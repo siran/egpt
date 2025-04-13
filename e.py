@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-e.py — Embodied GPT Daemon (CDP Watcher with Streaming Fix)
+e.py — Embodied GPT Daemon (CDP Watcher — Restored Working Version)
 """
 
 import time
