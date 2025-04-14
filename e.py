@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """
-e.py — Embodied GPT Daemon (CDP Watcher — Restored Working Version)
+e.py — Embodied GPT Daemon (CDP Watcher — Restored Reflex Loop)
 """
-
-import time
-from main import cdp, interpret_input
-
-cdp.connect()
-
 seen = {}
 
-def initialize_seen():
+def initialize_seen(cdp):
     js = '''
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
@@ -28,8 +22,6 @@ def initialize_seen():
         print("⚠️ Init failed:", e)
         return {}
 
-seen = initialize_seen()
-
 def fetch_chat():
     js = '''
     (() => {
@@ -45,8 +37,9 @@ def fetch_chat():
     return result.get("result", {}).get("result", {}).get("value", [])[-4:]
 
 def loop():
-    print("🧠 e is watching ChatGPT via CDP. Press Ctrl+C to stop.\n")
+
     while True:
+        from main import interpret_input
         try:
             msgs = fetch_chat()
             for msg in msgs[-2:]:
@@ -56,6 +49,7 @@ def loop():
                     continue
                 last = seen.get(msg_id)
                 if last == txt:
+                    resp = input('Press enter to continue... ctrl-break to reload.')
                     continue
                 seen[msg_id] = txt
                 prefix = "🧍 You:" if msg["role"] == "user" else "🤖 e:"
@@ -81,5 +75,9 @@ def loop():
 
 if __name__ == "__main__":
     while True:
+        import time
+        from cdp_instance import cdp
+        seen = initialize_seen(cdp)
+        print("Starting 🧠 e ... Press Ctrl+C to stop.\n")
         loop()
         print('\n\n--- \n... restarting ... \n---\n\n')
