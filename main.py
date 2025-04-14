@@ -65,7 +65,7 @@ def interpret_input(prompt, is_shell=True):
                 agent_state["pending_exec"] = None
                 return "❌ Command aborted."
         elif agent_state["pending_output"]:
-            if prompt == "y":
+            if prompt in ["", "y"]:
                 cmd, output, status = agent_state["pending_output"]
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
@@ -142,8 +142,9 @@ def input_loop():
     while True:
         try:
             prompt = input("\n🧍 You > ").strip()
+            mode = "s" if prompt == "" else prompt
 
-            if prompt in {"", "a", "l", "s"}:
+            if mode in {"s", "a", "l"}:
                 messages = fetch_latest_messages()
                 if not messages:
                     print("⚠️ No messages found.")
@@ -162,9 +163,9 @@ def input_loop():
                     prefix = "🧍 You:" if role == "user" else "🤖 e:"
                     print(f"\n{prefix}\n{txt}")
 
-                    if prompt == "s":
+                    if mode == "s":
                         continue
-                    if prompt == "l" and i != len(messages) - 1:
+                    if mode == "l" and i != len(messages) - 1:
                         continue
 
                     parsed = interpret_input(txt, is_shell=False)
@@ -189,42 +190,59 @@ def input_loop():
         except KeyboardInterrupt:
             print("\n👋 Exiting.")
             break
-def stream_reply(timeout=30):
+
+def stream_reply():
     js = '''
     (() => {
-        return Array.from(document.querySelectorAll(".text-message")).map(el => el.innerText).filter(t => t && t.trim().length > 0);
+        return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
+            const id = el.getAttribute("data-message-id") || "";
+            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
+            const text = el.innerText || "";
+            return { id, role, text };
+        });
     })();
     '''
-    seen_blocks = []
-    start = time.time()
-    cycle = 0
+    seen = {}
 
-    while True:
-        result = cdp.evaluate(js)
-        blocks = result.get("result", {}).get("result", {}).get("value", [])
-        new_blocks = blocks[len(seen_blocks):]
-        for block in new_blocks:
-            print(f"\n🧠 (streaming reply)\n{block}")
-        seen_blocks = blocks
-
-        elapsed = time.time() - start
-        if elapsed > timeout:
-            break
+    for _ in range(3):  # 15 seconds total
+        try:
+            result = cdp.evaluate(js)
+            messages = result.get("result", {}).get("result", {}).get("value", [])
+            for m in messages:
+                msg_id = m.get("id")
+                txt = m.get("text", "").strip()
+                if not msg_id or not txt:
+                    continue
+                if seen.get(msg_id) == txt:
+                    continue
+                seen[msg_id] = txt
+                prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
+                print(f"\n{prefix}\n{txt}")
+        except Exception as e:
+            print(f"\n⚠️ stream error: {e}")
         time.sleep(5)
 
     while True:
-        prompt = input("\n🧍 Poll again or send message: ").strip()
+        prompt = input("\n↻ Hit Enter to poll again, or type a message to send: ").strip()
         if prompt == "":
-            for _ in range(2):
+            try:
                 result = cdp.evaluate(js)
-                blocks = result.get("result", {}).get("result", {}).get("value", [])
-                new_blocks = blocks[len(seen_blocks):]
-                for block in new_blocks:
-                    print(f"\n🧠 (streaming reply)\n{block}")
-                seen_blocks = blocks
-                time.sleep(5)
+                messages = result.get("result", {}).get("result", {}).get("value", [])
+                for m in messages:
+                    msg_id = m.get("id")
+                    txt = m.get("text", "").strip()
+                    if not msg_id or not txt:
+                        continue
+                    if seen.get(msg_id) == txt:
+                        continue
+                    seen[msg_id] = txt
+                    prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
+                    print(f"\n{prefix}\n{txt}")
+            except Exception as e:
+                print(f"\n⚠️ stream error: {e}")
+            time.sleep(5)
         else:
-            parsed = interpret_input(prompt)
+            parsed = interpret_input(prompt, is_shell=True)
             if parsed:
                 print("\n📡 Interpreted:\n" + parsed)
                 if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
@@ -235,7 +253,10 @@ def stream_reply(timeout=30):
             break
 
 
+
 if __name__ == "__main__":
-    print("🧠 e is in shell mode — polling disabled.")
-    print("Press:\n  ↩ Enter = fetch and parse 4\n  s = fetch 4 and skip\n  l = parse only the last\n")
-    input_loop()
+    while True:
+        print("🧠 e is in shell mode — polling disabled.")
+        print("Press:\n  ↩ Enter = fetch and parse 4\n  s = fetch 4 and skip\n  l = parse only the last\n")
+        input_loop()
+        print("\n\nrespawning...\n\n")
