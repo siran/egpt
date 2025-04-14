@@ -1,2 +1,1 @@
-# egpt
-embodied gpt
+# eGPT — Embodied GPT Daemon
