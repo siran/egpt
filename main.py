@@ -50,6 +50,10 @@ def detect_structured_command(text):
 
 def interpret_input(prompt, is_shell=True):
     import sys
+    import re
+    import tempfile
+    from pathlib import Path
+    import subprocess
 
     prompt = prompt.strip()
 
@@ -64,31 +68,44 @@ def interpret_input(prompt, is_shell=True):
         except KeyboardInterrupt:
             return "❌ Paste cancelled."
 
+    # Detect HEREDOC block
+    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", prompt, re.DOTALL)
+    if match:
+        script_block = match.group(1).strip()
+        agent_state["pending_exec"] = script_block
+        return f"⚙️ Detected full patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
+
     if len(prompt.lower()) == 1 or prompt == "":
         if agent_state["pending_exec"]:
             if prompt == "y":
                 cmd = agent_state["pending_exec"]
                 try:
-                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                    status = result.returncode
-                    output = result.stdout.strip() + "\n" + result.stderr.strip()
+                    patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
+                    patch_file.write_text(cmd + "\n", encoding="utf-8")
+                    subprocess.run(["bash", str(patch_file)], check=True)
+                    output = cmd.strip()
+                    status = 0
                 except Exception as e:
                     output = str(e)
                     status = -1
 
                 print(f"\n📤 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
                 agent_state["pending_exec"] = None
+
                 try:
-                    msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    msg = f"📦 Patch applied:\n```bash\n{output}\n```"
                     import sendtobrain
                     sendtobrain.reflect(msg)
-                    print("🧠 Output sent to ChatGPT.")
+                    print("🧠 Patch reflected to ChatGPT.")
+                    from cdp_instance import cdp
+                    if cdp:
+                        cdp.wait_for_reply_end(timeout=90)
                 except Exception as e:
-                    print(f"❌ Failed to send to brain: {e}")
+                    print(f"❌ Failed to reflect patch: {e}")
                 return None
             else:
                 agent_state["pending_exec"] = None
-                return "❌ Command aborted."
+                return "❌ Patch aborted."
 
         elif agent_state["pending_output"]:
             cmd, output, status = agent_state["pending_output"]
@@ -105,8 +122,6 @@ def interpret_input(prompt, is_shell=True):
                     from cdp_instance import cdp
                     if cdp:
                         cdp.wait_for_reply_end(timeout=90)
-                    else:
-                        print("⚠️ CDP instance not available for polling.")
                 except Exception as e:
                     print(f"❌ Failed to send to brain: {e}")
                 agent_state["pending_output"] = None
