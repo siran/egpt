@@ -13,3 +13,8 @@ venv/
 memory.json
 .sqlite3
 config.yaml
+-e 
+# ignore reflex artifacts
+temp_reflect.txt
+sandbox/
+temp/
