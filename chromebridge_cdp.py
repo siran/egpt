@@ -77,7 +77,7 @@ class ChromeCDP:
                     "code": "Enter",
                     "windowsVirtualKeyCode": 13,
                     "nativeVirtualKeyCode": 13,
-                    "modifiers": 8  # Shift
+                    "modifiers": 8
                 })
             else:
                 self.send("Input.dispatchKeyEvent", {
@@ -113,3 +113,32 @@ class ChromeCDP:
         self.type_text(text)
         time.sleep(0.3)
         self.press_enter()
+
+    def wait_for_reply_end(self, timeout=90):
+        print("⏳ Waiting for reply to finish", end="", flush=True)
+        js = '''
+        (() => {
+            const btn = document.querySelector('form')?.querySelectorAll('button')[6];
+            if (!btn) return "none";
+            return btn.getAttribute("aria-label") || "none";
+        })();
+        '''
+        recent = []
+        start = time.time()
+        try:
+            while time.time() - start < timeout:
+                result = self.evaluate(js)
+                label = result.get("result", {}).get("result", {}).get("value", "")
+                recent.append(label)
+                if len(recent) > 3:
+                    recent = recent[-3:]
+                    if recent[0] == recent[1] == recent[2]:
+                        print(" ✅")
+                        return True
+                print(".", end="", flush=True)
+                time.sleep(2)
+        except KeyboardInterrupt:
+            print(" 🛑 [cancelled by user]")
+            return False
+        print(" ⏱️ timeout")
+        return False

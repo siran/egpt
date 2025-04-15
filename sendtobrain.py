@@ -75,6 +75,18 @@ def reflect(msg):
         print(" failed.")
     print("...sent!")
 
+    print("\n⏳ Waiting for reply to complete...", end="")
+    done = cdp.wait_for_reply_end(timeout=90)
+
+    if not done:
+        try:
+            follow = input("\n↻ Press Enter to poll again, or type message to be parsed: ").strip()
+            if follow:
+                from main import interpret_input
+                print("\n📡 Interpreted:\n" + str(interpret_input(follow, is_shell=False)))
+        except KeyboardInterrupt:
+            print("\n🛑 User cancelled input.")
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("❌ No message provided. Must pass as CLI argument.")
