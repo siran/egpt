@@ -210,9 +210,13 @@ def input_loop():
     print("🧠 e is in shell mode.")
     while True:
         try:
-            prompt = input("\n====================\n🧍 You (↩,s,l,?)> ").strip()
+            prompt = input("\n====================\n🧍 You (↩,s,l,p,?)> ").strip()
             mode = "s" if prompt == "" else prompt
             if prompt == "?":
+                print("↩: fetch+parse | s: skip | l: last only | a: all | p: enter polling mode | @paste: multiline input")
+                continue
+            if prompt == "p":
+                stream_reply_loop()
                 continue
             if prompt.isdigit():
                 fetch_n_messages = int(prompt)
@@ -255,7 +259,7 @@ def input_loop():
             parsed = interpret_input(prompt, is_shell=True)
             if parsed:
                 print("\n📡 Interpreted:\n" + parsed)
-                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
+                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message") or parsed.startswith("📝 Pasted block"):
                     answer = input("\n🧠 Approve? y/n > ").strip().lower()
                     result = interpret_input(answer, is_shell=True)
                     if result:
