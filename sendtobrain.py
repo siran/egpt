@@ -67,7 +67,7 @@ def reflect(msg):
         return
     time.sleep(0.3)
     type_text(msg)
-    time.sleep(0.5)
+    time.sleep(0.3)
     print(" clicking send...", end="", flush=True)
     if click_send_button():
         print(" clicked.")
