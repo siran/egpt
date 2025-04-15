@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-sendtobrain.py — Types message into ChatGPT UI using CDP key events,
-then submits using direct button[6] click on the form.
+sendtobrain.py — Copies command output to clipboard via CLIP.exe,
+pastes it into ChatGPT UI, and submits using simulated key events.
 """
 
 import sys
 import time
+from pathlib import Path
+import subprocess
 from cdp_instance import cdp
+
+TEMP_FILE = Path("temp_reflect.txt")
 
 def focus_textarea():
     js = '''
@@ -20,72 +24,57 @@ def focus_textarea():
     result = cdp.evaluate(js)
     return result.get("result", {}).get("result", {}).get("value", False)
 
-def type_text(text):
-    for c in text:
-        if c == "\n":
-            cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyDown",
-                "key": "Enter",
-                "code": "Enter",
-                "windowsVirtualKeyCode": 13,
-                "nativeVirtualKeyCode": 13,
-                "modifiers": 8
-            })
-            cdp.send("Input.dispatchKeyEvent", {
-                "type": "keyUp",
-                "key": "Enter",
-                "code": "Enter",
-                "windowsVirtualKeyCode": 13,
-                "nativeVirtualKeyCode": 13,
-                "modifiers": 8
-            })
-        else:
-            cdp.send("Input.dispatchKeyEvent", {
-                "type": "char",
-                "text": c,
-                "unmodifiedText": c,
-                "key": c
-            })
-        time.sleep(0.01)
+def press_ctrl_v():
+    cdp.send("Input.dispatchKeyEvent", {
+        "type": "keyDown",
+        "modifiers": 2,
+        "windowsVirtualKeyCode": 86,
+        "nativeVirtualKeyCode": 86,
+        "code": "KeyV",
+        "key": "v"
+    })
+    cdp.send("Input.dispatchKeyEvent", {
+        "type": "keyUp",
+        "modifiers": 2,
+        "windowsVirtualKeyCode": 86,
+        "nativeVirtualKeyCode": 86,
+        "code": "KeyV",
+        "key": "v"
+    })
 
-def click_send_button():
-    js = '''
-    (() => {
-        const button = document.querySelector('form')?.querySelectorAll('button')[6];
-        if (!button) return false;
-        button.click();
-        return true;
-    })();
-    '''
-    result = cdp.evaluate(js)
-    return result.get("result", {}).get("result", {}).get("value", False)
+def press_enter():
+    cdp.send("Input.dispatchKeyEvent", {
+        "type": "keyDown",
+        "key": "Enter",
+        "code": "Enter",
+        "windowsVirtualKeyCode": 13,
+        "nativeVirtualKeyCode": 13
+    })
+    cdp.send("Input.dispatchKeyEvent", {
+        "type": "keyUp",
+        "key": "Enter",
+        "code": "Enter",
+        "windowsVirtualKeyCode": 13,
+        "nativeVirtualKeyCode": 13
+    })
 
 def reflect(msg):
-    print("sending", end="", flush=True)
+    print("📋 Writing output to temp file...")
+    TEMP_FILE.write_text(msg, encoding="utf-8")
+
+    print("📥 Copying to clipboard...")
+    subprocess.run(f'CLIP.exe < "{TEMP_FILE}"', shell=True)
+
+    print("📤 Pasting into ChatGPT...", end="", flush=True)
     if not focus_textarea():
         print(" ❌ Could not focus textarea.")
         return
-    time.sleep(0.3)
-    type_text(msg)
-    time.sleep(0.3)
-    print(" clicking send...", end="", flush=True)
-    if click_send_button():
-        print(" clicked.")
-    else:
-        print(" failed.")
-    print("...sent!")
 
-    print("\n⏳ Waiting for reply to complete...", end="")
-    done = cdp.wait_for_reply_end(timeout=90)
-
-    if not done:
-        try:
-            follow = input("\n↻ Press Enter to poll again, or type message to be parsed: ").strip()
-            if follow:
-                from main import interpret_input
-                print("\n📡 Interpreted:\n" + str(interpret_input(follow, is_shell=False)))
-        except KeyboardInterrupt:
-            print("\n🛑 User cancelled input.")
+    time.sleep(0.4)
+    press_ctrl_v()
+    time.sleep(0.3)
+    press_enter()
+    print(" ✅ Sent.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
