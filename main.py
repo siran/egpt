@@ -67,6 +67,7 @@ def interpret_input(prompt, is_shell=True):
                 agent_state["pending_exec"] = None
                 try:
                     msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    import sendtobrain
                     sendtobrain.reflect(msg)
                     print("🧠 Output sent to ChatGPT.")
                 except Exception as e:
@@ -82,12 +83,18 @@ def interpret_input(prompt, is_shell=True):
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
                     msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    import sendtobrain
                     sendtobrain.reflect(msg)
                 except Exception as e:
                     print(f"❌ Failed to send to brain: {e}")
                 agent_state["pending_output"] = None
                 print("🧠 Output sent to ChatGPT.")
-                stream_reply_loop()
+                from cdp_instance import cdp
+                if cdp:
+                    cdp.wait_for_reply_end(timeout=90)
+                else:
+                    print("⚠️ CDP instance not available for polling.")
+
                 return None
             else:
                 agent_state["pending_output"] = None
@@ -104,6 +111,7 @@ def interpret_input(prompt, is_shell=True):
             print("⚠️ Pending exec already exists. Waiting for approval.")
             return None
     elif cmd == "reflect":
+        import sendtobrain
         sendtobrain.reflect(payload)
         return f"🪞 Reflected to brain: {payload}"
 
