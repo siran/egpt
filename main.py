@@ -8,16 +8,22 @@ from memory import Memory
 from executor import execute_command, log, say
 from patcher import propose_patch, apply_patch_if_approved, update_patch, show_patch
 from cdp_instance import cdp
+import sendtobrain
 
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 MODEL = config.get("model", "gpt-4")
 try:
+    say('loading openai','boot')
     from openai import OpenAI
+    say('loaded openai','boot')
     client = OpenAI(api_key=config["openai_api_key"])
+    say('created client OAI','boot')
 except:
     client = None
+
+fetch_n_messages= 1
 
 memory = Memory("state/memory.json")
 memory.load_reminiscence()
@@ -47,7 +53,7 @@ def detect_exec_block(text):
 def interpret_input(prompt, is_shell=True):
     prompt = prompt.strip()
 
-    if prompt.lower() in {"y", "n"}:
+    if len(prompt.lower()) == 1 or prompt == "":
         if agent_state["pending_exec"]:
             if prompt == "y":
                 cmd = agent_state["pending_exec"]
@@ -74,11 +80,7 @@ def interpret_input(prompt, is_shell=True):
                     else:
                         msg = f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
 
-                    subprocess.run(["python3",
-                                    "sendtobrain.py", msg],
-                                    check=True,
-                                    stdout=sys.stdout,
-                                    stderr=sys.stderr)
+                    sendtobrain.reflect(msg)
 
                 except Exception as e:
                     print(f"❌ Failed to send to brain: {e}")
@@ -89,7 +91,7 @@ def interpret_input(prompt, is_shell=True):
             else:
                 agent_state["pending_output"] = None
                 return "❌ Skipped sending to ChatGPT."
-        return "✅ y/n received, but no command or output was pending."
+        return "✅ single char response received, but no command or output was pending."
 
     if ":" in prompt and ";" in prompt:
         start = prompt.find(":")
@@ -97,13 +99,7 @@ def interpret_input(prompt, is_shell=True):
         if start != -1 and end != -1:
             reflect_msg = prompt[start+1:end].strip()
             if len(reflect_msg) > 1:
-                subprocess.run(
-                    ["python3", "sendtobrain.py"],
-                    input=reflect_msg,
-                    text=True,
-                    stdout=sys.stdout,
-                    stderr=sys.stderr
-                )
+                sendtobrain.reflect(reflect_msg)
                 return f"🪞 Reflected to brain: {reflect_msg}"
             else:
                 return f"🛑 Ignored single-char reflection: {reflect_msg}"
@@ -119,7 +115,7 @@ def interpret_input(prompt, is_shell=True):
 
     return None
 
-def fetch_latest_messages(n=4):
+def fetch_latest_messages(n=fetch_n_messages):
     js = '''
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
@@ -139,13 +135,22 @@ def fetch_latest_messages(n=4):
         return []
 
 def input_loop():
+    global fetch_n_messages
+    print("🧠 e is in shell mode.")
     while True:
+        print(f"Shell mode:\n  ↩ Enter = fetch and parse (n={fetch_n_messages}) messages,\n  (s)kip messages,\n  l = parse only the last\n")
+
         try:
-            prompt = input("\n🧍 You > ").strip()
+            prompt = input("\n--------\n\n🧍 You (↩,s,l,?)> ").strip()
             mode = "s" if prompt == "" else prompt
+            if prompt == "?":
+                continue
+            if prompt is int:
+                fetch_n_messages = prompt
+                continue
 
             if mode in {"s", "a", "l"}:
-                messages = fetch_latest_messages()
+                messages = fetch_latest_messages(n=fetch_n_messages)
                 if not messages:
                     print("⚠️ No messages found.")
                     continue
@@ -161,7 +166,7 @@ def input_loop():
 
                     seen_messages[msg_id] = txt
                     prefix = "🧍 You:" if role == "user" else "🤖 e:"
-                    print(f"\n{prefix}\n{txt}")
+                    print(f"\n\n{prefix}\n{txt}\n\n----------------\n\n")
 
                     if mode == "s":
                         continue
@@ -188,8 +193,9 @@ def input_loop():
                         print("\n📡 Result:\n" + result)
 
         except KeyboardInterrupt:
+            print('pressend ctrl-c')
             print("\n👋 Exiting.")
-            break
+            raise
 
 def stream_reply():
     js = '''
@@ -204,11 +210,11 @@ def stream_reply():
     '''
     seen = {}
 
-    for _ in range(3):  # 15 seconds total
+    for _ in range(3):
         try:
             result = cdp.evaluate(js)
             messages = result.get("result", {}).get("result", {}).get("value", [])
-            for m in messages:
+            for m in messages[-4:]:
                 msg_id = m.get("id")
                 txt = m.get("text", "").strip()
                 if not msg_id or not txt:
@@ -220,43 +226,50 @@ def stream_reply():
                 print(f"\n{prefix}\n{txt}")
         except Exception as e:
             print(f"\n⚠️ stream error: {e}")
-        time.sleep(5)
 
-    while True:
-        prompt = input("\n↻ Hit Enter to poll again, or type a message to send: ").strip()
-        if prompt == "":
-            try:
-                result = cdp.evaluate(js)
-                messages = result.get("result", {}).get("result", {}).get("value", [])
-                for m in messages:
-                    msg_id = m.get("id")
-                    txt = m.get("text", "").strip()
-                    if not msg_id or not txt:
-                        continue
-                    if seen.get(msg_id) == txt:
-                        continue
-                    seen[msg_id] = txt
-                    prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
-                    print(f"\n{prefix}\n{txt}")
-            except Exception as e:
-                print(f"\n⚠️ stream error: {e}")
-            time.sleep(5)
-        else:
-            parsed = interpret_input(prompt, is_shell=True)
-            if parsed:
-                print("\n📡 Interpreted:\n" + parsed)
-                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
-                    answer = input("\n🧠 Approve? y/n > ").strip().lower()
-                    result = interpret_input(answer)
-                    if result:
-                        print("\n📡 Result:\n" + result)
-            break
+    # while True:
+    #     prompt = input("\n↻ Hit Enter to poll again, or type a message to send: ").strip()
+    #     if prompt == "":
+    #         try:
+    #             result = cdp.evaluate(js)
+    #             messages = result.get("result", {}).get("result", {}).get("value", [])
+    #             for i, m in enumerate(messages):
+    #                 msg_id = m.get("id")
+    #                 txt = m.get("text", "").strip()
+    #                 role = m.get("role", "")
+    #                 if not msg_id or not txt:
+    #                     continue
+    #                 if seen.get(msg_id) == txt:
+    #                     continue
+    #                 seen[msg_id] = txt
+    #                 prefix = "🧍 You:" if role == "user" else "🤖 e:"
+    #                 print(f"\n{prefix}\n{txt}")
+
+    #                 # only parse the latest new message
+    #                 if i == len(messages) - 1:
+    #                     parsed = interpret_input(txt, is_shell=False)
+    #                     if parsed:
+    #                         print("\n📡 Interpreted:\n" + parsed)
+    #                         if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
+    #                             answer = input("\n🧠 Approve? y/n > ").strip().lower()
+    #                             result = interpret_input(answer, is_shell=False)
+    #                             if result:
+    #                                 print("\n📡 Result:\n" + result)
+    #         except Exception as e:
+    #             print(f"\n⚠️ stream error: {e}")
+    #         time.sleep(5)
+    #     else:
+    #         parsed = interpret_input(prompt, is_shell=True)
+    #         if parsed:
+    #             print("\n📡 Interpreted:\n" + parsed)
+    #             if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
+    #                 answer = input("\n🧠 Approve? y/n > ").strip().lower()
+    #                 result = interpret_input(answer)
+    #                 if result:
+    #                     print("\n📡 Result:\n" + result)
+    #         break
 
 
 
 if __name__ == "__main__":
-    while True:
-        print("🧠 e is in shell mode — polling disabled.")
-        print("Press:\n  ↩ Enter = fetch and parse 4\n  s = fetch 4 and skip\n  l = parse only the last\n")
-        input_loop()
-        print("\n\nrespawning...\n\n")
+    input_loop()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-sendtobrain.py — Types message into ChatGPT UI using CDP key events.
+sendtobrain.py — Types message into ChatGPT UI using CDP key events,
+then submits using direct button[6] click on the form.
 """
 
 import sys
@@ -28,7 +29,7 @@ def type_text(text):
                 "code": "Enter",
                 "windowsVirtualKeyCode": 13,
                 "nativeVirtualKeyCode": 13,
-                "modifiers": 8  # Shift
+                "modifiers": 8
             })
             cdp.send("Input.dispatchKeyEvent", {
                 "type": "keyUp",
@@ -47,32 +48,31 @@ def type_text(text):
             })
         time.sleep(0.01)
 
-def press_enter():
-    cdp.send("Input.dispatchKeyEvent", {
-        "type": "keyDown",
-        "key": "Enter",
-        "code": "Enter",
-        "windowsVirtualKeyCode": 13,
-        "nativeVirtualKeyCode": 13
-    })
-    cdp.send("Input.dispatchKeyEvent", {
-        "type": "keyUp",
-        "key": "Enter",
-        "code": "Enter",
-        "windowsVirtualKeyCode": 13,
-        "nativeVirtualKeyCode": 13
-    })
+def click_send_button():
+    js = '''
+    (() => {
+        const button = document.querySelector('form')?.querySelectorAll('button')[6];
+        if (!button) return false;
+        button.click();
+        return true;
+    })();
+    '''
+    result = cdp.evaluate(js)
+    return result.get("result", {}).get("result", {}).get("value", False)
 
 def reflect(msg):
     print("sending", end="", flush=True)
-    focused = focus_textarea()
-    if not focused:
-        print("❌ Could not focus textarea.")
+    if not focus_textarea():
+        print(" ❌ Could not focus textarea.")
         return
     time.sleep(0.3)
     type_text(msg)
-    time.sleep(0.3)
-    press_enter()
+    time.sleep(0.5)
+    print(" clicking send...", end="", flush=True)
+    if click_send_button():
+        print(" clicked.")
+    else:
+        print(" failed.")
     print("...sent!")
 
 if __name__ == "__main__":

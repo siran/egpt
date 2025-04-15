@@ -17,7 +17,7 @@ def log(text, filename=None):
         os.fsync(f.fileno())
 
 def say(text, prefix=""):
-    message = f"{prefix}{text}"
+    message = f"{prefix}: {text}"
     print(message, flush=True)
     log(message)
 
