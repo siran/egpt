@@ -1,8 +1,8 @@
 import os
 import subprocess
-import re
 import sys
 import time
+import re
 import yaml
 from memory import Memory
 from executor import execute_command, log, say
@@ -15,16 +15,15 @@ with open("config.yaml", "r") as f:
 
 MODEL = config.get("model", "gpt-4")
 try:
-    say('loading openai','boot')
+    say("loading openai", "boot")
     from openai import OpenAI
-    say('loaded openai','boot')
+    say("loaded openai", "boot")
     client = OpenAI(api_key=config["openai_api_key"])
-    say('created client OAI','boot')
+    say("created client OAI", "boot")
 except:
     client = None
 
-fetch_n_messages= 1
-
+fetch_n_messages = 1
 memory = Memory("state/memory.json")
 memory.load_reminiscence()
 
@@ -36,19 +35,18 @@ say(boot_msg)
 agent_state = {
     "pending_exec": None,
     "pending_output": None,
-    "interactive_local": False
+    "interactive_local": False,
 }
 
 seen_messages = {}
 
-def detect_exec_block(text):
-    body = text.split("---")[-1] if "---" in text else text
-    for line in body.strip().splitlines():
-        line = line.strip()
-        if line.startswith("@exec:"):
-            agent_state["pending_exec"] = line[6:].strip()
-            return "⚙️ Proposed Command: " + agent_state["pending_exec"] + "\n💡 Reply 'y' to approve execution, or 'n' to cancel."
-    return None
+def detect_structured_command(text):
+    body = text.split("---")[-1]
+    match = re.search(r"(^|\n\n)@(\w+):\s*(.*?)\s*\n\n", body, re.DOTALL)
+    if match:
+        cmd, payload = match[2].strip().lower(), match[3].strip()
+        return cmd, payload
+    return None, None
 
 def interpret_input(prompt, is_shell=True):
     prompt = prompt.strip()
@@ -59,59 +57,59 @@ def interpret_input(prompt, is_shell=True):
                 cmd = agent_state["pending_exec"]
                 try:
                     result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                    output = result.stdout.strip() + "\n" + result.stderr.strip()
                     status = result.returncode
+                    output = result.stdout.strip() + "\n" + result.stderr.strip()
                 except Exception as e:
                     output = str(e)
                     status = -1
-                agent_state["pending_output"] = (cmd, output, status)
+
+                print(f"\n📤 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
                 agent_state["pending_exec"] = None
-                return f"✅ Executed locally:\n@exec: {cmd}\n\n📤 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}\n\n💡 Send this to ChatGPT context? (y/n)"
+                try:
+                    msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    sendtobrain.reflect(msg)
+                    print("🧠 Output sent to ChatGPT.")
+                except Exception as e:
+                    print(f"❌ Failed to send to brain: {e}")
+                return None
             else:
                 agent_state["pending_exec"] = None
                 return "❌ Command aborted."
+
         elif agent_state["pending_output"]:
-            if prompt in ["", "y"]:
-                cmd, output, status = agent_state["pending_output"]
+            cmd, output, status = agent_state["pending_output"]
+            if prompt in ["y", ""]:
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
-                    if cmd == "text":
-                        msg = output.strip()
-                    else:
-                        msg = f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
-
+                    msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
                     sendtobrain.reflect(msg)
-
                 except Exception as e:
                     print(f"❌ Failed to send to brain: {e}")
                 agent_state["pending_output"] = None
                 print("🧠 Output sent to ChatGPT.")
-                stream_reply()
+                stream_reply_loop()
                 return None
             else:
                 agent_state["pending_output"] = None
                 return "❌ Skipped sending to ChatGPT."
-        return "✅ single char response received, but no command or output was pending."
 
-    if ":" in prompt and ";" in prompt:
-        start = prompt.find(":")
-        end = prompt.find(";", start)
-        if start != -1 and end != -1:
-            reflect_msg = prompt[start+1:end].strip()
-            if len(reflect_msg) > 1:
-                sendtobrain.reflect(reflect_msg)
-                return f"🪞 Reflected to brain: {reflect_msg}"
-            else:
-                return f"🛑 Ignored single-char reflection: {reflect_msg}"
+        return "✅ Response received, but no command/output was pending."
 
-    maybe = detect_exec_block(prompt)
-    if maybe:
-        return maybe
+    cmd, payload = detect_structured_command(prompt)
+    if cmd == "exec":
+        if agent_state["pending_exec"] is None:
+            agent_state["pending_exec"] = payload
+            return f"⚙️ Proposed Command:\n\n{payload}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
+        else:
+            print("⚠️ Pending exec already exists. Waiting for approval.")
+            return None
+    elif cmd == "reflect":
+        sendtobrain.reflect(payload)
+        return f"🪞 Reflected to brain: {payload}"
 
-    # Only reflect plain text from shell, never from polled UI
     if is_shell and len(prompt) > 1 and not prompt.startswith("@"):
         agent_state["pending_output"] = ("text", prompt, 0)
-        return f"📝 Detected plain message.\n💡 Send this to ChatGPT context? (y/n)"
+        return "📝 Detected plain message.\n💡 Send this to ChatGPT context? (y/n)"
 
     return None
 
@@ -134,19 +132,67 @@ def fetch_latest_messages(n=fetch_n_messages):
         print(f"\n⚠️ Failed to fetch messages: {e}")
         return []
 
+def stream_reply_loop():
+    print("\n🔁 Polling for brain reply. Ctrl+C to stop.\n")
+    js = '''
+    (() => {
+        return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
+            const id = el.getAttribute("data-message-id") || "";
+            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
+            const text = el.innerText || "";
+            return { id, role, text };
+        });
+    })();
+    '''
+    seen = {}
+    last_msg = None
+
+    try:
+        while True:
+            result = cdp.evaluate(js)
+            messages = result.get("result", {}).get("result", {}).get("value", [])[-4:]
+            for m in messages:
+                msg_id = m.get("id")
+                txt = m.get("text", "").strip()
+                if not msg_id or not txt:
+                    continue
+                if seen.get(msg_id) == txt:
+                    continue
+                seen[msg_id] = txt
+                last_msg = m
+                prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
+                print(f"\n{prefix}\n{txt}\n")
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\n🛑 Stream ended.")
+        if last_msg:
+            txt = last_msg.get("text", "").strip()
+            parsed = interpret_input(txt, is_shell=False)
+            if parsed:
+                print("\n📡 Interpreted:\n" + parsed)
+                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:"):
+                    while True:
+                        answer = input("\n🧠 Approve? y/n > ").strip().lower()
+                        if answer in {"y", "n"}:
+                            result = interpret_input(answer, is_shell=True)
+                            if result:
+                                print("\n📡 Result:\n" + result)
+                            break
+                        else:
+                            print("❗ Please answer 'y' or 'n'.")
+
 def input_loop():
     global fetch_n_messages
     print("🧠 e is in shell mode.")
     while True:
-        print(f"Shell mode:\n  ↩ Enter = fetch and parse (n={fetch_n_messages}) messages,\n  (s)kip messages,\n  l = parse only the last\n")
-
         try:
-            prompt = input("\n--------\n\n🧍 You (↩,s,l,?)> ").strip()
+            prompt = input("\n====================\n🧍 You (↩,s,l,?)> ").strip()
             mode = "s" if prompt == "" else prompt
             if prompt == "?":
                 continue
-            if prompt is int:
-                fetch_n_messages = prompt
+            if prompt.isdigit():
+                fetch_n_messages = int(prompt)
                 continue
 
             if mode in {"s", "a", "l"}:
@@ -161,12 +207,12 @@ def input_loop():
                     role = msg.get("role", "")
                     if not msg_id or not txt:
                         continue
-                    if seen_messages.get(msg_id) == txt:
+                    if mode != "l" and seen_messages.get(msg_id) == txt:
                         continue
 
                     seen_messages[msg_id] = txt
                     prefix = "🧍 You:" if role == "user" else "🤖 e:"
-                    print(f"\n\n{prefix}\n{txt}\n\n----------------\n\n")
+                    print(f"\n====================\n{prefix}\n{txt}\n====================\n\n")
 
                     if mode == "s":
                         continue
@@ -176,7 +222,7 @@ def input_loop():
                     parsed = interpret_input(txt, is_shell=False)
                     if parsed:
                         print("\n📡 Interpreted:\n" + parsed)
-                        if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:"):
+                        if agent_state["pending_exec"]:
                             answer = input("\n🧠 Approve? y/n > ").strip().lower()
                             result = interpret_input(answer, is_shell=False)
                             if result:
@@ -193,83 +239,8 @@ def input_loop():
                         print("\n📡 Result:\n" + result)
 
         except KeyboardInterrupt:
-            print('pressend ctrl-c')
-            print("\n👋 Exiting.")
+            print("\n👋 Ctrl+C exit request.")
             raise
-
-def stream_reply():
-    js = '''
-    (() => {
-        return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
-            const id = el.getAttribute("data-message-id") || "";
-            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
-            const text = el.innerText || "";
-            return { id, role, text };
-        });
-    })();
-    '''
-    seen = {}
-
-    for _ in range(3):
-        try:
-            result = cdp.evaluate(js)
-            messages = result.get("result", {}).get("result", {}).get("value", [])
-            for m in messages[-4:]:
-                msg_id = m.get("id")
-                txt = m.get("text", "").strip()
-                if not msg_id or not txt:
-                    continue
-                if seen.get(msg_id) == txt:
-                    continue
-                seen[msg_id] = txt
-                prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
-                print(f"\n{prefix}\n{txt}")
-        except Exception as e:
-            print(f"\n⚠️ stream error: {e}")
-
-    # while True:
-    #     prompt = input("\n↻ Hit Enter to poll again, or type a message to send: ").strip()
-    #     if prompt == "":
-    #         try:
-    #             result = cdp.evaluate(js)
-    #             messages = result.get("result", {}).get("result", {}).get("value", [])
-    #             for i, m in enumerate(messages):
-    #                 msg_id = m.get("id")
-    #                 txt = m.get("text", "").strip()
-    #                 role = m.get("role", "")
-    #                 if not msg_id or not txt:
-    #                     continue
-    #                 if seen.get(msg_id) == txt:
-    #                     continue
-    #                 seen[msg_id] = txt
-    #                 prefix = "🧍 You:" if role == "user" else "🤖 e:"
-    #                 print(f"\n{prefix}\n{txt}")
-
-    #                 # only parse the latest new message
-    #                 if i == len(messages) - 1:
-    #                     parsed = interpret_input(txt, is_shell=False)
-    #                     if parsed:
-    #                         print("\n📡 Interpreted:\n" + parsed)
-    #                         if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
-    #                             answer = input("\n🧠 Approve? y/n > ").strip().lower()
-    #                             result = interpret_input(answer, is_shell=False)
-    #                             if result:
-    #                                 print("\n📡 Result:\n" + result)
-    #         except Exception as e:
-    #             print(f"\n⚠️ stream error: {e}")
-    #         time.sleep(5)
-    #     else:
-    #         parsed = interpret_input(prompt, is_shell=True)
-    #         if parsed:
-    #             print("\n📡 Interpreted:\n" + parsed)
-    #             if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message"):
-    #                 answer = input("\n🧠 Approve? y/n > ").strip().lower()
-    #                 result = interpret_input(answer)
-    #                 if result:
-    #                     print("\n📡 Result:\n" + result)
-    #         break
-
-
 
 if __name__ == "__main__":
     input_loop()
