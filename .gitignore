@@ -12,3 +12,4 @@ venv/
 .DS_Store
 memory.json
 .sqlite3
+config.yaml
