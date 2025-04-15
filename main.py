@@ -58,7 +58,7 @@ def interpret_input(prompt, is_shell=True):
     prompt = prompt.strip()
 
     if prompt == "@paste":
-        print("\U0001f4c2 Paste mode enabled — press Ctrl+D when done.\n")
+        print("📂 Paste mode enabled — press Ctrl+D when done.\n")
         print("-------- begin paste --------")
         try:
             pasted = sys.stdin.read().strip()
@@ -68,22 +68,39 @@ def interpret_input(prompt, is_shell=True):
         except KeyboardInterrupt:
             return "❌ Paste cancelled."
 
-    # Detect HEREDOC @exec patch block
-    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", prompt, re.DOTALL)
+    # === Detect @exec ===
+    split = prompt.rsplit('---', 1)
+    body = split[-1] if len(split) > 1 else prompt
+
+    # HEREDOC-style block
+    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", body, re.DOTALL)
     if match:
         script_block = match.group(1).strip()
         agent_state["pending_exec"] = script_block
-        return f"⚙️ Detected full patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
+        return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
 
+    # Single-line command
+    match2 = re.search(r"(?:^|\n)@exec:\s*(.+)", body)
+    if match2:
+        command = match2.group(1).strip()
+        agent_state["pending_exec"] = command
+        return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Apply this command? (y/n)"
+
+    # === Confirm exec ===
     if len(prompt.lower()) == 1 or prompt == "":
-        # === Handle exec confirmation ===
         if agent_state["pending_exec"]:
             if prompt == "y":
                 cmd = agent_state["pending_exec"]
                 try:
-                    patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
-                    patch_file.write_text(cmd + "\n", encoding="utf-8")
-                    result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
+                    if "\n" in cmd:
+                        # HEREDOC multiline patch
+                        patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
+                        patch_file.write_text(cmd + "\n", encoding="utf-8")
+                        result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
+                    else:
+                        # Single-line command
+                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+
                     output = result.stdout.strip() + "\n" + result.stderr.strip()
                     status = result.returncode
                 except Exception as e:
@@ -108,16 +125,13 @@ def interpret_input(prompt, is_shell=True):
                 agent_state["pending_exec"] = None
                 return "❌ Patch/command aborted."
 
-        # === Handle normal/paste reflection ===
+        # === Handle confirmed message reflection ===
         elif agent_state["pending_output"]:
             cmd, output, status = agent_state["pending_output"]
             if prompt in ["y", ""]:
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
-                    if cmd == "text":
-                        msg = output.strip()
-                    else:
-                        msg = f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    msg = output.strip() if cmd == "text" else f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
                     import sendtobrain
                     sendtobrain.reflect(msg)
                     print("🧠 Output sent to ChatGPT.")
@@ -134,15 +148,9 @@ def interpret_input(prompt, is_shell=True):
 
         return "✅ Response received, but no command/output was pending."
 
-    # === Handle structured commands ===
+    # === Handle @reflect ===
     cmd, payload = detect_structured_command(prompt)
-    if cmd == "exec":
-        if agent_state["pending_exec"] is None:
-            agent_state["pending_exec"] = payload
-            return f"⚙️ Proposed Command:\n\n{payload}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
-        else:
-            return "⚠️ Already pending exec."
-    elif cmd == "reflect":
+    if cmd == "reflect":
         import sendtobrain
         sendtobrain.reflect(payload)
         return f"🪞 Reflected to brain: {payload}"
