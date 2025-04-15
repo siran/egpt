@@ -1,3 +1,4 @@
+# main.py — Reflexive shell interface for eGPT
 import os
 import subprocess
 import sys
@@ -48,120 +49,6 @@ def detect_structured_command(text):
         return cmd, payload
     return None, None
 
-def interpret_input(prompt, is_shell=True):
-    import sys
-    import re
-    import tempfile
-    from pathlib import Path
-    import subprocess
-
-    prompt = prompt.strip()
-
-    if prompt == "@paste":
-        print("📂 Paste mode enabled — press Ctrl+D when done.\n")
-        print("-------- begin paste --------")
-        try:
-            pasted = sys.stdin.read().strip()
-            agent_state["pending_output"] = ("text", pasted, 0)
-            print("-------- end paste --------\n")
-            return "📝 Pasted block detected.\n💡 Reflect to ChatGPT? (y/n)"
-        except KeyboardInterrupt:
-            return "❌ Paste cancelled."
-
-    # === Detect @exec ===
-    split = prompt.rsplit('---', 1)
-    body = split[-1] if len(split) > 1 else prompt
-
-    # HEREDOC-style block
-    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", body, re.DOTALL)
-    if match:
-        script_block = match.group(1).strip()
-        agent_state["pending_exec"] = script_block
-        return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
-
-    # Single-line command
-    match2 = re.search(r"(?:^|\n)@exec:\s*(.+)", body)
-    if match2:
-        command = match2.group(1).strip()
-        agent_state["pending_exec"] = command
-        return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Apply this command? (y/n)"
-
-    # === Confirm exec ===
-    if len(prompt.lower()) == 1 or prompt == "":
-        if agent_state["pending_exec"]:
-            if prompt == "y":
-                cmd = agent_state["pending_exec"]
-                try:
-                    if "\n" in cmd:
-                        # HEREDOC multiline patch
-                        patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
-                        patch_file.write_text(cmd + "\n", encoding="utf-8")
-                        result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
-                    else:
-                        # Single-line command
-                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-
-                    output = result.stdout.strip() + "\n" + result.stderr.strip()
-                    status = result.returncode
-                except Exception as e:
-                    output = str(e)
-                    status = -1
-
-                print(f"\n📄 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
-                agent_state["pending_exec"] = None
-
-                try:
-                    msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
-                    import sendtobrain
-                    sendtobrain.reflect(msg)
-                    print("🧠 Output sent to ChatGPT.")
-                    from cdp_instance import cdp
-                    if cdp:
-                        cdp.wait_for_reply_end(timeout=90)
-                except Exception as e:
-                    print(f"❌ Failed to reflect output: {e}")
-                return None
-            else:
-                agent_state["pending_exec"] = None
-                return "❌ Patch/command aborted."
-
-        # === Handle confirmed message reflection ===
-        elif agent_state["pending_output"]:
-            cmd, output, status = agent_state["pending_output"]
-            if prompt in ["y", ""]:
-                print("🧠 Sending to ChatGPT via CDP:")
-                try:
-                    msg = output.strip() if cmd == "text" else f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
-                    import sendtobrain
-                    sendtobrain.reflect(msg)
-                    print("🧠 Output sent to ChatGPT.")
-                    from cdp_instance import cdp
-                    if cdp:
-                        cdp.wait_for_reply_end(timeout=90)
-                except Exception as e:
-                    print(f"❌ Failed to send to brain: {e}")
-                agent_state["pending_output"] = None
-                return None
-            else:
-                agent_state["pending_output"] = None
-                return "❌ Skipped sending to ChatGPT."
-
-        return "✅ Response received, but no command/output was pending."
-
-    # === Handle @reflect ===
-    cmd, payload = detect_structured_command(prompt)
-    if cmd == "reflect":
-        import sendtobrain
-        sendtobrain.reflect(payload)
-        return f"🪞 Reflected to brain: {payload}"
-
-    # === Handle plain input ===
-    if is_shell and len(prompt) > 1 and not prompt.startswith("@"):
-        agent_state["pending_output"] = ("text", prompt, 0)
-        return "📝 Detected plain message.\n💡 Send this to ChatGPT context? (y/n)"
-
-    return None
-
 def fetch_latest_messages(n=fetch_n_messages):
     js = '''
     (() => {
@@ -180,6 +67,108 @@ def fetch_latest_messages(n=fetch_n_messages):
     except Exception as e:
         print(f"\n⚠️ Failed to fetch messages: {e}")
         return []
+
+def interpret_input(prompt, is_shell=True):
+    import tempfile
+    from pathlib import Path
+
+    prompt = prompt.strip()
+
+    if prompt == "@paste":
+        print("📂 Paste mode enabled — press Ctrl+D when done.\n")
+        print("-------- begin paste --------")
+        try:
+            pasted = sys.stdin.read().strip()
+            agent_state["pending_output"] = ("text", pasted, 0)
+            print("-------- end paste --------\n")
+            return "📝 Pasted block detected.\n💡 Reflect to ChatGPT? (y/n)"
+        except KeyboardInterrupt:
+            return "❌ Paste cancelled."
+
+    split = prompt.rsplit('---', 1)
+    body = split[-1] if len(split) > 1 else prompt
+
+    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", body, re.DOTALL)
+    if match:
+        script_block = match.group(1).strip()
+        agent_state["pending_exec"] = script_block
+        return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
+
+    match2 = re.search(r"(?:^|\n)@exec:\s*(.+)", body)
+    if match2:
+        command = match2.group(1).strip()
+        agent_state["pending_exec"] = command
+        return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Apply this command? (y/n)"
+
+    if len(prompt.lower()) == 1 or prompt == "":
+        if agent_state["pending_exec"]:
+            if prompt == "y":
+                cmd = agent_state["pending_exec"]
+                try:
+                    if "\n" in cmd:
+                        patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
+                        patch_file.write_text(cmd + "\n", encoding="utf-8")
+                        result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
+                    else:
+                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                    output = result.stdout.strip() + "\n" + result.stderr.strip()
+                    status = result.returncode
+                except Exception as e:
+                    output = str(e)
+                    status = -1
+                print(f"\n📄 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
+                agent_state["pending_exec"] = None
+                try:
+                    msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
+                    sendtobrain.reflect(msg)
+                    print("🧠 Output sent to ChatGPT.")
+                    messages = fetch_latest_messages(n=4)
+                    last = messages[-1]["text"].strip() if messages else None
+                    if last:
+                        result = interpret_input(last, is_shell=False)
+                        if result:
+                            print("\n📡 Interpreted:\n" + result)
+                except Exception as e:
+                    print(f"❌ Failed to reflect output: {e}")
+                return None
+            else:
+                agent_state["pending_exec"] = None
+                return "❌ Patch/command aborted."
+
+        elif agent_state["pending_output"]:
+            cmd, output, status = agent_state["pending_output"]
+            if prompt in ["y", ""]:
+                print("🧠 Sending to ChatGPT via CDP:")
+                try:
+                    msg = output.strip() if cmd == "text" else f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    sendtobrain.reflect(msg)
+                    print("🧠 Output sent to ChatGPT.")
+                    messages = fetch_latest_messages(n=4)
+                    last = messages[-1]["text"].strip() if messages else None
+                    if last:
+                        result = interpret_input(last, is_shell=False)
+                        if result:
+                            print("\n📡 Interpreted:\n" + result)
+                except Exception as e:
+                    print(f"❌ Failed to send to brain: {e}")
+                agent_state["pending_output"] = None
+                return None
+            else:
+                agent_state["pending_output"] = None
+                return "❌ Skipped sending to ChatGPT."
+
+        return "✅ Response received, but no command/output was pending."
+
+    cmd, payload = detect_structured_command(prompt)
+    if cmd == "reflect":
+        sendtobrain.reflect(payload)
+        return f"🪞 Reflected to brain: {payload}"
+
+    if is_shell and len(prompt) > 1 and not prompt.startswith("@"):
+        agent_state["pending_output"] = ("text", prompt, 0)
+        return "📝 Detected plain message.\n💡 Send this to ChatGPT context? (y/n)"
+
+    return None
 
 def stream_reply_loop():
     print("\n🔁 Polling for brain reply. Ctrl+C to stop.\n")
