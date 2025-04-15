@@ -49,7 +49,20 @@ def detect_structured_command(text):
     return None, None
 
 def interpret_input(prompt, is_shell=True):
+    import sys
+
     prompt = prompt.strip()
+
+    if prompt == "@paste":
+        print("📥 Paste mode enabled — press Ctrl+D when done.\n")
+        print("-------- begin paste --------")
+        try:
+            pasted = sys.stdin.read().strip()
+            agent_state["pending_output"] = ("text", pasted, 0)
+            print("-------- end paste --------\n")
+            return "📝 Pasted block detected.\n💡 Reflect to ChatGPT? (y/n)"
+        except KeyboardInterrupt:
+            return "❌ Paste cancelled."
 
     if len(prompt.lower()) == 1 or prompt == "":
         if agent_state["pending_exec"]:
@@ -82,19 +95,21 @@ def interpret_input(prompt, is_shell=True):
             if prompt in ["y", ""]:
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
-                    msg = output.strip() if cmd == "text" else f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    if cmd == "text":
+                        msg = output.strip()
+                    else:
+                        msg = f"📤 Output:\n{output}\n\n🔚 Exit Status: {status}"
                     import sendtobrain
                     sendtobrain.reflect(msg)
+                    print("🧠 Output sent to ChatGPT.")
+                    from cdp_instance import cdp
+                    if cdp:
+                        cdp.wait_for_reply_end(timeout=90)
+                    else:
+                        print("⚠️ CDP instance not available for polling.")
                 except Exception as e:
                     print(f"❌ Failed to send to brain: {e}")
                 agent_state["pending_output"] = None
-                print("🧠 Output sent to ChatGPT.")
-                from cdp_instance import cdp
-                if cdp:
-                    cdp.wait_for_reply_end(timeout=90)
-                else:
-                    print("⚠️ CDP instance not available for polling.")
-
                 return None
             else:
                 agent_state["pending_output"] = None
