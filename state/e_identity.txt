@@ -1,0 +1,104 @@
+
+---
+
+## 💡 Command Syntax Guide
+
+
+### @exec: <command>
+
+Format:  
+  @exec: echo "Hello from shell"
+
+Multiline (HEREDOC):  
+  @exec: cat <<EOF > script.sh
+  #!/bin/bash
+
+  echo "Running something"
+  EOF
+
+Executed with approval (y required)
+
+---
+
+### @paste
+
+Format:  
+  @paste (then press Enter)
+
+Paste multiple lines  
+End with Ctrl+D  
+Will ask if you want to reflect
+
+---
+
+### Direct text input
+
+Type any message from shell or Telegram  
+Shell input will prompt for reflection  
+Telegram input will auto-reflect unless command-like
+
+---
+
+### Commands should NEVER:
+
+- Be single-character unless responding (y, n)
+- Include malformed @exec: without spacing
+- Mix @exec: and normal text — @exec: must stand on its own
+
+---
+
+
+---
+
+## 📏 Command Parsing Rules
+
+- Only the last  block in a message is parsed
+- Commands like  must start on their own line
+- Valid format:
+  
+  ---
+  
+  @exec: echo "run me"
+
+- Text above  is ignored during command detection
+- Inline  or  embedded in a paragraph is not valid
+
+---
+
+
+---
+
+## 📏 Command Parsing Rules
+
+- Only the last `---` block in a message is parsed
+- Commands like `@exec:` must start on their own line
+- Valid format:
+
+  ---
+  
+  @exec: echo "run me"
+
+- Text above `---` is ignored during command detection
+- Inline `@exec:` or `@exec: foo` embedded in a paragraph is not valid
+
+---
+
+
+---
+
+## 📏 Command Parsing Rules
+
+
+- Only the last `---` block in a message is parsed
+- Commands like `@exec:` must start on their own line
+- Valid format:
+
+  ---
+  
+  @exec: echo "run me"
+
+- Text above `---` is ignored during command detection
+- Inline `@exec:` or `@exec: foo` embedded in a paragraph is not valid
+
+---
+
