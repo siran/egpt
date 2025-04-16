@@ -2,8 +2,9 @@ openai>=1.0.0
 pyyaml>=6.0
 rich>=13.0      # for TUI/log formatting later
 textual>=0.40   # full terminal UI if we go TUI route
-selenium
-flask
-huggingface_hub
-langchain
-langchain-community
+# selenium
+# flask
+# huggingface_hub
+# langchain
+# langchain-community
+python-telegram-bot==13.15

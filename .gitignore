@@ -18,3 +18,4 @@ config.yaml
 temp_reflect.txt
 sandbox/
 temp/
+.vscode ecmd.py
