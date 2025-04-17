@@ -1,74 +1,67 @@
 #!/usr/bin/env python3
 """
-sendtobrain.py — Inject message into ChatGPT UI via CDP using #prompt-textarea with focus and event dispatch.
+sendtobrain.py — Injects ChatGPT message via ProseMirror-compatible innerHTML (<p> blocks).
 """
 
 import sys
 import time
+import html
+import json
 from cdp_instance import cdp
 
 def press_enter():
-    cdp.send("Input.dispatchKeyEvent", {
-        "type": "keyDown", "key": "Enter", "code": "Enter",
-        "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13
-    })
-    cdp.send("Input.dispatchKeyEvent", {
-        "type": "keyUp", "key": "Enter", "code": "Enter",
-        "windowsVirtualKeyCode": 13, "nativeVirtualKeyCode": 13
-    })
-
-def wait_for_reply_end(timeout=90, poll_interval=1, stable_time=6):
-    print("⏳ Waiting for reply to finish", end="", flush=True)
-    js = '''
+    js_click = '''
     (() => {
-        const btn = document.querySelector('form')?.querySelectorAll('button')[6];
-        if (!btn) return "none";
-        return btn.getAttribute("aria-label") || "none";
+        const btn = document.querySelector('button#composer-submit-button');
+        if (!btn) return false;
+        btn.click();
+        console.log("🚀 Submit button clicked.");
+        return true;
     })();
     '''
-    start = time.time()
-    recent = []
-    try:
-        while time.time() - start < timeout:
-            result = cdp.evaluate(js)
-            label = result.get("result", {}).get("result", {}).get("value", "")
-            print(f"\n🧪 aria-label: {label}", flush=True)
-            recent.append(label)
-            if len(recent) > 3:
-                recent = recent[-3:]
-                if recent[0] == recent[1] == recent[2] and (time.time() - start) > stable_time:
-                    print(" ✅")
-                    return True
-            print(".", end="", flush=True)
-            time.sleep(poll_interval)
-    except KeyboardInterrupt:
-        print(" 🛑 [cancelled by user]")
-        return False
-    print(" ⏱️ timeout")
-    return False
+    result = cdp.evaluate(js_click)
+    return result.get("result", {}).get("result", {}).get("value", False)
 
-def reflect(msg):
-    print("📤 Injecting into #prompt-textarea...")
-    js = f"""
-    (() => {{
-        const div = document.querySelector('#prompt-textarea');
-        if (!div) return false;
-        div.focus();
-        div.innerText = `{msg}`;
-        div.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: `{msg}` }}));
-        div.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        return true;
-    }})();
-    """
-    result = cdp.evaluate(js)
-    injected = result.get("result", {}).get("result", {}).get("value", False)
-    if injected:
+def reflect(msg, source="shell"):
+    print("📤 Injecting content...")
+    try:
+        # Escape HTML and split by lines
+        lines = html.escape(msg).splitlines()
+        wrapped = "".join(f"<p>{line}</p>" for line in lines)
+        wrapped_escaped = wrapped.replace("`", "\\`")
+
+        js = f"""
+        (() => {{
+            const ta = document.querySelector('#prompt-textarea');
+            if (!ta) {{
+                console.log("❌ Textarea not found.");
+                return false;
+            }}
+            ta.focus();
+            ta.innerHTML = `{wrapped_escaped}`;
+            ta.dispatchEvent(new InputEvent('input', {{ bubbles: true }}));
+            ta.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            console.log("✅ innerHTML injected with <p> blocks.");
+            return true;
+        }})();
+        """
+
+        result = cdp.evaluate(js)
+        injected = result.get("result", {}).get("result", {}).get("value", False)
+        if not injected:
+            print("❌ Text injection failed.")
+            return
+
         time.sleep(0.3)
-        press_enter()
-        print(" ✅ Sent.")
-        wait_for_reply_end()
-    else:
-        print(" ❌ Injection failed — #prompt-textarea not found.")
+        if press_enter():
+            print("✅ Message submitted.")
+        else:
+            print("❌ Failed to click submit button.")
+
+    except Exception as e:
+        import traceback
+        print(f"❌ Failed to inject message: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
