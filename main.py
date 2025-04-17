@@ -121,7 +121,8 @@ def interpret_input(prompt, is_shell=True):
                 try:
                     msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
                     sendtobrain.reflect(msg)
-                    print("🧠 Output sent to ChatGPT.")
+                    maybe_send_telegram(msg)
+                    print("🧠 Output sent to registered clients.")
                     messages = fetch_latest_messages(n=4)
                     last = messages[-1]["text"].strip() if messages else None
                     if last:
@@ -141,9 +142,11 @@ def interpret_input(prompt, is_shell=True):
                 print("🧠 Sending to ChatGPT via CDP:")
                 try:
                     msg = output.strip() if cmd == "text" else f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
+                    maybe_send_telegram(msg)
                     sendtobrain.reflect(msg)
-                    print("🧠 Output sent to ChatGPT.")
-                    messages = fetch_latest_messages(n=4)
+                    # print("🧠 Output sent to ChatGPT.")
+                    stream_reply_loop()
+                    messages = fetch_latest_messages(n=1)
                     last = messages[-1]["text"].strip() if messages else None
                     if last:
                         result = interpret_input(last, is_shell=False)
@@ -176,49 +179,46 @@ def stream_reply_loop():
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
             const id = el.getAttribute("data-message-id") || "";
-            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
+            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "ROLE_NOT_SPECIFIED";
             const text = el.innerText || "";
             return { id, role, text };
         });
     })();
     '''
-    seen = {}
-    last_msg = None
+    seen = {}  # Tracks msg_id: text
+    last_update_time = time.time()  # Tracks last new message time
+    timeout = 10  # Stop after 10s of no new messages
+    poll_interval = 2  # Poll every 2s
 
     try:
         while True:
             result = cdp.evaluate(js)
-            messages = result.get("result", {}).get("result", {}).get("value", [])[-4:]
-            for m in messages:
+            messages = result.get("result", {}).get("result", {}).get("value", [])
+
+            new_content = False
+            for m in messages[-1:]:  # Check only the latest message
                 msg_id = m.get("id")
                 txt = m.get("text", "").strip()
                 if not msg_id or not txt:
                     continue
-                if seen.get(msg_id) == txt:
-                    continue
-                seen[msg_id] = txt
-                last_msg = m
-                prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
-                print(f"\n{prefix}\n{txt}\n")
-            time.sleep(2)
+                if seen.get(msg_id) != txt:  # New or changed message
+                    seen[msg_id] = txt
+                    prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
+                    print(f"\n\n-- update ---\n{prefix}\n->{txt}<-\n")
+                    last_update_time = time.time()
+                    new_content = True
+
+            # Stop if no new content for 10 seconds
+            if not new_content and time.time() - last_update_time > timeout:
+                print("🛑 No new messages for 10 seconds. Stopping.")
+                break
+
+            time.sleep(poll_interval)
 
     except KeyboardInterrupt:
-        print("\n🛑 Stream ended.")
-        if last_msg:
-            txt = last_msg.get("text", "").strip()
-            parsed = interpret_input(txt, is_shell=False)
-            if parsed:
-                print("\n📡 Interpreted:\n" + parsed)
-                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:"):
-                    while True:
-                        answer = input("\n🧠 Approve? y/n > ").strip().lower()
-                        if answer in {"y", "n"}:
-                            result = interpret_input(answer, is_shell=True)
-                            if result:
-                                print("\n📡 Result:\n" + result)
-                            break
-                        else:
-                            print("❗ Please answer 'y' or 'n'.")
+        print("\n🚫 Polling cancelled by user.")
+    except Exception as e:
+        print(f"\n❌ Error during polling: {e}")
 
 def input_loop():
     global fetch_n_messages
@@ -271,7 +271,7 @@ def input_loop():
                                 print("\n📡 Result:\n" + result)
                 continue
 
-            parsed = interpret_input(prompt, is_shell=True)
+            parsed = route_message(prompt, source="shell")
             if parsed:
                 print("\n📡 Interpreted:\n" + parsed)
                 if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message") or parsed.startswith("📝 Pasted block"):
@@ -284,5 +284,26 @@ def input_loop():
             print("\n👋 Ctrl+C exit request.")
             raise
 
+
+# Optional: Telegram-aware reflection routing
+try:
+    from telegram_runner import send_telegram
+except:
+    send_telegram = None
+
+def maybe_send_telegram(msg):
+    chat_id = agent_state.get("telegram_chat_id")
+    if chat_id and send_telegram:
+        try:
+            send_telegram(chat_id, msg[:4000])
+        except Exception as e:
+            print(f"⚠️ Failed to send to Telegram: {e}")
+
 if __name__ == "__main__":
     input_loop()
+
+# unify shell routing via router.py
+try:
+    from router import route_message
+except:
+    route_message = lambda text, source=None, chat_id=None: interpret_input(text, is_shell=True)
