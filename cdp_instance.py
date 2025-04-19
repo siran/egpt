@@ -1,7 +1,12 @@
 import os
 import json
 import requests
+import time
+
+import websocket
 from chromebridge_cdp import ChromeCDP
+
+cdp = ChromeCDP()
 
 def find_chatgpt_tab(conversation_id):
     try:
@@ -16,7 +21,9 @@ def find_chatgpt_tab(conversation_id):
         print(f"❌ Failed to query CDP targets: {e}")
         return None
 
-cdp = ChromeCDP()
+def open_chatgpt_tab(conversation_id):
+    url = f"https://chat.openai.com/c/{conversation_id}"
+    return cdp.create_and_navigate(url)
 
 def switch_tab(conversation_id):
     ws_url = find_chatgpt_tab(conversation_id)
@@ -25,5 +32,13 @@ def switch_tab(conversation_id):
         cdp.connect(ws_url)
         return True
     else:
-        print(f"❌ Could not find conversation tab for ID: {conversation_id}")
+        print(f"🧭 No tab found — launching...")
+        open_chatgpt_tab(conversation_id)
+        time.sleep(2)
+        ws_url = find_chatgpt_tab(conversation_id)
+        if ws_url:
+            print(f"🔁 Connected after launching new tab.")
+            cdp.connect(ws_url)
+            return True
+        print("❌ Still unable to connect to new tab.")
         return False

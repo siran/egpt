@@ -160,7 +160,12 @@ def main():
         conv_id = get_conversation_id(user_id)
         if conv_id:
             print(f"🔗 Conversation ID found for {user_id}")
-            switch_tab(conv_id)
+            if not switch_tab(conv_id):
+                send_telegram(chat_id, "🔧 Setting up session...")
+                time.sleep(1)
+                if not switch_tab(conv_id):
+                    send_telegram(chat_id, "❌ Failed to launch ChatGPT tab.")
+                    return
 
         if chat_id in active_polls:
             send_telegram(chat_id, "⚠️ Still processing previous message...")

@@ -1,4 +1,5 @@
 import time
+import requests
 import websocket
 import json
 
@@ -142,3 +143,28 @@ class ChromeCDP:
             return False
         print(" ⏱️ timeout")
         return False
+
+    def create_and_navigate(self, url):
+        try:
+            info = requests.get("http://localhost:9222/json/version").json()
+            browser_ws_url = info["webSocketDebuggerUrl"]
+            print(f"🚀 Attempting to open new tab with URL {url}")
+            ws = websocket.create_connection(browser_ws_url)
+            self.msg_id += 1
+            ws.send(json.dumps({
+                "id": self.msg_id,
+                "method": "Target.createTarget",
+                "params": {
+                    "url": url
+                }
+            }))
+            response = json.loads(ws.recv())
+            target_id = response["result"]["targetId"]
+            ws.close()
+            print(f"🌱 Created new tab: {target_id}")
+            return True
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"❌ Failed to create new tab: {e}")
+            return False
