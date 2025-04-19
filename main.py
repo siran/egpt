@@ -197,7 +197,7 @@ def stream_reply_loop():
                     last_update_time = time.time()
                     new_content = True
             if not new_content and time.time() - last_update_time > timeout:
-                print("🛑 No new messages for 10 seconds. Stopping.")
+                print(f"🛑 No new messages for {timeout} seconds. Stopping.")
                 break
             time.sleep(poll_interval)
 
