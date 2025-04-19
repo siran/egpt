@@ -1,4 +1,5 @@
-# main.py — Reflexive shell interface for eGPT
+# main.py — Reflex loop with proper exec approval and post-reflection polling
+
 import os
 import subprocess
 import sys
@@ -10,19 +11,7 @@ from executor import execute_command, log, say
 from patcher import propose_patch, apply_patch_if_approved, update_patch, show_patch
 from cdp_instance import cdp
 import sendtobrain
-
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
-
-MODEL = config.get("model", "gpt-4")
-try:
-    say("loading openai", "boot")
-    from openai import OpenAI
-    say("loaded openai", "boot")
-    client = OpenAI(api_key=config["openai_api_key"])
-    say("created client OAI", "boot")
-except:
-    client = None
+from load_config import get_config
 
 fetch_n_messages = 1
 memory = Memory("state/memory.json")
@@ -36,7 +25,7 @@ say(boot_msg)
 agent_state = {
     "pending_exec": None,
     "pending_output": None,
-    "interactive_local": False,
+    "telegram_chat_id": None,
 }
 
 seen_messages = {}
@@ -49,7 +38,7 @@ def detect_structured_command(text):
         return cmd, payload
     return None, None
 
-def fetch_latest_messages(n=fetch_n_messages):
+def fetch_latest_messages(n=fetch_n_messages, msg_id=None):
     js = '''
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
@@ -63,10 +52,28 @@ def fetch_latest_messages(n=fetch_n_messages):
     try:
         result = cdp.evaluate(js)
         messages = result.get("result", {}).get("result", {}).get("value", [])
+
+        if msg_id:
+            return [m for m in messages if m.get("id") == msg_id].get(0, None)
+
         return messages[-n:]
     except Exception as e:
         print(f"\n⚠️ Failed to fetch messages: {e}")
         return []
+
+def maybe_send_telegram(msg):
+    chat_id = agent_state.get("telegram_chat_id")
+    try:
+        from telegram_runner import send_telegram
+        if chat_id:
+            if len(msg) == 1:
+                msg = msg + " - Single character messages are ignored until pending answer."
+            send_telegram(chat_id, msg[:4000])
+            print(f"📬 Sent to Telegram chat {chat_id}: {msg[:100]}...")
+        else:
+            print("⚠️ Could notNo Telegram chat ID set. Message ignored.")
+    except:
+        pass
 
 def interpret_input(prompt, is_shell=True):
     import tempfile
@@ -81,7 +88,9 @@ def interpret_input(prompt, is_shell=True):
             pasted = sys.stdin.read().strip()
             agent_state["pending_output"] = ("text", pasted, 0)
             print("-------- end paste --------\n")
-            return "📝 Pasted block detected.\n💡 Reflect to ChatGPT? (y/n)"
+            sendtobrain.reflect(pasted)
+            stream_reply_loop()
+            return "✅ Pasted and sent."
         except KeyboardInterrupt:
             return "❌ Paste cancelled."
 
@@ -92,84 +101,54 @@ def interpret_input(prompt, is_shell=True):
     if match:
         script_block = match.group(1).strip()
         agent_state["pending_exec"] = script_block
-        return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Apply this patch? (y/n)"
+        return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
     match2 = re.search(r"(?:^|\n)@exec:\s*(.+)", body)
     if match2:
         command = match2.group(1).strip()
         agent_state["pending_exec"] = command
-        return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Apply this command? (y/n)"
+        return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
-    if len(prompt.lower()) == 1 or prompt == "":
-        if agent_state["pending_exec"]:
-            if prompt == "y":
-                cmd = agent_state["pending_exec"]
-                try:
-                    if "\n" in cmd:
-                        patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
-                        patch_file.write_text(cmd + "\n", encoding="utf-8")
-                        result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
-                    else:
-                        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-                    output = result.stdout.strip() + "\n" + result.stderr.strip()
-                    status = result.returncode
-                except Exception as e:
-                    output = str(e)
-                    status = -1
-                print(f"\n📄 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
-                agent_state["pending_exec"] = None
-                try:
-                    msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
-                    sendtobrain.reflect(msg)
-                    maybe_send_telegram(msg)
-                    print("🧠 Output sent to registered clients.")
-                    messages = fetch_latest_messages(n=4)
-                    last = messages[-1]["text"].strip() if messages else None
-                    if last:
-                        result = interpret_input(last, is_shell=False)
-                        if result:
-                            print("\n📡 Interpreted:\n" + result)
-                except Exception as e:
-                    print(f"❌ Failed to reflect output: {e}")
-                return None
-            else:
-                agent_state["pending_exec"] = None
-                return "❌ Patch/command aborted."
+    # Approval handling (only local, always allowed)
+    if prompt.lower() in {"y", "n"} and agent_state["pending_exec"]:
+        if prompt.lower() == "y":
+            cmd = agent_state["pending_exec"]
+            try:
+                if "\n" in cmd:
+                    patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
+                    patch_file.write_text(cmd + "\n", encoding="utf-8")
+                    result = subprocess.run(["bash", str(patch_file)], capture_output=True, text=True)
+                else:
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                output = result.stdout.strip() + "\n" + result.stderr.strip()
+                status = result.returncode
+            except Exception as e:
+                output = str(e)
+                status = -1
+            print(f"\n📄 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
+            agent_state["pending_exec"] = None
+            msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
+            maybe_send_telegram(msg)
+            sendtobrain.reflect(msg)
+            stream_reply_loop()
+            return None
+        else:
+            agent_state["pending_exec"] = None
+            return "❌ Command cancelled."
 
-        elif agent_state["pending_output"]:
-            cmd, output, status = agent_state["pending_output"]
-            if prompt in ["y", ""]:
-                print("🧠 Sending to ChatGPT via CDP:")
-                try:
-                    msg = output.strip() if cmd == "text" else f"📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
-                    maybe_send_telegram(msg)
-                    sendtobrain.reflect(msg)
-                    # print("🧠 Output sent to ChatGPT.")
-                    stream_reply_loop()
-                    messages = fetch_latest_messages(n=1)
-                    last = messages[-1]["text"].strip() if messages else None
-                    if last:
-                        result = interpret_input(last, is_shell=False)
-                        if result:
-                            print("\n📡 Interpreted:\n" + result)
-                except Exception as e:
-                    print(f"❌ Failed to send to brain: {e}")
-                agent_state["pending_output"] = None
-                return None
-            else:
-                agent_state["pending_output"] = None
-                return "❌ Skipped sending to ChatGPT."
+    if len(prompt) == 1 and not agent_state.get("pending_exec"):
+        message = "⚠️ Single-character responses are ignored unless approving a command."
+        print(message)
+        maybe_send_telegram(message)
+        return "✅ Ignored single character."
 
-        return "✅ Response received, but no command/output was pending."
-
-    cmd, payload = detect_structured_command(prompt)
-    if cmd == "reflect":
-        sendtobrain.reflect(payload)
-        return f"🪞 Reflected to brain: {payload}"
-
-    if is_shell and len(prompt) > 1 and not prompt.startswith("@"):
+    # Default = plain text, reflect immediately
+    if len(prompt) > 0:
         agent_state["pending_output"] = ("text", prompt, 0)
-        return "📝 Detected plain message.\n💡 Send this to ChatGPT context? (y/n)"
+        sendtobrain.reflect(prompt)
+        # stream_reply_loop()
+        return None
+
 
     return None
 
@@ -179,40 +158,36 @@ def stream_reply_loop():
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
             const id = el.getAttribute("data-message-id") || "";
-            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "ROLE_NOT_SPECIFIED";
+            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
             const text = el.innerText || "";
             return { id, role, text };
         });
     })();
     '''
-    seen = {}  # Tracks msg_id: text
-    last_update_time = time.time()  # Tracks last new message time
-    timeout = 10  # Stop after 10s of no new messages
-    poll_interval = 2  # Poll every 2s
+    seen = {}
+    last_update_time = time.time()
+    timeout = 10
+    poll_interval = 2
 
     try:
         while True:
             result = cdp.evaluate(js)
             messages = result.get("result", {}).get("result", {}).get("value", [])
-
             new_content = False
-            for m in messages[-1:]:  # Check only the latest message
+            for m in messages[-1:]:
                 msg_id = m.get("id")
                 txt = m.get("text", "").strip()
                 if not msg_id or not txt:
                     continue
-                if seen.get(msg_id) != txt:  # New or changed message
+                if seen.get(msg_id) != txt:
                     seen[msg_id] = txt
                     prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
-                    print(f"\n\n-- update ---\n{prefix}\n->{txt}<-\n")
+                    print(f"\n-- update ---\n{prefix}\n{txt}\n")
                     last_update_time = time.time()
                     new_content = True
-
-            # Stop if no new content for 10 seconds
             if not new_content and time.time() - last_update_time > timeout:
                 print("🛑 No new messages for 10 seconds. Stopping.")
                 break
-
             time.sleep(poll_interval)
 
     except KeyboardInterrupt:
@@ -228,7 +203,7 @@ def input_loop():
             prompt = input("\n====================\n🧍 You (↩,s,l,p,?)> ").strip()
             mode = "s" if prompt == "" else prompt
             if prompt == "?":
-                print("↩: fetch+parse | s: skip | l: last only | a: all | p: enter polling mode | @paste: multiline input")
+                print("↩: fetch+parse | s: skip | l: last only | a: all | p: poll | @paste = multiline")
                 continue
             if prompt == "p":
                 stream_reply_loop()
@@ -236,74 +211,12 @@ def input_loop():
             if prompt.isdigit():
                 fetch_n_messages = int(prompt)
                 continue
-
-            if mode in {"s", "a", "l"}:
-                messages = fetch_latest_messages(n=fetch_n_messages)
-                if not messages:
-                    print("⚠️ No messages found.")
-                    continue
-
-                for i, msg in enumerate(messages):
-                    msg_id = msg.get("id")
-                    txt = msg.get("text", "").strip()
-                    role = msg.get("role", "")
-                    if not msg_id or not txt:
-                        continue
-                    if mode != "l" and seen_messages.get(msg_id) == txt:
-                        continue
-
-                    seen_messages[msg_id] = txt
-                    prefix = "🧍 You:" if role == "user" else "🤖 e:"
-                    print(f"\n====================\n{prefix}\n{txt}\n====================\n\n")
-
-                    if mode == "s":
-                        continue
-                    if mode == "l" and i != len(messages) - 1:
-                        continue
-
-                    parsed = interpret_input(txt, is_shell=False)
-                    if parsed:
-                        print("\n📡 Interpreted:\n" + parsed)
-                        if agent_state["pending_exec"]:
-                            answer = input("\n🧠 Approve? y/n > ").strip().lower()
-                            result = interpret_input(answer, is_shell=False)
-                            if result:
-                                print("\n📡 Result:\n" + result)
-                continue
-
-            parsed = route_message(prompt, source="shell")
+            parsed = interpret_input(prompt, is_shell=True)
             if parsed:
                 print("\n📡 Interpreted:\n" + parsed)
-                if parsed.startswith("⚙️ Proposed Command") or parsed.startswith("✅ Executed locally:") or parsed.startswith("📝 Detected plain message") or parsed.startswith("📝 Pasted block"):
-                    answer = input("\n🧠 Approve? y/n > ").strip().lower()
-                    result = interpret_input(answer, is_shell=True)
-                    if result:
-                        print("\n📡 Result:\n" + result)
-
         except KeyboardInterrupt:
             print("\n👋 Ctrl+C exit request.")
             raise
 
-
-# Optional: Telegram-aware reflection routing
-try:
-    from telegram_runner import send_telegram
-except:
-    send_telegram = None
-
-def maybe_send_telegram(msg):
-    chat_id = agent_state.get("telegram_chat_id")
-    if chat_id and send_telegram:
-        try:
-            send_telegram(chat_id, msg[:4000])
-        except Exception as e:
-            print(f"⚠️ Failed to send to Telegram: {e}")
-
 if __name__ == "__main__":
     input_loop()
-
-# unify shell routing via router.py
-try:
-    from router import route_message
-except:
-    route_message = lambda text, source=None, chat_id=None: interpret_input(text, is_shell=True)
