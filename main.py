@@ -66,14 +66,22 @@ def maybe_send_telegram(msg):
     try:
         from telegram_runner import send_telegram
         if chat_id:
-            if len(msg) == 1:
-                msg = msg + " - Single character messages are ignored until pending answer."
-            send_telegram(chat_id, msg[:4000])
-            print(f"📬 Sent to Telegram chat {chat_id}: {msg[:100]}...")
+            # if len(msg) == 1:
+            #     msg = msg + " - Single character messages are ignored until pending answer."
+            msg_id = send_telegram(chat_id, msg[:4000])
+            if msg_id:
+                print(f"📬 Sent to Telegram chat {chat_id}: {msg[:100]}...")
+                return msg_id
+            else:
+                print("⚠️ Telegram message failed to send.")
+                return False
         else:
-            print("⚠️ Could notNo Telegram chat ID set. Message ignored.")
+            print("⚠️ There is no registered chatid, Could not send to Telegram. Message ignored.")
+            return False
     except:
-        pass
+        import traceback
+        traceback.print_exc()
+        print("⚠️ Telegram integration failed. Not sending to telegram. Message ignored.")
 
 def interpret_input(prompt, is_shell=True):
     import tempfile
@@ -109,7 +117,6 @@ def interpret_input(prompt, is_shell=True):
         agent_state["pending_exec"] = command
         return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
-    # Approval handling (only local, always allowed)
     if prompt.lower() in {"y", "n"} and agent_state["pending_exec"]:
         if prompt.lower() == "y":
             cmd = agent_state["pending_exec"]
@@ -125,30 +132,34 @@ def interpret_input(prompt, is_shell=True):
             except Exception as e:
                 output = str(e)
                 status = -1
-            print(f"\n📄 Output:\n====\n\n{output}\n\n====\n🔚 Exit Status: {status}")
+            print(f"\n📄 Output:\n====\n{output}\n====\n🔚 Exit Status: {status}")
             agent_state["pending_exec"] = None
             msg = f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}"
             maybe_send_telegram(msg)
             sendtobrain.reflect(msg)
             stream_reply_loop()
             return None
-        else:
+        elif prompt.lower() == "n":
             agent_state["pending_exec"] = None
-            return "❌ Command cancelled."
+            print("❌ Command cancelled.")
+            # stream_reply_loop()
+            return None
+        else:
+            msg = "⚠️ Invalid response. Reply 'y' to approve or 'n' to cancel, or send a new prompt."
+            print(msg)
+            maybe_send_telegram(msg)
+            return None
 
-    if len(prompt) == 1 and not agent_state.get("pending_exec"):
+    if len(prompt) == 1:
         message = "⚠️ Single-character responses are ignored unless approving a command."
         print(message)
         maybe_send_telegram(message)
         return "✅ Ignored single character."
 
-    # Default = plain text, reflect immediately
     if len(prompt) > 0:
         agent_state["pending_output"] = ("text", prompt, 0)
         sendtobrain.reflect(prompt)
-        # stream_reply_loop()
         return None
-
 
     return None
 
