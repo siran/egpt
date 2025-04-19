@@ -142,7 +142,7 @@ def interpret_input(prompt, is_shell=True):
         elif prompt.lower() == "n":
             agent_state["pending_exec"] = None
             print("❌ Command cancelled.")
-            # stream_reply_loop()
+            stream_reply_loop()
             return None
         else:
             msg = "⚠️ Invalid response. Reply 'y' to approve or 'n' to cancel, or send a new prompt."
