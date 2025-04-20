@@ -67,7 +67,7 @@ def maybe_send_telegram(msg):
         from telegram_runner import send_telegram
         if chat_id:
             # if len(msg) == 1:
-            #     msg = msg + " - Single character messages are ignored until pending answer."
+            #     msg = msg + " - Single character messages are ignored until pending answer."D
             msg_id = send_telegram(chat_id, msg[:4000])
             if msg_id:
                 print(f"📬 Sent to Telegram chat {chat_id}: {msg[:100]}...")
@@ -105,7 +105,8 @@ def interpret_input(prompt, is_shell=True):
     split = prompt.rsplit('---', 1)
     body = split[-1] if len(split) > 1 else prompt
 
-    match = re.search(r"@exec:\s*(cat\s+<<EOF\s+>.*?\nEOF)", body, re.DOTALL)
+    body = body.replace("<<EOF", "<<'EOF'", )
+    match = re.search(r"@exec:\s*(cat\s+<<'EOF'\s+>.*?\nEOF)", body, re.DOTALL)
     if match:
         script_block = match.group(1).strip()
         agent_state["pending_exec"] = script_block
@@ -142,8 +143,8 @@ def interpret_input(prompt, is_shell=True):
         elif prompt.lower() == "n":
             agent_state["pending_exec"] = None
             print("❌ Command cancelled.")
-            stream_reply_loop()
-            return None
+            # stream_reply_loop()
+            return "✅ Command cancelled — waiting for next input."
         else:
             msg = "⚠️ Invalid response. Reply 'y' to approve or 'n' to cancel, or send a new prompt."
             print(msg)
@@ -159,6 +160,7 @@ def interpret_input(prompt, is_shell=True):
     if len(prompt) > 0:
         agent_state["pending_output"] = ("text", prompt, 0)
         sendtobrain.reflect(prompt)
+        stream_reply_loop()
         return None
 
     return None

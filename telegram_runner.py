@@ -37,12 +37,16 @@ def get_conversation_id(user_id):
     try:
         with open(path) as f:
             lines = [line.strip() for line in f if ":" in line]
-            if not lines:
-                print(f"⚠️ No valid lines found in conversationids.txt for {user_id}")
-                return None
-            last_line = lines[0] # first line is the most recent
-            _, conv_id = last_line.split(":", 1)
-            return conv_id.strip()
+        if not lines:
+            print(f"⚠️ No valid lines found in conversationids.txt for {user_id}")
+            return None
+        for line in lines:
+            if line.startswith("#") or not line.strip():
+                continue
+            break
+        last_line = line # s[0] # first line is the most recent
+        _, conv_id = last_line.split(":", 1)
+        return conv_id.strip()
     except Exception as e:
         print(f"❌ Failed to read conversation ID for {user_id}: {e}")
         return None
@@ -156,10 +160,10 @@ def main():
             send_telegram(chat_id, "⚠️ You are not authorized.")
             return
 
-        os.chdir(user_home)
+        # os.chdir(user_home)
         conv_id = get_conversation_id(user_id)
         if conv_id:
-            print(f"🔗 Conversation ID found for {user_id}")
+            print(f"🔗 Conversation ID {conv_id} found for {user_id}")
             if not switch_tab(conv_id):
                 send_telegram(chat_id, "🔧 Setting up session...")
                 time.sleep(1)
