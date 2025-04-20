@@ -1,5 +1,9 @@
+
+bash
+Copy
+Edit
 #!/bin/bash
-# Usage: sudo ./create_user.sh <username> <chatgpt_conversation_id>
+# Usage: sudo ./create_user.sh <username> <chatgpt_conversation_id> [<name_identifier>]
 
 set -e
 
@@ -10,13 +14,21 @@ fi
 
 USERNAME="$1"
 CONVID="$2"
+NAMEID="$3"
 
 if [ -z "$USERNAME" ] || [ -z "$CONVID" ]; then
-  echo "Usage: $0 <username> <chatgpt_conversation_id>"
+  echo "Usage: $0 <username> <chatgpt_conversation_id> [<name_identifier>]"
   exit 1
 fi
 
-# Check if user exists
+# Determine home directory (may include nameid suffix)
+if [ -n "$NAMEID" ]; then
+  HOME_DIR="/home/${USERNAME}_${NAMEID}"
+else
+  HOME_DIR="/home/${USERNAME}"
+fi
+
+# Create system user (does not affect home dir suffix)
 if id "$USERNAME" &>/dev/null; then
   echo "✅ User $USERNAME already exists"
 else
@@ -24,10 +36,10 @@ else
   adduser --disabled-password --gecos "" "$USERNAME"
 fi
 
-# Create user's conversation ID record
-CONVFILE="/home/$USERNAME/conversationids.txt"
-mkdir -p "/home/$USERNAME"
+# Create home dir and conversation ID mapping
+mkdir -p "$HOME_DIR"
+CONVFILE="$HOME_DIR/conversationids.txt"
 echo "$USERNAME:$CONVID" > "$CONVFILE"
 chown "$USERNAME:$USERNAME" "$CONVFILE"
 
-echo "✅ User $USERNAME setup complete."
+echo "✅ User $USERNAME initialized in: $HOME_DIR"
