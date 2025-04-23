@@ -8,7 +8,8 @@ class ChromeCDP:
         self.ws = None
         self.msg_id = 0
 
-    def connect(self, url="ws://localhost:9222/devtools/page/1"):
+    def connect(self, url):
+        # url="ws://localhost:9222/devtools/page/1"
         try:
             self.ws = websocket.create_connection(url)
             return True

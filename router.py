@@ -1,5 +1,9 @@
-# router.py — Unified message router with output handler registry
-from main import interpret_input, agent_state
+# router.py — Unified message and output router
+
+import input_core
+from main import agent_state
+import output_core
+import sendtobrain
 
 _output_handlers = {}
 
@@ -9,16 +13,17 @@ def register_output_handler(source, handler):
 def route_message(text, source="shell", chat_id=None):
     text = text.strip()
 
-    if source == "telegram":
-        agent_state["telegram_chat_id"] = chat_id
+    # text can be a local command, or reply we try to interpret it
+    result = input_core.interpret_input(text, is_shell=(source == "shell"))
 
-    result = interpret_input(text, is_shell=(source == "shell"))
+    if len(text) > 1 and not result:
+        agent_state["pending_output"] = ("text", text, 0)
+        sendtobrain.reflect(text)
 
-    if result and source in _output_handlers and chat_id:
-        try:
-            _output_handlers[source](chat_id, result)
-        except Exception as e:
-            print(f"⚠️ Failed to send {source} reply: {e}")
+        return None
+
+    if result:
+        output_core.send_output(source, result)
 
     agent_state["telegram_chat_id"] = None
     return result
