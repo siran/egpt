@@ -1,6 +1,20 @@
 import yaml
 import pathlib
 
+from dataclasses import dataclass
+
+@dataclass
+class AgentState:
+    pending_exec = None
+    pending_output = None
+    telegram_chat_id = None
+    last_msg_id = None
+
+
+
+
+agent_state = AgentState()
+
 _config = None
 
 def get_config():

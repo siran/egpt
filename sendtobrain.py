@@ -7,7 +7,10 @@ import sys
 import time
 import html
 import json
-from cdp_instance import cdp
+import cdp_instance
+import output_core
+
+cdp = cdp_instance.cdp
 
 def press_enter():
     js_click = '''
@@ -23,7 +26,7 @@ def press_enter():
     return result.get("result", {}).get("result", {}).get("value", False)
 
 def reflect(msg, source="shell"):
-    print("📤 Injecting content...")
+    output_core.send_output("shell", "📤 Injecting content...")
     try:
         # Escape HTML and split by lines
         lines = html.escape(msg).splitlines()
@@ -49,27 +52,27 @@ def reflect(msg, source="shell"):
         result = cdp.evaluate(js)
         injected = result.get("result", {}).get("result", {}).get("value", False)
         if not injected:
-            print("❌ Text injection failed.")
+            output_core.send_output("shell","❌ Text injection failed.")
             return
 
-        time.sleep(0.3)
+        time.sleep(0.1)
         if press_enter():
-            print("✅ Message submitted.")
+            output_core.send_output("shell","✅ Message submitted.")
         else:
             print("❌ Failed to click submit button.")
 
     except Exception as e:
         import traceback
-        print(f"❌ Failed to inject message: {e}")
+        output_core.send_output("shell",f"❌ Failed to inject message: {e}")
         traceback.print_exc()
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("❌ No message provided. Must pass as CLI argument.")
+        output_core.send_output("shell","❌ No message provided. Must pass as CLI argument.")
         sys.exit(1)
 
     message = sys.argv[1]
     if message.strip():
         reflect(message.strip())
     else:
-        print("❌ Message was empty. Aborting.")
+        output_core.send_output("shell","❌ Message was empty. Aborting.")
