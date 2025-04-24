@@ -3,7 +3,6 @@ import json
 import traceback
 import requests
 import time
-
 import websocket
 from chromebridge_cdp import ChromeCDP
 import output_core
@@ -15,9 +14,8 @@ def find_chatgpt_tab(conversation_id):
         targets = requests.get("http://localhost:9222/json").json()
         output_core.send_output("shell", "🔍 Available tabs:")
         for t in targets:
-
             output_core.send_output("shell", f"- {t.get('title', '')} | url: {t.get('url', '')}")
-            if conversation_id in t.get("url", ""):
+            if str(conversation_id) in t.get("url", ""):
                 return t["webSocketDebuggerUrl"]
         return None
     except Exception as e:

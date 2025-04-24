@@ -1,10 +1,9 @@
-from main import agent_state
-import threading
-import time
-import yaml
+import asyncio
 import os
-import requests
-from telegram.ext import Updater, MessageHandler, Filters
+import json
+from dataclasses import dataclass, asdict
+from typing import Dict, Any
+from telegram.ext import Application, MessageHandler, filters
 import router
 import load_config
 import cdp_instance
@@ -12,95 +11,114 @@ import input_core
 import output_core
 import sendtobrain
 import chromebridge_cdp
-from dataclasses import dataclass, asdict
-from typing import Any, List, Dict
-import json
+
+@dataclass
+class AgentState:
+    pending_exec: Any = None
+    pending_output: Any = None
+    telegram_chat_id: Any = None
+    last_msg_id: Any = None
 
 @dataclass
 class Conversation:
     chat_id: Any
+    tab_url: str
     chat_name: str
-    tab_url_id: str = None
-    last_msg_id: str = None
-    pending_exec: bool = False
+    agent_state: AgentState = None
     streaming_input: bool = False
+
+    def __post_init__(self):
+        if self.agent_state is None:
+            self.agent_state = AgentState(telegram_chat_id=self.chat_id)
 
 @dataclass
 class Conversations:
     conversations: Dict[str, Conversation] = None
+    active_loops: Dict[str, asyncio.Task] = None
 
     def __post_init__(self):
         if self.conversations is None:
             self.conversations = {}
+        if self.active_loops is None:
+            self.active_loops = {}
 
     def __getitem__(self, key: Any) -> Conversation:
-        if str(key) not in self.conversations:
-            self.conversations[str(key)] = Conversation(
+        key_str = str(key)
+        if key_str not in self.conversations:
+            self.conversations[key_str] = Conversation(
                 chat_id=key,
                 tab_url=None,
                 chat_name=None
             )
+        return self.conversations[key_str]
 
-        return self.conversations[str(key)]
-
-
-    def __setitem__(self, key: str, value: Conversation) -> None:
+    def __setitem__(self, key: Any, value: Conversation) -> None:
         self.conversations[str(key)] = value
 
     def save(self, filename: str = "state/conversations.json") -> bool:
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, "w") as file:
-            json.dump(asdict(self), file)
-
+            data = {
+                "conversations": {
+                    k: {
+                        "chat_id": v.chat_id,
+                        "tab_url": v.tab_url,
+                        "chat_name": v.chat_name,
+                        "streaming_input": v.streaming_input,
+                        "last_msg_id": v.agent_state.last_msg_id
+                    }
+                    for k, v in self.conversations.items()
+                }
+            }
+            json.dump(data, file)
         return True
 
     def load(self, filename: str = "state/conversations.json") -> "Conversations":
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         if not os.path.exists(filename):
             return self
+        try:
+            with open(filename, "r") as file:
+                data = json.load(file)
+            self.conversations = {
+                k: Conversation(
+                    chat_id=v["chat_id"],
+                    tab_url=v.get("tab_url"),
+                    chat_name=v["chat_name"],
+                    streaming_input=v.get("streaming_input", False),
+                    agent_state=AgentState(
+                        telegram_chat_id=v["chat_id"],
+                        last_msg_id=v.get("last_msg_id")
+                    )
+                )
+                for k, v in data.get("conversations", {}).items()
+            }
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Error loading {filename}: {e}. Using empty conversations.")
+            self.conversations = {}
+        return self
 
-        with open(filename, "r") as file:
-            data = json.load(file)
-
-        return Conversations(**data)
-
-        # return cls(
-        #     conversations={
-        #         k: Conversation(**v) for k, v in data["conversations"].items()
-        #     }
-        # )
+    async def start_reply_loop(self, chat_id: str, app: Application):
+        chat_id_str = str(chat_id)
+        if chat_id_str in self.active_loops and not self.active_loops[chat_id_str].done():
+            print(f"Reply loop already running for chat_id {chat_id}")
+            return
+        conversation = self[chat_id]
+        task = app.create_task(input_core.stream_reply_loop(chat_id, conversation))
+        self.active_loops[chat_id_str] = task
 
 conversations = Conversations().load("state/conversations.json")
 
-def send_telegram(chat_id, message, **kwargs):
-    msg_id = kwargs.get("conversation")
-    # if conversation:
-    #     conversations[chat_id] = conversation
-    token = load_config.get_config().get("telegram_bot_token")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    r = requests.post(url, json={"chat_id": chat_id, "text": message[:4000]})
-    if r.status_code == 200:
-        return r.json()["result"]["message_id"]
-    return None
-
-def edit_telegram(chat_id, message_id, new_text):
-    token = load_config.get_config().get("telegram_bot_token")
-    url = f"https://api.telegram.org/bot{token}/editMessageText"
-    requests.post(url, json={
-        "chat_id": chat_id,
-        "message_id": message_id,
-        "text": new_text[:4000]
-    })
-
-def main():
+async def main():
     token = load_config.get_config().get("telegram_bot_token")
     if not token:
-        output_core.send_output("telegram", "❌ No Telegram token found in config.yaml")
+        await output_core.send_output("telegram", "❌ No Telegram token found in config.yaml")
         return
 
-    telegram_updater = Updater(token, use_context=True)
-    dp = telegram_updater.dispatcher
+    app = Application.builder().token(token).build()
 
-    try:
-        def handle(update, context):
+    async def handle(update, context):
+        try:
             msg = update.message.text.strip()
             user = update.effective_user
             user_id = f"tg{user.id}"
@@ -108,74 +126,69 @@ def main():
             chat_id = update.effective_chat.id
             chat_name = update.effective_chat.title or "DM"
             user_home = f"/home/{user_id}"
-            # username_chat = f"@{username}({user_id}-{chat_name})"
-            username_chat = f"@{username}/{chat_name})"
+            username_chat = f"@{username}/{chat_name}"
 
-
-            output_core.send_output("shell", f"📨 {username_chat}> {msg}")
+            await output_core.send_output("shell", f"📨 {username_chat}> {msg}")
 
             conversation = conversations[chat_id]
-
-            output_core.register_output_handler("telegram", send_telegram, editable=True, conversation=conversation)
+            conversation.tab_url = cdp_instance.switch_tab(chat_id)
+            conversation.chat_name = chat_name
+            conversations[chat_id] = conversation
 
             if not os.path.isdir(user_home):
-                output_core.send_output("telegram", f"❌ Access denied for {username_chat}")
-                output_core.send_telegram(chat_id, "⚠️ You are not authorized.")
+                await output_core.send_output("telegram", f"❌ Access denied for {username_chat}")
+                await output_core.send_telegram(chat_id, "⚠️ You are not authorized.")
                 return
 
-            conversation_id = conversation["tab_url_id"]
-            ws_url = cdp_instance.switch_tab(conversation_id=conversation_id)
+            if not conversation.tab_url:
+                await output_core.send_output("all", "🔧 Setting up session...", chat_id=chat_id)
+                await asyncio.sleep(1)
+                conversation.tab_url = cdp_instance.switch_tab(chat_id)
+                if not conversation.tab_url:
+                    await output_core.send_output("all", "❌ Failed to launch ChatGPT tab.", chat_id=chat_id)
+                    return
+                conversations[chat_id] = conversation
 
-            # os.chdir(user_home)
+            await conversations.start_reply_loop(chat_id, context.application)
 
-            threading.Thread(target=input_core.stream_reply_loop, args=((chat_id),)).start()
-
-            if conversation and conversation["streaming_input:"]:
-                output_core.send_telegram(chat_id, "⚠️ Still processing previous message...")
+            if conversation.streaming_input:
+                await output_core.send_telegram(chat_id, "⚠️ Still processing previous message...")
                 return
 
             if msg == "p":
-                input_core.stream_reply_loop(chat_id=chat_id)
+                await input_core.stream_reply_loop(chat_id, conversation)
                 return
 
             if msg:
+                result = await input_core.interpret_input(msg, conversation, is_shell=False)
+                if result:
+                    await output_core.send_output("shell", result)
+                if len(msg) > 1 and not result:
+                    sendtobrain.reflect(msg, "brain")
+                    await output_core.send_output("telegram", msg, chat_id=chat_id)
+                router.route_message(msg, source="telegram", chat_id=chat_id)
 
-                result = input_core.interpret_input(msg, is_shell=False)
-
-                if not result:
-                    # result = sendtobrain.reflect(msg, "brain", )
-                    result = output_core.send_output("brain", msg, chat_id=chat_id)
-
-                # agent_state["telegram_chat_id"] = chat_id
-                # router.route_message(msg, source="telegram", chat_id=chat_id)
-
-                if not agent_state.get("pending_exec"):
-                    from output_core import get_output_handler_state
-                    current_id = get_output_handler_state("telegram", "last_msg_id")
+                if not conversation.agent_state.pending_exec:
+                    current_id = output_core.get_output_handler_state("telegram", "last_msg_id")
                     if not current_id:
-                        msg_id = output_core.send_telegram(chat_id, "⏳ Waiting for brain to reply...")
-
+                        msg_id = await output_core.send_telegram(chat_id, "⏳ Waiting for brain to reply...")
                         output_core.update_output_handler_state("telegram", "last_msg_id", msg_id)
-                    input_core.stream_reply_loop()
-    except Exception as e:
-        output_core.send_output("telegram", f"Error: {e}", chat_id=chat_id)
-        raise
+                        conversation.agent_state.last_msg_id = msg_id
+                        conversations[chat_id] = conversation
+                    await input_core.stream_reply_loop(chat_id, conversation)
+        except Exception as e:
+            await output_core.send_output("telegram", f"Error: {e}", chat_id=chat_id)
+            raise
 
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle))
-    output_core.send_output("shell", "🤖 Telegram bridge running...")
-    telegram_updater.start_polling(drop_pending_updates=True,)
-    telegram_updater.idle()
-
-output_core.register_output_handler("telegram", send_telegram, kwargs={}, editable=True)
-output_core.register_output_handler("cdp",   chromebridge_cdp.ChromeCDP.type_and_send, editable=False)
-
-
-
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+    await output_core.send_output("shell", "🤖 Telegram bridge running...")
+    try:
+        await app.run_polling(drop_pending_updates=True)
+    finally:
+        for task in conversations.active_loops.values():
+            task.cancel()
+        cdp_instance.cdp.close()
+        conversations.save("state/conversations.json")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        output_core.send_output("shell", f"❌ Telegram error: {e}")
-    finally:
-        conversations.save("state/conversations.json")
+    asyncio.run(main())
