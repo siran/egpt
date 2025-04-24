@@ -1,5 +1,3 @@
-# router.py — Unified message and output router
-
 import input_core
 from main import agent_state
 import output_core

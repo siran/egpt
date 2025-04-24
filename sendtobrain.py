@@ -1,18 +1,12 @@
-#!/usr/bin/env python3
-"""
-sendtobrain.py — Injects ChatGPT message via ProseMirror-compatible innerHTML (<p> blocks).
-"""
-
+import asyncio
 import sys
-import time
 import html
-import json
 import cdp_instance
 import output_core
 
 cdp = cdp_instance.cdp
 
-def press_enter():
+async def press_enter():
     js_click = '''
     (() => {
         const btn = document.querySelector('button#composer-submit-button');
@@ -22,13 +16,13 @@ def press_enter():
         return true;
     })();
     '''
-    result = cdp.evaluate(js_click)
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, cdp.evaluate, js_click)
     return result.get("result", {}).get("result", {}).get("value", False)
 
-def reflect(msg, source="shell"):
-    output_core.send_output("shell", "📤 Injecting content...")
+async def reflect(msg, source="shell"):
+    await output_core.send_output("shell", "📤 Injecting content...")
     try:
-        # Escape HTML and split by lines
         lines = html.escape(msg).splitlines()
         wrapped = "".join(f"<p>{line}</p>" for line in lines)
         wrapped_escaped = wrapped.replace("`", "\\`")
@@ -49,30 +43,31 @@ def reflect(msg, source="shell"):
         }})();
         """
 
-        result = cdp.evaluate(js)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, cdp.evaluate, js)
         injected = result.get("result", {}).get("result", {}).get("value", False)
         if not injected:
-            output_core.send_output("shell","❌ Text injection failed.")
-            return
+            await output_core.send_output("shell", "❌ Text injection failed.")
+            return False
 
-        time.sleep(0.1)
-        if press_enter():
-            output_core.send_output("shell","✅ Message submitted.")
+        await asyncio.sleep(0.1)
+        if await press_enter():
+            await output_core.send_output("shell", "✅ Message submitted.")
         else:
-            print("❌ Failed to click submit button.")
-
+            await output_core.send_output("shell", "❌ Failed to click submit button.")
+            return False
+        return True
     except Exception as e:
-        import traceback
-        output_core.send_output("shell",f"❌ Failed to inject message: {e}")
-        traceback.print_exc()
+        await output_core.send_output("shell", f"❌ Failed to inject message: {e}")
+        return False
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        output_core.send_output("shell","❌ No message provided. Must pass as CLI argument.")
+        asyncio.run(output_core.send_output("shell", "❌ No message provided. Must pass as CLI argument."))
         sys.exit(1)
 
     message = sys.argv[1]
     if message.strip():
-        reflect(message.strip())
+        asyncio.run(reflect(message.strip()))
     else:
-        output_core.send_output("shell","❌ Message was empty. Aborting.")
+        asyncio.run(output_core.send_output("shell", "❌ Message was empty. Aborting."))

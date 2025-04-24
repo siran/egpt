@@ -19,3 +19,5 @@ temp_reflect.txt
 sandbox/
 temp/
 .vscode ecmd.py
+~
+.ackrc .vscode/
