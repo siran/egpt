@@ -3,86 +3,103 @@ import subprocess
 import re
 import tempfile
 from pathlib import Path
+import traceback
+import router
 import sendtobrain
 import output_core
 import cdp_instance
-from telegram_runner import conversations
+from telegram_runner import conversations, Conversation
 
 cdp = cdp_instance.cdp
 
 _input_handlers = {}
 
-async def stream_reply_loop(chat_id, conversation):
-    cdp_instance.switch_tab(chat_id)
-    await output_core.send_output("shell", "\n🔁 Polling for brain reply. Ctrl+C to stop.\n")
+async def stream_reply_loop(conversation):
+    print(f"🔁 stream_reply_loop is ACTIVE for chat_id: {conversation.chat_id}")
+    await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
     js = '''
     (() => {
         return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
             const id = el.getAttribute("data-message-id") || "";
-            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "assistant";
+            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "no-role";
             const text = el.innerText || "";
             return { id, role, text };
         });
     })();
     '''
     seen = {}
-    accumulated = ""
     last_update_time = asyncio.get_event_loop().time()
     timeout = 10
     poll_interval = 0.5
 
-    conversation.streaming_input = True
     try:
-        loop = asyncio.get_event_loop()
         while True:
-            result = await loop.run_in_executor(None, cdp.evaluate, js)
+            result = await cdp.evaluate(js)
             messages = result.get("result", {}).get("result", {}).get("value", [])
+            print(f"📦 Polled {len(messages)} message(s)")
+
             new_content = False
-            for m in messages[-1:]:
+            skipped = 0
+            old_message = True
+
+            for m in messages:
                 msg_id = m.get("id")
+
+                if old_message:
+                    if msg_id == conversation.last_seen_msg_id:
+                        old_message = False
+                    continue
+
+                if m.get("role") != "assistant":
+                    continue
+
                 txt = m.get("text", "")
+
                 if not msg_id or not txt:
                     continue
+
+                # ✅ Stream only new message content
                 if seen.get(msg_id) != txt:
                     seen[msg_id] = txt
-                    prefix = "🧍 You:" if m.get("role") == "user" else "🤖 e:"
-                    accumulated += f"{prefix}\n{txt}\n"
-                    await output_core.send_output("all", accumulated, chat_id=chat_id, is_final=False)
-                    last_update_time = asyncio.get_event_loop().time()
+                    print(f"📨 Sending to Telegram: {txt.strip()[:40]}")
+                    await output_core.send_output("telegram", txt.strip(), chat_id=conversation.chat_id, is_final=False)
+                    conversation.last_msg_id = msg_id
                     new_content = True
+
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
-                await output_core.send_output("all", accumulated.strip(), chat_id=chat_id, is_final=True)
-                output_core.update_output_handler_state("telegram", "last_msg_id", None)
-                conversation.agent_state.last_msg_id = None
-                conversations[chat_id] = conversation
-                await output_core.send_output("shell", f"🛑 No new messages for {timeout} seconds. Stopping.")
+                print("🛑 Timeout reached, finalizing stream.")
+                await output_core.send_output("telegram", "", chat_id=conversation.chat_id, is_final=True)
+                if conversation.chat_id in conversations.conversations:
+                    conversations[conversation.chat_id].last_msg_id = conversation.last_msg_id
                 break
+
             await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
         await output_core.send_output("shell", "\n🚫 Polling cancelled.")
         raise
     except Exception as e:
+        traceback.print_exc()
         await output_core.send_output("shell", f"\n❌ Error during polling: {e}")
     finally:
         conversation.streaming_input = False
 
 async def interpret_input(prompt, conversation, is_shell=True):
     prompt = prompt.strip()
-    agent_state = conversation.agent_state
+    agent_state = conversation
 
     if prompt == "@paste":
         await output_core.send_output("shell", "📂 Paste mode enabled — save to temp file and press Enter.\n-------- begin paste --------")
         try:
             temp_file = Path(tempfile.gettempdir()) / f"paste_{conversation.chat_id}.txt"
             await output_core.send_output("shell", f"Write input to {temp_file} and save.")
-            input("Press Enter when done: ")  # Synchronous, user-driven
             loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: input("Press Enter when done: "))
             pasted = await loop.run_in_executor(None, lambda: temp_file.read_text(encoding="utf-8"))
             agent_state.pending_output = ("text", pasted, 0)
             await output_core.send_output("shell", "-------- end paste --------")
-            sendtobrain.reflect(pasted)
-            await stream_reply_loop(conversation.chat_id, conversation)
+            await sendtobrain.reflect(pasted)
+            await stream_reply_loop(conversation.chat_id)
             return "✅ Pasted and sent."
         except KeyboardInterrupt:
             return "❌ Paste cancelled."
@@ -130,8 +147,8 @@ async def interpret_input(prompt, conversation, is_shell=True):
             chat_id = agent_state.telegram_chat_id
             if chat_id:
                 await output_core.send_telegram(chat_id, f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}")
-            sendtobrain.reflect(output)
-            await stream_reply_loop(conversation.chat_id, conversation)
+            await sendtobrain.reflect(output)
+            await stream_reply_loop(conversation.chat_id)
             return None
         elif prompt.lower() == "n":
             agent_state.pending_exec = None
@@ -142,7 +159,7 @@ async def interpret_input(prompt, conversation, is_shell=True):
         await output_core.send_output("shell", "⚠️ Single-character responses are ignored unless approving a command.")
         return None
 
-    return prompt
+    return None
 
 def register_input_handler(name, handler, editable=False):
     _input_handlers[name] = {

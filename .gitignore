@@ -18,6 +18,7 @@ config.yaml
 temp_reflect.txt
 sandbox/
 temp/
-.vscode ecmd.py
+.vscode 
+ecmd.py
 ~
-.ackrc .vscode/
+.ackrc 

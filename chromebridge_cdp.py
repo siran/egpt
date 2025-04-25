@@ -1,20 +1,25 @@
+import asyncio
 import time
+import traceback
 import requests
 import websocket
 import json
+
+import output_core
 
 class ChromeCDP:
     def __init__(self):
         self.ws = None
         self.msg_id = 0
 
-    def connect(self, url):
+    async def connect(self, url):
         # url="ws://localhost:9222/devtools/page/1"
         try:
             self.ws = websocket.create_connection(url)
             return True
         except Exception as e:
-            print("⚠️ CDP connection failed:", e)
+            traceback.print_exc()
+            await output_core.send_output("shell", f"❌ Failed to connect to CDP: {e}")
             return False
 
     def send(self, method, params=None):
@@ -30,7 +35,11 @@ class ChromeCDP:
     def recv(self):
         return json.loads(self.ws.recv())
 
-    def evaluate(self, expression):
+    async def evaluate(self, expression):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: self._evaluate_blocking(expression))
+
+    def _evaluate_blocking(self, expression):
         self.send("Runtime.evaluate", {
             "expression": expression,
             "awaitPromise": True,
@@ -145,7 +154,7 @@ class ChromeCDP:
         print(" ⏱️ timeout")
         return False
 
-    def create_and_navigate(self, url):
+    async def create_and_navigate(self, url):
         try:
             info = requests.get("http://localhost:9222/json/version").json()
             browser_ws_url = info["webSocketDebuggerUrl"]
