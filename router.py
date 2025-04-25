@@ -5,13 +5,13 @@ import cdp_instance
 
 from telegram_runner import Conversation
 
-async def route_message(text, source="shell", conversation:Conversation=None):
+async def route_message(text, source="shell", conversation: Conversation = None):
     text = text.strip()
 
     if len(text) > 1 and conversation:
         conversation.pending_output = ("text", text, 0)
 
-        # 🧠 Before reflecting, record last message ID
+        # 🧠 Before reflecting, record last seen message ID
         js = '''
         (() => {
           const msgs = Array.from(document.querySelectorAll("[data-message-id]"));
@@ -36,9 +36,12 @@ async def route_message(text, source="shell", conversation:Conversation=None):
                     "telegram",
                     "⏳ Waiting for brain to reply...",
                     chat_id=conversation.chat_id,
-                    conversation=conversation  # ✅ full object passed
+                    conversation=conversation
                 )
-                conversation.last_msg_id = msg_id
+
+                if msg_id:
+                    conversation.last_msg_id = msg_id
+                    print(f"✅ Registered last_msg_id: {msg_id}")
 
                 # 3. Stream response
                 await input_core.stream_reply_loop(conversation)
