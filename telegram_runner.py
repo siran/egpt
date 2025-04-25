@@ -39,13 +39,15 @@ class Conversations:
 
     def __getitem__(self, key: Any) -> Conversation:
         key_str = str(key)
-        if key_str not in self.conversations:
-            self.conversations[key_str] = Conversation(
-                chat_id=key,
-                tab_url=None,
-                chat_name=None
-            )
+        value = self.conversations.get(key_str)
+        if value is None:
+            self.conversations[key_str] = Conversation(chat_id=key_str)
+            return self.conversations[key_str]
+        if isinstance(value, dict):
+            # Lazily upgrade dict to Conversation
+            self.conversations[key_str] = Conversation(**value)
         return self.conversations[key_str]
+
 
     def __setitem__(self, key: Any, value: Conversation) -> None:
         self.conversations[str(key)] = value
