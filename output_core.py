@@ -62,12 +62,11 @@ async def send_output(target, text, is_final=False, **kwargs):
             await output_core.send_output("shell", "⚠️ No chat ID provided for Telegram output")
             return False
 
-        last_msg_id = chat_id
-        last_msg_id = None # debugging
-        # if not last_msg_id:
-        #     await output_core.send_output("shell", "⚠️ No last message ID provided for Telegram output")
-        #     return False
+        last_msg_id = conversation.last_msg_id
         await output_core.send_output("shell", f"Last message ID: {last_msg_id}")
+        if not last_msg_id:
+            await output_core.send_output("shell", "⚠️ No last message ID provided for Telegram output, sending new message")
+
         msg_id = await send_telegram(chat_id, text, msg_id=last_msg_id, is_final=is_final)
         # if msg_id:
         #     update_output_handler_state("telegram", "last_msg_id", msg_id)
@@ -119,10 +118,11 @@ async def send_telegram(chat_id, text, msg_id=None, is_final=False):
             ))
         if response.status_code == 200:
             return response.json()["result"]["message_id"]
-        print(f"Telegram API error: {response.text}")
+        await output_core.send_output("shell", f"Telegram API error: {response.text}")
         return None
     except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
+        traceback.print_exc()
+        await output_core.send_output("shell", f"Failed to send Telegram message: {e}")
         return None
 
 async def edit_telegram(chat_id, msg_id, text):

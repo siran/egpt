@@ -63,16 +63,19 @@ async def stream_reply_loop(conversation:Conversation):
                 if seen.get(msg_id) != txt:
                     seen[msg_id] = txt
                     await output_core.send_output("shell", f"📨 Sending to Telegram: {txt.strip()[:40]}")
-                    await output_core.send_output("telegram", txt.strip(), conversation=conversation, is_final=False)
+                    await output_core.send_output("telegram", txt.strip() + "\n...", conversation=conversation, is_final=False)
                     new_content = True
 
-            if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
-                await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
-                await output_core.send_output("telegram", "🛑 Timeout reached, finalizing stream. Please regresh last message with message 'p'", conversation=conversation)
-                # await output_core.send_output("telegram", "", chat_id=conversation.chat_id, is_final=True)
-                # if conversation.chat_id in conversations.conversations:
-                #     conversations[conversation.chat_id].last_msg_id = conversation.last_msg_id
-                break
+                    if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
+                        await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
+
+                        # Only finalize if there is a last streamed message
+                        if conversation.last_msg_id:
+                            await output_core.send_output("telegram", "✅ Completed.", conversation=conversation, is_final=True)
+                        else:
+                            await output_core.send_output("shell", "⚠️ No assistant reply detected during this session.")
+
+                        break
 
             await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
