@@ -8,15 +8,18 @@ import router
 import sendtobrain
 import output_core
 import cdp_instance
-from telegram_runner import conversations, Conversation
+from telegram_runner import Conversation
+
 
 cdp = cdp_instance.cdp
 
 _input_handlers = {}
 
-async def stream_reply_loop(conversation:Conversation):
+async def stream_reply_loop(conversation: Conversation):
     print(f"🔁 stream_reply_loop is ACTIVE for chat_id: {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
+
+    conversation.streaming_input = True  # ✅ Block new inputs until done
 
     js = '''
     (() => {
@@ -28,7 +31,9 @@ async def stream_reply_loop(conversation:Conversation):
         });
     })();
     '''
+
     seen = {}
+    last_txt = None
     last_update_time = asyncio.get_event_loop().time()
     timeout = 10
     poll_interval = 0.5
@@ -40,50 +45,55 @@ async def stream_reply_loop(conversation:Conversation):
             print(f"📦 Polled {len(messages)} message(s)")
 
             new_content = False
-            skipped = 0
             old_message = True
 
             for m in messages:
                 msg_id = m.get("id")
+                txt = m.get("text", "")
+                role = m.get("role", "")
+
+                if not msg_id or not txt:
+                    continue
 
                 if old_message:
                     if msg_id == conversation.last_seen_msg_id:
                         old_message = False
                     continue
 
-                if m.get("role") != "assistant":
+                if role != "assistant":
                     continue
 
-                txt = m.get("text", "")
-
-                if not msg_id or not txt:
+                if seen.get(msg_id) == txt:
                     continue
 
-                # ✅ Stream only new message content
-                if seen.get(msg_id) != txt:
-                    seen[msg_id] = txt
-                    await output_core.send_output("shell", f"📨 Sending to Telegram: {txt.strip()[:40]}")
-                    await output_core.send_output("telegram", txt.strip() + "\n...", conversation=conversation, is_final=False)
-                    new_content = True
+                seen[msg_id] = txt
+                last_txt = txt.strip()
 
-                    if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
-                        await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
+                print(f"📨 Sending to Telegram: {last_txt[:40]}")
+                await output_core.send_output("telegram", last_txt + "\n...", conversation=conversation, is_final=False)
+                conversation.last_msg_id = conversation.last_msg_id  # stay same
+                new_content = True
+                last_update_time = asyncio.get_event_loop().time()
 
-                        # Only finalize if there is a last streamed message
-                        if conversation.last_msg_id:
-                            await output_core.send_output("telegram", "✅ Completed.", conversation=conversation, is_final=True)
-                        else:
-                            await output_core.send_output("shell", "⚠️ No assistant reply detected during this session.")
-
-                        break
+            if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
+                await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
+                if last_txt:
+                    await output_core.send_output("telegram", last_txt.strip(), conversation=conversation, is_final=True)
+                    await output_core.send_output("shell", "✅ Final assistant message delivered.")
+                else:
+                    await output_core.send_output("shell", "⚠️ No assistant message to finalize.")
+                conversation.streaming_input = False  # ✅ Unlock for new Telegram inputs
+                break
 
             await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
         await output_core.send_output("shell", "\n🚫 Polling cancelled.")
+        conversation.streaming_input = False
         raise
     except Exception as e:
         traceback.print_exc()
         await output_core.send_output("shell", f"\n❌ Error during polling: {e}")
+        conversation.streaming_input = False
     finally:
         conversation.streaming_input = False
 
