@@ -3,9 +3,9 @@ import output_core
 import sendtobrain
 import cdp_instance
 
-from telegram_runner import conversations  # or conversation import depending on structure
+from telegram_runner import Conversation
 
-async def route_message(text, source="shell", conversation=None):
+async def route_message(text, source="shell", conversation:Conversation=None):
     text = text.strip()
 
     if len(text) > 1 and conversation:
@@ -21,20 +21,26 @@ async def route_message(text, source="shell", conversation=None):
         })();
         '''
         result = await cdp_instance.cdp.evaluate(js)
-        last_id = result.get("result", {}).get("result", {}).get("value", None)
-        if last_id:
-            conversation.last_seen_msg_id = last_id
-            print(f"📍 Pre-reflect last_seen_msg_id = {last_id}")
+        last_seen_msg_id = result.get("result", {}).get("result", {}).get("value", None)
+        if last_seen_msg_id:
+            conversation.last_seen_msg_id = last_seen_msg_id
+            print(f"📍 Pre-reflect last_seen_msg_id = {last_seen_msg_id}")
 
-        # ✅ Reflect if from user
         if source == "telegram_user":
-            response = await output_core.send_output("brain", text, conversation=conversation)
-            if response:
-                await input_core.stream_reply_loop(conversation)
+            # 1. Inject into brain
+            success = await output_core.send_output("brain", text, conversation=conversation)
 
-        # # Optional: show visual waiting in Telegram
-        # if source == "telegram":
-        #     msg_id = await output_core.send_output("telegram", "⏳ Waiting for brain to reply...", chat_id=conversation.chat_id)
-        #     return msg_id
+            if success:
+                # 2. Notify Telegram of pending response
+                msg_id = await output_core.send_output(
+                    "telegram",
+                    "⏳ Waiting for brain to reply...",
+                    chat_id=conversation.chat_id,
+                    conversation=conversation  # ✅ full object passed
+                )
+                conversation.last_msg_id = msg_id
+
+                # 3. Stream response
+                await input_core.stream_reply_loop(conversation)
 
     return None
