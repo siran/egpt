@@ -14,7 +14,7 @@ cdp = cdp_instance.cdp
 
 _input_handlers = {}
 
-async def stream_reply_loop(conversation):
+async def stream_reply_loop(conversation:Conversation):
     print(f"🔁 stream_reply_loop is ACTIVE for chat_id: {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
@@ -62,16 +62,16 @@ async def stream_reply_loop(conversation):
                 # ✅ Stream only new message content
                 if seen.get(msg_id) != txt:
                     seen[msg_id] = txt
-                    print(f"📨 Sending to Telegram: {txt.strip()[:40]}")
-                    await output_core.send_output("telegram", txt.strip(), chat_id=conversation.chat_id, is_final=False)
-                    conversation.last_msg_id = msg_id
+                    await output_core.send_output("shell", f"📨 Sending to Telegram: {txt.strip()[:40]}")
+                    await output_core.send_output("telegram", txt.strip(), conversation=conversation, is_final=False)
                     new_content = True
 
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
-                print("🛑 Timeout reached, finalizing stream.")
-                await output_core.send_output("telegram", "", chat_id=conversation.chat_id, is_final=True)
-                if conversation.chat_id in conversations.conversations:
-                    conversations[conversation.chat_id].last_msg_id = conversation.last_msg_id
+                await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
+                await output_core.send_output("telegram", "🛑 Timeout reached, finalizing stream. Please regresh last message with message 'p'", conversation=conversation)
+                # await output_core.send_output("telegram", "", chat_id=conversation.chat_id, is_final=True)
+                # if conversation.chat_id in conversations.conversations:
+                #     conversations[conversation.chat_id].last_msg_id = conversation.last_msg_id
                 break
 
             await asyncio.sleep(poll_interval)

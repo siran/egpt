@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import textwrap
 import time
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional
@@ -109,21 +110,27 @@ async def main():
             user_home = f"/home/{user_id}"
             username_chat = f"@{username}/({chat_name}:{chat_id})"
 
-            await output_core.send_output("shell", f"📨 {username_chat}> {msg}")
+            await output_core.send_output("shell", textwrap.dedent(f"""\
+                                                    🐢 Telegram bridge received message:
+                                                    🐢 {chat_name} ({chat_id}) {user_id} {username}
+                                                    🐢 {msg}
+                                                    """))
+            # await output_core.send_output("shell", f"📨 {username_chat}> {msg}")
 
-            conversation = Conversation(**conversations[chat_id])
-            await cdp_instance.switch_tab(conversation.tab_url)
-            conversation.chat_name = chat_name
 
             if not os.path.isdir(user_home):
                 await output_core.send_output("telegram", f"❌ Access denied for {username_chat}")
                 await output_core.send_telegram(chat_id, "⚠️ You are not authorized.")
                 return
 
-            if not conversation.tab_url:
+            conversation = Conversation(**conversations[chat_id])
+            result = await cdp_instance.switch_tab(conversation.tab_url)
+            # conversation.chat_name = chat_name
+
+            if not result:
                 await output_core.send_output("all", "🔧 Setting up session...", chat_id=chat_id)
                 await asyncio.sleep(1)
-                conversation.tab_url = cdp_instance.switch_tab(chat_id)
+                conversation.tab_url = cdp_instance.switch_tab(conversation.tab_url)
                 if not conversation.tab_url:
                     await output_core.send_output("all", "❌ Failed to launch ChatGPT tab.", chat_id=chat_id)
                     return
@@ -137,7 +144,7 @@ async def main():
             # await conversations.start_reply_loop(chat_id, context.application)
 
             if msg == "p":
-                await input_core.stream_reply_loop(chat_id)
+                await input_core.stream_reply_loop(conversation=conversation)
                 return
 
             if msg:

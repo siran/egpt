@@ -48,24 +48,37 @@ async def send_output(target, text, is_final=False, **kwargs):
             response = await sendtobrain.reflect(text)
             return response
     elif target == "telegram":
-        print("sending to telegram")
+        #print("sending to telegram")
         await output_core.send_output("shell", f"sending to telegram: {text}")
-        chat_id = kwargs.get("chat_id")
-        if not chat_id:
-            await send_output("shell", "⚠️ No chat ID provided for Telegram output")
+
+        conversation = kwargs.get("conversation")
+        if not conversation:
+            msg = "⚠️ No conversation provided for Telegram output"
+            await output_core.send_output("shell", msg)
             return False
-        msg_id = get_output_handler_state("telegram", "last_msg_id")
-        msg_id = await send_telegram(chat_id, text, msg_id=msg_id, is_final=is_final)
-        if msg_id:
-            update_output_handler_state("telegram", "last_msg_id", msg_id)
-            if chat_id in conversations.conversations:
-                conversations[chat_id].last_msg_id = msg_id
-        config = _output_handlers.get("cdp")
-        if config:
-            import cdp_instance
-            from cdp_instance import cdp
-            await cdp_instance.switch_tab(chat_id)
-            cdp.type_and_send(text)
+
+        chat_id = conversation.chat_id
+        if not chat_id:
+            await output_core.send_output("shell", "⚠️ No chat ID provided for Telegram output")
+            return False
+
+        last_msg_id = chat_id
+        last_msg_id = None # debugging
+        # if not last_msg_id:
+        #     await output_core.send_output("shell", "⚠️ No last message ID provided for Telegram output")
+        #     return False
+        await output_core.send_output("shell", f"Last message ID: {last_msg_id}")
+        msg_id = await send_telegram(chat_id, text, msg_id=last_msg_id, is_final=is_final)
+        # if msg_id:
+        #     update_output_handler_state("telegram", "last_msg_id", msg_id)
+        #     if chat_id in conversations.conversations:
+        #         conversations[chat_id].last_msg_id = msg_id
+        # config = _output_handlers.get("cdp")
+        # if config:
+        #     import cdp_instance
+        #     from cdp_instance import cdp
+        #     await cdp_instance.switch_tab(chat_id)
+        #     cdp.type_and_send(text)
     else:
         config = _output_handlers.get(target)
         if config:
