@@ -39,7 +39,8 @@ async def stream_reply_loop(conversation: Conversation):
     last_update_time = asyncio.get_event_loop().time()
     timeout = 5
     poll_interval = 0.5
-
+    max_retries = 3
+    retries = 0
     try:
         while True:
             result = await cdp.evaluate(js)
@@ -48,6 +49,15 @@ async def stream_reply_loop(conversation: Conversation):
                 await asyncio.sleep(1)
                 continue  # Retry next polling cycle
             messages = result.get("result", {}).get("result", {}).get("value", [])
+            if not isinstance(messages, list):
+                retries += 1
+                await output_core.send_output("shell", f"⚠️ Invalid messages format (attempt {retries}/{max_retries}). Retrying in 1s...")
+                if retries >= max_retries:
+                    await output_core.send_output("shell", "❌ Too many retries. Aborting polling.")
+                    conversation.streaming_input = False
+                    break  # exit loop safely
+                await asyncio.sleep(1)
+                continue
             print(f"📦 Polled {len(messages)} message(s)")
 
             new_content = False
@@ -78,30 +88,11 @@ async def stream_reply_loop(conversation: Conversation):
                     cleaned_html = clean_html_for_telegram(last_txt)
                     last_txt = cleaned_html
 
+                    if not last_txt.strip():
+                        continue  # 🚫 Skip empty or invisible replies
+
                     print(f"📨 Sending to Telegram: {last_txt[:40]} ...")
                     await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt[:40]} ...")
-
-                    if not conversation.last_reply_msg_id:
-                        msg_id = await output_core.send_output(
-                            "telegram",
-                            last_txt,
-                            conversation=conversation,
-                            is_final=False
-                        )
-                        conversation.last_reply_msg_id = msg_id
-                    else:
-                        msg_id = await output_core.send_output(
-                            "telegram",
-                            last_txt,
-                            conversation=conversation,
-                            is_final=False,
-                            msg_id=conversation.last_reply_msg_id
-                        )
-                        conversation.last_reply_msg_id = msg_id
-
-                    new_content = True  # ✅ Only if truly new content!
-                    last_update_time = asyncio.get_event_loop().time()
-
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
                 await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
 
@@ -111,11 +102,12 @@ async def stream_reply_loop(conversation: Conversation):
                         last_txt.strip(),
                         conversation=conversation,
                         is_final=True,
-                        msg_id=conversation.last_reply_msg_id
+                        msg_id=conversation.last_reply_msg_id  # ✅ Tell it to edit the reply message
                     )
                     await output_core.send_output("shell", "✅ Final assistant message delivered.")
                 else:
                     await output_core.send_output("shell", "⚠️ No real assistant reply to finalize.")
+
 
                 conversation.streaming_input = False
                 break
@@ -131,6 +123,8 @@ async def stream_reply_loop(conversation: Conversation):
         await output_core.send_output("shell", f"\n❌ Error during polling: {e}")
         conversation.streaming_input = False
     finally:
+        conversation.last_prompt_msg_id = None
+        conversation.last_reply_msg_id = None
         conversation.streaming_input = False
 
 async def interpret_input(prompt, conversation, is_shell=True):

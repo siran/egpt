@@ -121,6 +121,10 @@ async def main():
 
             conversation = conversations[chat_id]
 
+            # 🧹 Reset message IDs to prevent accidental edits
+            conversation.last_prompt_msg_id = None
+            conversation.last_reply_msg_id = None
+
             # ✅ Ensure correct tab_url is ready
             if not conversation.tab_url:
                 await output_core.send_output("all", "🔧 Setting up session...", chat_id=chat_id)

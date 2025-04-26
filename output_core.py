@@ -31,6 +31,7 @@ async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
             delivered = True
         if not delivered:
             print(f"📥 [fallback] {text}")
+
     elif target == "brain":
         if len(text) > 1:
             conversation = kwargs.get("conversation")
@@ -47,6 +48,7 @@ async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
             await cdp_instance.switch_tab(tab_url)
             response = await sendtobrain.reflect(text)
             return response
+
     elif target == "telegram":
         conversation = kwargs.get("conversation")
         if not conversation:
@@ -58,8 +60,12 @@ async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
             await output_core.send_output("shell", "⚠️ No chat ID provided for Telegram output")
             return False
 
-        if not msg_id:
+        passed_msg_id = kwargs.get("msg_id", None)
+
+        if passed_msg_id is None:
             msg_id = conversation.last_prompt_msg_id if not is_final else conversation.last_reply_msg_id
+        else:
+            msg_id = passed_msg_id
 
         new_msg_id = await send_telegram(chat_id, text, msg_id=msg_id, is_final=is_final)
 
@@ -72,7 +78,7 @@ async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
     else:
         config = _output_handlers.get(target)
         if config:
-            await _safe_dispatch(target, config, text, is_final, **kwargs)
+            await _safe_dispatch(name, config, text, is_final, **kwargs)
         else:
             print(f"📥 [fallback] {text}")
 
@@ -105,8 +111,9 @@ async def send_telegram(chat_id, text, msg_id=None, is_final=False):
         else:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             response = await loop.run_in_executor(None, lambda: requests.post(
-                url, json={"chat_id": chat_id, "text": text[:4000],  "parse_mode": "HTML"}
+                url, json={"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML"}
             ))
+
         if response.status_code == 200:
             return response.json()["result"]["message_id"]
         await output_core.send_output("shell", f"Telegram API error: {response.text}")
