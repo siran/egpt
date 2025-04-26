@@ -125,7 +125,9 @@ async def main():
                 await output_core.send_telegram(chat_id, "⚠️ You are not authorized.")
                 return
 
-            conversation = Conversation(**conversations[chat_id])
+            conversation = conversations[chat_id]
+            output_core.send_output("shell", f"🧠 Message from chat_id {chat_id}, conversation tab_url: {conversation.tab_url}")
+
             result = await cdp_instance.switch_tab(conversation.tab_url)
             # conversation.chat_name = chat_name
 

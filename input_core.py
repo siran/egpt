@@ -16,7 +16,7 @@ cdp = cdp_instance.cdp
 _input_handlers = {}
 
 async def stream_reply_loop(conversation: Conversation):
-    print(f"🔁 stream_reply_loop is ACTIVE for chat_id: {conversation.chat_id}")
+    await output_core.send_output("shell", f"🔁 Streaming for conversation.chat_id = {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
     conversation.streaming_input = True  # ✅ Block new inputs until done
