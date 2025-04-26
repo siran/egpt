@@ -23,7 +23,7 @@ def update_output_handler_state(name, key, value):
 def get_output_handler_state(name, key):
     return _output_handlers.get(name, {}).get(key)
 
-async def send_output(target, text, is_final=False, **kwargs):
+async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
     if target == "all":
         delivered = False
         for name, config in _output_handlers.items():
@@ -48,13 +48,9 @@ async def send_output(target, text, is_final=False, **kwargs):
             response = await sendtobrain.reflect(text)
             return response
     elif target == "telegram":
-        #print("sending to telegram")
-        await output_core.send_output("shell", f"sending to telegram: {text}")
-
         conversation = kwargs.get("conversation")
         if not conversation:
-            msg = "⚠️ No conversation provided for Telegram output"
-            await output_core.send_output("shell", msg)
+            await output_core.send_output("shell", "⚠️ No conversation provided for Telegram output")
             return False
 
         chat_id = conversation.chat_id
@@ -62,16 +58,17 @@ async def send_output(target, text, is_final=False, **kwargs):
             await output_core.send_output("shell", "⚠️ No chat ID provided for Telegram output")
             return False
 
-        last_msg_id = conversation.last_msg_id
-        await output_core.send_output("shell", f"Last message ID: {last_msg_id}")
-        if not last_msg_id:
-            await output_core.send_output("shell", "⚠️ No last message ID provided for Telegram output, sending new message")
+        if not msg_id:
+            msg_id = conversation.last_prompt_msg_id if not is_final else conversation.last_reply_msg_id
 
-        msg_id = await send_telegram(chat_id, text, msg_id=last_msg_id, is_final=is_final)
+        new_msg_id = await send_telegram(chat_id, text, msg_id=msg_id, is_final=is_final)
 
-        # ✅ Update conversation with latest msg_id
-        if msg_id:
-            conversation.last_msg_id = msg_id
+        if new_msg_id:
+            if is_final:
+                conversation.last_reply_msg_id = new_msg_id
+            else:
+                conversation.last_prompt_msg_id = new_msg_id
+
     else:
         config = _output_handlers.get(target)
         if config:

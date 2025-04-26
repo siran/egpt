@@ -41,6 +41,10 @@ async def stream_reply_loop(conversation: Conversation):
     try:
         while True:
             result = await cdp.evaluate(js)
+            if not isinstance(result, dict):
+                await output_core.send_output("shell", f"⚠️ CDP evaluate returned invalid result: {result}. Retrying...")
+                await asyncio.sleep(1)
+                continue  # Retry next polling cycle
             messages = result.get("result", {}).get("result", {}).get("value", [])
             print(f"📦 Polled {len(messages)} message(s)")
 
@@ -69,16 +73,26 @@ async def stream_reply_loop(conversation: Conversation):
                 seen[msg_id] = txt
                 last_txt = txt.strip()
 
-                print(f"📨 Sending to Telegram: {last_txt[:40]}")
-                await output_core.send_output("telegram", last_txt + "\n...", conversation=conversation, is_final=False)
-                conversation.last_msg_id = conversation.last_msg_id  # stay same
+                print(f"📨 Sending to Telegram: {last_txt[:40]} ...")
+                await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt[:40]} ...")
+
+                # 🧹 First time sending assistant reply: create new message
+                if not conversation.last_reply_msg_id:
+                    msg_id = await output_core.send_output("telegram", last_txt, conversation=conversation, is_final=False)
+                    conversation.last_reply_msg_id = msg_id
+                else:
+                    msg_id = await output_core.send_output("telegram", last_txt, conversation=conversation, is_final=False, msg_id=conversation.last_reply_msg_id)
+                    conversation.last_reply_msg_id = msg_id
+
+
                 new_content = True
                 last_update_time = asyncio.get_event_loop().time()
 
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
                 await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
-                if last_txt:
-                    await output_core.send_output("telegram", last_txt.strip(), conversation=conversation, is_final=True)
+                if last_txt and last_txt.strip():
+                    cleaned_final = last_txt.strip()
+                    await output_core.send_output("telegram", cleaned_final, conversation=conversation, is_final=True, msg_id=conversation.last_reply_msg_id)
                     await output_core.send_output("shell", "✅ Final assistant message delivered.")
                 else:
                     await output_core.send_output("shell", "⚠️ No assistant message to finalize.")
