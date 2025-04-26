@@ -9,6 +9,7 @@ import sendtobrain
 import output_core
 import cdp_instance
 from telegram_runner import Conversation
+from bs4 import BeautifulSoup
 
 
 cdp = cdp_instance.cdp
@@ -22,20 +23,21 @@ async def stream_reply_loop(conversation: Conversation):
     conversation.streaming_input = True  # ✅ Block new inputs until done
 
     js = '''
-    (() => {
-        return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
-            const id = el.getAttribute("data-message-id") || "";
-            const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "no-role";
-            const text = el.innerText || "";
-            return { id, role, text };
-        });
-    })();
+        (() => {
+            return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
+                const id = el.getAttribute("data-message-id") || "";
+                const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "no-role";
+                const contentDiv = el.querySelector("div.markdown");
+                const html = contentDiv ? contentDiv.innerHTML : "";
+                return { id, role, html };
+            });
+        })();
     '''
 
     seen = {}
     last_txt = None
     last_update_time = asyncio.get_event_loop().time()
-    timeout = 10
+    timeout = 5
     poll_interval = 0.5
 
     try:
@@ -53,10 +55,10 @@ async def stream_reply_loop(conversation: Conversation):
 
             for m in messages:
                 msg_id = m.get("id")
-                txt = m.get("text", "")
+                txt = m.get("html", "")
                 role = m.get("role", "")
 
-                if not msg_id or not txt:
+                if not msg_id:
                     continue
 
                 if old_message:
@@ -67,37 +69,57 @@ async def stream_reply_loop(conversation: Conversation):
                 if role != "assistant":
                     continue
 
-                if seen.get(msg_id) == txt:
+                if seen.get(msg_id) == txt and asyncio.get_event_loop().time() - last_update_time < timeout:
                     continue
 
-                seen[msg_id] = txt
-                last_txt = txt.strip()
+                if seen.get(msg_id) != txt:
+                    seen[msg_id] = txt
+                    last_txt = txt.strip()
+                    cleaned_html = clean_html_for_telegram(last_txt)
+                    last_txt = cleaned_html
 
-                print(f"📨 Sending to Telegram: {last_txt[:40]} ...")
-                await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt[:40]} ...")
+                    print(f"📨 Sending to Telegram: {last_txt[:40]} ...")
+                    await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt[:40]} ...")
 
-                # 🧹 First time sending assistant reply: create new message
-                if not conversation.last_reply_msg_id:
-                    msg_id = await output_core.send_output("telegram", last_txt, conversation=conversation, is_final=False)
-                    conversation.last_reply_msg_id = msg_id
-                else:
-                    msg_id = await output_core.send_output("telegram", last_txt, conversation=conversation, is_final=False, msg_id=conversation.last_reply_msg_id)
-                    conversation.last_reply_msg_id = msg_id
+                    if not conversation.last_reply_msg_id:
+                        msg_id = await output_core.send_output(
+                            "telegram",
+                            last_txt,
+                            conversation=conversation,
+                            is_final=False
+                        )
+                        conversation.last_reply_msg_id = msg_id
+                    else:
+                        msg_id = await output_core.send_output(
+                            "telegram",
+                            last_txt,
+                            conversation=conversation,
+                            is_final=False,
+                            msg_id=conversation.last_reply_msg_id
+                        )
+                        conversation.last_reply_msg_id = msg_id
 
-
-                new_content = True
-                last_update_time = asyncio.get_event_loop().time()
+                    new_content = True  # ✅ Only if truly new content!
+                    last_update_time = asyncio.get_event_loop().time()
 
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
                 await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
+
                 if last_txt and last_txt.strip():
-                    cleaned_final = last_txt.strip()
-                    await output_core.send_output("telegram", cleaned_final, conversation=conversation, is_final=True, msg_id=conversation.last_reply_msg_id)
+                    await output_core.send_output(
+                        "telegram",
+                        last_txt.strip(),
+                        conversation=conversation,
+                        is_final=True,
+                        msg_id=conversation.last_reply_msg_id
+                    )
                     await output_core.send_output("shell", "✅ Final assistant message delivered.")
                 else:
-                    await output_core.send_output("shell", "⚠️ No assistant message to finalize.")
-                conversation.streaming_input = False  # ✅ Unlock for new Telegram inputs
+                    await output_core.send_output("shell", "⚠️ No real assistant reply to finalize.")
+
+                conversation.streaming_input = False
                 break
+
 
             await asyncio.sleep(poll_interval)
     except asyncio.CancelledError:
@@ -194,3 +216,21 @@ def register_input_handler(name, handler, editable=False):
         "editable": editable,
         "last_msg_id": None
     }
+
+def clean_html_for_telegram(html: str) -> str:
+    """Clean GPT HTML output so it fits Telegram HTML format."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    allowed_tags = {"b", "i", "u", "s", "code", "pre"}
+
+    # Remove unwanted tags and attributes
+    for tag in soup.find_all(True):
+        if tag.name not in allowed_tags:
+            tag.unwrap()  # Flatten it, remove tag
+        else:
+            tag.attrs = {}  # ✅ Remove all attributes inside allowed tags
+
+    cleaned_html = str(soup)
+    cleaned_html = re.sub(r'\w+CopyEdit', '', cleaned_html)
+
+    return cleaned_html.strip()
