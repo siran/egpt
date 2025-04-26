@@ -19,12 +19,13 @@ class Conversation:
     chat_name: Optional[str] = None
     streaming_input: bool = False
 
-    # Flattened AgentState
     pending_exec: Optional[str] = None
     pending_output: Optional[str] = None
     telegram_chat_id: Optional[str] = None
-    last_msg_id: Optional[int] = None # Telegram message ID
-    last_seen_msg_id: Optional[int] = None # GPT DOM tracking
+
+    last_prompt_msg_id: Optional[int] = None  # 🆕 Telegram ID of last "Waiting..." message
+    last_reply_msg_id: Optional[int] = None   # 🆕 Telegram ID of last Assistant reply message
+    last_seen_msg_id: Optional[str] = None
 
 @dataclass
 class Conversations:
@@ -112,43 +113,40 @@ async def main():
             user_home = f"/home/{user_id}"
             username_chat = f"@{username}/({chat_name}:{chat_id})"
 
-            await output_core.send_output("shell", textwrap.dedent(f"""\
-                                                    🐢 Telegram bridge received message:
-                                                    🐢 {chat_name} ({chat_id}) {user_id} {username}
-                                                    🐢 {msg}
-                                                    """))
-            # await output_core.send_output("shell", f"📨 {username_chat}> {msg}")
-
+            await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id})")
 
             if not os.path.isdir(user_home):
-                await output_core.send_output("telegram", f"❌ Access denied for {username_chat}")
-                await output_core.send_telegram(chat_id, "⚠️ You are not authorized.")
+                await output_core.send_output("telegram", f"⚠️ Unauthorized access attempt from {username_chat}", chat_id=chat_id)
                 return
 
             conversation = conversations[chat_id]
-            output_core.send_output("shell", f"🧠 Message from chat_id {chat_id}, conversation tab_url: {conversation.tab_url}")
 
-            result = await cdp_instance.switch_tab(conversation.tab_url)
-            # conversation.chat_name = chat_name
-
-            if not result:
+            # ✅ Ensure correct tab_url is ready
+            if not conversation.tab_url:
                 await output_core.send_output("all", "🔧 Setting up session...", chat_id=chat_id)
-                await asyncio.sleep(1)
-                conversation.tab_url = cdp_instance.switch_tab(conversation.tab_url)
+                conversation.tab_url = await cdp_instance.switch_tab(conversation.tab_url)
                 if not conversation.tab_url:
                     await output_core.send_output("all", "❌ Failed to launch ChatGPT tab.", chat_id=chat_id)
                     return
-                # conversations[chat_id] = conversation
-
+            else:
+                # 🔁 Even if tab_url exists, reconnect to CDP tab to ensure ws is live
+                result = await cdp_instance.switch_tab(conversation.tab_url)
+                if not result:
+                    await output_core.send_output("all", "❌ Failed to reconnect to existing ChatGPT tab.", chat_id=chat_id)
+                    return
 
             if conversation.streaming_input:
-                await output_core.send_output("telegram", "⚠️ Still processing previous message...", chat_id=chat_id)
+                await output_core.send_output("telegram", "⚠️ Still processing previous message. Please wait.", chat_id=chat_id)
                 return
 
-            # await conversations.start_reply_loop(chat_id, context.application)
+            # ✅ Start stream loop per chat if needed
+            loop = asyncio.get_event_loop()
+            if chat_id not in conversations.active_loops or conversations.active_loops[chat_id].done():
+                task = loop.create_task(input_core.stream_reply_loop(conversation))
+                conversations.active_loops[chat_id] = task
 
             if msg == "p":
-                await input_core.stream_reply_loop(conversation=conversation)
+                await input_core.stream_reply_loop(conversation)
                 return
 
             if msg:
@@ -157,16 +155,9 @@ async def main():
                     await output_core.send_output("telegram", result, chat_id=chat_id)
                 else:
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
-                # if not conversation.pending_exec:
-                    # current_id = output_core.get_output_handler_state("telegram", "last_msg_id", conversation)
-                    # if not current_id:
-                    # msg_id = await output_core.send_telegram(chat_id, "⏳ Waiting for brain to reply...")
-                    # output_core.update_output_handler_state("telegram", "last_msg_id", msg_id)
-                    # conversation.last_msg_id = msg_id
-                    # conversations[chat_id] = conversation
-                    # await input_core.stream_reply_loop(chat_id)
+
         except Exception as e:
-            await output_core.send_output("telegram", f"Error: {e}", chat_id=chat_id)
+            await output_core.send_output("telegram", f"❌ Error handling message: {e}", chat_id=chat_id)
             raise
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
