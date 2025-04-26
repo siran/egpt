@@ -100,12 +100,12 @@ async def send_telegram(chat_id, text, msg_id=None, is_final=False):
             url = f"https://api.telegram.org/bot{token}/editMessageText"
             content = text.rstrip("\n.") if is_final else text + "\n..."
             response = await loop.run_in_executor(None, lambda: requests.post(
-                url, json={"chat_id": chat_id, "message_id": msg_id, "text": content[:4000]}
+                url, json={"chat_id": chat_id, "message_id": msg_id, "text": content[:4000], "parse_mode": "HTML"}
             ))
         else:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             response = await loop.run_in_executor(None, lambda: requests.post(
-                url, json={"chat_id": chat_id, "text": text[:4000]}
+                url, json={"chat_id": chat_id, "text": text[:4000],  "parse_mode": "HTML"}
             ))
         if response.status_code == 200:
             return response.json()["result"]["message_id"]
