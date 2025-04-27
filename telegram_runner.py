@@ -148,7 +148,7 @@ async def main():
             if msg:
                 result = await input_core.interpret_input(msg, conversation, is_shell=False)
                 if result:
-                    await output_core.send_output("telegram", result, chat_id=chat_id)
+                    await output_core.send_output("telegram", result, conversation=conversation)
                 else:
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
 

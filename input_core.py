@@ -183,7 +183,7 @@ async def interpret_input(prompt, conversation, is_shell=True):
             if chat_id:
                 await output_core.send_telegram(chat_id, f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}")
             await sendtobrain.reflect(output)
-            await stream_reply_loop(conversation.chat_id)
+            await stream_reply_loop(conversation)
             return None
         elif prompt.lower() == "n":
             agent_state.pending_exec = None
