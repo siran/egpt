@@ -27,20 +27,32 @@ async def route_message(text, source="shell", conversation: Conversation = None)
             print(f"📍 Pre-reflect last_seen_msg_id = {last_seen_msg_id}")
 
         if source == "telegram_user":
+            # 🌐 Send to brain first
             success = await output_core.send_output("brain", text, conversation=conversation)
 
             if success:
-                msg_id = await output_core.send_output(
+                # ✅ Only if brain reflection is successful, send "Waiting..." message
+                waiting_msg_id = await output_core.send_output(
                     "telegram",
                     "⏳ Waiting for brain to reply...",
                     chat_id=conversation.chat_id,
                     conversation=conversation
                 )
-                if msg_id:
-                    conversation.last_prompt_msg_id = msg_id
-                    await output_core.send_output("shell", f"✅ Registered last_prompt_msg_id: {msg_id}")
 
-                # 3. Stream response
+                if waiting_msg_id:
+                    # 📍 Register the placeholder for future editing
+                    conversation.last_prompt_msg_id = waiting_msg_id
+                    await output_core.send_output("shell", f"✅ Registered last_prompt_msg_id: {waiting_msg_id}")
+
+                # 🔁 Start reflexive streaming loop
                 await input_core.stream_reply_loop(conversation)
+
+                # 🧹 Cleanup after stream ends
+                conversation.last_prompt_msg_id = None
+                conversation.last_reply_msg_id = None
+                conversation.streaming_input = False
+
+            else:
+                await output_core.send_output("shell", "✅ Local message, no brain reflection needed.")
 
     return None

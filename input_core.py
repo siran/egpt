@@ -91,8 +91,7 @@ async def stream_reply_loop(conversation: Conversation):
                     if not last_txt.strip():
                         continue  # 🚫 Skip empty or invisible replies
 
-                    print(f"📨 Sending to Telegram: {last_txt[:40]} ...")
-                    await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt[:40]} ...")
+                    await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt} ...")
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
                 await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
 

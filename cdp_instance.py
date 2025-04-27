@@ -36,11 +36,11 @@ async def switch_tab(conversation_id):
         try:
             await cdp.connect(ws_url)
             await output_core.send_output("shell", f"🔁 Connected to tab in CDP to conversation ID: {conversation_id}")
-            return ws_url
+            return True
         except Exception as e:
-            # print(f"❌ Failed to connect to CDP: {e}")
-            await output_core.send_output("shell", f"❌ Failed to connect to tab for conversation ID: {conversation_id}")
-            return None
+            traceback.print_exc()
+            await output_core.send_output("shell", f"❌ Failed to connect to tab for conversation ID: {conversation_id}, exception: {e}")
+        return False
 
     n=0
     while True:
@@ -48,8 +48,8 @@ async def switch_tab(conversation_id):
         if n > 2:
             break
         ws_url = await find_chatgpt_tab(conversation_id)
-        if await connect(ws_url):
-            return ws_url
+        if ws_url:
+            return  await connect(ws_url)
         else:
             await open_chatgpt_tab(conversation_id)
             await asyncio.sleep(2)

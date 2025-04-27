@@ -1,8 +1,6 @@
 import asyncio
 import os
 import json
-import textwrap
-import time
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional
 from telegram.ext import Application, MessageHandler, filters
@@ -113,7 +111,7 @@ async def main():
             user_home = f"/home/{user_id}"
             username_chat = f"@{username}/({chat_name}:{chat_id})"
 
-            await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id})")
+            await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id}): {msg}")
 
             if not os.path.isdir(user_home):
                 await output_core.send_output("telegram", f"⚠️ Unauthorized access attempt from {username_chat}", chat_id=chat_id)
@@ -143,12 +141,6 @@ async def main():
                 await output_core.send_output("telegram", "⚠️ Still processing previous message. Please wait.", chat_id=chat_id)
                 return
 
-            # ✅ Start stream loop per chat if needed
-            loop = asyncio.get_event_loop()
-            if chat_id not in conversations.active_loops or conversations.active_loops[chat_id].done():
-                task = loop.create_task(input_core.stream_reply_loop(conversation))
-                conversations.active_loops[chat_id] = task
-
             if msg == "p":
                 await input_core.stream_reply_loop(conversation)
                 return
@@ -159,6 +151,12 @@ async def main():
                     await output_core.send_output("telegram", result, chat_id=chat_id)
                 else:
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
+
+            # ✅ Start stream loop per chat if needed
+            loop = asyncio.get_event_loop()
+            if chat_id not in conversations.active_loops or conversations.active_loops[chat_id].done():
+                task = loop.create_task(input_core.stream_reply_loop(conversation))
+                conversations.active_loops[chat_id] = task
 
         except Exception as e:
             await output_core.send_output("telegram", f"❌ Error handling message: {e}", chat_id=chat_id)
