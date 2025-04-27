@@ -5,6 +5,7 @@ from load_config import get_config
 import sendtobrain
 from telegram_runner import conversations, Conversation
 import output_core
+import datetime
 
 _output_handlers = {}
 _output_state = {}
@@ -24,13 +25,19 @@ def get_output_handler_state(name, key):
     return _output_handlers.get(name, {}).get(key)
 
 async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
+
+    now = datetime.datetime.now().replace(microsecond=0)
+    if not text:
+        await send_output("shell", "⚠️ No text provided for output")
+        return False
+
     if target == "all":
         delivered = False
         for name, config in _output_handlers.items():
             await _safe_dispatch(name, config, text, is_final, **kwargs)
             delivered = True
         if not delivered:
-            print(f"📥 [fallback] {text}")
+            print(f"[{now}] X Not delivered: -> {text} <-")
 
     elif target == "brain":
         if len(text) > 1:
@@ -78,9 +85,9 @@ async def send_output(target, text, is_final=False, msg_id=None, **kwargs):
     else:
         config = _output_handlers.get(target)
         if config:
-            await _safe_dispatch(name, config, text, is_final, **kwargs)
+            await _safe_dispatch(target, config, text, is_final, **kwargs)
         else:
-            print(f"📥 [fallback] {text}")
+            print(f"[{now}] {text}")
 
 async def _safe_dispatch(name, config, text, is_final, **kwargs):
     handler = config["handler"]
