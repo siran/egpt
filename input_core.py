@@ -169,14 +169,7 @@ async def interpret_input(prompt, conversation, is_shell=True):
             cmd = agent_state.pending_exec
             try:
                 loop = asyncio.get_event_loop()
-                if "\n" in cmd:
-                    patch_file = Path(tempfile.gettempdir()) / "patch_apply.sh"
-                    patch_file.write_text(cmd + "\n", encoding="utf-8")
-                    result = await loop.run_in_executor(None, lambda: subprocess.run(
-                        ["bash", str(patch_file)], capture_output=True, text=True
-                    ))
-                else:
-                    result = await loop.run_in_executor(None, lambda: subprocess.run(
+                result = await loop.run_in_executor(None, lambda: subprocess.run(
                         cmd, shell=True, capture_output=True, text=True
                     ))
                 output = result.stdout.strip() + "\n" + result.stderr.strip()
