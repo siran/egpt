@@ -132,7 +132,7 @@ async def main():
             if msg.lower() == "p":
                 await output_core.send_output("telegram", "🔄 Manual polling triggered.", conversation=conversation)
                 loop = asyncio.get_event_loop()
-                task = loop.create_task(input_core.stream_reply_loop(conversation))
+                task = loop.create_task(input_core.stream_reply_loop(conversation, poll_last_n_messages=1), )
                 conversations.active_loops[chat_id] = task
                 return
 
