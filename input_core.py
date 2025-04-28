@@ -20,6 +20,10 @@ async def stream_reply_loop(conversation: Conversation, **kwargs):
     await output_core.send_output("shell", f"🔁 Streaming for conversation.chat_id = {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
+    if conversation.streaming_input:
+        await output_core.send_output("shell", "⚠️ Already streaming input, skipping.")
+        return False
+
     conversation.streaming_input = True
 
     poll_last_n_messages = kwargs.get("poll_last_n_messages", None)
