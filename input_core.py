@@ -16,11 +16,13 @@ cdp = cdp_instance.cdp
 
 _input_handlers = {}
 
-async def stream_reply_loop(conversation: Conversation):
+async def stream_reply_loop(conversation: Conversation, **kwargs):
     await output_core.send_output("shell", f"🔁 Streaming for conversation.chat_id = {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
     conversation.streaming_input = True
+
+    poll_last_n_messages = kwargs.get("poll_last_n_messages", None)
 
     js = '''
         (() => {
@@ -64,6 +66,8 @@ async def stream_reply_loop(conversation: Conversation):
             new_content = False
             old_message = True
 
+            if poll_last_n_messages:
+                messages = messages[-poll_last_n_messages:]
             for m in messages:
                 msg_id = m.get("id")
                 txt = m.get("html", "")
@@ -72,7 +76,7 @@ async def stream_reply_loop(conversation: Conversation):
                 if not msg_id:
                     continue
 
-                if old_message:
+                if last_ui_msg_id and old_message:
                     if msg_id == last_ui_msg_id:
                         old_message = False
                     continue
@@ -87,7 +91,7 @@ async def stream_reply_loop(conversation: Conversation):
                 seen[msg_id] = cleaned
                 last_txt = cleaned
 
-                await output_core.send_output("shell", f"📨 Updating Telegram: {last_txt[:50]}...")
+                await output_core.send_output("shell", f"📨 Updating Telegram: {last_txt}")
 
                 new_msg_id = await output_core.send_output(
                     "telegram",
