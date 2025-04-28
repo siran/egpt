@@ -21,9 +21,8 @@ class Conversation:
     pending_output: Optional[str] = None
     telegram_chat_id: Optional[str] = None
 
-    last_prompt_msg_id: Optional[int] = None  # 🆕 Telegram ID of last "Waiting..." message
-    last_reply_msg_id: Optional[int] = None   # 🆕 Telegram ID of last Assistant reply message
-    last_seen_msg_id: Optional[str] = None
+    last_telegram_msg_id: Optional[int] = None   # 🧠 For Telegram edits
+    last_ui_msg_id: Optional[str] = None          # 🧠 For ChatGPT UI tracking
 
 @dataclass
 class Conversations:
@@ -43,10 +42,8 @@ class Conversations:
             self.conversations[key_str] = Conversation(chat_id=key_str)
             return self.conversations[key_str]
         if isinstance(value, dict):
-            # Lazily upgrade dict to Conversation
             self.conversations[key_str] = Conversation(**value)
         return self.conversations[key_str]
-
 
     def __setitem__(self, key: Any, value: Conversation) -> None:
         self.conversations[str(key)] = value
@@ -87,15 +84,9 @@ async def main():
         await output_core.send_output("telegram", "❌ No Telegram token found in config.yaml")
         return
 
-    # Create custom JobQueue with enforced pytz.UTC
-    # job_queue = JobQueue()
-    # job_queue._scheduler = AsyncIOScheduler(timezone=pytz.UTC)  # force pytz scheduler
-
     try:
-        app = app = Application.builder().token(token).build()
-
-        # print(f"Application initialized with scheduler timezone: {scheduler.timezone}")
-        await output_core.send_output("shell", f"🤖 Telegram bot initialized with timezone UTC.")
+        app = Application.builder().token(token).build()
+        await output_core.send_output("shell", "🤖 Telegram bot initialized with timezone UTC.")
     except Exception as e:
         print(f"Failed to initialize Application: {e}")
         raise
@@ -104,26 +95,22 @@ async def main():
         try:
             msg = update.message.text.strip()
             user = update.effective_user
-            user_id = f"tg{user.id}"
-            username = user.username
             chat_id = update.effective_chat.id
-            chat_name = update.effective_chat.title or f"DM({username})"
-            user_home = f"/home/{user_id}"
-            username_chat = f"@{username}/({chat_name}:{chat_id})"
+            chat_name = update.effective_chat.title or f"DM({user.username})"
+            user_home = f"/home/tg{user.id}"
 
             await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id}): {msg}")
 
             if not os.path.isdir(user_home):
-                await output_core.send_output("telegram", f"⚠️ Unauthorized access attempt from {username_chat}", chat_id=chat_id)
+                await output_core.send_output("telegram", f"⚠️ Unauthorized access attempt from {chat_name}", chat_id=chat_id)
                 return
 
             conversation = conversations[chat_id]
 
-            # 🧹 Reset message IDs to prevent accidental edits
-            conversation.last_prompt_msg_id = None
-            conversation.last_reply_msg_id = None
+            # Reset tracking states
+            conversation.last_telegram_msg_id = None
+            conversation.last_ui_msg_id = None
 
-            # ✅ Ensure correct tab_url is ready
             if not conversation.tab_url:
                 await output_core.send_output("all", "🔧 Setting up session...", chat_id=chat_id)
                 conversation.tab_url = await cdp_instance.switch_tab(conversation.tab_url)
@@ -131,7 +118,6 @@ async def main():
                     await output_core.send_output("all", "❌ Failed to launch ChatGPT tab.", chat_id=chat_id)
                     return
             else:
-                # 🔁 Even if tab_url exists, reconnect to CDP tab to ensure ws is live
                 result = await cdp_instance.switch_tab(conversation.tab_url)
                 if not result:
                     await output_core.send_output("all", "❌ Failed to reconnect to existing ChatGPT tab.", chat_id=chat_id)
@@ -141,10 +127,6 @@ async def main():
                 await output_core.send_output("telegram", "⚠️ Still processing previous message. Please wait.", chat_id=chat_id)
                 return
 
-            if msg == "p":
-                await input_core.stream_reply_loop(conversation)
-                return
-
             if msg:
                 result = await input_core.interpret_input(msg, conversation, is_shell=False)
                 if result:
@@ -152,7 +134,6 @@ async def main():
                 else:
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
 
-            # ✅ Start stream loop per chat if needed
             loop = asyncio.get_event_loop()
             if chat_id not in conversations.active_loops or conversations.active_loops[chat_id].done():
                 task = loop.create_task(input_core.stream_reply_loop(conversation))
@@ -170,7 +151,6 @@ async def main():
         await output_core.send_output("shell", "🤖 Telegram bridge started (idle mode)...")
         await app.updater.start_polling(drop_pending_updates=True)
 
-        # Wait forever
         await asyncio.Event().wait()
     finally:
         for task in conversations.active_loops.values():

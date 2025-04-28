@@ -13,7 +13,6 @@ async def press_enter():
         return true;
     })();
     '''
-    loop = asyncio.get_event_loop()
     result = await cdp.evaluate(js_click)
     return result.get("result", {}).get("result", {}).get("value", False)
 
@@ -39,9 +38,7 @@ async def reflect(msg, source="shell"):
         }})();
         """
 
-        loop = asyncio.get_event_loop()
         result = await cdp.evaluate(js)
-
         injection_succeeded = result.get("result", {}).get("result", {}).get("value", None)
 
         if not injection_succeeded:

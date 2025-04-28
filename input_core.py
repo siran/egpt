@@ -10,7 +10,7 @@ import output_core
 import cdp_instance
 from telegram_runner import Conversation
 from bs4 import BeautifulSoup
-
+from load_config import get_config
 
 cdp = cdp_instance.cdp
 
@@ -20,7 +20,7 @@ async def stream_reply_loop(conversation: Conversation):
     await output_core.send_output("shell", f"🔁 Streaming for conversation.chat_id = {conversation.chat_id}")
     await cdp_instance.switch_tab(conversation_id=conversation.tab_url)
 
-    conversation.streaming_input = True  # ✅ Block new inputs until done
+    conversation.streaming_input = True
 
     js = '''
         (() => {
@@ -36,29 +36,30 @@ async def stream_reply_loop(conversation: Conversation):
 
     seen = {}
     last_txt = None
+    last_telegram_msg_id = conversation.last_telegram_msg_id
+    last_ui_msg_id = conversation.last_ui_msg_id
     last_update_time = asyncio.get_event_loop().time()
-    timeout = 5
+    timeout = 10
     poll_interval = 0.5
-    max_retries = 3
     retries = 0
+    max_retries = 6
+
     try:
         while True:
             result = await cdp.evaluate(js)
             if not isinstance(result, dict):
-                await output_core.send_output("shell", f"⚠️ CDP evaluate returned invalid result: {result}. Retrying...")
+                await output_core.send_output("shell", "⚠️ Invalid CDP result, retrying...")
                 await asyncio.sleep(1)
-                continue  # Retry next polling cycle
+                continue
+
             messages = result.get("result", {}).get("result", {}).get("value", [])
             if not isinstance(messages, list):
                 retries += 1
-                await output_core.send_output("shell", f"⚠️ Invalid messages format (attempt {retries}/{max_retries}). Retrying in 1s...")
                 if retries >= max_retries:
-                    await output_core.send_output("shell", "❌ Too many retries. Aborting polling.")
-                    conversation.streaming_input = False
-                    break  # exit loop safely
+                    await output_core.send_output("shell", "❌ Too many retries, aborting.")
+                    break
                 await asyncio.sleep(1)
                 continue
-            print(f"📦 Polled {len(messages)} message(s)")
 
             new_content = False
             old_message = True
@@ -72,65 +73,83 @@ async def stream_reply_loop(conversation: Conversation):
                     continue
 
                 if old_message:
-                    if msg_id == conversation.last_seen_msg_id:
+                    if msg_id == last_ui_msg_id:
                         old_message = False
                     continue
 
                 if role != "assistant":
                     continue
 
-                if seen.get(msg_id) == txt and asyncio.get_event_loop().time() - last_update_time < timeout:
+                cleaned = clean_html_for_telegram(txt.strip())
+                if not cleaned or seen.get(msg_id) == cleaned:
                     continue
 
-                if seen.get(msg_id) != txt:
-                    seen[msg_id] = txt
-                    last_txt = txt.strip()
-                    cleaned_html = clean_html_for_telegram(last_txt)
-                    last_txt = cleaned_html
+                seen[msg_id] = cleaned
+                last_txt = cleaned
 
-                    if not last_txt.strip():
-                        continue  # 🚫 Skip empty or invisible replies
+                await output_core.send_output("shell", f"📨 Updating Telegram: {last_txt[:50]}...")
 
-                    await output_core.send_output("shell", f"📨 Sending to Telegram: {last_txt} ...")
+                new_msg_id = await output_core.send_output(
+                    "telegram",
+                    last_txt,
+                    conversation=conversation,
+                    is_final=False,
+                    msg_id=last_telegram_msg_id
+                )
+
+                if new_msg_id:
+                    last_telegram_msg_id = new_msg_id
+                    conversation.last_telegram_msg_id = new_msg_id
+
+                last_update_time = asyncio.get_event_loop().time()
+                new_content = True
+
             if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
                 await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
-
-                if last_txt and last_txt.strip():
+                if last_txt and last_telegram_msg_id:
                     await output_core.send_output(
                         "telegram",
                         last_txt.strip(),
                         conversation=conversation,
                         is_final=True,
-                        msg_id=conversation.last_reply_msg_id  # ✅ Tell it to edit the reply message
+                        msg_id=last_telegram_msg_id
                     )
                     await output_core.send_output("shell", "✅ Final assistant message delivered.")
                 else:
-                    await output_core.send_output("shell", "⚠️ No real assistant reply to finalize.")
-
-
-                conversation.streaming_input = False
+                    await output_core.send_output("shell", "⚠️ Nothing to finalize.")
                 break
 
-
             await asyncio.sleep(poll_interval)
+
     except asyncio.CancelledError:
-        await output_core.send_output("shell", "\n🚫 Polling cancelled.")
-        conversation.streaming_input = False
+        await output_core.send_output("shell", "🚫 Polling cancelled.")
         raise
     except Exception as e:
         traceback.print_exc()
-        await output_core.send_output("shell", f"\n❌ Error during polling: {e}")
-        conversation.streaming_input = False
+        await output_core.send_output("shell", f"❌ Exception during polling: {e}")
     finally:
-        conversation.last_prompt_msg_id = None
-        conversation.last_reply_msg_id = None
         conversation.streaming_input = False
+
+def is_authorized_to_approve_command_exec(user_id: str) -> bool:
+    config = get_config()
+    architect_id = str(config.get("architect_tg_id", ""))
+    architect_ids = config.get("architects_tg_ids", [])
+
+    if user_id == architect_id:
+        return True
+    if user_id in architect_ids:
+        return True
+    return False
 
 async def interpret_input(prompt, conversation, is_shell=True):
     prompt = prompt.strip()
     agent_state = conversation
 
-    if prompt == "@paste":
+    split = re.split(r'^---$', prompt, flags=re.MULTILINE)
+    body = split[-1]
+    body = body.replace("<<EOF", "<<'EOF'")
+
+    if prompt == "@paste": # for shell multiline input, can be improved
         await output_core.send_output("shell", "📂 Paste mode enabled — save to temp file and press Enter.\n-------- begin paste --------")
         try:
             temp_file = Path(tempfile.gettempdir()) / f"paste_{conversation.chat_id}.txt"
@@ -148,9 +167,6 @@ async def interpret_input(prompt, conversation, is_shell=True):
         finally:
             temp_file.unlink(missing_ok=True)
 
-    split = prompt.rsplit('---', 1)
-    body = split[-1] if len(split) > 1 else prompt
-    body = body.replace("<<EOF", "<<'EOF'")
 
     match = re.search(r"@exec:\s*(cat\s+<<'EOF'\s+>.*?\nEOF)", body, re.DOTALL)
     if match:
@@ -165,6 +181,10 @@ async def interpret_input(prompt, conversation, is_shell=True):
         return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
     if prompt.lower() in {"y", "n"} and agent_state.pending_exec:
+        user_id = str(conversation.chat_id)
+        if not is_authorized_to_approve_command_exec(user_id):
+            await output_core.send_output("shell", f"❌ User {user_id} not authorized to approve commands.")
+            return "✅ Approval ignored — waiting for Architect(s)."
         if prompt.lower() == "y":
             cmd = agent_state.pending_exec
             try:
@@ -204,19 +224,13 @@ def register_input_handler(name, handler, editable=False):
     }
 
 def clean_html_for_telegram(html: str) -> str:
-    """Clean GPT HTML output so it fits Telegram HTML format."""
     soup = BeautifulSoup(html, "html.parser")
-
     allowed_tags = {"b", "i", "u", "s", "code", "pre"}
-
-    # Remove unwanted tags and attributes
     for tag in soup.find_all(True):
         if tag.name not in allowed_tags:
-            tag.unwrap()  # Flatten it, remove tag
+            tag.unwrap()
         else:
-            tag.attrs = {}  # ✅ Remove all attributes inside allowed tags
-
+            tag.attrs = {}
     cleaned_html = str(soup)
     cleaned_html = re.sub(r'\w+CopyEdit', '', cleaned_html)
-
     return cleaned_html.strip()
