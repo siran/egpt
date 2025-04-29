@@ -1,9 +1,9 @@
 if [ "${1}" = "chrome" ]; then
-    explorer.exe config.xlaunch
+    # explorer.exe config.xlaunch
     google-chrome-stable \
         --remote-debugging-port=9222 \
         --remote-allow-origins=* \
-        --user-data-dir="~/.config/google-chrome"
+        --user-data-dir="~/.config/google-chrome" \
         --disable-background-timer-throttling \
         --disable-renderer-backgrounding \
         --disable-backgrounding-occluded-windows

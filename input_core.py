@@ -7,6 +7,7 @@ import traceback
 import router
 import sendtobrain
 import output_core
+import input_core
 import cdp_instance
 from telegram_runner import Conversation
 from bs4 import BeautifulSoup
@@ -24,31 +25,26 @@ async def stream_reply_loop(conversation: Conversation, **kwargs):
         await output_core.send_output("shell", "⚠️ Already streaming input, skipping.")
         return False
 
-    conversation.streaming_input = True
-
-    poll_last_n_messages = kwargs.get("poll_last_n_messages", None)
+    # conversation.streaming_input = True
 
     js = '''
         (() => {
-            return Array.from(document.querySelectorAll("[data-message-id]")).map(el => {
-                const id = el.getAttribute("data-message-id") || "";
-                const role = el.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "no-role";
-                const contentDiv = el.querySelector("div.markdown");
-                const html = contentDiv ? contentDiv.innerHTML : "";
-                return { id, role, html };
-            });
+            const elements = document.querySelectorAll("[data-message-id]")
+            const last_div = elements[elements.length - 1];
+
+            return {
+                id: last_div.getAttribute("data-message-id") || "",
+                role: last_div.closest('[data-message-author-role]')?.getAttribute('data-message-author-role') || "no-role",
+                html: (last_div.querySelector("div.markdown") || {}).innerHTML || "",
+                continue_streaming: document.querySelector('button[aria-label~="streaming"]') || false
+            };
         })();
     '''
 
-    seen = {}
-    last_txt = None
-    last_telegram_msg_id = conversation.last_telegram_msg_id
-    last_ui_msg_id = conversation.last_ui_msg_id
-    last_update_time = asyncio.get_event_loop().time()
-    timeout = 10
-    poll_interval = 0.5
+    poll_interval = 0.2
     retries = 0
-    max_retries = 6
+    max_retries = 5
+    last_telegram_msg_id = conversation.last_telegram_msg_id
 
     try:
         while True:
@@ -58,8 +54,11 @@ async def stream_reply_loop(conversation: Conversation, **kwargs):
                 await asyncio.sleep(1)
                 continue
 
-            messages = result.get("result", {}).get("result", {}).get("value", [])
-            if not isinstance(messages, list):
+            message = result.get("result", {}).get("result", {}).get("value", {})
+            print(message)
+            print(f'message.get("id", None) == {message.get("id", None)}')
+            if not message.get("id", None):
+                print("id is None")
                 retries += 1
                 if retries >= max_retries:
                     await output_core.send_output("shell", "❌ Too many retries, aborting.")
@@ -67,64 +66,48 @@ async def stream_reply_loop(conversation: Conversation, **kwargs):
                 await asyncio.sleep(1)
                 continue
 
-            new_content = False
-            old_message = True
+            m = message
+            msg_id = m.get("id")
+            txt = m.get("html", "")
+            role = m.get("role", "")
+            continue_streaming = bool(m.get("continue_streaming", ""))
 
-            if poll_last_n_messages:
-                messages = messages[-poll_last_n_messages:]
-            for m in messages:
-                msg_id = m.get("id")
-                txt = m.get("html", "")
-                role = m.get("role", "")
+            print(m)
+            print(message)
 
-                if not msg_id:
-                    continue
+            if not msg_id:
+                continue
 
-                if last_ui_msg_id and old_message:
-                    if msg_id == last_ui_msg_id:
-                        old_message = False
-                    continue
+            if role != "assistant":
+                continue
 
-                if role != "assistant":
-                    continue
+            cleaned = clean_html_for_telegram(txt.strip())
+            last_txt = cleaned
 
-                cleaned = clean_html_for_telegram(txt.strip())
-                if not cleaned or seen.get(msg_id) == cleaned:
-                    continue
+            await output_core.send_output("shell", f"📨 Updating Telegram: {last_txt}")
 
-                seen[msg_id] = cleaned
-                last_txt = cleaned
+            last_telegram_msg_id = await output_core.send_output(
+                "telegram",
+                last_txt,
+                conversation=conversation,
+                is_final=False,
+                msg_id=last_telegram_msg_id
+            )
 
-                await output_core.send_output("shell", f"📨 Updating Telegram: {last_txt}")
-
-                new_msg_id = await output_core.send_output(
+            if not continue_streaming:
+                await output_core.send_output(
                     "telegram",
                     last_txt,
                     conversation=conversation,
-                    is_final=False,
+                    is_final=True,
                     msg_id=last_telegram_msg_id
                 )
+                result = await input_core.interpret_input(last_txt, conversation, is_shell=False)
+                if result:
+                    last_telegram_msg_id = await output_core.send_output("telegram", result, conversation=conversation)
 
-                if new_msg_id:
-                    last_telegram_msg_id = new_msg_id
-                    conversation.last_telegram_msg_id = new_msg_id
+                await output_core.send_output("shell", "✅ Final assistant message delivered.")
 
-                last_update_time = asyncio.get_event_loop().time()
-                new_content = True
-
-            if not new_content and asyncio.get_event_loop().time() - last_update_time > timeout:
-                await output_core.send_output("shell", "🛑 Timeout reached, finalizing stream.")
-                if last_txt and last_telegram_msg_id:
-                    await output_core.send_output(
-                        "telegram",
-                        last_txt.strip(),
-                        conversation=conversation,
-                        is_final=True,
-                        msg_id=last_telegram_msg_id
-                    )
-                    await output_core.send_output("shell", "✅ Final assistant message delivered.")
-                else:
-                    await output_core.send_output("shell", "⚠️ Nothing to finalize.")
                 break
 
             await asyncio.sleep(poll_interval)
@@ -188,7 +171,7 @@ async def interpret_input(prompt, conversation, is_shell=True):
         return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
     if prompt.lower() in {"y", "n"} and conversation.pending_exec:
-        user_id = str(conversation.user_id)
+        user_id = str(conversation.telegram_user_id)
         if not is_authorized_to_approve_command_exec(user_id):
             await output_core.send_output("shell", f"❌ User {user_id} not authorized to approve commands.")
             return "✅ Approval ignored — waiting for Architect(s)."
@@ -204,11 +187,12 @@ async def interpret_input(prompt, conversation, is_shell=True):
             except Exception as e:
                 output = str(e)
                 status = -1
-            await output_core.send_output("shell", f"\n📄 Output:\n====\n{output}\n====\n🔚 Exit Status: {status}")
+            msg = f"Command:\n{cmd}\n📄 Output:\n{output}\n\n🔚 Exit Status: {status}"
+            await output_core.send_output("shell", msg)
             conversation.pending_exec = None
             chat_id = conversation.chat_id
             if chat_id:
-                await output_core.send_telegram(chat_id, f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}")
+                await output_core.send_telegram(chat_id, msg)
             await sendtobrain.reflect(output)
             await stream_reply_loop(conversation, poll_last_n_messages=1)
             return None
