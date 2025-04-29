@@ -63,14 +63,12 @@ async def send_output(target, text, is_final=False, msg_id=None, conversation: C
             await send_output("shell", "⚠️ No chat ID provided for Telegram output")
             return None
 
-        msg_id_to_use = msg_id or conversation.last_telegram_msg_id
+        msg_id = conversation.last_telegram_msg_id
 
-        new_msg_id = await send_telegram(chat_id, text, msg_id=msg_id_to_use, is_final=is_final)
+        msg_id = await send_telegram(chat_id, text, msg_id=msg_id, is_final=is_final)
 
-        if new_msg_id and not msg_id_to_use:
-            conversation.last_telegram_msg_id = new_msg_id
-
-        return new_msg_id
+        if msg_id:
+            return msg_id
 
     else:
         config = _output_handlers.get(target)

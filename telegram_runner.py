@@ -21,6 +21,7 @@ class Conversation:
     pending_exec: Optional[str] = None
     pending_output: Optional[str] = None
     telegram_chat_id: Optional[str] = None
+    user_id: Optional[str] = None
 
     last_telegram_msg_id: Optional[int] = None   # 🧠 For Telegram edits
     last_ui_msg_id: Optional[str] = None          # 🧠 For ChatGPT UI tracking
@@ -101,6 +102,7 @@ async def main():
             chat_name = update.effective_chat.title or f"DM({user.username})"
             user_home = f"/home/tg{user.id}"
             conversation = conversations[chat_id]
+            conversation.user_id = user.id
 
             await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id}): {msg}")
 
@@ -136,17 +138,21 @@ async def main():
                 conversations.active_loops[chat_id] = task
                 return
 
-
+            local_mode = False
             if msg:
                 result = await input_core.interpret_input(msg, conversation, is_shell=False)
                 if result:
-                    await output_core.send_output("telegram", result, conversation=conversation)
+                    msg_id = await output_core.send_output("telegram", result, conversation=conversation)
+                    local_mode = True
                 else:
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
 
-            loop = asyncio.get_event_loop()
+            if local_mode:
+                return
+
             if chat_id not in conversations.active_loops or conversations.active_loops[chat_id].done():
-                task = loop.create_task(input_core.stream_reply_loop(conversation))
+                loop = asyncio.get_event_loop()
+                task = loop.create_task(input_core.stream_reply_loop(conversation, poll_last_n_messages=1))
                 conversations.active_loops[chat_id] = task
 
         except Exception as e:
@@ -159,7 +165,7 @@ async def main():
         await app.initialize()
         await app.start()
         drop_pending_updates = True
-        await output_core.send_output("shell", f"🤖 Starting to poll telegram messages now (drop_pending_updates={drop_pending_updates})...")
+        await output_core.send_output("shell", f"""🤖 Polling Telegram for new messages...""")
         await app.updater.start_polling(drop_pending_updates=drop_pending_updates)
 
         await asyncio.Event().wait()
