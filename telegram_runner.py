@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import json
 from dataclasses import dataclass, asdict
 import traceback
@@ -20,11 +21,12 @@ class Conversation:
 
     pending_exec: Optional[str] = None
     pending_output: Optional[str] = None
+    telegram_user_id: Optional[str] = None # we should remove
     telegram_chat_id: Optional[str] = None
-    user_id: Optional[str] = None
+    telegram_user_id: Optional[str] = None
+    telegram_name: Optional[str] = None
 
     last_telegram_msg_id: Optional[int] = None   # 🧠 For Telegram edits
-    last_ui_msg_id: Optional[str] = None          # 🧠 For ChatGPT UI tracking
 
 @dataclass
 class Conversations:
@@ -69,16 +71,9 @@ class Conversations:
 
         return cls
 
-    # async def start_reply_loop(self, chat_id: str, app: Application):
-    #     chat_id_str = str(chat_id)
-    #     if chat_id_str in self.active_loops and not self.active_loops[chat_id_str].done():
-    #         await output_core.send_output("shell", f"⚠️ Reply loop already running for chat_id {chat_id}")
-    #         await asyncio.sleep(1)
-    #         return
-    #     task = app.create_task(input_core.stream_reply_loop(chat_id))
-    #     self.active_loops[chat_id_str] = task
-
 conversations = Conversations().load("state/conversations.json")
+
+user_home_names = {}
 
 async def main():
     token = load_config.get_config().get("telegram_bot_token")
@@ -99,14 +94,17 @@ async def main():
             msg = update.message.text.strip()
             user = update.effective_user
             chat_id = update.effective_chat.id
+            chat_is_group = chat_id < 0
             chat_name = update.effective_chat.title or f"DM({user.username})"
             user_home = f"/home/tg{user.id}"
             conversation = conversations[chat_id]
-            conversation.user_id = user.id
+            conversation.telegram_user_id = user.id
+            # conversation.telegram_name = f"{user.full_name} ({user.id})"
+            conversation.telegram_name = f"{user.full_name}"
 
             await output_core.send_output("shell", f"🐢 Message received from {chat_name} ({chat_id}): {msg}")
 
-            if not os.path.isdir(user_home):
+            if not any(str(conversation.telegram_user_id) in value for value in user_home_names):
                 await output_core.send_output("telegram", f"⚠️ Unauthorized access attempt from {chat_name}", conversation=conversation)
                 return
 
@@ -145,6 +143,9 @@ async def main():
                     msg_id = await output_core.send_output("telegram", result, conversation=conversation)
                     local_mode = True
                 else:
+                    if chat_is_group:
+                        architect_tg_id = load_config.get_config().get("architect_tg_id", "")
+                        msg = f"{conversation.telegram_name} says: {msg}"
                     await router.route_message(msg, source="telegram_user", conversation=conversation)
 
             if local_mode:
@@ -175,8 +176,22 @@ async def main():
         cdp_instance.cdp.close()
         conversations.save("state/conversations.json")
 
+def load_home_dirs(base_dir="/home"):
+    valid_paths = []
+
+    for d in os.listdir(base_dir):
+        full_path = os.path.join(base_dir, d)
+        if not os.path.isdir(full_path):
+            continue
+        if d.startswith("_"):  # skip dirs starting with '_'
+            continue
+        valid_paths.append(d)
+
+    return valid_paths
+
 if __name__ == "__main__":
     try:
+        user_home_names = load_home_dirs() # for user authorization; disabled start with _
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(main())
