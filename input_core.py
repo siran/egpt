@@ -151,7 +151,6 @@ def is_authorized_to_approve_command_exec(user_id: str) -> bool:
 
 async def interpret_input(prompt, conversation, is_shell=True):
     prompt = prompt.strip()
-    agent_state = conversation
 
     split = re.split(r'^---$', prompt, flags=re.MULTILINE)
     body = split[-1]
@@ -165,7 +164,7 @@ async def interpret_input(prompt, conversation, is_shell=True):
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: input("Press Enter when done: "))
             pasted = await loop.run_in_executor(None, lambda: temp_file.read_text(encoding="utf-8"))
-            agent_state.pending_output = ("text", pasted, 0)
+            conversation.pending_output = ("text", pasted, 0)
             await output_core.send_output("shell", "-------- end paste --------")
             await sendtobrain.reflect(pasted)
             await stream_reply_loop(conversation.chat_id)
@@ -179,22 +178,22 @@ async def interpret_input(prompt, conversation, is_shell=True):
     match = re.search(r"@exec:\s*(cat\s+<<'EOF'\s+>.*?\nEOF)", body, re.DOTALL)
     if match:
         script_block = match.group(1).strip()
-        agent_state.pending_exec = script_block
+        conversation.pending_exec = script_block
         return f"⚙️ Detected patch block:\n\n{script_block}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
     match2 = re.search(r"(?:^|\n)@exec:\s*(.+)", body)
     if match2:
         command = match2.group(1).strip()
-        agent_state.pending_exec = command
+        conversation.pending_exec = command
         return f"⚙️ Proposed Command:\n\n{command}\n\n💡 Reply 'y' to approve execution, or 'n' to cancel."
 
-    if prompt.lower() in {"y", "n"} and agent_state.pending_exec:
-        user_id = str(conversation.chat_id)
+    if prompt.lower() in {"y", "n"} and conversation.pending_exec:
+        user_id = str(conversation.user_id)
         if not is_authorized_to_approve_command_exec(user_id):
             await output_core.send_output("shell", f"❌ User {user_id} not authorized to approve commands.")
             return "✅ Approval ignored — waiting for Architect(s)."
         if prompt.lower() == "y":
-            cmd = agent_state.pending_exec
+            cmd = conversation.pending_exec
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, lambda: subprocess.run(
@@ -206,15 +205,15 @@ async def interpret_input(prompt, conversation, is_shell=True):
                 output = str(e)
                 status = -1
             await output_core.send_output("shell", f"\n📄 Output:\n====\n{output}\n====\n🔚 Exit Status: {status}")
-            agent_state.pending_exec = None
-            chat_id = agent_state.telegram_chat_id
+            conversation.pending_exec = None
+            chat_id = conversation.chat_id
             if chat_id:
                 await output_core.send_telegram(chat_id, f"📄 Output:\n{output.strip()}\n\n🔚 Exit Status: {status}")
             await sendtobrain.reflect(output)
-            await stream_reply_loop(conversation)
+            await stream_reply_loop(conversation, poll_last_n_messages=1)
             return None
         elif prompt.lower() == "n":
-            agent_state.pending_exec = None
+            conversation.pending_exec = None
             await output_core.send_output("shell", "❌ Command cancelled.")
             return "✅ Command cancelled — waiting for next input."
 
