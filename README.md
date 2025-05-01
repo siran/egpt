@@ -1,3 +1,5 @@
+(project moved  become egptjs, living in a Chrome browser)
+
 # eGPT — Embodied GPT Daemon
 
 eGPT is a self-hosted, reflexive large language model (LLM) shell daemon.
