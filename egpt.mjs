@@ -88,17 +88,45 @@ async function readJsonlMetadata(path) {
   return { cwd, preview };
 }
 
-// Find the JSONL path for a given session id by scanning ~/.claude/projects/*/.
-async function findSessionJsonl(sessionId) {
+// Find the JSONL for a given session ID *or prefix*. Returns { path, slug, sessionId }
+// where sessionId is always the FULL UUID (the disk filename minus .jsonl), even if
+// the caller passed a short prefix. Throws if a prefix matches multiple sessions.
+async function findSessionJsonl(sessionIdOrPrefix) {
   const projectsDir = join(homedir(), '.claude', 'projects');
   let projects = [];
   try { projects = await readdir(projectsDir); } catch { return null; }
+
+  // First pass: exact filename match (fast path for full UUIDs)
   for (const slug of projects) {
-    const candidate = join(projectsDir, slug, `${sessionId}.jsonl`);
+    const candidate = join(projectsDir, slug, `${sessionIdOrPrefix}.jsonl`);
     try {
       const st = await stat(candidate);
-      if (st.isFile()) return { path: candidate, slug };
+      if (st.isFile()) return { path: candidate, slug, sessionId: sessionIdOrPrefix };
     } catch { /* not in this project */ }
+  }
+
+  // Second pass: prefix match. Require ≥6 chars to avoid weird short collisions.
+  if (sessionIdOrPrefix.length < 6) return null;
+  const lower = sessionIdOrPrefix.toLowerCase();
+  const matches = [];
+  for (const slug of projects) {
+    const dir = join(projectsDir, slug);
+    let files = [];
+    try { files = await readdir(dir); } catch { continue; }
+    for (const f of files) {
+      if (f.endsWith('.jsonl') && f.toLowerCase().startsWith(lower)) {
+        matches.push({
+          path: join(dir, f),
+          slug,
+          sessionId: f.slice(0, -'.jsonl'.length),
+        });
+      }
+    }
+  }
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    const ids = matches.map(m => m.sessionId).join(', ');
+    throw new Error(`prefix "${sessionIdOrPrefix}" matches multiple sessions: ${ids}`);
   }
   return null;
 }
@@ -406,7 +434,7 @@ function App() {
         return true;
       }
       const parts = arg.split(/\s+/);
-      const sid = parts[0];
+      let sid = parts[0];
       let cwd = parts.slice(1).join(' ').trim() || undefined;
       if (sid === 'none' || sid === 'clear') {
         setSessions(s => ({
@@ -421,18 +449,26 @@ function App() {
         sysOut(`${principal}: resume cleared (back to stateless mode)`);
         return true;
       }
-      // If cwd wasn't given, find the session's JSONL on disk and read cwd
-      // from it (the JSONL stores the original working directory; the project
-      // slug is lossy when paths contain dots).
+      // Resolve the session ID to the full UUID. claude --resume requires a
+      // full UUID (or a saved title) — the prefix the user typed (e.g. from
+      // /history) won't work as-is. While we're at it, auto-detect cwd from
+      // the JSONL if not explicitly given.
+      let expandedFromPrefix = false;
       let detectedCwd = false;
-      if (!cwd) {
-        try {
-          const found = await findSessionJsonl(sid);
-          if (found) {
-            const meta = await readJsonlMetadata(found.path);
-            if (meta.cwd) { cwd = meta.cwd; detectedCwd = true; }
-          }
-        } catch { /* fall through with cwd undefined */ }
+      try {
+        const found = await findSessionJsonl(sid);
+        if (!found) {
+          sysOut(`!! no session matches "${sid}". /history to list, /session none to clear.`);
+          return true;
+        }
+        if (found.sessionId !== sid) { sid = found.sessionId; expandedFromPrefix = true; }
+        if (!cwd) {
+          const meta = await readJsonlMetadata(found.path);
+          if (meta.cwd) { cwd = meta.cwd; detectedCwd = true; }
+        }
+      } catch (e) {
+        sysOut(`!! ${e.message}`);
+        return true;
       }
       setSessions(s => ({
         ...s,
@@ -442,6 +478,7 @@ function App() {
         },
       }));
       sysOut(`${principal}.sessionId → ${sid}` +
+             (expandedFromPrefix ? '  (expanded from prefix)' : '') +
              (cwd ? `\n${principal}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
              `\n(claude --resume mode active for this session)`);
       return true;
