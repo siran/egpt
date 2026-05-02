@@ -76,6 +76,21 @@ hola                                          # routes to code1 (default)
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Reusable distillations (saved in ~/.egpt/summaries/<name>.md)
+# ────────────────────────────────────────────────────────────────────────
+/save my-answer                                # save the latest non-system msg verbatim
+/summarize today                               # principal compresses the room → today.md
+/summaries                                     # list saved summaries
+/inject today                                  # drop today.md into room as a system note
+
+# typical flow:
+#   long conversation in room A about topic X
+#   /summarize topic-x         → ~/.egpt/summaries/topic-x.md
+#   in a new egpt session against room B:
+#   /inject topic-x            → topic-x context now ambient in room B's brains
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Recovery / when things go weird
 # ────────────────────────────────────────────────────────────────────────
 Ctrl+R                                        # force-reset UI if a brain hangs
@@ -303,6 +318,12 @@ Conversation:
   /last [N]                     show last N messages from the file (default 10)
   @<name> <message>             address a session for THIS turn only,
                                 without changing the principal
+
+Reusable distillations (~/.egpt/summaries/<name>.md):
+  /save <name>                  save the latest non-system message verbatim
+  /summarize <name>              principal compresses the room → summary file
+  /summaries                    list saved summaries
+  /inject <name>                drop a saved summary into the room as a system note
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
 Brains: claude-code, chatgpt-cdp, claude-cdp
