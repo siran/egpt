@@ -204,6 +204,20 @@ function App() {
   const [principal, setPrincipal] = useState('claude-code');
   const { exit } = useApp();
 
+  // Top-level escape hatch: Ctrl+R force-resets state when the brain hangs.
+  // The in-flight WebSocket / subprocess is orphaned (will eventually GC)
+  // but the UI returns control. Last-resort, not a graceful cancel.
+  useInput((input, key) => {
+    if (key.ctrl && input === 'r' && (busy || streaming)) {
+      setBusy(false);
+      setStreaming(null);
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        body: '(reset by Ctrl+R — any in-flight brain stream is abandoned; the underlying tab/process may still be running)',
+      }]);
+    }
+  });
+
   const sysOut = body =>
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body }]);
 
@@ -590,10 +604,23 @@ function App() {
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, { color: 'gray' },
         `[principal: ${principal} · ${sessions[principal]?.brain ?? '?'}]`),
-      streaming && h(Box, { flexDirection: 'column', marginTop: 1 },
-        h(Text, { color: 'green', bold: true }, streaming.author),
-        h(Text, null, streaming.text + '▎')),
-      busy && !streaming?.text && h(Text, { color: 'yellow' }, '… thinking'),
+      streaming && (() => {
+        // Show only the trailing portion of long streamed text — keeps the
+        // dynamic area small even for multi-page replies, and reduces Ink's
+        // re-render cost. Full text gets committed to <Static> once finalized.
+        const lines = streaming.text.split('\n');
+        const tail = lines.slice(-8).join('\n');
+        const hidden = Math.max(0, lines.length - 8);
+        const charCount = streaming.text.length;
+        return h(Box, { flexDirection: 'column', marginTop: 1 },
+          h(Text, { color: 'green', bold: true },
+            `${streaming.author}  `,
+            h(Text, { color: 'gray', dimColor: true }, `(${charCount} chars · Ctrl+R to abort)`)),
+          hidden > 0 && h(Text, { color: 'gray', dimColor: true },
+            `… ${hidden} earlier line${hidden > 1 ? 's' : ''} hidden …`),
+          h(Text, null, tail + '▎'));
+      })(),
+      busy && !streaming?.text && h(Text, { color: 'yellow' }, '… thinking  ', h(Text, { color: 'gray', dimColor: true }, '(Ctrl+R to abort)')),
       error && h(Text, { color: 'red' }, '!! ' + error),
       !busy && h(MultiLineInput, { onSubmit: submit })));
 }

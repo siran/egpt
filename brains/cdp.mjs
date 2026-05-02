@@ -171,10 +171,16 @@ export function streamFromTab({
         let noStreamingCount = 0;
         let sawNew = false;
         let pollErrs = 0;
-        // Need both signals stable for ~1s before declaring done. This dampens
-        // the false "done" caused by transient rendering pauses (latex / code blocks)
-        // or locale-specific stop-button labels we don't recognize.
+        const pollStartMs = Date.now();
+        // Primary: both signals (no-streaming + text-stable) agree for ~1s.
+        // This dampens false "done" during latex/code rendering pauses.
         const STABLE_TICKS = 4;
+        // Safety net: if text is dead-stable for 5s AND polling has run >= 10s,
+        // finalize even if the stop-button selector is broken (e.g. a locale we
+        // don't recognize, or a selector that overmatches and stays "true"
+        // forever). Without this, a misconfigured selector means infinite hang.
+        const TEXT_STALE_FALLBACK_TICKS = 20; // 5s at 250ms/tick
+        const MIN_POLL_MS = 10000;
 
         pollHandle = setInterval(async () => {
           try {
@@ -196,6 +202,14 @@ export function streamFromTab({
             if (!v.streaming) noStreamingCount++;
             else noStreamingCount = 0;
             if (noStreamingCount >= STABLE_TICKS && textStable >= STABLE_TICKS && lastText) {
+              done(lastText);
+              return;
+            }
+            // Fallback: text dead-stable for a long time despite the
+            // streaming flag. Likely the stop-button selector is misbehaving.
+            if (textStable >= TEXT_STALE_FALLBACK_TICKS &&
+                lastText &&
+                (Date.now() - pollStartMs) >= MIN_POLL_MS) {
               done(lastText);
             }
           } catch {

@@ -19,7 +19,7 @@ const POLL_SCRIPT = `
     document.querySelector('button[aria-label*="Arrêter" i]') ||
     document.querySelector('button[aria-label*="Stoppen" i]') ||
     document.querySelector('button[aria-label*="Stoppa" i]') ||
-    document.querySelector('button[aria-label*="Para" i]');
+    document.querySelector('button[aria-label*="Parar" i]'); // Portuguese; "Para" alone overmatches Spanish
   // Backup: any element flagged streaming.
   const flag =
     document.querySelector('[data-is-streaming="true"]') ||
