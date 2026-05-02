@@ -229,22 +229,27 @@ function App() {
     if (cmd === '/file') { sysOut(FILE); return true; }
     if (cmd === '/help') {
       sysOut(
-        '/exit · /file · /help\n' +
-        '/open <brain> <name>            open a fresh tab and register a new session\n' +
-        '/principal [name [tabSpec]]     switch (or create) principal session.\n' +
-        '                                tabSpec: targetId | url | uuid | prefix\n' +
-        '/sessions                       list registered sessions\n' +
-        '/tabs [all]                     list pages in the brain Chrome (chrome:// hidden)\n' +
+        '/exit · /file · /help\n\n' +
+        'Sessions (named participants in the room):\n' +
+        '/open <brain> <name>            open a fresh tab + register session <name>\n' +
+        '/attach <brain> <name> [tab]    bind an EXISTING tab to session <name>\n' +
+        '                                (no tabSpec → auto-find single match)\n' +
+        '/principal [name [tabSpec]]     show or switch principal\n' +
+        '/sessions                       list registered sessions (* = principal)\n\n' +
+        'Browser brains:\n' +
+        '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
-        '/session [<id> [cwd]]           extend an existing claude-code session via --resume\n' +
-        '                                (instead of stateless re-imitation each turn)\n' +
-        '/rules                          write room-rules system message into the file\n' +
-        '                                (silence convention, @mentions, politeness)\n' +
-        '/refresh                        re-poll current CDP tab; append full text\n' +
-        '                                (use when streaming was cut off)\n' +
-        '/last [N]                       show last N messages from the file (default 10)\n\n' +
-        '@<name> <message>               route this turn to a session by name without\n' +
-        '                                changing the principal. e.g. @gpt1 ¿qué opinas?\n\n' +
+        '/refresh                        re-poll CDP tab; append latest assistant text\n' +
+        '                                (use when streaming was cut off)\n\n' +
+        'Local brain (claude-code):\n' +
+        '/session [<id> [cwd]]           continue an existing claude-code session via\n' +
+        '                                --resume (otherwise stateless: re-reads file)\n\n' +
+        'Conversation:\n' +
+        '/rules                          write room rules into file (silence, @, politeness)\n' +
+        '/last [N]                       show last N messages from the file (default 10)\n' +
+        '@<name> <message>               address a session for THIS turn only,\n' +
+        '                                without changing the principal\n\n' +
+        'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
         'Brains: ' + Object.keys(BRAINS).join(', '));
       return true;
     }
@@ -362,10 +367,77 @@ function App() {
       return true;
     }
     if (cmd === '/sessions') {
-      const lines = Object.entries(sessions).map(([name, s]) =>
-        `${name === principal ? '*' : ' '} ${name}  ${s.brain}` +
-        (s.options.targetId ? `  (target: ${s.options.targetId.slice(0, 8)}…)` : ''));
-      sysOut(lines.join('\n') || '(none)');
+      // Best-effort: if a session has a targetId, look up the live tab title
+      // and show that. Falls back to just the targetId if Chrome isn't reachable.
+      let tabsByid = new Map();
+      try {
+        const tabs = await cdp.listTabs();
+        for (const t of tabs) tabsByid.set(t.id, t);
+      } catch { /* Chrome not running — that's fine for non-CDP sessions */ }
+
+      const rows = Object.entries(sessions).map(([name, s]) => {
+        const marker = name === principal ? '*' : ' ';
+        const namePad = name.padEnd(14);
+        const brainPad = s.brain.padEnd(13);
+        let detail = '';
+        if (s.options.targetId) {
+          const live = tabsByid.get(s.options.targetId);
+          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${s.options.targetId.slice(0, 8)}…)`;
+        } else if (s.options.sessionId) {
+          detail = `claude --resume ${s.options.sessionId.slice(0, 8)}…`;
+        }
+        return `${marker} ${namePad}${brainPad}${detail}`;
+      });
+      sysOut(rows.join('\n') || '(none)');
+      return true;
+    }
+    if (cmd === '/attach') {
+      // Attach an EXISTING tab (or just register a non-CDP brain session) under
+      // a custom name, without opening anything new. /open opens a fresh tab;
+      // /attach binds to one already there.
+      const parts = arg.split(/\s+/);
+      const brainName = parts[0];
+      const sessionName = parts[1];
+      const tabSpec = parts.slice(2).join(' ').trim();
+
+      if (!brainName || !sessionName) {
+        sysOut('usage: /attach <brain> <name> [tabSpec]\n' +
+               '  attaches an existing tab to a session named <name>.\n' +
+               '  for CDP brains: tabSpec resolves to an open tab (auto if only one).\n' +
+               '  for non-CDP brains (claude-code, codex): tabSpec is ignored.\n' +
+               '  brains: ' + Object.keys(BRAINS).join(', '));
+        return true;
+      }
+      const brain = BRAINS[brainName];
+      if (!brain) { sysOut(`unknown brain: ${brainName}`); return true; }
+      if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
+
+      const options = {};
+      if (brain.urlMatch) {
+        try {
+          if (tabSpec) {
+            const tid = await resolveTabId(tabSpec, brain);
+            if (!tid) { sysOut(`could not resolve "${tabSpec}" to a tab. /tabs to see open tabs.`); return true; }
+            options.targetId = tid;
+          } else {
+            const tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
+            if (tabs.length === 0) { sysOut(`no open ${brainName} tabs to attach. /open ${brainName} ${sessionName} would open one.`); return true; }
+            if (tabs.length > 1) {
+              const lst = tabs.map(t => `  "${t.title}" — ${t.url}`).join('\n');
+              sysOut(`multiple ${brainName} tabs open. specify which:\n${lst}\nuse: /attach ${brainName} ${sessionName} <urlOrUuidOrId>`);
+              return true;
+            }
+            options.targetId = tabs[0].id;
+          }
+        } catch (e) { sysOut(`!! ${e.message}`); return true; }
+      }
+
+      setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options } }));
+      setPrincipal(sessionName);
+      sysOut(`session "${sessionName}" → ${brainName}` +
+        (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
+        `\nprincipal → ${sessionName}\n` +
+        `address it as @${sessionName} for guest turns`);
       return true;
     }
     if (cmd === '/principal') {
@@ -478,9 +550,13 @@ function App() {
         };
         const hidden = all.length - tabs.length;
         const header = hidden ? `(${hidden} chrome:// page${hidden > 1 ? 's' : ''} hidden — /tabs all to see)\n` : '';
+        // Title-first format: humans recognize titles, not target IDs. URL and
+        // shortened ID below for /attach lookup. To attach: /attach chatgpt-cdp <name> <urlOrId>
         sysOut(header + tabs.map(t =>
-          `${t.id.slice(0, 8)}…  ${matchBrain(t.url).padEnd(12)}  ${t.url}\n            → ${t.title || '(untitled)'}`
-        ).join('\n'));
+          `"${t.title || '(untitled)'}"   ·   ${matchBrain(t.url)}\n` +
+          `   ${t.url}\n` +
+          `   id: ${t.id.slice(0, 8)}`
+        ).join('\n\n'));
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
