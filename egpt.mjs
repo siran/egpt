@@ -149,15 +149,16 @@ async function findSessionJsonl(sessionIdOrPrefix) {
 
 const FILE = process.argv[2] ?? './conversation.md';
 
-// preflight: claude is required because the default room has a claude-code
-// session (code1). CDP brains don't need the `claude` binary themselves, but
-// every fresh room starts with code1, so this binary must be present.
+// preflight: warn if claude is missing but don't refuse to start. egpt is
+// the room itself; CDP brains and most slash commands work without claude.
+// Only invocations of the claude-code brain (/open claude-code or addressed
+// turns) actually need the binary.
 {
   const r = spawnSync('claude', ['--version'], { stdio: 'pipe' });
   if (r.error?.code === 'ENOENT') {
-    console.error('!! `claude` CLI not found on PATH.');
-    console.error('   Install Claude Code: npm install -g @anthropic-ai/claude-code');
-    process.exit(1);
+    console.error('warning: `claude` CLI not found on PATH.');
+    console.error('  CDP brains work without it; install only if you want claude-code.');
+    console.error('    npm install -g @anthropic-ai/claude-code\n');
   }
 }
 
@@ -327,12 +328,10 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
-  // Default participant: code1 (claude-code subprocess, no Chrome needed).
-  // No principal — every participant is equal. Routing is broadcast-by-default
-  // unless an @mention names a single recipient.
-  const [sessions, setSessions] = useState({
-    'code1': { brain: 'claude-code', options: {} },
-  });
+  // The room starts empty — egpt is the host, not a participant. Use /open
+  // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
+  // if Chrome is already running.
+  const [sessions, setSessions] = useState({});
   // Elapsed-time tracking so the user has progress feedback during the
   // brain's pre-generation "thinking" phase (which can be 5-15s for a long
   // conversation file). When busy goes true we record the start; an interval
@@ -359,7 +358,7 @@ function App() {
       try {
         const tabs = await cdp.listTabs();
         if (cancelled) return;
-        let working = { 'code1': { brain: 'claude-code', options: {} } };
+        let working = {};
         const additions = {};
         for (const tab of tabs) {
           if (isInternalUrl(tab.url)) continue;
@@ -411,6 +410,10 @@ function App() {
     if (cmd === '/help') {
       sysOut(
         '/exit · /file · /help\n\n' +
+        'egpt is the room itself. The room can be empty (zombie mode):\n' +
+        '  most slash commands work without a brain — file ops, session\n' +
+        '  management, summaries, browser lifecycle. Only sending a chat\n' +
+        '  message needs at least one participant.\n\n' +
         'Sessions (named participants in the room — every participant is equal):\n' +
         '  Auto-naming: cgpt1, claude1, code1, codex1 ... per brain.\n' +
         '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
@@ -423,8 +426,11 @@ function App() {
         'Browser brains:\n' +
         '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
-        '/refresh                        re-poll CDP tab; append latest assistant text\n' +
-        '                                (use when streaming was cut off)\n\n' +
+        '/refresh [<session-name>]       re-poll CDP tab; append latest assistant text\n' +
+        '                                (use when streaming was cut off)\n' +
+        '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
+        '                                session\'s tab (default: last reply → all\n' +
+        '                                other CDPs — useful after an operator output)\n\n' +
         'Local brain (claude-code):\n' +
         '/history [N]                    list recent claude-code sessions on disk\n' +
         '                                (newest first; default 10)\n' +
@@ -556,6 +562,57 @@ function App() {
         `arbitrates when AI-AI exchanges get loud.`;
       await append('system', rules);
       setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
+      return true;
+    }
+    if (cmd === '/mirror') {
+      // Push a session's last reply into another session's tab.
+      // Forms:
+      //   /mirror                       → most recent non-system non-You reply
+      //                                   pushed to all OTHER CDP brains
+      //   /mirror <target>              → most recent non-system non-You reply
+      //                                   pushed to one target session
+      //   /mirror <source> <target>     → last reply from <source> pushed to <target>
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const text = await readFile(FILE, 'utf8');
+      let source, targets;
+
+      if (parts.length >= 2) {
+        source = parts[0];
+        targets = [parts[1]];
+      } else {
+        const replies = parseMessages(text).filter(t => t.author !== 'system' && t.author !== 'You');
+        if (!replies.length) { sysOut('(no reply to mirror — room has no brain replies yet)'); return true; }
+        source = replies[replies.length - 1].author;
+        if (parts.length === 1) targets = [parts[0]];
+        else {
+          targets = Object.entries(sessions)
+            .filter(([n, s]) => n !== source && BRAINS[s.brain]?.urlMatch)
+            .map(([n]) => n);
+          if (targets.length === 0) {
+            sysOut(`no other CDP sessions to mirror to (source: ${source})`);
+            return true;
+          }
+        }
+      }
+
+      // Find last body from source
+      const sourceTurns = parseMessages(text).filter(t => t.author === source);
+      if (!sourceTurns.length) { sysOut(`no replies from "${source}" in this room`); return true; }
+      const lastBody = sourceTurns[sourceTurns.length - 1].body;
+
+      // Validate targets
+      for (const t of targets) {
+        if (!sessions[t]) { sysOut(`no session named "${t}"`); return true; }
+      }
+
+      const mirrorMsg = `[${source}]: ${lastBody}`;
+      sysOut(`mirroring last reply by ${source} to: ${targets.join(', ')}`);
+      setBusy(true);
+      try {
+        for (const t of targets) {
+          await runBrainTurn(t, mirrorMsg);
+        }
+      } finally { setBusy(false); }
       return true;
     }
     if (cmd === '/refresh') {
@@ -1135,7 +1192,14 @@ function App() {
       recipients = Object.keys(sessions);
       userPayload = text;
     }
-    if (recipients.length === 0) { setBusy(false); setError('no participants in the room — try /open or /attach'); return; }
+    if (recipients.length === 0) {
+      // Egpt is the room itself; with nobody in it, just echo back. Slash
+      // commands still work for managing files, sessions, summaries, etc.
+      // We don't append the user's text to .md here — nothing to address it
+      // to, and the transcript becomes confusing if it has lone messages.
+      sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
+      return;
+    }
 
     // The .md keeps the original text (including any @mention prefix).
     await append('You', text);
