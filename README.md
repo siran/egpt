@@ -75,7 +75,8 @@ You keep a Chrome instance logged in to the web brains. You launch it once with 
 
 ## What works today
 
-- ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, visible spaces, slash commands, streaming reply display
+- ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
+- ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — long-poll a Telegram bot, route incoming messages into the same room, mirror brain replies back to the chat. Works with or without any AI present (zombie mode runs slash commands over Telegram)
 - ✅ Plain Markdown file as conversation source-of-truth (`tail -f`-friendly, vim-editable, grep-able)
 - ✅ Three working brains:
   - `claude-code` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json`
@@ -89,8 +90,6 @@ You keep a Chrome instance logged in to the web brains. You launch it once with 
 
 ## What's coming
 
-- 🛠 **`@mentions`** — address a guest brain without changing principal (`@claude1 ¿qué piensas?`). Replies mirror back to the principal's tab.
-- 🛠 **Telegram bridge** — same conversation, accessible from your phone. Bot polls Telegram; messages flow into the same Markdown file; replies go back via the bot.
 - 🛠 **Browser extension** — display surface for the conversation, plus a CDP brain runner so the daemon can be on a home server while the brains live in your laptop's Chrome
 - 🛠 **Admin / queue / flush** — when multiple humans are chatting in a Telegram group, the admin controls when the queue gets flushed to the brains (avoids noise polluting brain context)
 - 🛠 **Federation (v2)** — multiple egpt daemons connected by a peer bridge; one conversation can span home server + laptop + phone

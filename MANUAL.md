@@ -76,6 +76,28 @@ hola                                          # routes to code1 (default)
 
 
 # ────────────────────────────────────────────────────────────────────────
+# Telegram bridge (drive egpt from your phone)
+# ────────────────────────────────────────────────────────────────────────
+# 1. Talk to @BotFather on Telegram, /newbot, get a bot_token.
+# 2. Find your numeric Telegram user ID (e.g. via @userinfobot).
+# 3. Write ~/.egpt/config.json:
+#    {
+#      "telegram": {
+#        "bot_token": "1234567890:AA...",
+#        "allowed_users": [<your numeric user id>]
+#      }
+#    }
+# 4. Send any message to your bot once so Telegram routes future replies.
+# 5. Launch egpt — see "telegram bridge enabled" in the transcript.
+#
+# Then from the phone:
+#   "hello"                # broadcasts to all participants in the room
+#   "@code1 git status"    # routes to a specific session
+#   "/sessions"            # any slash command works (it's the same submit())
+#   "/save my-thought"     # zombie commands work even with no brain present
+
+
+# ────────────────────────────────────────────────────────────────────────
 # Reusable distillations (saved in ~/.egpt/summaries/<name>.md)
 # ────────────────────────────────────────────────────────────────────────
 /save my-answer                                # save the latest non-system msg verbatim
@@ -374,17 +396,24 @@ Notes:
 
 ```
 ~/src/egpt/
-├── egpt.mjs               # main app — Ink UI, slash commands, session state
+├── egpt.mjs               # main app — Ink UI, slash commands, room state
 ├── brains/
 │   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
 │   │                      #   streamFromTab, closeBrowser, isRunning
 │   ├── claude-code.mjs    # subprocess brain (stateless or --resume)
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
 │   └── claude-cdp.mjs     # Claude.ai (same shape, different selectors)
+├── bridges/
+│   └── telegram.mjs       # Telegram bot bridge (long-poll + send)
 ├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2)
 ├── package.json           # type:module · ink + react
 ├── README.md              # what & why
 └── MANUAL.md              # this file
+
+~/.egpt/
+├── config.json            # secrets (bot tokens, allowed users) — DO NOT commit
+├── brain-profile/         # persistent Chrome profile for the brain Chrome
+└── summaries/<name>.md    # saved & summarized conversations
 ```
 
 About a thousand lines of code, no build step, two runtime dependencies (`ink`, `react`).

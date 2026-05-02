@@ -12,8 +12,9 @@ import * as claudeCode from './brains/claude-code.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './brains/cdp.mjs';
+import { startTelegramBridge } from './bridges/telegram.mjs';
 
-const { createElement: h, useState, useEffect, Fragment } = React;
+const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 
 const BRAINS = {
   [claudeCode.name]: claudeCode,
@@ -340,6 +341,12 @@ function App() {
   const [now, setNow] = useState(Date.now());
   const { exit } = useApp();
 
+  // Refs so background bridges (Telegram) can call submit() and forward new
+  // items without depending on render closures. submitRef updated each render.
+  const submitRef = useRef(null);
+  const bridgeRef = useRef(null);
+  const sentItemsCountRef = useRef(0);
+
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
     setBusyStart(Date.now());
@@ -347,6 +354,48 @@ function App() {
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
   }, [busy]);
+
+  // Start Telegram bridge once if ~/.egpt/config.json has telegram.bot_token.
+  // Bridge calls submitRef.current(text) on incoming Telegram messages and
+  // we forward every new item from `items` back to the chat (see effect below).
+  useEffect(() => {
+    let bridge = null;
+    (async () => {
+      let cfg;
+      try { cfg = JSON.parse(await readFile(join(homedir(), '.egpt', 'config.json'), 'utf8')); }
+      catch { return; }
+      if (!cfg.telegram?.bot_token) return;
+      bridge = startTelegramBridge({
+        botToken: cfg.telegram.bot_token,
+        allowedUsers: cfg.telegram.allowed_users ?? [],
+        chatId: cfg.telegram.chat_id ?? null,
+        onIncoming: async (text, from) => {
+          const who = from.username || from.firstName || `tg:${from.userId}`;
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system',
+            body: `(telegram message from ${who}) → ${text}`,
+          }]);
+          if (submitRef.current) await submitRef.current(text);
+        },
+        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}` }]),
+        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}` }]),
+      });
+      bridgeRef.current = bridge;
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled' }]);
+    })();
+    return () => bridge?.stop();
+  }, []);
+
+  // Forward every NEW item to the Telegram bridge. Track sent count via ref so
+  // bulk additions (/last replays) flush all of them, not just the tail.
+  useEffect(() => {
+    const b = bridgeRef.current;
+    if (!b) return;
+    while (sentItemsCountRef.current < items.length) {
+      const item = items[sentItemsCountRef.current++];
+      b.send(`[${item.author}] ${item.body}`);
+    }
+  }, [items.length]);
 
   // Startup auto-attach: if Chrome is already running with chatgpt/claude tabs
   // open, register each as a session with an auto-generated name (cgpt1,
@@ -1240,6 +1289,10 @@ function App() {
 
     setBusy(false);
   };
+
+  // Keep the bridge's reference to submit() up to date with each render so
+  // background message arrivals always run against the current closure.
+  submitRef.current = submit;
 
   const color = a =>
     a === 'You' ? 'cyan' : a === 'system' ? 'gray' : 'green';
