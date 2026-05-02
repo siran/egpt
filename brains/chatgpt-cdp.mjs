@@ -9,18 +9,17 @@ export const urlMatch = /chatgpt\.com|chat\.openai\.com/;
 
 const POLL_SCRIPT = `
 (() => {
-  // Stop button: localized aria-labels + testids + ids.
+  // Stop-button detection. Only use signals that are NOT translated by the UI:
+  //   - data-testid (test hooks, locale-stable by convention)
+  //   - id (also locale-stable)
+  //   - DOM-state markers (data-is-streaming, .result-streaming)
+  // Avoid aria-label/visible text — those get i18n'd and overmatch.
   const stopBtn =
     document.querySelector('button[data-testid="stop-button"]') ||
     document.querySelector('button[data-testid="composer-stop-button"]') ||
+    document.querySelector('button[data-testid="fruitjuice-stop-button"]') ||
     document.querySelector('button#stop-button') ||
-    document.querySelector('button[aria-label*="Stop" i]') ||
-    document.querySelector('button[aria-label*="Detener" i]') ||
-    document.querySelector('button[aria-label*="Arrêter" i]') ||
-    document.querySelector('button[aria-label*="Stoppen" i]') ||
-    document.querySelector('button[aria-label*="Stoppa" i]') ||
-    document.querySelector('button[aria-label*="Parar" i]'); // Portuguese; "Para" alone overmatches Spanish
-  // Backup: any element flagged streaming.
+    document.querySelector('button#composer-stop-button');
   const flag =
     document.querySelector('[data-is-streaming="true"]') ||
     document.querySelector('.result-streaming');
@@ -51,8 +50,12 @@ function buildInject(message) {
   }).join('');
   ta.dispatchEvent(new InputEvent('input', { bubbles: true }));
   setTimeout(() => {
+    // Locale-stable selectors only. id and data-testid don't translate.
     const btn = document.querySelector(
-      '#composer-submit-button, button[data-testid="send-button"], button[aria-label*="Send" i]'
+      '#composer-submit-button, ' +
+      'button[data-testid="send-button"], ' +
+      'button[data-testid="composer-send-button"], ' +
+      'button[data-testid="fruitjuice-send-button"]'
     );
     if (btn) btn.click();
   }, 120);

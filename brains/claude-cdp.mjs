@@ -10,13 +10,15 @@ export const urlMatch = /claude\.ai/;
 
 const POLL_SCRIPT = `
 (() => {
+  // Locale-stable signals only (data-testid + DOM state). aria-label is i18n'd.
   const stopBtn =
-    document.querySelector('button[aria-label*="Stop" i]') ||
-    document.querySelector('button[aria-label*="Detener" i]') ||
-    document.querySelector('button[aria-label*="Arrêter" i]') ||
-    document.querySelector('button[aria-label*="Stoppen" i]') ||
-    document.querySelector('button[data-testid*="stop" i]');
-  const flag = document.querySelector('[data-is-streaming="true"]');
+    document.querySelector('button[data-testid*="stop" i]') ||
+    document.querySelector('button[data-testid="stop-button"]') ||
+    document.querySelector('button[data-testid*="cancel" i]') ||
+    document.querySelector('button#stop-button');
+  const flag =
+    document.querySelector('[data-is-streaming="true"]') ||
+    document.querySelector('[data-is-streaming]:not([data-is-streaming="false"])');
   const streaming = !!stopBtn || !!flag;
   const msgs = document.querySelectorAll('.font-claude-message');
   const last = msgs[msgs.length - 1];
@@ -65,8 +67,13 @@ function buildInject(message) {
   }
 
   setTimeout(() => {
+    // Locale-stable selectors first. button[type="submit"] is a structural
+    // fallback that works regardless of language since "submit" is an HTML
+    // attribute value, not user-facing text.
     const btn = document.querySelector(
-      'button[aria-label*="Send" i], button[aria-label*="message" i], button[type="submit"]'
+      'button[data-testid="send-button"], ' +
+      'button[data-testid*="send" i], ' +
+      'button[type="submit"]'
     );
     if (btn) btn.click();
   }, 200);
