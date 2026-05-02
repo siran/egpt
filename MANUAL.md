@@ -60,6 +60,28 @@ hello everyone                                # broadcast to all sessions in the
 /attach                                       # rescan Chrome for new tabs
 
 
+# ------------------------------------------------------------------------
+# Brain profiles (named presets)
+# ------------------------------------------------------------------------
+# Put YAML in one of:
+#   ~/.egpt/brains/alex.yaml                  # personal
+#   ./.egpt/brains/alex.yaml                  # project-local
+#   <egpt repo>/brains/type/alex.yaml         # repo-defined
+#
+# Example:
+#   name: alex
+#   type: codex                               # codex | code | cdp_chat | cdp_claude
+#   model: gpt-5.5
+#   effort: low
+#   cwd: C:\Users\an\src\egpt
+#   summary: alex                             # inject ~/.egpt/summaries/alex.md on attach
+#   chat_name: Alex
+#
+/profiles                                     # list configured profiles and paths
+/attach alex                                  # start profile "alex" as @alex
+/sessions                                     # shows profile, cwd, model, effort, thread/log
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Resume a past ccode session (real session continuity, no cloning)
 # ────────────────────────────────────────────────────────────────────────
@@ -213,6 +235,30 @@ Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You ca
 
 If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1` or `/open codex`.
 
+### Brain profiles
+
+A brain profile is a YAML preset for a named participant. `/attach alex` looks for `alex.yaml` in:
+
+- `./.egpt/brains/` for project-local profiles
+- `~/.egpt/brains/` for personal profiles
+- `<egpt repo>/brains/type/` or `<egpt repo>/brains/types/` for repo-defined profiles
+
+Minimal Codex profile:
+
+```yaml
+name: alex
+type: codex
+model: gpt-5.5
+effort: low
+cwd: C:\Users\an\src\egpt
+summary: alex
+chat_name: Alex
+```
+
+`type` accepts `codex`, `code`/`ccode`, `cdp_chat`, and `cdp_claude`. `summary: alex` injects `~/.egpt/summaries/alex.md` into the new session on attach. Native Codex/Claude thread IDs are not resumed by default; set `resume: true` or `session_id: <id>` if you explicitly want native resume instead of a fresh session plus summary context.
+
+Runtime state is written to `~/.egpt/brain-state/<profile>.json`. It records the last cwd, thread id, model/effort, log path, and tab target when available. `/profiles` lists profiles; `/sessions` shows which live sessions came from a profile.
+
 ### Routing
 
 A leading `@name` sends a turn to one session:
@@ -290,7 +336,7 @@ Codex storage is separate from the egpt room:
 - `~/.egpt/codex/<session>.jsonl` is egpt's tail-able mirror of Codex events.
 - `~/.codex/sessions/.../rollout-<timestamp>-<thread-id>.jsonl` is Codex's native rollout file.
 
-Run `/sessions` after the first Codex turn to see the Codex thread id, cwd, effort, and egpt mirror log path. egpt invokes Codex with `model_reasoning_effort="low"` by default because that is the lowest effort supported by this CLI; set `EGPT_CODEX_REASONING_EFFORT=medium`, `high`, or `xhigh` before launch to override.
+Run `/sessions` after the first Codex turn to see the Codex thread id, cwd, model, effort, and egpt mirror log path. egpt invokes Codex with `model_reasoning_effort="low"` by default because that is the lowest effort supported by this CLI; set `EGPT_CODEX_REASONING_EFFORT=medium`, `high`, or `xhigh` before launch to override, or set `effort:` in a brain profile. A Codex profile can also pass `model:` through to `codex exec -m`.
 
 ---
 
@@ -334,6 +380,8 @@ General:
 
 Sessions (named participants in the room):
   /open <brain> [name]          open a new tab + register session (auto-name if no name)
+  /profiles                     list YAML brain profiles
+  /attach <profile>             start a configured brain profile
   /attach                       rescan Chrome and attach any new tabs
   /attach <brain>               attach all unattached tabs of that brain
   /attach <brain> <name> [tab]  explicit attach

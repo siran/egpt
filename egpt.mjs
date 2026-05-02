@@ -2,11 +2,13 @@
 // egpt.mjs — file IS the conversation; Ink shell; sessions = named participants
 import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
+import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
@@ -16,6 +18,8 @@ import * as cdp from './brains/cdp.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
+const APP_DIR = dirname(fileURLToPath(import.meta.url));
+const EGPT_HOME = join(homedir(), '.egpt');
 
 const BRAINS = {
   [ccode.name]: ccode,
@@ -127,7 +131,28 @@ async function readJsonlMetadata(path) {
 // vim-editable, grep-able, and portable. /save writes one. /summarize asks a
 // brain to compose one. /inject drops one into the current room as a system
 // note or sends it directly to one session. /summaries lists what's available.
-const SUMMARIES_DIR = join(homedir(), '.egpt', 'summaries');
+const SUMMARIES_DIR = join(EGPT_HOME, 'summaries');
+const BRAIN_STATE_DIR = join(EGPT_HOME, 'brain-state');
+const BRAIN_PROFILE_DIRS = [
+  { label: 'project', dir: join(process.cwd(), '.egpt', 'brains') },
+  { label: 'user', dir: join(EGPT_HOME, 'brains') },
+  { label: 'repo', dir: join(APP_DIR, 'brains', 'type') },
+  { label: 'repo', dir: join(APP_DIR, 'brains', 'types') },
+];
+
+const PROFILE_TYPE_ALIASES = {
+  code: 'ccode',
+  ccode: 'ccode',
+  'claude-code': 'ccode',
+  codex: 'codex',
+  cdp_chat: 'chatgpt-cdp',
+  chat: 'chatgpt-cdp',
+  chatgpt: 'chatgpt-cdp',
+  'chatgpt-cdp': 'chatgpt-cdp',
+  cdp_claude: 'claude-cdp',
+  claude: 'claude-cdp',
+  'claude-cdp': 'claude-cdp',
+};
 
 function isSafeName(name) {
   return /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..';
@@ -137,6 +162,181 @@ function summaryPath(name) {
 }
 async function ensureSummariesDir() {
   await mkdir(SUMMARIES_DIR, { recursive: true });
+}
+
+function canonicalProfileType(type) {
+  const raw = String(type ?? '').trim();
+  const key = raw.toLowerCase();
+  return canonicalBrainName(PROFILE_TYPE_ALIASES[key] ?? key);
+}
+
+function statePathForProfile(profileName) {
+  return join(BRAIN_STATE_DIR, `${profileName}.json`);
+}
+
+function profileDirsText() {
+  return BRAIN_PROFILE_DIRS.map(d => `  ${d.dir}`).join('\n');
+}
+
+async function findBrainProfilePath(name) {
+  if (!isSafeName(name)) return null;
+  for (const { label, dir } of BRAIN_PROFILE_DIRS) {
+    for (const ext of ['yaml', 'yml']) {
+      const path = join(dir, `${name}.${ext}`);
+      try {
+        const st = await stat(path);
+        if (st.isFile()) return { path, label, dir };
+      } catch { /* not here */ }
+    }
+  }
+  return null;
+}
+
+async function loadBrainProfile(name) {
+  const found = await findBrainProfilePath(name);
+  if (!found) return null;
+
+  let parsed;
+  const raw = await readFile(found.path, 'utf8');
+  try {
+    parsed = YAML.parse(raw);
+  } catch (e) {
+    throw new Error(`${found.path}: ${e.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${found.path}: profile must be a YAML mapping`);
+  }
+
+  const profileName = String(parsed.name ?? name).trim();
+  if (!isSafeName(profileName)) {
+    throw new Error(`${found.path}: name must use letters, numbers, dot, dash, or underscore`);
+  }
+  const brainName = canonicalProfileType(parsed.type ?? parsed.brain);
+  if (!brainForName(brainName)) {
+    throw new Error(`${found.path}: unknown type "${parsed.type ?? parsed.brain ?? ''}"`);
+  }
+
+  return {
+    ...parsed,
+    name: profileName,
+    brain: brainName,
+    __path: found.path,
+    __source: found.label,
+  };
+}
+
+async function listBrainProfiles() {
+  const seen = new Set();
+  const out = [];
+  for (const { label, dir } of BRAIN_PROFILE_DIRS) {
+    let files = [];
+    try { files = await readdir(dir); } catch { continue; }
+    for (const file of files) {
+      const m = file.match(/^(.+)\.ya?ml$/i);
+      if (!m || !isSafeName(m[1]) || seen.has(m[1])) continue;
+      seen.add(m[1]);
+      try {
+        const profile = await loadBrainProfile(m[1]);
+        out.push({ name: profile.name, brain: profile.brain, path: profile.__path, source: label });
+      } catch (e) {
+        out.push({ name: m[1], brain: '(invalid)', path: join(dir, file), source: label, error: e.message });
+      }
+    }
+  }
+  return out;
+}
+
+function boolOpt(value, fallback = false) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
+}
+
+function asStringArray(value) {
+  if (value === undefined || value === null || value === false) return [];
+  if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);
+  return [String(value).trim()].filter(Boolean);
+}
+
+function profileStartupSummaries(profile) {
+  const startup = profile.startup && typeof profile.startup === 'object' ? profile.startup : {};
+  const policy = String(profile.context_policy ?? profile.contextPolicy ?? 'summary').toLowerCase();
+  if (['manual', 'none', 'off', 'false'].includes(policy)) return [];
+  const names = [
+    ...asStringArray(profile.summary),
+    ...asStringArray(profile.summaries),
+    ...asStringArray(profile.inject),
+    ...asStringArray(startup.inject),
+  ];
+  return [...new Set(names)].filter(isSafeName);
+}
+
+async function readBrainProfileState(profileName) {
+  if (!isSafeName(profileName)) return null;
+  try {
+    return JSON.parse(await readFile(statePathForProfile(profileName), 'utf8'));
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+async function writeBrainProfileState(sessionName, session) {
+  const profileName = session?.options?.profileName;
+  if (!profileName || !isSafeName(profileName)) return;
+  await mkdir(BRAIN_STATE_DIR, { recursive: true });
+  const body = {
+    profile: profileName,
+    session: sessionName,
+    brain: session.brain,
+    emoji: session.emoji ?? null,
+    bio: session.bio ?? null,
+    options: session.options ?? {},
+    updatedAt: new Date().toISOString(),
+  };
+  await writeFile(statePathForProfile(profileName), JSON.stringify(body, null, 2) + '\n');
+}
+
+function optionFromPath(object, path) {
+  let cur = object;
+  for (const key of path) {
+    if (!cur || typeof cur !== 'object') return undefined;
+    cur = cur[key];
+  }
+  return cur;
+}
+
+function profileOptions(profile, previousState = null) {
+  const previous = previousState?.options && typeof previousState.options === 'object'
+    ? previousState.options
+    : {};
+  const resumeNative = boolOpt(
+    profile.resume_native ?? profile.resumeNative ?? profile.resume_thread ?? profile.resumeThread ?? profile.resume,
+    false,
+  );
+  const options = {
+    profileName: profile.name,
+    profilePath: profile.__path,
+  };
+
+  const cwd = profile.cwd ?? optionFromPath(profile, ['operator', 'cwd']) ?? previous.cwd;
+  if (cwd) options.cwd = String(cwd);
+  const model = profile.model ?? optionFromPath(profile, [profile.brain, 'model']);
+  if (model) options.model = String(model);
+  const effort = profile.effort ?? profile.reasoningEffort ?? profile.reasoning_effort ??
+    optionFromPath(profile, [profile.brain, 'effort']);
+  if (effort) options.reasoningEffort = String(effort);
+  else if (previous.reasoningEffort) options.reasoningEffort = previous.reasoningEffort;
+
+  const explicitSessionId = profile.session_id ?? profile.sessionId ?? profile.thread_id ?? profile.threadId;
+  if (explicitSessionId) options.sessionId = String(explicitSessionId);
+  else if (resumeNative && previous.sessionId) options.sessionId = previous.sessionId;
+
+  if (previous.previousCwd) options.previousCwd = previous.previousCwd;
+  if (profile.log_path ?? profile.logPath) options.logPath = String(profile.log_path ?? profile.logPath);
+  else if (previous.logPath) options.logPath = previous.logPath;
+
+  return options;
 }
 
 // Find the JSONL for a given session ID *or prefix*. Returns { path, slug, sessionId }
@@ -193,6 +393,8 @@ Arguments:
 
 Inside egpt:
   /help             show room commands
+  /profiles         list YAML brain profiles
+  /attach <profile> start a configured brain profile
   /open <brain>     register a participant, e.g. /open ccode or /open codex
   @codex exec: pwd  run an operator command in the codex session cwd`);
   process.exit(0);
@@ -545,6 +747,88 @@ function App() {
   const sysOut = body =>
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body }]);
 
+  async function injectSummary(name, target = null, sessionMap = sessions) {
+    const path = summaryPath(name);
+    const body = await readFile(path, 'utf8');
+    const note = `[injected summary "${name}" from ${path}${target ? ` into ${target}` : ''}]\n\n${body.trim()}`;
+    await append('system', note);
+    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+    if (target) {
+      await runBrainTurn(
+        target,
+        `[system]: Please absorb this injected context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${note}`,
+        sessionMap,
+      );
+    }
+    return { path, body };
+  }
+
+  async function attachProfile(profile) {
+    const brainName = profile.brain;
+    const brain = brainForName(brainName);
+    const sessionName = String(profile.session ?? profile.handle ?? profile.name).trim();
+    if (!isSafeName(sessionName)) {
+      sysOut(`profile "${profile.name}" has invalid session/handle "${sessionName}"`);
+      return;
+    }
+    if (sessions[sessionName]) {
+      sysOut(`session "${sessionName}" already exists`);
+      return;
+    }
+
+    const previousState = await readBrainProfileState(profile.name);
+    const options = profileOptions(profile, previousState);
+    const url = profile.url ?? profile.conversation_url ?? profile.conversationUrl ??
+      optionFromPath(profile, ['cdp', 'url']);
+    try {
+      if (brain.urlMatch) {
+        const openUrl = url || brain.homeUrl;
+        if (!openUrl) {
+          sysOut(`profile "${profile.name}" has no url and ${brainName} has no homeUrl`);
+          return;
+        }
+        sysOut(`opening ${brainName} profile "${profile.name}" -> ${openUrl}`);
+        options.targetId = await cdp.openTab(String(openUrl));
+        if (url) options.url = String(url);
+      }
+
+      const emoji = profile.emoji ? String(profile.emoji) : nextEmoji(sessions);
+      const bio = profile.chat_name ?? profile.chatName ?? profile.description;
+      const session = {
+        brain: brainName,
+        options,
+        emoji,
+        ...(bio ? { bio: String(bio) } : {}),
+      };
+      const activeSessions = { ...sessions, [sessionName]: session };
+      setSessions(activeSessions);
+      await writeBrainProfileState(sessionName, session);
+
+      const summaries = profileStartupSummaries(profile);
+      sysOut(`profile "${profile.name}" -> session "${sessionName}" (${brainName})` +
+        (options.model ? ` | model: ${options.model}` : '') +
+        (options.reasoningEffort ? ` | effort: ${options.reasoningEffort}` : '') +
+        (options.cwd ? ` | cwd: ${options.cwd}` : '') +
+        `\n  state: ${statePathForProfile(profile.name)}` +
+        `\n  address it as @${sessionName} for a single-recipient turn`);
+
+      if (summaries.length) {
+        setBusy(true);
+        try {
+          for (const summaryName of summaries) {
+            const { body } = await injectSummary(summaryName, sessionName, activeSessions);
+            sysOut(`profile "${profile.name}" injected "${summaryName}" into ${sessionName} (${body.length} chars)`);
+          }
+        } finally {
+          setBusy(false);
+        }
+      }
+    } catch (e) {
+      setBusy(false);
+      sysOut(`!! ${e.message}`);
+    }
+  }
+
   const handleSlash = async (text) => {
     const [cmd, ...rest] = text.split(/\s+/);
     const arg = rest.join(' ').trim();
@@ -563,6 +847,8 @@ function App() {
         '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
         '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
+        '/profiles                       list YAML brain profiles\n' +
+        '/attach <profile>               start a configured brain profile\n' +
         '/attach                         re-scan Chrome, attach any new tabs\n' +
         '/attach <brain>                 attach all unattached tabs of that brain\n' +
         '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
@@ -610,6 +896,23 @@ function App() {
         'Brains: ' + brainNamesForHelp());
       return true;
     }
+    if (cmd === '/profiles' || cmd === '/brain-profiles') {
+      try {
+        const profiles = await listBrainProfiles();
+        if (!profiles.length) {
+          sysOut(`(no brain profiles found)\nprofile dirs:\n${profileDirsText()}`);
+          return true;
+        }
+        const rows = profiles.map(p => {
+          const base = `${p.name.padEnd(16)} ${p.brain.padEnd(13)} ${p.source}  ${p.path}`;
+          return p.error ? `${base}\n  !! ${p.error}` : base;
+        });
+        sysOut(`Brain profiles:\n\n${rows.join('\n')}\n\n/attach <profile> starts one.\nprofile dirs:\n${profileDirsText()}`);
+      } catch (e) {
+        sysOut(`!! ${e.message}`);
+      }
+      return true;
+    }
     if (cmd === '/session') {
       // /session <session-name>                       → show resume state
       // /session <session-name> <id> [cwd]            → set resume id (cwd auto-detected)
@@ -649,15 +952,17 @@ function App() {
       let sid = restParts[0];
       let cwd = restParts.slice(1).join(' ').trim() || undefined;
       if (sid === 'none' || sid === 'clear') {
+        const nextSession = {
+          ...sessions[target],
+          options: Object.fromEntries(
+            Object.entries(sessions[target].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
+          ),
+        };
         setSessions(s => ({
           ...s,
-          [target]: {
-            ...s[target],
-            options: Object.fromEntries(
-              Object.entries(s[target].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
-            ),
-          },
+          [target]: nextSession,
         }));
+        await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
         sysOut(`${target}: resume cleared (back to stateless mode)`);
         return true;
       }
@@ -679,13 +984,15 @@ function App() {
         sysOut(`!! ${e.message}`);
         return true;
       }
+      const nextSession = {
+        ...sessions[target],
+        options: { ...sessions[target].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
+      };
       setSessions(s => ({
         ...s,
-        [target]: {
-          ...s[target],
-          options: { ...s[target].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
-        },
+        [target]: nextSession,
       }));
+      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
       sysOut(`${target}.sessionId → ${sid}` +
              (expandedFromPrefix ? '  (expanded from prefix)' : '') +
              (cwd ? `\n${target}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
@@ -963,23 +1270,13 @@ function App() {
         return true;
       }
       try {
-        const path = summaryPath(name);
-        const body = await readFile(path, 'utf8');
-        const note = `[injected summary "${name}" from ${path}${target ? ` into ${target}` : ''}]\n\n${body.trim()}`;
-        await append('system', note);
-        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         if (target) {
           setBusy(true);
-          try {
-            await runBrainTurn(
-              target,
-              `[system]: Please absorb this injected context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${note}`,
-            );
-          } finally {
-            setBusy(false);
-          }
+          const { body } = await injectSummary(name, target);
+          setBusy(false);
           sysOut(`injected "${name}" into ${target} (${body.length} chars)`);
         } else {
+          const { body } = await injectSummary(name);
           sysOut(`injected "${name}" (${body.length} chars)`);
         }
       } catch (e) {
@@ -1110,6 +1407,9 @@ function App() {
         } else if (brain?.stateDetail) {
           detail = brain.stateDetail(s.options);
         }
+        if (s.options.profileName) {
+          detail = [`profile: ${s.options.profileName}`, detail].filter(Boolean).join(' | ');
+        }
         const bio = s.bio ? `\n  bio: ${s.bio}` : '';
         return `${emojiPad}${namePad}${brainPad}${detail}${bio}`;
       });
@@ -1135,6 +1435,7 @@ function App() {
         id: Date.now() + Math.random(), author: 'system',
         body: `${emoji} ${oldName} is now ${newName}`,
       }]);
+      await writeBrainProfileState(newName, sessions[oldName]).catch(e => sysOut(`!! profile state: ${e.message}`));
       return true;
     }
     if (cmd === '/emoji') {
@@ -1156,11 +1457,13 @@ function App() {
         target = parts[0]; emoji = parts[1];
       }
       if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
+      const nextSession = { ...sessions[target], emoji };
       setSessions(s => ({ ...s, [target]: { ...s[target], emoji } }));
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: 'system',
         body: `${target} avatar → ${emoji}`,
       }]);
+      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
       return true;
     }
     if (cmd === '/bio') {
@@ -1184,15 +1487,18 @@ function App() {
         sysOut(bio ? `${sessions[target].emoji ?? '❓'} ${target}: ${bio}` : `(no bio set for ${target})`);
         return true;
       }
+      const nextSession = { ...sessions[target], bio: text };
       setSessions(s => ({ ...s, [target]: { ...s[target], bio: text } }));
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: 'system',
         body: `${sessions[target].emoji ?? '❓'} ${target} bio: ${text}`,
       }]);
+      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
       return true;
     }
     if (cmd === '/attach') {
-      // Three forms:
+      // Four forms:
+      //   /attach <profile>                -> start a YAML brain profile
       //   /attach                          → re-scan Chrome, attach any new tabs
       //   /attach <brain> <name> [tabSpec] → explicit attach to a specific tab
       //   /attach <brain>                  → attach all unattached tabs of that brain
@@ -1224,14 +1530,30 @@ function App() {
         return true;
       }
 
-      // Form 2 & 3: explicit
+      // Profile form: a single token can name a YAML profile from /profiles.
+      if (parts.length === 1) {
+        try {
+          const profile = await loadBrainProfile(parts[0]);
+          if (profile) {
+            await attachProfile(profile);
+            return true;
+          }
+        } catch (e) {
+          sysOut(`!! profile "${parts[0]}": ${e.message}`);
+          return true;
+        }
+      }
+
+      // Brain forms: explicit CDP attach or attach all matching CDP tabs.
       const brainName = canonicalBrainName(parts[0]);
       const brain = brainForName(brainName);
       if (!brain) {
         sysOut('usage: /attach                          rescan and attach new tabs\n' +
+               '       /attach <profile>                 start a YAML brain profile\n' +
                '       /attach <brain>                  attach all unattached tabs of that brain\n' +
                '       /attach <brain> <name> [tabSpec] explicit attach\n' +
-               'brains: ' + brainNamesForHelp());
+               'brains: ' + brainNamesForHelp() +
+               '\nprofile dirs:\n' + profileDirsText());
         return true;
       }
       const sessionName = parts[1];
@@ -1379,7 +1701,10 @@ function App() {
           const matches = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
           if (matches.length === 1) {
             opts = { ...opts, targetId: matches[0].id };
-            setSessions(s => ({ ...s, [routedTo]: { ...s[routedTo], options: opts } }));
+            session.options = opts;
+            setSessions(s => ({ ...s, [routedTo]: { ...(s[routedTo] ?? session), options: opts } }));
+            await writeBrainProfileState(routedTo, { ...session, options: opts })
+              .catch(e => sysOut(`!! profile state: ${e.message}`));
             sysOut(`(auto-bound ${routedTo} to tab ${opts.targetId.slice(0, 8)}…)`);
           } else if (matches.length === 0) {
             sysOut(`!! no open ${session.brain} tabs for ${routedTo}. open one in the brain Chrome.`);
@@ -1429,15 +1754,20 @@ function App() {
         ? (result.text ?? '')
         : (result ?? '');
       if (result?.optionsPatch) {
-        setSessions(s => ({
-          ...s,
-          ...(s[routedTo] ? {
+        const patchedOptions = { ...opts, ...result.optionsPatch };
+        session.options = patchedOptions;
+        setSessions(s => {
+          const base = s[routedTo] ?? session;
+          return {
+            ...s,
             [routedTo]: {
-              ...s[routedTo],
-              options: { ...s[routedTo].options, ...result.optionsPatch },
+              ...base,
+              options: { ...base.options, ...result.optionsPatch },
             },
-          } : {}),
-        }));
+          };
+        });
+        await writeBrainProfileState(routedTo, { ...session, options: patchedOptions })
+          .catch(e => sysOut(`!! profile state: ${e.message}`));
       }
       setStreaming(null);
       const trimmed = (final ?? '').trim();

@@ -73,6 +73,22 @@ The brains are tools. The conversation log is the work. egpt makes the work prim
 
 You keep a Chrome instance logged in to the web brains. You launch it once with `launch-brain.sh` and its profile persists at `~/.egpt/brain-profile`. The daemon talks to its tabs over CDP. No API keys to manage, no token bills to watch.
 
+## Brain profiles
+
+Reusable participants can be described as YAML profiles. `/attach alex` looks for `alex.yaml` in `./.egpt/brains/`, `~/.egpt/brains/`, or the repo's `brains/type/` / `brains/types/` directories.
+
+```yaml
+name: alex
+type: codex                 # codex | code | cdp_chat | cdp_claude
+model: gpt-5.5
+effort: low
+cwd: C:\Users\an\src\egpt
+summary: alex               # injects ~/.egpt/summaries/alex.md on attach
+chat_name: Alex
+```
+
+Profile runtime state is stored separately in `~/.egpt/brain-state/<profile>.json`. That file records details like the last cwd, Codex thread id, CDP target id, model/effort, and log path while keeping the YAML declarative.
+
 ## What works today
 
 - ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
@@ -84,6 +100,7 @@ You keep a Chrome instance logged in to the web brains. You launch it once with 
   - `chatgpt-cdp` — drives ChatGPT.com in a CDP-exposed Chrome; tab keeps its own history
   - `claude-cdp` — drives Claude.ai the same way
 - ✅ Multi-participant model: register as many sessions as you want (`/open chatgpt-cdp gpt1`, `/open claude-cdp claude1`); each shows up as a distinct author in the log
+- ✅ YAML brain profiles: `/profiles` lists configured presets and `/attach <profile>` starts one with model/effort/cwd plus optional summary injection
 - ✅ Auto-recovery: when a tab dies, the daemon silently rebinds to a single matching open tab
 - ✅ Browser lifecycle: `launch-brain.sh start | stop | status | restart`, persistent profile dir at `~/.egpt/brain-profile`, Ctrl+C in the launching terminal closes the brain cleanly via CDP `Browser.close`
 - ✅ `/refresh` — re-poll the current CDP tab and append the full assistant message (recovery from premature streaming-end detection)
@@ -115,6 +132,8 @@ node egpt.mjs --help                         # CLI usage
 
 # inside egpt
 /help                                        # all commands
+/profiles                                    # list configured YAML brain profiles
+/attach alex                                 # start profile "alex" if configured
 /open ccode ccode1                           # local Claude Code subprocess
 /open codex                                  # local Codex session (auto-name: codex)
 @codex exec: pwd                             # run a shell command in codex's cwd
@@ -152,6 +171,8 @@ Sobre la pregunta original...
 ```
 /exit · /file · /help
 /open <brain> [name]            open/register a new session
+/profiles                       list YAML brain profiles
+/attach <profile>               start a configured brain profile
 /attach                         re-scan Chrome and attach matching tabs
 /attach <brain> <name> [tab]    explicit attach; tabSpec: targetId | url | uuid | prefix
 /sessions                       list registered sessions
@@ -210,6 +231,8 @@ egpt/
 ```
 
 Around 1100 lines of code total, ~10 files.
+
+Optional repo-defined brain profiles live under `brains/type/*.yaml` or `brains/types/*.yaml`; personal profiles normally live in `~/.egpt/brains/*.yaml`.
 
 ## How the brains work
 

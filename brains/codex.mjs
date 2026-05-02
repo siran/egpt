@@ -22,6 +22,7 @@ const CODEX_LOG_DIR = join(homedir(), '.egpt', 'codex');
 
 export function stateDetail(options = {}) {
   const parts = [`cwd: ${options.cwd ?? process.cwd()}`];
+  if (options.model) parts.push(`model: ${options.model}`);
   parts.push(`effort: ${codexReasoningEffort(options)}`);
   if (options.sessionId) parts.push(`thread: ${options.sessionId}`);
   if (options.logPath) parts.push(`log: ${options.logPath}`);
@@ -103,6 +104,10 @@ function parsePositiveInt(value, fallback) {
 function codexReasoningEffort(options = {}) {
   const raw = options.reasoningEffort ?? process.env.EGPT_CODEX_REASONING_EFFORT ?? DEFAULT_CODEX_REASONING_EFFORT;
   return raw === 'minimal' || raw === 'minimum' || raw === 'min' ? 'low' : raw;
+}
+
+function codexModelArgs(options = {}) {
+  return options.model ? ['-m', String(options.model)] : [];
 }
 
 function safeName(name) {
@@ -284,10 +289,12 @@ async function runCodex(turn, onUpdate, options) {
     ? []
     : ['--dangerously-bypass-approvals-and-sandbox'];
   const configArgs = ['-c', `model_reasoning_effort="${codexReasoningEffort(options)}"`];
+  const modelArgs = codexModelArgs(options);
   const args = options.sessionId
     ? [
         'exec', 'resume',
         '--json',
+        ...modelArgs,
         ...configArgs,
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
@@ -298,6 +305,7 @@ async function runCodex(turn, onUpdate, options) {
     : [
         'exec',
         '--json',
+        ...modelArgs,
         ...configArgs,
         '--cd', cwd,
         '--skip-git-repo-check',
@@ -310,6 +318,7 @@ async function runCodex(turn, onUpdate, options) {
     type: 'codex.start',
     cwd,
     resume: options.sessionId ?? null,
+    model: options.model ?? null,
     reasoningEffort: codexReasoningEffort(options),
     prompt,
   });
