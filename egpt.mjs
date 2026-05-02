@@ -192,6 +192,28 @@ async function resolveTabId(spec, brain = null) {
   return null;
 }
 
+// For a given session name, find what's NEW in the room since they last spoke.
+// Returns the array of turns after their last `## ts — <name>` heading. If they
+// never spoke before (never participated in this room), returns the whole room
+// as onboarding context with isFirstTime=true.
+function getDeltaForSession(fileText, sessionName) {
+  const turns = parseMessages(fileText);
+  let lastIdx = -1;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (turns[i].author === sessionName) { lastIdx = i; break; }
+  }
+  return { turns: turns.slice(lastIdx + 1), isFirstTime: lastIdx === -1 };
+}
+
+// Compose a brain prompt from a delta. The delta becomes [author]: line blocks;
+// a leading framing tells the brain whether they're catching up or onboarding.
+function composeDeltaPrompt(delta, isFirstTime) {
+  const ctx = delta.map(t => `[${t.author}]: ${t.body}`).join('\n\n');
+  return isFirstTime
+    ? `[Joining a shared room. Full context follows:]\n\n${ctx}\n\n[Please respond to the latest message. If you have nothing useful to add, reply with literally "..." to acknowledge silently.]`
+    : `[Update — new in our shared room since your last reply:]\n\n${ctx}\n\n[Please respond. If you have nothing useful to add, reply with literally "..." to acknowledge silently.]`;
+}
+
 // Parse messages.md back into objects (for /last).
 function parseMessages(text) {
   const out = [];
@@ -584,44 +606,87 @@ function App() {
       return true;
     }
     if (cmd === '/summarize') {
-      // /summarize <name> — spawn a *fresh* `claude --print` to read the room
-      // file and produce a summary. Crucially NOT the principal — a participant
-      // summarizing its own conversation is biased; a fresh agent re-reading
-      // the file produces a cleaner distillation. Saved to ~/.egpt/summaries/.
-      const name = arg.trim();
-      if (!isSafeName(name)) {
-        sysOut('usage: /summarize <name>\n  a fresh claude reads the room and saves a summary to ~/.egpt/summaries/<name>.md\n  (independent of the principal — no bias from the room\'s participants)');
+      // /summarize <name> [<brain>]
+      // Spawns a *fresh* agent (not a room participant) to read the room and
+      // produce a summary. Default: open a fresh chatgpt-cdp tab if Chrome is
+      // running (the web envelope writes nicer summaries). Falls through to
+      // claude-cdp, then to a fresh `claude --print` subprocess. Override with
+      // an explicit brain name as the second arg.
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const name = parts[0];
+      let brainKey = parts[1];  // optional override
+      if (!isSafeName(name ?? '')) {
+        sysOut('usage: /summarize <name> [<brain>]\n  default: chatgpt-cdp via fresh tab → claude-cdp → fresh claude-code\n  saves to ~/.egpt/summaries/<name>.md');
         return true;
       }
       try {
         await ensureSummariesDir();
         const text = await readFile(FILE, 'utf8');
+        const turns = parseMessages(text).filter(t => t.author !== 'system');
+        if (!turns.length) { sysOut('(nothing to summarize — room is empty)'); return true; }
+        const formatted = turns.map(t => `[${t.author}]: ${t.body}`).join('\n\n');
         const prompt =
-          `${text}\n\n---\n\n` +
-          `Summarize the conversation above into a tight, faithful condensation. ` +
-          `Preserve the participants, key decisions, and any open questions or loose threads. ` +
+          `Please summarize this conversation faithfully. ` +
+          `Preserve participants, key decisions, and any open questions or loose threads. ` +
           `Aim for under 600 words. Plain markdown, no preamble. ` +
-          `Output ONLY the summary text — no "Here is the summary:" boilerplate.`;
+          `Output ONLY the summary text — no "Here is the summary:" boilerplate.\n\n` +
+          `---\n\n${formatted}`;
 
-        sysOut('asking a fresh claude to summarize…');
-        setBusy(true);
-        const summary = await new Promise((resolve, reject) => {
-          const proc = spawn('claude', ['--print', '--output-format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'] });
-          let out = '', err = '';
-          proc.stdout.on('data', c => out += c);
-          proc.stderr.on('data', c => err += c);
-          proc.on('close', code => {
-            if (code !== 0) return reject(new Error(`claude exit ${code}: ${err.trim() || 'no stderr'}`));
-            try { resolve((JSON.parse(out).result ?? out).trim()); }
-            catch { resolve(out.trim()); }
-          });
-          proc.on('error', e => reject(e.code === 'ENOENT' ? new Error('claude not found on PATH') : e));
-          proc.stdin.write(prompt); proc.stdin.end();
-        });
-        setBusy(false);
+        // Decide which brain to use
+        if (!brainKey) {
+          if (await cdp.isRunning()) {
+            if (BRAINS['chatgpt-cdp']) brainKey = 'chatgpt-cdp';
+            else if (BRAINS['claude-cdp']) brainKey = 'claude-cdp';
+          }
+        }
+
+        let summary;
+        let summarizer;
+        if (brainKey && BRAINS[brainKey]?.homeUrl) {
+          // CDP path — open a fresh tab, send prompt, capture
+          summarizer = `${brainKey} (fresh tab)`;
+          sysOut(`opening a fresh ${brainKey} tab for summarization…`);
+          const targetId = await cdp.openTab(BRAINS[brainKey].homeUrl);
+          // Wait for the page to load enough that #prompt-textarea (or
+          // claude.ai's ProseMirror) is mounted. 3.5s is conservative; future
+          // improvement: poll for selector presence.
+          await new Promise(r => setTimeout(r, 3500));
+          setBusy(true);
+          setStreaming({ author: summarizer, text: '' });
+          try {
+            summary = await BRAINS[brainKey].stream(
+              { history: '', message: prompt },
+              partial => setStreaming({ author: summarizer, text: partial }),
+              { targetId },
+            );
+          } finally {
+            setStreaming(null); setBusy(false);
+          }
+        } else {
+          // Fallback: spawn a fresh `claude --print` subprocess
+          summarizer = 'fresh claude-code';
+          sysOut('asking a fresh claude-code subprocess to summarize…');
+          setBusy(true);
+          try {
+            summary = await new Promise((resolve, reject) => {
+              const proc = spawn('claude', ['--print', '--output-format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'] });
+              let out = '', err = '';
+              proc.stdout.on('data', c => out += c);
+              proc.stderr.on('data', c => err += c);
+              proc.on('close', code => {
+                if (code !== 0) return reject(new Error(`claude exit ${code}: ${err.trim() || 'no stderr'}`));
+                try { resolve((JSON.parse(out).result ?? out).trim()); }
+                catch { resolve(out.trim()); }
+              });
+              proc.on('error', e => reject(e.code === 'ENOENT' ? new Error('claude not found on PATH') : e));
+              proc.stdin.write(prompt); proc.stdin.end();
+            });
+          } finally { setBusy(false); }
+        }
+
         if (!summary) { sysOut('(empty summary)'); return true; }
         const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-        const body = `# ${name}\n\n_Summarized ${stamp} by a fresh claude (no participant bias) from ${FILE}_\n\n---\n\n${summary}\n`;
+        const body = `# ${name}\n\n_Summarized ${stamp} by ${summarizer} (independent of room participants) from ${FILE}_\n\n---\n\n${summary}\n`;
         await writeFile(summaryPath(name), body);
         sysOut(`saved → ${summaryPath(name)}  (${summary.length} chars)`);
       } catch (e) {
@@ -1020,10 +1085,11 @@ function App() {
     return false;
   };
 
-  // Run a single brain-turn for one session: validate, auto-recover the tab if
-  // a CDP brain, stream, handle silence, append. Used by both @mention routing
-  // (single recipient) and broadcast (loop over recipients).
-  async function runBrainTurn(routedTo, messageToBrain) {
+  // Run a single brain-turn for one session. The brain's prompt is composed
+  // from the conversation file via delta-injection: everything new in the room
+  // since this session last replied, framed as "[update]" or "[joining]". This
+  // is what gives every brain shared-room visibility without auto-mirroring.
+  async function runBrainTurn(routedTo) {
     const session = sessions[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return; }
     const brain = BRAINS[session.brain];
@@ -1063,11 +1129,18 @@ function App() {
       }
     }
 
+    const history = await readFile(FILE, 'utf8');
+    const { turns: delta, isFirstTime } = getDeltaForSession(history, routedTo);
+    if (delta.length === 0) {
+      sysOut(`(${routedTo} skipped — nothing new since their last reply)`);
+      return;
+    }
+    const promptForBrain = composeDeltaPrompt(delta, isFirstTime);
+
     setStreaming({ author: routedTo, text: '' });
     try {
-      const history = await readFile(FILE, 'utf8');
       const final = await brain.stream(
-        { history, message: messageToBrain },
+        { history, message: promptForBrain },
         partial => setStreaming({ author: routedTo, text: partial }),
         { ...opts, principal: routedTo },
       );
@@ -1110,10 +1183,8 @@ function App() {
     //   3. Otherwise (no CDP sessions) → fall back to the principal.
     const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
     let recipients;
-    let messageToBrain = text;
     if (mention && sessions[mention[1]]) {
       recipients = [mention[1]];
-      messageToBrain = (mention[2] ?? '').trim() || '?';
     } else {
       const cdpRecipients = Object.entries(sessions)
         .filter(([_, s]) => BRAINS[s.brain]?.urlMatch)
@@ -1121,20 +1192,23 @@ function App() {
       recipients = cdpRecipients.length > 0 ? cdpRecipients : [principal];
     }
 
-    // The .md keeps the original text (including any @mention prefix).
+    // The .md keeps the original text (including any @mention prefix). Brains
+    // get this content via delta-injection in runBrainTurn.
     await append('You', text);
 
     setBusy(true);
     setError(null);
 
-    // Sequential broadcast: each speaker reads the file fresh so it picks up
-    // prior speakers' replies in this turn. Cheap multi-brain visibility
-    // without explicit cross-mirroring (delta-injection comes later).
+    // Sequential broadcast: each speaker computes their own delta from the
+    // file (which grows as earlier speakers reply), so a later speaker sees
+    // earlier speakers' replies in this same turn. That's the "shared room"
+    // visibility the user asked for — every brain catches up to the room
+    // before they speak.
     if (recipients.length > 1) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
     for (const recipient of recipients) {
-      await runBrainTurn(recipient, messageToBrain);
+      await runBrainTurn(recipient);
     }
     setBusy(false);
   };
