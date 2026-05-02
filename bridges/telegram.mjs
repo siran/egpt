@@ -105,6 +105,79 @@ export function startTelegramBridge({
 
   pollLoop().catch(e => err(`pollLoop crashed: ${e.message}`));
 
+  // Start a Telegram message that will be edited in place as a brain stream
+  // progresses. Returns { update(text), finish(text) }. Drops silently if no
+  // chat is known. Edits are throttled to once every 1.5s to stay under
+  // Telegram's edit rate limit; finish() cancels the throttle and flushes.
+  function startStreamMessage(initialText) {
+    if (!lastSeenChat) return null;
+    let msgId = null;
+    let pending = null;
+    let lastSent = initialText;
+    let lastEditAt = Date.now();
+    let editTimer = null;
+    let initialDone = false;
+
+    sendChain = sendChain.then(async () => {
+      try {
+        const res = await fetch(`${TG_BASE}${botToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: lastSeenChat, text: initialText.slice(0, 4000), disable_web_page_preview: true }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          msgId = data.result?.message_id ?? null;
+        }
+      } catch (e) { err(`stream start: ${e.message}`); }
+      initialDone = true;
+      if (pending !== null) maybeEdit();
+    }).catch(() => {});
+
+    function flush() {
+      if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+      if (!initialDone || !msgId) return;
+      if (pending === null || pending === lastSent) return;
+      const text = pending;
+      pending = null;
+      sendChain = sendChain.then(async () => {
+        try {
+          await fetch(`${TG_BASE}${botToken}/editMessageText`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: lastSeenChat, message_id: msgId,
+              text: text.slice(0, 4000),
+              disable_web_page_preview: true,
+            }),
+          });
+          lastSent = text;
+          lastEditAt = Date.now();
+        } catch {}
+      }).catch(() => {});
+    }
+
+    function maybeEdit() {
+      const since = Date.now() - lastEditAt;
+      const interval = 1500;
+      if (since >= interval) flush();
+      else if (!editTimer) {
+        editTimer = setTimeout(() => { editTimer = null; flush(); }, interval - since);
+      }
+    }
+
+    return {
+      update(text) { pending = text; maybeEdit(); },
+      async finish(text) {
+        pending = text;
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        flush();
+        // Wait for the chain so callers can sequence cleanly.
+        try { await sendChain; } catch {}
+      },
+    };
+  }
+
   return {
     // Send a line to Telegram. Drops silently if no chat is known yet (the
     // user hasn't messaged the bot in this lifetime). The bridge does NOT
@@ -116,6 +189,7 @@ export function startTelegramBridge({
         .then(() => sendMessage(lastSeenChat, text))
         .catch(e => err(`send failed: ${e.message}`));
     },
+    startStreamMessage,
     stop() { stopped = true; },
   };
 }

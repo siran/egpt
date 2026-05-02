@@ -1201,28 +1201,57 @@ function App() {
     }
 
     setStreaming({ author: routedTo, text: '' });
+
+    // If Telegram is connected, send a placeholder message that we'll edit
+    // in place as the stream progresses. This gives Telegram users the
+    // same "thinking → text" experience as the local shell. The eventual
+    // committed item is tagged _localOnly so we don't double-deliver.
+    const tg = bridgeRef.current?.startStreamMessage?.(`[${routedTo}] ⌛ thinking…`);
+    const tgFmt = (text) => {
+      // Show only the trailing ~3500 chars during streaming so it fits in
+      // Telegram's 4096-char message cap (even with our prefix).
+      const tail = text.length > 3500 ? '…' + text.slice(-3500) : text;
+      return `[${routedTo}] ${tail} ⌛`;
+    };
+
     try {
       const history = await readFile(FILE, 'utf8');
       const final = await brain.stream(
         { history, message: messageText },
-        partial => setStreaming({ author: routedTo, text: partial }),
+        partial => {
+          setStreaming({ author: routedTo, text: partial });
+          tg?.update(tgFmt(partial));
+        },
         opts,
       );
       setStreaming(null);
       const trimmed = (final ?? '').trim();
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
+        // Finalize the streaming Telegram msg as a quiet ack and tag the
+        // local note _localOnly so it doesn't double-post.
+        await tg?.finish(`[${routedTo}] (acknowledged silently)`);
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: 'system',
           body: `${routedTo} acknowledged silently (${trimmed})`,
+          _localOnly: !!tg,
         }]);
         return null;
       }
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: routedTo, body: final }]);
+      // Finalize the streaming Telegram msg with the full text. The local
+      // item carries _localOnly when Telegram already received it via the
+      // streaming edit, to avoid sending the reply twice.
+      const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
+      await tg?.finish(`[${routedTo}] ${finalTail}`);
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: routedTo, body: final,
+        _localOnly: !!tg,
+      }]);
       await append(routedTo, final);
       return final;
     } catch (e) {
       setStreaming(null);
+      await tg?.finish(`[${routedTo}] !! ${e.message}`);
       sysOut(`!! ${routedTo}: ${e.message}`);
       return null;
     }
