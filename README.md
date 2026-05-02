@@ -9,6 +9,8 @@ Claude  +  ChatGPT  +  Codex  +  Claude Code  +  Telegram  +  shell  +  browser 
 
 The pitch in one breath: it joins your **web AIs** (ChatGPT.com, Claude.ai — driven via Chrome DevTools Protocol) with your **local CLIs** (Claude Code, Codex — driven as subprocesses), inside a single Markdown-backed conversation, accessible from terminal today and from Telegram + browser extension soon. Like a desktop bridge for multiple AIs, but **account-driven, not API-driven**.
 
+> **Just want to use it?** See **[MANUAL.md](./MANUAL.md)** — cheat sheet up top, descriptive sections below.
+
 ## Why this exists
 
 The model card says "GPT-5" or "Claude Sonnet" — but the *envelope* around the model on chatgpt.com or claude.ai is dramatically more capable than the same model called over the API. The envelope is what you're really paying for:
