@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -160,6 +160,7 @@ const PROFILE_TYPE_ALIASES = {
 const CHATGPT_CONVERSATION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_PASTE_FILE_MAX_CHARS = 120_000;
+const PREPARED_FILES_DIR = join(EGPT_HOME, 'prepared-files');
 
 const PROFILE_CREATE_SCOPES = {
   user: USER_BRAIN_PROFILE_DIR,
@@ -209,6 +210,14 @@ function pasteFileUsage() {
   ].join('\n');
 }
 
+function sendFileUsage() {
+  return [
+    'usage: /send-file [via=<operator>] <path> @<session> "<prep instruction>" [--ask "<prompt>"] [--max <chars>|--all]',
+    '  example: /send-file via=codex1 "C:\\path\\book.md" @cgpt1 "before chapter 8"',
+    '  target @session must already be registered',
+  ].join('\n');
+}
+
 function parseCommandWords(input) {
   const words = [];
   let cur = '';
@@ -251,6 +260,11 @@ function parsePositiveLimit(value, fallback) {
   return n;
 }
 
+function safeFileSlug(value, fallback = 'file') {
+  const s = String(value ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
+  return s || fallback;
+}
+
 function parsePasteFileArgs(arg) {
   const words = parseCommandWords(arg);
   if (words.length < 2) throw new Error(pasteFileUsage());
@@ -276,6 +290,52 @@ function parsePasteFileArgs(arg) {
     }
   }
 
+  return opts;
+}
+
+function parseSendFileArgs(arg) {
+  const words = parseCommandWords(arg);
+  if (words.length < 3) throw new Error(sendFileUsage());
+  const opts = {
+    viaSpec: null,
+    maxChars: DEFAULT_PASTE_FILE_MAX_CHARS,
+    ask: null,
+  };
+
+  const positional = [];
+  while (words.length) {
+    const token = words.shift();
+    const viaMatch = token.match(/^\[?via=([A-Za-z0-9._-]+)\]?$/);
+    if (viaMatch) {
+      opts.viaSpec = viaMatch[1];
+    } else if (token === '--via') {
+      if (!words.length) throw new Error('--via requires a session name');
+      opts.viaSpec = words.shift();
+    } else if (token === '--ask') {
+      if (!words.length) throw new Error('--ask requires a prompt');
+      opts.ask = words.shift();
+    } else if (token === '--max') {
+      if (!words.length) throw new Error('--max requires a value');
+      opts.maxChars = parsePositiveLimit(words.shift(), DEFAULT_PASTE_FILE_MAX_CHARS);
+    } else if (token === '--all') {
+      opts.maxChars = 0;
+    } else if (token.startsWith('--')) {
+      throw new Error(`unknown option ${token}\n\n${sendFileUsage()}`);
+    } else {
+      positional.push(token);
+    }
+  }
+
+  const targetIndex = positional.findIndex(w => w.startsWith('@'));
+  if (targetIndex < 0) throw new Error(`missing target @session\n\n${sendFileUsage()}`);
+  let pathParts = positional.slice(0, targetIndex);
+  if (['to', '[to]'].includes(pathParts[pathParts.length - 1]?.toLowerCase())) {
+    pathParts = pathParts.slice(0, -1);
+  }
+  if (!pathParts.length) throw new Error(`missing path before target\n\n${sendFileUsage()}`);
+  opts.path = pathParts.join(' ');
+  opts.targetName = positional[targetIndex].slice(1);
+  opts.instruction = positional.slice(targetIndex + 1).join(' ').trim() || 'prepare the relevant excerpt';
   return opts;
 }
 
@@ -354,6 +414,51 @@ function buildPasteFileMessage(payload, options) {
     return `${header}\n\n[request]\n${options.ask}`;
   }
   return `[system]: Please read and keep this file excerpt in context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${header}`;
+}
+
+function defaultOperatorSession(sessions) {
+  const matches = Object.entries(sessions)
+    .filter(([_, s]) => ['codex', 'ccode'].includes(canonicalBrainName(s.brain)))
+    .map(([name]) => name);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function assertOperatorSession(name, sessions) {
+  const session = sessions[name];
+  if (!session) throw new Error(`no operator session named "${name}"`);
+  const brainName = canonicalBrainName(session.brain);
+  if (!['codex', 'ccode'].includes(brainName)) {
+    throw new Error(`${name} is ${session.brain}; /send-file needs a local operator such as codex or ccode`);
+  }
+}
+
+async function preparedFilePathFor(via, sourcePath) {
+  await mkdir(PREPARED_FILES_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const sourceName = safeFileSlug(basename(sourcePath), 'excerpt');
+  return join(PREPARED_FILES_DIR, `${stamp}-${safeFileSlug(via)}-${sourceName}`);
+}
+
+function buildSendFilePrepPrompt({ sourcePath, preparedPath, targetName, instruction }) {
+  return [
+    `[system]: Prepare a local file excerpt for egpt to paste into @${targetName}.`,
+    '',
+    `Source path or search hint from the user:`,
+    sourcePath,
+    '',
+    `Preparation instruction from the user:`,
+    instruction,
+    '',
+    `Write the prepared excerpt to this exact UTF-8 Markdown file path:`,
+    preparedPath,
+    '',
+    `Rules:`,
+    `- Resolve the user's source path/search hint yourself. If it is relative, use your current cwd and nearby repo context.`,
+    `- Preserve exact source text for the selected excerpt. Do not summarize unless the user explicitly requested a summary.`,
+    `- For natural instructions like "before chapter 8", identify the heading/marker in the source and include content before that chapter.`,
+    `- Do not include the excerpt in your reply.`,
+    `- After writing the file, reply with exactly one short line: prepared: ${preparedPath}`,
+  ].join('\n');
 }
 
 async function findBrainProfilePath(name) {
@@ -1165,6 +1270,8 @@ function App() {
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
         '/refresh [<session-name>]       re-poll CDP tab; append latest assistant text\n' +
         '                                (use when streaming was cut off)\n' +
+        '/send-file [via=<op>] <path> @<session> "<instruction>"\n' +
+        '                                operator prepares excerpt, egpt sends it\n' +
         '/paste-file <session> <path>     paste a local file/excerpt into one session\n' +
         '                                use --before/--after/--ask; quote spaces\n' +
         '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
@@ -1233,7 +1340,99 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/paste-file' || cmd === '/inject-file' || cmd === '/send-file' || cmd === '/paste') {
+    if (cmd === '/send-file') {
+      let parsed;
+      try {
+        parsed = parseSendFileArgs(arg);
+      } catch (e) {
+        sysOut(e.message);
+        return true;
+      }
+      if (!sessions[parsed.targetName]) {
+        sysOut(`no registered target session "@${parsed.targetName}"`);
+        return true;
+      }
+      let via = parsed.viaSpec;
+      if (!via) {
+        via = defaultOperatorSession(sessions);
+        if (!via) {
+          sysOut('no unambiguous local operator session; use via=codex1 or via=ccode1');
+          return true;
+        }
+      }
+      try {
+        assertOperatorSession(via, sessions);
+      } catch (e) {
+        sysOut(`!! ${e.message}`);
+        return true;
+      }
+
+      try {
+        const preparedPath = await preparedFilePathFor(via, parsed.path);
+        const prepNote =
+          `[send-file preparing via ${via}]\n` +
+          `source: ${parsed.path}\n` +
+          `target: @${parsed.targetName}\n` +
+          `instruction: ${parsed.instruction}\n` +
+          `prepared path: ${preparedPath}`;
+        await append('system', prepNote);
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: prepNote }]);
+
+        setBusy(true);
+        try {
+          await runBrainTurn(
+            via,
+            buildSendFilePrepPrompt({
+              sourcePath: parsed.path,
+              preparedPath,
+              targetName: parsed.targetName,
+              instruction: parsed.instruction,
+            }),
+          );
+        } finally {
+          setBusy(false);
+        }
+
+        const prepared = await readFile(preparedPath, 'utf8');
+        const maxChars = parsePositiveLimit(parsed.maxChars, DEFAULT_PASTE_FILE_MAX_CHARS);
+        if (!prepared.trim()) {
+          sysOut(`${via} created an empty prepared file: ${preparedPath}`);
+          return true;
+        }
+        if (maxChars > 0 && prepared.length > maxChars) {
+          sysOut(`prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n${preparedPath}\nUse --all or a narrower instruction.`);
+          return true;
+        }
+
+        const sendNote =
+          `[send-file pasted prepared excerpt into ${parsed.targetName}]\n` +
+          `via: ${via}\n` +
+          `source: ${parsed.path}\n` +
+          `instruction: ${parsed.instruction}\n` +
+          `prepared: ${preparedPath}\n` +
+          `chars: ${prepared.length}`;
+        await append('system', sendNote);
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: sendNote }]);
+
+        setBusy(true);
+        try {
+          await runBrainTurn(parsed.targetName, buildPasteFileMessage({
+            path: `${parsed.path} (prepared by ${via} at ${preparedPath})`,
+            originalChars: prepared.length,
+            excerpt: prepared,
+            rangeLabel: `prepared by ${via}: ${parsed.instruction}`,
+          }, parsed));
+        } finally {
+          setBusy(false);
+        }
+        sysOut(`sent ${prepared.length} prepared chars from ${via} to ${parsed.targetName}`);
+      } catch (e) {
+        setBusy(false);
+        sysOut(`!! ${e.message}\n\n${sendFileUsage()}`);
+      }
+      return true;
+    }
+    if (cmd === '/paste-file' || cmd === '/inject-file' || cmd === '/paste') {
       let parsed;
       try {
         parsed = parsePasteFileArgs(arg);

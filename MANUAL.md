@@ -60,8 +60,10 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 hello everyone                                # broadcast to all sessions in the room
 /open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
 /attach                                       # rescan Chrome for new tabs
+/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+                                              # codex prepares the excerpt, egpt sends it
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
-                                              # paste everything before chapter 8 into alex
+                                              # deterministic marker paste
 
 
 # ------------------------------------------------------------------------
@@ -391,19 +393,30 @@ This writes a system message into the file describing:
 
 Any brain that reads the `.md` (stateless ccode, all CDP brains) will absorb this as ambient context.
 
-### Pasting local file excerpts
+### Sending local file excerpts
 
-Use `/paste-file` when the source of context is already on disk and you want it
-sent directly to one brain without saving an intermediate summary:
+Use `/send-file` when the source of context is already on disk but the range is
+best described in natural language. A local operator prepares the excerpt first,
+then egpt sends the prepared file to the target:
+
+```text
+/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+```
+
+The target `@session` must already be registered. If `via=` is omitted, egpt uses
+the only registered local operator when there is exactly one.
+
+Use `/paste-file` when you already know the exact marker and want deterministic
+slicing without asking an operator:
 
 ```text
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
 ```
 
-The command sends the excerpt to the target session but only writes a short
+Both commands send the excerpt to the target session but only write a short
 system note to `conversation.md`. By default the target is asked to absorb the
 excerpt and reply with `...`; add `--ask "what do you think of Part I?"` to ask
-in the same prompt. Marker options are plain substring matches:
+in the same prompt. `/paste-file` marker options are plain substring matches:
 
 - `--before <marker>` excludes the marker and everything after it
 - `--after <marker>` excludes everything through the marker
@@ -438,6 +451,8 @@ Browser brains:
   /brain [status|stop]          brain Chrome lifecycle (CDP-based)
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
+  /send-file [via=<op>] <path> @<session> "<instruction>"
+                                operator prepares excerpt, egpt sends it
   /paste-file <session> <path>  paste a local file/excerpt into one session
                                 supports --before/--after markers and --ask
 

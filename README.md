@@ -158,8 +158,10 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 @codex exec: cd ../siran/writing             # change codex's persistent cwd
 /open chatgpt-cdp                            # opens/registers a ChatGPT tab
 /open claude-cdp claude1                     # opens a fresh claude.ai tab, named claude1
+/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+                                             # codex prepares the excerpt, egpt sends it
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
-                                             # paste the book up to chapter 8 into alex
+                                             # deterministic marker paste
 /sessions                                    # see who's registered
 /last 5                                      # replay last 5 messages from the file
 /refresh                                     # if a streaming reply got cut off
@@ -201,6 +203,8 @@ Sobre la pregunta original...
 /brain [status|stop]            brain Chrome lifecycle (CDP-based)
 /refresh                        re-poll current CDP tab; append full text
                                 (use when streaming was cut off)
+/send-file [via=<op>] <path> @<session> "<instruction>"
+                                operator prepares excerpt, egpt sends it
 /paste-file <session> <path>     paste a local file/excerpt into one session
                                 (--before/--after markers, --ask prompt)
 /last [N]                       show last N messages from the file (default 10)
@@ -208,8 +212,16 @@ Sobre la pregunta original...
 @codex exec: cd <dir>           change codex cwd for later commands
 ```
 
-`/paste-file` sends local file content directly to one session without adding
-the full content to `conversation.md`. Example:
+`/send-file` uses a local operator (`codex`/`ccode`) to prepare an excerpt, then
+egpt sends that prepared file to the target session. The target `@session` must
+already be registered.
+
+```text
+/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+```
+
+`/paste-file` is the deterministic version when you already know the exact
+marker:
 
 ```text
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
