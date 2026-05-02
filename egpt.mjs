@@ -592,15 +592,18 @@ function App() {
       return true;
     }
     if (cmd === '/rules') {
-      // Write a room-rules system message into the conversation file. Brains
-      // reading the file will see it as ambient context. (Stateless brains and
-      // CDP brains absorb this naturally; --resume brains won't see it via the
-      // JSONL — for those, paste the rules manually as a turn if you want them.)
+      // Compose the rules text, write it to the .md, show it in the transcript
+      // (which also mirrors to Telegram via the items.length effect), then
+      // PUSH it into each CDP brain's tab — CDP brains can't see the .md, only
+      // what's injected into their textarea, so without this push the rules are
+      // invisible to the very participants they're meant to instruct.
+      // Local brains (claude-code) read the .md on each invocation and pick up
+      // the rules naturally on their next turn — no per-brain inject needed.
       const all = Object.entries(sessions).map(([n, s]) => `${n} (${s.brain})`).join(', ');
       const rules =
         `[Room rules — read once and remember]\n` +
-        `Participants right now: ${all}, plus the human admin (${USER_NAME}).\n` +
-        `Every participant — CDP brain or local operator — sees every mirrored message. No principal.\n\n` +
+        `Participants right now: ${all || '(no brains yet)'}, plus the human admin (${USER_NAME}).\n` +
+        `Every participant sees mirrored messages. No principal — every brain is equal.\n\n` +
         `You don't have to reply to every message. Only speak when:\n` +
         `- you're directly addressed (your name or @mention),\n` +
         `- you have something specifically useful that hasn't been said,\n` +
@@ -609,8 +612,22 @@ function App() {
         `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
         `You may @mention another participant to ask them something. The admin\n` +
         `arbitrates when AI-AI exchanges get loud.`;
+
       await append('system', rules);
       setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
+
+      const cdpSessions = Object.entries(sessions).filter(([_, s]) => BRAINS[s.brain]?.urlMatch);
+      if (cdpSessions.length === 0) {
+        sysOut('(no CDP brains in the room — rules saved to file; local brains will see them on their next turn)');
+        return true;
+      }
+      sysOut(`pushing rules to ${cdpSessions.length} CDP brain(s)…`);
+      setBusy(true);
+      try {
+        for (const [name] of cdpSessions) {
+          await runBrainTurn(name, `[system]\n${rules}`);
+        }
+      } finally { setBusy(false); }
       return true;
     }
     if (cmd === '/mirror') {
