@@ -371,28 +371,38 @@ function App() {
         chatId: cfg.telegram.chat_id ?? null,
         onIncoming: async (text, from) => {
           const who = from.username || from.firstName || `tg:${from.userId}`;
+          // Local-only system note so the shell viewer sees Telegram traffic
+          // arriving. Tagged so it isn't echoed back to the Telegram user
+          // (they sent the message; they don't need to see the arrival
+          // notification).
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'system',
             body: `(telegram message from ${who}) → ${text}`,
+            _localOnly: true,
           }]);
-          if (submitRef.current) await submitRef.current(text);
+          if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
         },
-        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}` }]),
-        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}` }]),
+        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
+        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
       });
       bridgeRef.current = bridge;
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled' }]);
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
     })();
     return () => bridge?.stop();
   }, []);
 
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
   // bulk additions (/last replays) flush all of them, not just the tail.
+  // Items tagged _localOnly stay out of Telegram (e.g. the "(telegram message
+  // from X)" arrival note, the user's own [You] echo when they typed via
+  // Telegram). The bridge itself drops sends until a chat_id is known, so
+  // pre-Telegram backlog never floods the chat when someone connects later.
   useEffect(() => {
     const b = bridgeRef.current;
     if (!b) return;
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
+      if (item._localOnly) continue;
       b.send(`[${item.author}] ${item.body}`);
     }
   }, [items.length]);
@@ -1218,12 +1228,19 @@ function App() {
     }
   }
 
-  const submit = async (raw) => {
+  const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
 
-    // Echo everything the user types into the transcript.
-    setItems(p => [...p, { id: Date.now(), author: 'You', body: text }]);
+    // Echo everything the user types into the transcript. If the input came
+    // from Telegram, tag the echo _localOnly so it doesn't get sent back to
+    // the same Telegram user — they already saw their own message in their
+    // app. Echoes from the local shell still forward to Telegram so a
+    // remote viewer sees what the shell user typed.
+    setItems(p => [...p, {
+      id: Date.now(), author: 'You', body: text,
+      ...(meta.fromTelegram ? { _localOnly: true } : {}),
+    }]);
 
     if (text.startsWith('/')) {
       const handled = await handleSlash(text);

@@ -26,14 +26,16 @@ export function startTelegramBridge({
   let stopped = false;
   let lastUpdateId = 0;
   let lastSeenChat = chatId;
-  const outgoingBuffer = [];
+  // Sequential send chain so messages arrive on Telegram in the order
+  // egpt produced them. Without this, fire-and-forget fetch races over the
+  // network and shorter messages can overtake longer ones.
+  let sendChain = Promise.resolve();
 
   const log  = (m) => onLog?.(m);
   const err  = (m) => onError?.(m);
 
   async function sendMessage(targetChat, text) {
     if (!targetChat) return;
-    // Telegram caps a single message at 4096 chars. Chunk longer payloads.
     const chunks = chunkText(text, 4000);
     for (const chunk of chunks) {
       try {
@@ -51,14 +53,6 @@ export function startTelegramBridge({
         err(`sendMessage failed: ${e.message}`);
         return;
       }
-    }
-  }
-
-  async function flushBuffer() {
-    if (!lastSeenChat) return;
-    while (outgoingBuffer.length) {
-      const text = outgoingBuffer.shift();
-      await sendMessage(lastSeenChat, text);
     }
   }
 
@@ -90,7 +84,6 @@ export function startTelegramBridge({
             continue;
           }
           lastSeenChat = msg.chat.id;
-          await flushBuffer();
           try {
             await onIncoming(msg.text, {
               userId: msg.from.id,
@@ -113,12 +106,15 @@ export function startTelegramBridge({
   pollLoop().catch(e => err(`pollLoop crashed: ${e.message}`));
 
   return {
+    // Send a line to Telegram. Drops silently if no chat is known yet (the
+    // user hasn't messaged the bot in this lifetime). The bridge does NOT
+    // buffer — old shell-side traffic shouldn't dump into the chat once a
+    // human shows up. They can /last N if they want to catch up.
     send(text) {
-      if (lastSeenChat) {
-        sendMessage(lastSeenChat, text).catch(e => err(`send failed: ${e.message}`));
-      } else {
-        outgoingBuffer.push(text);
-      }
+      if (!lastSeenChat) return;
+      sendChain = sendChain
+        .then(() => sendMessage(lastSeenChat, text))
+        .catch(e => err(`send failed: ${e.message}`));
     },
     stop() { stopped = true; },
   };
