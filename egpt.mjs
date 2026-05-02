@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 import * as claudeCode from './brains/claude-code.mjs';
+import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './brains/cdp.mjs';
@@ -18,6 +19,7 @@ const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 
 const BRAINS = {
   [claudeCode.name]: claudeCode,
+  [codex.name]: codex,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
 };
@@ -31,11 +33,24 @@ const BRAIN_PREFIX = {
   'codex':       'codex',
 };
 
+const BRAIN_DEFAULT_HANDLE = {
+  codex: 'codex',
+};
+
 function nextName(brainName, sessions) {
+  const defaultHandle = BRAIN_DEFAULT_HANDLE[brainName];
+  if (defaultHandle && !sessions[defaultHandle]) return defaultHandle;
   const prefix = BRAIN_PREFIX[brainName] ?? brainName;
   let n = 1;
   while (sessions[`${prefix}${n}`]) n++;
   return `${prefix}${n}`;
+}
+
+function resolveAddressedSession(token, sessions) {
+  if (sessions[token]) return token;
+  if (!BRAINS[token]) return null;
+  const matches = Object.entries(sessions).filter(([_, s]) => s.brain === token);
+  return matches.length === 1 ? matches[0][0] : null;
 }
 
 const isInternalUrl = (u) =>
@@ -198,6 +213,34 @@ async function resolveTabId(spec, brain = null) {
 // User name as it appears to brains (in [An]: prefixes when broadcasting/mirroring).
 // Override with EGPT_USER_NAME if you're not An.
 const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
+const USER_EMOJI = '👤';
+
+// Visual avatars for sessions. Auto-assigned on session creation; users can
+// rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
+// before recycling — collisions are visually noisy but not functional.
+const EMOJI_PALETTE = ['🦊', '🐻', '🐯', '🐶', '🐱', '🦁', '🐮', '🐷', '🐸', '🐵',
+                       '🦝', '🐲', '🐳', '🦅', '🦉', '🐝', '🐢', '🐙', '🦄', '🐺'];
+
+function nextEmoji(sessions) {
+  const used = new Set(Object.values(sessions).map(s => s.emoji).filter(Boolean));
+  for (const e of EMOJI_PALETTE) if (!used.has(e)) return e;
+  return EMOJI_PALETTE[Object.keys(sessions).length % EMOJI_PALETTE.length];
+}
+
+// HTML-safe version of arbitrary text for Telegram parse_mode='HTML'.
+const escapeHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// Render an item for the Telegram chat. Uses HTML parse_mode (not Markdown
+// — brains often emit markdown that breaks Telegram's strict MarkdownV2).
+// system messages render in italic, user/sessions get an emoji + bold name.
+function formatItemForTelegram(item, sessions) {
+  const body = escapeHtml(item.body);
+  if (item.author === 'system') return `<i>${body}</i>`;
+  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${body}`;
+  const sess = sessions[item.author];
+  const emoji = sess?.emoji ?? '❓';
+  return `${emoji} <b>${escapeHtml(item.author)}</b>\n${body}`;
+}
 
 // Parse messages.md back into objects (for /last).
 function parseMessages(text) {
@@ -403,7 +446,7 @@ function App() {
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
-      b.send(`[${item.author}] ${item.body}`);
+      b.send(formatItemForTelegram(item, sessions));
     }
   }, [items.length]);
 
@@ -426,19 +469,20 @@ function App() {
           // skip if the targetId is already attached
           if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
           const name = nextName(brainName, working);
-          additions[name] = { brain: brainName, options: { targetId: tab.id } };
+          const emoji = nextEmoji(working);
+          additions[name] = { brain: brainName, options: { targetId: tab.id }, emoji };
           working[name] = additions[name];
         }
         if (Object.keys(additions).length > 0 && !cancelled) {
           setSessions(s => ({ ...s, ...additions }));
           const summary = Object.entries(additions)
-            .map(([n, s]) => `${n} (${s.brain})`).join(', ');
+            .map(([n, s]) => `${s.emoji} ${n} (${s.brain})`).join(', ');
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'system',
             body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
           }]);
         }
-      } catch { /* Chrome not running — fine, only code1 is registered */ }
+      } catch { /* Chrome not running — empty room, fine */ }
     })();
     return () => { cancelled = true; };
   }, []);
@@ -474,14 +518,17 @@ function App() {
         '  management, summaries, browser lifecycle. Only sending a chat\n' +
         '  message needs at least one participant.\n\n' +
         'Sessions (named participants in the room — every participant is equal):\n' +
-        '  Auto-naming: cgpt1, claude1, code1, codex1 ... per brain.\n' +
+        '  Auto-naming: cgpt1, claude1, code1, codex, codex1 ... per brain.\n' +
         '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
         '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
         '/attach                         re-scan Chrome, attach any new tabs\n' +
         '/attach <brain>                 attach all unattached tabs of that brain\n' +
         '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
-        '/sessions                       list registered sessions\n\n' +
+        '/sessions                       list registered sessions\n' +
+        '/handle <old> <new>             rename a session (keeps brain + emoji)\n' +
+        '/emoji [<name> <emoji>]         show/set a session\'s avatar emoji\n' +
+        '/bio [<name> [<text>]]          show/set a session\'s bio (echoed in room)\n\n' +
         'Browser brains:\n' +
         '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
@@ -490,13 +537,15 @@ function App() {
         '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
         '                                session\'s tab (default: last reply → all\n' +
         '                                other CDPs — useful after an operator output)\n\n' +
-        'Local brain (claude-code):\n' +
+        'Local brains/operators:\n' +
         '/history [N]                    list recent claude-code sessions on disk\n' +
         '                                (newest first; default 10)\n' +
         '/session [<id>]                 continue a claude-code session via --resume\n' +
         '                                (cwd auto-detected from the JSONL)\n' +
         '/session <id> <cwd>             explicit cwd if auto-detection fails\n' +
-        '/session none                   back to stateless mode (re-reads file each turn)\n\n' +
+        '/session none                   back to stateless mode (re-reads file each turn)\n' +
+        '@codex exec: <command>          run a shell command in codex\'s cwd\n' +
+        '@codex exec: cd <dir>           change codex\'s persistent cwd\n\n' +
         'Conversation:\n' +
         '/rules                          write room rules into file (silence, @, politeness)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n' +
@@ -982,18 +1031,98 @@ function App() {
       } catch { /* Chrome not running — that's fine for non-CDP sessions */ }
 
       const rows = Object.entries(sessions).map(([name, s]) => {
+        const emojiPad = (s.emoji ?? '❓') + ' ';
         const namePad = name.padEnd(14);
         const brainPad = s.brain.padEnd(13);
+        const brain = BRAINS[s.brain];
         let detail = '';
         if (s.options.targetId) {
           const live = tabsByid.get(s.options.targetId);
           detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${s.options.targetId.slice(0, 8)}…)`;
         } else if (s.options.sessionId) {
           detail = `claude --resume ${s.options.sessionId.slice(0, 8)}…`;
+        } else if (brain?.stateDetail) {
+          detail = brain.stateDetail(s.options);
         }
-        return `${namePad}${brainPad}${detail}`;
+        const bio = s.bio ? `\n  bio: ${s.bio}` : '';
+        return `${emojiPad}${namePad}${brainPad}${detail}${bio}`;
       });
       sysOut(rows.join('\n') || '(none)');
+      return true;
+    }
+    if (cmd === '/handle') {
+      // Rename a session: /handle <old> <new>. Preserves brain, emoji, options, bio.
+      const parts = arg.split(/\s+/).filter(Boolean);
+      if (parts.length !== 2) { sysOut('usage: /handle <old> <new>'); return true; }
+      const [oldName, newName] = parts;
+      if (!sessions[oldName]) { sysOut(`no session named "${oldName}"`); return true; }
+      if (sessions[newName]) { sysOut(`session "${newName}" already exists`); return true; }
+      if (!/^[A-Za-z0-9_-]+$/.test(newName)) { sysOut('handle must be alphanumeric (- and _ ok)'); return true; }
+      setSessions(s => {
+        const next = { ...s };
+        next[newName] = next[oldName];
+        delete next[oldName];
+        return next;
+      });
+      const emoji = sessions[oldName].emoji ?? '';
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        body: `${emoji} ${oldName} is now ${newName}`,
+      }]);
+      return true;
+    }
+    if (cmd === '/emoji') {
+      // /emoji                  → list current emoji per session
+      // /emoji <name> <emoji>   → set
+      // /emoji <emoji>          → set the lone session's emoji (only if 1 session)
+      const parts = arg.split(/\s+/).filter(Boolean);
+      if (parts.length === 0) {
+        const rows = Object.entries(sessions).map(([n, s]) => `${s.emoji ?? '❓'} ${n}`);
+        sysOut(rows.join('\n') || '(no sessions)');
+        return true;
+      }
+      let target, emoji;
+      if (parts.length === 1) {
+        const all = Object.keys(sessions);
+        if (all.length !== 1) { sysOut('usage: /emoji <name> <emoji>'); return true; }
+        target = all[0]; emoji = parts[0];
+      } else {
+        target = parts[0]; emoji = parts[1];
+      }
+      if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
+      setSessions(s => ({ ...s, [target]: { ...s[target], emoji } }));
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        body: `${target} avatar → ${emoji}`,
+      }]);
+      return true;
+    }
+    if (cmd === '/bio') {
+      // /bio                       → list bios
+      // /bio <name>                → show that session's bio
+      // /bio <name> <text...>      → set bio; echoes a system message into the room
+      const parts = arg.split(/\s+/);
+      const first = parts[0] ?? '';
+      if (!first) {
+        const rows = Object.entries(sessions)
+          .filter(([_, s]) => s.bio)
+          .map(([n, s]) => `${s.emoji ?? '❓'} ${n}: ${s.bio}`);
+        sysOut(rows.length ? rows.join('\n') : '(no bios set)');
+        return true;
+      }
+      const target = first;
+      if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
+      const text = parts.slice(1).join(' ').trim();
+      if (!text) {
+        const bio = sessions[target].bio;
+        sysOut(bio ? `${sessions[target].emoji ?? '❓'} ${target}: ${bio}` : `(no bio set for ${target})`);
+        return true;
+      }
+      setSessions(s => ({ ...s, [target]: { ...s[target], bio: text } }));
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        body: `${sessions[target].emoji ?? '❓'} ${target} bio: ${text}`,
+      }]);
       return true;
     }
     if (cmd === '/attach') {
@@ -1015,14 +1144,15 @@ function App() {
             if (!brainName) continue;
             if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
             const name = nextName(brainName, working);
-            additions[name] = { brain: brainName, options: { targetId: tab.id } };
+            const emoji = nextEmoji(working);
+            additions[name] = { brain: brainName, options: { targetId: tab.id }, emoji };
             working[name] = additions[name];
           }
           if (Object.keys(additions).length === 0) {
             sysOut('no new tabs to attach (everything matching is already a session)');
           } else {
             setSessions(s => ({ ...s, ...additions }));
-            sysOut(`attached: ${Object.entries(additions).map(([n, s]) => `${n} (${s.brain})`).join(', ')}`);
+            sysOut(`attached: ${Object.entries(additions).map(([n, s]) => `${s.emoji} ${n} (${s.brain})`).join(', ')}`);
           }
         } catch (e) { sysOut(`!! ${e.message}`); }
         return true;
@@ -1054,7 +1184,8 @@ function App() {
           for (const tab of matching) {
             if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
             const name = nextName(brainName, working);
-            additions[name] = { brain: brainName, options: { targetId: tab.id } };
+            const emoji = nextEmoji(working);
+            additions[name] = { brain: brainName, options: { targetId: tab.id }, emoji };
             working[name] = additions[name];
           }
           if (Object.keys(additions).length === 0) {
@@ -1089,8 +1220,9 @@ function App() {
         } catch (e) { sysOut(`!! ${e.message}`); return true; }
       }
 
-      setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options } }));
-      sysOut(`session "${sessionName}" → ${brainName}` +
+      const emoji = nextEmoji(sessions);
+      setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options, emoji } }));
+      sysOut(`session "${sessionName}" → ${emoji} ${brainName}` +
         (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
         `\n  address it as @${sessionName} for a single-recipient turn`);
       return true;
@@ -1113,8 +1245,9 @@ function App() {
           sysOut(`opening tab → ${brain.homeUrl}`);
           options.targetId = await cdp.openTab(brain.homeUrl);
         }
-        setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options } }));
-        sysOut(`session "${sessionName}" → ${brainName}` +
+        const emoji = nextEmoji(sessions);
+        setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options, emoji } }));
+        sysOut(`session "${sessionName}" → ${emoji} ${brainName}` +
           (options.targetId ? ` (target: ${options.targetId.slice(0, 8)}…)` : '') +
           `\n  address it as @${sessionName} for a single-recipient turn`);
       } catch (e) {
@@ -1160,8 +1293,8 @@ function App() {
   // with [author]: when broadcasting or mirroring. Returns the brain's reply
   // text (string) on a substantive answer, or null on silence/error so the
   // caller knows whether to mirror it.
-  async function runBrainTurn(routedTo, messageText) {
-    const session = sessions[routedTo];
+  async function runBrainTurn(routedTo, messageText, sessionMap = sessions) {
+    const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = BRAINS[session.brain];
     if (!brain) { sysOut(`!! brain not found: ${session.brain}`); return null; }
@@ -1206,17 +1339,19 @@ function App() {
     // in place as the stream progresses. This gives Telegram users the
     // same "thinking → text" experience as the local shell. The eventual
     // committed item is tagged _localOnly so we don't double-deliver.
-    const tg = bridgeRef.current?.startStreamMessage?.(`[${routedTo}] ⌛ thinking…`);
+    const sessEmoji = sessionMap[routedTo]?.emoji ?? '❓';
+    const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}</b>`;
+    const tg = bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`);
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
       // Telegram's 4096-char message cap (even with our prefix).
       const tail = text.length > 3500 ? '…' + text.slice(-3500) : text;
-      return `[${routedTo}] ${tail} ⌛`;
+      return `${authorPrefix}\n${escapeHtml(tail)} ⌛`;
     };
 
     try {
       const history = await readFile(FILE, 'utf8');
-      const final = await brain.stream(
+      const result = await brain.stream(
         { history, message: messageText },
         partial => {
           setStreaming({ author: routedTo, text: partial });
@@ -1224,16 +1359,31 @@ function App() {
         },
         opts,
       );
+      const final = typeof result === 'object' && result !== null
+        ? (result.text ?? '')
+        : (result ?? '');
+      if (result?.optionsPatch) {
+        setSessions(s => ({
+          ...s,
+          ...(s[routedTo] ? {
+            [routedTo]: {
+              ...s[routedTo],
+              options: { ...s[routedTo].options, ...result.optionsPatch },
+            },
+          } : {}),
+        }));
+      }
       setStreaming(null);
       const trimmed = (final ?? '').trim();
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
-        // Finalize the streaming Telegram msg as a quiet ack and tag the
-        // local note _localOnly so it doesn't double-post.
-        await tg?.finish(`[${routedTo}] (acknowledged silently)`);
+        // Quiet ack: render as the session itself with a single em-dash body,
+        // both locally and on Telegram. The local entry carries _localOnly
+        // when Telegram already saw the streaming msg, to avoid double-post.
+        await tg?.finish(`${authorPrefix}\n—`);
         setItems(p => [...p, {
-          id: Date.now() + Math.random(), author: 'system',
-          body: `${routedTo} acknowledged silently (${trimmed})`,
+          id: Date.now() + Math.random(), author: routedTo, body: '—',
+          _silent: true,
           _localOnly: !!tg,
         }]);
         return null;
@@ -1242,7 +1392,7 @@ function App() {
       // item carries _localOnly when Telegram already received it via the
       // streaming edit, to avoid sending the reply twice.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
-      await tg?.finish(`[${routedTo}] ${finalTail}`);
+      await tg?.finish(`${authorPrefix}\n${escapeHtml(finalTail)}`);
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: routedTo, body: final,
         _localOnly: !!tg,
@@ -1251,7 +1401,7 @@ function App() {
       return final;
     } catch (e) {
       setStreaming(null);
-      await tg?.finish(`[${routedTo}] !! ${e.message}`);
+      await tg?.finish(`${authorPrefix}\n!! ${escapeHtml(e.message)}`);
       sysOut(`!! ${routedTo}: ${e.message}`);
       return null;
     }
@@ -1284,13 +1434,40 @@ function App() {
     //     brains and local operators alike). Each may reply or stay silent
     //     per the polite-silence convention.
     const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
+    let activeSessions = sessions;
     let recipients;
     let userPayload;
-    if (mention && sessions[mention[1]]) {
-      recipients = [mention[1]];
-      userPayload = (mention[2] ?? '').trim() || '?';
+    if (mention) {
+      const token = mention[1];
+      let target = resolveAddressedSession(token, activeSessions);
+      const brain = BRAINS[token];
+      if (!target && brain && !brain.urlMatch) {
+        const emoji = nextEmoji(activeSessions);
+        activeSessions = {
+          ...activeSessions,
+          [token]: { brain: token, options: { cwd: process.cwd() }, emoji },
+        };
+        setSessions(activeSessions);
+        sysOut(`session "${token}" -> ${emoji} ${token} (auto-opened for @${token})`);
+        target = token;
+      }
+      if (target) {
+        recipients = [target];
+        userPayload = (mention[2] ?? '').trim() || '?';
+      } else if (brain) {
+        const matches = Object.entries(activeSessions)
+          .filter(([_, s]) => s.brain === token)
+          .map(([n]) => n);
+        sysOut(matches.length
+          ? `@${token} is ambiguous; address one of: ${matches.join(', ')}`
+          : `no ${token} session; /open ${token} [name]`);
+        return;
+      } else {
+        recipients = Object.keys(activeSessions);
+        userPayload = text;
+      }
     } else {
-      recipients = Object.keys(sessions);
+      recipients = Object.keys(activeSessions);
       userPayload = text;
     }
     if (recipients.length === 0) {
@@ -1316,7 +1493,7 @@ function App() {
     }
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains);
+      const reply = await runBrainTurn(recipient, messageForBrains, activeSessions);
       if (reply !== null) replies.push({ author: recipient, text: reply });
     }
 
@@ -1324,16 +1501,16 @@ function App() {
     // substantively, push "[B]: <reply>" into every OTHER CDP brain's tab so
     // they see it. Receiving brains may reply or stay silent (per /rules).
     // We do NOT mirror the secondary replies; cascade is bounded to one hop.
-    const cdpRecipients = recipients.filter(r => BRAINS[sessions[r]?.brain]?.urlMatch);
+    const cdpRecipients = recipients.filter(r => BRAINS[activeSessions[r]?.brain]?.urlMatch);
     if (cdpRecipients.length > 1 && replies.length > 0) {
-      const mirrorables = replies.filter(r => BRAINS[sessions[r.author]?.brain]?.urlMatch);
+      const mirrorables = replies.filter(r => BRAINS[activeSessions[r.author]?.brain]?.urlMatch);
       if (mirrorables.length > 0) {
         sysOut(`mirroring ${mirrorables.length} reply/replies to other CDP brains…`);
         for (const { author, text: replyText } of mirrorables) {
           const mirrorMsg = `[${author}]: ${replyText}`;
           for (const other of cdpRecipients) {
             if (other === author) continue;
-            await runBrainTurn(other, mirrorMsg);
+            await runBrainTurn(other, mirrorMsg, activeSessions);
           }
         }
       }
@@ -1350,10 +1527,16 @@ function App() {
     a === 'You' ? 'cyan' : a === 'system' ? 'gray' : 'green';
 
   return h(Fragment, null,
-    h(Static, { items }, item =>
-      h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
-        h(Text, { color: color(item.author), bold: true }, item.author),
-        h(Text, null, item.body))),
+    h(Static, { items }, item => {
+      const isSystem = item.author === 'system';
+      const isUser = item.author === 'You';
+      const sess = sessions[item.author];
+      const emoji = isSystem ? 'ℹ️ ' : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
+      const label = isUser ? USER_NAME : item.author;
+      return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
+        h(Text, { color: color(item.author), bold: true }, `${emoji}${label}`),
+        h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
+    }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, { color: 'gray' },
         `[room: ${Object.keys(sessions).join(', ') || '(empty)'}]`),
@@ -1368,7 +1551,7 @@ function App() {
         const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         return h(Box, { flexDirection: 'column', marginTop: 1 },
           h(Text, { color: 'green', bold: true },
-            `${streaming.author}  `,
+            `${sessions[streaming.author]?.emoji ? sessions[streaming.author].emoji + ' ' : ''}${streaming.author}  `,
             h(Text, { color: 'gray', dimColor: true },
               `(${charCount} chars · ${elapsed}s · Ctrl+R to abort)`)),
           hidden > 0 && h(Text, { color: 'gray', dimColor: true },

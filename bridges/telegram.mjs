@@ -42,7 +42,7 @@ export function startTelegramBridge({
         const res = await fetch(`${TG_BASE}${botToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: targetChat, text: chunk, disable_web_page_preview: true }),
+          body: JSON.stringify({ chat_id: targetChat, text: chunk, disable_web_page_preview: true, parse_mode: 'HTML' }),
         });
         if (!res.ok) {
           const body = await res.text().catch(() => '');
@@ -123,7 +123,7 @@ export function startTelegramBridge({
         const res = await fetch(`${TG_BASE}${botToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: lastSeenChat, text: initialText.slice(0, 4000), disable_web_page_preview: true }),
+          body: JSON.stringify({ chat_id: lastSeenChat, text: initialText.slice(0, 4000), disable_web_page_preview: true, parse_mode: 'HTML' }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -149,6 +149,7 @@ export function startTelegramBridge({
               chat_id: lastSeenChat, message_id: msgId,
               text: text.slice(0, 4000),
               disable_web_page_preview: true,
+              parse_mode: 'HTML',
             }),
           });
           lastSent = text;

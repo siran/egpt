@@ -78,8 +78,9 @@ You keep a Chrome instance logged in to the web brains. You launch it once with 
 - ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
 - ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — long-poll a Telegram bot, route incoming messages into the same room, mirror brain replies back to the chat. Works with or without any AI present (zombie mode runs slash commands over Telegram)
 - ✅ Plain Markdown file as conversation source-of-truth (`tail -f`-friendly, vim-editable, grep-able)
-- ✅ Three working brains:
+- ✅ Four working brains/operators:
   - `claude-code` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json`
+  - `codex` — local Codex CLI plus `exec:` operator commands with a persistent cwd
   - `chatgpt-cdp` — drives ChatGPT.com in a CDP-exposed Chrome; tab keeps its own history
   - `claude-cdp` — drives Claude.ai the same way
 - ✅ Multi-participant model: register as many sessions as you want (`/open chatgpt-cdp gpt1`, `/open claude-cdp claude1`); each shows up as a distinct author in the log
@@ -113,8 +114,11 @@ node egpt.mjs ~/conversations/foo.md         # explicit path
 
 # inside egpt
 /help                                        # all commands
-/principal claude-code                       # default; local subprocess
-/principal chatgpt-cdp                       # auto-binds the open chatgpt tab
+/open claude-code code1                      # local Claude Code subprocess
+/open codex                                  # local Codex session (auto-name: codex)
+@codex exec: pwd                             # run a shell command in codex's cwd
+@codex exec: cd ../siran/writing             # change codex's persistent cwd
+/open chatgpt-cdp                            # opens/registers a ChatGPT tab
 /open claude-cdp claude1                     # opens a fresh claude.ai tab, named claude1
 /sessions                                    # see who's registered
 /last 5                                      # replay last 5 messages from the file
@@ -146,15 +150,17 @@ Sobre la pregunta original...
 
 ```
 /exit · /file · /help
-/open <brain> <name>            open a fresh tab and register a new session
-/principal [name [tabSpec]]     switch (or create) principal session.
-                                tabSpec: targetId | url | uuid | prefix
+/open <brain> [name]            open/register a new session
+/attach                         re-scan Chrome and attach matching tabs
+/attach <brain> <name> [tab]    explicit attach; tabSpec: targetId | url | uuid | prefix
 /sessions                       list registered sessions
 /tabs [all]                     list pages in the brain Chrome (chrome:// hidden)
 /brain [status|stop]            brain Chrome lifecycle (CDP-based)
 /refresh                        re-poll current CDP tab; append full text
                                 (use when streaming was cut off)
 /last [N]                       show last N messages from the file (default 10)
+@codex exec: <command>          run shell command in codex cwd
+@codex exec: cd <dir>           change codex cwd for later commands
 ```
 
 ## Architecture
@@ -179,7 +185,7 @@ A small core, many bridges. The core is platform-agnostic logic; the bridges tra
 │  🛠   │  │  ✅        │         │ storage│
 │ext    │  │claude-cdp  │         │  🛠    │
 │  🛠   │  │  ✅        │         │        │
-│       │  │codex 🛠    │         │        │
+│       │  │codex ✅    │         │        │
 └───────┘  └────────────┘         └────────┘
 ```
 
@@ -194,6 +200,7 @@ egpt/
 │   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, findTab,
 │   │                      #   streamFromTab, peekTab, closeBrowser
 │   ├── claude-code.mjs    # subprocess `claude --print --output-format stream-json`
+│   ├── codex.mjs          # subprocess `codex exec` + direct `exec:` shell operator
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
 │   └── claude-cdp.mjs     # Claude.ai selectors + inject + poll
 ├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2)
@@ -208,6 +215,10 @@ Around 1100 lines of code total, ~10 files.
 ### Subprocess brain (`claude-code`)
 
 Each turn: spawn `claude --print --output-format stream-json --include-partial-messages`, pipe the full conversation history to stdin, parse newline-delimited JSON for token deltas, accumulate, return final text on `result` event.
+
+### Codex brain/operator (`codex`)
+
+Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively.
 
 ### CDP brains (`chatgpt-cdp`, `claude-cdp`)
 

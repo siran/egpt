@@ -93,6 +93,8 @@ hola                                          # routes to code1 (default)
 # Then from the phone:
 #   "hello"                # broadcasts to all participants in the room
 #   "@code1 git status"    # routes to a specific session
+#   "@codex exec: pwd"     # run an operator command on the computer
+#   "@codex exec: cd ~/src/siran/writing"  # change codex cwd
 #   "/sessions"            # any slash command works (it's the same submit())
 #   "/save my-thought"     # zombie commands work even with no brain present
 
@@ -196,7 +198,7 @@ Sessions auto-name by convention:
 | `claude-code`  | `code`         | `code1`, `code2`, `code3`    |
 | `chatgpt-cdp`  | `cgpt`         | `cgpt1`, `cgpt2`             |
 | `claude-cdp`   | `claude`       | `claude1`, `claude2`         |
-| `codex`        | `codex`        | `codex1`, `codex2` (planned) |
+| `codex`        | `codex`        | `codex`, `codex1`, `codex2`  |
 
 Numbers grow per brain. Names are auto-assigned on `/open`, `/attach`, and `/principal <brain>`. You can pass an explicit name to override (`/open chatgpt-cdp gpt-research`).
 
@@ -269,9 +271,16 @@ How it works internally:
 
 Selectors use **only** locale-stable signals: `data-testid`, `id`, `data-is-streaming`. No `aria-label` (those get translated and overmatch).
 
-### `codex` (planned)
+### `codex` (local CLI + shell operator)
 
-Same shape as `claude-code` (subprocess). Not implemented yet.
+Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs a shell command in the Codex session's persistent cwd and returns:
+
+```
+$ <command>
+<stdout/stderr>
+```
+
+`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively.
 
 ---
 
@@ -328,12 +337,14 @@ Browser brains:
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
 
-Local brain (claude-code):
+Local brains/operators:
   /history [N]                  list recent claude-code sessions on disk (newest first)
   /session [<id>]               continue an existing claude-code session via --resume
                                 (cwd auto-detected from the JSONL)
   /session <id> <cwd>           explicit cwd if auto-detection fails
   /session none                 back to stateless mode
+  @codex exec: <command>        run shell command in codex cwd
+  @codex exec: cd <dir>         change codex cwd for later commands
 
 Conversation:
   /rules                        write room-rules system message into the file
@@ -348,7 +359,7 @@ Reusable distillations (~/.egpt/summaries/<name>.md):
   /inject <name>                drop a saved summary into the room as a system note
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
-Brains: claude-code, chatgpt-cdp, claude-cdp
+Brains: claude-code, codex, chatgpt-cdp, claude-cdp
 ```
 
 ---
