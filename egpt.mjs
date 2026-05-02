@@ -229,6 +229,8 @@ function App() {
         '/refresh                        re-poll current CDP tab; append full text\n' +
         '                                (use when streaming was cut off)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n\n' +
+        '@<name> <message>               route this turn to a session by name without\n' +
+        '                                changing the principal. e.g. @gpt1 ¿qué opinas?\n\n' +
         'Brains: ' + Object.keys(BRAINS).join(', '));
       return true;
     }
@@ -483,8 +485,20 @@ function App() {
       if (handled) return;
     }
 
-    const session = sessions[principal];
-    if (!session) { setError(`no session "${principal}"`); return; }
+    // @mention routing: "@<name> rest..." at the START of the message routes
+    // *this turn only* to that session, without changing the principal. If the
+    // name doesn't match a known session, fall through to principal and the
+    // "@name" stays as plain text for the principal to read normally.
+    let routedTo = principal;
+    let messageToBrain = text;
+    const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
+    if (mention && sessions[mention[1]]) {
+      routedTo = mention[1];
+      messageToBrain = (mention[2] ?? '').trim() || '?';
+    }
+
+    const session = sessions[routedTo];
+    if (!session) { setError(`no session "${routedTo}"`); return; }
     const brain = BRAINS[session.brain];
     if (!brain) { setError(`brain not found: ${session.brain}`); return; }
 
@@ -504,14 +518,14 @@ function App() {
           const matches = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
           if (matches.length === 1) {
             opts = { ...opts, targetId: matches[0].id };
-            setSessions(s => ({ ...s, [principal]: { ...s[principal], options: opts } }));
-            sysOut(`(auto-bound ${principal} to tab ${opts.targetId.slice(0, 8)}…)`);
+            setSessions(s => ({ ...s, [routedTo]: { ...s[routedTo], options: opts } }));
+            sysOut(`(auto-bound ${routedTo} to tab ${opts.targetId.slice(0, 8)}…)`);
           } else if (matches.length === 0) {
             setError(`no open ${session.brain} tabs. open one in the brain Chrome, or /open ${session.brain} <name>`);
             return;
           } else {
             const lst = matches.map(t => `  ${t.id.slice(0, 8)}…  ${t.url}`).join('\n');
-            setError(`multiple ${session.brain} tabs open — pick one:\n${lst}\nuse: /principal ${principal} <urlOrId>`);
+            setError(`multiple ${session.brain} tabs open — pick one:\n${lst}\nuse: /principal ${routedTo} <urlOrId>`);
             return;
           }
         } catch (e) { setError(`!! ${e.message}`); return; }
@@ -519,23 +533,25 @@ function App() {
     }
     for (const req of (brain.requires ?? [])) {
       if (!opts[req]) {
-        setError(`session ${principal} (${session.brain}) still missing ${req}. try /open ${session.brain} <name>.`);
+        setError(`session ${routedTo} (${session.brain}) still missing ${req}. try /open ${session.brain} <name>.`);
         return;
       }
     }
 
     const id = Date.now();
+    // The .md keeps the original text including the "@mention" prefix —
+    // that's part of the room's record. The brain only gets the clean message.
     await append('You', text);
 
     setBusy(true);
     setError(null);
-    setStreaming({ author: principal, text: '' });
+    setStreaming({ author: routedTo, text: '' });
 
     try {
       const history = await readFile(FILE, 'utf8');
       const final = await brain.stream(
-        { history, message: text },
-        partial => setStreaming({ author: principal, text: partial }),
+        { history, message: messageToBrain },
+        partial => setStreaming({ author: routedTo, text: partial }),
         opts,
       );
       setStreaming(null);
@@ -548,12 +564,12 @@ function App() {
       if (isSilence) {
         setItems(p => [...p, {
           id: id + 1, author: 'system',
-          body: `${principal} acknowledged silently (${trimmed})`,
+          body: `${routedTo} acknowledged silently (${trimmed})`,
         }]);
         // intentionally NOT appending to FILE — silence stays out of the log
       } else {
-        setItems(p => [...p, { id: id + 1, author: principal, body: final }]);
-        await append(principal, final);
+        setItems(p => [...p, { id: id + 1, author: routedTo, body: final }]);
+        await append(routedTo, final);
       }
     } catch (e) {
       setStreaming(null);
