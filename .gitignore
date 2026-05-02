@@ -1,5 +1,6 @@
 node_modules/
 conversation.md
+conversations/
 *.local.md
 .egpt/
 *.log
