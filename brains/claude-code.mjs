@@ -1,18 +1,32 @@
-// brains/claude-code.mjs — stateless subprocess brain (full history each turn)
+// brains/claude-code.mjs — local `claude` CLI as subprocess.
+// Two modes:
+//   - default:        each turn is a fresh `claude --print`, full conversation
+//                     file piped to stdin (stateless, brain re-reads each time).
+//   - resume:         when options.sessionId is set, runs `claude --resume <id>`
+//                     and pipes only the new user message; claude has the session
+//                     history in its JSONL already. This *extends* an existing
+//                     Claude Code session rather than re-imitating it.
 import { spawn } from 'node:child_process';
 
 export const name = 'claude-code';
-export const description = 'Local `claude` CLI as subprocess. Full file is sent each turn.';
-export const requires = []; // no required options
+export const description = 'Local `claude` CLI; optionally --resume to extend an existing session.';
+export const requires = [];
 
-export function stream({ history }, onUpdate, _options = {}) {
+export function stream({ history, message }, onUpdate, options = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', [
+    const args = [
       '--print',
       '--output-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    ];
+    const isResume = !!options.sessionId;
+    if (isResume) args.push('--resume', options.sessionId);
+
+    const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'] };
+    if (options.cwd) spawnOpts.cwd = options.cwd;
+
+    const proc = spawn('claude', args, spawnOpts);
 
     let buf = '';
     let acc = '';
@@ -63,7 +77,9 @@ export function stream({ history }, onUpdate, _options = {}) {
       ? new Error('claude not found on PATH')
       : err));
 
-    proc.stdin.write(history);
+    // Resume mode: send only the new user turn (claude has the session in JSONL).
+    // Default mode: send the full conversation file (claude is stateless per call).
+    proc.stdin.write(isResume ? (message ?? '') : (history ?? ''));
     proc.stdin.end();
   });
 }

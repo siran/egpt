@@ -222,10 +222,52 @@ function App() {
         '/sessions                       list registered sessions\n' +
         '/tabs [all]                     list pages in the brain Chrome (chrome:// hidden)\n' +
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
+        '/session [<id> [cwd]]           extend an existing claude-code session via --resume\n' +
+        '                                (instead of stateless re-imitation each turn)\n' +
         '/refresh                        re-poll current CDP tab; append full text\n' +
         '                                (use when streaming was cut off)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n\n' +
         'Brains: ' + Object.keys(BRAINS).join(', '));
+      return true;
+    }
+    if (cmd === '/session') {
+      // /session                  → show
+      // /session <id> [cwd]       → set resume sessionId (and optional cwd)
+      //                             on the current principal session.
+      // /session none             → clear (revert to stateless mode)
+      const session = sessions[principal];
+      if (!session) { sysOut(`no current session`); return true; }
+      if (!arg) {
+        sysOut(`${principal}.sessionId: ${session.options.sessionId ?? '(none)'}` +
+               `\n${principal}.cwd: ${session.options.cwd ?? '(none)'}`);
+        return true;
+      }
+      const parts = arg.split(/\s+/);
+      const sid = parts[0];
+      const cwd = parts.slice(1).join(' ').trim() || undefined;
+      if (sid === 'none' || sid === 'clear') {
+        setSessions(s => ({
+          ...s,
+          [principal]: {
+            ...s[principal],
+            options: Object.fromEntries(
+              Object.entries(s[principal].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
+            ),
+          },
+        }));
+        sysOut(`${principal}: resume cleared (back to stateless mode)`);
+        return true;
+      }
+      setSessions(s => ({
+        ...s,
+        [principal]: {
+          ...s[principal],
+          options: { ...s[principal].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
+        },
+      }));
+      sysOut(`${principal}.sessionId → ${sid}` +
+             (cwd ? `\n${principal}.cwd → ${cwd}` : '') +
+             `\n(claude --resume mode active for this session)`);
       return true;
     }
     if (cmd === '/refresh') {
