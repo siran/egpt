@@ -12,6 +12,14 @@ export const name = 'claude-code';
 export const description = 'Local `claude` CLI; optionally --resume to extend an existing session.';
 export const requires = [];
 
+// MSYS2/Cygwin paths like "/c/Users/an/src/foo" don't work as Node spawn cwd
+// on Windows. Translate them to "C:/Users/an/src/foo".
+function normalizeCwd(p) {
+  if (!p) return p;
+  const m = p.match(/^\/([a-zA-Z])\/(.*)$/);
+  return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
+}
+
 export function stream({ history, message }, onUpdate, options = {}) {
   return new Promise((resolve, reject) => {
     const args = [
@@ -24,7 +32,8 @@ export function stream({ history, message }, onUpdate, options = {}) {
     if (isResume) args.push('--resume', options.sessionId);
 
     const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'] };
-    if (options.cwd) spawnOpts.cwd = options.cwd;
+    const cwd = normalizeCwd(options.cwd);
+    if (cwd) spawnOpts.cwd = cwd;
 
     const proc = spawn('claude', args, spawnOpts);
 
@@ -73,9 +82,16 @@ export function stream({ history, message }, onUpdate, options = {}) {
       if (code !== 0) return reject(new Error(`claude exit ${code}: ${stderrBuf.trim() || 'no stderr'}`));
       resolve(finalText ?? acc);
     });
-    proc.on('error', err => reject(err.code === 'ENOENT'
-      ? new Error('claude not found on PATH')
-      : err));
+    proc.on('error', err => {
+      if (err.code === 'ENOENT') {
+        // ENOENT can mean either the binary or the cwd is missing. Disambiguate.
+        const msg = cwd
+          ? `spawn ENOENT: claude binary or cwd not found. cwd=${cwd}, original options.cwd=${options.cwd ?? '(none)'}`
+          : 'claude not found on PATH';
+        return reject(new Error(msg));
+      }
+      reject(err);
+    });
 
     // Resume mode: send only the new user turn (claude has the session in JSONL).
     // Default mode: send the full conversation file (claude is stateless per call).
