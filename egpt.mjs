@@ -2,7 +2,7 @@
 // egpt.mjs — file IS the conversation; Ink shell; sessions = named participants
 import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -431,12 +431,15 @@ function App() {
         'Conversation:\n' +
         '/rules                          write room rules into file (silence, @, politeness)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n' +
-        '@<name> <message>               address a session for THIS turn only,\n' +
-        '                                without changing the principal\n\n' +
+        '@<name> <message>               address a session for THIS turn only\n' +
+        '<message> without @            broadcasts to all CDP brains (the "thinkers");\n' +
+        '                                local brains (code/codex) stay silent unless\n' +
+        '                                explicitly @addressed (they are the operatives)\n\n' +
         'Reusable distillations (~/.egpt/summaries/<name>.md):\n' +
         '/save <name>                    save the latest non-system message verbatim\n' +
-        '/summarize <name>               principal compresses the room → summary file\n' +
-        '/summaries                      list saved summaries\n' +
+        '/summarize <name>               fresh claude reads the room → summary file\n' +
+        '                                (independent of room participants — no bias)\n' +
+        '/summaries · /list-saved        list saved summaries\n' +
         '/inject <name>                  drop a saved summary into the room as a system note\n\n' +
         'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
         'Brains: ' + Object.keys(BRAINS).join(', '));
@@ -539,7 +542,7 @@ function App() {
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
-    if (cmd === '/summaries') {
+    if (cmd === '/summaries' || cmd === '/list-saved' || cmd === '/saved') {
       try {
         await ensureSummariesDir();
         const files = (await readdir(SUMMARIES_DIR)).filter(f => f.endsWith('.md'));
@@ -581,43 +584,50 @@ function App() {
       return true;
     }
     if (cmd === '/summarize') {
-      // /summarize <name> — ask the principal to compress the current room and
-      // save the result as <name>.md. Uses the principal's brain via the same
-      // dispatch the user does, so the rules-aware turn convention applies.
+      // /summarize <name> — spawn a *fresh* `claude --print` to read the room
+      // file and produce a summary. Crucially NOT the principal — a participant
+      // summarizing its own conversation is biased; a fresh agent re-reading
+      // the file produces a cleaner distillation. Saved to ~/.egpt/summaries/.
       const name = arg.trim();
       if (!isSafeName(name)) {
-        sysOut('usage: /summarize <name>\n  the current principal will summarize the room into ~/.egpt/summaries/<name>.md');
+        sysOut('usage: /summarize <name>\n  a fresh claude reads the room and saves a summary to ~/.egpt/summaries/<name>.md\n  (independent of the principal — no bias from the room\'s participants)');
         return true;
       }
-      const session = sessions[principal];
-      if (!session) { sysOut(`no session "${principal}"`); return true; }
-      const brain = BRAINS[session.brain];
-      if (!brain) { sysOut(`brain not found: ${session.brain}`); return true; }
       try {
         await ensureSummariesDir();
-        const history = await readFile(FILE, 'utf8');
+        const text = await readFile(FILE, 'utf8');
         const prompt =
-          `Summarize the conversation above into a tight, faithful condensation that ` +
-          `preserves the participants, the key decisions, and any open questions or ` +
-          `loose threads. Aim for under 600 words. Plain markdown, no preamble. ` +
-          `When you reply, output ONLY the summary text (no "Here is the summary:" boilerplate).`;
-        sysOut(`asking ${principal} to summarize…`);
+          `${text}\n\n---\n\n` +
+          `Summarize the conversation above into a tight, faithful condensation. ` +
+          `Preserve the participants, key decisions, and any open questions or loose threads. ` +
+          `Aim for under 600 words. Plain markdown, no preamble. ` +
+          `Output ONLY the summary text — no "Here is the summary:" boilerplate.`;
+
+        sysOut('asking a fresh claude to summarize…');
         setBusy(true);
-        setStreaming({ author: principal, text: '' });
-        let final;
-        try {
-          final = await brain.stream(
-            { history: `${history}\n\n## ${ts()} — You\n${prompt}\n\n`, message: prompt },
-            partial => setStreaming({ author: principal, text: partial }),
-            { ...session.options, principal },
-          );
-        } finally {
-          setStreaming(null); setBusy(false);
-        }
-        const body = `# ${name}\n\n_Summarized ${new Date().toISOString().slice(0, 16).replace('T', ' ')} by ${principal} (${session.brain}) from ${FILE}_\n\n---\n\n${final}\n`;
+        const summary = await new Promise((resolve, reject) => {
+          const proc = spawn('claude', ['--print', '--output-format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'] });
+          let out = '', err = '';
+          proc.stdout.on('data', c => out += c);
+          proc.stderr.on('data', c => err += c);
+          proc.on('close', code => {
+            if (code !== 0) return reject(new Error(`claude exit ${code}: ${err.trim() || 'no stderr'}`));
+            try { resolve((JSON.parse(out).result ?? out).trim()); }
+            catch { resolve(out.trim()); }
+          });
+          proc.on('error', e => reject(e.code === 'ENOENT' ? new Error('claude not found on PATH') : e));
+          proc.stdin.write(prompt); proc.stdin.end();
+        });
+        setBusy(false);
+        if (!summary) { sysOut('(empty summary)'); return true; }
+        const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+        const body = `# ${name}\n\n_Summarized ${stamp} by a fresh claude (no participant bias) from ${FILE}_\n\n---\n\n${summary}\n`;
         await writeFile(summaryPath(name), body);
-        sysOut(`saved → ${summaryPath(name)}  (${final.length} chars)`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
+        sysOut(`saved → ${summaryPath(name)}  (${summary.length} chars)`);
+      } catch (e) {
+        setBusy(false);
+        sysOut(`!! ${e.message}`);
+      }
       return true;
     }
     if (cmd === '/inject') {
@@ -1010,37 +1020,15 @@ function App() {
     return false;
   };
 
-  const submit = async (raw) => {
-    const text = raw.trim();
-    if (!text) return;
-
-    // Always echo what the user typed into the transcript (commands + messages alike).
-    setItems(p => [...p, { id: Date.now(), author: 'You', body: text }]);
-
-    if (text.startsWith('/')) {
-      const handled = await handleSlash(text);
-      if (handled) return;
-    }
-
-    // @mention routing: "@<name> rest..." at the START of the message routes
-    // *this turn only* to that session, without changing the principal. If the
-    // name doesn't match a known session, fall through to principal and the
-    // "@name" stays as plain text for the principal to read normally.
-    let routedTo = principal;
-    let messageToBrain = text;
-    const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
-    if (mention && sessions[mention[1]]) {
-      routedTo = mention[1];
-      messageToBrain = (mention[2] ?? '').trim() || '?';
-    }
-
+  // Run a single brain-turn for one session: validate, auto-recover the tab if
+  // a CDP brain, stream, handle silence, append. Used by both @mention routing
+  // (single recipient) and broadcast (loop over recipients).
+  async function runBrainTurn(routedTo, messageToBrain) {
     const session = sessions[routedTo];
-    if (!session) { setError(`no session "${routedTo}"`); return; }
+    if (!session) { sysOut(`!! no session "${routedTo}"`); return; }
     const brain = BRAINS[session.brain];
-    if (!brain) { setError(`brain not found: ${session.brain}`); return; }
+    if (!brain) { sysOut(`!! brain not found: ${session.brain}`); return; }
 
-    // Auto-recover: if this brain needs a tab and the current targetId is gone
-    // (or never set), try to bind to a uniquely-matching open tab.
     let opts = session.options;
     if (brain.urlMatch) {
       let needsRebind = !opts.targetId;
@@ -1048,7 +1036,7 @@ function App() {
         try {
           const live = await cdp.findTab(opts.targetId);
           if (!live) needsRebind = true;
-        } catch (e) { setError(`!! ${e.message}`); return; }
+        } catch (e) { sysOut(`!! ${routedTo}: ${e.message}`); return; }
       }
       if (needsRebind) {
         try {
@@ -1058,32 +1046,24 @@ function App() {
             setSessions(s => ({ ...s, [routedTo]: { ...s[routedTo], options: opts } }));
             sysOut(`(auto-bound ${routedTo} to tab ${opts.targetId.slice(0, 8)}…)`);
           } else if (matches.length === 0) {
-            setError(`no open ${session.brain} tabs. open one in the brain Chrome, or /open ${session.brain} <name>`);
+            sysOut(`!! no open ${session.brain} tabs for ${routedTo}. open one in the brain Chrome.`);
             return;
           } else {
             const lst = matches.map(t => `  ${t.id.slice(0, 8)}…  ${t.url}`).join('\n');
-            setError(`multiple ${session.brain} tabs open — pick one:\n${lst}\nuse: /principal ${routedTo} <urlOrId>`);
+            sysOut(`!! multiple ${session.brain} tabs open for ${routedTo} — pick one:\n${lst}`);
             return;
           }
-        } catch (e) { setError(`!! ${e.message}`); return; }
+        } catch (e) { sysOut(`!! ${routedTo}: ${e.message}`); return; }
       }
     }
     for (const req of (brain.requires ?? [])) {
       if (!opts[req]) {
-        setError(`session ${routedTo} (${session.brain}) still missing ${req}. try /open ${session.brain} <name>.`);
+        sysOut(`!! session ${routedTo} (${session.brain}) missing ${req}. /open ${session.brain} <name>.`);
         return;
       }
     }
 
-    const id = Date.now();
-    // The .md keeps the original text including the "@mention" prefix —
-    // that's part of the room's record. The brain only gets the clean message.
-    await append('You', text);
-
-    setBusy(true);
-    setError(null);
     setStreaming({ author: routedTo, text: '' });
-
     try {
       const history = await readFile(FILE, 'utf8');
       const final = await brain.stream(
@@ -1092,28 +1072,71 @@ function App() {
         { ...opts, principal: routedTo },
       );
       setStreaming(null);
-
-      // Polite-silence convention: a brain reply that is *just* "..." (3+ dots
-      // or the Unicode ellipsis) means "acknowledged, nothing to add". Don't
-      // post it to the room — show a small hand-raised note in the transcript.
       const trimmed = (final ?? '').trim();
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
         setItems(p => [...p, {
-          id: id + 1, author: 'system',
+          id: Date.now() + Math.random(), author: 'system',
           body: `${routedTo} acknowledged silently (${trimmed})`,
         }]);
-        // intentionally NOT appending to FILE — silence stays out of the log
       } else {
-        setItems(p => [...p, { id: id + 1, author: routedTo, body: final }]);
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: routedTo, body: final }]);
         await append(routedTo, final);
       }
     } catch (e) {
       setStreaming(null);
-      setError(e.message);
-    } finally {
-      setBusy(false);
+      sysOut(`!! ${routedTo}: ${e.message}`);
     }
+  }
+
+  const submit = async (raw) => {
+    const text = raw.trim();
+    if (!text) return;
+
+    // Echo everything the user types into the transcript.
+    setItems(p => [...p, { id: Date.now(), author: 'You', body: text }]);
+
+    if (text.startsWith('/')) {
+      const handled = await handleSlash(text);
+      if (handled) return;
+    }
+
+    // Routing decision:
+    //   1. "@name ..." → route to that single session only.
+    //   2. Otherwise, if any CDP-brain sessions exist in the room → broadcast
+    //      to ALL of them (the "thinkers"). Local brains (claude-code, codex)
+    //      are operatives, not default speakers; they stay silent unless
+    //      explicitly @addressed.
+    //   3. Otherwise (no CDP sessions) → fall back to the principal.
+    const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
+    let recipients;
+    let messageToBrain = text;
+    if (mention && sessions[mention[1]]) {
+      recipients = [mention[1]];
+      messageToBrain = (mention[2] ?? '').trim() || '?';
+    } else {
+      const cdpRecipients = Object.entries(sessions)
+        .filter(([_, s]) => BRAINS[s.brain]?.urlMatch)
+        .map(([n]) => n);
+      recipients = cdpRecipients.length > 0 ? cdpRecipients : [principal];
+    }
+
+    // The .md keeps the original text (including any @mention prefix).
+    await append('You', text);
+
+    setBusy(true);
+    setError(null);
+
+    // Sequential broadcast: each speaker reads the file fresh so it picks up
+    // prior speakers' replies in this turn. Cheap multi-brain visibility
+    // without explicit cross-mirroring (delta-injection comes later).
+    if (recipients.length > 1) {
+      sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
+    }
+    for (const recipient of recipients) {
+      await runBrainTurn(recipient, messageToBrain);
+    }
+    setBusy(false);
   };
 
   const color = a =>
