@@ -1,11 +1,22 @@
 // brains/claude-code.mjs — local `claude` CLI as subprocess.
 // Two modes:
-//   - default:        each turn is a fresh `claude --print`, full conversation
-//                     file piped to stdin (stateless, brain re-reads each time).
-//   - resume:         when options.sessionId is set, runs `claude --resume <id>`
-//                     and pipes only the new user message; claude has the session
-//                     history in its JSONL already. This *extends* an existing
-//                     Claude Code session rather than re-imitating it.
+//   - stateless (default): each turn pipes the entire conversation file as
+//                          one user message (a structured transcript). claude
+//                          reads it as the full context and responds to the
+//                          implied "what's next?" Anthropic's prompt cache
+//                          catches the unchanging prefix between turns.
+//   - resume:              when options.sessionId is set, runs `claude --resume`
+//                          and pipes only the new user message; claude has the
+//                          session history in its JSONL already.
+//
+// Note on `--input-format stream-json`: tested but unsuitable. It treats each
+// user message in the stream as a separate query (claude responds to each in
+// turn) rather than as pre-populated history. So we can't use it to inject
+// prior assistant turns as context. The proper-turns optimization will require
+// a --resume-with-delta-injection refactor in a future commit.
+//
+// `parseConversation()` is exported anyway because /summarize and similar
+// future features need to walk the .md as structured turns.
 import { spawn } from 'node:child_process';
 
 export const name = 'claude-code';
@@ -19,6 +30,66 @@ function normalizeCwd(p) {
   const m = p.match(/^\/([a-zA-Z])\/(.*)$/);
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
+
+// Parse a conversation.md file into role-tagged turns.
+//   author === principal | brainName → assistant (claude's own past output)
+//   author === "You"                 → user, no prefix
+//   author === "system"              → user, "(system note) " prefix
+//                                       (system-author lines from /rules etc.)
+//   anything else (cgpt1, ...)       → user, "[author]: " prefix
+// This preserves cross-brain visibility while letting claude read each turn
+// as a real conversation participant rather than a single mega-blob.
+export function parseConversation(text, principal, brainName = name) {
+  const lines = text.split('\n');
+  const turns = [];
+  let author = null;
+  let buf = [];
+
+  const flush = () => {
+    if (!author) return;
+    const body = buf.join('\n').trim();
+    if (!body) { author = null; buf = []; return; }
+    let role, content;
+    if (author === principal || author === brainName) {
+      role = 'assistant'; content = body;
+    } else if (author === 'You') {
+      role = 'user'; content = body;
+    } else if (author === 'system') {
+      role = 'user'; content = `(system note) ${body}`;
+    } else {
+      role = 'user'; content = `[${author}]: ${body}`;
+    }
+    turns.push({ role, content });
+    author = null; buf = [];
+  };
+
+  for (const line of lines) {
+    const m = line.match(/^## (\S.*?) — (.+)$/);
+    if (m) { flush(); author = m[2]; }
+    else if (author) { buf.push(line); }
+  }
+  flush();
+  return mergeAdjacentSameRole(turns);
+}
+
+// Anthropic's Messages API expects alternating user/assistant turns. When
+// several non-claude authors speak in a row (multiple humans or a brain reply
+// before claude weighs in), they all map to consecutive `user` turns. Merge
+// them into one user turn whose body preserves both contributions, separated
+// by a blank line. Same for any accidental consecutive-assistant case.
+function mergeAdjacentSameRole(turns) {
+  const merged = [];
+  for (const t of turns) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.role === t.role) {
+      prev.content = prev.content + '\n\n' + t.content;
+    } else {
+      merged.push({ ...t });
+    }
+  }
+  return merged;
+}
+
 
 export function stream({ history, message }, onUpdate, options = {}) {
   return new Promise((resolve, reject) => {
@@ -109,8 +180,8 @@ export function stream({ history, message }, onUpdate, options = {}) {
       reject(err);
     });
 
-    // Resume mode: send only the new user turn (claude has the session in JSONL).
-    // Default mode: send the full conversation file (claude is stateless per call).
+    // Resume mode: send only the new user turn (claude has session in JSONL).
+    // Stateless mode: pipe the whole conversation file as one user message.
     proc.stdin.write(isResume ? (message ?? '') : (history ?? ''));
     proc.stdin.end();
   });

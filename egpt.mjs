@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import { spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
-import { readFile, appendFile, readdir, stat, open } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -86,6 +86,22 @@ async function readJsonlMetadata(path) {
     }
   } catch { /* unreadable, return what we have */ }
   return { cwd, preview };
+}
+
+// Summaries live in ~/.egpt/summaries/<name>.md as plain Markdown so they're
+// vim-editable, grep-able, and portable. /save writes one. /summarize asks a
+// brain to compose one. /inject drops one into the current room as a system
+// note. /summaries lists what's available.
+const SUMMARIES_DIR = join(homedir(), '.egpt', 'summaries');
+
+function isSafeName(name) {
+  return /^[A-Za-z0-9._-]+$/.test(name) && name !== '.' && name !== '..';
+}
+function summaryPath(name) {
+  return join(SUMMARIES_DIR, `${name}.md`);
+}
+async function ensureSummariesDir() {
+  await mkdir(SUMMARIES_DIR, { recursive: true });
 }
 
 // Find the JSONL for a given session ID *or prefix*. Returns { path, slug, sessionId }
@@ -417,6 +433,11 @@ function App() {
         '/last [N]                       show last N messages from the file (default 10)\n' +
         '@<name> <message>               address a session for THIS turn only,\n' +
         '                                without changing the principal\n\n' +
+        'Reusable distillations (~/.egpt/summaries/<name>.md):\n' +
+        '/save <name>                    save the latest non-system message verbatim\n' +
+        '/summarize <name>               principal compresses the room → summary file\n' +
+        '/summaries                      list saved summaries\n' +
+        '/inject <name>                  drop a saved summary into the room as a system note\n\n' +
         'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
         'Brains: ' + Object.keys(BRAINS).join(', '));
       return true;
@@ -516,6 +537,108 @@ function App() {
         await append(principal, text);
         sysOut('(refreshed from tab — full text appended to file)');
       } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/summaries') {
+      try {
+        await ensureSummariesDir();
+        const files = (await readdir(SUMMARIES_DIR)).filter(f => f.endsWith('.md'));
+        if (!files.length) { sysOut(`(no summaries yet — try /save <name> or /summarize <name>)\n  dir: ${SUMMARIES_DIR}`); return true; }
+        const rows = await Promise.all(files.map(async (f) => {
+          const p = join(SUMMARIES_DIR, f);
+          const st = await stat(p);
+          const head = (await readFile(p, 'utf8')).slice(0, 80).replace(/\s+/g, ' ');
+          return { name: f.replace(/\.md$/, ''), size: st.size, mtime: st.mtime, head };
+        }));
+        rows.sort((a, b) => b.mtime - a.mtime);
+        const fmtSize = (b) => b < 1024 ? `${b}B` : `${(b / 1024).toFixed(1)}K`;
+        sysOut(rows.map(r =>
+          `${r.name.padEnd(20)} ${fmtSize(r.size).padEnd(7)} "${r.head}${r.head.length >= 80 ? '…' : ''}"`
+        ).join('\n') + `\n\ndir: ${SUMMARIES_DIR}`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/save') {
+      // /save <name> — write the most recent NON-system message in the current
+      // room to ~/.egpt/summaries/<name>.md. Cheap, no LLM call. Useful for
+      // saving a clean answer (your own paragraph, or claude's last reply) for
+      // injection elsewhere later.
+      const name = arg.trim();
+      if (!isSafeName(name)) {
+        sysOut('usage: /save <name>\n  name: letters/digits/dot/dash/underscore only');
+        return true;
+      }
+      try {
+        const text = await readFile(FILE, 'utf8');
+        const turns = parseMessages(text).filter(m => m.author !== 'system');
+        if (!turns.length) { sysOut('(nothing to save — the room is empty)'); return true; }
+        const last = turns[turns.length - 1];
+        await ensureSummariesDir();
+        const body = `# ${name}\n\n_Saved ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from ${FILE}_\n_Author: ${last.author}_\n\n---\n\n${last.body}\n`;
+        await writeFile(summaryPath(name), body);
+        sysOut(`saved → ${summaryPath(name)}\n  (${last.body.length} chars from ${last.author})`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/summarize') {
+      // /summarize <name> — ask the principal to compress the current room and
+      // save the result as <name>.md. Uses the principal's brain via the same
+      // dispatch the user does, so the rules-aware turn convention applies.
+      const name = arg.trim();
+      if (!isSafeName(name)) {
+        sysOut('usage: /summarize <name>\n  the current principal will summarize the room into ~/.egpt/summaries/<name>.md');
+        return true;
+      }
+      const session = sessions[principal];
+      if (!session) { sysOut(`no session "${principal}"`); return true; }
+      const brain = BRAINS[session.brain];
+      if (!brain) { sysOut(`brain not found: ${session.brain}`); return true; }
+      try {
+        await ensureSummariesDir();
+        const history = await readFile(FILE, 'utf8');
+        const prompt =
+          `Summarize the conversation above into a tight, faithful condensation that ` +
+          `preserves the participants, the key decisions, and any open questions or ` +
+          `loose threads. Aim for under 600 words. Plain markdown, no preamble. ` +
+          `When you reply, output ONLY the summary text (no "Here is the summary:" boilerplate).`;
+        sysOut(`asking ${principal} to summarize…`);
+        setBusy(true);
+        setStreaming({ author: principal, text: '' });
+        let final;
+        try {
+          final = await brain.stream(
+            { history: `${history}\n\n## ${ts()} — You\n${prompt}\n\n`, message: prompt },
+            partial => setStreaming({ author: principal, text: partial }),
+            { ...session.options, principal },
+          );
+        } finally {
+          setStreaming(null); setBusy(false);
+        }
+        const body = `# ${name}\n\n_Summarized ${new Date().toISOString().slice(0, 16).replace('T', ' ')} by ${principal} (${session.brain}) from ${FILE}_\n\n---\n\n${final}\n`;
+        await writeFile(summaryPath(name), body);
+        sysOut(`saved → ${summaryPath(name)}  (${final.length} chars)`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/inject') {
+      // /inject <name> — drop a saved summary into the current room as a system
+      // note, so all brains pick it up as ambient context on their next turn.
+      const name = arg.trim();
+      if (!isSafeName(name)) {
+        sysOut('usage: /inject <name>\n  drops the summary into this room as a system note. /summaries to list.');
+        return true;
+      }
+      try {
+        const path = summaryPath(name);
+        const body = await readFile(path, 'utf8');
+        const note = `[injected summary "${name}" from ${path}]\n\n${body.trim()}`;
+        await append('system', note);
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+        sysOut(`injected "${name}" (${body.length} chars)`);
+      } catch (e) {
+        if (e.code === 'ENOENT') sysOut(`no summary named "${name}". /summaries to list.`);
+        else sysOut(`!! ${e.message}`);
+      }
       return true;
     }
     if (cmd === '/history') {
@@ -966,7 +1089,7 @@ function App() {
       const final = await brain.stream(
         { history, message: messageToBrain },
         partial => setStreaming({ author: routedTo, text: partial }),
-        opts,
+        { ...opts, principal: routedTo },
       );
       setStreaming(null);
 
