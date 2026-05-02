@@ -111,7 +111,8 @@ hola                                          # routes to ccode1 (default)
 #   long conversation in room A about topic X
 #   /summarize topic-x         → ~/.egpt/summaries/topic-x.md
 #   in a new egpt session against room B:
-#   /inject topic-x            → topic-x context now ambient in room B's brains
+#   /inject topic-x            → topic-x context now ambient in room B
+#   /inject topic-x codex      → topic-x context sent directly to codex
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -280,7 +281,7 @@ $ <command>
 <stdout/stderr>
 ```
 
-`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively: the first turn gets the egpt transcript as context, and later turns resume the Codex thread. Raw Codex events are mirrored to `~/.egpt/codex/<session>.jsonl`, so you can tail that file while the session runs.
+`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively, and later turns resume the Codex thread. Codex does not receive the whole egpt transcript automatically; summarize and inject context intentionally with `/summarize <name>` followed by `/inject <name> codex`. Raw Codex events are mirrored to `~/.egpt/codex/<session>.jsonl`, so you can tail that file while the session runs.
 
 ---
 
@@ -356,7 +357,7 @@ Reusable distillations (~/.egpt/summaries/<name>.md):
   /save <name>                  save the latest non-system message verbatim
   /summarize <name>              principal compresses the room → summary file
   /summaries                    list saved summaries
-  /inject <name>                drop a saved summary into the room as a system note
+  /inject <name> [session]      drop a saved summary into the room or one session
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
 Brains: ccode, codex, chatgpt-cdp, claude-cdp

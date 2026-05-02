@@ -255,14 +255,9 @@ function buildCodexPrompt({ history, message }, options) {
   }
   return [
     `Reply as ${sessionName} in an egpt room.`,
-    `The transcript is context only; do not acknowledge this wrapper or restate your setup.`,
     `Current user message: [${options.userName ?? 'An'}]: ${text}`,
     `Answer that current message directly. If it is a greeting, just greet back briefly.`,
     `If there is nothing useful to add, reply with exactly "...".`,
-    '',
-    '<egpt_transcript>',
-    history ?? '',
-    '</egpt_transcript>',
   ].join('\n');
 }
 

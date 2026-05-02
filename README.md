@@ -218,7 +218,7 @@ Each turn: spawn `claude --print --output-format stream-json --include-partial-m
 
 ### Codex brain/operator (`codex`)
 
-Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively; the first turn receives the egpt transcript as context, then later turns resume the Codex thread. Raw events are written to `~/.egpt/codex/<session>.jsonl` for `tail -f`.
+Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively and later turns resume the Codex thread. To give Codex room context, use `/summarize <name>` and then `/inject <name> codex`. Raw events are written to `~/.egpt/codex/<session>.jsonl` for `tail -f`.
 
 ### CDP brains (`chatgpt-cdp`, `claude-cdp`)
 

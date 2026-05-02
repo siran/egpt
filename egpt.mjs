@@ -582,7 +582,7 @@ function App() {
         '/cdp-summarize ...              same as /summarize but force CDP\n' +
         '/operator-summarize ...         force fresh ccode subprocess (no Chrome)\n' +
         '/summaries · /list-saved        list saved summaries\n' +
-        '/inject <name>                  drop a saved summary into the room as a system note\n\n' +
+        '/inject <name> [session]        drop a saved summary into the room or one session\n\n' +
         'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
         'Brains: ' + brainNamesForHelp());
       return true;
@@ -922,21 +922,45 @@ function App() {
       return true;
     }
     if (cmd === '/inject') {
-      // /inject <name> — drop a saved summary into the current room as a system
-      // note, so all brains pick it up as ambient context on their next turn.
-      const name = arg.trim();
+      // /inject <name>           — drop a saved summary into the current room
+      // /inject <name> <session> — send it directly to one brain session
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const [name, targetSpec] = parts;
       if (!isSafeName(name)) {
-        sysOut('usage: /inject <name>\n  drops the summary into this room as a system note. /summaries to list.');
+        sysOut('usage: /inject <name> [session]\n  no session: drops the summary into this room as a system note\n  with session: sends the summary directly to that brain. /summaries to list.');
+        return true;
+      }
+      if (parts.length > 2) {
+        sysOut('usage: /inject <name> [session]');
+        return true;
+      }
+      const target = targetSpec ? resolveAddressedSession(targetSpec, sessions) : null;
+      if (targetSpec && !target) {
+        sysOut(`no session or unambiguous brain named "${targetSpec}"`);
         return true;
       }
       try {
         const path = summaryPath(name);
         const body = await readFile(path, 'utf8');
-        const note = `[injected summary "${name}" from ${path}]\n\n${body.trim()}`;
+        const note = `[injected summary "${name}" from ${path}${target ? ` into ${target}` : ''}]\n\n${body.trim()}`;
         await append('system', note);
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
-        sysOut(`injected "${name}" (${body.length} chars)`);
+        if (target) {
+          setBusy(true);
+          try {
+            await runBrainTurn(
+              target,
+              `[system]: Please absorb this injected context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${note}`,
+            );
+          } finally {
+            setBusy(false);
+          }
+          sysOut(`injected "${name}" into ${target} (${body.length} chars)`);
+        } else {
+          sysOut(`injected "${name}" (${body.length} chars)`);
+        }
       } catch (e) {
+        setBusy(false);
         if (e.code === 'ENOENT') sysOut(`no summary named "${name}". /summaries to list.`);
         else sysOut(`!! ${e.message}`);
       }
