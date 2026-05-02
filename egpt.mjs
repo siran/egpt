@@ -192,27 +192,9 @@ async function resolveTabId(spec, brain = null) {
   return null;
 }
 
-// For a given session name, find what's NEW in the room since they last spoke.
-// Returns the array of turns after their last `## ts — <name>` heading. If they
-// never spoke before (never participated in this room), returns the whole room
-// as onboarding context with isFirstTime=true.
-function getDeltaForSession(fileText, sessionName) {
-  const turns = parseMessages(fileText);
-  let lastIdx = -1;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i].author === sessionName) { lastIdx = i; break; }
-  }
-  return { turns: turns.slice(lastIdx + 1), isFirstTime: lastIdx === -1 };
-}
-
-// Compose a brain prompt from a delta. The delta becomes [author]: line blocks;
-// a leading framing tells the brain whether they're catching up or onboarding.
-function composeDeltaPrompt(delta, isFirstTime) {
-  const ctx = delta.map(t => `[${t.author}]: ${t.body}`).join('\n\n');
-  return isFirstTime
-    ? `[Joining a shared room. Full context follows:]\n\n${ctx}\n\n[Please respond to the latest message. If you have nothing useful to add, reply with literally "..." to acknowledge silently.]`
-    : `[Update — new in our shared room since your last reply:]\n\n${ctx}\n\n[Please respond. If you have nothing useful to add, reply with literally "..." to acknowledge silently.]`;
-}
+// User name as it appears to brains (in [An]: prefixes when broadcasting/mirroring).
+// Override with EGPT_USER_NAME if you're not An.
+const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
 
 // Parse messages.md back into objects (for /last).
 function parseMessages(text) {
@@ -459,8 +441,11 @@ function App() {
         '                                explicitly @addressed (they are the operatives)\n\n' +
         'Reusable distillations (~/.egpt/summaries/<name>.md):\n' +
         '/save <name>                    save the latest non-system message verbatim\n' +
-        '/summarize <name>               fresh claude reads the room → summary file\n' +
-        '                                (independent of room participants — no bias)\n' +
+        '/summarize [all|last N] <name> [brain]\n' +
+        '                                a FRESH agent reads the room and writes a summary;\n' +
+        '                                default: fresh chatgpt-cdp tab if Chrome is running\n' +
+        '/cdp-summarize ...              same as /summarize but force CDP\n' +
+        '/operator-summarize ...         force fresh claude-code subprocess (no Chrome)\n' +
         '/summaries · /list-saved        list saved summaries\n' +
         '/inject <name>                  drop a saved summary into the room as a system note\n\n' +
         'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
@@ -605,26 +590,43 @@ function App() {
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
-    if (cmd === '/summarize') {
-      // /summarize <name> [<brain>]
-      // Spawns a *fresh* agent (not a room participant) to read the room and
-      // produce a summary. Default: open a fresh chatgpt-cdp tab if Chrome is
-      // running (the web envelope writes nicer summaries). Falls through to
-      // claude-cdp, then to a fresh `claude --print` subprocess. Override with
-      // an explicit brain name as the second arg.
+    if (cmd === '/summarize' || cmd === '/cdp-summarize' || cmd === '/operator-summarize') {
+      // Syntax:
+      //   /summarize [all|last <N>] <name> [<brain>]
+      //   /cdp-summarize ...           (force CDP path: chatgpt-cdp default)
+      //   /operator-summarize ...      (force fresh `claude --print` subprocess)
+      //
+      // The summarizer is always a fresh agent — never a room participant —
+      // so it has no bias from being inside the conversation it's summarizing.
       const parts = arg.split(/\s+/).filter(Boolean);
-      const name = parts[0];
-      let brainKey = parts[1];  // optional override
+      let scope = 'all', scopeN = null, i = 0;
+      if (parts[i] === 'all') { scope = 'all'; i++; }
+      else if (parts[i] === 'last' && /^\d+$/.test(parts[i+1] ?? '')) {
+        scope = 'last'; scopeN = parseInt(parts[i+1], 10); i += 2;
+      }
+      const name = parts[i++];
+      let brainKey = parts[i];
+
       if (!isSafeName(name ?? '')) {
-        sysOut('usage: /summarize <name> [<brain>]\n  default: chatgpt-cdp via fresh tab → claude-cdp → fresh claude-code\n  saves to ~/.egpt/summaries/<name>.md');
+        sysOut(
+          'usage: ' + cmd + ' [all|last <N>] <name> [<brain>]\n' +
+          '  default scope: all room messages\n' +
+          '  default brain: ' + (cmd === '/operator-summarize'
+            ? 'fresh claude-code subprocess'
+            : 'fresh chatgpt-cdp tab → claude-cdp → fresh claude-code') + '\n' +
+          '  saves to ~/.egpt/summaries/<name>.md'
+        );
         return true;
       }
+
       try {
         await ensureSummariesDir();
         const text = await readFile(FILE, 'utf8');
-        const turns = parseMessages(text).filter(t => t.author !== 'system');
-        if (!turns.length) { sysOut('(nothing to summarize — room is empty)'); return true; }
+        const allTurns = parseMessages(text).filter(t => t.author !== 'system');
+        if (!allTurns.length) { sysOut('(nothing to summarize — room is empty)'); return true; }
+        const turns = scope === 'last' && scopeN ? allTurns.slice(-scopeN) : allTurns;
         const formatted = turns.map(t => `[${t.author}]: ${t.body}`).join('\n\n');
+        const scopeLabel = scope === 'last' ? `last ${scopeN}` : 'all';
         const prompt =
           `Please summarize this conversation faithfully. ` +
           `Preserve participants, key decisions, and any open questions or loose threads. ` +
@@ -632,8 +634,10 @@ function App() {
           `Output ONLY the summary text — no "Here is the summary:" boilerplate.\n\n` +
           `---\n\n${formatted}`;
 
-        // Decide which brain to use
-        if (!brainKey) {
+        // Pick brain
+        const forceOperator = cmd === '/operator-summarize';
+        if (forceOperator) brainKey = null;
+        if (!brainKey && !forceOperator) {
           if (await cdp.isRunning()) {
             if (BRAINS['chatgpt-cdp']) brainKey = 'chatgpt-cdp';
             else if (BRAINS['claude-cdp']) brainKey = 'claude-cdp';
@@ -643,14 +647,10 @@ function App() {
         let summary;
         let summarizer;
         if (brainKey && BRAINS[brainKey]?.homeUrl) {
-          // CDP path — open a fresh tab, send prompt, capture
           summarizer = `${brainKey} (fresh tab)`;
-          sysOut(`opening a fresh ${brainKey} tab for summarization…`);
+          sysOut(`opening a fresh ${brainKey} tab for summarization (${scopeLabel} of ${allTurns.length} turns)…`);
           const targetId = await cdp.openTab(BRAINS[brainKey].homeUrl);
-          // Wait for the page to load enough that #prompt-textarea (or
-          // claude.ai's ProseMirror) is mounted. 3.5s is conservative; future
-          // improvement: poll for selector presence.
-          await new Promise(r => setTimeout(r, 3500));
+          await new Promise(r => setTimeout(r, 3500)); // wait for page to mount textarea
           setBusy(true);
           setStreaming({ author: summarizer, text: '' });
           try {
@@ -663,9 +663,8 @@ function App() {
             setStreaming(null); setBusy(false);
           }
         } else {
-          // Fallback: spawn a fresh `claude --print` subprocess
           summarizer = 'fresh claude-code';
-          sysOut('asking a fresh claude-code subprocess to summarize…');
+          sysOut(`asking a fresh claude-code subprocess to summarize (${scopeLabel} of ${allTurns.length} turns)…`);
           setBusy(true);
           try {
             summary = await new Promise((resolve, reject) => {
@@ -686,7 +685,7 @@ function App() {
 
         if (!summary) { sysOut('(empty summary)'); return true; }
         const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-        const body = `# ${name}\n\n_Summarized ${stamp} by ${summarizer} (independent of room participants) from ${FILE}_\n\n---\n\n${summary}\n`;
+        const body = `# ${name}\n\n_Summarized ${stamp} by ${summarizer} from ${FILE}_\n_Scope: ${scopeLabel}${scope === 'last' ? ` (of ${allTurns.length} total)` : ''}_\n\n---\n\n${summary}\n`;
         await writeFile(summaryPath(name), body);
         sysOut(`saved → ${summaryPath(name)}  (${summary.length} chars)`);
       } catch (e) {
@@ -1085,15 +1084,17 @@ function App() {
     return false;
   };
 
-  // Run a single brain-turn for one session. The brain's prompt is composed
-  // from the conversation file via delta-injection: everything new in the room
-  // since this session last replied, framed as "[update]" or "[joining]". This
-  // is what gives every brain shared-room visibility without auto-mirroring.
-  async function runBrainTurn(routedTo) {
+  // Run a single brain-turn for one session.
+  // `messageText` is exactly what gets injected into the brain (or piped to
+  // claude-code in resume mode). The caller is responsible for prefixing
+  // with [author]: when broadcasting or mirroring. Returns the brain's reply
+  // text (string) on a substantive answer, or null on silence/error so the
+  // caller knows whether to mirror it.
+  async function runBrainTurn(routedTo, messageText) {
     const session = sessions[routedTo];
-    if (!session) { sysOut(`!! no session "${routedTo}"`); return; }
+    if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = BRAINS[session.brain];
-    if (!brain) { sysOut(`!! brain not found: ${session.brain}`); return; }
+    if (!brain) { sysOut(`!! brain not found: ${session.brain}`); return null; }
 
     let opts = session.options;
     if (brain.urlMatch) {
@@ -1119,28 +1120,21 @@ function App() {
             sysOut(`!! multiple ${session.brain} tabs open for ${routedTo} — pick one:\n${lst}`);
             return;
           }
-        } catch (e) { sysOut(`!! ${routedTo}: ${e.message}`); return; }
+        } catch (e) { sysOut(`!! ${routedTo}: ${e.message}`); return null; }
       }
     }
     for (const req of (brain.requires ?? [])) {
       if (!opts[req]) {
         sysOut(`!! session ${routedTo} (${session.brain}) missing ${req}. /open ${session.brain} <name>.`);
-        return;
+        return null;
       }
     }
 
-    const history = await readFile(FILE, 'utf8');
-    const { turns: delta, isFirstTime } = getDeltaForSession(history, routedTo);
-    if (delta.length === 0) {
-      sysOut(`(${routedTo} skipped — nothing new since their last reply)`);
-      return;
-    }
-    const promptForBrain = composeDeltaPrompt(delta, isFirstTime);
-
     setStreaming({ author: routedTo, text: '' });
     try {
+      const history = await readFile(FILE, 'utf8');
       const final = await brain.stream(
-        { history, message: promptForBrain },
+        { history, message: messageText },
         partial => setStreaming({ author: routedTo, text: partial }),
         { ...opts, principal: routedTo },
       );
@@ -1152,13 +1146,15 @@ function App() {
           id: Date.now() + Math.random(), author: 'system',
           body: `${routedTo} acknowledged silently (${trimmed})`,
         }]);
-      } else {
-        setItems(p => [...p, { id: Date.now() + Math.random(), author: routedTo, body: final }]);
-        await append(routedTo, final);
+        return null;
       }
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: routedTo, body: final }]);
+      await append(routedTo, final);
+      return final;
     } catch (e) {
       setStreaming(null);
       sysOut(`!! ${routedTo}: ${e.message}`);
+      return null;
     }
   }
 
@@ -1183,33 +1179,55 @@ function App() {
     //   3. Otherwise (no CDP sessions) → fall back to the principal.
     const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
     let recipients;
+    let userPayload;
     if (mention && sessions[mention[1]]) {
       recipients = [mention[1]];
+      userPayload = (mention[2] ?? '').trim() || '?';
     } else {
       const cdpRecipients = Object.entries(sessions)
         .filter(([_, s]) => BRAINS[s.brain]?.urlMatch)
         .map(([n]) => n);
       recipients = cdpRecipients.length > 0 ? cdpRecipients : [principal];
+      userPayload = text;
     }
 
-    // The .md keeps the original text (including any @mention prefix). Brains
-    // get this content via delta-injection in runBrainTurn.
+    // The .md keeps the original text (including any @mention prefix).
     await append('You', text);
 
     setBusy(true);
     setError(null);
 
-    // Sequential broadcast: each speaker computes their own delta from the
-    // file (which grows as earlier speakers reply), so a later speaker sees
-    // earlier speakers' replies in this same turn. That's the "shared room"
-    // visibility the user asked for — every brain catches up to the room
-    // before they speak.
+    // Phase A — broadcast/single. Each brain receives just `[An]: <message>`
+    // (no fancy framing; the brain's tab keeps its own native history).
+    const messageForBrains = `[${USER_NAME}]: ${userPayload}`;
     if (recipients.length > 1) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
+    const replies = [];
     for (const recipient of recipients) {
-      await runBrainTurn(recipient);
+      const reply = await runBrainTurn(recipient, messageForBrains);
+      if (reply !== null) replies.push({ author: recipient, text: reply });
     }
+
+    // Phase B — one-hop mirror among CDP recipients. When brain B replied
+    // substantively, push "[B]: <reply>" into every OTHER CDP brain's tab so
+    // they see it. Receiving brains may reply or stay silent (per /rules).
+    // We do NOT mirror the secondary replies; cascade is bounded to one hop.
+    const cdpRecipients = recipients.filter(r => BRAINS[sessions[r]?.brain]?.urlMatch);
+    if (cdpRecipients.length > 1 && replies.length > 0) {
+      const mirrorables = replies.filter(r => BRAINS[sessions[r.author]?.brain]?.urlMatch);
+      if (mirrorables.length > 0) {
+        sysOut(`mirroring ${mirrorables.length} reply/replies to other CDP brains…`);
+        for (const { author, text: replyText } of mirrorables) {
+          const mirrorMsg = `[${author}]: ${replyText}`;
+          for (const other of cdpRecipients) {
+            if (other === author) continue;
+            await runBrainTurn(other, mirrorMsg);
+          }
+        }
+      }
+    }
+
     setBusy(false);
   };
 
