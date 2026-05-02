@@ -149,13 +149,14 @@ async function findSessionJsonl(sessionIdOrPrefix) {
 
 const FILE = process.argv[2] ?? './conversation.md';
 
-// preflight (only fatal if claude-code is the default principal)
+// preflight: claude is required because the default room has a claude-code
+// session (code1). CDP brains don't need the `claude` binary themselves, but
+// every fresh room starts with code1, so this binary must be present.
 {
   const r = spawnSync('claude', ['--version'], { stdio: 'pipe' });
   if (r.error?.code === 'ENOENT') {
     console.error('!! `claude` CLI not found on PATH.');
     console.error('   Install Claude Code: npm install -g @anthropic-ai/claude-code');
-    console.error('   (Other brains do not need it; switch with /principal.)');
     process.exit(1);
   }
 }
@@ -327,10 +328,11 @@ function App() {
   const [error, setError] = useState(null);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // Default participant: code1 (claude-code subprocess, no Chrome needed).
+  // No principal — every participant is equal. Routing is broadcast-by-default
+  // unless an @mention names a single recipient.
   const [sessions, setSessions] = useState({
     'code1': { brain: 'claude-code', options: {} },
   });
-  const [principal, setPrincipal] = useState('code1');
   // Elapsed-time tracking so the user has progress feedback during the
   // brain's pre-generation "thinking" phase (which can be 5-15s for a long
   // conversation file). When busy goes true we record the start; an interval
@@ -409,17 +411,15 @@ function App() {
     if (cmd === '/help') {
       sysOut(
         '/exit · /file · /help\n\n' +
-        'Sessions (named participants in the room):\n' +
+        'Sessions (named participants in the room — every participant is equal):\n' +
         '  Auto-naming: cgpt1, claude1, code1, codex1 ... per brain.\n' +
-        '  Names are auto-generated on /open, /attach, /principal-with-brain.\n' +
-        '  At startup egpt scans Chrome and auto-attaches every matching tab.\n\n' +
+        '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
+        '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
         '/attach                         re-scan Chrome, attach any new tabs\n' +
         '/attach <brain>                 attach all unattached tabs of that brain\n' +
         '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
-        '/principal [name [tabSpec]]     show/switch; brain name picks single\n' +
-        '                                existing or auto-creates one\n' +
-        '/sessions                       list registered sessions (* = principal)\n\n' +
+        '/sessions                       list registered sessions\n\n' +
         'Browser brains:\n' +
         '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
@@ -435,10 +435,12 @@ function App() {
         'Conversation:\n' +
         '/rules                          write room rules into file (silence, @, politeness)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n' +
-        '@<name> <message>               address a session for THIS turn only\n' +
-        '<message> without @            broadcasts to all CDP brains (the "thinkers");\n' +
-        '                                local brains (code/codex) stay silent unless\n' +
-        '                                explicitly @addressed (they are the operatives)\n\n' +
+        '<message>                       broadcasts to every session in the room. Each\n' +
+        '                                may reply or stay silent ("...") per /rules.\n' +
+        '                                Replies among CDP brains mirror once to other\n' +
+        '                                CDP tabs so all see all.\n' +
+        '@<name> <message>               single recipient for this turn (logged in the\n' +
+        '                                .md but only injected into that brain\'s tab)\n\n' +
         'Reusable distillations (~/.egpt/summaries/<name>.md):\n' +
         '/save <name>                    save the latest non-system message verbatim\n' +
         '/summarize [all|last N] <name> [brain]\n' +
@@ -453,43 +455,63 @@ function App() {
       return true;
     }
     if (cmd === '/session') {
-      // /session                  → show
-      // /session <id> [cwd]       → set resume sessionId (and optional cwd)
-      //                             on the current principal session.
-      // /session none             → clear (revert to stateless mode)
-      const session = sessions[principal];
-      if (!session) { sysOut(`no current session`); return true; }
-      if (!arg) {
-        sysOut(`${principal}.sessionId: ${session.options.sessionId ?? '(none)'}` +
-               `\n${principal}.cwd: ${session.options.cwd ?? '(none)'}`);
+      // /session <session-name>                       → show resume state
+      // /session <session-name> <id> [cwd]            → set resume id (cwd auto-detected)
+      // /session <session-name> none|clear            → clear (back to stateless)
+      // /session <id> [cwd]                           → shorthand: applies to the
+      //                                                 only claude-code session if
+      //                                                 there's exactly one
+      const parts = arg.split(/\s+/).filter(Boolean);
+      if (parts.length === 0) {
+        sysOut('usage: /session <session-name> [<id>|none] [cwd]\n  shorthand /session <id> works if there is exactly one claude-code session');
         return true;
       }
-      const parts = arg.split(/\s+/);
-      let sid = parts[0];
-      let cwd = parts.slice(1).join(' ').trim() || undefined;
+      // Resolve the target session
+      let target;
+      let restParts;
+      if (sessions[parts[0]]) {
+        target = parts[0];
+        restParts = parts.slice(1);
+      } else {
+        const codeSessions = Object.entries(sessions).filter(([_, s]) => s.brain === 'claude-code');
+        if (codeSessions.length === 1) {
+          target = codeSessions[0][0];
+          restParts = parts;
+        } else if (codeSessions.length > 1) {
+          sysOut(`multiple claude-code sessions: ${codeSessions.map(([n]) => n).join(', ')}\n  /session <session-name> <id>`);
+          return true;
+        } else {
+          sysOut(`no session named "${parts[0]}" and no claude-code session to default to`);
+          return true;
+        }
+      }
+      if (restParts.length === 0) {
+        const opts = sessions[target].options;
+        sysOut(`${target}.sessionId: ${opts.sessionId ?? '(none)'}\n${target}.cwd: ${opts.cwd ?? '(none)'}`);
+        return true;
+      }
+      let sid = restParts[0];
+      let cwd = restParts.slice(1).join(' ').trim() || undefined;
       if (sid === 'none' || sid === 'clear') {
         setSessions(s => ({
           ...s,
-          [principal]: {
-            ...s[principal],
+          [target]: {
+            ...s[target],
             options: Object.fromEntries(
-              Object.entries(s[principal].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
+              Object.entries(s[target].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
             ),
           },
         }));
-        sysOut(`${principal}: resume cleared (back to stateless mode)`);
+        sysOut(`${target}: resume cleared (back to stateless mode)`);
         return true;
       }
-      // Resolve the session ID to the full UUID. claude --resume requires a
-      // full UUID (or a saved title) — the prefix the user typed (e.g. from
-      // /history) won't work as-is. While we're at it, auto-detect cwd from
-      // the JSONL if not explicitly given.
+      // Resolve a prefix to the full session UUID and auto-detect cwd.
       let expandedFromPrefix = false;
       let detectedCwd = false;
       try {
         const found = await findSessionJsonl(sid);
         if (!found) {
-          sysOut(`!! no session matches "${sid}". /history to list, /session none to clear.`);
+          sysOut(`!! no session matches "${sid}". /history to list, /session ${target} none to clear.`);
           return true;
         }
         if (found.sessionId !== sid) { sid = found.sessionId; expandedFromPrefix = true; }
@@ -503,15 +525,15 @@ function App() {
       }
       setSessions(s => ({
         ...s,
-        [principal]: {
-          ...s[principal],
-          options: { ...s[principal].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
+        [target]: {
+          ...s[target],
+          options: { ...s[target].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
         },
       }));
-      sysOut(`${principal}.sessionId → ${sid}` +
+      sysOut(`${target}.sessionId → ${sid}` +
              (expandedFromPrefix ? '  (expanded from prefix)' : '') +
-             (cwd ? `\n${principal}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
-             `\n(claude --resume mode active for this session)`);
+             (cwd ? `\n${target}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
+             `\n(claude --resume mode active for ${target})`);
       return true;
     }
     if (cmd === '/rules') {
@@ -519,11 +541,11 @@ function App() {
       // reading the file will see it as ambient context. (Stateless brains and
       // CDP brains absorb this naturally; --resume brains won't see it via the
       // JSONL — for those, paste the rules manually as a turn if you want them.)
-      const others = Object.keys(sessions).filter(n => n !== principal).map(n => `${n} (${sessions[n].brain})`);
-      const all = [`${principal} (${sessions[principal].brain})`, ...others].join(', ');
+      const all = Object.entries(sessions).map(([n, s]) => `${n} (${s.brain})`).join(', ');
       const rules =
         `[Room rules — read once and remember]\n` +
-        `Participants right now: ${all}, plus the human admin (An).\n\n` +
+        `Participants right now: ${all}, plus the human admin (${USER_NAME}).\n` +
+        `Every participant — CDP brain or local operator — sees every mirrored message. No principal.\n\n` +
         `You don't have to reply to every message. Only speak when:\n` +
         `- you're directly addressed (your name or @mention),\n` +
         `- you have something specifically useful that hasn't been said,\n` +
@@ -537,15 +559,30 @@ function App() {
       return true;
     }
     if (cmd === '/refresh') {
-      const session = sessions[principal];
-      const brain = BRAINS[session?.brain];
-      if (!brain?.peek) { sysOut('/refresh only works on CDP brains (chatgpt-cdp, claude-cdp)'); return true; }
+      // /refresh <session-name> — re-poll a CDP session's tab and append the
+      // latest assistant text. Without a session name, only works if there's
+      // exactly one CDP session in the room.
+      const target = arg.trim();
+      let session, sessionName;
+      if (target) {
+        if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
+        sessionName = target; session = sessions[target];
+      } else {
+        const cdps = Object.entries(sessions).filter(([_, s]) => BRAINS[s.brain]?.urlMatch);
+        if (cdps.length !== 1) {
+          sysOut(`usage: /refresh <session-name>\n  ${cdps.length === 0 ? 'no CDP sessions in the room' : `multiple CDP sessions: ${cdps.map(([n]) => n).join(', ')}`}`);
+          return true;
+        }
+        sessionName = cdps[0][0]; session = cdps[0][1];
+      }
+      const brain = BRAINS[session.brain];
+      if (!brain?.peek) { sysOut(`/refresh only works on CDP brains (${sessionName} is ${session.brain})`); return true; }
       try {
         const text = await brain.peek(session.options);
         if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
-        setItems(p => [...p, { id: Date.now(), author: principal, body: text }]);
-        await append(principal, text);
-        sysOut('(refreshed from tab — full text appended to file)');
+        setItems(p => [...p, { id: Date.now(), author: sessionName, body: text }]);
+        await append(sessionName, text);
+        sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
@@ -823,7 +860,6 @@ function App() {
       } catch { /* Chrome not running — that's fine for non-CDP sessions */ }
 
       const rows = Object.entries(sessions).map(([name, s]) => {
-        const marker = name === principal ? '*' : ' ';
         const namePad = name.padEnd(14);
         const brainPad = s.brain.padEnd(13);
         let detail = '';
@@ -833,7 +869,7 @@ function App() {
         } else if (s.options.sessionId) {
           detail = `claude --resume ${s.options.sessionId.slice(0, 8)}…`;
         }
-        return `${marker} ${namePad}${brainPad}${detail}`;
+        return `${namePad}${brainPad}${detail}`;
       });
       sysOut(rows.join('\n') || '(none)');
       return true;
@@ -932,96 +968,9 @@ function App() {
       }
 
       setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options } }));
-      setPrincipal(sessionName);
       sysOut(`session "${sessionName}" → ${brainName}` +
         (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
-        `\nprincipal → ${sessionName}\n` +
-        `address it as @${sessionName} for guest turns`);
-      return true;
-    }
-    if (cmd === '/principal') {
-      if (!arg) {
-        sysOut(`principal: ${principal}\nuse /principal <name> [tabSpec] to switch`);
-        return true;
-      }
-      const [target, ...rest] = arg.split(/\s+/);
-      const tabSpec = rest.join(' ').trim();
-
-      // 1) existing session — switch (and optionally rebind tab)
-      if (sessions[target]) {
-        setPrincipal(target);
-        let msg = `principal → ${target}`;
-        if (tabSpec) {
-          try {
-            const tid = await resolveTabId(tabSpec);
-            if (tid) {
-              setSessions(s => ({ ...s, [target]: { ...s[target], options: { ...s[target].options, targetId: tid } } }));
-              msg += `\n${target}.targetId → ${tid.slice(0, 8)}…`;
-            } else {
-              msg += `\n(could not resolve "${tabSpec}" to a tab; principal switched but tab unchanged)`;
-            }
-          } catch (e) { msg += `\n!! ${e.message}`; }
-        }
-        sysOut(msg);
-        return true;
-      }
-
-      // 2) brain name — switch to single existing session of that brain,
-      //    or auto-create a new session with auto-name (cgpt2, claude1, ...).
-      const brain = BRAINS[target];
-      if (brain) {
-        const ofBrain = Object.entries(sessions).filter(([_, s]) => s.brain === target);
-        // 2a) one existing session of this brain, no explicit tabSpec → just switch
-        if (ofBrain.length === 1 && !tabSpec) {
-          const [name] = ofBrain[0];
-          setPrincipal(name);
-          sysOut(`principal → ${name}`);
-          return true;
-        }
-        // 2b) multiple existing sessions of this brain → ask for disambiguation
-        if (ofBrain.length > 1 && !tabSpec) {
-          const names = ofBrain.map(([n, s]) =>
-            `  ${n}` + (s.options?.targetId ? ` (tab ${s.options.targetId.slice(0, 8)}…)` : '')
-          ).join('\n');
-          sysOut(`multiple sessions for ${target}:\n${names}\nuse: /principal <name>`);
-          return true;
-        }
-        // 2c) zero existing OR explicit tabSpec → create a new session
-        const newName = nextName(target, sessions);
-        const options = {};
-        if (brain.urlMatch) {
-          try {
-            if (tabSpec) {
-              const tid = await resolveTabId(tabSpec, brain);
-              if (!tid) {
-                sysOut(`could not resolve "${tabSpec}" to a tab. /tabs to see open tabs.`);
-                return true;
-              }
-              options.targetId = tid;
-            } else {
-              const tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
-              if (tabs.length === 0) {
-                sysOut(`no open ${target} tabs. /open ${target} opens one, or pass a tabSpec.`);
-                return true;
-              }
-              if (tabs.length > 1) {
-                const lines = tabs.map(t => `  ${t.id.slice(0, 8)}…  ${t.url}`).join('\n');
-                sysOut(`multiple ${target} tabs open. pick one:\n${lines}\nuse: /principal ${target} <urlOrIdOrUuid>`);
-                return true;
-              }
-              options.targetId = tabs[0].id;
-            }
-          } catch (e) { sysOut(`!! ${e.message}`); return true; }
-        }
-        setSessions(s => ({ ...s, [newName]: { brain: target, options } }));
-        setPrincipal(newName);
-        sysOut(`session "${newName}" → ${target}` +
-          (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
-          `\nprincipal → ${newName}`);
-        return true;
-      }
-
-      sysOut(`no session or brain named "${target}". one of: ${Object.keys(BRAINS).join(', ')}`);
+        `\n  address it as @${sessionName} for a single-recipient turn`);
       return true;
     }
     if (cmd === '/open') {
@@ -1043,10 +992,9 @@ function App() {
           options.targetId = await cdp.openTab(brain.homeUrl);
         }
         setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options } }));
-        setPrincipal(sessionName);
         sysOut(`session "${sessionName}" → ${brainName}` +
           (options.targetId ? ` (target: ${options.targetId.slice(0, 8)}…)` : '') +
-          `\nprincipal → ${sessionName}`);
+          `\n  address it as @${sessionName} for a single-recipient turn`);
       } catch (e) {
         sysOut(`!! ${e.message}`);
       }
@@ -1136,7 +1084,7 @@ function App() {
       const final = await brain.stream(
         { history, message: messageText },
         partial => setStreaming({ author: routedTo, text: partial }),
-        { ...opts, principal: routedTo },
+        opts,
       );
       setStreaming(null);
       const trimmed = (final ?? '').trim();
@@ -1170,13 +1118,13 @@ function App() {
       if (handled) return;
     }
 
-    // Routing decision:
-    //   1. "@name ..." → route to that single session only.
-    //   2. Otherwise, if any CDP-brain sessions exist in the room → broadcast
-    //      to ALL of them (the "thinkers"). Local brains (claude-code, codex)
-    //      are operatives, not default speakers; they stay silent unless
-    //      explicitly @addressed.
-    //   3. Otherwise (no CDP sessions) → fall back to the principal.
+    // Routing:
+    //   - "@name ..." → that single session only. The full text (with @name
+    //     prefix) lands in the .md; only the addressed brain's tab gets the
+    //     payload injected.
+    //   - any other message → broadcasts to every session in the room (CDP
+    //     brains and local operators alike). Each may reply or stay silent
+    //     per the polite-silence convention.
     const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
     let recipients;
     let userPayload;
@@ -1184,12 +1132,10 @@ function App() {
       recipients = [mention[1]];
       userPayload = (mention[2] ?? '').trim() || '?';
     } else {
-      const cdpRecipients = Object.entries(sessions)
-        .filter(([_, s]) => BRAINS[s.brain]?.urlMatch)
-        .map(([n]) => n);
-      recipients = cdpRecipients.length > 0 ? cdpRecipients : [principal];
+      recipients = Object.keys(sessions);
       userPayload = text;
     }
+    if (recipients.length === 0) { setBusy(false); setError('no participants in the room — try /open or /attach'); return; }
 
     // The .md keeps the original text (including any @mention prefix).
     await append('You', text);
@@ -1241,7 +1187,7 @@ function App() {
         h(Text, null, item.body))),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, { color: 'gray' },
-        `[principal: ${principal} · ${sessions[principal]?.brain ?? '?'}]`),
+        `[room: ${Object.keys(sessions).join(', ') || '(empty)'}]`),
       streaming && (() => {
         // Show only the trailing portion of long streamed text — keeps the
         // dynamic area small even for multi-page replies, and reduces Ink's
