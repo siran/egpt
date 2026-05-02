@@ -592,13 +592,10 @@ function App() {
       return true;
     }
     if (cmd === '/rules') {
-      // Compose the rules text, write it to the .md, show it in the transcript
-      // (which also mirrors to Telegram via the items.length effect), then
-      // PUSH it into each CDP brain's tab — CDP brains can't see the .md, only
-      // what's injected into their textarea, so without this push the rules are
-      // invisible to the very participants they're meant to instruct.
-      // Local brains (claude-code) read the .md on each invocation and pick up
-      // the rules naturally on their next turn — no per-brain inject needed.
+      // Just emit the rules as a system message: written to the .md, shown in
+      // the local transcript, mirrored to Telegram via the items.length effect.
+      // CDP brains don't read the .md, so they won't see this until the admin
+      // explicitly /mirror's the latest message to them.
       const all = Object.entries(sessions).map(([n, s]) => `${n} (${s.brain})`).join(', ');
       const rules =
         `[Room rules — read once and remember]\n` +
@@ -612,32 +609,23 @@ function App() {
         `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
         `You may @mention another participant to ask them something. The admin\n` +
         `arbitrates when AI-AI exchanges get loud.`;
-
       await append('system', rules);
       setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
-
-      const cdpSessions = Object.entries(sessions).filter(([_, s]) => BRAINS[s.brain]?.urlMatch);
-      if (cdpSessions.length === 0) {
-        sysOut('(no CDP brains in the room — rules saved to file; local brains will see them on their next turn)');
-        return true;
-      }
-      sysOut(`pushing rules to ${cdpSessions.length} CDP brain(s)…`);
-      setBusy(true);
-      try {
-        for (const [name] of cdpSessions) {
-          await runBrainTurn(name, `[system]\n${rules}`);
-        }
-      } finally { setBusy(false); }
       return true;
     }
     if (cmd === '/mirror') {
-      // Push a session's last reply into another session's tab.
+      // Push a message into one or more CDP tabs.
       // Forms:
-      //   /mirror                       → most recent non-system non-You reply
-      //                                   pushed to all OTHER CDP brains
-      //   /mirror <target>              → most recent non-system non-You reply
-      //                                   pushed to one target session
-      //   /mirror <source> <target>     → last reply from <source> pushed to <target>
+      //   /mirror                       → latest non-You non-silence-ack message
+      //                                   to all OTHER CDP brains
+      //   /mirror <target>              → same source, only that target
+      //   /mirror <source> <target>     → <source>'s last message → <target>
+      // System messages (e.g. /rules output) are eligible sources; silence
+      // acknowledgements ("X acknowledged silently (...)") are skipped because
+      // they're operational noise, not content.
+      const isSilenceAck = (m) => m.author === 'system' && /acknowledged silently/.test(m.body);
+      const isMirrorable = (m) => m.author !== 'You' && !isSilenceAck(m);
+
       const parts = arg.split(/\s+/).filter(Boolean);
       const text = await readFile(FILE, 'utf8');
       let source, targets;
@@ -646,9 +634,9 @@ function App() {
         source = parts[0];
         targets = [parts[1]];
       } else {
-        const replies = parseMessages(text).filter(t => t.author !== 'system' && t.author !== 'You');
-        if (!replies.length) { sysOut('(no reply to mirror — room has no brain replies yet)'); return true; }
-        source = replies[replies.length - 1].author;
+        const candidates = parseMessages(text).filter(isMirrorable);
+        if (!candidates.length) { sysOut('(nothing to mirror — room has no content yet)'); return true; }
+        source = candidates[candidates.length - 1].author;
         if (parts.length === 1) targets = [parts[0]];
         else {
           targets = Object.entries(sessions)
@@ -661,9 +649,10 @@ function App() {
         }
       }
 
-      // Find last body from source
-      const sourceTurns = parseMessages(text).filter(t => t.author === source);
-      if (!sourceTurns.length) { sysOut(`no replies from "${source}" in this room`); return true; }
+      // Find the source's most recent message of any kind (besides silence acks).
+      const sourceTurns = parseMessages(text)
+        .filter(t => t.author === source && !isSilenceAck(t));
+      if (!sourceTurns.length) { sysOut(`no messages from "${source}" in this room`); return true; }
       const lastBody = sourceTurns[sourceTurns.length - 1].body;
 
       // Validate targets
@@ -672,7 +661,7 @@ function App() {
       }
 
       const mirrorMsg = `[${source}]: ${lastBody}`;
-      sysOut(`mirroring last reply by ${source} to: ${targets.join(', ')}`);
+      sysOut(`mirroring last message from ${source} to: ${targets.join(', ')}`);
       setBusy(true);
       try {
         for (const t of targets) {
