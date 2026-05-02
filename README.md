@@ -219,7 +219,11 @@ Each turn: spawn `claude --print --output-format stream-json --include-partial-m
 
 ### Codex brain/operator (`codex`)
 
-Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively and later turns resume the Codex thread. To give Codex room context, use `/summarize <name>` and then `/inject <name> codex`. Raw events are written to `~/.egpt/codex/<session>.jsonl` for `tail -f`.
+Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there.
+
+Non-`exec:` messages are sent to `codex exec` non-interactively and later turns resume the Codex thread. egpt forces `model_reasoning_effort="low"` by default for these Codex turns; override with `EGPT_CODEX_REASONING_EFFORT=medium|high|xhigh` if needed. To give Codex room context, use `/summarize <name>` and then `/inject <name> codex`.
+
+There are three storage layers: the room stays in `conversation.md`, egpt mirrors Codex events to `~/.egpt/codex/<session>.jsonl` for `tail -f`, and Codex stores its native rollout under `~/.codex/sessions/.../rollout-<timestamp>-<thread-id>.jsonl`. `/sessions` shows the Codex thread id, current cwd, effort, and egpt mirror log path after the first Codex turn.
 
 ### CDP brains (`chatgpt-cdp`, `claude-cdp`)
 

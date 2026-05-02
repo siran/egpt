@@ -586,7 +586,8 @@ function App() {
         '/session <id> <cwd>             explicit cwd if auto-detection fails\n' +
         '/session none                   back to stateless mode (re-reads file each turn)\n' +
         '@codex exec: <command>          run a shell command in codex\'s cwd\n' +
-        '@codex exec: cd <dir>           change codex\'s persistent cwd\n\n' +
+        '@codex exec: cd <dir>           change codex\'s persistent cwd\n' +
+        '                                /sessions shows Codex thread/log/effort\n\n' +
         'Conversation:\n' +
         '/rules                          write room rules into file (silence, @, politeness)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n' +

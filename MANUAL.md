@@ -282,7 +282,15 @@ $ <command>
 <stdout/stderr>
 ```
 
-`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively, and later turns resume the Codex thread. Codex does not receive the whole egpt transcript automatically; summarize and inject context intentionally with `/summarize <name>` followed by `/inject <name> codex`. Raw Codex events are mirrored to `~/.egpt/codex/<session>.jsonl`, so you can tail that file while the session runs.
+`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively, and later turns resume the Codex thread. Codex does not receive the whole egpt transcript automatically; summarize and inject context intentionally with `/summarize <name>` followed by `/inject <name> codex`.
+
+Codex storage is separate from the egpt room:
+
+- `conversation.md` is the shared room transcript.
+- `~/.egpt/codex/<session>.jsonl` is egpt's tail-able mirror of Codex events.
+- `~/.codex/sessions/.../rollout-<timestamp>-<thread-id>.jsonl` is Codex's native rollout file.
+
+Run `/sessions` after the first Codex turn to see the Codex thread id, cwd, effort, and egpt mirror log path. egpt invokes Codex with `model_reasoning_effort="low"` by default because that is the lowest effort supported by this CLI; set `EGPT_CODEX_REASONING_EFFORT=medium`, `high`, or `xhigh` before launch to override.
 
 ---
 

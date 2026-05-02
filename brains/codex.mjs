@@ -17,11 +17,13 @@ export const requires = [];
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const DEFAULT_CODEX_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
+const DEFAULT_CODEX_REASONING_EFFORT = 'low';
 const CODEX_LOG_DIR = join(homedir(), '.egpt', 'codex');
 
 export function stateDetail(options = {}) {
   const parts = [`cwd: ${options.cwd ?? process.cwd()}`];
-  if (options.sessionId) parts.push(`resume: ${options.sessionId.slice(0, 8)}...`);
+  parts.push(`effort: ${codexReasoningEffort(options)}`);
+  if (options.sessionId) parts.push(`thread: ${options.sessionId}`);
   if (options.logPath) parts.push(`log: ${options.logPath}`);
   return parts.join(' | ');
 }
@@ -96,6 +98,11 @@ function shellFor(command) {
 function parsePositiveInt(value, fallback) {
   const n = Number.parseInt(value ?? '', 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function codexReasoningEffort(options = {}) {
+  const raw = options.reasoningEffort ?? process.env.EGPT_CODEX_REASONING_EFFORT ?? DEFAULT_CODEX_REASONING_EFFORT;
+  return raw === 'minimal' || raw === 'minimum' || raw === 'min' ? 'low' : raw;
 }
 
 function safeName(name) {
@@ -250,11 +257,14 @@ function buildCodexPrompt({ history, message }, options) {
       `[${options.userName ?? 'An'}]: ${text}`,
       '',
       `Reply as ${sessionName} in the egpt room.`,
+      `Codex thread id for this egpt session: ${options.sessionId}`,
+      `Configured reasoning effort for this invocation: ${codexReasoningEffort(options)}`,
       `Current egpt cwd for this session: ${options.cwd ?? process.cwd()}`,
     ].join('\n');
   }
   return [
     `Reply as ${sessionName} in an egpt room.`,
+    `Configured reasoning effort for this invocation: ${codexReasoningEffort(options)}`,
     `Current user message: [${options.userName ?? 'An'}]: ${text}`,
     `Answer that current message directly. If it is a greeting, just greet back briefly.`,
     `If there is nothing useful to add, reply with exactly "...".`,
@@ -273,10 +283,12 @@ async function runCodex(turn, onUpdate, options) {
   const trustArgs = process.env.EGPT_CODEX_TRUST === '0'
     ? []
     : ['--dangerously-bypass-approvals-and-sandbox'];
+  const configArgs = ['-c', `model_reasoning_effort="${codexReasoningEffort(options)}"`];
   const args = options.sessionId
     ? [
         'exec', 'resume',
         '--json',
+        ...configArgs,
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
         ...trustArgs,
@@ -286,6 +298,7 @@ async function runCodex(turn, onUpdate, options) {
     : [
         'exec',
         '--json',
+        ...configArgs,
         '--cd', cwd,
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
@@ -293,7 +306,13 @@ async function runCodex(turn, onUpdate, options) {
         prompt,
       ];
   const cmd = codexSpawn(args);
-  logLine(logPath, { type: 'codex.start', cwd, resume: options.sessionId ?? null, prompt });
+  logLine(logPath, {
+    type: 'codex.start',
+    cwd,
+    resume: options.sessionId ?? null,
+    reasoningEffort: codexReasoningEffort(options),
+    prompt,
+  });
 
   try {
     return await new Promise((resolvePromise, reject) => {
@@ -360,10 +379,15 @@ async function runCodex(turn, onUpdate, options) {
         if (!final && stderr.trim()) final = stderr.trim();
         if (timedOut) final = `${final ? final + '\n' : ''}[codex timed out after ${Math.round(timeoutMs / 1000)}s]`;
         else if (code !== 0 && !final) final = `[codex exit ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}]`;
-        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId });
+        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId, reasoningEffort: codexReasoningEffort(options) });
         resolvePromise({
           text: final || '...',
-          optionsPatch: { cwd, logPath, ...(sessionId ? { sessionId } : {}) },
+          optionsPatch: {
+            cwd,
+            logPath,
+            reasoningEffort: codexReasoningEffort(options),
+            ...(sessionId ? { sessionId } : {}),
+          },
         });
       });
     });
