@@ -60,6 +60,8 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 hello everyone                                # broadcast to all sessions in the room
 /open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
 /attach                                       # rescan Chrome for new tabs
+/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
+                                              # paste everything before chapter 8 into alex
 
 
 # ------------------------------------------------------------------------
@@ -389,6 +391,28 @@ This writes a system message into the file describing:
 
 Any brain that reads the `.md` (stateless ccode, all CDP brains) will absorb this as ambient context.
 
+### Pasting local file excerpts
+
+Use `/paste-file` when the source of context is already on disk and you want it
+sent directly to one brain without saving an intermediate summary:
+
+```text
+/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
+```
+
+The command sends the excerpt to the target session but only writes a short
+system note to `conversation.md`. By default the target is asked to absorb the
+excerpt and reply with `...`; add `--ask "what do you think of Part I?"` to ask
+in the same prompt. Marker options are plain substring matches:
+
+- `--before <marker>` excludes the marker and everything after it
+- `--after <marker>` excludes everything through the marker
+- `--from <marker>` includes the marker and everything after it
+- `--to <marker>` includes text through the marker
+
+Large accidental pastes are capped at 120k characters; use `--max 0` or `--all`
+to send a larger excerpt intentionally.
+
 ---
 
 ## Slash command reference
@@ -414,6 +438,8 @@ Browser brains:
   /brain [status|stop]          brain Chrome lifecycle (CDP-based)
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
+  /paste-file <session> <path>  paste a local file/excerpt into one session
+                                supports --before/--after markers and --ask
 
 Local brains/operators:
   /history [N]                  list recent ccode sessions on disk (newest first)

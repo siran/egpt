@@ -158,6 +158,8 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 @codex exec: cd ../siran/writing             # change codex's persistent cwd
 /open chatgpt-cdp                            # opens/registers a ChatGPT tab
 /open claude-cdp claude1                     # opens a fresh claude.ai tab, named claude1
+/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
+                                             # paste the book up to chapter 8 into alex
 /sessions                                    # see who's registered
 /last 5                                      # replay last 5 messages from the file
 /refresh                                     # if a streaming reply got cut off
@@ -199,10 +201,22 @@ Sobre la pregunta original...
 /brain [status|stop]            brain Chrome lifecycle (CDP-based)
 /refresh                        re-poll current CDP tab; append full text
                                 (use when streaming was cut off)
+/paste-file <session> <path>     paste a local file/excerpt into one session
+                                (--before/--after markers, --ask prompt)
 /last [N]                       show last N messages from the file (default 10)
 @codex exec: <command>          run shell command in codex cwd
 @codex exec: cd <dir>           change codex cwd for later commands
 ```
+
+`/paste-file` sends local file content directly to one session without adding
+the full content to `conversation.md`. Example:
+
+```text
+/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
+```
+
+Use `--ask "..."` to ask a question in the same prompt, or omit it to ask the
+target to absorb the excerpt silently.
 
 ## Architecture
 

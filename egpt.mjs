@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -159,6 +159,7 @@ const PROFILE_TYPE_ALIASES = {
 
 const CHATGPT_CONVERSATION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_PASTE_FILE_MAX_CHARS = 120_000;
 
 const PROFILE_CREATE_SCOPES = {
   user: USER_BRAIN_PROFILE_DIR,
@@ -197,6 +198,162 @@ function profileCreateUsage() {
     '  bare ids become https://chatgpt.com/c/<id>',
     '  writes YAML to ~/.egpt/brains by default',
   ].join('\n');
+}
+
+function pasteFileUsage() {
+  return [
+    'usage: /paste-file <session> <path> [--before <marker>] [--after <marker>] [--from <marker>] [--to <marker>]',
+    '       /paste-file <session> <path> [--ask <prompt>] [--max <chars>|--max 0]',
+    '  quote paths or markers with spaces',
+    '  example: /paste-file alex "C:\\path\\book.md" --before "# 8."',
+  ].join('\n');
+}
+
+function parseCommandWords(input) {
+  const words = [];
+  let cur = '';
+  let quote = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (/\s/.test(ch)) {
+      if (cur) {
+        words.push(cur);
+        cur = '';
+      }
+    } else {
+      cur += ch;
+    }
+  }
+  if (quote) throw new Error(`unterminated ${quote} quote`);
+  if (cur) words.push(cur);
+  return words;
+}
+
+function expandUserPath(path, base = process.cwd()) {
+  let out = String(path ?? '').trim();
+  if (!out) throw new Error('missing path');
+  if (out === '~') out = homedir();
+  else if (out.startsWith('~/') || out.startsWith('~\\')) out = join(homedir(), out.slice(2));
+  return isAbsolute(out) ? resolve(out) : resolve(base, out);
+}
+
+function parsePositiveLimit(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  const n = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`invalid --max value: ${value}`);
+  return n;
+}
+
+function parsePasteFileArgs(arg) {
+  const words = parseCommandWords(arg);
+  if (words.length < 2) throw new Error(pasteFileUsage());
+  const targetSpec = words.shift();
+  const path = words.shift();
+  const opts = {
+    targetSpec,
+    path,
+    maxChars: DEFAULT_PASTE_FILE_MAX_CHARS,
+  };
+
+  while (words.length) {
+    const key = words.shift();
+    if (key === '--before' || key === '--after' || key === '--from' || key === '--to' || key === '--ask' || key === '--max') {
+      if (!words.length) throw new Error(`${key} requires a value`);
+      const value = words.shift();
+      if (key === '--max') opts.maxChars = parsePositiveLimit(value, DEFAULT_PASTE_FILE_MAX_CHARS);
+      else opts[key.slice(2)] = value;
+    } else if (key === '--all') {
+      opts.maxChars = 0;
+    } else {
+      throw new Error(`unknown option ${key}\n\n${pasteFileUsage()}`);
+    }
+  }
+
+  return opts;
+}
+
+function markerIndexOrThrow(text, marker, startAt = 0, label = 'marker') {
+  const idx = text.indexOf(marker, startAt);
+  if (idx < 0) throw new Error(`${label} not found: ${marker}`);
+  return idx;
+}
+
+function sliceTextByMarkers(text, options) {
+  let start = 0;
+  let end = text.length;
+  const notes = [];
+
+  if (options.after) {
+    const idx = markerIndexOrThrow(text, options.after, 0, '--after');
+    start = idx + options.after.length;
+    notes.push(`after ${JSON.stringify(options.after)}`);
+  }
+  if (options.from) {
+    const idx = markerIndexOrThrow(text, options.from, start, '--from');
+    start = idx;
+    notes.push(`from ${JSON.stringify(options.from)}`);
+  }
+  if (options.before) {
+    const idx = markerIndexOrThrow(text, options.before, start, '--before');
+    end = Math.min(end, idx);
+    notes.push(`before ${JSON.stringify(options.before)}`);
+  }
+  if (options.to) {
+    const idx = markerIndexOrThrow(text, options.to, start, '--to');
+    end = Math.min(end, idx + options.to.length);
+    notes.push(`to ${JSON.stringify(options.to)}`);
+  }
+  if (end < start) throw new Error('marker range is empty or inverted');
+
+  return {
+    text: text.slice(start, end),
+    start,
+    end,
+    label: notes.length ? notes.join(', ') : 'whole file',
+  };
+}
+
+async function readPasteFilePayload(options) {
+  const path = expandUserPath(options.path);
+  const original = await readFile(path, 'utf8');
+  const sliced = sliceTextByMarkers(original, options);
+  const maxChars = parsePositiveLimit(options.maxChars, DEFAULT_PASTE_FILE_MAX_CHARS);
+  if (maxChars > 0 && sliced.text.length > maxChars) {
+    throw new Error(
+      `selected excerpt is ${sliced.text.length} chars, over --max ${maxChars}. ` +
+      'Use a narrower marker range or --max 0 / --all to send it anyway.',
+    );
+  }
+  return {
+    path,
+    originalChars: original.length,
+    excerpt: sliced.text,
+    start: sliced.start,
+    end: sliced.end,
+    rangeLabel: sliced.label,
+  };
+}
+
+function buildPasteFileMessage(payload, options) {
+  const header = [
+    `[file paste from egpt]`,
+    `path: ${payload.path}`,
+    `range: ${payload.rangeLabel}`,
+    `chars: ${payload.excerpt.length} of ${payload.originalChars}`,
+    '',
+    payload.excerpt,
+  ].join('\n');
+  if (options.ask) {
+    return `${header}\n\n[request]\n${options.ask}`;
+  }
+  return `[system]: Please read and keep this file excerpt in context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${header}`;
 }
 
 async function findBrainProfilePath(name) {
@@ -1008,6 +1165,8 @@ function App() {
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
         '/refresh [<session-name>]       re-poll CDP tab; append latest assistant text\n' +
         '                                (use when streaming was cut off)\n' +
+        '/paste-file <session> <path>     paste a local file/excerpt into one session\n' +
+        '                                use --before/--after/--ask; quote spaces\n' +
         '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
         '                                session\'s tab (default: last reply → all\n' +
         '                                other CDPs — useful after an operator output)\n\n' +
@@ -1071,6 +1230,47 @@ function App() {
         }
       } catch (e) {
         sysOut(e.message.includes('usage: /profile') ? e.message : `!! ${e.message}\n\n${profileCreateUsage()}`);
+      }
+      return true;
+    }
+    if (cmd === '/paste-file' || cmd === '/inject-file' || cmd === '/send-file' || cmd === '/paste') {
+      let parsed;
+      try {
+        parsed = parsePasteFileArgs(arg);
+      } catch (e) {
+        sysOut(e.message);
+        return true;
+      }
+      const target = resolveAddressedSession(parsed.targetSpec, sessions);
+      if (!target) {
+        sysOut(`no session or unambiguous brain named "${parsed.targetSpec}"`);
+        return true;
+      }
+
+      try {
+        const payload = await readPasteFilePayload(parsed);
+        if (!payload.excerpt.trim()) {
+          sysOut('selected file excerpt is empty');
+          return true;
+        }
+        const note =
+          `[pasted file excerpt into ${target}]\n` +
+          `path: ${payload.path}\n` +
+          `range: ${payload.rangeLabel}\n` +
+          `chars: ${payload.excerpt.length} of ${payload.originalChars}` +
+          (parsed.ask ? '\nmode: paste + ask' : '\nmode: paste as context');
+        await append('system', note);
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+        setBusy(true);
+        try {
+          await runBrainTurn(target, buildPasteFileMessage(payload, parsed));
+        } finally {
+          setBusy(false);
+        }
+        sysOut(`pasted ${payload.excerpt.length} chars into ${target}`);
+      } catch (e) {
+        setBusy(false);
+        sysOut(`!! ${e.message}\n\n${pasteFileUsage()}`);
       }
       return true;
     }
