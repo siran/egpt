@@ -69,7 +69,23 @@ export function stream({ history, message }, onUpdate, options = {}) {
           if (ev.subtype === 'success' && typeof ev.result === 'string') {
             finalText = ev.result;
           } else if (ev.subtype && ev.subtype !== 'success') {
-            return reject(new Error(`claude: ${ev.subtype}${ev.error ? ' — ' + ev.error : ''}`));
+            // The 'result' event for an error subtype can carry useful detail
+            // in any of: ev.error (string), ev.message (string|object),
+            // ev.result (sometimes a fallback message). We surface all of them
+            // plus the current stderr buffer and the raw event JSON, because
+            // "error_during_execution" alone is unactionable.
+            const parts = [];
+            if (ev.error) parts.push(typeof ev.error === 'string' ? ev.error : JSON.stringify(ev.error));
+            if (ev.message) parts.push(typeof ev.message === 'string' ? ev.message : JSON.stringify(ev.message));
+            if (typeof ev.result === 'string' && ev.result) parts.push(ev.result);
+            if (stderrBuf.trim()) parts.push(`stderr: ${stderrBuf.trim()}`);
+            // Append a truncated raw event for the irreducible-mystery case.
+            try {
+              const raw = JSON.stringify(ev);
+              if (parts.length === 0) parts.push(`raw event: ${raw.slice(0, 600)}${raw.length > 600 ? '…' : ''}`);
+            } catch {}
+            const detail = parts.join('\n  ');
+            return reject(new Error(`claude: ${ev.subtype}${detail ? '\n  ' + detail : ''}`));
           }
         }
       }
