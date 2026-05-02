@@ -9,21 +9,49 @@ Claude  +  ChatGPT  +  Codex  +  Claude Code  +  Telegram  +  shell  +  browser 
 
 The pitch in one breath: it joins your **web AIs** (ChatGPT.com, Claude.ai — driven via Chrome DevTools Protocol) with your **local CLIs** (Claude Code, Codex — driven as subprocesses), inside a single Markdown-backed conversation, accessible from terminal today and from Telegram + browser extension soon. Like a desktop bridge for multiple AIs, but **account-driven, not API-driven**.
 
-## Why no API?
+## Why this exists
 
-Because the API isn't where most of you live. ChatGPT Plus and Claude Pro have memory, projects, custom GPTs, file uploads, web browsing — features that don't exist (or cost extra) over the API. You're already paying. egpt drives those accounts directly through their web UI.
+The model card says "GPT-5" or "Claude Sonnet" — but the *envelope* around the model on chatgpt.com or claude.ai is dramatically more capable than the same model called over the API. The envelope is what you're really paying for:
 
-The trade-off: you keep a Chrome instance logged in. You launch it once with `launch-brain.sh`. The daemon talks to its tabs over CDP.
+- A long, carefully tuned system prompt — personality, formatting rules, when to ask clarifying questions, when to switch to thinking mode
+- First-class tools used by reflex — Code Interpreter (Python sandbox), web browsing, image gen, file analysis, Connectors
+- Cross-conversation memory, custom instructions, projects, and quiet retrieval over your past threads
+- Variable reasoning effort, auto-routed by the front-end (or forceable into "Thinking" mode)
+- Rendered output — KaTeX math, syntax-highlighted code, tables, citations
+
+The API strips most of that away and gives you a barer model. That's why GPT-5 or Claude Sonnet over the API often feels duller than the same model in their respective web apps.
+
+**The original motivator behind egpt (across multiple rewrites): automate the web UI from a shell.** Use the rich envelope you're already paying for via your ChatGPT Plus / Claude Pro subscription, drive its tabs over CDP, get all those features for free in any script.
+
+Then bring in **CLI agents** (Claude Code, Codex) for what web envelopes can't do — actually edit your files, run your tests, commit, ssh into a server. CLI envelopes feel less articulate but actually touch the world. The two complement each other directly:
+
+- **Web brain** — more articulate, more memory, more tools, no fingers
+- **CLI brain** — fewer features, less polished, but real hands on real files
+
+`egpt` joins both kinds of envelopes in one conversation log, addressable as named participants:
+
+```
+@chatgpt explain the refactor strategy
+@claude-code apply it to these files
+@codex run the test suite and report
+@claude give a second opinion on the result
+```
+
+Same model families you'd reach for over the API, but speaking through their richer native envelopes. With multiple of them addressable in one room, the possibilities open up surreally fast.
 
 ## Three asymmetries this fixes
 
 | Tool | Strength | Trapped where |
 |---|---|---|
-| ChatGPT.com / Claude.ai | rich rendering, memory, paid features | inside the browser |
+| ChatGPT.com / Claude.ai | rich rendering, memory, paid features, polished envelope | inside the browser |
 | Claude Code / Codex CLI | shell + filesystem access, real agent loops | on the laptop in front of you |
-| Anthropic / OpenAI API | scriptable, automatable | per-token billing, no UI features |
+| Anthropic / OpenAI API | scriptable, automatable | per-token billing, dropped envelope |
 
 `egpt` is the small daemon that gives one canonical conversation a way to talk to all three.
+
+## Practical trade-off
+
+You keep a Chrome instance logged in to the web brains. You launch it once with `launch-brain.sh` and its profile persists at `~/.egpt/brain-profile`. The daemon talks to its tabs over CDP. No API keys to manage, no token bills to watch.
 
 ## What works today
 
