@@ -109,22 +109,6 @@ function parseMessages(text) {
 }
 
 // --- multi-line input ---
-// Render line content with visible spaces (· in dim gray). Returns array of children.
-function renderInputContent(line) {
-  const out = [];
-  let buf = '';
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === ' ') {
-      if (buf) { out.push(buf); buf = ''; }
-      out.push(h(Text, { key: 's' + i, color: 'gray', dimColor: true }, '·'));
-    } else {
-      buf += line[i];
-    }
-  }
-  if (buf) out.push(buf);
-  return out;
-}
-
 function MultiLineInput({ onSubmit }) {
   const [lines, setLines] = useState(['']);
   const [r, setR] = useState(0);
@@ -194,27 +178,39 @@ function MultiLineInput({ onSubmit }) {
     if (key.ctrl && input === 'e') { setC(lines[r].length); return; }
     if (input && !key.ctrl && !key.meta) {
       const next = [...lines];
-      next[r] = next[r].slice(0, c) + input + next[r].slice(c);
-      setLines(next); setC(c + input.length);
+      // Multi-line paste: split on \n, splice into the lines array, set cursor
+      // to the end of the last pasted line. Without this, an embedded \n would
+      // render weirdly inside a single Ink Text component.
+      if (input.includes('\n') || input.includes('\r')) {
+        const chunks = input.replace(/\r\n?/g, '\n').split('\n');
+        const before = next[r].slice(0, c);
+        const after = next[r].slice(c);
+        next[r] = before + chunks[0];
+        for (let i = 1; i < chunks.length; i++) {
+          next.splice(r + i, 0, chunks[i]);
+        }
+        const last = r + chunks.length - 1;
+        next[last] += after;
+        setLines(next);
+        setR(last);
+        setC(chunks[chunks.length - 1].length);
+      } else {
+        next[r] = next[r].slice(0, c) + input + next[r].slice(c);
+        setLines(next); setC(c + input.length);
+      }
     }
   });
 
   return h(Box, { flexDirection: 'column' },
     lines.map((line, i) => {
       const pre = i === 0 ? '› ' : '  ';
-      if (i !== r) return h(Text, { key: i }, pre, ...renderInputContent(line));
-      // Cursor: distinguish between "on a character" vs "at end of line"
+      if (i !== r) return h(Text, { key: i }, pre + line);
       const onChar = c < line.length;
-      const at = line[c];
-      const cursorIsTypedSpace = onChar && at === ' ';
+      const at = onChar ? line[c] : ' ';
       return h(Text, { key: i },
-        pre,
-        ...renderInputContent(line.slice(0, c)),
-        onChar
-          ? h(Text, cursorIsTypedSpace ? { inverse: true, color: 'gray' } : { inverse: true },
-              cursorIsTypedSpace ? '·' : at)
-          : h(Text, { inverse: true }, ' '),
-        ...renderInputContent(onChar ? line.slice(c + 1) : ''));
+        pre + line.slice(0, c),
+        h(Text, { inverse: true }, at),
+        onChar ? line.slice(c + 1) : '');
     }));
 }
 
@@ -230,7 +226,21 @@ function App() {
     'code1': { brain: 'claude-code', options: {} },
   });
   const [principal, setPrincipal] = useState('code1');
+  // Elapsed-time tracking so the user has progress feedback during the
+  // brain's pre-generation "thinking" phase (which can be 5-15s for a long
+  // conversation file). When busy goes true we record the start; an interval
+  // bumps `now` every 250ms to drive re-renders.
+  const [busyStart, setBusyStart] = useState(null);
+  const [now, setNow] = useState(Date.now());
   const { exit } = useApp();
+
+  useEffect(() => {
+    if (!busy) { setBusyStart(null); return; }
+    setBusyStart(Date.now());
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [busy]);
 
   // Startup auto-attach: if Chrome is already running with chatgpt/claude tabs
   // open, register each as a session with an auto-generated name (cgpt1,
@@ -831,15 +841,27 @@ function App() {
         const tail = lines.slice(-8).join('\n');
         const hidden = Math.max(0, lines.length - 8);
         const charCount = streaming.text.length;
+        const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         return h(Box, { flexDirection: 'column', marginTop: 1 },
           h(Text, { color: 'green', bold: true },
             `${streaming.author}  `,
-            h(Text, { color: 'gray', dimColor: true }, `(${charCount} chars · Ctrl+R to abort)`)),
+            h(Text, { color: 'gray', dimColor: true },
+              `(${charCount} chars · ${elapsed}s · Ctrl+R to abort)`)),
           hidden > 0 && h(Text, { color: 'gray', dimColor: true },
             `… ${hidden} earlier line${hidden > 1 ? 's' : ''} hidden …`),
           h(Text, null, tail + '▎'));
       })(),
-      busy && !streaming?.text && h(Text, { color: 'yellow' }, '… thinking  ', h(Text, { color: 'gray', dimColor: true }, '(Ctrl+R to abort)')),
+      busy && !streaming?.text && (() => {
+        // While the brain is processing input but hasn't started streaming
+        // yet, show an elapsed counter and a spinner so the UI looks alive.
+        const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
+        const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
+        const ch = SPIN[Math.floor(now / 100) % SPIN.length];
+        return h(Text, { color: 'yellow' },
+          `${ch} thinking… `,
+          h(Text, { color: 'gray', dimColor: true },
+            `${elapsed}s · Ctrl+R to abort`));
+      })(),
       error && h(Text, { color: 'red' }, '!! ' + error),
       !busy && h(MultiLineInput, { onSubmit: submit })));
 }
