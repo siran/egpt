@@ -28,8 +28,10 @@ which claude             # Claude Code CLI on PATH (for the ccode brain)
 # ────────────────────────────────────────────────────────────────────────
 node egpt.mjs                                 # uses ./conversation.md
 node egpt.mjs ~/notes/2026-05-02.md           # explicit file path
+node egpt.mjs --help                          # CLI usage (does not create a file)
 # inside egpt:
-hola                                          # routes to ccode1 (default)
+/open ccode ccode1                            # add local Claude Code participant
+@ccode1 hola                                  # say hello to that session
 /file                                         # which file are we writing to?
 /last 5                                       # show last 5 turns from the file
 /exit
@@ -52,8 +54,8 @@ hola                                          # routes to ccode1 (default)
 /sessions                                     # who's in the room
 /tabs                                         # what's open in the brain Chrome
 @cgpt1 ¿qué piensas de esto?                  # address one tab for a single turn
-@claude1 segunda opinión?                     # principal stays unchanged
-/principal cgpt1                              # make cgpt1 the default recipient
+@claude1 segunda opinión?                     # address another tab for a single turn
+hello everyone                                # broadcast to all sessions in the room
 /open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
 /attach                                       # rescan Chrome for new tabs
 
@@ -103,7 +105,7 @@ hola                                          # routes to ccode1 (default)
 # Reusable distillations (saved in ~/.egpt/summaries/<name>.md)
 # ────────────────────────────────────────────────────────────────────────
 /save my-answer                                # save the latest non-system msg verbatim
-/summarize today                               # principal compresses the room → today.md
+/summarize today                               # fresh agent compresses the room → today.md
 /summaries                                     # list saved summaries
 /inject today                                  # drop today.md into room as a system note
 
@@ -201,30 +203,29 @@ Sessions auto-name by convention:
 | `claude-cdp`   | `claude`       | `claude1`, `claude2`         |
 | `codex`        | `codex`        | `codex`, `codex1`, `codex2`  |
 
-Numbers grow per brain. Names are auto-assigned on `/open`, `/attach`, and `/principal <brain>`. You can pass an explicit name to override (`/open chatgpt-cdp gpt-research`).
+Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You can pass an explicit name to override (`/open chatgpt-cdp gpt-research`).
 
 ### What egpt does at startup
 
-1. Registers `ccode1` (Claude Code subprocess) as the default participant
+1. Starts the room using the chosen Markdown conversation file.
 2. If brain Chrome is running on port 9222, scans tabs and auto-attaches each matching one as `cgpt1`, `claude1`, etc.
-3. Sets `ccode1` as the principal
+3. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
 
-If Chrome isn't running, only `ccode1` is registered — you can chat immediately.
+If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1` or `/open codex`.
 
-### Principal vs guests
+### Routing
 
-One session is the **principal** — receives messages by default. To address others:
+A leading `@name` sends a turn to one session:
 
 ```
 @cgpt1 ¿qué piensas?
 ```
 
-The `@mention` syntax is recognized only at the **start** of a message. The principal is unchanged for the next turn. To switch the principal:
+The `@mention` syntax is recognized only at the **start** of a message. Messages without a leading mention broadcast to every session in the room. If the room is empty, egpt does not append the message to the conversation file.
 
 ```
-/principal cgpt1                              # explicit name
-/principal chatgpt-cdp                        # by brain — picks the only matching session
-                                              # (errors if there are several)
+@codex exec: pwd                              # one session
+hello all                                     # broadcast
 ```
 
 ---
@@ -291,7 +292,7 @@ Once two or more AI sessions share a conversation, you want some etiquette. Two 
 
 ### Routing (egpt does it for you)
 
-By default, only the **principal** receives un-addressed messages. Other sessions are quiet unless you `@mention` them. So a room with `ccode1` (principal), `cgpt1`, and `claude1` won't have all three replying to every line — only `ccode1` does.
+Un-addressed messages broadcast to every session in the room. Use `@session` when you want a single recipient, especially for operator commands like `@codex exec: ...`.
 
 ### Polite silence (the brain decides)
 
@@ -328,9 +329,7 @@ Sessions (named participants in the room):
   /attach                       rescan Chrome and attach any new tabs
   /attach <brain>               attach all unattached tabs of that brain
   /attach <brain> <name> [tab]  explicit attach
-  /principal [name [tabSpec]]   show or switch principal; brain name picks single
-                                existing session or auto-creates one
-  /sessions                     list registered sessions (* = principal)
+  /sessions                     list registered sessions
 
 Browser brains:
   /tabs [all]                   list pages in brain Chrome (chrome:// hidden)
@@ -350,12 +349,11 @@ Local brains/operators:
 Conversation:
   /rules                        write room-rules system message into the file
   /last [N]                     show last N messages from the file (default 10)
-  @<name> <message>             address a session for THIS turn only,
-                                without changing the principal
+  @<name> <message>             address a session for THIS turn only
 
 Reusable distillations (~/.egpt/summaries/<name>.md):
   /save <name>                  save the latest non-system message verbatim
-  /summarize <name>              principal compresses the room → summary file
+  /summarize <name>              fresh agent compresses the room → summary file
   /summaries                    list saved summaries
   /inject <name> [session]      drop a saved summary into the room or one session
 
@@ -396,7 +394,7 @@ Notes:
 | `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | `~/src/egpt/launch-brain.sh start` |
 | Streaming reply seems frozen, no progress | Premature finalize OR locale-specific selector miss | `Ctrl+R` to reset, then `/refresh` to pull the actual final text from the tab |
 | `auto-bound cgpt1 to tab abc12345…` | Old tab closed; egpt found a single matching replacement | Normal recovery — nothing to do |
-| Multiple `cgpt` tabs open and `/principal chatgpt-cdp` errors | Ambiguity is intentional — pick one | `/principal cgpt2` (use the explicit name) |
+| Multiple `cgpt` tabs open and a brain-name address is ambiguous | Ambiguity is intentional — pick one | `@cgpt2 ...` (use the explicit name) |
 | Spinner counts up past 30s with no first token | ccode processing a large file | Wait, or `Ctrl+R` and try with a shorter `/file` |
 | egpt UI itself hangs (Ink wedge) | Rare; usually after an Ink render error | `/exit` and relaunch — the file is intact |
 | `claude not found on PATH` | Claude Code CLI not installed | `npm i -g @anthropic-ai/claude-code` |

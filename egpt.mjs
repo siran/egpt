@@ -126,7 +126,7 @@ async function readJsonlMetadata(path) {
 // Summaries live in ~/.egpt/summaries/<name>.md as plain Markdown so they're
 // vim-editable, grep-able, and portable. /save writes one. /summarize asks a
 // brain to compose one. /inject drops one into the current room as a system
-// note. /summaries lists what's available.
+// note or sends it directly to one session. /summaries lists what's available.
 const SUMMARIES_DIR = join(homedir(), '.egpt', 'summaries');
 
 function isSafeName(name) {
@@ -182,7 +182,29 @@ async function findSessionJsonl(sessionIdOrPrefix) {
   return null;
 }
 
-const FILE = process.argv[2] ?? './conversation.md';
+const cliArg = process.argv[2];
+if (cliArg === '--help' || cliArg === '-h') {
+  console.log(`usage: egpt [conversation.md]
+
+Starts the egpt room using ./conversation.md by default.
+
+Arguments:
+  conversation.md   optional Markdown conversation file
+
+Inside egpt:
+  /help             show room commands
+  /open <brain>     register a participant, e.g. /open ccode or /open codex
+  @codex exec: pwd  run an operator command in the codex session cwd`);
+  process.exit(0);
+}
+if (cliArg?.startsWith('-')) {
+  console.error(`egpt: unknown option ${cliArg}`);
+  console.error('usage: egpt [conversation.md]');
+  console.error('try: egpt --help');
+  process.exit(2);
+}
+
+const FILE = cliArg ?? './conversation.md';
 
 // preflight: warn if claude is missing but don't refuse to start. egpt is
 // the room itself; CDP brains and most slash commands work without claude.

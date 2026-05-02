@@ -111,6 +111,7 @@ npm install
 # in terminal B — run the chat
 node egpt.mjs                                # uses ./conversation.md
 node egpt.mjs ~/conversations/foo.md         # explicit path
+node egpt.mjs --help                         # CLI usage
 
 # inside egpt
 /help                                        # all commands
