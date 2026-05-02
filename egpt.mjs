@@ -224,6 +224,8 @@ function App() {
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
         '/session [<id> [cwd]]           extend an existing claude-code session via --resume\n' +
         '                                (instead of stateless re-imitation each turn)\n' +
+        '/rules                          write room-rules system message into the file\n' +
+        '                                (silence convention, @mentions, politeness)\n' +
         '/refresh                        re-poll current CDP tab; append full text\n' +
         '                                (use when streaming was cut off)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n\n' +
@@ -268,6 +270,28 @@ function App() {
       sysOut(`${principal}.sessionId → ${sid}` +
              (cwd ? `\n${principal}.cwd → ${cwd}` : '') +
              `\n(claude --resume mode active for this session)`);
+      return true;
+    }
+    if (cmd === '/rules') {
+      // Write a room-rules system message into the conversation file. Brains
+      // reading the file will see it as ambient context. (Stateless brains and
+      // CDP brains absorb this naturally; --resume brains won't see it via the
+      // JSONL — for those, paste the rules manually as a turn if you want them.)
+      const others = Object.keys(sessions).filter(n => n !== principal).map(n => `${n} (${sessions[n].brain})`);
+      const all = [`${principal} (${sessions[principal].brain})`, ...others].join(', ');
+      const rules =
+        `[Room rules — read once and remember]\n` +
+        `Participants right now: ${all}, plus the human admin (An).\n\n` +
+        `You don't have to reply to every message. Only speak when:\n` +
+        `- you're directly addressed (your name or @mention),\n` +
+        `- you have something specifically useful that hasn't been said,\n` +
+        `- the admin asks for your input.\n\n` +
+        `Otherwise, reply with literally just \`...\` (three dots) and nothing else.\n` +
+        `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
+        `You may @mention another participant to ask them something. The admin\n` +
+        `arbitrates when AI-AI exchanges get loud.`;
+      await append('system', rules);
+      setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
       return true;
     }
     if (cmd === '/refresh') {
@@ -514,9 +538,23 @@ function App() {
         partial => setStreaming({ author: principal, text: partial }),
         opts,
       );
-      setItems(p => [...p, { id: id + 1, author: principal, body: final }]);
       setStreaming(null);
-      await append(principal, final);
+
+      // Polite-silence convention: a brain reply that is *just* "..." (3+ dots
+      // or the Unicode ellipsis) means "acknowledged, nothing to add". Don't
+      // post it to the room — show a small hand-raised note in the transcript.
+      const trimmed = (final ?? '').trim();
+      const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
+      if (isSilence) {
+        setItems(p => [...p, {
+          id: id + 1, author: 'system',
+          body: `${principal} acknowledged silently (${trimmed})`,
+        }]);
+        // intentionally NOT appending to FILE — silence stays out of the log
+      } else {
+        setItems(p => [...p, { id: id + 1, author: principal, body: final }]);
+        await append(principal, final);
+      }
     } catch (e) {
       setStreaming(null);
       setError(e.message);
