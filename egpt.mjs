@@ -133,10 +133,13 @@ async function readJsonlMetadata(path) {
 // note or sends it directly to one session. /summaries lists what's available.
 const SUMMARIES_DIR = join(EGPT_HOME, 'summaries');
 const BRAIN_STATE_DIR = join(EGPT_HOME, 'brain-state');
+const USER_BRAIN_PROFILE_DIR = join(EGPT_HOME, 'brains');
+const PROJECT_BRAIN_PROFILE_DIR = join(process.cwd(), '.egpt', 'brains');
+const REPO_BRAIN_PROFILE_DIR = join(APP_DIR, 'brains', 'type');
 const BRAIN_PROFILE_DIRS = [
-  { label: 'project', dir: join(process.cwd(), '.egpt', 'brains') },
-  { label: 'user', dir: join(EGPT_HOME, 'brains') },
-  { label: 'repo', dir: join(APP_DIR, 'brains', 'type') },
+  { label: 'project', dir: PROJECT_BRAIN_PROFILE_DIR },
+  { label: 'user', dir: USER_BRAIN_PROFILE_DIR },
+  { label: 'repo', dir: REPO_BRAIN_PROFILE_DIR },
   { label: 'repo', dir: join(APP_DIR, 'brains', 'types') },
 ];
 
@@ -152,6 +155,15 @@ const PROFILE_TYPE_ALIASES = {
   cdp_claude: 'claude-cdp',
   claude: 'claude-cdp',
   'claude-cdp': 'claude-cdp',
+};
+
+const CHATGPT_CONVERSATION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const PROFILE_CREATE_SCOPES = {
+  user: USER_BRAIN_PROFILE_DIR,
+  project: PROJECT_BRAIN_PROFILE_DIR,
+  repo: REPO_BRAIN_PROFILE_DIR,
 };
 
 function isSafeName(name) {
@@ -176,6 +188,15 @@ function statePathForProfile(profileName) {
 
 function profileDirsText() {
   return BRAIN_PROFILE_DIRS.map(d => `  ${d.dir}`).join('\n');
+}
+
+function profileCreateUsage() {
+  return [
+    'usage: /profile <name> <urlOrId> [--attach] [--force] [--user|--project|--repo]',
+    '       /profile <urlOrId> <name> [--attach] [--force] [--user|--project|--repo]',
+    '  bare ids become https://chatgpt.com/c/<id>',
+    '  writes YAML to ~/.egpt/brains by default',
+  ].join('\n');
 }
 
 async function findBrainProfilePath(name) {
@@ -223,6 +244,105 @@ async function loadBrainProfile(name) {
     __path: found.path,
     __source: found.label,
   };
+}
+
+function looksLikeConversationUrlOrId(value) {
+  const raw = String(value ?? '').trim();
+  return /^https?:\/\//i.test(raw) ||
+    CHATGPT_CONVERSATION_ID_RE.test(raw) ||
+    /^\/?c\/[^/\s?#]+/i.test(raw);
+}
+
+function conversationProfileFromSpec(spec) {
+  const raw = String(spec ?? '').trim();
+  if (!raw) throw new Error('missing urlOrId');
+
+  const bareId = raw.match(CHATGPT_CONVERSATION_ID_RE)?.[0];
+  if (bareId) {
+    return { type: 'cdp_chat', url: `https://chatgpt.com/c/${bareId}` };
+  }
+
+  const pathId = raw.match(/^\/?c\/([^/\s?#]+)/i)?.[1];
+  if (pathId) {
+    return { type: 'cdp_chat', url: `https://chatgpt.com/c/${pathId}` };
+  }
+
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`"${raw}" is not a full URL or ChatGPT conversation id`);
+  }
+
+  const host = url.hostname.toLowerCase().replace(/^www\./, '');
+  if (host === 'chatgpt.com' || host === 'chat.openai.com') {
+    const id = url.pathname.match(/\/c\/([^/?#]+)/i)?.[1];
+    return {
+      type: 'cdp_chat',
+      url: id ? `https://chatgpt.com/c/${id}` : url.href,
+    };
+  }
+  if (host === 'claude.ai' || host.endsWith('.claude.ai')) {
+    return { type: 'cdp_claude', url: url.href };
+  }
+
+  const brainName = brainForUrl(url.href);
+  if (brainName === 'chatgpt-cdp') return { type: 'cdp_chat', url: url.href };
+  if (brainName === 'claude-cdp') return { type: 'cdp_claude', url: url.href };
+  throw new Error(`cannot infer brain type from URL host "${host}"`);
+}
+
+function parseProfileCreateArgs(arg) {
+  const tokens = arg.split(/\s+/).filter(Boolean);
+  const positional = [];
+  let scope = 'user';
+  let force = false;
+  let attach = false;
+
+  for (const token of tokens) {
+    if (token === '--force') force = true;
+    else if (token === '--attach') attach = true;
+    else if (token === '--user') scope = 'user';
+    else if (token === '--project') scope = 'project';
+    else if (token === '--repo') scope = 'repo';
+    else if (token.startsWith('--')) throw new Error(`unknown option ${token}`);
+    else positional.push(token);
+  }
+
+  if (positional.length !== 2) throw new Error(profileCreateUsage());
+
+  let name = positional[0];
+  let spec = positional[1];
+  if (looksLikeConversationUrlOrId(positional[0]) && isSafeName(positional[1])) {
+    spec = positional[0];
+    name = positional[1];
+  }
+  if (!isSafeName(name)) {
+    throw new Error('profile name must use letters, numbers, dot, dash, or underscore');
+  }
+
+  return { name, spec, scope, force, attach };
+}
+
+async function writeConversationProfile({ name, spec, scope = 'user', force = false }) {
+  const dir = PROFILE_CREATE_SCOPES[scope];
+  if (!dir) throw new Error(`unknown profile scope "${scope}"`);
+  const path = join(dir, `${name}.yaml`);
+  const existing = await findBrainProfilePath(name);
+  if (existing && !force) {
+    throw new Error(`profile "${name}" already exists at ${existing.path}\n  use --force to overwrite or choose another name`);
+  }
+  if (existing && existing.path !== path) {
+    throw new Error(`profile "${name}" resolves to ${existing.path}\n  ${path} would be shadowed; choose another name or scope`);
+  }
+
+  const profile = {
+    name,
+    ...conversationProfileFromSpec(spec),
+  };
+  await mkdir(dir, { recursive: true });
+  await writeFile(path, YAML.stringify(profile, { lineWidth: 0 }));
+  return { path, profile };
 }
 
 async function listBrainProfiles() {
@@ -382,9 +502,27 @@ async function findSessionJsonl(sessionIdOrPrefix) {
   return null;
 }
 
-const cliArg = process.argv[2];
+const cliArgs = process.argv.slice(2);
+if (cliArgs[0] === 'profile' || cliArgs[0] === 'profile-url') {
+  try {
+    const spec = parseProfileCreateArgs(cliArgs.slice(1).join(' '));
+    if (spec.attach) throw new Error('--attach only works inside the egpt room');
+    const { path, profile } = await writeConversationProfile(spec);
+    console.log(`profile "${profile.name}" saved -> ${path}`);
+    console.log(`type: ${profile.type}`);
+    console.log(`url: ${profile.url}`);
+    console.log(`attach with: /attach ${profile.name}`);
+    process.exit(0);
+  } catch (e) {
+    console.error(e.message.includes('usage: /profile') ? e.message.replaceAll('/profile', 'egpt profile') : `egpt profile: ${e.message}`);
+    process.exit(2);
+  }
+}
+
+const cliArg = cliArgs[0];
 if (cliArg === '--help' || cliArg === '-h') {
   console.log(`usage: egpt [conversation.md]
+       egpt profile <name> <urlOrId> [--force] [--user|--project|--repo]
 
 Starts the egpt room using ./conversation.md by default.
 
@@ -394,10 +532,17 @@ Arguments:
 Inside egpt:
   /help             show room commands
   /profiles         list YAML brain profiles
+  /profile name url create a ChatGPT/Claude URL profile
   /attach <profile> start a configured brain profile
   /open <brain>     register a participant, e.g. /open ccode or /open codex
   @codex exec: pwd  run an operator command in the codex session cwd`);
   process.exit(0);
+}
+if (cliArgs.length > 1) {
+  console.error('egpt: expected at most one conversation file');
+  console.error('usage: egpt [conversation.md]');
+  console.error('       egpt profile <name> <urlOrId>');
+  process.exit(2);
 }
 if (cliArg?.startsWith('-')) {
   console.error(`egpt: unknown option ${cliArg}`);
@@ -848,6 +993,8 @@ function App() {
         '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
         '/profiles                       list YAML brain profiles\n' +
+        '/profile <name> <urlOrId>        create a ChatGPT/Claude URL profile\n' +
+        '                                (also accepts /profile <urlOrId> <name>)\n' +
         '/attach <profile>               start a configured brain profile\n' +
         '/attach                         re-scan Chrome, attach any new tabs\n' +
         '/attach <brain>                 attach all unattached tabs of that brain\n' +
@@ -910,6 +1057,20 @@ function App() {
         sysOut(`Brain profiles:\n\n${rows.join('\n')}\n\n/attach <profile> starts one.\nprofile dirs:\n${profileDirsText()}`);
       } catch (e) {
         sysOut(`!! ${e.message}`);
+      }
+      return true;
+    }
+    if (cmd === '/profile' || cmd === '/profile-url') {
+      try {
+        const spec = parseProfileCreateArgs(arg);
+        const { path, profile } = await writeConversationProfile(spec);
+        sysOut(`profile "${profile.name}" saved -> ${path}\n  type: ${profile.type}\n  url: ${profile.url}\n  attach with: /attach ${profile.name}`);
+        if (spec.attach) {
+          const loaded = await loadBrainProfile(profile.name);
+          await attachProfile(loaded);
+        }
+      } catch (e) {
+        sysOut(e.message.includes('usage: /profile') ? e.message : `!! ${e.message}\n\n${profileCreateUsage()}`);
       }
       return true;
     }

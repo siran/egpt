@@ -89,6 +89,20 @@ chat_name: Alex
 
 Profile runtime state is stored separately in `~/.egpt/brain-state/<profile>.json`. That file records details like the last cwd, Codex thread id, CDP target id, model/effort, and log path while keeping the YAML declarative.
 
+For a ChatGPT conversation that is already configured in the web UI, create the
+minimal profile directly:
+
+```text
+/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
+/profile 69f68099-5cf8-8328-ad8f-37d991ff0071 alex --attach
+```
+
+The same writer is available from the shell as
+`node egpt.mjs profile alex <urlOrId>`.
+
+Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
+`--force`, or `--attach` when needed.
+
 ## What works today
 
 - ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
@@ -129,10 +143,14 @@ npm install
 node egpt.mjs                                # uses ./conversation.md
 node egpt.mjs ~/conversations/foo.md         # explicit path
 node egpt.mjs --help                         # CLI usage
+node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
+                                             # create ~/.egpt/brains/alex.yaml
 
 # inside egpt
 /help                                        # all commands
 /profiles                                    # list configured YAML brain profiles
+/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
+                                             # create a minimal ChatGPT URL profile
 /attach alex                                 # start profile "alex" if configured
 /open ccode ccode1                           # local Claude Code subprocess
 /open codex                                  # local Codex session (auto-name: codex)
@@ -172,6 +190,7 @@ Sobre la pregunta original...
 /exit · /file · /help
 /open <brain> [name]            open/register a new session
 /profiles                       list YAML brain profiles
+/profile <name> <urlOrId>       create a ChatGPT/Claude URL profile
 /attach <profile>               start a configured brain profile
 /attach                         re-scan Chrome and attach matching tabs
 /attach <brain> <name> [tab]    explicit attach; tabSpec: targetId | url | uuid | prefix

@@ -22,6 +22,18 @@ Attach it from egpt with:
 /attach alex
 ```
 
+For a web conversation, egpt can write the minimal profile:
+
+```text
+/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
+```
+
+Or from the shell:
+
+```bash
+node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
+```
+
 Supported `type` values:
 
 - `codex`

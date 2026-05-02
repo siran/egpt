@@ -29,6 +29,8 @@ which claude             # Claude Code CLI on PATH (for the ccode brain)
 node egpt.mjs                                 # uses ./conversation.md
 node egpt.mjs ~/notes/2026-05-02.md           # explicit file path
 node egpt.mjs --help                          # CLI usage (does not create a file)
+node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
+                                              # create ~/.egpt/brains/alex.yaml
 # inside egpt:
 /open ccode ccode1                            # add local Claude Code participant
 @ccode1 hola                                  # say hello to that session
@@ -78,6 +80,10 @@ hello everyone                                # broadcast to all sessions in the
 #   chat_name: Alex
 #
 /profiles                                     # list configured profiles and paths
+/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
+                                              # create ~/.egpt/brains/alex.yaml
+/profile 69f68099-5cf8-8328-ad8f-37d991ff0071 alex --attach
+                                              # bare id -> ChatGPT URL, then attach
 /attach alex                                  # start profile "alex" as @alex
 /sessions                                     # shows profile, cwd, model, effort, thread/log
 
@@ -257,6 +263,21 @@ chat_name: Alex
 
 `type` accepts `codex`, `code`/`ccode`, `cdp_chat`, and `cdp_claude`. `summary: alex` injects `~/.egpt/summaries/alex.md` into the new session on attach. Native Codex/Claude thread IDs are not resumed by default; set `resume: true` or `session_id: <id>` if you explicitly want native resume instead of a fresh session plus summary context.
 
+For existing web conversations, let egpt write the minimal profile:
+
+```text
+/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
+/profile 69f68099-5cf8-8328-ad8f-37d991ff0071 alex
+```
+
+The first form is `<name> <urlOrId>`; the second is `<urlOrId> <name>`. Bare UUIDs become `https://chatgpt.com/c/<id>`. Full `chatgpt.com`, `chat.openai.com`, and `claude.ai` URLs are detected from the host. Profiles are saved to `~/.egpt/brains/` by default; use `--project` or `--repo` to write elsewhere, `--force` to overwrite the same file, and `--attach` to attach immediately after saving.
+
+The same writer works from the shell:
+
+```bash
+node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
+```
+
 Runtime state is written to `~/.egpt/brain-state/<profile>.json`. It records the last cwd, thread id, model/effort, log path, and tab target when available. `/profiles` lists profiles; `/sessions` shows which live sessions came from a profile.
 
 ### Routing
@@ -381,6 +402,7 @@ General:
 Sessions (named participants in the room):
   /open <brain> [name]          open a new tab + register session (auto-name if no name)
   /profiles                     list YAML brain profiles
+  /profile <name> <urlOrId>      create a ChatGPT/Claude URL profile
   /attach <profile>             start a configured brain profile
   /attach                       rescan Chrome and attach any new tabs
   /attach <brain>               attach all unattached tabs of that brain
