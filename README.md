@@ -39,6 +39,24 @@ Then bring in **CLI agents** (Claude Code, Codex) for what web envelopes can't d
 
 Same model families you'd reach for over the API, but speaking through their richer native envelopes. With multiple of them addressable in one room, the possibilities open up surreally fast.
 
+## What this unlocks (a.k.a. why this is an AI manager, not just a chat tool)
+
+Once the conversation is a plain Markdown file you own — and the brains are interchangeable bridges over it — a class of things that's awkward or impossible elsewhere becomes natural:
+
+- **Cross-brain context teleportation.** Switch from `chatgpt-cdp` to `claude-cdp` mid-thread; the new brain joins the room with the full transcript as context (planned: `/invite ... --with-history` injects the log on first turn). It's the *"invite = replay scrollback"* pattern that's already implicit in the architecture.
+
+- **No vendor lock-in.** ChatGPT, Claude, Codex all keep your conversations trapped in their UI. egpt inverts it: the file is the primary artifact, the UI is a renderer over it. If a provider raises prices, deprecates a feature, or just frustrates you that day, you carry your conversations to whichever brain still serves you. No migration project, no lost continuity.
+
+- **Conversation revival.** Months later, open `~/conversations/refactor-2026-q2.md` in egpt and resume — with any brain. The brain doesn't even need to be the original one. New brain, fresh perspective, full prior context.
+
+- **Side-by-side comparisons.** Replay the same prompt set across multiple brains in different files. Compare how Claude vs GPT-5 vs Codex approach an identical problem with identical context. Real evaluations, not anecdotes.
+
+- **The conversation as a document.** It's a Markdown file. `vim` it, paste it into Notion, share it as a gist, version it with git, search across years with `rg`. Your AI thinking becomes searchable like any other text you've ever written.
+
+- **Hand-edit the past.** If a brain produced something off, delete those lines. If you typo'd, fix it before resuming. The conversation isn't sacred history — it's a working document.
+
+The brains are tools. The conversation log is the work. egpt makes the work primary, and that's the difference between *using* AIs and *managing* them.
+
 ## Three asymmetries this fixes
 
 | Tool | Strength | Trapped where |
