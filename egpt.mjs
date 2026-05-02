@@ -11,13 +11,40 @@ import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './brains/cdp.mjs';
 
-const { createElement: h, useState, Fragment } = React;
+const { createElement: h, useState, useEffect, Fragment } = React;
 
 const BRAINS = {
   [claudeCode.name]: claudeCode,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
 };
+
+// Short, recognizable session-name prefixes per brain. Sessions are
+// auto-named <prefix><N> where N grows to the first unused integer.
+const BRAIN_PREFIX = {
+  'chatgpt-cdp': 'cgpt',
+  'claude-cdp':  'claude',
+  'claude-code': 'code',
+  'codex':       'codex',
+};
+
+function nextName(brainName, sessions) {
+  const prefix = BRAIN_PREFIX[brainName] ?? brainName;
+  let n = 1;
+  while (sessions[`${prefix}${n}`]) n++;
+  return `${prefix}${n}`;
+}
+
+const isInternalUrl = (u) =>
+  u.startsWith('chrome://') || u.startsWith('chrome-extension://') ||
+  u.startsWith('devtools://') || u.startsWith('about:');
+
+function brainForUrl(url) {
+  for (const b of Object.values(BRAINS)) {
+    if (b.urlMatch && b.urlMatch.test(url)) return b.name;
+  }
+  return null;
+}
 
 const FILE = process.argv[2] ?? './conversation.md';
 
@@ -198,11 +225,48 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
+  // Default participant: code1 (claude-code subprocess, no Chrome needed).
   const [sessions, setSessions] = useState({
-    'claude-code': { brain: 'claude-code', options: {} },
+    'code1': { brain: 'claude-code', options: {} },
   });
-  const [principal, setPrincipal] = useState('claude-code');
+  const [principal, setPrincipal] = useState('code1');
   const { exit } = useApp();
+
+  // Startup auto-attach: if Chrome is already running with chatgpt/claude tabs
+  // open, register each as a session with an auto-generated name (cgpt1,
+  // claude1, etc.) so they're addressable as @cgpt1, @claude1, ... right away.
+  // Silently does nothing if Chrome isn't running.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const tabs = await cdp.listTabs();
+        if (cancelled) return;
+        let working = { 'code1': { brain: 'claude-code', options: {} } };
+        const additions = {};
+        for (const tab of tabs) {
+          if (isInternalUrl(tab.url)) continue;
+          const brainName = brainForUrl(tab.url);
+          if (!brainName) continue;
+          // skip if the targetId is already attached
+          if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
+          const name = nextName(brainName, working);
+          additions[name] = { brain: brainName, options: { targetId: tab.id } };
+          working[name] = additions[name];
+        }
+        if (Object.keys(additions).length > 0 && !cancelled) {
+          setSessions(s => ({ ...s, ...additions }));
+          const summary = Object.entries(additions)
+            .map(([n, s]) => `${n} (${s.brain})`).join(', ');
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system',
+            body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
+          }]);
+        }
+      } catch { /* Chrome not running — fine, only code1 is registered */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Top-level escape hatch: Ctrl+R force-resets state when the brain hangs.
   // The in-flight WebSocket / subprocess is orphaned (will eventually GC)
@@ -231,10 +295,15 @@ function App() {
       sysOut(
         '/exit · /file · /help\n\n' +
         'Sessions (named participants in the room):\n' +
-        '/open <brain> <name>            open a fresh tab + register session <name>\n' +
-        '/attach <brain> <name> [tab]    bind an EXISTING tab to session <name>\n' +
-        '                                (no tabSpec → auto-find single match)\n' +
-        '/principal [name [tabSpec]]     show or switch principal\n' +
+        '  Auto-naming: cgpt1, claude1, code1, codex1 ... per brain.\n' +
+        '  Names are auto-generated on /open, /attach, /principal-with-brain.\n' +
+        '  At startup egpt scans Chrome and auto-attaches every matching tab.\n\n' +
+        '/open <brain> [name]            open a fresh tab + register session\n' +
+        '/attach                         re-scan Chrome, attach any new tabs\n' +
+        '/attach <brain>                 attach all unattached tabs of that brain\n' +
+        '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
+        '/principal [name [tabSpec]]     show/switch; brain name picks single\n' +
+        '                                existing or auto-creates one\n' +
         '/sessions                       list registered sessions (* = principal)\n\n' +
         'Browser brains:\n' +
         '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
@@ -392,26 +461,78 @@ function App() {
       return true;
     }
     if (cmd === '/attach') {
-      // Attach an EXISTING tab (or just register a non-CDP brain session) under
-      // a custom name, without opening anything new. /open opens a fresh tab;
-      // /attach binds to one already there.
-      const parts = arg.split(/\s+/);
+      // Three forms:
+      //   /attach                          → re-scan Chrome, attach any new tabs
+      //   /attach <brain> <name> [tabSpec] → explicit attach to a specific tab
+      //   /attach <brain>                  → attach all unattached tabs of that brain
+      const parts = arg.split(/\s+/).filter(Boolean);
+
+      // Form 1: no args — rescan and attach all unattached matching tabs.
+      if (parts.length === 0) {
+        try {
+          const tabs = await cdp.listTabs();
+          let working = { ...sessions };
+          const additions = {};
+          for (const tab of tabs) {
+            if (isInternalUrl(tab.url)) continue;
+            const brainName = brainForUrl(tab.url);
+            if (!brainName) continue;
+            if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
+            const name = nextName(brainName, working);
+            additions[name] = { brain: brainName, options: { targetId: tab.id } };
+            working[name] = additions[name];
+          }
+          if (Object.keys(additions).length === 0) {
+            sysOut('no new tabs to attach (everything matching is already a session)');
+          } else {
+            setSessions(s => ({ ...s, ...additions }));
+            sysOut(`attached: ${Object.entries(additions).map(([n, s]) => `${n} (${s.brain})`).join(', ')}`);
+          }
+        } catch (e) { sysOut(`!! ${e.message}`); }
+        return true;
+      }
+
+      // Form 2 & 3: explicit
       const brainName = parts[0];
+      const brain = BRAINS[brainName];
+      if (!brain) {
+        sysOut('usage: /attach                          rescan and attach new tabs\n' +
+               '       /attach <brain>                  attach all unattached tabs of that brain\n' +
+               '       /attach <brain> <name> [tabSpec] explicit attach\n' +
+               'brains: ' + Object.keys(BRAINS).join(', '));
+        return true;
+      }
       const sessionName = parts[1];
       const tabSpec = parts.slice(2).join(' ').trim();
 
-      if (!brainName || !sessionName) {
-        sysOut('usage: /attach <brain> <name> [tabSpec]\n' +
-               '  attaches an existing tab to a session named <name>.\n' +
-               '  for CDP brains: tabSpec resolves to an open tab (auto if only one).\n' +
-               '  for non-CDP brains (claude-code, codex): tabSpec is ignored.\n' +
-               '  brains: ' + Object.keys(BRAINS).join(', '));
+      // Form 3: brain only — attach all unattached tabs of that brain
+      if (!sessionName) {
+        if (!brain.urlMatch) {
+          sysOut(`/attach ${brainName} requires a name (non-CDP brains have no tabs to scan).`);
+          return true;
+        }
+        try {
+          const matching = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
+          let working = { ...sessions };
+          const additions = {};
+          for (const tab of matching) {
+            if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
+            const name = nextName(brainName, working);
+            additions[name] = { brain: brainName, options: { targetId: tab.id } };
+            working[name] = additions[name];
+          }
+          if (Object.keys(additions).length === 0) {
+            sysOut(`no new ${brainName} tabs to attach`);
+          } else {
+            setSessions(s => ({ ...s, ...additions }));
+            sysOut(`attached: ${Object.keys(additions).join(', ')}`);
+          }
+        } catch (e) { sysOut(`!! ${e.message}`); }
         return true;
       }
-      const brain = BRAINS[brainName];
-      if (!brain) { sysOut(`unknown brain: ${brainName}`); return true; }
-      if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
 
+      // Form 2: explicit
+      if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
       const options = {};
       if (brain.urlMatch) {
         try {
@@ -421,7 +542,7 @@ function App() {
             options.targetId = tid;
           } else {
             const tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
-            if (tabs.length === 0) { sysOut(`no open ${brainName} tabs to attach. /open ${brainName} ${sessionName} would open one.`); return true; }
+            if (tabs.length === 0) { sysOut(`no open ${brainName} tabs to attach. try /open ${brainName} to open one.`); return true; }
             if (tabs.length > 1) {
               const lst = tabs.map(t => `  "${t.title}" — ${t.url}`).join('\n');
               sysOut(`multiple ${brainName} tabs open. specify which:\n${lst}\nuse: /attach ${brainName} ${sessionName} <urlOrUuidOrId>`);
@@ -467,9 +588,28 @@ function App() {
         return true;
       }
 
-      // 2) brain name — auto-create session named after the brain
+      // 2) brain name — switch to single existing session of that brain,
+      //    or auto-create a new session with auto-name (cgpt2, claude1, ...).
       const brain = BRAINS[target];
       if (brain) {
+        const ofBrain = Object.entries(sessions).filter(([_, s]) => s.brain === target);
+        // 2a) one existing session of this brain, no explicit tabSpec → just switch
+        if (ofBrain.length === 1 && !tabSpec) {
+          const [name] = ofBrain[0];
+          setPrincipal(name);
+          sysOut(`principal → ${name}`);
+          return true;
+        }
+        // 2b) multiple existing sessions of this brain → ask for disambiguation
+        if (ofBrain.length > 1 && !tabSpec) {
+          const names = ofBrain.map(([n, s]) =>
+            `  ${n}` + (s.options?.targetId ? ` (tab ${s.options.targetId.slice(0, 8)}…)` : '')
+          ).join('\n');
+          sysOut(`multiple sessions for ${target}:\n${names}\nuse: /principal <name>`);
+          return true;
+        }
+        // 2c) zero existing OR explicit tabSpec → create a new session
+        const newName = nextName(target, sessions);
         const options = {};
         if (brain.urlMatch) {
           try {
@@ -483,7 +623,7 @@ function App() {
             } else {
               const tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
               if (tabs.length === 0) {
-                sysOut(`no open ${target} tabs. /open ${target} <name> opens one, or pass a tabSpec.`);
+                sysOut(`no open ${target} tabs. /open ${target} opens one, or pass a tabSpec.`);
                 return true;
               }
               if (tabs.length > 1) {
@@ -495,11 +635,11 @@ function App() {
             }
           } catch (e) { sysOut(`!! ${e.message}`); return true; }
         }
-        setSessions(s => ({ ...s, [target]: { brain: target, options } }));
-        setPrincipal(target);
-        sysOut(`session "${target}" → ${target}` +
+        setSessions(s => ({ ...s, [newName]: { brain: target, options } }));
+        setPrincipal(newName);
+        sysOut(`session "${newName}" → ${target}` +
           (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
-          `\nprincipal → ${target}`);
+          `\nprincipal → ${newName}`);
         return true;
       }
 
@@ -507,13 +647,16 @@ function App() {
       return true;
     }
     if (cmd === '/open') {
-      const [brainName, sessionName] = arg.split(/\s+/);
-      if (!brainName || !sessionName) {
-        sysOut('usage: /open <brain> <name>\nbrains: ' + Object.keys(BRAINS).join(', '));
+      const parts = arg.split(/\s+/);
+      const brainName = parts[0];
+      let sessionName = parts[1];
+      if (!brainName) {
+        sysOut('usage: /open <brain> [name]\n  name auto-generated (e.g. cgpt2) if omitted.\n  brains: ' + Object.keys(BRAINS).join(', '));
         return true;
       }
       const brain = BRAINS[brainName];
       if (!brain) { sysOut(`unknown brain: ${brainName}`); return true; }
+      if (!sessionName) sessionName = nextName(brainName, sessions);
       if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
       try {
         const options = {};
