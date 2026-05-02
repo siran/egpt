@@ -34,7 +34,7 @@ Then bring in **CLI agents** (Claude Code, Codex) for what web envelopes can't d
 
 ```
 @chatgpt explain the refactor strategy
-@claude-code apply it to these files
+@ccode apply it to these files
 @codex run the test suite and report
 @claude give a second opinion on the result
 ```
@@ -79,7 +79,7 @@ You keep a Chrome instance logged in to the web brains. You launch it once with 
 - ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — long-poll a Telegram bot, route incoming messages into the same room, mirror brain replies back to the chat. Works with or without any AI present (zombie mode runs slash commands over Telegram)
 - ✅ Plain Markdown file as conversation source-of-truth (`tail -f`-friendly, vim-editable, grep-able)
 - ✅ Four working brains/operators:
-  - `claude-code` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json`
+  - `ccode` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json` (`claude-code` is accepted as a legacy alias)
   - `codex` — local Codex CLI plus `exec:` operator commands with a persistent cwd
   - `chatgpt-cdp` — drives ChatGPT.com in a CDP-exposed Chrome; tab keeps its own history
   - `claude-cdp` — drives Claude.ai the same way
@@ -114,7 +114,7 @@ node egpt.mjs ~/conversations/foo.md         # explicit path
 
 # inside egpt
 /help                                        # all commands
-/open claude-code code1                      # local Claude Code subprocess
+/open ccode ccode1                           # local Claude Code subprocess
 /open codex                                  # local Codex session (auto-name: codex)
 @codex exec: pwd                             # run a shell command in codex's cwd
 @codex exec: cd ../siran/writing             # change codex's persistent cwd
@@ -179,7 +179,7 @@ A small core, many bridges. The core is platform-agnostic logic; the bridges tra
 │ human │  │   brain    │         │storage │
 │bridges│  │  bridges   │         │bridges │
 ├───────┤  ├────────────┤         ├────────┤
-│ shell │  │claude-code │         │ fs     │
+│ shell │  │ccode       │         │ fs     │
 │  ✅   │  │  ✅        │         │  ✅    │
 │telegram│ │chatgpt-cdp │         │chrome- │
 │  🛠   │  │  ✅        │         │ storage│
@@ -212,13 +212,13 @@ Around 1100 lines of code total, ~10 files.
 
 ## How the brains work
 
-### Subprocess brain (`claude-code`)
+### Subprocess brain (`ccode`)
 
 Each turn: spawn `claude --print --output-format stream-json --include-partial-messages`, pipe the full conversation history to stdin, parse newline-delimited JSON for token deltas, accumulate, return final text on `result` event.
 
 ### Codex brain/operator (`codex`)
 
-Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively.
+Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs the command directly in a shell and returns output as `$ <command>` followed by stdout/stderr. `@codex exec: cd <dir>` updates that Codex session's cwd, so the next `exec:` runs there. Non-`exec:` messages are sent to `codex exec` non-interactively; the first turn receives the egpt transcript as context, then later turns resume the Codex thread. Raw events are written to `~/.egpt/codex/<session>.jsonl` for `tail -f`.
 
 ### CDP brains (`chatgpt-cdp`, `claude-cdp`)
 
@@ -237,7 +237,7 @@ Both web UIs render via React; they don't expose the SSE token stream cleanly to
 
 - **Selectors break.** When ChatGPT or Claude redesigns their UI, the inject/poll scripts in `brains/*-cdp.mjs` will need tweaking. They're written defensively (multiple fallback selectors), but not future-proof.
 - **One language detected, others guessed.** Stop-button labels are matched in English, Spanish, French, German, Swedish, Portuguese. Other locales may need adding.
-- **Tab-as-context.** A CDP brain remembers conversation history *in its tab*. If you switch from `claude-code` to `chatgpt-cdp` mid-conversation, ChatGPT only knows what it had in its own tab — not the egpt log. Solved cleanly by the planned multi-participant model where each session has full context.
+- **Tab-as-context.** A CDP brain remembers conversation history *in its tab*. If you switch from `ccode` to `chatgpt-cdp` mid-conversation, ChatGPT only knows what it had in its own tab — not the egpt log. Solved cleanly by the planned multi-participant model where each session has full context.
 - **Markdown file as truth.** Slash commands aren't logged. Your messages and brain replies are.
 
 ## License

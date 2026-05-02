@@ -19,7 +19,8 @@
 // future features need to walk the .md as structured turns.
 import { spawn } from 'node:child_process';
 
-export const name = 'claude-code';
+export const name = 'ccode';
+export const legacyNames = ['claude-code'];
 export const description = 'Local `claude` CLI; optionally --resume to extend an existing session.';
 export const requires = [];
 

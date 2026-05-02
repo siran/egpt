@@ -20,16 +20,16 @@ npm link                 # then `egpt` works from anywhere
 
 # Optional: confirm dependencies
 node --version           # need >= 18
-which claude             # claude-code CLI on PATH (for the local brain)
+which claude             # Claude Code CLI on PATH (for the ccode brain)
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Daily: chat with claude-code (no Chrome needed)
+# Daily: chat with ccode (no Chrome needed)
 # ────────────────────────────────────────────────────────────────────────
 node egpt.mjs                                 # uses ./conversation.md
 node egpt.mjs ~/notes/2026-05-02.md           # explicit file path
 # inside egpt:
-hola                                          # routes to code1 (default)
+hola                                          # routes to ccode1 (default)
 /file                                         # which file are we writing to?
 /last 5                                       # show last 5 turns from the file
 /exit
@@ -59,9 +59,9 @@ hola                                          # routes to code1 (default)
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Resume a past claude-code session (real session continuity, no cloning)
+# Resume a past ccode session (real session continuity, no cloning)
 # ────────────────────────────────────────────────────────────────────────
-/history                                      # list claude-code JSONLs on disk
+/history                                      # list Claude Code JSONLs on disk
 /session 26b30e57                             # resume by 8-char id; cwd auto-detected
 /session none                                 # back to stateless mode (.md file is memory)
 
@@ -92,7 +92,7 @@ hola                                          # routes to code1 (default)
 #
 # Then from the phone:
 #   "hello"                # broadcasts to all participants in the room
-#   "@code1 git status"    # routes to a specific session
+#   "@ccode1 git status"   # routes to a specific session
 #   "@codex exec: pwd"     # run an operator command on the computer
 #   "@codex exec: cd ~/src/siran/writing"  # change codex cwd
 #   "/sessions"            # any slash command works (it's the same submit())
@@ -160,14 +160,14 @@ The format:
 ## 2026-05-02 14:32 — You
 hola, qué tal?
 
-## 2026-05-02 14:32 — code1
+## 2026-05-02 14:32 — ccode1
 Bien gracias. ¿En qué te ayudo?
 
 ## 2026-05-02 14:33 — You
 @cgpt1 y tú qué dices?
 
 ## 2026-05-02 14:33 — cgpt1
-Coincido con code1 en lo principal, pero...
+Coincido con ccode1 en lo principal, pero...
 ```
 
 This file is **the source of truth**. egpt appends to it on every turn. You can:
@@ -185,8 +185,8 @@ When using a CDP brain or `claude --resume`, the brain has its *own* native memo
 
 A **session** is a named participant in the conversation. It has:
 
-- A **brain** — the type of AI (`claude-code`, `chatgpt-cdp`, `claude-cdp`)
-- A **name** — like `code1`, `cgpt1`, `claude1`
+- A **brain** — the type of AI (`ccode`, `codex`, `chatgpt-cdp`, `claude-cdp`)
+- A **name** — like `ccode1`, `codex`, `cgpt1`, `claude1`
 - **Options** — which tab, which Claude Code session ID, etc.
 
 ### Auto-naming
@@ -195,7 +195,7 @@ Sessions auto-name by convention:
 
 | Brain          | Session prefix | Example names                |
 |----------------|----------------|------------------------------|
-| `claude-code`  | `code`         | `code1`, `code2`, `code3`    |
+| `ccode`        | `ccode`        | `ccode1`, `ccode2`, `ccode3` |
 | `chatgpt-cdp`  | `cgpt`         | `cgpt1`, `cgpt2`             |
 | `claude-cdp`   | `claude`       | `claude1`, `claude2`         |
 | `codex`        | `codex`        | `codex`, `codex1`, `codex2`  |
@@ -204,11 +204,11 @@ Numbers grow per brain. Names are auto-assigned on `/open`, `/attach`, and `/pri
 
 ### What egpt does at startup
 
-1. Registers `code1` (claude-code subprocess) as the default participant
+1. Registers `ccode1` (Claude Code subprocess) as the default participant
 2. If brain Chrome is running on port 9222, scans tabs and auto-attaches each matching one as `cgpt1`, `claude1`, etc.
-3. Sets `code1` as the principal
+3. Sets `ccode1` as the principal
 
-If Chrome isn't running, only `code1` is registered — you can chat immediately.
+If Chrome isn't running, only `ccode1` is registered — you can chat immediately.
 
 ### Principal vs guests
 
@@ -230,16 +230,16 @@ The `@mention` syntax is recognized only at the **start** of a message. The prin
 
 ## The brain types
 
-### `claude-code` (local CLI)
+### `ccode` (local Claude Code CLI)
 
 Spawns `claude --print` as a subprocess. Two modes:
 
-**Stateless (default)** — each turn pipes the entire `.md` file as input. Claude reads the whole conversation as one big prompt, replies, exits. The `.md` file IS the memory; claude-code itself has no continuity between turns.
+**Stateless (default)** — each turn pipes the entire `.md` file as input. Claude reads the whole conversation as one big prompt, replies, exits. The `.md` file IS the memory; ccode itself has no continuity between turns.
 
 **Resume mode** — set with `/session <id>`:
 
 ```
-/history                                      # list available claude-code JSONLs
+/history                                      # list available Claude Code JSONLs
 /session 26b30e57                             # resume by id (cwd auto-detected)
 ```
 
@@ -280,7 +280,7 @@ $ <command>
 <stdout/stderr>
 ```
 
-`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively.
+`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively: the first turn gets the egpt transcript as context, and later turns resume the Codex thread. Raw Codex events are mirrored to `~/.egpt/codex/<session>.jsonl`, so you can tail that file while the session runs.
 
 ---
 
@@ -290,7 +290,7 @@ Once two or more AI sessions share a conversation, you want some etiquette. Two 
 
 ### Routing (egpt does it for you)
 
-By default, only the **principal** receives un-addressed messages. Other sessions are quiet unless you `@mention` them. So a room with `code1` (principal), `cgpt1`, and `claude1` won't have all three replying to every line — only `code1` does.
+By default, only the **principal** receives un-addressed messages. Other sessions are quiet unless you `@mention` them. So a room with `ccode1` (principal), `cgpt1`, and `claude1` won't have all three replying to every line — only `ccode1` does.
 
 ### Polite silence (the brain decides)
 
@@ -310,7 +310,7 @@ This writes a system message into the file describing:
 - when to speak (addressed, useful, asked by admin),
 - the `@mention` mechanism for participants to ask each other things.
 
-Any brain that reads the `.md` (stateless claude-code, all CDP brains) will absorb this as ambient context.
+Any brain that reads the `.md` (stateless ccode, all CDP brains) will absorb this as ambient context.
 
 ---
 
@@ -338,8 +338,8 @@ Browser brains:
                                 (recovery for premature streaming termination)
 
 Local brains/operators:
-  /history [N]                  list recent claude-code sessions on disk (newest first)
-  /session [<id>]               continue an existing claude-code session via --resume
+  /history [N]                  list recent ccode sessions on disk (newest first)
+  /session [<id>]               continue an existing ccode session via --resume
                                 (cwd auto-detected from the JSONL)
   /session <id> <cwd>           explicit cwd if auto-detection fails
   /session none                 back to stateless mode
@@ -359,7 +359,7 @@ Reusable distillations (~/.egpt/summaries/<name>.md):
   /inject <name>                drop a saved summary into the room as a system note
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
-Brains: claude-code, codex, chatgpt-cdp, claude-cdp
+Brains: ccode, codex, chatgpt-cdp, claude-cdp
 ```
 
 ---
@@ -396,7 +396,7 @@ Notes:
 | Streaming reply seems frozen, no progress | Premature finalize OR locale-specific selector miss | `Ctrl+R` to reset, then `/refresh` to pull the actual final text from the tab |
 | `auto-bound cgpt1 to tab abc12345…` | Old tab closed; egpt found a single matching replacement | Normal recovery — nothing to do |
 | Multiple `cgpt` tabs open and `/principal chatgpt-cdp` errors | Ambiguity is intentional — pick one | `/principal cgpt2` (use the explicit name) |
-| Spinner counts up past 30s with no first token | claude-code processing a large file | Wait, or `Ctrl+R` and try with a shorter `/file` |
+| Spinner counts up past 30s with no first token | ccode processing a large file | Wait, or `Ctrl+R` and try with a shorter `/file` |
 | egpt UI itself hangs (Ink wedge) | Rare; usually after an Ink render error | `/exit` and relaunch — the file is intact |
 | `claude not found on PATH` | Claude Code CLI not installed | `npm i -g @anthropic-ai/claude-code` |
 | Want to undo a brain reply | Edit the .md file directly | `vim` — remove the offending `## ts — name` block |

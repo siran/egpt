@@ -6,7 +6,7 @@
 //
 // Other addressed messages are passed to `codex exec` non-interactively.
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -17,9 +17,13 @@ export const requires = [];
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const DEFAULT_CODEX_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
+const CODEX_LOG_DIR = join(homedir(), '.egpt', 'codex');
 
 export function stateDetail(options = {}) {
-  return `cwd: ${options.cwd ?? process.cwd()}`;
+  const parts = [`cwd: ${options.cwd ?? process.cwd()}`];
+  if (options.sessionId) parts.push(`resume: ${options.sessionId.slice(0, 8)}...`);
+  if (options.logPath) parts.push(`log: ${options.logPath}`);
+  return parts.join(' | ');
 }
 
 function stripUserPrefix(message) {
@@ -94,6 +98,22 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function safeName(name) {
+  return String(name || 'codex').replace(/[^A-Za-z0-9._-]+/g, '_');
+}
+
+async function ensureLogPath(options) {
+  if (options.logPath) return options.logPath;
+  await mkdir(CODEX_LOG_DIR, { recursive: true });
+  return join(CODEX_LOG_DIR, `${safeName(options.sessionName)}.jsonl`);
+}
+
+function logLine(path, value) {
+  if (!path) return;
+  const line = typeof value === 'string' ? value : JSON.stringify(value);
+  void appendFile(path, line.replace(/\r?\n$/, '') + '\n').catch(() => {});
+}
+
 function appendCapped(current, chunk, maxChars) {
   if (current.length >= maxChars) return { text: current, truncated: true };
   const room = maxChars - current.length;
@@ -112,23 +132,26 @@ async function runCd(command, options) {
   try {
     await assertDirectory(nextCwd);
   } catch (e) {
+    logLine(options.logPath, { type: 'exec.cd.error', command, error: e.message, cwd: oldCwd });
     return {
       text: `$ ${command}\ncd: ${e.message}`,
-      optionsPatch: { cwd: oldCwd },
+      optionsPatch: { cwd: oldCwd, ...(options.logPath ? { logPath: options.logPath } : {}) },
     };
   }
 
+  logLine(options.logPath, { type: 'exec.cd', command, cwd: nextCwd, previousCwd: oldCwd });
   return {
     text: `$ ${command}\n${nextCwd}`,
-    optionsPatch: { cwd: nextCwd, previousCwd: oldCwd },
+    optionsPatch: { cwd: nextCwd, previousCwd: oldCwd, ...(options.logPath ? { logPath: options.logPath } : {}) },
   };
 }
 
 async function runShell(command, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
+  const logPath = await ensureLogPath(options);
 
-  const cdResult = await runCd(command, { ...options, cwd });
+  const cdResult = await runCd(command, { ...options, cwd, logPath });
   if (cdResult) {
     onUpdate(cdResult.text);
     return cdResult;
@@ -138,6 +161,7 @@ async function runShell(command, onUpdate, options) {
   const maxChars = parsePositiveInt(process.env.EGPT_CODEX_MAX_OUTPUT_CHARS, DEFAULT_MAX_OUTPUT_CHARS);
   const shell = shellFor(command);
   const header = `$ ${command}\n`;
+  logLine(logPath, { type: 'exec.start', command, cwd });
 
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(shell.command, shell.args, {
@@ -162,7 +186,9 @@ async function runShell(command, onUpdate, options) {
     }, timeoutMs);
 
     const onData = (chunk) => {
-      const appended = appendCapped(output, chunk.toString('utf8'), maxChars);
+      const text = chunk.toString('utf8');
+      logLine(logPath, { type: 'exec.output', command, text });
+      const appended = appendCapped(output, text, maxChars);
       output = appended.text;
       truncated = truncated || appended.truncated;
       publish();
@@ -185,7 +211,8 @@ async function runShell(command, onUpdate, options) {
       if (timedOut) text += `\n[timed out after ${Math.round(timeoutMs / 1000)}s]`;
       else if (code !== 0) text += `\n[exit ${code}]`;
       text = text.replace(/\s+$/g, '');
-      resolvePromise({ text, optionsPatch: { cwd } });
+      logLine(logPath, { type: 'exec.close', command, code, timedOut });
+      resolvePromise({ text, optionsPatch: { cwd, logPath } });
     });
   });
 }
@@ -202,6 +229,7 @@ function codexSpawn(commandArgs) {
 
 function extractTextEvent(ev) {
   if (!ev || typeof ev !== 'object') return null;
+  if (ev.type === 'item.completed' && ev.item?.type === 'agent_message') return ev.item.text ?? null;
   if (typeof ev.message === 'string' && /message/i.test(ev.type ?? '')) return ev.message;
   if (typeof ev.text === 'string' && /message|delta|output/i.test(ev.type ?? '')) return ev.text;
   if (typeof ev.delta === 'string') return ev.delta;
@@ -214,29 +242,70 @@ function extractTextEvent(ev) {
   return null;
 }
 
-async function runCodex(prompt, onUpdate, options) {
+function buildCodexPrompt({ history, message }, options) {
+  const text = stripUserPrefix(message);
+  const sessionName = options.sessionName ?? 'codex';
+  if (options.sessionId) {
+    return [
+      `[${options.userName ?? 'An'}]: ${text}`,
+      '',
+      `Reply as ${sessionName} in the egpt room.`,
+      `Current egpt cwd for this session: ${options.cwd ?? process.cwd()}`,
+    ].join('\n');
+  }
+  return [
+    `Reply as ${sessionName} in an egpt room.`,
+    `The transcript is context only; do not acknowledge this wrapper or restate your setup.`,
+    `Current user message: [${options.userName ?? 'An'}]: ${text}`,
+    `Answer that current message directly. If it is a greeting, just greet back briefly.`,
+    `If there is nothing useful to add, reply with exactly "...".`,
+    '',
+    '<egpt_transcript>',
+    history ?? '',
+    '</egpt_transcript>',
+  ].join('\n');
+}
+
+async function runCodex(turn, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
+  const logPath = await ensureLogPath(options);
+  const prompt = buildCodexPrompt(turn, { ...options, cwd });
 
   const timeoutMs = parsePositiveInt(process.env.EGPT_CODEX_TIMEOUT_MS, DEFAULT_CODEX_TIMEOUT_MS);
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
-  const args = [
-    'exec',
-    '--json',
-    '--ask-for-approval', 'never',
-    '--cd', cwd,
-    '--skip-git-repo-check',
-    '--output-last-message', lastMessagePath,
-    prompt,
-  ];
+  const trustArgs = process.env.EGPT_CODEX_TRUST === '0'
+    ? []
+    : ['--dangerously-bypass-approvals-and-sandbox'];
+  const args = options.sessionId
+    ? [
+        'exec', 'resume',
+        '--json',
+        '--skip-git-repo-check',
+        '--output-last-message', lastMessagePath,
+        ...trustArgs,
+        options.sessionId,
+        prompt,
+      ]
+    : [
+        'exec',
+        '--json',
+        '--cd', cwd,
+        '--skip-git-repo-check',
+        '--output-last-message', lastMessagePath,
+        ...trustArgs,
+        prompt,
+      ];
   const cmd = codexSpawn(args);
+  logLine(logPath, { type: 'codex.start', cwd, resume: options.sessionId ?? null, prompt });
 
   try {
     return await new Promise((resolvePromise, reject) => {
       const proc = spawn(cmd.command, cmd.args, {
         cwd,
         env: { ...process.env, TERM: process.env.TERM || 'dumb' },
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
       });
 
@@ -244,6 +313,7 @@ async function runCodex(prompt, onUpdate, options) {
       let plainOutput = '';
       let assistantText = '';
       let stderr = '';
+      let sessionId = options.sessionId ?? null;
       let timedOut = false;
 
       const timer = setTimeout(() => {
@@ -263,9 +333,12 @@ async function runCodex(prompt, onUpdate, options) {
           let ev;
           try { ev = JSON.parse(t); } catch {
             plainOutput += line + '\n';
+            logLine(logPath, { type: 'codex.stdout', text: line });
             onUpdate(plainOutput);
             continue;
           }
+          logLine(logPath, ev);
+          if (ev.type === 'thread.started' && ev.thread_id) sessionId = ev.thread_id;
           const text = extractTextEvent(ev);
           if (text) {
             assistantText += text;
@@ -274,7 +347,9 @@ async function runCodex(prompt, onUpdate, options) {
         }
       });
       proc.stderr.on('data', chunk => {
-        stderr += chunk.toString('utf8');
+        const text = chunk.toString('utf8');
+        stderr += text;
+        logLine(logPath, { type: 'codex.stderr', text });
       });
 
       proc.on('error', err => {
@@ -289,8 +364,12 @@ async function runCodex(prompt, onUpdate, options) {
         if (!final) final = assistantText.trim() || plainOutput.trim();
         if (!final && stderr.trim()) final = stderr.trim();
         if (timedOut) final = `${final ? final + '\n' : ''}[codex timed out after ${Math.round(timeoutMs / 1000)}s]`;
-        else if (code !== 0) final = `${final ? final + '\n' : ''}[codex exit ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}]`;
-        resolvePromise({ text: final || '...', optionsPatch: { cwd } });
+        else if (code !== 0 && !final) final = `[codex exit ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}]`;
+        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId });
+        resolvePromise({
+          text: final || '...',
+          optionsPatch: { cwd, logPath, ...(sessionId ? { sessionId } : {}) },
+        });
       });
     });
   } finally {
@@ -298,12 +377,12 @@ async function runCodex(prompt, onUpdate, options) {
   }
 }
 
-export async function stream({ message }, onUpdate, options = {}) {
+export async function stream({ history, message }, onUpdate, options = {}) {
   const text = stripUserPrefix(message);
   const execCommand = parseExec(text);
   if (execCommand !== null) {
     if (!execCommand) return { text: 'usage: @codex exec: <command>', optionsPatch: {} };
     return runShell(execCommand, onUpdate, options);
   }
-  return runCodex(text, onUpdate, options);
+  return runCodex({ history, message }, onUpdate, options);
 }

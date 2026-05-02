@@ -8,7 +8,7 @@ import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'nod
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import * as claudeCode from './brains/claude-code.mjs';
+import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
@@ -18,18 +18,22 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 
 const BRAINS = {
-  [claudeCode.name]: claudeCode,
+  [ccode.name]: ccode,
   [codex.name]: codex,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
 };
+
+const BRAIN_ALIASES = Object.fromEntries(
+  Object.values(BRAINS).flatMap(brain => (brain.legacyNames ?? []).map(alias => [alias, brain.name])),
+);
 
 // Short, recognizable session-name prefixes per brain. Sessions are
 // auto-named <prefix><N> where N grows to the first unused integer.
 const BRAIN_PREFIX = {
   'chatgpt-cdp': 'cgpt',
   'claude-cdp':  'claude',
-  'claude-code': 'code',
+  'ccode':       'ccode',
   'codex':       'codex',
 };
 
@@ -37,7 +41,21 @@ const BRAIN_DEFAULT_HANDLE = {
   codex: 'codex',
 };
 
+function canonicalBrainName(name) {
+  return BRAIN_ALIASES[name] ?? name;
+}
+
+function brainForName(name) {
+  return BRAINS[canonicalBrainName(name)];
+}
+
+function brainNamesForHelp() {
+  const aliases = Object.entries(BRAIN_ALIASES).map(([alias, target]) => `${alias}->${target}`);
+  return [...Object.keys(BRAINS), ...aliases].join(', ');
+}
+
 function nextName(brainName, sessions) {
+  brainName = canonicalBrainName(brainName);
   const defaultHandle = BRAIN_DEFAULT_HANDLE[brainName];
   if (defaultHandle && !sessions[defaultHandle]) return defaultHandle;
   const prefix = BRAIN_PREFIX[brainName] ?? brainName;
@@ -48,8 +66,9 @@ function nextName(brainName, sessions) {
 
 function resolveAddressedSession(token, sessions) {
   if (sessions[token]) return token;
-  if (!BRAINS[token]) return null;
-  const matches = Object.entries(sessions).filter(([_, s]) => s.brain === token);
+  const brainName = canonicalBrainName(token);
+  if (!BRAINS[brainName]) return null;
+  const matches = Object.entries(sessions).filter(([_, s]) => canonicalBrainName(s.brain) === brainName);
   return matches.length === 1 ? matches[0][0] : null;
 }
 
@@ -167,13 +186,13 @@ const FILE = process.argv[2] ?? './conversation.md';
 
 // preflight: warn if claude is missing but don't refuse to start. egpt is
 // the room itself; CDP brains and most slash commands work without claude.
-// Only invocations of the claude-code brain (/open claude-code or addressed
+// Only invocations of the ccode brain (/open ccode or addressed
 // turns) actually need the binary.
 {
   const r = spawnSync('claude', ['--version'], { stdio: 'pipe' });
   if (r.error?.code === 'ENOENT') {
     console.error('warning: `claude` CLI not found on PATH.');
-    console.error('  CDP brains work without it; install only if you want claude-code.');
+    console.error('  CDP brains work without it; install only if you want ccode.');
     console.error('    npm install -g @anthropic-ai/claude-code\n');
   }
 }
@@ -518,7 +537,7 @@ function App() {
         '  management, summaries, browser lifecycle. Only sending a chat\n' +
         '  message needs at least one participant.\n\n' +
         'Sessions (named participants in the room — every participant is equal):\n' +
-        '  Auto-naming: cgpt1, claude1, code1, codex, codex1 ... per brain.\n' +
+        '  Auto-naming: cgpt1, claude1, ccode1, codex, codex1 ... per brain.\n' +
         '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
         '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
@@ -538,9 +557,9 @@ function App() {
         '                                session\'s tab (default: last reply → all\n' +
         '                                other CDPs — useful after an operator output)\n\n' +
         'Local brains/operators:\n' +
-        '/history [N]                    list recent claude-code sessions on disk\n' +
+        '/history [N]                    list recent ccode/Claude Code sessions on disk\n' +
         '                                (newest first; default 10)\n' +
-        '/session [<id>]                 continue a claude-code session via --resume\n' +
+        '/session [<id>]                 continue a ccode session via claude --resume\n' +
         '                                (cwd auto-detected from the JSONL)\n' +
         '/session <id> <cwd>             explicit cwd if auto-detection fails\n' +
         '/session none                   back to stateless mode (re-reads file each turn)\n' +
@@ -561,11 +580,11 @@ function App() {
         '                                a FRESH agent reads the room and writes a summary;\n' +
         '                                default: fresh chatgpt-cdp tab if Chrome is running\n' +
         '/cdp-summarize ...              same as /summarize but force CDP\n' +
-        '/operator-summarize ...         force fresh claude-code subprocess (no Chrome)\n' +
+        '/operator-summarize ...         force fresh ccode subprocess (no Chrome)\n' +
         '/summaries · /list-saved        list saved summaries\n' +
         '/inject <name>                  drop a saved summary into the room as a system note\n\n' +
         'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
-        'Brains: ' + Object.keys(BRAINS).join(', '));
+        'Brains: ' + brainNamesForHelp());
       return true;
     }
     if (cmd === '/session') {
@@ -573,11 +592,11 @@ function App() {
       // /session <session-name> <id> [cwd]            → set resume id (cwd auto-detected)
       // /session <session-name> none|clear            → clear (back to stateless)
       // /session <id> [cwd]                           → shorthand: applies to the
-      //                                                 only claude-code session if
+      //                                                 only ccode session if
       //                                                 there's exactly one
       const parts = arg.split(/\s+/).filter(Boolean);
       if (parts.length === 0) {
-        sysOut('usage: /session <session-name> [<id>|none] [cwd]\n  shorthand /session <id> works if there is exactly one claude-code session');
+        sysOut('usage: /session <session-name> [<id>|none] [cwd]\n  shorthand /session <id> works if there is exactly one ccode session');
         return true;
       }
       // Resolve the target session
@@ -587,15 +606,15 @@ function App() {
         target = parts[0];
         restParts = parts.slice(1);
       } else {
-        const codeSessions = Object.entries(sessions).filter(([_, s]) => s.brain === 'claude-code');
+        const codeSessions = Object.entries(sessions).filter(([_, s]) => canonicalBrainName(s.brain) === 'ccode');
         if (codeSessions.length === 1) {
           target = codeSessions[0][0];
           restParts = parts;
         } else if (codeSessions.length > 1) {
-          sysOut(`multiple claude-code sessions: ${codeSessions.map(([n]) => n).join(', ')}\n  /session <session-name> <id>`);
+          sysOut(`multiple ccode sessions: ${codeSessions.map(([n]) => n).join(', ')}\n  /session <session-name> <id>`);
           return true;
         } else {
-          sysOut(`no session named "${parts[0]}" and no claude-code session to default to`);
+          sysOut(`no session named "${parts[0]}" and no ccode session to default to`);
           return true;
         }
       }
@@ -699,7 +718,7 @@ function App() {
         if (parts.length === 1) targets = [parts[0]];
         else {
           targets = Object.entries(sessions)
-            .filter(([n, s]) => n !== source && BRAINS[s.brain]?.urlMatch)
+            .filter(([n, s]) => n !== source && brainForName(s.brain)?.urlMatch)
             .map(([n]) => n);
           if (targets.length === 0) {
             sysOut(`no other CDP sessions to mirror to (source: ${source})`);
@@ -739,14 +758,14 @@ function App() {
         if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
         sessionName = target; session = sessions[target];
       } else {
-        const cdps = Object.entries(sessions).filter(([_, s]) => BRAINS[s.brain]?.urlMatch);
+        const cdps = Object.entries(sessions).filter(([_, s]) => brainForName(s.brain)?.urlMatch);
         if (cdps.length !== 1) {
           sysOut(`usage: /refresh <session-name>\n  ${cdps.length === 0 ? 'no CDP sessions in the room' : `multiple CDP sessions: ${cdps.map(([n]) => n).join(', ')}`}`);
           return true;
         }
         sessionName = cdps[0][0]; session = cdps[0][1];
       }
-      const brain = BRAINS[session.brain];
+      const brain = brainForName(session.brain);
       if (!brain?.peek) { sysOut(`/refresh only works on CDP brains (${sessionName} is ${session.brain})`); return true; }
       try {
         const text = await brain.peek(session.options);
@@ -820,8 +839,8 @@ function App() {
           'usage: ' + cmd + ' [all|last <N>] <name> [<brain>]\n' +
           '  default scope: all room messages\n' +
           '  default brain: ' + (cmd === '/operator-summarize'
-            ? 'fresh claude-code subprocess'
-            : 'fresh chatgpt-cdp tab → claude-cdp → fresh claude-code') + '\n' +
+            ? 'fresh ccode subprocess'
+            : 'fresh chatgpt-cdp tab → claude-cdp → fresh ccode') + '\n' +
           '  saves to ~/.egpt/summaries/<name>.md'
         );
         return true;
@@ -871,8 +890,8 @@ function App() {
             setStreaming(null); setBusy(false);
           }
         } else {
-          summarizer = 'fresh claude-code';
-          sysOut(`asking a fresh claude-code subprocess to summarize (${scopeLabel} of ${allTurns.length} turns)…`);
+          summarizer = 'fresh ccode';
+          sysOut(`asking a fresh ccode subprocess to summarize (${scopeLabel} of ${allTurns.length} turns)…`);
           setBusy(true);
           try {
             summary = await new Promise((resolve, reject) => {
@@ -924,13 +943,13 @@ function App() {
       return true;
     }
     if (cmd === '/history') {
-      // List recent claude-code sessions on disk, newest first.
+      // List recent Claude Code sessions on disk, newest first.
       // Each entry shows: short id, "Nm/Nh ago", size, original cwd, first user line.
       try {
         const projectsDir = join(homedir(), '.claude', 'projects');
         let projects = [];
         try { projects = await readdir(projectsDir); }
-        catch { sysOut(`(${projectsDir} not found — no claude-code sessions yet)`); return true; }
+        catch { sysOut(`(${projectsDir} not found — no ccode sessions yet)`); return true; }
 
         const items = [];
         for (const slug of projects) {
@@ -948,7 +967,7 @@ function App() {
             } catch { /* skip */ }
           }
         }
-        if (!items.length) { sysOut('(no claude-code sessions on disk)'); return true; }
+        if (!items.length) { sysOut('(no ccode sessions on disk)'); return true; }
 
         items.sort((a, b) => b.mtime - a.mtime);
         const N = parseInt(arg, 10) || 10;
@@ -977,7 +996,7 @@ function App() {
           return `${id}…  ${fmtTime(it.mtime).padEnd(8)} ${fmtSize(it.size).padEnd(6)} ${preview}\n` +
                  `             cwd: ${cwd}`;
         });
-        sysOut(`Last ${enriched.length} of ${items.length} claude-code session(s) on disk:\n\n` +
+        sysOut(`Last ${enriched.length} of ${items.length} ccode session(s) on disk:\n\n` +
                lines.join('\n\n') +
                `\n\nto resume: /session <sessionId>   (cwd auto-detected from the JSONL)`);
       } catch (e) { sysOut(`!! ${e.message}`); }
@@ -1034,7 +1053,7 @@ function App() {
         const emojiPad = (s.emoji ?? '❓') + ' ';
         const namePad = name.padEnd(14);
         const brainPad = s.brain.padEnd(13);
-        const brain = BRAINS[s.brain];
+        const brain = brainForName(s.brain);
         let detail = '';
         if (s.options.targetId) {
           const live = tabsByid.get(s.options.targetId);
@@ -1159,13 +1178,13 @@ function App() {
       }
 
       // Form 2 & 3: explicit
-      const brainName = parts[0];
-      const brain = BRAINS[brainName];
+      const brainName = canonicalBrainName(parts[0]);
+      const brain = brainForName(brainName);
       if (!brain) {
         sysOut('usage: /attach                          rescan and attach new tabs\n' +
                '       /attach <brain>                  attach all unattached tabs of that brain\n' +
                '       /attach <brain> <name> [tabSpec] explicit attach\n' +
-               'brains: ' + Object.keys(BRAINS).join(', '));
+               'brains: ' + brainNamesForHelp());
         return true;
       }
       const sessionName = parts[1];
@@ -1229,13 +1248,13 @@ function App() {
     }
     if (cmd === '/open') {
       const parts = arg.split(/\s+/);
-      const brainName = parts[0];
+      const brainName = canonicalBrainName(parts[0]);
       let sessionName = parts[1];
       if (!brainName) {
-        sysOut('usage: /open <brain> [name]\n  name auto-generated (e.g. cgpt2) if omitted.\n  brains: ' + Object.keys(BRAINS).join(', '));
+        sysOut('usage: /open <brain> [name]\n  name auto-generated (e.g. cgpt2) if omitted.\n  brains: ' + brainNamesForHelp());
         return true;
       }
-      const brain = BRAINS[brainName];
+      const brain = brainForName(brainName);
       if (!brain) { sysOut(`unknown brain: ${brainName}`); return true; }
       if (!sessionName) sessionName = nextName(brainName, sessions);
       if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
@@ -1289,14 +1308,14 @@ function App() {
 
   // Run a single brain-turn for one session.
   // `messageText` is exactly what gets injected into the brain (or piped to
-  // claude-code in resume mode). The caller is responsible for prefixing
+  // ccode in resume mode). The caller is responsible for prefixing
   // with [author]: when broadcasting or mirroring. Returns the brain's reply
   // text (string) on a substantive answer, or null on silence/error so the
   // caller knows whether to mirror it.
   async function runBrainTurn(routedTo, messageText, sessionMap = sessions) {
     const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
-    const brain = BRAINS[session.brain];
+    const brain = brainForName(session.brain);
     if (!brain) { sysOut(`!! brain not found: ${session.brain}`); return null; }
 
     let opts = session.options;
@@ -1357,7 +1376,7 @@ function App() {
           setStreaming({ author: routedTo, text: partial });
           tg?.update(tgFmt(partial));
         },
-        opts,
+        { ...opts, sessionName: routedTo, userName: USER_NAME },
       );
       const final = typeof result === 'object' && result !== null
         ? (result.text ?? '')
@@ -1440,23 +1459,25 @@ function App() {
     if (mention) {
       const token = mention[1];
       let target = resolveAddressedSession(token, activeSessions);
-      const brain = BRAINS[token];
+      const brainName = canonicalBrainName(token);
+      const brain = brainForName(token);
       if (!target && brain && !brain.urlMatch) {
         const emoji = nextEmoji(activeSessions);
+        const sessionName = nextName(brainName, activeSessions);
         activeSessions = {
           ...activeSessions,
-          [token]: { brain: token, options: { cwd: process.cwd() }, emoji },
+          [sessionName]: { brain: brainName, options: { cwd: process.cwd() }, emoji },
         };
         setSessions(activeSessions);
-        sysOut(`session "${token}" -> ${emoji} ${token} (auto-opened for @${token})`);
-        target = token;
+        sysOut(`session "${sessionName}" -> ${emoji} ${brainName} (auto-opened for @${token})`);
+        target = sessionName;
       }
       if (target) {
         recipients = [target];
         userPayload = (mention[2] ?? '').trim() || '?';
       } else if (brain) {
         const matches = Object.entries(activeSessions)
-          .filter(([_, s]) => s.brain === token)
+          .filter(([_, s]) => canonicalBrainName(s.brain) === brainName)
           .map(([n]) => n);
         sysOut(matches.length
           ? `@${token} is ambiguous; address one of: ${matches.join(', ')}`
@@ -1501,9 +1522,9 @@ function App() {
     // substantively, push "[B]: <reply>" into every OTHER CDP brain's tab so
     // they see it. Receiving brains may reply or stay silent (per /rules).
     // We do NOT mirror the secondary replies; cascade is bounded to one hop.
-    const cdpRecipients = recipients.filter(r => BRAINS[activeSessions[r]?.brain]?.urlMatch);
+    const cdpRecipients = recipients.filter(r => brainForName(activeSessions[r]?.brain)?.urlMatch);
     if (cdpRecipients.length > 1 && replies.length > 0) {
-      const mirrorables = replies.filter(r => BRAINS[activeSessions[r.author]?.brain]?.urlMatch);
+      const mirrorables = replies.filter(r => brainForName(activeSessions[r.author]?.brain)?.urlMatch);
       if (mirrorables.length > 0) {
         sysOut(`mirroring ${mirrorables.length} reply/replies to other CDP brains…`);
         for (const { author, text: replyText } of mirrorables) {
