@@ -4,7 +4,9 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import { spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
-import { readFile, appendFile } from 'node:fs/promises';
+import { readFile, appendFile, readdir, stat, open } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 import * as claudeCode from './brains/claude-code.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
@@ -42,6 +44,61 @@ const isInternalUrl = (u) =>
 function brainForUrl(url) {
   for (const b of Object.values(BRAINS)) {
     if (b.urlMatch && b.urlMatch.test(url)) return b.name;
+  }
+  return null;
+}
+
+// Read the first chunk of a Claude Code session JSONL and pull out:
+//   - cwd: the working directory the session was started in (truth source for /session)
+//   - preview: the first non-empty user text message (for human recognition)
+// We read only ~64 KB so this stays fast even when scanning many sessions.
+async function readJsonlMetadata(path) {
+  let cwd = null;
+  let preview = null;
+  try {
+    const handle = await open(path, 'r');
+    const buf = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    await handle.close();
+    const text = buf.slice(0, bytesRead).toString('utf8');
+    // Quick regex: find any "cwd": "..." in the chunk
+    const m = text.match(/"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (m) cwd = m[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+    // Walk lines for the first user text
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      let o;
+      try { o = JSON.parse(line); } catch { continue; }
+      if (o.type === 'user' && o.message?.role === 'user') {
+        const c = o.message.content;
+        let t = '';
+        if (typeof c === 'string') t = c;
+        else if (Array.isArray(c)) {
+          t = c.filter(x => x.type === 'text').map(x => x.text).join(' ');
+        }
+        // Strip system-reminder / command-* tag blocks
+        t = t.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+             .replace(/<command-[^>]+>[\s\S]*?<\/command-[^>]+>/g, '')
+             .replace(/<local-command-[^>]+>[\s\S]*?<\/local-command-[^>]+>/g, '')
+             .trim();
+        if (t) { preview = t.slice(0, 80); break; }
+      }
+    }
+  } catch { /* unreadable, return what we have */ }
+  return { cwd, preview };
+}
+
+// Find the JSONL path for a given session id by scanning ~/.claude/projects/*/.
+async function findSessionJsonl(sessionId) {
+  const projectsDir = join(homedir(), '.claude', 'projects');
+  let projects = [];
+  try { projects = await readdir(projectsDir); } catch { return null; }
+  for (const slug of projects) {
+    const candidate = join(projectsDir, slug, `${sessionId}.jsonl`);
+    try {
+      const st = await stat(candidate);
+      if (st.isFile()) return { path: candidate, slug };
+    } catch { /* not in this project */ }
   }
   return null;
 }
@@ -321,8 +378,12 @@ function App() {
         '/refresh                        re-poll CDP tab; append latest assistant text\n' +
         '                                (use when streaming was cut off)\n\n' +
         'Local brain (claude-code):\n' +
-        '/session [<id> [cwd]]           continue an existing claude-code session via\n' +
-        '                                --resume (otherwise stateless: re-reads file)\n\n' +
+        '/history [N]                    list recent claude-code sessions on disk\n' +
+        '                                (newest first; default 10)\n' +
+        '/session [<id>]                 continue a claude-code session via --resume\n' +
+        '                                (cwd auto-detected from the JSONL)\n' +
+        '/session <id> <cwd>             explicit cwd if auto-detection fails\n' +
+        '/session none                   back to stateless mode (re-reads file each turn)\n\n' +
         'Conversation:\n' +
         '/rules                          write room rules into file (silence, @, politeness)\n' +
         '/last [N]                       show last N messages from the file (default 10)\n' +
@@ -346,7 +407,7 @@ function App() {
       }
       const parts = arg.split(/\s+/);
       const sid = parts[0];
-      const cwd = parts.slice(1).join(' ').trim() || undefined;
+      let cwd = parts.slice(1).join(' ').trim() || undefined;
       if (sid === 'none' || sid === 'clear') {
         setSessions(s => ({
           ...s,
@@ -360,6 +421,19 @@ function App() {
         sysOut(`${principal}: resume cleared (back to stateless mode)`);
         return true;
       }
+      // If cwd wasn't given, find the session's JSONL on disk and read cwd
+      // from it (the JSONL stores the original working directory; the project
+      // slug is lossy when paths contain dots).
+      let detectedCwd = false;
+      if (!cwd) {
+        try {
+          const found = await findSessionJsonl(sid);
+          if (found) {
+            const meta = await readJsonlMetadata(found.path);
+            if (meta.cwd) { cwd = meta.cwd; detectedCwd = true; }
+          }
+        } catch { /* fall through with cwd undefined */ }
+      }
       setSessions(s => ({
         ...s,
         [principal]: {
@@ -368,7 +442,7 @@ function App() {
         },
       }));
       sysOut(`${principal}.sessionId → ${sid}` +
-             (cwd ? `\n${principal}.cwd → ${cwd}` : '') +
+             (cwd ? `\n${principal}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
              `\n(claude --resume mode active for this session)`);
       return true;
     }
@@ -404,6 +478,66 @@ function App() {
         setItems(p => [...p, { id: Date.now(), author: principal, body: text }]);
         await append(principal, text);
         sysOut('(refreshed from tab — full text appended to file)');
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/history') {
+      // List recent claude-code sessions on disk, newest first.
+      // Each entry shows: short id, "Nm/Nh ago", size, original cwd, first user line.
+      try {
+        const projectsDir = join(homedir(), '.claude', 'projects');
+        let projects = [];
+        try { projects = await readdir(projectsDir); }
+        catch { sysOut(`(${projectsDir} not found — no claude-code sessions yet)`); return true; }
+
+        const items = [];
+        for (const slug of projects) {
+          const projectPath = join(projectsDir, slug);
+          let files = [];
+          try { files = await readdir(projectPath); } catch { continue; }
+          for (const file of files) {
+            if (!file.endsWith('.jsonl')) continue;
+            const sessionId = file.replace(/\.jsonl$/, '');
+            const fullPath = join(projectPath, file);
+            try {
+              const st = await stat(fullPath);
+              if (st.size === 0) continue;
+              items.push({ sessionId, slug, fullPath, mtime: st.mtime, size: st.size });
+            } catch { /* skip */ }
+          }
+        }
+        if (!items.length) { sysOut('(no claude-code sessions on disk)'); return true; }
+
+        items.sort((a, b) => b.mtime - a.mtime);
+        const N = parseInt(arg, 10) || 10;
+        const top = items.slice(0, N);
+        const enriched = await Promise.all(top.map(async (it) => {
+          const meta = await readJsonlMetadata(it.fullPath);
+          return { ...it, ...meta };
+        }));
+
+        const fmtTime = (d) => {
+          const sec = Math.max(0, (Date.now() - d.getTime()) / 1000);
+          if (sec < 60) return `${Math.floor(sec)}s ago`;
+          if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+          if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+          return `${Math.floor(sec / 86400)}d ago`;
+        };
+        const fmtSize = (b) =>
+          b < 1024 ? `${b}B` :
+          b < 1024 * 1024 ? `${(b / 1024).toFixed(0)}K` :
+          `${(b / (1024 * 1024)).toFixed(1)}M`;
+
+        const lines = enriched.map(it => {
+          const id = it.sessionId.slice(0, 8);
+          const cwd = it.cwd ?? `(slug: ${it.slug})`;
+          const preview = it.preview ? `"${it.preview}"` : '(no preview)';
+          return `${id}…  ${fmtTime(it.mtime).padEnd(8)} ${fmtSize(it.size).padEnd(6)} ${preview}\n` +
+                 `             cwd: ${cwd}`;
+        });
+        sysOut(`Last ${enriched.length} of ${items.length} claude-code session(s) on disk:\n\n` +
+               lines.join('\n\n') +
+               `\n\nto resume: /session <sessionId>   (cwd auto-detected from the JSONL)`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
