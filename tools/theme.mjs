@@ -7,12 +7,14 @@
 // Unknown keys are ignored; missing keys fall back to DEFAULTS.
 
 import { readFileSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const EGPT_HOME  = join(homedir(), '.egpt');
-const THEMES_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'themes');
+const EGPT_HOME      = join(homedir(), '.egpt');
+export const THEMES_DIR      = join(dirname(fileURLToPath(import.meta.url)), '..', 'themes');
+export const USER_THEMES_DIR = join(EGPT_HOME, 'themes');
 
 export const DEFAULTS = {
   authorYou:       'cyanBright',
@@ -37,7 +39,7 @@ export const DEFAULTS = {
 
 // Load a theme by name. Returns merged theme object (always complete).
 export function loadTheme(name = 'default') {
-  const userPath = join(EGPT_HOME, 'themes', `${name}.json`);
+  const userPath = join(USER_THEMES_DIR, `${name}.json`);
   const appPath  = join(THEMES_DIR, `${name}.json`);
   for (const p of [userPath, appPath]) {
     try {
@@ -45,4 +47,16 @@ export function loadTheme(name = 'default') {
     } catch {}
   }
   return { ...DEFAULTS };
+}
+
+// List all available theme names (shipped + user), sorted.
+export async function listThemes() {
+  const [app, user] = await Promise.all([
+    readdir(THEMES_DIR).catch(() => []),
+    readdir(USER_THEMES_DIR).catch(() => []),
+  ]);
+  return [...new Set([...app, ...user])]
+    .filter(f => f.endsWith('.json'))
+    .map(f => f.slice(0, -5))
+    .sort();
 }

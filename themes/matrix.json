@@ -1,0 +1,20 @@
+{
+  "authorYou":       "greenBright",
+  "authorSystem":    "green",
+  "authorBrain":     "cyanBright",
+  "meta":            "green",
+  "systemBody":      "green",
+  "helpSeparator":   "greenBright",
+  "helpCommand":     "greenBright",
+  "helpDash":        "green",
+  "helpDescription": "white",
+  "helpIndent":      "green",
+  "statusBrand":     "greenBright",
+  "statusFile":      "green",
+  "statusSessions":  "greenBright",
+  "streamingStats":  "green",
+  "spinnerLabel":    "greenBright",
+  "spinnerElapsed":  "green",
+  "hint":            "green",
+  "error":           "red"
+}

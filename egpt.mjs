@@ -16,7 +16,7 @@ import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './tools/cdp.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
-import { loadTheme } from './tools/theme.mjs';
+import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
@@ -27,6 +27,7 @@ const EGPT_HOME = join(homedir(), '.egpt');
 let EGPT_CONFIG = {};
 try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
 const T = loadTheme(EGPT_CONFIG.theme ?? 'default');
+let _currentTheme = EGPT_CONFIG.theme ?? 'default';
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
@@ -1095,6 +1096,7 @@ function App() {
   const [streaming, setStreaming] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [, setThemeRev] = useState(0);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // The room starts empty — egpt is the host, not a participant. Use /open
   // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
@@ -1485,6 +1487,7 @@ function App() {
         '── MISC ─────────────────────────────────────────────',
         '/status — room snapshot: participants, interfaces, models',
         '/prompts [on|off] — show full prompt sent to operators',
+        '/themes — list themes  ·  /theme <name> — switch theme (live)',
         'Brains: ' + brainNamesForHelp(),
         '─────────────────────────────────────────────────────',
       ].join('\n'),
@@ -1530,6 +1533,7 @@ function App() {
         '🔧 <b>Misc</b>',
         '<code>/status</code> — room snapshot',
         '<code>/prompts [on|off]</code> — show operator prompts',
+        '<code>/themes</code> — list themes · <code>/theme &lt;name&gt;</code> — switch live',
         '<code>/file</code> — conversation file path',
         '<code>/exit</code> — quit egpt',
       ].join('\n'),
@@ -1615,6 +1619,24 @@ function App() {
         }
       }
       sysOut(parts.join('\n'));
+      return true;
+    }
+    if (cmd === '/themes') {
+      const names = await listThemes();
+      const lines = names.map(n => n === _currentTheme ? `/theme ${n} ← active` : `/theme ${n}`);
+      sysOut(`themes:\n${lines.join('\n')}`);
+      return true;
+    }
+    if (cmd === '/theme') {
+      const name = arg.trim();
+      if (!name) {
+        sysOut(`active theme: ${_currentTheme}  (use /themes to list)`);
+        return true;
+      }
+      Object.assign(T, loadTheme(name));
+      _currentTheme = name;
+      setThemeRev(n => n + 1);
+      sysOut(`theme: ${name}`);
       return true;
     }
     if (cmd === '/create-profile') {
