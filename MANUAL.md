@@ -404,12 +404,19 @@ then egpt sends the prepared file to the target:
 ```text
 /send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+/send-file "C:\Users\an\.egpt\prepared-files\2026-05-03T01-03-30-619Z-codex1-null" @cgpt1
 ```
 
 The source path is optional; if omitted, the operator infers/finds the file from
 the instruction and local context. The target `@session` must already be
 registered. If `via=` is omitted, egpt uses the only registered local operator
 when there is exactly one.
+
+If a prepared excerpt is over the default 120k character guard, egpt saves it
+and does not paste it yet. Use the reported file path with `/send-file
+"<prepared-path>" @target` to send exactly that prepared artifact. Paths under
+`~/.egpt/prepared-files/` are treated as already prepared and are sent directly
+instead of going back through the operator.
 
 Use `/paste-file` when you already know the exact marker and want deterministic
 slicing without asking an operator:
@@ -456,8 +463,8 @@ Browser brains:
   /brain [status|stop]          brain Chrome lifecycle (CDP-based)
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
-  /send-file [via=<op>] [<path>] @<session> "<instruction>"
-                                operator prepares excerpt, egpt sends it
+  /send-file [via=<op>] [<path>] @<session> ["<instruction>"]
+                                prepare excerpt, or send prepared file
   /paste-file <session> <path>  paste a local file/excerpt into one session
                                 supports --before/--after markers and --ask
 

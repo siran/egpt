@@ -206,8 +206,8 @@ Sobre la pregunta original...
 /brain [status|stop]            brain Chrome lifecycle (CDP-based)
 /refresh                        re-poll current CDP tab; append full text
                                 (use when streaming was cut off)
-/send-file [via=<op>] [<path>] @<session> "<instruction>"
-                                operator prepares excerpt, egpt sends it
+/send-file [via=<op>] [<path>] @<session> ["<instruction>"]
+                                prepare excerpt, or send prepared file
 /paste-file <session> <path>     paste a local file/excerpt into one session
                                 (--before/--after markers, --ask prompt)
 /last [N]                       show last N messages from the file (default 10)
@@ -217,12 +217,17 @@ Sobre la pregunta original...
 
 `/send-file` uses a local operator (`codex`/`ccode`) to prepare an excerpt, then
 egpt sends that prepared file to the target session. The target `@session` must
-already be registered.
+already be registered. If the prepared file is too large for the default guard,
+egpt saves it and tells you exactly which prepared path to send next.
 
 ```text
 /send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
+/send-file "C:\Users\an\.egpt\prepared-files\2026-05-03T01-03-30-619Z-codex1-null" @cgpt1
 ```
+
+Paths under `~/.egpt/prepared-files/` are treated as already prepared and are
+sent directly; they do not go back through the operator.
 
 `/paste-file` is the deterministic version when you already know the exact
 marker:

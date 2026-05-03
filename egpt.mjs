@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
@@ -63,6 +63,7 @@ function nextName(brainName, sessions) {
 }
 
 function resolveAddressedSession(token, sessions) {
+  token = String(token ?? '').replace(/^@+/, '');
   if (sessions[token]) return token;
   const brainName = canonicalBrainName(token);
   if (!BRAINS[brainName]) return null;
@@ -206,9 +207,10 @@ function pasteFileUsage() {
 
 function sendFileUsage() {
   return [
-    'usage: /send-file [via=<operator>] [<path>] @<session> "<prep instruction>" [--ask "<prompt>"] [--max <chars>|--all]',
+    'usage: /send-file [via=<operator>] [<path>] @<session> ["<prep instruction>"] [--ask "<prompt>"] [--max <chars>|--all]',
     '  example: /send-file via=codex1 "C:\\path\\book.md" @cgpt1 "before chapter 8"',
     '  example: /send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"',
+    '  prepared shortcut: /send-file "C:\\Users\\an\\.egpt\\prepared-files\\..." @cgpt1',
     '  target @session must already be registered',
   ].join('\n');
 }
@@ -217,26 +219,33 @@ function parseCommandWords(input) {
   const words = [];
   let cur = '';
   let quote = null;
+  let hasToken = false;
   for (let i = 0; i < input.length; i++) {
     const ch = input[i];
     if (quote) {
       if (ch === quote) quote = null;
-      else cur += ch;
+      else {
+        cur += ch;
+        hasToken = true;
+      }
       continue;
     }
     if (ch === '"' || ch === "'") {
       quote = ch;
+      hasToken = true;
     } else if (/\s/.test(ch)) {
-      if (cur) {
+      if (hasToken) {
         words.push(cur);
         cur = '';
+        hasToken = false;
       }
     } else {
       cur += ch;
+      hasToken = true;
     }
   }
   if (quote) throw new Error(`unterminated ${quote} quote`);
-  if (cur) words.push(cur);
+  if (hasToken) words.push(cur);
   return words;
 }
 
@@ -258,6 +267,11 @@ function parsePositiveLimit(value, fallback) {
 function safeFileSlug(value, fallback = 'file') {
   const s = String(value ?? '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');
   return s || fallback;
+}
+
+function isPathInsideDir(path, dir) {
+  const rel = relative(resolve(dir), resolve(path));
+  return rel === '' || (!!rel && !rel.startsWith('..') && !isAbsolute(rel));
 }
 
 function parsePasteFileArgs(arg) {
@@ -290,10 +304,11 @@ function parsePasteFileArgs(arg) {
 
 function parseSendFileArgs(arg) {
   const words = parseCommandWords(arg);
-  if (words.length < 3) throw new Error(sendFileUsage());
+  if (!words.length) throw new Error(sendFileUsage());
   const opts = {
     viaSpec: null,
     maxChars: DEFAULT_PASTE_FILE_MAX_CHARS,
+    maxProvided: false,
     ask: null,
   };
 
@@ -312,8 +327,10 @@ function parseSendFileArgs(arg) {
     } else if (token === '--max') {
       if (!words.length) throw new Error('--max requires a value');
       opts.maxChars = parsePositiveLimit(words.shift(), DEFAULT_PASTE_FILE_MAX_CHARS);
+      opts.maxProvided = true;
     } else if (token === '--all') {
       opts.maxChars = 0;
+      opts.maxProvided = true;
     } else if (token.startsWith('--')) {
       throw new Error(`unknown option ${token}\n\n${sendFileUsage()}`);
     } else {
@@ -329,7 +346,12 @@ function parseSendFileArgs(arg) {
   }
   opts.path = pathParts.length ? pathParts.join(' ') : null;
   opts.targetName = positional[targetIndex].slice(1);
-  opts.instruction = positional.slice(targetIndex + 1).join(' ').trim() || 'prepare the relevant excerpt';
+  const instructionParts = positional.slice(targetIndex + 1);
+  opts.instructionProvided = instructionParts.some(part => part.trim());
+  opts.instruction = instructionParts.join(' ').trim() || 'prepare the relevant excerpt';
+  if (!opts.path && !opts.instructionProvided) {
+    throw new Error(`missing source path or preparation instruction\n\n${sendFileUsage()}`);
+  }
   return opts;
 }
 
@@ -433,6 +455,19 @@ async function preparedFilePathFor(via, sourcePath) {
     ? safeFileSlug(basename(sourcePath), 'excerpt')
     : 'operator-selected-excerpt.md';
   return join(PREPARED_FILES_DIR, `${stamp}-${safeFileSlug(via)}-${sourceName}`);
+}
+
+function directPreparedPathFromSource(sourcePath) {
+  if (!sourcePath) return null;
+  const path = expandUserPath(sourcePath);
+  return isPathInsideDir(path, PREPARED_FILES_DIR) ? path : null;
+}
+
+function quoteRoomArg(value) {
+  const s = String(value);
+  if (!s.includes("'")) return `'${s}'`;
+  if (!s.includes('"')) return `"${s}"`;
+  return s;
 }
 
 function buildSendFilePrepPrompt({ sourcePath, preparedPath, targetName, instruction }) {
@@ -1270,8 +1305,8 @@ function App() {
         '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
         '/refresh [<session-name>]       re-poll CDP tab; append latest assistant text\n' +
         '                                (use when streaming was cut off)\n' +
-        '/send-file [via=<op>] <path> @<session> "<instruction>"\n' +
-        '                                operator prepares excerpt, egpt sends it\n' +
+        '/send-file [via=<op>] [<path>] @<session> ["<instruction>"]\n' +
+        '                                prepare excerpt, or send prepared file\n' +
         '/paste-file <session> <path>     paste a local file/excerpt into one session\n' +
         '                                use --before/--after/--ask; quote spaces\n' +
         '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
@@ -1352,6 +1387,67 @@ function App() {
         sysOut(`no registered target session "@${parsed.targetName}"`);
         return true;
       }
+      let directPreparedPath = null;
+      try {
+        directPreparedPath = !parsed.instructionProvided
+          ? directPreparedPathFromSource(parsed.path)
+          : null;
+      } catch (e) {
+        sysOut(`!! ${e.message}`);
+        return true;
+      }
+      if (directPreparedPath) {
+        try {
+          const info = await stat(directPreparedPath);
+          if (!info.isFile()) {
+            sysOut(`prepared path is not a file: ${directPreparedPath}`);
+            return true;
+          }
+          const prepared = await readFile(directPreparedPath, 'utf8');
+          if (!prepared.trim()) {
+            sysOut(`prepared file is empty: ${directPreparedPath}`);
+            return true;
+          }
+          const maxChars = parsed.maxProvided ? parsed.maxChars : 0;
+          if (maxChars > 0 && prepared.length > maxChars) {
+            const askSuffix = parsed.ask ? ` --ask ${quoteRoomArg(parsed.ask)}` : '';
+            sysOut(
+              `not pasted into @${parsed.targetName}: prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n` +
+              `${directPreparedPath}\n` +
+              `Use --all to send it:\n` +
+              `/send-file ${quoteRoomArg(directPreparedPath)} @${parsed.targetName} --all${askSuffix}`,
+            );
+            return true;
+          }
+
+          const sendNote =
+            `[send-file pasted prepared file into ${parsed.targetName}]\n` +
+            `source: ${directPreparedPath}\n` +
+            `chars: ${prepared.length}\n` +
+            `mode: prepared-file direct` +
+            (parsed.ask ? '\nmode: paste + ask' : '');
+          await append('system', sendNote);
+          setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: sendNote }]);
+
+          setBusy(true);
+          try {
+            await runBrainTurn(parsed.targetName, buildPasteFileMessage({
+              path: directPreparedPath,
+              originalChars: prepared.length,
+              excerpt: prepared,
+              rangeLabel: 'prepared file',
+            }, parsed));
+          } finally {
+            setBusy(false);
+          }
+          sysOut(`sent ${prepared.length} prepared chars to ${parsed.targetName}`);
+        } catch (e) {
+          setBusy(false);
+          sysOut(`!! ${e.message}\n\n${sendFileUsage()}`);
+        }
+        return true;
+      }
+
       let via = parsed.viaSpec;
       if (!via) {
         via = defaultOperatorSession(sessions);
@@ -1400,7 +1496,14 @@ function App() {
           return true;
         }
         if (maxChars > 0 && prepared.length > maxChars) {
-          sysOut(`prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n${preparedPath}\nUse --all or a narrower instruction.`);
+          const askSuffix = parsed.ask ? ` --ask ${quoteRoomArg(parsed.ask)}` : '';
+          sysOut(
+            `not pasted into @${parsed.targetName}: prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n` +
+            `${preparedPath}\n` +
+            `To paste exactly this prepared file, run:\n` +
+            `/send-file ${quoteRoomArg(preparedPath)} @${parsed.targetName}${askSuffix}\n` +
+            `Or rerun the preparation with --all or a narrower instruction.`,
+          );
           return true;
         }
 
