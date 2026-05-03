@@ -1845,8 +1845,13 @@ function App() {
       }
 
       const mirrorMsg = `[${source}]: ${lastBody}`;
-      const preview = lastBody.replace(/\n/g, ' ').slice(0, 100) + (lastBody.length > 100 ? '…' : '');
-      sysOut(`mirroring [${source}] → ${targets.join(', ')}\n  "${preview}"`);
+      const mkMirrorPreview = (text) => {
+        const lines = text.split('\n').filter(l => l.trim());
+        if (text.length <= 300 || lines.length <= 6)
+          return text.length > 300 ? text.slice(0, 300) + '…' : text;
+        return lines.slice(0, 3).join('\n') + '\n  …\n' + lines.slice(-2).join('\n');
+      };
+      sysOut(`mirroring [${source}] → ${targets.join(', ')}\n${mkMirrorPreview(lastBody)}`);
       setBusy(true);
       try {
         for (const t of targets) {
