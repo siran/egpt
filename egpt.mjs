@@ -23,9 +23,12 @@ const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
 
-// Load ~/.egpt/config.json synchronously at startup (small file, read once).
+// Load config: global (~/.egpt/config.json) then local (.egpt/config.json).
+// Local keys override global ones. Both files are optional.
 let EGPT_CONFIG = {};
 try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
+const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
+try { EGPT_CONFIG = { ...EGPT_CONFIG, ...JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')) }; } catch {}
 const T = loadTheme(EGPT_CONFIG.theme ?? 'default');
 let _currentTheme = EGPT_CONFIG.theme ?? 'default';
 // dp(path) — display a filesystem path, converting to POSIX style when
@@ -1488,6 +1491,7 @@ function App() {
         '/status — room snapshot: participants, interfaces, models',
         '/prompts [on|off] — show full prompt sent to operators',
         '/themes — list themes  ·  /theme <name> — switch theme (live)',
+        '/config [key] [value] — read/write local .egpt/config.json',
         'Brains: ' + brainNamesForHelp(),
         '─────────────────────────────────────────────────────',
       ].join('\n'),
@@ -1534,6 +1538,7 @@ function App() {
         '<code>/status</code> — room snapshot',
         '<code>/prompts [on|off]</code> — show operator prompts',
         '<code>/themes</code> — list themes · <code>/theme &lt;name&gt;</code> — switch live',
+        '<code>/config [key] [value]</code> — read/write local config',
         '<code>/file</code> — conversation file path',
         '<code>/exit</code> — quit egpt',
       ].join('\n'),
@@ -1637,6 +1642,44 @@ function App() {
       _currentTheme = name;
       setThemeRev(n => n + 1);
       sysOut(`theme: ${name}`);
+      return true;
+    }
+    if (cmd === '/config') {
+      const parts = arg.trim().split(/\s+/);
+      const key = parts[0];
+      const rawVal = parts.slice(1).join(' ');
+      // Read current local config (don't use in-memory EGPT_CONFIG — show file state)
+      let localCfg = {};
+      try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
+      if (!key) {
+        const entries = Object.entries(localCfg);
+        sysOut(entries.length
+          ? `local config (${dp(LOCAL_CONFIG_PATH)}):\n${entries.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}`
+          : `local config empty  (${dp(LOCAL_CONFIG_PATH)})`);
+        return true;
+      }
+      if (!rawVal) {
+        const v = localCfg[key] ?? EGPT_CONFIG[key];
+        sysOut(v !== undefined ? `${key}: ${JSON.stringify(v)}` : `${key}: (not set)`);
+        return true;
+      }
+      // Parse value: try JSON (handles numbers, booleans), fall back to string
+      let val;
+      try { val = JSON.parse(rawVal); } catch { val = rawVal; }
+      localCfg[key] = val;
+      try {
+        await mkdir(dirname(LOCAL_CONFIG_PATH), { recursive: true });
+        await writeFile(LOCAL_CONFIG_PATH, JSON.stringify(localCfg, null, 2) + '\n');
+        EGPT_CONFIG[key] = val;
+      } catch (e) { sysOut(`!! config write: ${e.message}`); return true; }
+      // Apply live side-effects for known keys
+      if (key === 'theme') {
+        Object.assign(T, loadTheme(val));
+        _currentTheme = val;
+        setThemeRev(n => n + 1);
+      }
+      if (key === 'show_prompts') _showPrompts = !!val;
+      sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(LOCAL_CONFIG_PATH)}`);
       return true;
     }
     if (cmd === '/create-profile') {
