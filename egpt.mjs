@@ -41,10 +41,6 @@ const BRAIN_PREFIX = {
   'codex':       'codex',
 };
 
-const BRAIN_DEFAULT_HANDLE = {
-  codex: 'codex',
-};
-
 function canonicalBrainName(name) {
   return BRAIN_ALIASES[name] ?? name;
 }
@@ -60,8 +56,6 @@ function brainNamesForHelp() {
 
 function nextName(brainName, sessions) {
   brainName = canonicalBrainName(brainName);
-  const defaultHandle = BRAIN_DEFAULT_HANDLE[brainName];
-  if (defaultHandle && !sessions[defaultHandle]) return defaultHandle;
   const prefix = BRAIN_PREFIX[brainName] ?? brainName;
   let n = 1;
   while (sessions[`${prefix}${n}`]) n++;
@@ -1256,7 +1250,7 @@ function App() {
         '  management, summaries, browser lifecycle. Only sending a chat\n' +
         '  message needs at least one participant.\n\n' +
         'Sessions (named participants in the room — every participant is equal):\n' +
-        '  Auto-naming: cgpt1, claude1, ccode1, codex, codex1 ... per brain.\n' +
+        '  Auto-naming: cgpt1, claude1, ccode1, codex1 ... per brain.\n' +
         '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
         '  Chrome and auto-attaches every matching tab.\n\n' +
         '/open <brain> [name]            open a fresh tab + register session\n' +
@@ -1265,7 +1259,7 @@ function App() {
         '                                (also accepts /profile <urlOrId> <name>)\n' +
         '/attach <profile>               start a configured brain profile\n' +
         '/attach                         re-scan Chrome, attach any new tabs\n' +
-        '/attach <brain>                 attach all unattached tabs of that brain\n' +
+        '/attach <brain>                 attach CDP tabs or create a local session\n' +
         '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
         '/sessions                       list registered sessions\n' +
         '/handle <old> <new>             rename a session (keeps brain + emoji)\n' +
@@ -2067,7 +2061,7 @@ function App() {
       //   /attach <profile>                -> start a YAML brain profile
       //   /attach                          → re-scan Chrome, attach any new tabs
       //   /attach <brain> <name> [tabSpec] → explicit attach to a specific tab
-      //   /attach <brain>                  → attach all unattached tabs of that brain
+      //   /attach <brain>                  → attach CDP tabs or create local session
       const parts = arg.split(/\s+/).filter(Boolean);
 
       // Form 1: no args — rescan and attach all unattached matching tabs.
@@ -2116,7 +2110,7 @@ function App() {
       if (!brain) {
         sysOut('usage: /attach                          rescan and attach new tabs\n' +
                '       /attach <profile>                 start a YAML brain profile\n' +
-               '       /attach <brain>                  attach all unattached tabs of that brain\n' +
+               '       /attach <brain>                  attach CDP tabs or create a local session\n' +
                '       /attach <brain> <name> [tabSpec] explicit attach\n' +
                'brains: ' + brainNamesForHelp() +
                '\nprofile dirs:\n' + profileDirsText());
@@ -2125,10 +2119,17 @@ function App() {
       const sessionName = parts[1];
       const tabSpec = parts.slice(2).join(' ').trim();
 
-      // Form 3: brain only — attach all unattached tabs of that brain
+      // Form 3: brain only. CDP brains attach all unattached tabs; local
+      // brains create one auto-named session in the current cwd.
       if (!sessionName) {
         if (!brain.urlMatch) {
-          sysOut(`/attach ${brainName} requires a name (non-CDP brains have no tabs to scan).`);
+          const name = nextName(brainName, sessions);
+          const emoji = nextEmoji(sessions);
+          const options = { cwd: process.cwd() };
+          setSessions(s => ({ ...s, [name]: { brain: brainName, options, emoji } }));
+          sysOut(`session "${name}" â†’ ${emoji} ${brainName}` +
+            `\n  cwd: ${options.cwd}` +
+            `\n  address it as @${name} for a single-recipient turn`);
           return true;
         }
         try {

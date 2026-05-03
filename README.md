@@ -153,7 +153,7 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
                                              # create a minimal ChatGPT URL profile
 /attach alex                                 # start profile "alex" if configured
 /open ccode ccode1                           # local Claude Code subprocess
-/open codex                                  # local Codex session (auto-name: codex)
+/open codex                                  # local Codex session (auto-name: codex1)
 @codex exec: pwd                             # run a shell command in codex's cwd
 @codex exec: cd ../siran/writing             # change codex's persistent cwd
 /open chatgpt-cdp                            # opens/registers a ChatGPT tab
@@ -199,6 +199,7 @@ Sobre la pregunta original...
 /profile <name> <urlOrId>       create a ChatGPT/Claude URL profile
 /attach <profile>               start a configured brain profile
 /attach                         re-scan Chrome and attach matching tabs
+/attach <brain>                 attach CDP tabs or create a local session
 /attach <brain> <name> [tab]    explicit attach; tabSpec: targetId | url | uuid | prefix
 /sessions                       list registered sessions
 /tabs [all]                     list pages in the brain Chrome (chrome:// hidden)

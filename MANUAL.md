@@ -223,7 +223,7 @@ When using a CDP brain or `claude --resume`, the brain has its *own* native memo
 A **session** is a named participant in the conversation. It has:
 
 - A **brain** — the type of AI (`ccode`, `codex`, `chatgpt-cdp`, `claude-cdp`)
-- A **name** — like `ccode1`, `codex`, `cgpt1`, `claude1`
+- A **name** — like `ccode1`, `codex1`, `cgpt1`, `claude1`
 - **Options** — which tab, which Claude Code session ID, etc.
 
 ### Auto-naming
@@ -235,7 +235,7 @@ Sessions auto-name by convention:
 | `ccode`        | `ccode`        | `ccode1`, `ccode2`, `ccode3` |
 | `chatgpt-cdp`  | `cgpt`         | `cgpt1`, `cgpt2`             |
 | `claude-cdp`   | `claude`       | `claude1`, `claude2`         |
-| `codex`        | `codex`        | `codex`, `codex1`, `codex2`  |
+| `codex`        | `codex`        | `codex1`, `codex2`           |
 
 Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You can pass an explicit name to override (`/open chatgpt-cdp gpt-research`).
 
@@ -245,7 +245,7 @@ Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You ca
 2. If brain Chrome is running on port 9222, scans tabs and auto-attaches each matching one as `cgpt1`, `claude1`, etc.
 3. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
 
-If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1` or `/open codex`.
+If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1`, `/open codex`, or `/attach codex`.
 
 ### Brain profiles
 
@@ -447,7 +447,7 @@ Sessions (named participants in the room):
   /profile <name> <urlOrId>      create a ChatGPT/Claude URL profile
   /attach <profile>             start a configured brain profile
   /attach                       rescan Chrome and attach any new tabs
-  /attach <brain>               attach all unattached tabs of that brain
+  /attach <brain>               attach CDP tabs or create a local session
   /attach <brain> <name> [tab]  explicit attach
   /sessions                     list registered sessions
 
