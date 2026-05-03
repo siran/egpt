@@ -951,26 +951,11 @@ function mdToTgHtml(text) {
   }).join('');
 }
 
-// Format a _bright (help/status) item for Telegram HTML.
-// Section headers "── TITLE ────" → <b>TITLE</b>, /commands → <code>/cmd</code>.
-function formatBrightForTelegram(body) {
-  const lines = body.split('\n');
-  const out = [];
-  for (const line of lines) {
-    const hdr = line.match(/^──+\s+(.+?)\s+─+$/);
-    if (hdr) { out.push(`\n<b>${escapeHtml(hdr[1])}</b>`); continue; }
-    if (/^─{3,}/.test(line.trim())) continue;
-    if (!line.trim()) { out.push(''); continue; }
-    out.push(escapeHtml(line).replace(/(\/[\w-]+)/g, '<code>$1</code>'));
-  }
-  return out.join('\n').trim();
-}
-
 // Render an item for the Telegram chat. Uses HTML parse_mode.
 // System messages render italic; brain/session bodies get markdown rendered.
 function formatItemForTelegram(item, sessions) {
   if (item.author === 'system') {
-    if (item._bright) return `${EGPT_EMOJI}\n${formatBrightForTelegram(item.body)}`;
+    if (item._tgBody) return item._tgBody;
     return `${EGPT_EMOJI} <i>${escapeHtml(item.body)}</i>`;
   }
   if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${escapeHtml(item.body)}`;
@@ -1534,7 +1519,53 @@ function App() {
         '/prompts [on|off]  toggle showing the full prompt sent to operators',
         '                   (set show_prompts:true in ~/.egpt/config.json to persist)',
         '─────────────────────────────────────────────────────',
-      ].join('\n') }]);
+      ].join('\n'),
+      _tgBody: [
+        `${EGPT_EMOJI} <b>egpt help</b>`,
+        '',
+        '💬 <b>Room</b>',
+        '<code>message</code> — broadcast to all sessions',
+        '<code>@name message</code> — address one session',
+        '<code>/rules</code> — write room etiquette into the file',
+        '<code>/last [N]</code> — tail N conversation messages',
+        '',
+        '🤖 <b>Sessions</b>',
+        '<code>/sessions</code> — list active sessions',
+        '<code>/open brain [name]</code> — open new tab/session',
+        '<code>/attach [brain|profile]</code> — scan Chrome or start profile',
+        '<code>/detach name</code> — remove from room',
+        '<code>/handle old new</code> — rename session',
+        '<code>/emoji [name emoji]</code> — set avatar',
+        '',
+        '🌐 <b>Browser (CDP)</b>',
+        '<code>/browse "task"</code> — drive Chrome via CDP',
+        '<code>/tabs [all]</code> — list open pages',
+        '<code>/refresh [@name]</code> — re-poll tab or replay last message',
+        '<code>/mirror [@src] [@tgt]</code> — forward message between sessions',
+        '<code>/continue</code> — resume after captcha/login pause',
+        '',
+        '📁 <b>Files</b>',
+        '<code>/send-file [via=op] [path] @session ["instruction"]</code>',
+        '<code>/paste-file session path</code>',
+        '',
+        '⚙️ <b>Operators</b>',
+        '<code>/summarize [all|last N] name</code> — summarize conversation',
+        '<code>/inject name [session]</code> — drop summary into room',
+        '<code>/save name</code> — save last message verbatim',
+        '<code>@codex exec: cmd</code> — run shell command',
+        '',
+        '🧩 <b>Profiles</b>',
+        '<code>/profiles</code> — list YAML profiles',
+        '<code>/create-profile [name]</code> — interactive wizard',
+        '<code>/attach profile [name]</code> — start a profile',
+        '',
+        '🔧 <b>Misc</b>',
+        '<code>/status</code> — room snapshot',
+        '<code>/prompts [on|off]</code> — show operator prompts',
+        '<code>/file</code> — conversation file path',
+        '<code>/exit</code> — quit egpt',
+      ].join('\n'),
+      }]);
       return true;
     }
     if (cmd === '/status') {
