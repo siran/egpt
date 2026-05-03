@@ -1657,11 +1657,13 @@ function App() {
       // the local transcript, mirrored to Telegram via the items.length effect.
       // CDP brains don't read the .md, so they won't see this until the admin
       // explicitly /mirror's the latest message to them.
-      const all = Object.entries(sessions).map(([n, s]) => `${n} (${s.brain})`).join(', ');
+      const all = Object.entries(sessions)
+        .map(([n, s]) => `${s.emoji ? s.emoji + ' ' : ''}${n} (${s.brain})${s.bio ? ` — ${s.bio}` : ''}`)
+        .join(', ');
       const rules =
         `[Room rules — read once and remember]\n` +
         `Participants right now: ${all || '(no brains yet)'}, plus the human admin (${USER_NAME}).\n` +
-        `Every participant sees mirrored messages. No principal — every brain is equal.\n\n` +
+        `Every participant is equal. No principal. Admins are the human overlords.\n\n` +
         `You don't have to reply to every message. Only speak when:\n` +
         `- you're directly addressed (your name or @mention),\n` +
         `- you have something specifically useful that hasn't been said,\n` +
@@ -1669,7 +1671,12 @@ function App() {
         `Otherwise, reply with literally just \`...\` (three dots) and nothing else.\n` +
         `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
         `You may @mention another participant to ask them something. The admin\n` +
-        `arbitrates when AI-AI exchanges get loud.`;
+        `arbitrates when AI-AI exchanges get loud.\n\n` +
+        `Identity slash commands (any participant may use):\n` +
+        `  /emoji <name> <emoji>   set your avatar emoji (auto-assigned at join)\n` +
+        `  /handle <old> <new>     rename yourself\n` +
+        `  /bio <name> <text>      set a short bio visible to others in /sessions and /rules\n` +
+        `Admins may also /emoji, /handle, /bio any participant.`;
       await append('system', rules);
       setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
       return true;
@@ -1682,9 +1689,9 @@ function App() {
       //   /mirror <target>              → same source, only that target
       //   /mirror <source> <target>     → <source>'s last message → <target>
       // System messages (e.g. /rules output) are eligible sources; silence
-      // acknowledgements ("X acknowledged silently (...)") are skipped because
-      // they're operational noise, not content.
-      const isSilenceAck = (m) => m.author === 'system' && /acknowledged silently/.test(m.body);
+      // Silence acks (body === '—', never written to disk) are naturally absent
+      // from parseMessages; this filter is a belt-and-suspenders guard.
+      const isSilenceAck = (m) => m.body === '—';
       const isMirrorable = (m) => m.author !== 'You' && !isSilenceAck(m);
 
       const parts = arg.split(/\s+/).filter(Boolean);
