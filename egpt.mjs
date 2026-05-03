@@ -1428,6 +1428,8 @@ function App() {
         '                   operator prepares/excerpts file, pastes into session',
         '/paste-file <session> <path> [--before/--after/--ask "<q>"]',
         '                   paste raw file or excerpt directly (no operator)',
+        '/browse <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]',
+        '                   fetch a web page, extract text → room or @session',
         '',
         '── OPERATORS (local CLI: ccode / codex) ─────────────',
         '/history [N]                       list recent ccode sessions on disk (default 10)',
@@ -1685,6 +1687,80 @@ function App() {
       } catch (e) {
         setBusy(false);
         sysOut(`!! ${e.message}\n\n${pasteFileUsage()}`);
+      }
+      return true;
+    }
+    if (cmd === '/browse') {
+      // /browse <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]
+      const words = parseCommandWords(arg);
+      if (!words.length) {
+        sysOut([
+          'usage: /browse <url> [@<session>] ["<instruction>"] [--max <chars>] [--keep]',
+          '  fetches a web page, extracts its text, drops it into the room',
+          '  @<session>   inject into this session (CDP or operator) with optional instruction',
+          '  --max <N>    max chars to extract (default 60000)',
+          '  --keep       keep the tab open after extracting (default: close it)',
+        ].join('\n'));
+        return true;
+      }
+      let browseUrl = null, browseTarget = null, browseInstruction = [], maxChars = 60000, keepTab = false;
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        if (!browseUrl && /^https?:\/\//.test(w)) { browseUrl = w; continue; }
+        if (w.startsWith('@')) { browseTarget = w.slice(1); continue; }
+        if (w === '--max' && i + 1 < words.length) { maxChars = Math.max(1000, parseInt(words[++i], 10) || 60000); continue; }
+        if (w === '--keep') { keepTab = true; continue; }
+        browseInstruction.push(w);
+      }
+      const instruction = browseInstruction.join(' ').trim() || null;
+      if (!browseUrl) { sysOut('!! /browse: missing URL (must start with http:// or https://)'); return true; }
+      if (browseTarget && !sessions[browseTarget]) { sysOut(`!! /browse: no session named "${browseTarget}"`); return true; }
+
+      setBusy(true);
+      setStreaming({ author: 'browse', text: `fetching ${browseUrl}…` });
+      let browseResult = null;
+      try {
+        let lastProg = '';
+        browseResult = await cdp.browseTab(browseUrl, {
+          maxChars,
+          onProgress: (href, len, ready) => {
+            const t = `${href}\n  ${ready} · ${len.toLocaleString()} chars`;
+            if (t !== lastProg) { lastProg = t; setStreaming({ author: 'browse', text: t }); }
+          },
+        });
+        setStreaming(null);
+
+        if (!keepTab) {
+          cdp.closeTab(browseResult.targetId).catch(() => {});
+        }
+
+        const chars = browseResult.text.length;
+        const header = `[browse: ${browseResult.title || browseResult.url}]\n${browseResult.url}  (${chars.toLocaleString()} chars)`;
+        const body = browseResult.text.trim();
+        const fullContent = `${header}\n\n${body}`;
+
+        if (browseTarget) {
+          const note = `[browsed ${browseResult.url} (${chars.toLocaleString()} chars)] → injecting into ${browseTarget}`;
+          setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+          await append('system', note);
+          // CDP brains: paste content, type ask separately.
+          // Operator brains: concatenate instruction into message (ask is ignored).
+          const isCDP = !!brainForName(sessions[browseTarget]?.brain)?.urlMatch;
+          const msg = isCDP
+            ? { message: fullContent, ask: instruction }
+            : (instruction ? `${fullContent}\n\n---\n${instruction}` : fullContent);
+          await runBrainTurn(browseTarget, msg);
+        } else {
+          const note = instruction ? `${fullContent}\n\n---\n${instruction}` : fullContent;
+          await append('system', note);
+          setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+        }
+      } catch (e) {
+        setStreaming(null);
+        if (browseResult && !keepTab) cdp.closeTab(browseResult.targetId).catch(() => {});
+        sysOut(`!! browse: ${e.message}`);
+      } finally {
+        setBusy(false);
       }
       return true;
     }
