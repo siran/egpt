@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -20,6 +20,13 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+
+// Load ~/.egpt/config.json synchronously at startup (small file, read once).
+let EGPT_CONFIG = {};
+try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
+// dp(path) — display a filesystem path, converting to POSIX style when
+// unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
+const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
 
 const BRAINS = {
   [ccode.name]: ccode,
@@ -1277,7 +1284,7 @@ function App() {
         await mkdir(dir, { recursive: true });
         const profilePath = join(dir, `${data.name}.yaml`);
         await writeFile(profilePath, lines.join('\n') + '\n');
-        sysOut(`profile "${data.name}" saved → ${profilePath}\n\n  /attach ${data.name}        start it\n  /profiles                 list all profiles`);
+        sysOut(`profile "${data.name}" saved → ${dp(profilePath)}\n\n  /attach ${data.name}        start it\n  /profiles                 list all profiles`);
       } catch (e) { sysOut(`!! save failed: ${e.message}`); }
     };
 
@@ -1470,7 +1477,7 @@ function App() {
       try {
         const spec = parseProfileCreateArgs(arg);
         const { path, profile } = await writeConversationProfile(spec);
-        sysOut(`profile "${profile.name}" saved -> ${path}\n  type: ${profile.type}\n  url: ${profile.url}\n  attach with: /attach ${profile.name}`);
+        sysOut(`profile "${profile.name}" saved -> ${dp(path)}\n  type: ${profile.type}\n  url: ${profile.url}\n  attach with: /attach ${profile.name}`);
         if (spec.attach) {
           const loaded = await loadBrainProfile(profile.name);
           await attachProfile(loaded);
@@ -1505,7 +1512,7 @@ function App() {
         try {
           const info = await stat(directPreparedPath);
           if (!info.isFile()) {
-            sysOut(`prepared path is not a file: ${directPreparedPath}`);
+            sysOut(`prepared path is not a file: ${dp(directPreparedPath)}`);
             return true;
           }
           const prepared = await readFile(directPreparedPath, 'utf8');
@@ -1518,7 +1525,7 @@ function App() {
             const askSuffix = parsed.ask ? ` --ask ${quoteRoomArg(parsed.ask)}` : '';
             sysOut(
               `not pasted into @${parsed.targetName}: prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n` +
-              `${directPreparedPath}\n` +
+              `${dp(directPreparedPath)}\n` +
               `Use --all to send it:\n` +
               `/send-file ${quoteRoomArg(directPreparedPath)} @${parsed.targetName} --all${askSuffix}`,
             );
@@ -1604,7 +1611,7 @@ function App() {
           const askSuffix = parsed.ask ? ` --ask ${quoteRoomArg(parsed.ask)}` : '';
           sysOut(
             `not pasted into @${parsed.targetName}: prepared file is ${prepared.length} chars, over --max ${maxChars}. It is saved at:\n` +
-            `${preparedPath}\n` +
+            `${dp(preparedPath)}\n` +
             `To paste exactly this prepared file, run:\n` +
             `/send-file ${quoteRoomArg(preparedPath)} @${parsed.targetName}${askSuffix}\n` +
             `Or rerun the preparation with --all or a narrower instruction.`,
@@ -1944,7 +1951,7 @@ function App() {
         await ensureSummariesDir();
         const body = `# ${name}\n\n_Saved ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from ${FILE}_\n_Author: ${last.author}_\n\n---\n\n${last.body}\n`;
         await writeFile(summaryPath(name), body);
-        sysOut(`saved → ${summaryPath(name)}\n  (${last.body.length} chars from ${last.author})`);
+        sysOut(`saved → ${dp(summaryPath(name))}\n  (${last.body.length} chars from ${last.author})`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
@@ -2045,7 +2052,7 @@ function App() {
         const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
         const body = `# ${name}\n\n_Summarized ${stamp} by ${summarizer} from ${FILE}_\n_Scope: ${scopeLabel}${scope === 'last' ? ` (of ${allTurns.length} total)` : ''}_\n\n---\n\n${summary}\n`;
         await writeFile(summaryPath(name), body);
-        sysOut(`saved → ${summaryPath(name)}  (${summary.length} chars)`);
+        sysOut(`saved → ${dp(summaryPath(name))}  (${summary.length} chars)`);
       } catch (e) {
         setBusy(false);
         sysOut(`!! ${e.message}`);
@@ -2223,7 +2230,7 @@ function App() {
         let files = [];
         try { files = (await readdir(dir)).filter(f => f.endsWith('.yaml')); } catch {}
         if (!files.length) { sysOut(`(no saved rooms)\n  /save-room <name> to save current room`); return true; }
-        sysOut(`Saved rooms in ${dir}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/load-room <name> to restore`);
+        sysOut(`Saved rooms in ${dp(dir)}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/load-room <name> to restore`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
@@ -2257,7 +2264,7 @@ function App() {
         await mkdir(dir, { recursive: true });
         const roomFile = join(dir, `${roomName}.yaml`);
         await writeFile(roomFile, lines.join('\n') + '\n');
-        sysOut(`room "${roomName}" saved → ${roomFile}`);
+        sysOut(`room "${roomName}" saved → ${dp(roomFile)}`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
