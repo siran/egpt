@@ -418,8 +418,8 @@ async function readPasteFilePayload(options) {
 }
 
 function buildPasteFileMessage(payload, options) {
-  if (options.ask) return `${payload.excerpt}\n\n${options.ask}`;
-  return payload.excerpt;
+  // Returns { message, ask } so CDP brains can paste content and type ask separately.
+  return { message: payload.excerpt, ask: options.ask ?? null };
 }
 
 function defaultOperatorSession(sessions) {
@@ -2348,7 +2348,9 @@ function App() {
   // with [author]: when broadcasting or mirroring. Returns the brain's reply
   // text (string) on a substantive answer, or null on silence/error so the
   // caller knows whether to mirror it.
-  async function runBrainTurn(routedTo, messageText, sessionMap = sessions) {
+  async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions) {
+    const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
+    const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
     const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = brainForName(session.brain);
@@ -2410,7 +2412,7 @@ function App() {
     try {
       const history = await readFile(FILE, 'utf8');
       const result = await brain.stream(
-        { history, message: messageText },
+        { history, message: messageText, ask: askText },
         partial => {
           setStreaming({ author: routedTo, text: partial });
           tg?.update(tgFmt(partial));

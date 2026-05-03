@@ -36,19 +36,20 @@ const POLL_SCRIPT = `
 })()
 `;
 
-function buildInject(message) {
+function buildInject(message, ask = null) {
   return `
 (() => {
   const ta = document.querySelector('#prompt-textarea');
   if (!ta) return false;
   ta.focus();
-  const text = ${JSON.stringify(message)};
+  const contentText = ${JSON.stringify(message)};
+  const askText = ${JSON.stringify(ask)};
 
   const currentText = (el) => ('value' in el ? el.value : el.innerText) || '';
-  const hasText = (el) => {
-    const probe = text.slice(0, Math.min(80, text.length));
+  const hasContent = (el) => {
+    const probe = contentText.slice(0, Math.min(80, contentText.length));
     const cur = currentText(el);
-    return text.length === 0 || cur.includes(probe) || cur.length >= Math.min(text.length, 200);
+    return contentText.length === 0 || cur.includes(probe) || cur.length >= Math.min(contentText.length, 200);
   };
   const isDisabled = (el) =>
     !el ||
@@ -79,52 +80,57 @@ function buildInject(message) {
     const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
     return '<p>' + (safe || '<br>') + '</p>';
   }).join('');
-  const fallbackSetWholeValue = (el) => {
-    if ('value' in el) el.value = text;
-    else el.innerHTML = htmlFromText(text);
-    el.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      inputType: 'insertFromPaste',
-      data: text,
-    }));
+  const fallbackSetContent = (el) => {
+    if ('value' in el) el.value = contentText;
+    else el.innerHTML = htmlFromText(contentText);
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: contentText }));
   };
   const clearEditor = (el) => {
     if ('value' in el) el.value = '';
     else el.innerHTML = '';
     el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
   };
-  const pasteWholeValue = (el) => {
+  const pasteContent = (el) => {
     clearEditor(el);
     try {
       const data = new DataTransfer();
-      data.setData('text/plain', text);
-      const ev = new ClipboardEvent('paste', {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: data,
-      });
-      el.dispatchEvent(ev);
-    } catch {
-      return false;
-    }
+      data.setData('text/plain', contentText);
+      el.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+    } catch { return false; }
     return true;
   };
+  // Type (not paste) the ask prompt after content has landed.
+  const typeAsk = (el) => {
+    if (!askText) return;
+    const appendStr = '\\n\\n' + askText;
+    if ('value' in el) {
+      el.value += appendStr;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: appendStr }));
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, appendStr);
+    }
+  };
 
-  pasteWholeValue(ta);
+  pasteContent(ta);
   let attempts = 0;
   let usedFallback = false;
+  let askDone = !askText;
   const trySubmit = () => {
     attempts++;
-    if (!usedFallback && attempts >= 6 && !hasText(ta)) {
-      fallbackSetWholeValue(ta);
+    if (!usedFallback && attempts >= 6 && !hasContent(ta)) {
+      fallbackSetContent(ta);
       usedFallback = true;
     }
-    if (hasText(ta)) {
+    if (hasContent(ta)) {
+      if (!askDone) { typeAsk(ta); askDone = true; }
       const btn = findSendButton();
-      if (btn) {
-        btn.click();
-        return;
-      }
+      if (btn) { btn.click(); return; }
     }
     if (attempts < 50) setTimeout(trySubmit, 100);
   };
@@ -134,10 +140,10 @@ function buildInject(message) {
 `;
 }
 
-export function stream({ message }, onUpdate, options = {}) {
+export function stream({ message, ask = null }, onUpdate, options = {}) {
   return cdp.streamFromTab({
     targetId: options.targetId,
-    injectScript: buildInject(message),
+    injectScript: buildInject(message, ask),
     pollScript: POLL_SCRIPT,
     onUpdate,
   });
