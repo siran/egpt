@@ -119,10 +119,12 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 - ✅ Browser lifecycle: `launch-brain.sh start | stop | status | restart`, persistent profile dir at `~/.egpt/brain-profile`, Ctrl+C in the launching terminal closes the brain cleanly via CDP `Browser.close`
 - ✅ `/refresh` — re-poll the current CDP tab and append the full assistant message (recovery from premature streaming-end detection)
 - ✅ `/last [N]` — replay the last N messages from the conversation file
+- ✅ **Terminal themes** — 10 built-in color themes (`/themes` to list, `/theme <name>` or `/theme next|prev` to switch live)
+- ✅ **Per-project config** — `.egpt/config.json` in the working directory overrides `~/.egpt/config.json`; `/config key value` reads/writes it live
 
 ## What's coming
 
-- 🛠 **Browser extension** — display surface for the conversation, plus a CDP brain runner so the daemon can be on a home server while the brains live in your laptop's Chrome
+- 🛠 **Browser extension** — egpt is plain ES modules (JS all the way down); the extension port runs the same CDP brains and Telegram bridge inside Chrome itself, with a tab-based UI replacing the Ink terminal. `ccode`/`codex` are the only true shell dependencies; everything else is browser-native.
 - 🛠 **Admin / queue / flush** — when multiple humans are chatting in a Telegram group, the admin controls when the queue gets flushed to the brains (avoids noise polluting brain context)
 - 🛠 **Federation (v2)** — multiple egpt daemons connected by a peer bridge; one conversation can span home server + laptop + phone
 
@@ -259,7 +261,7 @@ A small core, many bridges. The core is platform-agnostic logic; the bridges tra
 │ shell │  │ccode       │         │ fs     │
 │  ✅   │  │  ✅        │         │  ✅    │
 │telegram│ │chatgpt-cdp │         │chrome- │
-│  🛠   │  │  ✅        │         │ storage│
+│  ✅   │  │  ✅        │         │ storage│
 │ext    │  │claude-cdp  │         │  🛠    │
 │  🛠   │  │  ✅        │         │        │
 │       │  │codex ✅    │         │        │
@@ -280,12 +282,24 @@ egpt/
 │   ├── codex.mjs          # subprocess `codex exec` + direct `exec:` shell operator
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
 │   └── claude-cdp.mjs     # Claude.ai selectors + inject + poll
-├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2)
-├── package.json           # type:module, ink + react as deps
-└── README.md
+├── bridges/
+│   └── telegram.mjs       # Telegram long-poll bridge (bot_token from config)
+├── tools/
+│   ├── template.mjs       # command prompt template loader (commands/*.md)
+│   └── theme.mjs          # terminal color theme loader (themes/*.json)
+├── commands/              # operator prompt templates with {{variable}} substitution
+│   ├── browse.md          # CDP browser-automation task prompt
+│   ├── codex-task.md      # codex operator task passthrough
+│   └── ...
+├── themes/                # terminal color themes (10 shipped; override in ~/.egpt/themes/)
+│   ├── catppuccin.json    # default
+│   ├── dracula.json
+│   └── ...
+├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2/Windows)
+├── package.json           # type:module · ink + react
+├── README.md
+└── MANUAL.md
 ```
-
-Around 1100 lines of code total, ~10 files.
 
 Optional repo-defined brain profiles live under `brains/type/*.yaml` or `brains/types/*.yaml`; personal profiles normally live in `~/.egpt/brains/*.yaml`.
 

@@ -464,10 +464,19 @@ Browser brains:
   /brain [status|stop]          brain Chrome lifecycle (CDP-based)
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
+  /browse ["task"]              drive Chrome via CDP (auto-attaches operator if none active)
   /send-file [via=<op>] [<path>] @<session> ["<instruction>"]
                                 prepare excerpt, or send prepared file
   /paste-file <session> <path>  paste a local file/excerpt into one session
                                 supports --before/--after markers and --ask
+
+Appearance:
+  /themes                       list available color themes
+  /theme <name>                 switch theme live (no restart needed)
+  /theme next|prev              rotate through themes
+  /config                       show local .egpt/config.json + valid keys
+  /config <key>                 read a config value
+  /config <key> <value>         write a config value (keys: theme, show_prompts, unix_paths)
 
 Local brains/operators:
   /history [N]                  list recent ccode sessions on disk (newest first)
@@ -543,19 +552,34 @@ Notes:
 │   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
 │   │                      #   streamFromTab, closeBrowser, isRunning
 │   ├── claude-code.mjs    # subprocess brain (stateless or --resume)
+│   ├── codex.mjs          # Codex CLI + exec: shell operator
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
 │   └── claude-cdp.mjs     # Claude.ai (same shape, different selectors)
 ├── bridges/
 │   └── telegram.mjs       # Telegram bot bridge (long-poll + send)
-├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2)
+├── tools/
+│   ├── template.mjs       # command prompt template loader
+│   └── theme.mjs          # color theme loader + listThemes()
+├── commands/              # operator prompt templates ({{variable}} substitution)
+│   ├── browse.md          # CDP browser-automation task
+│   ├── codex-task.md
+│   └── inject.md
+├── themes/                # 10 built-in color themes (override in ~/.egpt/themes/)
+│   ├── catppuccin.json    # shipped default
+│   └── ...
+├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2/Windows)
 ├── package.json           # type:module · ink + react
 ├── README.md              # what & why
 └── MANUAL.md              # this file
 
 ~/.egpt/
-├── config.json            # secrets (bot tokens, allowed users) — DO NOT commit
+├── config.json            # global config (bot tokens, theme, etc.) — DO NOT commit
 ├── brain-profile/         # persistent Chrome profile for the brain Chrome
-└── summaries/<name>.md    # saved & summarized conversations
+├── summaries/<name>.md    # saved & summarized conversations
+└── themes/<name>.json     # user theme overrides (same keys as themes/*.json)
+
+.egpt/                     # project-local config (in cwd, can be committed)
+└── config.json            # overrides ~/.egpt/config.json (keys: theme, show_prompts, unix_paths)
 ```
 
 About a thousand lines of code, no build step, two runtime dependencies (`ink`, `react`).
