@@ -1,6 +1,6 @@
 // brains/claude-cdp.mjs — drives claude.ai via CDP
 // Selectors are best-effort against current claude.ai DOM (may need tweaking).
-import * as cdp from './cdp.mjs';
+import * as cdp from '../tools/cdp.mjs';
 
 export const name = 'claude-cdp';
 export const description = 'Claude.ai via Chrome DevTools Protocol. Tab keeps its own history.';

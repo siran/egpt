@@ -14,7 +14,7 @@ import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
-import * as cdp from './brains/cdp.mjs';
+import * as cdp from './tools/cdp.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
@@ -1931,7 +1931,7 @@ function App() {
           return true;
         }
         // Build task from template (commands/browse.md), falling back to inline
-        const browserToolsUrl = pathToFileURL(join(APP_DIR, 'brains', 'browser-tools.mjs')).href;
+        const browserToolsUrl = pathToFileURL(join(APP_DIR, 'tools', 'browser-tools.mjs')).href;
         const taskBlock = [
           ...(browseUrl ? [`URL: ${browseUrl}`, ''] : []),
           `Task: ${instruction ?? 'fetch the page and summarize its main content'}`,

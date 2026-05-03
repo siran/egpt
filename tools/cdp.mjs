@@ -1,5 +1,4 @@
-// brains/cdp.mjs — shared CDP plumbing for browser-driven brains
-// Used by chatgpt-cdp and claude-cdp.
+// tools/cdp.mjs — shared CDP plumbing for browser-driven brains and tools
 
 export const cdpHost = process.env.EGPT_CDP_HOST ?? 'localhost:9222';
 
