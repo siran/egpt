@@ -1635,27 +1635,46 @@ function App() {
     if (cmd === '/theme') {
       const name = arg.trim();
       if (!name) {
-        sysOut(`active theme: ${_currentTheme}  (use /themes to list)`);
+        sysOut(`active theme: ${_currentTheme}  (use /themes to list, next/prev to rotate)`);
         return true;
       }
-      Object.assign(T, loadTheme(name));
-      _currentTheme = name;
+      const names = await listThemes();
+      let target = name;
+      if (name === 'next' || name === 'prev') {
+        const idx = names.indexOf(_currentTheme);
+        target = name === 'next'
+          ? names[(idx + 1) % names.length]
+          : names[(idx - 1 + names.length) % names.length];
+      }
+      Object.assign(T, loadTheme(target));
+      _currentTheme = target;
       setThemeRev(n => n + 1);
-      sysOut(`theme: ${name}`);
+      sysOut(`theme: ${target}`);
       return true;
     }
     if (cmd === '/config') {
+      // Allowed config keys with descriptions
+      const CONFIG_SCHEMA = {
+        theme:        'color theme name  (see /themes)',
+        show_prompts: 'show full operator prompt before each turn  (true/false)',
+        unix_paths:   'display filesystem paths in POSIX style  (true/false)',
+      };
       const parts = arg.trim().split(/\s+/);
       const key = parts[0];
       const rawVal = parts.slice(1).join(' ');
-      // Read current local config (don't use in-memory EGPT_CONFIG — show file state)
       let localCfg = {};
       try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
       if (!key) {
         const entries = Object.entries(localCfg);
-        sysOut(entries.length
-          ? `local config (${dp(LOCAL_CONFIG_PATH)}):\n${entries.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}`
-          : `local config empty  (${dp(LOCAL_CONFIG_PATH)})`);
+        const schema = Object.entries(CONFIG_SCHEMA).map(([k, d]) => `  ${k} — ${d}`).join('\n');
+        sysOut((entries.length
+          ? `local config (${dp(LOCAL_CONFIG_PATH)}):\n${entries.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}\n`
+          : `local config empty  (${dp(LOCAL_CONFIG_PATH)})\n`) + `\nkeys:\n${schema}`);
+        return true;
+      }
+      if (!(key in CONFIG_SCHEMA)) {
+        const valid = Object.keys(CONFIG_SCHEMA).join(', ');
+        sysOut(`!! unknown config key: ${key}\nvalid keys: ${valid}`);
         return true;
       }
       if (!rawVal) {
@@ -1663,7 +1682,6 @@ function App() {
         sysOut(v !== undefined ? `${key}: ${JSON.stringify(v)}` : `${key}: (not set)`);
         return true;
       }
-      // Parse value: try JSON (handles numbers, booleans), fall back to string
       let val;
       try { val = JSON.parse(rawVal); } catch { val = rawVal; }
       localCfg[key] = val;
@@ -1672,7 +1690,6 @@ function App() {
         await writeFile(LOCAL_CONFIG_PATH, JSON.stringify(localCfg, null, 2) + '\n');
         EGPT_CONFIG[key] = val;
       } catch (e) { sysOut(`!! config write: ${e.message}`); return true; }
-      // Apply live side-effects for known keys
       if (key === 'theme') {
         Object.assign(T, loadTheme(val));
         _currentTheme = val;
