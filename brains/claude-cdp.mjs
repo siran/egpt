@@ -135,7 +135,12 @@ function buildInject(message, ask = null) {
       usedFallback = true;
     }
     if (hasContent(editor)) {
-      if (!askDone) { typeAsk(editor); askDone = true; }
+      if (!askDone) {
+        typeAsk(editor);
+        askDone = true;
+        if (attempts < 50) setTimeout(trySubmit, 100);
+        return;
+      }
       const btn = findSendButton();
       if (btn) { btn.click(); return; }
     }

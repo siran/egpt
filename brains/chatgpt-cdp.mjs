@@ -128,7 +128,13 @@ function buildInject(message, ask = null) {
       usedFallback = true;
     }
     if (hasContent(ta)) {
-      if (!askDone) { typeAsk(ta); askDone = true; }
+      if (!askDone) {
+        typeAsk(ta);
+        askDone = true;
+        // Give React one tick to process the input event and re-enable the button.
+        if (attempts < 50) setTimeout(trySubmit, 100);
+        return;
+      }
       const btn = findSendButton();
       if (btn) { btn.click(); return; }
     }

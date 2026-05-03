@@ -857,6 +857,10 @@ if (!existsSync(FILE)) writeFileSync(FILE, `# Conversation\n\n---\n\n`);
 
 const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 16);
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
+const fmtTs = (ms) => {
+  const d = new Date(ms);
+  return `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+};
 
 // Resolve a user-typed tab spec to a chrome targetId.
 // Accepts: full chrome targetId, targetId prefix (≥6 chars), full URL, partial URL, UUID inside URL.
@@ -1287,6 +1291,7 @@ function App() {
         '/attach <brain>                 attach CDP tabs or create a local session\n' +
         '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
         '/sessions                       list registered sessions\n' +
+        '/detach <session>               remove from room (brain keeps running)\n' +
         '/handle <old> <new>             rename a session (keeps brain + emoji)\n' +
         '/emoji [<name> <emoji>]         show/set a session\'s avatar emoji\n' +
         '/bio [<name> [<text>]]          show/set a session\'s bio (echoed in room)\n\n' +
@@ -2076,6 +2081,18 @@ function App() {
       sysOut(rows.join('\n') || '(none)');
       return true;
     }
+    if (cmd === '/detach') {
+      const name = arg.trim();
+      if (!name) { sysOut('usage: /detach <session>  — remove from room (brain keeps running)'); return true; }
+      if (!sessions[name]) { sysOut(`no session named "${name}"`); return true; }
+      const { emoji = '', brain: brainName } = sessions[name];
+      setSessions(s => { const n = { ...s }; delete n[name]; return n; });
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        body: `${emoji} ${name} (${brainName}) detached from room`,
+      }]);
+      return true;
+    }
     if (cmd === '/handle') {
       // Rename a session: /handle <old> <new>. Preserves brain, emoji, options, bio.
       const parts = arg.split(/\s+/).filter(Boolean);
@@ -2600,13 +2617,20 @@ function App() {
       const sess = sessions[item.author];
       const emoji = isSystem ? 'ℹ️ ' : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
       const label = isUser ? USER_NAME : item.author;
+      const time = fmtTs(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
-        h(Text, { color: color(item.author), bold: true }, `${emoji}${label}`),
+        h(Text, { color: color(item.author), bold: true },
+          `${emoji}${label} `, h(Text, { color: 'gray', dimColor: true }, `(${time})`)),
         h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
-      h(Text, { color: 'gray' },
-        `[room: ${Object.keys(sessions).join(', ') || '(empty)'}]`),
+      h(Text, null,
+        h(Text, { color: 'cyan', bold: true }, 'egpt'),
+        h(Text, { color: 'gray' }, `  ${basename(FILE)}  `),
+        h(Text, { color: 'gray', dimColor: true },
+          Object.keys(sessions).length
+            ? Object.entries(sessions).map(([n, s]) => `${s.emoji ?? ''}${n}`).join(' ')
+            : '(empty room)')),
       streaming && (() => {
         // Show only the trailing portion of long streamed text — keeps the
         // dynamic area small even for multi-page replies, and reduces Ink's
