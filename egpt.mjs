@@ -3170,7 +3170,7 @@ function App() {
   submitRef.current = submit;
 
   const color = a =>
-    a === 'You' ? 'cyan' : a === 'system' ? 'gray' : 'green';
+    a === 'You' ? 'cyan' : a === 'system' ? 'magenta' : 'green';
 
   return h(Fragment, null,
     h(Static, { items }, item => {
@@ -3181,21 +3181,21 @@ function App() {
       const label = isUser ? USER_NAME : item.author;
       const time = fmtTs(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
-        h(Text, { color: color(item.author), bold: !item._thinking, dimColor: item._thinking },
+        h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
           item._thinking
-            ? h(Text, { color: 'gray' }, '(thinking…)')
-            : h(Text, { color: 'gray' }, `(${time})`)),
+            ? h(Text, { color: 'cyan' }, '(thinking…)')
+            : h(Text, { color: 'cyan' }, `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
-              h(Text, { color: 'gray', dimColor: true }, '  ╌╌╌'))
+              h(Text, { color: 'cyan' }, '  ╌╌╌'))
           : item._bright
           ? h(Box, { flexDirection: 'column' },
               ...item.body.split('\n').map((line, i) => {
                 if (/^──/.test(line)) return h(Text, { key: i, color: 'cyan', bold: true }, line);
                 if (line === '') return h(Text, { key: i }, ' ');
-                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'gray', dimColor: true }, line);
+                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'blue' }, line);
                 const dash = line.indexOf(' — ');
                 if (dash > 0) return h(Text, { key: i },
                   h(Text, { color: 'yellow' }, line.slice(0, dash)),
@@ -3208,8 +3208,8 @@ function App() {
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
         h(Text, { color: 'cyan', bold: true }, `${EGPT_EMOJI} egpt`),
-        h(Text, { color: 'gray' }, `  ${basename(FILE)}  `),
-        h(Text, { color: 'gray', dimColor: true },
+        h(Text, { color: 'blue' }, `  ${basename(FILE)}  `),
+        h(Text, { color: 'cyan' },
           Object.keys(sessions).length
             ? Object.entries(sessions).map(([n, s]) => `${s.emoji ?? ''}${n}`).join(' ')
             : '(empty room)')),
@@ -3225,9 +3225,9 @@ function App() {
         return h(Box, { flexDirection: 'column', marginTop: 1 },
           h(Text, { color: 'green', bold: true },
             `${sessions[streaming.author]?.emoji ? sessions[streaming.author].emoji + ' ' : ''}${streaming.author}  `,
-            h(Text, { color: 'gray', dimColor: true },
+            h(Text, { color: 'blue' },
               `(${charCount} chars · ${elapsed}s · Ctrl+R to abort)`)),
-          hidden > 0 && h(Text, { color: 'gray', dimColor: true },
+          hidden > 0 && h(Text, { color: 'blue' },
             `… ${hidden} earlier line${hidden > 1 ? 's' : ''} hidden …`),
           h(Text, null, tail + '▎'));
       })(),
@@ -3239,17 +3239,17 @@ function App() {
         const ch = SPIN[Math.floor(now / 100) % SPIN.length];
         return h(Text, { color: 'yellow' },
           `${ch} thinking… `,
-          h(Text, { color: 'gray', dimColor: true },
+          h(Text, { color: 'cyan' },
             `${elapsed}s · Ctrl+R to abort`));
       })(),
       browserWaiting && h(Box, { flexDirection: 'column', marginTop: 1 },
         h(Text, { color: 'yellow', bold: true },
           '⏸  WAITING FOR YOU: ',
           h(Text, { color: 'white' }, browserWaiting)),
-        h(Text, { color: 'gray', dimColor: true }, '   type /continue when ready')),
+        h(Text, { color: 'blue' }, '   type /continue when ready')),
       error && h(Text, { color: 'red' }, '!! ' + error),
       !busy && h(Box, { flexDirection: 'column' },
-        h(Text, { color: 'gray', dimColor: true },
+        h(Text, { color: 'blue' },
           'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
         h(MultiLineInput, { onSubmit: submit }))));
 }
