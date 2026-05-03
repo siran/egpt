@@ -56,6 +56,25 @@ function buildInject(message) {
     const cur = currentText(el);
     return text.length === 0 || cur.includes(probe) || cur.length >= Math.min(text.length, 200);
   };
+  const isDisabled = (el) =>
+    !el ||
+    el.disabled ||
+    el.getAttribute('disabled') !== null ||
+    el.getAttribute('aria-disabled') === 'true' ||
+    el.closest('[aria-disabled="true"]');
+  const findSendButton = () => {
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid*="send" i]',
+      'button[aria-label*="Send" i]',
+      'button[type="submit"]',
+    ];
+    for (const selector of selectors) {
+      const btn = document.querySelector(selector);
+      if (btn && !isDisabled(btn)) return btn;
+    }
+    return null;
+  };
   const htmlFromText = (value) => value.split('\\n').map(l => {
     const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
     return '<p>' + (safe || '<br>') + '</p>';
@@ -98,18 +117,24 @@ function buildInject(message) {
 
   pasteWholeValue(editor);
 
-  setTimeout(() => {
-    if (!hasText(editor)) fallbackSetWholeValue(editor);
-    // Locale-stable selectors first. button[type="submit"] is a structural
-    // fallback that works regardless of language since "submit" is an HTML
-    // attribute value, not user-facing text.
-    const btn = document.querySelector(
-      'button[data-testid="send-button"], ' +
-      'button[data-testid*="send" i], ' +
-      'button[type="submit"]'
-    );
-    if (btn) btn.click();
-  }, 200);
+  let attempts = 0;
+  let usedFallback = false;
+  const trySubmit = () => {
+    attempts++;
+    if (!usedFallback && attempts >= 6 && !hasText(editor)) {
+      fallbackSetWholeValue(editor);
+      usedFallback = true;
+    }
+    if (hasText(editor)) {
+      const btn = findSendButton();
+      if (btn) {
+        btn.click();
+        return;
+      }
+    }
+    if (attempts < 50) setTimeout(trySubmit, 100);
+  };
+  setTimeout(trySubmit, 100);
   return true;
 })()
 `;

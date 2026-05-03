@@ -426,9 +426,10 @@ slicing without asking an operator:
 ```
 
 Both commands send the excerpt to the target session but only write a short
-system note to `conversation.md`. By default the target is asked to absorb the
-excerpt and reply with `...`; add `--ask "what do you think of Part I?"` to ask
-in the same prompt. `/paste-file` marker options are plain substring matches:
+system note to `conversation.md`. By default egpt sends only the file content;
+it does not prepend response instructions. Add `--ask "what do you think of
+Part I?"` to append a question after the pasted content. `/paste-file` marker
+options are plain substring matches:
 
 - `--before <marker>` excludes the marker and everything after it
 - `--after <marker>` excludes everything through the marker

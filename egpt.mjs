@@ -418,18 +418,8 @@ async function readPasteFilePayload(options) {
 }
 
 function buildPasteFileMessage(payload, options) {
-  const header = [
-    `[file paste from egpt]`,
-    `path: ${payload.path}`,
-    `range: ${payload.rangeLabel}`,
-    `chars: ${payload.excerpt.length} of ${payload.originalChars}`,
-    '',
-    payload.excerpt,
-  ].join('\n');
-  if (options.ask) {
-    return `${header}\n\n[request]\n${options.ask}`;
-  }
-  return `[system]: Please read and keep this file excerpt in context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${header}`;
+  if (options.ask) return `${payload.excerpt}\n\n${options.ask}`;
+  return payload.excerpt;
 }
 
 function defaultOperatorSession(sessions) {
@@ -1560,7 +1550,7 @@ function App() {
           `path: ${payload.path}\n` +
           `range: ${payload.rangeLabel}\n` +
           `chars: ${payload.excerpt.length} of ${payload.originalChars}` +
-          (parsed.ask ? '\nmode: paste + ask' : '\nmode: paste as context');
+          (parsed.ask ? '\nmode: paste + ask' : '\nmode: raw paste');
         await append('system', note);
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         setBusy(true);

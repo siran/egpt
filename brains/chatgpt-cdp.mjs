@@ -50,6 +50,31 @@ function buildInject(message) {
     const cur = currentText(el);
     return text.length === 0 || cur.includes(probe) || cur.length >= Math.min(text.length, 200);
   };
+  const isDisabled = (el) =>
+    !el ||
+    el.disabled ||
+    el.getAttribute('disabled') !== null ||
+    el.getAttribute('aria-disabled') === 'true' ||
+    el.closest('[aria-disabled="true"]');
+  const looksLikeVoiceButton = (el) =>
+    /voice|dictation|audio/i.test(el.getAttribute('aria-label') || '');
+  const findSendButton = () => {
+    const selectors = [
+      '#composer-submit-button',
+      'button[data-testid="send-button"]',
+      'button[data-testid="composer-send-button"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'button[aria-label*="Send" i]',
+      'form button[type="submit"]',
+    ];
+    for (const selector of selectors) {
+      const btn = document.querySelector(selector);
+      if (btn && !isDisabled(btn)) return btn;
+    }
+    const composerBtn = document.querySelector('button.composer-submit-button-color');
+    if (composerBtn && !isDisabled(composerBtn) && !looksLikeVoiceButton(composerBtn)) return composerBtn;
+    return null;
+  };
   const htmlFromText = (value) => value.split('\\n').map(l => {
     const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
     return '<p>' + (safe || '<br>') + '</p>';
@@ -86,17 +111,24 @@ function buildInject(message) {
   };
 
   pasteWholeValue(ta);
-  setTimeout(() => {
-    if (!hasText(ta)) fallbackSetWholeValue(ta);
-    // Locale-stable selectors only. id and data-testid don't translate.
-    const btn = document.querySelector(
-      '#composer-submit-button, ' +
-      'button[data-testid="send-button"], ' +
-      'button[data-testid="composer-send-button"], ' +
-      'button[data-testid="fruitjuice-send-button"]'
-    );
-    if (btn) btn.click();
-  }, 160);
+  let attempts = 0;
+  let usedFallback = false;
+  const trySubmit = () => {
+    attempts++;
+    if (!usedFallback && attempts >= 6 && !hasText(ta)) {
+      fallbackSetWholeValue(ta);
+      usedFallback = true;
+    }
+    if (hasText(ta)) {
+      const btn = findSendButton();
+      if (btn) {
+        btn.click();
+        return;
+      }
+    }
+    if (attempts < 50) setTimeout(trySubmit, 100);
+  };
+  setTimeout(trySubmit, 100);
   return true;
 })()
 `;

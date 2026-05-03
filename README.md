@@ -236,8 +236,9 @@ marker:
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
 ```
 
-Use `--ask "..."` to ask a question in the same prompt, or omit it to ask the
-target to absorb the excerpt silently.
+Use `--ask "..."` to append a question after the pasted content. Without
+`--ask`, egpt sends only the file content; it does not prepend response
+instructions.
 
 ## Architecture
 
