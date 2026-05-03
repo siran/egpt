@@ -50,23 +50,56 @@ function buildInject(message) {
   editor.focus();
   const text = ${JSON.stringify(message)};
 
-  try {
+  const currentText = (el) => ('value' in el ? el.value : el.innerText) || '';
+  const hasText = (el) => {
+    const probe = text.slice(0, Math.min(80, text.length));
+    const cur = currentText(el);
+    return text.length === 0 || cur.includes(probe) || cur.length >= Math.min(text.length, 200);
+  };
+  const htmlFromText = (value) => value.split('\\n').map(l => {
+    const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
+    return '<p>' + (safe || '<br>') + '</p>';
+  }).join('');
+  const clearEditor = (el) => {
+    if ('value' in el) el.value = '';
+    else el.innerHTML = '';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+  };
+  const fallbackSetWholeValue = (el) => {
+    if ('value' in el) el.value = text;
+    else el.innerHTML = htmlFromText(text);
+    el.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertFromPaste',
+      data: text,
+    }));
+  };
+  const pasteWholeValue = (el) => {
+    clearEditor(el);
     const sel = window.getSelection();
     sel.removeAllRanges();
     const range = document.createRange();
-    range.selectNodeContents(editor);
+    range.selectNodeContents(el);
     sel.addRange(range);
-    document.execCommand('insertText', false, text);
-  } catch {
-    const lines = text.split('\\n');
-    editor.innerHTML = lines.map(l => {
-      const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
-      return '<p>' + (safe || '<br>') + '</p>';
-    }).join('');
-    editor.dispatchEvent(new InputEvent('input', { bubbles: true }));
-  }
+    try {
+      const data = new DataTransfer();
+      data.setData('text/plain', text);
+      const ev = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      el.dispatchEvent(ev);
+    } catch {
+      return false;
+    }
+    return true;
+  };
+
+  pasteWholeValue(editor);
 
   setTimeout(() => {
+    if (!hasText(editor)) fallbackSetWholeValue(editor);
     // Locale-stable selectors first. button[type="submit"] is a structural
     // fallback that works regardless of language since "submit" is an HTML
     // attribute value, not user-facing text.

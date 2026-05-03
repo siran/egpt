@@ -158,6 +158,8 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 @codex exec: cd ../siran/writing             # change codex's persistent cwd
 /open chatgpt-cdp                            # opens/registers a ChatGPT tab
 /open claude-cdp claude1                     # opens a fresh claude.ai tab, named claude1
+/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
+                                             # codex finds/prepares it, egpt sends it
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
                                              # codex prepares the excerpt, egpt sends it
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
@@ -203,7 +205,7 @@ Sobre la pregunta original...
 /brain [status|stop]            brain Chrome lifecycle (CDP-based)
 /refresh                        re-poll current CDP tab; append full text
                                 (use when streaming was cut off)
-/send-file [via=<op>] <path> @<session> "<instruction>"
+/send-file [via=<op>] [<path>] @<session> "<instruction>"
                                 operator prepares excerpt, egpt sends it
 /paste-file <session> <path>     paste a local file/excerpt into one session
                                 (--before/--after markers, --ask prompt)
@@ -217,6 +219,7 @@ egpt sends that prepared file to the target session. The target `@session` must
 already be registered.
 
 ```text
+/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
 ```
 
@@ -298,7 +301,7 @@ There are three storage layers: the room stays in `conversation.md`, egpt mirror
 Each turn:
 1. Connect to Chrome's HTTP debug endpoint, find the bound tab by `targetId`
 2. Open a WebSocket to that tab's `webSocketDebuggerUrl`
-3. `Runtime.evaluate` an inject script: drop the message into the page's prompt-textarea (or contenteditable), dispatch input events, click the submit button
+3. `Runtime.evaluate` an inject script: dispatch a paste event into the page's prompt-textarea (or contenteditable), fall back to one whole-value set if needed, then click submit
 4. Poll the DOM at 250ms ticks via `Runtime.evaluate`, watching for the latest assistant message
 5. Resolve when the stop-button is gone *and* text is stable — both for ≥4 consecutive ticks (~1s of agreement). Locale-aware (Spanish, French, German, etc.) so it doesn't false-finalize when the UI isn't English.
 

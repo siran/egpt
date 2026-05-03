@@ -212,8 +212,9 @@ function pasteFileUsage() {
 
 function sendFileUsage() {
   return [
-    'usage: /send-file [via=<operator>] <path> @<session> "<prep instruction>" [--ask "<prompt>"] [--max <chars>|--all]',
+    'usage: /send-file [via=<operator>] [<path>] @<session> "<prep instruction>" [--ask "<prompt>"] [--max <chars>|--all]',
     '  example: /send-file via=codex1 "C:\\path\\book.md" @cgpt1 "before chapter 8"',
+    '  example: /send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"',
     '  target @session must already be registered',
   ].join('\n');
 }
@@ -332,8 +333,7 @@ function parseSendFileArgs(arg) {
   if (['to', '[to]'].includes(pathParts[pathParts.length - 1]?.toLowerCase())) {
     pathParts = pathParts.slice(0, -1);
   }
-  if (!pathParts.length) throw new Error(`missing path before target\n\n${sendFileUsage()}`);
-  opts.path = pathParts.join(' ');
+  opts.path = pathParts.length ? pathParts.join(' ') : null;
   opts.targetName = positional[targetIndex].slice(1);
   opts.instruction = positional.slice(targetIndex + 1).join(' ').trim() || 'prepare the relevant excerpt';
   return opts;
@@ -435,16 +435,21 @@ function assertOperatorSession(name, sessions) {
 async function preparedFilePathFor(via, sourcePath) {
   await mkdir(PREPARED_FILES_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const sourceName = safeFileSlug(basename(sourcePath), 'excerpt');
+  const sourceName = sourcePath
+    ? safeFileSlug(basename(sourcePath), 'excerpt')
+    : 'operator-selected-excerpt.md';
   return join(PREPARED_FILES_DIR, `${stamp}-${safeFileSlug(via)}-${sourceName}`);
 }
 
 function buildSendFilePrepPrompt({ sourcePath, preparedPath, targetName, instruction }) {
+  const sourceHint = sourcePath
+    ? sourcePath
+    : '(none provided; infer/find the source file from the preparation instruction, cwd, and nearby repo context)';
   return [
     `[system]: Prepare a local file excerpt for egpt to paste into @${targetName}.`,
     '',
     `Source path or search hint from the user:`,
-    sourcePath,
+    sourceHint,
     '',
     `Preparation instruction from the user:`,
     instruction,
@@ -453,7 +458,8 @@ function buildSendFilePrepPrompt({ sourcePath, preparedPath, targetName, instruc
     preparedPath,
     '',
     `Rules:`,
-    `- Resolve the user's source path/search hint yourself. If it is relative, use your current cwd and nearby repo context.`,
+    `- Resolve the user's source path/search hint yourself. If no path was provided, find the intended file from the instruction and local repo context.`,
+    `- If a relative path or fuzzy source hint is provided, use your current cwd and nearby repo context.`,
     `- Preserve exact source text for the selected excerpt. Do not summarize unless the user explicitly requested a summary.`,
     `- For natural instructions like "before chapter 8", identify the heading/marker in the source and include content before that chapter.`,
     `- Do not include the excerpt in your reply.`,
@@ -1371,7 +1377,7 @@ function App() {
         const preparedPath = await preparedFilePathFor(via, parsed.path);
         const prepNote =
           `[send-file preparing via ${via}]\n` +
-          `source: ${parsed.path}\n` +
+          `source: ${parsed.path ?? '(operator will infer)'}\n` +
           `target: @${parsed.targetName}\n` +
           `instruction: ${parsed.instruction}\n` +
           `prepared path: ${preparedPath}`;
@@ -1407,7 +1413,7 @@ function App() {
         const sendNote =
           `[send-file pasted prepared excerpt into ${parsed.targetName}]\n` +
           `via: ${via}\n` +
-          `source: ${parsed.path}\n` +
+          `source: ${parsed.path ?? '(operator inferred source)'}\n` +
           `instruction: ${parsed.instruction}\n` +
           `prepared: ${preparedPath}\n` +
           `chars: ${prepared.length}`;
@@ -1417,7 +1423,7 @@ function App() {
         setBusy(true);
         try {
           await runBrainTurn(parsed.targetName, buildPasteFileMessage({
-            path: `${parsed.path} (prepared by ${via} at ${preparedPath})`,
+            path: `${parsed.path ?? '(operator inferred source)'} (prepared by ${via} at ${preparedPath})`,
             originalChars: prepared.length,
             excerpt: prepared,
             rangeLabel: `prepared by ${via}: ${parsed.instruction}`,

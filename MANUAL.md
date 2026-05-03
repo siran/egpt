@@ -60,6 +60,8 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 hello everyone                                # broadcast to all sessions in the room
 /open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
 /attach                                       # rescan Chrome for new tabs
+/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
+                                              # codex finds/prepares it, egpt sends it
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
                                               # codex prepares the excerpt, egpt sends it
 /paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
@@ -337,7 +339,7 @@ Then in egpt, the tab gets auto-attached on startup. Or `/open chatgpt-cdp` to l
 How it works internally:
 
 - egpt opens a WebSocket to the tab's CDP URL
-- Sends `Runtime.evaluate` to inject the message into `#prompt-textarea` and click submit
+- Sends `Runtime.evaluate` to paste the message into `#prompt-textarea` and click submit
 - Polls the DOM every 250ms for the latest assistant message
 - Resolves when the stop button is gone AND text is stable for ≥1 second
 - Has a 5-second text-stability fallback if stop-button detection fails entirely
@@ -400,11 +402,14 @@ best described in natural language. A local operator prepares the excerpt first,
 then egpt sends the prepared file to the target:
 
 ```text
+/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
 /send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
 ```
 
-The target `@session` must already be registered. If `via=` is omitted, egpt uses
-the only registered local operator when there is exactly one.
+The source path is optional; if omitted, the operator infers/finds the file from
+the instruction and local context. The target `@session` must already be
+registered. If `via=` is omitted, egpt uses the only registered local operator
+when there is exactly one.
 
 Use `/paste-file` when you already know the exact marker and want deterministic
 slicing without asking an operator:
@@ -451,7 +456,7 @@ Browser brains:
   /brain [status|stop]          brain Chrome lifecycle (CDP-based)
   /refresh                      re-poll current CDP tab; append the latest assistant text
                                 (recovery for premature streaming termination)
-  /send-file [via=<op>] <path> @<session> "<instruction>"
+  /send-file [via=<op>] [<path>] @<session> "<instruction>"
                                 operator prepares excerpt, egpt sends it
   /paste-file <session> <path>  paste a local file/excerpt into one session
                                 supports --before/--after markers and --ask

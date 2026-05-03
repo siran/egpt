@@ -43,13 +43,51 @@ function buildInject(message) {
   if (!ta) return false;
   ta.focus();
   const text = ${JSON.stringify(message)};
-  const lines = text.split('\\n');
-  ta.innerHTML = lines.map(l => {
+
+  const currentText = (el) => ('value' in el ? el.value : el.innerText) || '';
+  const hasText = (el) => {
+    const probe = text.slice(0, Math.min(80, text.length));
+    const cur = currentText(el);
+    return text.length === 0 || cur.includes(probe) || cur.length >= Math.min(text.length, 200);
+  };
+  const htmlFromText = (value) => value.split('\\n').map(l => {
     const safe = l.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'})[c]);
     return '<p>' + (safe || '<br>') + '</p>';
   }).join('');
-  ta.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  const fallbackSetWholeValue = (el) => {
+    if ('value' in el) el.value = text;
+    else el.innerHTML = htmlFromText(text);
+    el.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertFromPaste',
+      data: text,
+    }));
+  };
+  const clearEditor = (el) => {
+    if ('value' in el) el.value = '';
+    else el.innerHTML = '';
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+  };
+  const pasteWholeValue = (el) => {
+    clearEditor(el);
+    try {
+      const data = new DataTransfer();
+      data.setData('text/plain', text);
+      const ev = new ClipboardEvent('paste', {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      el.dispatchEvent(ev);
+    } catch {
+      return false;
+    }
+    return true;
+  };
+
+  pasteWholeValue(ta);
   setTimeout(() => {
+    if (!hasText(ta)) fallbackSetWholeValue(ta);
     // Locale-stable selectors only. id and data-testid don't translate.
     const btn = document.querySelector(
       '#composer-submit-button, ' +
@@ -58,7 +96,7 @@ function buildInject(message) {
       'button[data-testid="fruitjuice-send-button"]'
     );
     if (btn) btn.click();
-  }, 120);
+  }, 160);
   return true;
 })()
 `;
