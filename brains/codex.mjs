@@ -305,13 +305,18 @@ async function runCodex(turn, onUpdate, options) {
   const logPath = await ensureLogPath(options);
   const prompt = await buildCodexPrompt(turn, { ...options, cwd });
 
+  // Task messages (browse, send-file, etc.) require code execution — bump low -> medium.
+  const isTask = /^\[(?:browse|send-file|file)\s+task\b/i.test(stripUserPrefix(turn.message ?? ''));
+  const baseEffort = codexReasoningEffort(options);
+  const effort = isTask && baseEffort === 'low' ? 'medium' : baseEffort;
+
   const timeoutMs = parsePositiveInt(process.env.EGPT_CODEX_TIMEOUT_MS, DEFAULT_CODEX_TIMEOUT_MS);
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
   const trustArgs = process.env.EGPT_CODEX_TRUST === '0'
     ? []
     : ['--dangerously-bypass-approvals-and-sandbox'];
-  const configArgs = ['-c', `model_reasoning_effort="${codexReasoningEffort(options)}"`];
+  const configArgs = ['-c', `model_reasoning_effort="${effort}"`];
   const modelArgs = codexModelArgs(options);
   const args = options.sessionId
     ? [
@@ -342,7 +347,7 @@ async function runCodex(turn, onUpdate, options) {
     cwd,
     resume: options.sessionId ?? null,
     model: options.model ?? null,
-    reasoningEffort: codexReasoningEffort(options),
+    reasoningEffort: effort,
     prompt,
   });
 
@@ -411,13 +416,13 @@ async function runCodex(turn, onUpdate, options) {
         if (!final && stderr.trim()) final = stderr.trim();
         if (timedOut) final = `${final ? final + '\n' : ''}[codex timed out after ${Math.round(timeoutMs / 1000)}s]`;
         else if (code !== 0 && !final) final = `[codex exit ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}]`;
-        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId, reasoningEffort: codexReasoningEffort(options) });
+        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId, reasoningEffort: effort });
         resolvePromise({
           text: final || '...',
           optionsPatch: {
             cwd,
             logPath,
-            reasoningEffort: codexReasoningEffort(options),
+            reasoningEffort: effort,
             ...(sessionId ? { sessionId } : {}),
           },
         });
