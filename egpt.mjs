@@ -1273,7 +1273,7 @@ function App() {
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/file') { sysOut(FILE); return true; }
     if (cmd === '/help') {
-      sysOut([
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true, body: [
         '── ROOM ─────────────────────────────────────────────',
         '<message>          broadcast to every session (each may reply or send "...")',
         '@<name> <message>  address one session only (still logged in the .md)',
@@ -1284,6 +1284,8 @@ function App() {
         '',
         '── SESSIONS ─────────────────────────────────────────',
         '/sessions          list active sessions with emoji, brain, tab/thread',
+        '/rooms             list saved rooms',
+        '/save-room [name]  save current sessions + tabs to ~/.egpt/rooms/<name>.yaml',
         '/open <brain> [name]               open a fresh tab + register session',
         '/attach                            re-scan Chrome, attach new tabs',
         '/attach <brain> [name] [tabSpec]   attach specific brain/tab',
@@ -1304,18 +1306,22 @@ function App() {
         '/brain [status|stop]               Chrome lifecycle',
         '/tabs [all]        list pages in brain Chrome',
         '/refresh [<name>]  re-poll tab, append latest text (use if stream cut off)',
-        '/mirror [<src>] [<tgt>]            push last reply into another tab',
-        '                   default: last reply → all other CDP tabs',
+        '/mirror                            last non-You message → all other CDP tabs',
+        '/mirror @<tgt>                     last non-You message → one target',
+        '/mirror @<src> @<tgt>              <src>\'s last message → <tgt>',
+        '                   src: session name or @egpt (= system/egpt messages)',
+        '                   tgt: active CDP session name',
         '/send-file [via=<op>] [<path>] @<session> ["<instruction>"] [--ask "<q>"]',
         '                   operator prepares/excerpts file, pastes into session',
         '/paste-file <session> <path> [--before/--after/--ask "<q>"]',
         '                   paste raw file or excerpt directly (no operator)',
         '',
         '── OPERATORS (local CLI: ccode / codex) ─────────────',
-        '/history [N]       list recent ccode sessions on disk (default 10)',
-        '/session [<id>]    resume a ccode session (cwd auto-detected)',
-        '/session <id> <cwd>                explicit cwd override',
-        '/session none      back to stateless mode',
+        '/history [N]                       list recent ccode sessions on disk (default 10)',
+        '/session <name> [<id>|none] [cwd]  resume/clear a ccode session',
+        '                   <name> = ccode session name; omit if only one ccode in room',
+        '                   <id>   = session UUID or prefix from /history',
+        '                   none   = back to stateless (re-reads file each turn)',
         '@codex exec: <cmd> run a shell command in codex\'s cwd',
         '@codex exec: cd <dir>              change codex\'s persistent cwd',
         '',
@@ -1330,7 +1336,7 @@ function App() {
         'tabSpec: full URL · UUID · targetId · 6+ char prefix',
         'Brains:  ' + brainNamesForHelp(),
         '─────────────────────────────────────────────────────',
-      ].join('\n'));
+      ].join('\n') }]);
       return true;
     }
     if (cmd === '/profiles' || cmd === '/brain-profiles') {
@@ -1693,7 +1699,9 @@ function App() {
       const isSilenceAck = (m) => m.body === '—';
       const isMirrorable = (m) => m.author !== 'You' && !isSilenceAck(m);
 
-      const parts = arg.split(/\s+/).filter(Boolean);
+      // Resolve a name that may carry an @ prefix, and treat "egpt" as "system".
+      const resolveName = (n) => { const s = n.replace(/^@/, ''); return s === 'egpt' ? 'system' : s; };
+      const parts = arg.split(/\s+/).filter(Boolean).map(resolveName);
       const text = await readFile(FILE, 'utf8');
       let source, targets;
 
@@ -1722,9 +1730,9 @@ function App() {
       if (!sourceTurns.length) { sysOut(`no messages from "${source}" in this room`); return true; }
       const lastBody = sourceTurns[sourceTurns.length - 1].body;
 
-      // Validate targets
+      // Validate targets (must be real sessions — system is only valid as source)
       for (const t of targets) {
-        if (!sessions[t]) { sysOut(`no session named "${t}"`); return true; }
+        if (!sessions[t]) { sysOut(`no session named "${t}" — targets must be active sessions`); return true; }
       }
 
       const mirrorMsg = `[${source}]: ${lastBody}`;
@@ -2073,6 +2081,50 @@ function App() {
         return `${emojiPad}${namePad}${brainPad}${detail}${bio}`;
       });
       sysOut(rows.join('\n') || '(none)');
+      return true;
+    }
+    if (cmd === '/rooms') {
+      try {
+        const dir = join(homedir(), '.egpt', 'rooms');
+        let files = [];
+        try { files = (await readdir(dir)).filter(f => f.endsWith('.yaml')); } catch {}
+        if (!files.length) { sysOut(`(no saved rooms)\n  /save-room <name> to save current room`); return true; }
+        sysOut(`Saved rooms in ${dir}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/load-room <name> to restore`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/save-room') {
+      const roomName = arg.trim() || 'default';
+      try {
+        let tabsByid = new Map();
+        try { const tabs = await cdp.listTabs(); for (const t of tabs) tabsByid.set(t.id, t); } catch {}
+        const lines = [`# egpt room: ${roomName}`, `# saved: ${ts()}`, ``, `sessions:`];
+        for (const [name, s] of Object.entries(sessions)) {
+          lines.push(`  ${name}:`);
+          lines.push(`    brain: ${s.brain}`);
+          if (s.emoji) lines.push(`    emoji: ${s.emoji}`);
+          if (s.bio) lines.push(`    bio: "${s.bio.replace(/"/g, '\\"')}"`);
+          const opts = s.options ?? {};
+          if (opts.targetId) {
+            const tab = tabsByid.get(opts.targetId);
+            if (tab?.url && !tab.url.startsWith('chrome')) lines.push(`    url: ${tab.url}`);
+          }
+          if (opts.sessionId) lines.push(`    session_id: ${opts.sessionId}`);
+          if (opts.cwd) lines.push(`    cwd: ${opts.cwd}`);
+          if (opts.model) lines.push(`    model: ${opts.model}`);
+          if (opts.effort) lines.push(`    effort: ${opts.effort}`);
+          if (opts.profileName) lines.push(`    profile: ${opts.profileName}`);
+        }
+        const tgChatId = bridgeRef.current?.chatId;
+        if (tgChatId) {
+          lines.push(``, `telegram:`, `  chat_id: ${tgChatId}`);
+        }
+        const dir = join(homedir(), '.egpt', 'rooms');
+        await mkdir(dir, { recursive: true });
+        const roomFile = join(dir, `${roomName}.yaml`);
+        await writeFile(roomFile, lines.join('\n') + '\n');
+        sysOut(`room "${roomName}" saved → ${roomFile}`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
     if (cmd === '/detach') {
@@ -2615,7 +2667,16 @@ function App() {
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: true },
           `${emoji}${label} `, h(Text, { color: 'gray', dimColor: true }, `(${time})`)),
-        h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
+          item._bright
+          ? h(Box, { flexDirection: 'column' },
+              ...item.body.split('\n').map((line, i) => {
+                if (/^──/.test(line)) return h(Text, { key: i, color: 'cyan', bold: true }, line);
+                if (/^[/@<]/.test(line)) return h(Text, { key: i, color: 'yellow' }, line);
+                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'gray' }, line);
+                if (line === '') return h(Text, { key: i }, ' ');
+                return h(Text, { key: i }, line);
+              }))
+          : h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
@@ -2655,7 +2716,10 @@ function App() {
             `${elapsed}s · Ctrl+R to abort`));
       })(),
       error && h(Text, { color: 'red' }, '!! ' + error),
-      !busy && h(MultiLineInput, { onSubmit: submit })));
+      !busy && h(Box, { flexDirection: 'column' },
+        h(Text, { color: 'gray', dimColor: true },
+          'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
+        h(MultiLineInput, { onSubmit: submit }))));
 }
 
 console.log(`egpt | ${FILE}`);

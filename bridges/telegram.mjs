@@ -70,8 +70,16 @@ export function startTelegramBridge({
         const url = `${TG_BASE}${botToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=25`;
         const res = await fetch(url);
         if (!res.ok) {
-          err(`getUpdates HTTP ${res.status}`);
-          await sleep(5000);
+          if (res.status === 409) {
+            // 409 Conflict = another getUpdates call is in flight (restarted too
+            // fast) or a webhook is set. Wait 35s > the 25s long-poll timeout so
+            // the old request expires, then retry.
+            err('getUpdates 409 — another instance running or stale webhook. Waiting 35s…');
+            await sleep(35000);
+          } else {
+            err(`getUpdates HTTP ${res.status}`);
+            await sleep(5000);
+          }
           continue;
         }
         const data = await res.json();
@@ -197,6 +205,7 @@ export function startTelegramBridge({
     },
     startStreamMessage,
     stop() { stopped = true; },
+    get chatId() { return lastSeenChat; },
   };
 }
 
