@@ -1068,6 +1068,7 @@ function App() {
   // items without depending on render closures. submitRef updated each render.
   const submitRef = useRef(null);
   const bridgeRef = useRef(null);
+  const wizardRef = useRef(null);
   const sentItemsCountRef = useRef(0);
 
   useEffect(() => {
@@ -1200,10 +1201,110 @@ function App() {
     return { path, body };
   }
 
-  async function attachProfile(profile) {
+  function startProfileWizard(initialName) {
+    const STEPS = [
+      { key: 'name', when: (d) => !d.name,
+        ask: () => 'Profile name (alphanumeric, dash, underscore):',
+        hint: () => 'saved to ~/.egpt/brains/<name>.yaml',
+        validate: v => /^[A-Za-z0-9_-]+$/.test(v) ? null : 'must be alphanumeric (dash/underscore ok)',
+      },
+      { key: 'type',
+        ask: () => 'Brain type:',
+        hint: () => 'codex  ccode  cdp_chat  cdp_claude',
+        validate: v => ['codex','ccode','cdp_chat','cdp_claude'].includes(v) ? null : 'invalid type — codex ccode cdp_chat cdp_claude',
+      },
+      { key: 'model', when: (d) => ['codex','ccode'].includes(d.type),
+        ask: (d) => `Model (Enter = default for ${d.type}):`,
+        hint: (d) => d.type === 'codex' ? 'gpt-4o · o4-mini · gpt-5' : 'leave blank to use ccode default',
+        optional: true,
+      },
+      { key: 'effort', when: (d) => d.type === 'codex',
+        ask: () => 'Reasoning effort (Enter = medium):',
+        hint: () => 'low · medium · high',
+        optional: true,
+        validate: v => !v || ['low','medium','high'].includes(v) ? null : 'must be low / medium / high',
+      },
+      { key: 'cwd', when: (d) => ['codex','ccode'].includes(d.type),
+        ask: () => `Working directory (Enter = ${process.cwd()}):`,
+        hint: () => 'directory where the operator subprocess runs',
+        optional: true,
+      },
+      { key: 'url', when: (d) => ['cdp_chat','cdp_claude'].includes(d.type),
+        ask: () => 'Conversation URL (Enter = open fresh tab):',
+        hint: () => 'e.g. https://chatgpt.com/c/abc123…   or use /profile <name> <url>',
+        optional: true,
+      },
+      { key: 'emoji',
+        ask: () => 'Emoji avatar (Enter = auto-assigned):',
+        hint: () => 'e.g. 🦊 🐻 🤖 🧙',
+        optional: true,
+      },
+      { key: 'bio',
+        ask: () => 'Short bio (Enter = none):',
+        hint: () => 'shown in /sessions and /rules',
+        optional: true,
+      },
+    ];
+
+    const data = { name: initialName ?? '' };
+    let step = 0;
+
+    const advance = () => {
+      step++;
+      while (step < STEPS.length && STEPS[step].when && !STEPS[step].when(data)) step++;
+    };
+
+    const showCurrent = () => {
+      if (step >= STEPS.length) { finish(); return; }
+      const s = STEPS[step];
+      const total = STEPS.filter(q => !q.when || q.when(data)).length;
+      const done = STEPS.slice(0, step).filter(q => !q.when || q.when(data)).length;
+      sysOut(`[${done + 1}/${total}] ${typeof s.ask === 'function' ? s.ask(data) : s.ask}\n  hint: ${typeof s.hint === 'function' ? s.hint(data) : s.hint}${s.optional ? '\n  (Enter to skip)' : ''}`);
+    };
+
+    const finish = async () => {
+      wizardRef.current = null;
+      try {
+        const lines = [`# egpt brain profile — created ${ts()}`, `name: ${data.name}`, `type: ${data.type}`];
+        if (data.model) lines.push(`model: ${data.model}`);
+        if (data.effort) lines.push(`effort: ${data.effort}`);
+        if (data.cwd) lines.push(`cwd: ${data.cwd}`);
+        if (data.url) lines.push(`url: ${data.url}`);
+        if (data.emoji) lines.push(`emoji: ${data.emoji}`);
+        if (data.bio) lines.push(`bio: "${data.bio.replace(/"/g, '\\"')}"`);
+        const dir = join(homedir(), '.egpt', 'brains');
+        await mkdir(dir, { recursive: true });
+        const profilePath = join(dir, `${data.name}.yaml`);
+        await writeFile(profilePath, lines.join('\n') + '\n');
+        sysOut(`profile "${data.name}" saved → ${profilePath}\n\n  /attach ${data.name}        start it\n  /profiles                 list all profiles`);
+      } catch (e) { sysOut(`!! save failed: ${e.message}`); }
+    };
+
+    wizardRef.current = {
+      answer(input) {
+        const s = STEPS[step];
+        const trimmed = input.trim();
+        if (!trimmed && !s.optional) { sysOut(`(field required — Enter to skip is not allowed here)\n  hint: ${typeof s.hint === 'function' ? s.hint(data) : s.hint}`); return; }
+        if (trimmed && s.validate) {
+          const err = s.validate(trimmed);
+          if (err) { sysOut(`!! ${err}\n  hint: ${typeof s.hint === 'function' ? s.hint(data) : s.hint}`); return; }
+        }
+        data[s.key] = trimmed || '';
+        advance();
+        showCurrent();
+      },
+    };
+
+    // Skip already-satisfied steps
+    while (step < STEPS.length && STEPS[step].when && !STEPS[step].when(data)) step++;
+    sysOut(`Creating profile${initialName ? ` "${initialName}"` : ''}. Answer each question (Ctrl+C to cancel):`);
+    showCurrent();
+  }
+
+  async function attachProfile(profile, nameOverride) {
     const brainName = profile.brain;
     const brain = brainForName(brainName);
-    const sessionName = String(profile.session ?? profile.handle ?? profile.name).trim();
+    const sessionName = String(nameOverride ?? profile.session ?? profile.handle ?? profile.name).trim();
     if (!isSafeName(sessionName)) {
       sysOut(`profile "${profile.name}" has invalid session/handle "${sessionName}"`);
       return;
@@ -1296,16 +1397,20 @@ function App() {
         '/bio [<name> [text]]               show/set session bio (echoed in room)',
         '',
         '── BRAIN PROFILES (~/.egpt/brains/*.yaml) ───────────',
-        '/profiles          list all YAML profiles',
-        '/profile <name> <url-or-id>        create profile from ChatGPT/Claude URL',
+        '/profiles                          list all YAML profiles',
+        '/create-profile [name]             interactive wizard — asks type, model,',
+        '                   effort, cwd, url, emoji, bio; saves the YAML file',
+        '/profile <name> <url-or-id>        quick-create profile from ChatGPT/Claude URL',
+        '/attach <profile> [session-name]   start profile (optional session name override)',
         'Profile fields: name · type (codex|ccode|cdp_chat|cdp_claude)',
-        '                model · effort (low|medium|high) · cwd',
-        '                chat_name · summary (thread name for codex)',
+        '                model · effort (low|medium|high) · cwd · url',
+        '                emoji · bio · summary (codex thread name)',
         '',
         '── BROWSER BRAINS (CDP) ─────────────────────────────',
         '/brain [status|stop]               Chrome lifecycle',
         '/tabs [all]        list pages in brain Chrome',
-        '/refresh [<name>]  re-poll tab, append latest text (use if stream cut off)',
+        '/refresh [@<name>] CDP: re-poll tab, append latest text (use if stream cut off)',
+        '                   operator: replay last user message → fresh response',
         '/mirror                            last non-You message → all other CDP tabs',
         '/mirror @<tgt>                     last non-You message → one target',
         '/mirror @<src> @<tgt>              <src>\'s last message → <tgt>',
@@ -1337,6 +1442,10 @@ function App() {
         'Brains:  ' + brainNamesForHelp(),
         '─────────────────────────────────────────────────────',
       ].join('\n') }]);
+      return true;
+    }
+    if (cmd === '/create-profile') {
+      startProfileWizard(arg.trim() || undefined);
       return true;
     }
     if (cmd === '/profiles' || cmd === '/brain-profiles') {
@@ -1736,7 +1845,8 @@ function App() {
       }
 
       const mirrorMsg = `[${source}]: ${lastBody}`;
-      sysOut(`mirroring last message from ${source} to: ${targets.join(', ')}`);
+      const preview = lastBody.replace(/\n/g, ' ').slice(0, 100) + (lastBody.length > 100 ? '…' : '');
+      sysOut(`mirroring [${source}] → ${targets.join(', ')}\n  "${preview}"`);
       setBusy(true);
       try {
         for (const t of targets) {
@@ -1746,10 +1856,11 @@ function App() {
       return true;
     }
     if (cmd === '/refresh') {
-      // /refresh <session-name> — re-poll a CDP session's tab and append the
-      // latest assistant text. Without a session name, only works if there's
-      // exactly one CDP session in the room.
-      const target = arg.trim();
+      // /refresh [@<name>]
+      //   CDP brain:  re-poll the tab and append whatever the AI currently shows.
+      //   Operator:   replay the last user message that was addressed to (or
+      //               broadcast to) this session — triggers a fresh response.
+      const target = arg.trim().replace(/^@/, '');
       let session, sessionName;
       if (target) {
         if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
@@ -1757,20 +1868,37 @@ function App() {
       } else {
         const cdps = Object.entries(sessions).filter(([_, s]) => brainForName(s.brain)?.urlMatch);
         if (cdps.length !== 1) {
-          sysOut(`usage: /refresh <session-name>\n  ${cdps.length === 0 ? 'no CDP sessions in the room' : `multiple CDP sessions: ${cdps.map(([n]) => n).join(', ')}`}`);
+          sysOut(`usage: /refresh [@<session>]\n  ${cdps.length === 0 ? 'no CDP sessions in the room' : `multiple CDP sessions — specify one: ${cdps.map(([n]) => n).join(', ')}`}`);
           return true;
         }
         sessionName = cdps[0][0]; session = cdps[0][1];
       }
       const brain = brainForName(session.brain);
-      if (!brain?.peek) { sysOut(`/refresh only works on CDP brains (${sessionName} is ${session.brain})`); return true; }
-      try {
-        const text = await brain.peek(session.options);
-        if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
-        setItems(p => [...p, { id: Date.now(), author: sessionName, body: text }]);
-        await append(sessionName, text);
-        sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
+      if (brain?.peek) {
+        // CDP path: re-poll tab
+        try {
+          const text = await brain.peek(session.options);
+          if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
+          setItems(p => [...p, { id: Date.now(), author: sessionName, body: text }]);
+          await append(sessionName, text);
+          sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
+        } catch (e) { sysOut(`!! ${e.message}`); }
+      } else {
+        // Operator path: replay last user message sent to (or broadcast to) this session
+        const fileText = await readFile(FILE, 'utf8');
+        const msgs = parseMessages(fileText);
+        const lastUserMsg = [...msgs].reverse().find(m =>
+          m.author === 'You' &&
+          (!m.body.startsWith('@') || m.body.startsWith(`@${sessionName} `) || m.body.startsWith(`@${sessionName}\n`))
+        );
+        if (!lastUserMsg) { sysOut(`no user message to replay for ${sessionName}`); return true; }
+        const payload = lastUserMsg.body.startsWith(`@${sessionName}`)
+          ? lastUserMsg.body.slice(sessionName.length + 1).trim()
+          : lastUserMsg.body;
+        sysOut(`replaying last message to ${sessionName}…`);
+        setBusy(true);
+        try { await runBrainTurn(sessionName, payload); } finally { setBusy(false); }
+      }
       return true;
     }
     if (cmd === '/summaries' || cmd === '/list-saved' || cmd === '/saved') {
@@ -2253,16 +2381,18 @@ function App() {
         return true;
       }
 
-      // Profile form: a single token can name a YAML profile from /profiles.
-      if (parts.length === 1) {
+      // Profile form: /attach <profile> [session-name-override]
+      const profileCandidate = parts[0];
+      const profileNameOverride = parts.length === 2 && !brainForName(canonicalBrainName(parts[0])) ? parts[1] : null;
+      if (parts.length <= 2) {
         try {
-          const profile = await loadBrainProfile(parts[0]);
+          const profile = await loadBrainProfile(profileCandidate);
           if (profile) {
-            await attachProfile(profile);
+            await attachProfile(profile, profileNameOverride || undefined);
             return true;
           }
         } catch (e) {
-          sysOut(`!! profile "${parts[0]}": ${e.message}`);
+          sysOut(`!! profile "${profileCandidate}": ${e.message}`);
           return true;
         }
       }
@@ -2538,6 +2668,13 @@ function App() {
   const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
+
+    // Wizard mode: /create-profile interactive questions intercept all input.
+    if (wizardRef.current) {
+      setItems(p => [...p, { id: Date.now(), author: 'You', body: text }]);
+      wizardRef.current.answer(text);
+      return;
+    }
 
     // Echo everything the user types into the transcript. If the input came
     // from Telegram, tag the echo _localOnly so it doesn't get sent back to
