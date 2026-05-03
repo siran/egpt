@@ -29,8 +29,8 @@ let EGPT_CONFIG = {};
 try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
 const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
 try { EGPT_CONFIG = { ...EGPT_CONFIG, ...JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')) }; } catch {}
-const T = loadTheme(EGPT_CONFIG.theme ?? 'default');
-let _currentTheme = EGPT_CONFIG.theme ?? 'default';
+const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
+let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
