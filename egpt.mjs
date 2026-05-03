@@ -8,7 +8,7 @@ import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
@@ -924,16 +924,41 @@ function nextEmoji(sessions) {
 // HTML-safe version of arbitrary text for Telegram parse_mode='HTML'.
 const escapeHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Render an item for the Telegram chat. Uses HTML parse_mode (not Markdown
-// — brains often emit markdown that breaks Telegram's strict MarkdownV2).
-// system messages render in italic, user/sessions get an emoji + bold name.
+// Convert Markdown to Telegram HTML (parse_mode: HTML).
+// Strategy: HTML-escape the source first (so < > & become entities and are safe
+// inside tags), then apply markdown patterns — the markdown characters * _ ` [ ]
+// are not HTML-special so they survive the escaping untouched.
+// Fenced code blocks are handled before inline patterns to avoid double-processing.
+function mdToTgHtml(text) {
+  const s = String(text ?? '');
+  // Split on fenced code blocks so we don't mangle markdown-like chars inside them.
+  const parts = s.split(/(```[\w]*\n?[\s\S]*?```)/g);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) {
+      const inner = part.replace(/^```[\w]*\n?/, '').replace(/```$/, '');
+      return `<pre>${escapeHtml(inner.trim())}</pre>`;
+    }
+    let r = escapeHtml(part);
+    r = r
+      .replace(/\*\*([^*\n]+)\*\*/g,         '<b>$1</b>')
+      .replace(/__([^_\n]+)__/g,              '<b>$1</b>')
+      .replace(/\*([^*\n]+)\*/g,              '<i>$1</i>')
+      .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g,  '<i>$1</i>')
+      .replace(/`([^`\n]+)`/g,               '<code>$1</code>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,   '<a href="$2">$1</a>')
+      .replace(/^#{1,6}\s+(.+)$/gm,          '<b>$1</b>');
+    return r;
+  }).join('');
+}
+
+// Render an item for the Telegram chat. Uses HTML parse_mode.
+// System messages render italic; brain/session bodies get markdown rendered.
 function formatItemForTelegram(item, sessions) {
-  const body = escapeHtml(item.body);
-  if (item.author === 'system') return `${EGPT_EMOJI} <i>${body}</i>`;
-  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${body}`;
+  if (item.author === 'system') return `${EGPT_EMOJI} <i>${escapeHtml(item.body)}</i>`;
+  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${escapeHtml(item.body)}`;
   const sess = sessions[item.author];
   const emoji = sess?.emoji ?? '❓';
-  return `${emoji} <b>${escapeHtml(item.author)}</b>\n${body}`;
+  return `${emoji} <b>${escapeHtml(item.author)}</b>\n${mdToTgHtml(item.body)}`;
 }
 
 // Parse messages.md back into objects (for /last).
@@ -1889,13 +1914,11 @@ function App() {
           sysOut(`!! /browse: session "${viaOp ?? '?'}" not found`);
           return true;
         }
-        const browserToolsUrl = pathToFileURL(join(APP_DIR, 'tools', 'browser-tools.mjs')).href;
-        const browseVars = {
-          task_block:        [...(browseUrl ? [`URL: ${browseUrl}`, ''] : []), `Task: ${instruction ?? 'fetch the page and summarize its main content'}`].join('\n'),
-          cdp_host:          cdp.cdpHost,
-          browser_tools_url: browserToolsUrl,
-          url_arg:           browseUrl ? `'${browseUrl}'` : '/* URL from task */',
-        };
+        const browseTask = [
+          instruction ?? 'fetch the page and summarize its main content',
+          ...(browseUrl ? [`URL: ${browseUrl}`] : []),
+        ].join('\n');
+        const browseVars = { task: browseTask, cdp_host: cdp.cdpHost };
         const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);
@@ -2929,11 +2952,13 @@ function App() {
       return `${authorPrefix}\n${escapeHtml(tail)} ⌛`;
     };
 
+    let lastStreamingText = '';
     try {
       const history = await readFile(FILE, 'utf8');
       const result = await brain.stream(
         { history, message: messageText, ask: askText },
         partial => {
+          lastStreamingText = partial;
           setStreaming({ author: routedTo, text: partial });
           tg?.update(tgFmt(partial));
         },
@@ -2960,6 +2985,16 @@ function App() {
       }
       setStreaming(null);
       const trimmed = (final ?? '').trim();
+      const streamSnapshot = lastStreamingText.trim();
+      if (streamSnapshot && streamSnapshot !== trimmed) {
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(),
+          author: routedTo,
+          body: streamSnapshot,
+          _thinking: true,
+          _localOnly: true,
+        }]);
+      }
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
         // Quiet ack: render as the session itself with a single em-dash body,
@@ -2977,7 +3012,7 @@ function App() {
       // item carries _localOnly when Telegram already received it via the
       // streaming edit, to avoid sending the reply twice.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
-      await tg?.finish(`${authorPrefix}\n${escapeHtml(finalTail)}`);
+      await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: routedTo, body: final,
         _localOnly: !!tg,
@@ -3129,9 +3164,16 @@ function App() {
       const label = isUser ? USER_NAME : item.author;
       const time = fmtTs(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
-        h(Text, { color: color(item.author), bold: true },
-          `${emoji}${label} `, h(Text, { color: 'gray', dimColor: true }, `(${time})`)),
-          item._bright
+        h(Text, { color: color(item.author), bold: !item._thinking, dimColor: item._thinking },
+          `${emoji}${label} `,
+          item._thinking
+            ? h(Text, { color: 'gray', dimColor: true }, '(thinking…)')
+            : h(Text, { color: 'gray', dimColor: true }, `(${time})`)),
+          item._thinking
+          ? h(Box, { flexDirection: 'column' },
+              h(Text, { italic: true }, item.body),
+              h(Text, { color: 'gray', dimColor: true }, '  ╌╌╌'))
+          : item._bright
           ? h(Box, { flexDirection: 'column' },
               ...item.body.split('\n').map((line, i) => {
                 if (/^──/.test(line)) return h(Text, { key: i, color: 'cyan', bold: true }, line);

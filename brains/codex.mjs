@@ -269,15 +269,7 @@ async function buildCodexPrompt({ history, message }, options) {
       task:             text,
     });
     if (result) return result.text;
-    // fallback if template file is missing
-    return [
-      `You are ${sessionName}, a coding agent in an egpt room.`,
-      `Your job: execute the task below. Write Node.js scripts, run them, report results.`,
-      `Reasoning effort: ${codexReasoningEffort(options)}`,
-      `Working directory: ${options.cwd ?? process.cwd()}`,
-      ``,
-      text,
-    ].join('\n');
+    return text; // fallback: raw task text (template file missing)
   }
 
   if (options.sessionId) {
@@ -328,7 +320,7 @@ async function runCodex(turn, onUpdate, options) {
         '--output-last-message', lastMessagePath,
         ...trustArgs,
         options.sessionId,
-        prompt,
+        '-',
       ]
     : [
         'exec',
@@ -339,7 +331,7 @@ async function runCodex(turn, onUpdate, options) {
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
         ...trustArgs,
-        prompt,
+        '-',
       ];
   const cmd = codexSpawn(args);
   logLine(logPath, {
@@ -356,9 +348,10 @@ async function runCodex(turn, onUpdate, options) {
       const proc = spawn(cmd.command, cmd.args, {
         cwd,
         env: { ...process.env, TERM: process.env.TERM || 'dumb' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       });
+      proc.stdin.end(prompt, 'utf8');
 
       let lineBuf = '';
       let plainOutput = '';

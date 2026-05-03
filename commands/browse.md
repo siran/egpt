@@ -1,38 +1,16 @@
 ---
 command: browse
 ---
-[browse task — augmented browsing via CDP]
+[browse task] use CDP  to: {{task}}
 
-{{task_block}}
+Chrome is live with the user's real session — connect via port 9222 (visible browser window). Do NOT launch a new browser instance or use Playwright/Puppeteer. Node.js v22 has native `fetch` + `WebSocket` — no libraries needed.
 
-━━ MANDATORY: use the browser-tools CDP library — DO NOT use curl, fetch, or any HTTP client ━━
-Chrome is running at http://{{cdp_host}} with the user's real logged-in session.
-You MUST write and execute a Node.js script that imports and uses browser-tools.
+CDP quick reference:
+- List tabs: `fetch('http://{{cdp_host}}/json/list').then(r => r.json())`
+- New tab: `fetch('http://{{cdp_host}}/json/new?'+encodeURIComponent(url), {method:'PUT'}).then(r=>r.json())`
+- Connect: `new WebSocket(tab.webSocketDebuggerUrl)`
+- Send command: `ws.send(JSON.stringify({id, method, params}))` / await reply via `ws.onmessage`
+- Evaluate JS: `send('Runtime.evaluate', {expression: '...', returnByValue: true})`
+- Wait for load: poll `Runtime.evaluate` with `document.readyState === 'complete'`
 
-import * as browser from '{{browser_tools_url}}';
-
-Starter pattern:
-  const id = await browser.openTab({{url_arg}});
-  await browser.waitForLoad(id);
-  // interact with the page here
-  const text = await browser.getText(id);
-  await browser.closeTab(id);
-
-Full API:
-  browser.openTab(url)                  -> targetId
-  browser.navigate(id, url)
-  browser.waitForLoad(id, timeoutMs?)
-  browser.getText(id, selector?)        -> string
-  browser.evaluate(id, 'expression')    -> primitive
-  browser.click(id, 'selector')
-  browser.type(id, 'selector', 'text')
-  browser.scroll(id, x, y)
-  browser.waitForElement(id, 'selector', timeoutMs?)
-  browser.getUrl(id)  browser.getTitle(id)
-  browser.closeTab(id)
-  browser.waitForHuman('message')       — pauses; user acts in browser, types /continue
-
-CAPTCHAs / Cloudflare / login / 2FA: call waitForHuman() — user sees a banner and can act.
-
-Return plain text suitable for Telegram (no markdown, use newlines).
-For products: name · price · URL, one per line.
+Return Markdown-formatted text. Use **bold**, *italic*, `code`, and links where appropriate.
