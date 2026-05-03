@@ -951,10 +951,28 @@ function mdToTgHtml(text) {
   }).join('');
 }
 
+// Format a _bright (help/status) item for Telegram HTML.
+// Section headers "── TITLE ────" → <b>TITLE</b>, /commands → <code>/cmd</code>.
+function formatBrightForTelegram(body) {
+  const lines = body.split('\n');
+  const out = [];
+  for (const line of lines) {
+    const hdr = line.match(/^──+\s+(.+?)\s+─+$/);
+    if (hdr) { out.push(`\n<b>${escapeHtml(hdr[1])}</b>`); continue; }
+    if (/^─{3,}/.test(line.trim())) continue;
+    if (!line.trim()) { out.push(''); continue; }
+    out.push(escapeHtml(line).replace(/(\/[\w-]+)/g, '<code>$1</code>'));
+  }
+  return out.join('\n').trim();
+}
+
 // Render an item for the Telegram chat. Uses HTML parse_mode.
 // System messages render italic; brain/session bodies get markdown rendered.
 function formatItemForTelegram(item, sessions) {
-  if (item.author === 'system') return `${EGPT_EMOJI} <i>${escapeHtml(item.body)}</i>`;
+  if (item.author === 'system') {
+    if (item._bright) return `${EGPT_EMOJI}\n${formatBrightForTelegram(item.body)}`;
+    return `${EGPT_EMOJI} <i>${escapeHtml(item.body)}</i>`;
+  }
   if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${escapeHtml(item.body)}`;
   const sess = sessions[item.author];
   const emoji = sess?.emoji ?? '❓';
