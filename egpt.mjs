@@ -1428,8 +1428,9 @@ function App() {
         '                   operator prepares/excerpts file, pastes into session',
         '/paste-file <session> <path> [--before/--after/--ask "<q>"]',
         '                   paste raw file or excerpt directly (no operator)',
-        '/browse <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]',
-        '                   fetch a web page, extract text → room or @session',
+        '/browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>]',
+        '  via=<op>: operator browses with its own tools, result → Telegram',
+        '  (no via): egpt extracts page text → room or @session',
         '',
         '── OPERATORS (local CLI: ccode / codex) ─────────────',
         '/history [N]                       list recent ccode sessions on disk (default 10)',
@@ -1691,29 +1692,70 @@ function App() {
       return true;
     }
     if (cmd === '/browse') {
-      // /browse <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]
+      // /browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]
+      //
+      // via=<op>  delegate entirely to an operator brain — it fetches, parses,
+      //           and formats the result itself using its own tools (curl, node,
+      //           CDP scripts, etc.). Its reply flows to Telegram automatically.
+      //           No CDP tab is opened by egpt in this mode.
+      //
+      // (no via) egpt opens a Chrome tab, waits for the page to settle, extracts
+      //           body text, and drops it into the room or injects into @session.
       const words = parseCommandWords(arg);
       if (!words.length) {
         sysOut([
-          'usage: /browse <url> [@<session>] ["<instruction>"] [--max <chars>] [--keep]',
-          '  fetches a web page, extracts its text, drops it into the room',
-          '  @<session>   inject into this session (CDP or operator) with optional instruction',
-          '  --max <N>    max chars to extract (default 60000)',
-          '  --keep       keep the tab open after extracting (default: close it)',
+          'usage: /browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]',
+          '  via=<op>     delegate to operator — it browses with its own tools',
+          '               result flows to Telegram automatically via normal reply',
+          '  @<session>   inject extracted text into this session (no-via mode only)',
+          '  --max <N>    max chars to extract, default 60000 (no-via mode only)',
+          '  --keep       keep the Chrome tab open after extracting (no-via mode only)',
+          'examples:',
+          '  /browse via=codex1 amazon.com "find cheapest bongo drums: image; price; link"',
+          '  /browse https://en.wikipedia.org/wiki/Bongo_drum @cgpt1 "summarize history"',
         ].join('\n'));
         return true;
       }
-      let browseUrl = null, browseTarget = null, browseInstruction = [], maxChars = 60000, keepTab = false;
+
+      // Parse: collect via=, url, @target, --flags, and everything else = instruction
+      let viaOp = null, browseUrl = null, browseTarget = null;
+      let browseInstruction = [], maxChars = 60000, keepTab = false;
       for (let i = 0; i < words.length; i++) {
         const w = words[i];
+        if (w.startsWith('via=')) { viaOp = w.slice(4); continue; }
         if (!browseUrl && /^https?:\/\//.test(w)) { browseUrl = w; continue; }
+        // Accept bare domains / paths: amazon.com, google.com/search?q=…
+        if (!browseUrl && /^[a-zA-Z0-9][-a-zA-Z0-9.]*\.[a-zA-Z]{2,}(\/|$)/.test(w)) {
+          browseUrl = 'https://' + w; continue;
+        }
         if (w.startsWith('@')) { browseTarget = w.slice(1); continue; }
         if (w === '--max' && i + 1 < words.length) { maxChars = Math.max(1000, parseInt(words[++i], 10) || 60000); continue; }
         if (w === '--keep') { keepTab = true; continue; }
         browseInstruction.push(w);
       }
       const instruction = browseInstruction.join(' ').trim() || null;
-      if (!browseUrl) { sysOut('!! /browse: missing URL (must start with http:// or https://)'); return true; }
+      if (!browseUrl) { sysOut('!! /browse: missing URL'); return true; }
+
+      // ── via=operator mode: delegate the whole task ──────────────────────────
+      if (viaOp) {
+        if (!sessions[viaOp]) { sysOut(`!! /browse: no session named "${viaOp}"`); return true; }
+        const task = [
+          `[browse task]`,
+          `URL: ${browseUrl}`,
+          instruction ? `\nTask: ${instruction}` : '\nTask: fetch the page and summarize its main content',
+          `\nReturn your answer in plain text suitable for Telegram (no markdown, use line breaks).`,
+          `For images, include the direct image URL on its own line.`,
+        ].join('\n');
+        const note = `[browse via ${viaOp}] ${browseUrl}${instruction ? '\n  ' + instruction : ''}`;
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+        await append('system', note);
+        setBusy(true);
+        try { await runBrainTurn(viaOp, task); }
+        finally { setBusy(false); }
+        return true;
+      }
+
+      // ── direct CDP extraction mode ──────────────────────────────────────────
       if (browseTarget && !sessions[browseTarget]) { sysOut(`!! /browse: no session named "${browseTarget}"`); return true; }
 
       setBusy(true);
@@ -1729,10 +1771,7 @@ function App() {
           },
         });
         setStreaming(null);
-
-        if (!keepTab) {
-          cdp.closeTab(browseResult.targetId).catch(() => {});
-        }
+        if (!keepTab) cdp.closeTab(browseResult.targetId).catch(() => {});
 
         const chars = browseResult.text.length;
         const header = `[browse: ${browseResult.title || browseResult.url}]\n${browseResult.url}  (${chars.toLocaleString()} chars)`;
@@ -1743,8 +1782,6 @@ function App() {
           const note = `[browsed ${browseResult.url} (${chars.toLocaleString()} chars)] → injecting into ${browseTarget}`;
           setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
           await append('system', note);
-          // CDP brains: paste content, type ask separately.
-          // Operator brains: concatenate instruction into message (ask is ignored).
           const isCDP = !!brainForName(sessions[browseTarget]?.brain)?.urlMatch;
           const msg = isCDP
             ? { message: fullContent, ask: instruction }
