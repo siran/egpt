@@ -15,6 +15,7 @@ import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './tools/cdp.mjs';
+import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
@@ -49,25 +50,6 @@ function resolveOperatorSession(explicit, sessions) {
   if (_defaultOp && sessions[_defaultOp] && isOp(['', sessions[_defaultOp]])) return _defaultOp;
   const ops = Object.entries(sessions).filter(isOp);
   return ops.length === 1 ? ops[0][0] : null;
-}
-
-// Load a command prompt template from ~/.egpt/commands/<cmd>.md or APP_DIR/commands/<cmd>.md.
-// Returns { path, body } or null. Strips YAML frontmatter.
-async function loadCommandTemplate(cmdName) {
-  const userPath = join(EGPT_HOME, 'commands', `${cmdName}.md`);
-  const appPath  = join(APP_DIR,   'commands', `${cmdName}.md`);
-  for (const p of [userPath, appPath]) {
-    try {
-      const raw = await readFile(p, 'utf8');
-      const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
-      return { path: p, body };
-    } catch {}
-  }
-  return null;
-}
-
-function applyTemplate(body, vars) {
-  return body.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
 }
 
 const BRAINS = {
@@ -509,30 +491,13 @@ function quoteRoomArg(value) {
   return s;
 }
 
-function buildSendFilePrepPrompt({ sourcePath, preparedPath, targetName, instruction }) {
-  const sourceHint = sourcePath
-    ? sourcePath
-    : '(none provided; infer/find the source file from the preparation instruction, cwd, and nearby repo context)';
-  return [
-    `[system]: Prepare a local file excerpt for egpt to paste into @${targetName}.`,
-    '',
-    `Source path or search hint from the user:`,
-    sourceHint,
-    '',
-    `Preparation instruction from the user:`,
-    instruction,
-    '',
-    `Write the prepared excerpt to this exact UTF-8 Markdown file path:`,
-    preparedPath,
-    '',
-    `Rules:`,
-    `- Resolve the user's source path/search hint yourself. If no path was provided, find the intended file from the instruction and local repo context.`,
-    `- If a relative path or fuzzy source hint is provided, use your current cwd and nearby repo context.`,
-    `- Preserve exact source text for the selected excerpt. Do not summarize unless the user explicitly requested a summary.`,
-    `- For natural instructions like "before chapter 8", identify the heading/marker in the source and include content before that chapter.`,
-    `- Do not include the excerpt in your reply.`,
-    `- After writing the file, reply with exactly one short line: prepared: ${preparedPath}`,
-  ].join('\n');
+function sendFilePrepVars({ sourcePath, preparedPath, targetName, instruction }) {
+  return {
+    target:       targetName,
+    source_hint:  sourcePath ?? '(none provided; infer from the instruction, cwd, and nearby repo context)',
+    instruction:  instruction,
+    output_path:  preparedPath,
+  };
 }
 
 async function findBrainProfilePath(name) {
@@ -1267,11 +1232,7 @@ function App() {
     await append('system', note);
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
     if (target) {
-      await runBrainTurn(
-        target,
-        `[system]: Please absorb this injected context for future turns. Reply with exactly "..." unless you need to report a problem.\n\n${note}`,
-        sessionMap,
-      );
+      await dispatchToOperator('inject', { content: note }, target, sessionMap);
     }
     return { path, body };
   }
@@ -1598,15 +1559,17 @@ function App() {
       if (arg === 'on')  { _showPrompts = true;  sysOut('prompt display on — full task text shown before each operator turn'); return true; }
       if (arg === 'off') { _showPrompts = false; sysOut('prompt display off'); return true; }
       // No arg: show templates
-      const knownCmds = ['browse'];
+      const knownCmds = ['browse', 'send-file', 'summarize', 'inject', 'codex-task'];
       const parts = [`prompt display is ${_showPrompts ? 'ON' : 'OFF'}  (/prompts on|off to toggle)\n`];
       for (const c of knownCmds) {
-        const tpl = await loadCommandTemplate(c);
+        const tpl = await loadTemplate(c);
         if (tpl) {
-          parts.push(`── /${c} template ── (${dp(tpl.path)})`);
+          parts.push(`── /${c} ── (${dp(tpl.path)})`);
           parts.push(tpl.body.length > 1200 ? tpl.body.slice(0, 1200) + '\n...[truncated]' : tpl.body);
+          parts.push('');
         } else {
-          parts.push(`── /${c} template ── (built-in, no file found)`);
+          parts.push(`── /${c} ── (no template file found)`);
+          parts.push('');
         }
       }
       sysOut(parts.join('\n'));
@@ -1748,14 +1711,10 @@ function App() {
 
         setBusy(true);
         try {
-          await runBrainTurn(
+          await dispatchToOperator(
+            'send-file',
+            sendFilePrepVars({ sourcePath: parsed.path, preparedPath, targetName: parsed.targetName, instruction: parsed.instruction }),
             via,
-            buildSendFilePrepPrompt({
-              sourcePath: parsed.path,
-              preparedPath,
-              targetName: parsed.targetName,
-              instruction: parsed.instruction,
-            }),
           );
         } finally {
           setBusy(false);
@@ -1930,50 +1889,18 @@ function App() {
           sysOut(`!! /browse: session "${viaOp ?? '?'}" not found`);
           return true;
         }
-        // Build task from template (commands/browse.md), falling back to inline
         const browserToolsUrl = pathToFileURL(join(APP_DIR, 'tools', 'browser-tools.mjs')).href;
-        const taskBlock = [
-          ...(browseUrl ? [`URL: ${browseUrl}`, ''] : []),
-          `Task: ${instruction ?? 'fetch the page and summarize its main content'}`,
-        ].join('\n');
-        const tplVars = {
-          task_block:        taskBlock,
+        const browseVars = {
+          task_block:        [...(browseUrl ? [`URL: ${browseUrl}`, ''] : []), `Task: ${instruction ?? 'fetch the page and summarize its main content'}`].join('\n'),
           cdp_host:          cdp.cdpHost,
           browser_tools_url: browserToolsUrl,
           url_arg:           browseUrl ? `'${browseUrl}'` : '/* URL from task */',
         };
-        const tpl = await loadCommandTemplate('browse');
-        const task = tpl
-          ? applyTemplate(tpl.body, tplVars)
-          : [
-              `[browse task — augmented browsing via CDP]`,
-              ``,
-              taskBlock,
-              ``,
-              `━━ MANDATORY: use the browser-tools CDP library — DO NOT use curl, fetch, or any HTTP client ━━`,
-              `Chrome is running at http://${cdp.cdpHost} with the user's real logged-in session.`,
-              `You MUST write and execute a Node.js script that imports and uses browser-tools.`,
-              ``,
-              `import * as browser from '${browserToolsUrl}';`,
-              ``,
-              `Starter pattern:`,
-              `  const id = await browser.openTab(${browseUrl ? `'${browseUrl}'` : '/* URL from task */'});`,
-              `  await browser.waitForLoad(id);`,
-              `  // interact with the page here`,
-              `  const text = await browser.getText(id);`,
-              `  await browser.closeTab(id);`,
-              ``,
-              `Return plain text suitable for Telegram (no markdown, use newlines).`,
-              `For products: name · price · URL, one per line.`,
-            ].join('\n');
         const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);
-        if (_showPrompts) {
-          sysOut(`[prompt -> ${viaOp}]\n─────────────────────────────────────────────────────\n${task}\n─────────────────────────────────────────────────────`);
-        }
         setBusy(true);
-        try { await runBrainTurn(viaOp, task, effectiveSessions); }
+        try { await dispatchToOperator('browse', browseVars, viaOp, effectiveSessions); }
         finally { setBusy(false); setBrowserWaiting(null); }
         return true;
       }
@@ -2343,12 +2270,13 @@ function App() {
         const turns = scope === 'last' && scopeN ? allTurns.slice(-scopeN) : allTurns;
         const formatted = turns.map(t => `[${t.author}]: ${t.body}`).join('\n\n');
         const scopeLabel = scope === 'last' ? `last ${scopeN}` : 'all';
-        const prompt =
-          `Please summarize this conversation faithfully. ` +
-          `Preserve participants, key decisions, and any open questions or loose threads. ` +
-          `Aim for under 600 words. Plain markdown, no preamble. ` +
-          `Output ONLY the summary text — no "Here is the summary:" boilerplate.\n\n` +
-          `---\n\n${formatted}`;
+        const promptResult = await buildCommandPrompt('summarize', { conversation: formatted });
+        const prompt = promptResult?.text ??
+          `Please summarize this conversation faithfully. Preserve participants, key decisions, and any open questions or loose threads. Aim for under 600 words. Plain markdown, no preamble. Output ONLY the summary text — no "Here is the summary:" boilerplate.\n\n---\n\n${formatted}`;
+        if (_showPrompts) {
+          const bar = '─'.repeat(53);
+          sysOut(`[prompt -> summarize]\n${bar}\n${prompt.slice(0, 800)}${prompt.length > 800 ? '\n...[truncated for display]' : ''}\n${bar}`);
+        }
 
         // Pick brain
         const forceOperator = cmd === '/operator-summarize';
@@ -2920,6 +2848,19 @@ function App() {
     }
     return false;
   };
+
+  // Build a command prompt from its template and run it on an operator session.
+  // Handles template loading, /prompts display, and runBrainTurn dispatch.
+  // Callers manage setBusy/cleanup around this call.
+  async function dispatchToOperator(cmdName, vars, opSession, sessionMap) {
+    const result = await buildCommandPrompt(cmdName, vars);
+    if (!result) { sysOut(`!! no template found for command "${cmdName}" — check commands/${cmdName}.md`); return null; }
+    if (_showPrompts) {
+      const bar = '─'.repeat(53);
+      sysOut(`[prompt -> ${opSession}  (${cmdName})]\n${bar}\n${result.text}\n${bar}`);
+    }
+    return runBrainTurn(opSession, result.text, sessionMap ?? sessions);
+  }
 
   // Run a single brain-turn for one session.
   // `messageText` is exactly what gets injected into the brain (or piped to

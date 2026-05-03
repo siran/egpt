@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { buildCommandPrompt } from '../tools/template.mjs';
 
 export const name = 'codex';
 export const description = 'Local Codex CLI; `exec:` runs shell commands with persistent cwd.';
@@ -254,13 +255,21 @@ function extractTextEvent(ev) {
   return null;
 }
 
-function buildCodexPrompt({ history, message }, options) {
+async function buildCodexPrompt({ history, message }, options) {
   const text = stripUserPrefix(message);
   const sessionName = options.sessionName ?? 'codex';
 
-  // Task messages (from /browse via=op, /send-file, etc.) need agent/execution framing.
+  // Task messages (from /browse via=op, /send-file, etc.) use commands/codex-task.md.
   // They arrive without a thread and start with a bracketed task marker.
   if (!options.sessionId && /^\[(?:browse|send-file|file)\s+task\b/i.test(text)) {
+    const result = await buildCommandPrompt('codex-task', {
+      session_name:     sessionName,
+      reasoning_effort: codexReasoningEffort(options),
+      cwd:              options.cwd ?? process.cwd(),
+      task:             text,
+    });
+    if (result) return result.text;
+    // fallback if template file is missing
     return [
       `You are ${sessionName}, a coding agent in an egpt room.`,
       `Your job: execute the task below. Write Node.js scripts, run them, report results.`,
@@ -294,7 +303,7 @@ async function runCodex(turn, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
   const logPath = await ensureLogPath(options);
-  const prompt = buildCodexPrompt(turn, { ...options, cwd });
+  const prompt = await buildCodexPrompt(turn, { ...options, cwd });
 
   const timeoutMs = parsePositiveInt(process.env.EGPT_CODEX_TIMEOUT_MS, DEFAULT_CODEX_TIMEOUT_MS);
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
