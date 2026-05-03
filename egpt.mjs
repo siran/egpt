@@ -3184,8 +3184,8 @@ function App() {
         h(Text, { color: color(item.author), bold: !item._thinking, dimColor: item._thinking },
           `${emoji}${label} `,
           item._thinking
-            ? h(Text, { color: 'gray', dimColor: true }, '(thinking…)')
-            : h(Text, { color: 'gray', dimColor: true }, `(${time})`)),
+            ? h(Text, { color: 'gray' }, '(thinking…)')
+            : h(Text, { color: 'gray' }, `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
@@ -3203,7 +3203,7 @@ function App() {
                   h(Text, { color: 'white' }, line.slice(dash + 3)));
                 return h(Text, { key: i, color: 'yellow' }, line);
               }))
-          : h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
+          : h(Text, { italic: isSystem }, item.body));
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
