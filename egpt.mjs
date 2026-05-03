@@ -4,11 +4,11 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
@@ -27,6 +27,29 @@ try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
+
+// show_prompts: when true, the full task/prompt text is printed to the shell
+// before each operator turn. Toggle with /prompts on|off, or set in config.
+let _showPrompts = EGPT_CONFIG.show_prompts ?? false;
+
+// default operator session name — used when a command needs an operator and
+// none is specified. Persisted to ~/.egpt/default-op.txt.
+const DEFAULT_OP_FILE = join(EGPT_HOME, 'default-op.txt');
+let _defaultOp = null;
+try { _defaultOp = readFileSync(DEFAULT_OP_FILE, 'utf8').trim() || null; } catch {}
+
+// Return the operator session name to use for a command:
+// 1. explicit (passed in) — always wins
+// 2. _defaultOp if it's in the session map
+// 3. the only operator session if there's exactly one
+// Returns null (caller should prompt) if none found.
+function resolveOperatorSession(explicit, sessions) {
+  if (explicit) return explicit;
+  const isOp = ([_, s]) => s.brain === 'ccode' || s.brain === 'codex';
+  if (_defaultOp && sessions[_defaultOp] && isOp(['', sessions[_defaultOp]])) return _defaultOp;
+  const ops = Object.entries(sessions).filter(isOp);
+  return ops.length === 1 ? ops[0][0] : null;
+}
 
 const BRAINS = {
   [ccode.name]: ccode,
@@ -1069,6 +1092,8 @@ function App() {
   // bumps `now` every 250ms to drive re-renders.
   const [busyStart, setBusyStart] = useState(null);
   const [now, setNow] = useState(Date.now());
+  // Banner shown when an operator calls browser.waitForHuman() — pauses until /continue.
+  const [browserWaiting, setBrowserWaiting] = useState(null);
   const { exit } = useApp();
 
   // Refs so background bridges (Telegram) can call submit() and forward new
@@ -1085,6 +1110,20 @@ function App() {
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
   }, [busy]);
+
+  // Poll for ~/.egpt/browser-pause.txt — written by browser.waitForHuman() inside
+  // an operator script. When found, show a banner prompting the user to act in
+  // the browser and type /continue.
+  useEffect(() => {
+    const pauseFile = join(EGPT_HOME, 'browser-pause.txt');
+    const id = setInterval(() => {
+      if (!existsSync(pauseFile)) return;
+      let msg = 'please act in the browser';
+      try { msg = readFileSync(pauseFile, 'utf8').trim() || msg; unlinkSync(pauseFile); } catch {}
+      setBrowserWaiting(msg);
+    }, 800);
+    return () => clearInterval(id);
+  }, []);
 
   // Start Telegram bridge once if ~/.egpt/config.json has telegram.bot_token.
   // Bridge calls submitRef.current(text) on incoming Telegram messages and
@@ -1108,7 +1147,7 @@ function App() {
           // notification).
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'system',
-            body: `(telegram message from ${who}) → ${text}`,
+            body: `(telegram message from ${who}) -> ${text}`,
             _localOnly: true,
           }]);
           if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
@@ -1119,6 +1158,12 @@ function App() {
       bridgeRef.current = bridge;
       _globalBridge = bridge;
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
+      if (!bridge.chatId) {
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+          body: 'telegram: no chat_id configured — shell-side messages will NOT reach Telegram until\n' +
+                '  the bot receives its first message, OR add "chat_id": <id> to ~/.egpt/config.json',
+        }]);
+      }
     })();
     return () => { bridge?.stop(); _globalBridge = null; };
   }, []);
@@ -1176,10 +1221,13 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // Top-level escape hatch: Ctrl+R force-resets state when the brain hangs.
-  // The in-flight WebSocket / subprocess is orphaned (will eventually GC)
-  // but the UI returns control. Last-resort, not a graceful cancel.
+  // Top-level hotkeys. Ctrl+C exits cleanly (raw-mode means SIGINT never fires
+  // when exitOnCtrlC:false, so we handle it here instead). Ctrl+R force-resets.
   useInput((input, key) => {
+    if (key.ctrl && input === 'c') {
+      _exitClean(0);
+      return;
+    }
     if (key.ctrl && input === 'r' && (busy || streaming)) {
       setBusy(false);
       setStreaming(null);
@@ -1284,7 +1332,7 @@ function App() {
         await mkdir(dir, { recursive: true });
         const profilePath = join(dir, `${data.name}.yaml`);
         await writeFile(profilePath, lines.join('\n') + '\n');
-        sysOut(`profile "${data.name}" saved → ${dp(profilePath)}\n\n  /attach ${data.name}        start it\n  /profiles                 list all profiles`);
+        sysOut(`profile "${data.name}" saved -> ${dp(profilePath)}\n\n  /attach ${data.name}        start it\n  /profiles                 list all profiles`);
       } catch (e) { sysOut(`!! save failed: ${e.message}`); }
     };
 
@@ -1418,19 +1466,26 @@ function App() {
         '/brain [status|stop]               Chrome lifecycle',
         '/tabs [all]        list pages in brain Chrome',
         '/refresh [@<name>] CDP: re-poll tab, append latest text (use if stream cut off)',
-        '                   operator: replay last user message → fresh response',
-        '/mirror                            last non-You message → all other CDP tabs',
-        '/mirror @<tgt>                     last non-You message → one target',
-        '/mirror @<src> @<tgt>              <src>\'s last message → <tgt>',
+        '                   operator: replay last user message -> fresh response',
+        '/mirror                            last non-You message -> all other CDP tabs',
+        '/mirror @<tgt>                     last non-You message -> one target',
+        '/mirror @<src> @<tgt>              <src>\'s last message -> <tgt>',
         '                   src: session name or @egpt (= system/egpt messages)',
         '                   tgt: active CDP session name',
         '/send-file [via=<op>] [<path>] @<session> ["<instruction>"] [--ask "<q>"]',
         '                   operator prepares/excerpts file, pastes into session',
         '/paste-file <session> <path> [--before/--after/--ask "<q>"]',
         '                   paste raw file or excerpt directly (no operator)',
-        '/browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>]',
-        '  via=<op>: operator browses with its own tools, result → Telegram',
-        '  (no via): egpt extracts page text → room or @session',
+        '/browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]',
+        '  via=<op>: operator drives Chrome via CDP (browser-tools.mjs), result -> Telegram',
+        '            instruction = the task (search, fill form, scrape — operator acts on it)',
+        '            tip: for dynamic/interactive pages (Google, Amazon search, login)',
+        '  (no via): egpt opens tab, extracts text, closes tab',
+        '            @<session>: extracted text -> that session\'s input (AI analyzes it)',
+        '            instruction: appended as a note; use @session for AI to act on it',
+        '            --max N: max chars to extract (default 60000)',
+        '            --keep: keep tab open after extraction',
+        '/continue          resume operator paused by browser.waitForHuman() (captcha/login)',
         '',
         '── OPERATORS (local CLI: ccode / codex) ─────────────',
         '/history [N]                       list recent ccode sessions on disk (default 10)',
@@ -1451,8 +1506,80 @@ function App() {
         '── REFERENCE ────────────────────────────────────────',
         'tabSpec: full URL · UUID · targetId · 6+ char prefix',
         'Brains:  ' + brainNamesForHelp(),
+        '',
+        '/status            room snapshot: participants, interfaces, models, tab URLs',
+        '/prompts [on|off]  toggle showing the full prompt sent to operators',
+        '                   (set show_prompts:true in ~/.egpt/config.json to persist)',
         '─────────────────────────────────────────────────────',
       ].join('\n') }]);
+      return true;
+    }
+    if (cmd === '/status') {
+      let tabsByid = new Map();
+      try {
+        const tabs = await cdp.listTabs();
+        for (const t of tabs) tabsByid.set(t.id, t);
+      } catch {}
+      const lines = [
+        '── STATUS ───────────────────────────────────────────',
+        `file:  ${dp(FILE)}`,
+        '',
+        '── INTERFACES ───────────────────────────────────────',
+        '  console     active',
+      ];
+      const tgBridge = bridgeRef.current;
+      if (tgBridge) {
+        const chatInfo = tgBridge.chatId ? `connected · chat ${tgBridge.chatId}` : 'connected (no incoming messages yet)';
+        lines.push(`  telegram    ${chatInfo}`);
+      } else {
+        lines.push(`  telegram    not configured`);
+      }
+      lines.push(`  extension   — coming soon`);
+      lines.push('', '── PARTICIPANTS ─────────────────────────────────────');
+      const tgSuffix = tgBridge ? ' · telegram' : '';
+      lines.push(`  👤 You         human    console${tgSuffix}`);
+      if (!Object.keys(sessions).length) {
+        lines.push('  (no AI sessions — use /attach or /open)');
+      } else {
+        for (const [name, s] of Object.entries(sessions)) {
+          const emoji = (s.emoji ?? '?') + ' ';
+          const brain = s.brain;
+          const opts = s.options ?? {};
+          let typeLine = '';
+          let locLine = '';
+          if (brain === 'chatgpt-cdp' || brain === 'claude-cdp') {
+            const tab = opts.targetId ? tabsByid.get(opts.targetId) : null;
+            const label = brain === 'chatgpt-cdp' ? 'ChatGPT (web)' : 'Claude (web)';
+            typeLine = label;
+            locLine = tab
+              ? `tab: "${(tab.title ?? '').slice(0, 40)}"  ${tab.url.slice(0, 60)}`
+              : opts.targetId ? `tab: ${opts.targetId.slice(0, 8)}… (not found in Chrome)` : 'no tab bound';
+          } else if (brain === 'ccode') {
+            typeLine = `Claude Code · model: ${opts.model ?? 'default'}`;
+            if (opts.sessionId) typeLine += `  resume: ${opts.sessionId.slice(0, 8)}…`;
+            locLine = `cwd: ${opts.cwd ? dp(opts.cwd) : '(egpt dir)'}`;
+          } else if (brain === 'codex') {
+            typeLine = `Codex · model: ${opts.model ?? 'gpt-4o'} · effort: ${opts.reasoningEffort ?? 'medium'}`;
+            if (opts.thread) typeLine += `  thread: ${opts.thread}`;
+            if (opts.sessionId) typeLine += `  thread: ${opts.sessionId.slice(0, 8)}…`;
+            locLine = `cwd: ${opts.cwd ? dp(opts.cwd) : '(egpt dir)'}`;
+          } else {
+            typeLine = brain;
+          }
+          lines.push(`  ${emoji}${name.padEnd(10)} ${typeLine}`);
+          if (locLine) lines.push(`               ${locLine}`);
+          if (s.bio) lines.push(`               bio: ${s.bio.slice(0, 70)}${s.bio.length > 70 ? '…' : ''}`);
+        }
+      }
+      lines.push('─────────────────────────────────────────────────────');
+      sysOut(lines.join('\n'));
+      return true;
+    }
+    if (cmd === '/prompts') {
+      if (arg === 'on') _showPrompts = true;
+      else if (arg === 'off') _showPrompts = false;
+      else _showPrompts = !_showPrompts;
+      sysOut(`prompt display ${_showPrompts ? 'on — full task text will be shown before each operator turn' : 'off'}`);
       return true;
     }
     if (cmd === '/create-profile') {
@@ -1704,14 +1831,16 @@ function App() {
       const words = parseCommandWords(arg);
       if (!words.length) {
         sysOut([
-          'usage: /browse [via=<op>] <url> [@<session>] ["<instruction>"] [--max <N>] [--keep]',
-          '  via=<op>     delegate to operator — it browses with its own tools',
-          '               result flows to Telegram automatically via normal reply',
-          '  @<session>   inject extracted text into this session (no-via mode only)',
-          '  --max <N>    max chars to extract, default 60000 (no-via mode only)',
-          '  --keep       keep the Chrome tab open after extracting (no-via mode only)',
+          'usage: /browse [via=<op>] [<url>] ["<instruction>"] [@<session>] [--max <N>] [--keep]',
+          '  via=<op>     delegate to operator (CDP automation via browser-tools.mjs)',
+          '               url optional — operator determines where to go if omitted',
+          '               instruction = the task; result flows to Telegram automatically',
+          '  (no via)     egpt opens tab, extracts text, closes it',
+          '               url required; @<session> injects text into that session',
+          '               --max N: max chars (default 60000)  --keep: leave tab open',
           'examples:',
-          '  /browse via=codex1 amazon.com "find cheapest bongo drums: image; price; link"',
+          '  /browse via=codex1 "search google for bongo drum inventors, return 3 results"',
+          '  /browse via=ccode1 amazon.com "find cheapest bongo drums: image; price; link"',
           '  /browse https://en.wikipedia.org/wiki/Bongo_drum @cgpt1 "summarize history"',
         ].join('\n'));
         return true;
@@ -1734,24 +1863,72 @@ function App() {
         browseInstruction.push(w);
       }
       const instruction = browseInstruction.join(' ').trim() || null;
-      if (!browseUrl) { sysOut('!! /browse: missing URL'); return true; }
+      // URL required for direct CDP mode; optional for via=op (operator decides where to go).
+      if (!browseUrl && !viaOp) { sysOut('!! /browse: missing URL (or use via=<op> and let the operator decide)'); return true; }
 
       // ── via=operator mode: delegate the whole task ──────────────────────────
+      // Auto-select operator when via= is omitted but instruction is given (no URL = must be via=op).
+      if (!viaOp && instruction && !browseUrl) {
+        const auto = resolveOperatorSession(null, sessions);
+        if (!auto) {
+          sysOut('!! /browse: no URL given and no operator in room — attach ccode/codex or specify via=<name>');
+          return true;
+        }
+        viaOp = auto;
+        sysOut(`(using operator: ${viaOp})`);
+      }
       if (viaOp) {
-        if (!sessions[viaOp]) { sysOut(`!! /browse: no session named "${viaOp}"`); return true; }
+        viaOp = resolveOperatorSession(viaOp, sessions);
+        if (!viaOp || !sessions[viaOp]) { sysOut(`!! /browse: session "${viaOp ?? '?'}" not found`); return true; }
+        // pathToFileURL gives a valid file:// URL for ES module import on all platforms.
+        const browserToolsUrl = pathToFileURL(join(APP_DIR, 'brains', 'browser-tools.mjs')).href;
         const task = [
-          `[browse task]`,
-          `URL: ${browseUrl}`,
-          instruction ? `\nTask: ${instruction}` : '\nTask: fetch the page and summarize its main content',
-          `\nReturn your answer in plain text suitable for Telegram (no markdown, use line breaks).`,
-          `For images, include the direct image URL on its own line.`,
+          `[browse task — augmented browsing via CDP]`,
+          ``,
+          ...(browseUrl ? [`URL: ${browseUrl}`, ``] : []),
+          `Task: ${instruction ?? 'fetch the page and summarize its main content'}`,
+          ``,
+          `━━ MANDATORY: use the browser-tools CDP library — DO NOT use curl, fetch, or any HTTP client ━━`,
+          `Chrome is running at http://${cdp.cdpHost} with the user's real logged-in session.`,
+          `You MUST write and execute a Node.js script that imports and uses browser-tools.`,
+          ``,
+          `import * as browser from '${browserToolsUrl}';`,
+          ``,
+          `Starter pattern:`,
+          `  const id = await browser.openTab(${browseUrl ? `'${browseUrl}'` : '/* URL from task */'});`,
+          `  await browser.waitForLoad(id);`,
+          `  // interact with the page here`,
+          `  const text = await browser.getText(id);`,
+          `  await browser.closeTab(id);`,
+          ``,
+          `Full API:`,
+          `  browser.openTab(url)                  -> targetId`,
+          `  browser.navigate(id, url)`,
+          `  browser.waitForLoad(id, timeoutMs?)`,
+          `  browser.getText(id, selector?)         -> string`,
+          `  browser.evaluate(id, 'expression')     -> primitive`,
+          `  browser.click(id, 'selector')`,
+          `  browser.type(id, 'selector', 'text')`,
+          `  browser.scroll(id, x, y)`,
+          `  browser.waitForElement(id, 'selector', timeoutMs?)`,
+          `  browser.getUrl(id)  browser.getTitle(id)`,
+          `  browser.closeTab(id)`,
+          `  browser.waitForHuman('message')        — pauses; user acts in browser, types /continue`,
+          ``,
+          `CAPTCHAs / Cloudflare / login / 2FA: call waitForHuman() — user sees a banner and can act.`,
+          ``,
+          `Return plain text suitable for Telegram (no markdown, use newlines).`,
+          `For products: name · price · URL, one per line.`,
         ].join('\n');
-        const note = `[browse via ${viaOp}] ${browseUrl}${instruction ? '\n  ' + instruction : ''}`;
+        const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);
+        if (_showPrompts) {
+          sysOut(`[prompt -> ${viaOp}]\n─────────────────────────────────────────────────────\n${task}\n─────────────────────────────────────────────────────`);
+        }
         setBusy(true);
         try { await runBrainTurn(viaOp, task); }
-        finally { setBusy(false); }
+        finally { setBusy(false); setBrowserWaiting(null); }
         return true;
       }
 
@@ -1778,8 +1955,12 @@ function App() {
         const body = browseResult.text.trim();
         const fullContent = `${header}\n\n${body}`;
 
+        if (chars < 300) {
+          sysOut(`(only ${chars} chars extracted — dynamic/JS-heavy pages need /browse via=<op> to interact)`);
+        }
+
         if (browseTarget) {
-          const note = `[browsed ${browseResult.url} (${chars.toLocaleString()} chars)] → injecting into ${browseTarget}`;
+          const note = `[browsed ${browseResult.url} (${chars.toLocaleString()} chars)] -> injecting into ${browseTarget}`;
           setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
           await append('system', note);
           const isCDP = !!brainForName(sessions[browseTarget]?.brain)?.urlMatch;
@@ -1799,6 +1980,17 @@ function App() {
       } finally {
         setBusy(false);
       }
+      return true;
+    }
+    if (cmd === '/continue') {
+      // Resume an operator that called browser.waitForHuman().
+      // Creates ~/.egpt/browser-continue.txt which browser-tools.mjs polls for.
+      const continueFile = join(EGPT_HOME, 'browser-continue.txt');
+      try { writeFileSync(continueFile, '1', 'utf8'); } catch (e) {
+        sysOut(`!! /continue: ${e.message}`); return true;
+      }
+      setBrowserWaiting(null);
+      sysOut('browser resumed');
       return true;
     }
     if (cmd === '/session') {
@@ -1881,9 +2073,9 @@ function App() {
         [target]: nextSession,
       }));
       await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
-      sysOut(`${target}.sessionId → ${sid}` +
+      sysOut(`${target}.sessionId -> ${sid}` +
              (expandedFromPrefix ? '  (expanded from prefix)' : '') +
-             (cwd ? `\n${target}.cwd → ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
+             (cwd ? `\n${target}.cwd -> ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
              `\n(claude --resume mode active for ${target})`);
       return true;
     }
@@ -1972,7 +2164,7 @@ function App() {
           return text.length > 300 ? text.slice(0, 300) + '…' : text;
         return lines.slice(0, 3).join('\n') + '\n  …\n' + lines.slice(-2).join('\n');
       };
-      sysOut(`mirroring [${source}] → ${targets.join(', ')}\n${mkMirrorPreview(lastBody)}`);
+      sysOut(`mirroring [${source}] -> ${targets.join(', ')}\n${mkMirrorPreview(lastBody)}`);
       setBusy(true);
       try {
         for (const t of targets) {
@@ -2064,7 +2256,7 @@ function App() {
         await ensureSummariesDir();
         const body = `# ${name}\n\n_Saved ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from ${FILE}_\n_Author: ${last.author}_\n\n---\n\n${last.body}\n`;
         await writeFile(summaryPath(name), body);
-        sysOut(`saved → ${dp(summaryPath(name))}\n  (${last.body.length} chars from ${last.author})`);
+        sysOut(`saved -> ${dp(summaryPath(name))}\n  (${last.body.length} chars from ${last.author})`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
@@ -2091,7 +2283,7 @@ function App() {
           '  default scope: all room messages\n' +
           '  default brain: ' + (cmd === '/operator-summarize'
             ? 'fresh ccode subprocess'
-            : 'fresh chatgpt-cdp tab → claude-cdp → fresh ccode') + '\n' +
+            : 'fresh chatgpt-cdp tab -> claude-cdp -> fresh ccode') + '\n' +
           '  saves to ~/.egpt/summaries/<name>.md'
         );
         return true;
@@ -2165,7 +2357,7 @@ function App() {
         const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
         const body = `# ${name}\n\n_Summarized ${stamp} by ${summarizer} from ${FILE}_\n_Scope: ${scopeLabel}${scope === 'last' ? ` (of ${allTurns.length} total)` : ''}_\n\n---\n\n${summary}\n`;
         await writeFile(summaryPath(name), body);
-        sysOut(`saved → ${dp(summaryPath(name))}  (${summary.length} chars)`);
+        sysOut(`saved -> ${dp(summaryPath(name))}  (${summary.length} chars)`);
       } catch (e) {
         setBusy(false);
         sysOut(`!! ${e.message}`);
@@ -2306,6 +2498,25 @@ function App() {
       return true;
     }
     if (cmd === '/sessions') {
+      // /sessions default <name>  — set the default operator session
+      // /sessions default clear   — clear the default
+      const parts = arg.split(/\s+/).filter(Boolean);
+      if (parts[0] === 'default') {
+        const target = parts[1];
+        if (!target || target === 'clear' || target === 'none') {
+          _defaultOp = null;
+          try { unlinkSync(DEFAULT_OP_FILE); } catch {}
+          sysOut('default operator cleared');
+        } else if (!sessions[target]) {
+          sysOut(`!! no session named "${target}"`);
+        } else {
+          _defaultOp = target;
+          try { writeFileSync(DEFAULT_OP_FILE, target, 'utf8'); } catch {}
+          sysOut(`default operator -> ${target} (persisted)`);
+        }
+        return true;
+      }
+
       // Best-effort: if a session has a targetId, look up the live tab title
       // and show that. Falls back to just the targetId if Chrome isn't reachable.
       let tabsByid = new Map();
@@ -2315,6 +2526,7 @@ function App() {
       } catch { /* Chrome not running — that's fine for non-CDP sessions */ }
 
       const rows = Object.entries(sessions).map(([name, s]) => {
+        const star = name === _defaultOp ? '* ' : '  ';
         const emojiPad = (s.emoji ?? '❓') + ' ';
         const namePad = name.padEnd(14);
         const brainPad = s.brain.padEnd(13);
@@ -2322,19 +2534,21 @@ function App() {
         let detail = '';
         if (s.options.targetId) {
           const live = tabsByid.get(s.options.targetId);
-          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${s.options.targetId.slice(0, 8)}…)`;
+          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${s.options.targetId.slice(0, 8)}...)`;
         } else if (s.options.sessionId) {
-          detail = `claude --resume ${s.options.sessionId.slice(0, 8)}…`;
+          const idShort = s.options.sessionId.slice(0, 8) + '...';
+          detail = s.brain === 'codex' ? `thread: ${idShort}` : `claude --resume ${idShort}`;
         } else if (brain?.stateDetail) {
           detail = brain.stateDetail(s.options);
         }
         if (s.options.profileName) {
           detail = [`profile: ${s.options.profileName}`, detail].filter(Boolean).join(' | ');
         }
-        const bio = s.bio ? `\n  bio: ${s.bio}` : '';
-        return `${emojiPad}${namePad}${brainPad}${detail}${bio}`;
+        const bio = s.bio ? `\n     bio: ${s.bio}` : '';
+        return `${star}${emojiPad}${namePad}${brainPad}${detail}${bio}`;
       });
-      sysOut(rows.join('\n') || '(none)');
+      const footer = _defaultOp ? `\n* = default operator (${_defaultOp})  /sessions default clear to unset` : '';
+      sysOut((rows.join('\n') || '(none)') + footer);
       return true;
     }
     if (cmd === '/rooms') {
@@ -2377,7 +2591,7 @@ function App() {
         await mkdir(dir, { recursive: true });
         const roomFile = join(dir, `${roomName}.yaml`);
         await writeFile(roomFile, lines.join('\n') + '\n');
-        sysOut(`room "${roomName}" saved → ${dp(roomFile)}`);
+        sysOut(`room "${roomName}" saved -> ${dp(roomFile)}`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
@@ -2438,7 +2652,7 @@ function App() {
       setSessions(s => ({ ...s, [target]: { ...s[target], emoji } }));
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: 'system',
-        body: `${target} avatar → ${emoji}`,
+        body: `${target} avatar -> ${emoji}`,
       }]);
       await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
       return true;
@@ -2546,7 +2760,7 @@ function App() {
           const emoji = nextEmoji(sessions);
           const options = { cwd: process.cwd() };
           setSessions(s => ({ ...s, [name]: { brain: brainName, options, emoji } }));
-          sysOut(`session "${name}" â†’ ${emoji} ${brainName}` +
+          sysOut(`session "${name}" -> ${emoji} ${brainName}` +
             `\n  cwd: ${options.cwd}` +
             `\n  address it as @${name} for a single-recipient turn`);
           return true;
@@ -2596,8 +2810,8 @@ function App() {
 
       const emoji = nextEmoji(sessions);
       setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options, emoji } }));
-      sysOut(`session "${sessionName}" → ${emoji} ${brainName}` +
-        (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}…)` : '') +
+      sysOut(`session "${sessionName}" -> ${emoji} ${brainName}` +
+        (options.targetId ? ` (tab ${options.targetId.slice(0, 8)}...)` : '') +
         `\n  address it as @${sessionName} for a single-recipient turn`);
       return true;
     }
@@ -2616,13 +2830,13 @@ function App() {
       try {
         const options = {};
         if (brain.homeUrl) {
-          sysOut(`opening tab → ${brain.homeUrl}`);
+          sysOut(`opening tab -> ${brain.homeUrl}`);
           options.targetId = await cdp.openTab(brain.homeUrl);
         }
         const emoji = nextEmoji(sessions);
         setSessions(s => ({ ...s, [sessionName]: { brain: brainName, options, emoji } }));
-        sysOut(`session "${sessionName}" → ${emoji} ${brainName}` +
-          (options.targetId ? ` (target: ${options.targetId.slice(0, 8)}…)` : '') +
+        sysOut(`session "${sessionName}" -> ${emoji} ${brainName}` +
+          (options.targetId ? ` (target: ${options.targetId.slice(0, 8)}...)` : '') +
           `\n  address it as @${sessionName} for a single-recipient turn`);
       } catch (e) {
         sysOut(`!! ${e.message}`);
@@ -2978,6 +3192,11 @@ function App() {
           h(Text, { color: 'gray', dimColor: true },
             `${elapsed}s · Ctrl+R to abort`));
       })(),
+      browserWaiting && h(Box, { flexDirection: 'column', marginTop: 1 },
+        h(Text, { color: 'yellow', bold: true },
+          '⏸  WAITING FOR YOU: ',
+          h(Text, { color: 'white' }, browserWaiting)),
+        h(Text, { color: 'gray', dimColor: true }, '   type /continue when ready')),
       error && h(Text, { color: 'red' }, '!! ' + error),
       !busy && h(Box, { flexDirection: 'column' },
         h(Text, { color: 'gray', dimColor: true },

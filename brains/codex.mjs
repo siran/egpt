@@ -257,6 +257,20 @@ function extractTextEvent(ev) {
 function buildCodexPrompt({ history, message }, options) {
   const text = stripUserPrefix(message);
   const sessionName = options.sessionName ?? 'codex';
+
+  // Task messages (from /browse via=op, /send-file, etc.) need agent/execution framing.
+  // They arrive without a thread and start with a bracketed task marker.
+  if (!options.sessionId && /^\[(?:browse|send-file|file)\s+task\b/i.test(text)) {
+    return [
+      `You are ${sessionName}, a coding agent in an egpt room.`,
+      `Your job: execute the task below. Write Node.js scripts, run them, report results.`,
+      `Reasoning effort: ${codexReasoningEffort(options)}`,
+      `Working directory: ${options.cwd ?? process.cwd()}`,
+      ``,
+      text,
+    ].join('\n');
+  }
+
   if (options.sessionId) {
     return [
       `[${options.userName ?? 'An'}]: ${text}`,
