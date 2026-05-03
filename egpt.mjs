@@ -51,6 +51,25 @@ function resolveOperatorSession(explicit, sessions) {
   return ops.length === 1 ? ops[0][0] : null;
 }
 
+// Load a command prompt template from ~/.egpt/commands/<cmd>.md or APP_DIR/commands/<cmd>.md.
+// Returns { path, body } or null. Strips YAML frontmatter.
+async function loadCommandTemplate(cmdName) {
+  const userPath = join(EGPT_HOME, 'commands', `${cmdName}.md`);
+  const appPath  = join(APP_DIR,   'commands', `${cmdName}.md`);
+  for (const p of [userPath, appPath]) {
+    try {
+      const raw = await readFile(p, 'utf8');
+      const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+      return { path: p, body };
+    } catch {}
+  }
+  return null;
+}
+
+function applyTemplate(body, vars) {
+  return body.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
+}
+
 const BRAINS = {
   [ccode.name]: ccode,
   [codex.name]: codex,
@@ -1576,10 +1595,21 @@ function App() {
       return true;
     }
     if (cmd === '/prompts') {
-      if (arg === 'on') _showPrompts = true;
-      else if (arg === 'off') _showPrompts = false;
-      else _showPrompts = !_showPrompts;
-      sysOut(`prompt display ${_showPrompts ? 'on — full task text will be shown before each operator turn' : 'off'}`);
+      if (arg === 'on')  { _showPrompts = true;  sysOut('prompt display on — full task text shown before each operator turn'); return true; }
+      if (arg === 'off') { _showPrompts = false; sysOut('prompt display off'); return true; }
+      // No arg: show templates
+      const knownCmds = ['browse'];
+      const parts = [`prompt display is ${_showPrompts ? 'ON' : 'OFF'}  (/prompts on|off to toggle)\n`];
+      for (const c of knownCmds) {
+        const tpl = await loadCommandTemplate(c);
+        if (tpl) {
+          parts.push(`── /${c} template ── (${dp(tpl.path)})`);
+          parts.push(tpl.body.length > 1200 ? tpl.body.slice(0, 1200) + '\n...[truncated]' : tpl.body);
+        } else {
+          parts.push(`── /${c} template ── (built-in, no file found)`);
+        }
+      }
+      sysOut(parts.join('\n'));
       return true;
     }
     if (cmd === '/create-profile') {
@@ -1863,63 +1893,79 @@ function App() {
         browseInstruction.push(w);
       }
       const instruction = browseInstruction.join(' ').trim() || null;
-      // URL required for direct CDP mode; optional for via=op (operator decides where to go).
-      if (!browseUrl && !viaOp) { sysOut('!! /browse: missing URL (or use via=<op> and let the operator decide)'); return true; }
 
-      // ── via=operator mode: delegate the whole task ──────────────────────────
-      // Auto-select operator when via= is omitted but instruction is given (no URL = must be via=op).
-      if (!viaOp && instruction && !browseUrl) {
-        const auto = resolveOperatorSession(null, sessions);
-        if (!auto) {
-          sysOut('!! /browse: no URL given and no operator in room — attach ccode/codex or specify via=<name>');
+      // ── resolve or auto-attach operator ────────────────────────────────────
+      // instruction-only (no URL, no via=) always needs an operator
+      let extraSessions = {};
+      if (!browseUrl && !viaOp) {
+        if (!instruction) {
+          sysOut('!! /browse: provide a URL, an instruction, or via=<op>');
           return true;
         }
-        viaOp = auto;
-        sysOut(`(using operator: ${viaOp})`);
+        viaOp = resolveOperatorSession(null, sessions);
+        if (!viaOp) {
+          // No operator in room — auto-attach a new codex session and make it default
+          const name  = nextName('codex', sessions);
+          const emoji = nextEmoji(sessions);
+          const entry = { brain: 'codex', options: { cwd: process.cwd() }, emoji };
+          extraSessions[name] = entry;
+          setSessions(s => ({ ...s, [name]: entry }));
+          _defaultOp = name;
+          try { writeFileSync(DEFAULT_OP_FILE, name, 'utf8'); } catch {}
+          sysOut(`attached ${emoji} ${name} (codex) — new default operator`);
+          viaOp = name;
+        } else {
+          sysOut(`(using operator: ${viaOp})`);
+        }
       }
+
+      // ── via=operator mode: delegate the whole task ──────────────────────────
       if (viaOp) {
-        viaOp = resolveOperatorSession(viaOp, sessions);
-        if (!viaOp || !sessions[viaOp]) { sysOut(`!! /browse: session "${viaOp ?? '?'}" not found`); return true; }
-        // pathToFileURL gives a valid file:// URL for ES module import on all platforms.
+        // Merge any freshly attached sessions so lookups don't depend on React re-render
+        const effectiveSessions = Object.keys(extraSessions).length
+          ? { ...sessions, ...extraSessions }
+          : sessions;
+        viaOp = resolveOperatorSession(viaOp, effectiveSessions);
+        if (!viaOp || !effectiveSessions[viaOp]) {
+          sysOut(`!! /browse: session "${viaOp ?? '?'}" not found`);
+          return true;
+        }
+        // Build task from template (commands/browse.md), falling back to inline
         const browserToolsUrl = pathToFileURL(join(APP_DIR, 'brains', 'browser-tools.mjs')).href;
-        const task = [
-          `[browse task — augmented browsing via CDP]`,
-          ``,
-          ...(browseUrl ? [`URL: ${browseUrl}`, ``] : []),
+        const taskBlock = [
+          ...(browseUrl ? [`URL: ${browseUrl}`, ''] : []),
           `Task: ${instruction ?? 'fetch the page and summarize its main content'}`,
-          ``,
-          `━━ MANDATORY: use the browser-tools CDP library — DO NOT use curl, fetch, or any HTTP client ━━`,
-          `Chrome is running at http://${cdp.cdpHost} with the user's real logged-in session.`,
-          `You MUST write and execute a Node.js script that imports and uses browser-tools.`,
-          ``,
-          `import * as browser from '${browserToolsUrl}';`,
-          ``,
-          `Starter pattern:`,
-          `  const id = await browser.openTab(${browseUrl ? `'${browseUrl}'` : '/* URL from task */'});`,
-          `  await browser.waitForLoad(id);`,
-          `  // interact with the page here`,
-          `  const text = await browser.getText(id);`,
-          `  await browser.closeTab(id);`,
-          ``,
-          `Full API:`,
-          `  browser.openTab(url)                  -> targetId`,
-          `  browser.navigate(id, url)`,
-          `  browser.waitForLoad(id, timeoutMs?)`,
-          `  browser.getText(id, selector?)         -> string`,
-          `  browser.evaluate(id, 'expression')     -> primitive`,
-          `  browser.click(id, 'selector')`,
-          `  browser.type(id, 'selector', 'text')`,
-          `  browser.scroll(id, x, y)`,
-          `  browser.waitForElement(id, 'selector', timeoutMs?)`,
-          `  browser.getUrl(id)  browser.getTitle(id)`,
-          `  browser.closeTab(id)`,
-          `  browser.waitForHuman('message')        — pauses; user acts in browser, types /continue`,
-          ``,
-          `CAPTCHAs / Cloudflare / login / 2FA: call waitForHuman() — user sees a banner and can act.`,
-          ``,
-          `Return plain text suitable for Telegram (no markdown, use newlines).`,
-          `For products: name · price · URL, one per line.`,
         ].join('\n');
+        const tplVars = {
+          task_block:        taskBlock,
+          cdp_host:          cdp.cdpHost,
+          browser_tools_url: browserToolsUrl,
+          url_arg:           browseUrl ? `'${browseUrl}'` : '/* URL from task */',
+        };
+        const tpl = await loadCommandTemplate('browse');
+        const task = tpl
+          ? applyTemplate(tpl.body, tplVars)
+          : [
+              `[browse task — augmented browsing via CDP]`,
+              ``,
+              taskBlock,
+              ``,
+              `━━ MANDATORY: use the browser-tools CDP library — DO NOT use curl, fetch, or any HTTP client ━━`,
+              `Chrome is running at http://${cdp.cdpHost} with the user's real logged-in session.`,
+              `You MUST write and execute a Node.js script that imports and uses browser-tools.`,
+              ``,
+              `import * as browser from '${browserToolsUrl}';`,
+              ``,
+              `Starter pattern:`,
+              `  const id = await browser.openTab(${browseUrl ? `'${browseUrl}'` : '/* URL from task */'});`,
+              `  await browser.waitForLoad(id);`,
+              `  // interact with the page here`,
+              `  const text = await browser.getText(id);`,
+              `  await browser.closeTab(id);`,
+              ``,
+              `Return plain text suitable for Telegram (no markdown, use newlines).`,
+              `For products: name · price · URL, one per line.`,
+            ].join('\n');
         const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);
@@ -1927,7 +1973,7 @@ function App() {
           sysOut(`[prompt -> ${viaOp}]\n─────────────────────────────────────────────────────\n${task}\n─────────────────────────────────────────────────────`);
         }
         setBusy(true);
-        try { await runBrainTurn(viaOp, task); }
+        try { await runBrainTurn(viaOp, task, effectiveSessions); }
         finally { setBusy(false); setBrowserWaiting(null); }
         return true;
       }
