@@ -3199,8 +3199,8 @@ function App() {
                 const dash = line.indexOf(' — ');
                 if (dash > 0) return h(Text, { key: i },
                   h(Text, { color: 'yellow' }, line.slice(0, dash)),
-                  h(Text, { color: 'gray', dimColor: true }, ' — '),
-                  h(Text, {}, line.slice(dash + 3)));
+                  h(Text, { color: 'cyan' }, ' — '),
+                  h(Text, { color: 'white' }, line.slice(dash + 3)));
                 return h(Text, { key: i, color: 'yellow' }, line);
               }))
           : h(Text, { italic: isSystem, dimColor: isSystem }, item.body));
