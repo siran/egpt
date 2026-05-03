@@ -893,6 +893,7 @@ async function resolveTabId(spec, brain = null) {
 // Override with EGPT_USER_NAME if you're not An.
 const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
 const USER_EMOJI = '👤';
+const EGPT_EMOJI = '🧠';
 
 // Visual avatars for sessions. Auto-assigned on session creation; users can
 // rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
@@ -914,7 +915,7 @@ const escapeHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '
 // system messages render in italic, user/sessions get an emoji + bold name.
 function formatItemForTelegram(item, sessions) {
   const body = escapeHtml(item.body);
-  if (item.author === 'system') return `<i>${body}</i>`;
+  if (item.author === 'system') return `${EGPT_EMOJI} <i>${body}</i>`;
   if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${body}`;
   const sess = sessions[item.author];
   const emoji = sess?.emoji ?? '❓';
@@ -1272,71 +1273,64 @@ function App() {
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/file') { sysOut(FILE); return true; }
     if (cmd === '/help') {
-      sysOut(
-        '/exit · /file · /help\n\n' +
-        'egpt is the room itself. The room can be empty (zombie mode):\n' +
-        '  most slash commands work without a brain — file ops, session\n' +
-        '  management, summaries, browser lifecycle. Only sending a chat\n' +
-        '  message needs at least one participant.\n\n' +
-        'Sessions (named participants in the room — every participant is equal):\n' +
-        '  Auto-naming: cgpt1, claude1, ccode1, codex1 ... per brain.\n' +
-        '  Names are auto-generated on /open, /attach. At startup egpt scans\n' +
-        '  Chrome and auto-attaches every matching tab.\n\n' +
-        '/open <brain> [name]            open a fresh tab + register session\n' +
-        '/profiles                       list YAML brain profiles\n' +
-        '/profile <name> <urlOrId>        create a ChatGPT/Claude URL profile\n' +
-        '                                (also accepts /profile <urlOrId> <name>)\n' +
-        '/attach <profile>               start a configured brain profile\n' +
-        '/attach                         re-scan Chrome, attach any new tabs\n' +
-        '/attach <brain>                 attach CDP tabs or create a local session\n' +
-        '/attach <brain> <name> [tab]    explicit attach to a specific tab\n' +
-        '/sessions                       list registered sessions\n' +
-        '/detach <session>               remove from room (brain keeps running)\n' +
-        '/handle <old> <new>             rename a session (keeps brain + emoji)\n' +
-        '/emoji [<name> <emoji>]         show/set a session\'s avatar emoji\n' +
-        '/bio [<name> [<text>]]          show/set a session\'s bio (echoed in room)\n\n' +
-        'Browser brains:\n' +
-        '/tabs [all]                     list pages in brain Chrome (chrome:// hidden)\n' +
-        '/brain [status|stop]            brain Chrome lifecycle (CDP-based)\n' +
-        '/refresh [<session-name>]       re-poll CDP tab; append latest assistant text\n' +
-        '                                (use when streaming was cut off)\n' +
-        '/send-file [via=<op>] [<path>] @<session> ["<instruction>"]\n' +
-        '                                prepare excerpt, or send prepared file\n' +
-        '/paste-file <session> <path>     paste a local file/excerpt into one session\n' +
-        '                                use --before/--after/--ask; quote spaces\n' +
-        '/mirror [<source>] [<target>]   push a session\'s last reply into another\n' +
-        '                                session\'s tab (default: last reply → all\n' +
-        '                                other CDPs — useful after an operator output)\n\n' +
-        'Local brains/operators:\n' +
-        '/history [N]                    list recent ccode/Claude Code sessions on disk\n' +
-        '                                (newest first; default 10)\n' +
-        '/session [<id>]                 continue a ccode session via claude --resume\n' +
-        '                                (cwd auto-detected from the JSONL)\n' +
-        '/session <id> <cwd>             explicit cwd if auto-detection fails\n' +
-        '/session none                   back to stateless mode (re-reads file each turn)\n' +
-        '@codex exec: <command>          run a shell command in codex\'s cwd\n' +
-        '@codex exec: cd <dir>           change codex\'s persistent cwd\n' +
-        '                                /sessions shows Codex thread/log/effort\n\n' +
-        'Conversation:\n' +
-        '/rules                          write room rules into file (silence, @, politeness)\n' +
-        '/last [N]                       show last N messages from the file (default 10)\n' +
-        '<message>                       broadcasts to every session in the room. Each\n' +
-        '                                may reply or stay silent ("...") per /rules.\n' +
-        '                                Replies among CDP brains mirror once to other\n' +
-        '                                CDP tabs so all see all.\n' +
-        '@<name> <message>               single recipient for this turn (logged in the\n' +
-        '                                .md but only injected into that brain\'s tab)\n\n' +
-        'Reusable distillations (~/.egpt/summaries/<name>.md):\n' +
-        '/save <name>                    save the latest non-system message verbatim\n' +
-        '/summarize [all|last N] <name> [brain]\n' +
-        '                                a FRESH agent reads the room and writes a summary;\n' +
-        '                                default: fresh chatgpt-cdp tab if Chrome is running\n' +
-        '/cdp-summarize ...              same as /summarize but force CDP\n' +
-        '/operator-summarize ...         force fresh ccode subprocess (no Chrome)\n' +
-        '/summaries · /list-saved        list saved summaries\n' +
-        '/inject <name> [session]        drop a saved summary into the room or one session\n\n' +
-        'tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix\n' +
-        'Brains: ' + brainNamesForHelp());
+      sysOut([
+        '── ROOM ─────────────────────────────────────────────',
+        '<message>          broadcast to every session (each may reply or send "...")',
+        '@<name> <message>  address one session only (still logged in the .md)',
+        '/rules             write room rules into the file (silence, @, politeness)',
+        '/last [N]          tail N messages from the file (default 10)',
+        '/file              show current conversation file path',
+        '/exit              quit egpt',
+        '',
+        '── SESSIONS ─────────────────────────────────────────',
+        '/sessions          list active sessions with emoji, brain, tab/thread',
+        '/open <brain> [name]               open a fresh tab + register session',
+        '/attach                            re-scan Chrome, attach new tabs',
+        '/attach <brain> [name] [tabSpec]   attach specific brain/tab',
+        '/attach <profile>                  start a YAML brain profile',
+        '/detach <name>     remove from room (brain keeps running)',
+        '/handle <old> <new>                rename a session',
+        '/emoji [<name> <emoji>]            show/set avatar emoji',
+        '/bio [<name> [text]]               show/set session bio (echoed in room)',
+        '',
+        '── BRAIN PROFILES (~/.egpt/brains/*.yaml) ───────────',
+        '/profiles          list all YAML profiles',
+        '/profile <name> <url-or-id>        create profile from ChatGPT/Claude URL',
+        'Profile fields: name · type (codex|ccode|cdp_chat|cdp_claude)',
+        '                model · effort (low|medium|high) · cwd',
+        '                chat_name · summary (thread name for codex)',
+        '',
+        '── BROWSER BRAINS (CDP) ─────────────────────────────',
+        '/brain [status|stop]               Chrome lifecycle',
+        '/tabs [all]        list pages in brain Chrome',
+        '/refresh [<name>]  re-poll tab, append latest text (use if stream cut off)',
+        '/mirror [<src>] [<tgt>]            push last reply into another tab',
+        '                   default: last reply → all other CDP tabs',
+        '/send-file [via=<op>] [<path>] @<session> ["<instruction>"] [--ask "<q>"]',
+        '                   operator prepares/excerpts file, pastes into session',
+        '/paste-file <session> <path> [--before/--after/--ask "<q>"]',
+        '                   paste raw file or excerpt directly (no operator)',
+        '',
+        '── OPERATORS (local CLI: ccode / codex) ─────────────',
+        '/history [N]       list recent ccode sessions on disk (default 10)',
+        '/session [<id>]    resume a ccode session (cwd auto-detected)',
+        '/session <id> <cwd>                explicit cwd override',
+        '/session none      back to stateless mode',
+        '@codex exec: <cmd> run a shell command in codex\'s cwd',
+        '@codex exec: cd <dir>              change codex\'s persistent cwd',
+        '',
+        '── SUMMARIES (~/.egpt/summaries/) ───────────────────',
+        '/summarize [all|last N] <name> [brain]',
+        '                   fresh agent reads room, writes summary',
+        '/save <name>       save latest non-system message verbatim',
+        '/summaries         list saved summaries  (alias: /list-saved)',
+        '/inject <name> [session]           drop summary into room or one session',
+        '',
+        '── REFERENCE ────────────────────────────────────────',
+        'tabSpec: full URL · UUID · targetId · 6+ char prefix',
+        'Brains:  ' + brainNamesForHelp(),
+        '─────────────────────────────────────────────────────',
+      ].join('\n'));
       return true;
     }
     if (cmd === '/profiles' || cmd === '/brain-profiles') {
@@ -2615,7 +2609,7 @@ function App() {
       const isSystem = item.author === 'system';
       const isUser = item.author === 'You';
       const sess = sessions[item.author];
-      const emoji = isSystem ? 'ℹ️ ' : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
+      const emoji = isSystem ? `${EGPT_EMOJI} ` : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
       const label = isUser ? USER_NAME : item.author;
       const time = fmtTs(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
@@ -2625,7 +2619,7 @@ function App() {
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
-        h(Text, { color: 'cyan', bold: true }, 'egpt'),
+        h(Text, { color: 'cyan', bold: true }, `${EGPT_EMOJI} egpt`),
         h(Text, { color: 'gray' }, `  ${basename(FILE)}  `),
         h(Text, { color: 'gray', dimColor: true },
           Object.keys(sessions).length

@@ -57,6 +57,11 @@ export function startTelegramBridge({
   }
 
   async function pollLoop() {
+    // Clear any stale webhook before long-polling. A set webhook causes Telegram
+    // to return 409 Conflict on every getUpdates call.
+    try {
+      await fetch(`${TG_BASE}${botToken}/deleteWebhook`, { method: 'POST' });
+    } catch {}
     log('telegram bridge: polling started');
     while (!stopped) {
       try {
