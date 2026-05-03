@@ -1,0 +1,20 @@
+{
+  "authorYou":       "yellowBright",
+  "authorSystem":    "redBright",
+  "authorBrain":     "yellowBright",
+  "meta":            "yellow",
+  "systemBody":      "yellow",
+  "helpSeparator":   "redBright",
+  "helpCommand":     "yellowBright",
+  "helpDash":        "red",
+  "helpDescription": "white",
+  "helpIndent":      "yellow",
+  "statusBrand":     "redBright",
+  "statusFile":      "yellow",
+  "statusSessions":  "yellowBright",
+  "streamingStats":  "yellow",
+  "spinnerLabel":    "redBright",
+  "spinnerElapsed":  "yellow",
+  "hint":            "yellow",
+  "error":           "red"
+}
