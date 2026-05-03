@@ -3170,7 +3170,7 @@ function App() {
   submitRef.current = submit;
 
   const color = a =>
-    a === 'You' ? 'cyan' : a === 'system' ? 'magenta' : 'green';
+    a === 'You' ? 'cyanBright' : a === 'system' ? 'magentaBright' : 'greenBright';
 
   return h(Fragment, null,
     h(Static, { items }, item => {
@@ -3178,38 +3178,38 @@ function App() {
       const isUser = item.author === 'You';
       const sess = sessions[item.author];
       const emoji = isSystem ? `${EGPT_EMOJI} ` : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
-      const label = isUser ? USER_NAME : item.author;
+      const label = isUser ? USER_NAME : isSystem ? 'egpt' : item.author;
       const time = fmtTs(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
           item._thinking
-            ? h(Text, { color: 'cyan' }, '(thinking…)')
-            : h(Text, { color: 'cyan' }, `(${time})`)),
+            ? h(Text, { color: 'cyanBright' }, '(thinking…)')
+            : h(Text, { color: 'cyanBright' }, `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
-              h(Text, { color: 'cyan' }, '  ╌╌╌'))
+              h(Text, { color: 'cyanBright' }, '  ╌╌╌'))
           : item._bright
           ? h(Box, { flexDirection: 'column' },
               ...item.body.split('\n').map((line, i) => {
-                if (/^──/.test(line)) return h(Text, { key: i, color: 'cyan', bold: true }, line);
+                if (/^──/.test(line)) return h(Text, { key: i, color: 'cyanBright', bold: true }, line);
                 if (line === '') return h(Text, { key: i }, ' ');
-                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'blue' }, line);
+                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'blueBright' }, line);
                 const dash = line.indexOf(' — ');
                 if (dash > 0) return h(Text, { key: i },
-                  h(Text, { color: 'yellow' }, line.slice(0, dash)),
-                  h(Text, { color: 'cyan' }, ' — '),
+                  h(Text, { color: 'yellowBright' }, line.slice(0, dash)),
+                  h(Text, { color: 'cyanBright' }, ' — '),
                   h(Text, { color: 'white' }, line.slice(dash + 3)));
-                return h(Text, { key: i, color: 'yellow' }, line);
+                return h(Text, { key: i, color: 'yellowBright' }, line);
               }))
-          : h(Text, { italic: isSystem }, item.body));
+          : h(Text, { italic: isSystem, color: isSystem ? 'cyan' : undefined }, item.body));
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
-        h(Text, { color: 'cyan', bold: true }, `${EGPT_EMOJI} egpt`),
-        h(Text, { color: 'blue' }, `  ${basename(FILE)}  `),
-        h(Text, { color: 'cyan' },
+        h(Text, { color: 'cyanBright', bold: true }, `${EGPT_EMOJI} egpt`),
+        h(Text, { color: 'blueBright' }, `  ${basename(FILE)}  `),
+        h(Text, { color: 'cyanBright' },
           Object.keys(sessions).length
             ? Object.entries(sessions).map(([n, s]) => `${s.emoji ?? ''}${n}`).join(' ')
             : '(empty room)')),
@@ -3223,11 +3223,11 @@ function App() {
         const charCount = streaming.text.length;
         const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         return h(Box, { flexDirection: 'column', marginTop: 1 },
-          h(Text, { color: 'green', bold: true },
+          h(Text, { color: 'greenBright', bold: true },
             `${sessions[streaming.author]?.emoji ? sessions[streaming.author].emoji + ' ' : ''}${streaming.author}  `,
-            h(Text, { color: 'blue' },
+            h(Text, { color: 'blueBright' },
               `(${charCount} chars · ${elapsed}s · Ctrl+R to abort)`)),
-          hidden > 0 && h(Text, { color: 'blue' },
+          hidden > 0 && h(Text, { color: 'blueBright' },
             `… ${hidden} earlier line${hidden > 1 ? 's' : ''} hidden …`),
           h(Text, null, tail + '▎'));
       })(),
@@ -3237,19 +3237,19 @@ function App() {
         const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
         const ch = SPIN[Math.floor(now / 100) % SPIN.length];
-        return h(Text, { color: 'yellow' },
+        return h(Text, { color: 'yellowBright' },
           `${ch} thinking… `,
-          h(Text, { color: 'cyan' },
+          h(Text, { color: 'cyanBright' },
             `${elapsed}s · Ctrl+R to abort`));
       })(),
       browserWaiting && h(Box, { flexDirection: 'column', marginTop: 1 },
-        h(Text, { color: 'yellow', bold: true },
+        h(Text, { color: 'yellowBright', bold: true },
           '⏸  WAITING FOR YOU: ',
           h(Text, { color: 'white' }, browserWaiting)),
-        h(Text, { color: 'blue' }, '   type /continue when ready')),
+        h(Text, { color: 'blueBright' }, '   type /continue when ready')),
       error && h(Text, { color: 'red' }, '!! ' + error),
       !busy && h(Box, { flexDirection: 'column' },
-        h(Text, { color: 'blue' },
+        h(Text, { color: 'blueBright' },
           'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
         h(MultiLineInput, { onSubmit: submit }))));
 }
