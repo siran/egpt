@@ -1,0 +1,20 @@
+{
+  "authorYou":       "cyanBright",
+  "authorSystem":    "magentaBright",
+  "authorBrain":     "greenBright",
+  "meta":            "cyanBright",
+  "systemBody":      "cyan",
+  "helpSeparator":   "cyanBright",
+  "helpCommand":     "yellowBright",
+  "helpDash":        "cyanBright",
+  "helpDescription": "white",
+  "helpIndent":      "blueBright",
+  "statusBrand":     "cyanBright",
+  "statusFile":      "blueBright",
+  "statusSessions":  "cyanBright",
+  "streamingStats":  "blueBright",
+  "spinnerLabel":    "yellowBright",
+  "spinnerElapsed":  "cyanBright",
+  "hint":            "blueBright",
+  "error":           "red"
+}

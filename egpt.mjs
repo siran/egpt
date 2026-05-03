@@ -16,6 +16,7 @@ import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './tools/cdp.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
+import { loadTheme } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
@@ -25,6 +26,7 @@ const EGPT_HOME = join(homedir(), '.egpt');
 // Load ~/.egpt/config.json synchronously at startup (small file, read once).
 let EGPT_CONFIG = {};
 try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
+const T = loadTheme(EGPT_CONFIG.theme ?? 'default');
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
@@ -3170,7 +3172,7 @@ function App() {
   submitRef.current = submit;
 
   const color = a =>
-    a === 'You' ? 'cyanBright' : a === 'system' ? 'magentaBright' : 'greenBright';
+    a === 'You' ? T.authorYou : a === 'system' ? T.authorSystem : T.authorBrain;
 
   return h(Fragment, null,
     h(Static, { items }, item => {
@@ -3184,32 +3186,32 @@ function App() {
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
           item._thinking
-            ? h(Text, { color: 'cyanBright' }, '(thinking…)')
-            : h(Text, { color: 'cyanBright' }, `(${time})`)),
+            ? h(Text, { color: T.meta }, '(thinking…)')
+            : h(Text, { color: T.meta }, `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
-              h(Text, { color: 'cyanBright' }, '  ╌╌╌'))
+              h(Text, { color: T.meta }, '  ╌╌╌'))
           : item._bright
           ? h(Box, { flexDirection: 'column' },
               ...item.body.split('\n').map((line, i) => {
-                if (/^──/.test(line)) return h(Text, { key: i, color: 'cyanBright', bold: true }, line);
+                if (/^──/.test(line)) return h(Text, { key: i, color: T.helpSeparator, bold: true }, line);
                 if (line === '') return h(Text, { key: i }, ' ');
-                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: 'blueBright' }, line);
+                if (/^\s{2,}/.test(line)) return h(Text, { key: i, color: T.helpIndent }, line);
                 const dash = line.indexOf(' — ');
                 if (dash > 0) return h(Text, { key: i },
-                  h(Text, { color: 'yellowBright' }, line.slice(0, dash)),
-                  h(Text, { color: 'cyanBright' }, ' — '),
-                  h(Text, { color: 'white' }, line.slice(dash + 3)));
-                return h(Text, { key: i, color: 'yellowBright' }, line);
+                  h(Text, { color: T.helpCommand }, line.slice(0, dash)),
+                  h(Text, { color: T.helpDash }, ' — '),
+                  h(Text, { color: T.helpDescription }, line.slice(dash + 3)));
+                return h(Text, { key: i, color: T.helpCommand }, line);
               }))
-          : h(Text, { italic: isSystem, color: isSystem ? 'cyan' : undefined }, item.body));
+          : h(Text, { italic: isSystem, color: isSystem ? T.systemBody : undefined }, item.body));
     }),
     h(Box, { flexDirection: 'column', marginTop: 1 },
       h(Text, null,
-        h(Text, { color: 'cyanBright', bold: true }, `${EGPT_EMOJI} egpt`),
-        h(Text, { color: 'blueBright' }, `  ${basename(FILE)}  `),
-        h(Text, { color: 'cyanBright' },
+        h(Text, { color: T.statusBrand, bold: true }, `${EGPT_EMOJI} egpt`),
+        h(Text, { color: T.statusFile }, `  ${basename(FILE)}  `),
+        h(Text, { color: T.statusSessions },
           Object.keys(sessions).length
             ? Object.entries(sessions).map(([n, s]) => `${s.emoji ?? ''}${n}`).join(' ')
             : '(empty room)')),
@@ -3223,11 +3225,11 @@ function App() {
         const charCount = streaming.text.length;
         const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         return h(Box, { flexDirection: 'column', marginTop: 1 },
-          h(Text, { color: 'greenBright', bold: true },
+          h(Text, { color: T.authorBrain, bold: true },
             `${sessions[streaming.author]?.emoji ? sessions[streaming.author].emoji + ' ' : ''}${streaming.author}  `,
-            h(Text, { color: 'blueBright' },
+            h(Text, { color: T.streamingStats },
               `(${charCount} chars · ${elapsed}s · Ctrl+R to abort)`)),
-          hidden > 0 && h(Text, { color: 'blueBright' },
+          hidden > 0 && h(Text, { color: T.streamingStats },
             `… ${hidden} earlier line${hidden > 1 ? 's' : ''} hidden …`),
           h(Text, null, tail + '▎'));
       })(),
@@ -3237,19 +3239,19 @@ function App() {
         const elapsed = busyStart ? ((now - busyStart) / 1000).toFixed(1) : '0.0';
         const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
         const ch = SPIN[Math.floor(now / 100) % SPIN.length];
-        return h(Text, { color: 'yellowBright' },
+        return h(Text, { color: T.spinnerLabel },
           `${ch} thinking… `,
-          h(Text, { color: 'cyanBright' },
+          h(Text, { color: T.spinnerElapsed },
             `${elapsed}s · Ctrl+R to abort`));
       })(),
       browserWaiting && h(Box, { flexDirection: 'column', marginTop: 1 },
-        h(Text, { color: 'yellowBright', bold: true },
+        h(Text, { color: T.spinnerLabel, bold: true },
           '⏸  WAITING FOR YOU: ',
           h(Text, { color: 'white' }, browserWaiting)),
-        h(Text, { color: 'blueBright' }, '   type /continue when ready')),
-      error && h(Text, { color: 'red' }, '!! ' + error),
+        h(Text, { color: T.hint }, '   type /continue when ready')),
+      error && h(Text, { color: T.error }, '!! ' + error),
       !busy && h(Box, { flexDirection: 'column' },
-        h(Text, { color: 'blueBright' },
+        h(Text, { color: T.hint },
           'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
         h(MultiLineInput, { onSubmit: submit }))));
 }
