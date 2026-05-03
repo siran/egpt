@@ -1110,9 +1110,10 @@ function App() {
         onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
       });
       bridgeRef.current = bridge;
+      _globalBridge = bridge;
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
     })();
-    return () => bridge?.stop();
+    return () => { bridge?.stop(); _globalBridge = null; };
   }, []);
 
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
@@ -2864,6 +2865,15 @@ function App() {
         h(MultiLineInput, { onSubmit: submit }))));
 }
 
+// Module-level bridge reference so SIGINT/SIGHUP handlers can abort the
+// long-poll fetch immediately, preventing orphaned egpt processes.
+let _globalBridge = null;
+const _exitClean = (code = 0) => { _globalBridge?.stop(); process.exit(code); };
+process.on('SIGINT',  () => _exitClean(0));
+process.on('SIGHUP',  () => _exitClean(0));
+process.on('SIGTERM', () => _exitClean(0));
+
 console.log(`egpt | ${FILE}`);
 console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
-render(h(App));
+render(h(App), { exitOnCtrlC: false });
+process.on('exit', () => _globalBridge?.stop());

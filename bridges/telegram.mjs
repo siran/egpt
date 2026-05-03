@@ -11,7 +11,10 @@
 //                      until the first incoming, then sends to that chat.
 
 const TG_BASE = 'https://api.telegram.org/bot';
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms, signal) => new Promise((r, j) => {
+  const t = setTimeout(r, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(t); j(new DOMException('aborted', 'AbortError')); }, { once: true });
+});
 
 export function startTelegramBridge({
   botToken,
@@ -24,6 +27,7 @@ export function startTelegramBridge({
   if (!botToken) throw new Error('telegram bridge: bot_token is required');
 
   let stopped = false;
+  const stopController = new AbortController();
   let lastUpdateId = 0;
   let lastSeenChat = chatId;
   // Sequential send chain so messages arrive on Telegram in the order
@@ -63,29 +67,30 @@ export function startTelegramBridge({
       await fetch(`${TG_BASE}${botToken}/deleteWebhook`, { method: 'POST' });
     } catch {}
     log('telegram bridge: polling started');
+    const sig = stopController.signal;
     while (!stopped) {
       try {
         // Long-polling: timeout=25 keeps the connection open up to 25s
         // waiting for new updates. Cheap, near-instant delivery.
         const url = `${TG_BASE}${botToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=25`;
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: sig });
         if (!res.ok) {
           if (res.status === 409) {
             // 409 Conflict = another getUpdates call is in flight (restarted too
             // fast) or a webhook is set. Wait 35s > the 25s long-poll timeout so
             // the old request expires, then retry.
             err('getUpdates 409 — another instance running or stale webhook. Waiting 35s…');
-            await sleep(35000);
+            await sleep(35000, sig);
           } else {
             err(`getUpdates HTTP ${res.status}`);
-            await sleep(5000);
+            await sleep(5000, sig);
           }
           continue;
         }
         const data = await res.json();
         if (!data.ok) {
           err(`getUpdates error: ${data.description}`);
-          await sleep(5000);
+          await sleep(5000, sig);
           continue;
         }
         for (const update of data.result) {
@@ -109,8 +114,9 @@ export function startTelegramBridge({
           }
         }
       } catch (e) {
+        if (e.name === 'AbortError') break;
         err(`poll error: ${e.message}`);
-        await sleep(5000);
+        await sleep(5000, sig);
       }
     }
     log('telegram bridge: polling stopped');
@@ -204,7 +210,7 @@ export function startTelegramBridge({
         .catch(e => err(`send failed: ${e.message}`));
     },
     startStreamMessage,
-    stop() { stopped = true; },
+    stop() { stopped = true; stopController.abort(); },
     get chatId() { return lastSeenChat; },
   };
 }
