@@ -97,17 +97,17 @@ export function startTelegramBridge({
           lastUpdateId = update.update_id;
           const msg = update.message ?? update.edited_message;
           if (!msg || !msg.text) continue;
-          if (allowedUsers.length > 0 && !allowedUsers.includes(msg.from.id)) {
-            log(`ignored message from unauthorized user ${msg.from.id} (${msg.from.username || msg.from.first_name})`);
-            continue;
-          }
           lastSeenChat = msg.chat.id;
+          // authorized = user is in the allowedUsers list.
+          // Empty allowedUsers means nobody is authorized (secure default).
+          const authorized = allowedUsers.length > 0 && allowedUsers.includes(msg.from.id);
           try {
             await onIncoming(msg.text, {
               userId: msg.from.id,
               username: msg.from.username,
               firstName: msg.from.first_name,
               chatId: msg.chat.id,
+              authorized,
             });
           } catch (e) {
             err(`onIncoming threw: ${e.message}`);

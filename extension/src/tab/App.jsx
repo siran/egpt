@@ -68,15 +68,39 @@ export default function App() {
 
   // ── incoming Telegram messages ────────────────────────────────
 
-  const handleIncoming = useCallback((text, meta) => {
-    const author = meta.username ?? meta.firstName ?? 'human';
+  const handleIncoming = useCallback(async (text, meta) => {
+    const author = meta.username ? `@${meta.username}` : (meta.firstName ?? 'human');
     appendMsg(author, text);
 
-    const m = text.match(/^@(\S+)\s+([\s\S]*)$/);
-    if (!m) return;
-    const [, name, prompt] = m;
-    if (sessionsRef.current.has(name)) runBrain(name, prompt);
-  }, [appendMsg, runBrain]);
+    const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+
+    if (isCommand && !meta.authorized) {
+      bridgeRef.current?.send(
+        `${author} (${meta.userId}) is not authorized to emit commands or mentions`
+      );
+      return;
+    }
+
+    if (isCommand) {
+      const m = text.match(/^@(\S+)\s+([\s\S]*)$/);
+      if (m) {
+        const [, name, prompt] = m;
+        if (sessionsRef.current.has(name)) runBrain(name, prompt);
+      }
+      return;
+    }
+
+    // Plain message — check mirror setting
+    const { telegram } = await chrome.storage.sync.get('telegram');
+    const mirror = telegram?.mirror ?? 'none';
+    const canMirror =
+      mirror === 'all' ||
+      (mirror === 'allowed' && meta.authorized);
+
+    if (canMirror && activeSession) {
+      runBrain(activeSession, text);
+    }
+  }, [appendMsg, runBrain, activeSession]);
 
   const handleIncomingRef = useRef(handleIncoming);
   handleIncomingRef.current = handleIncoming;

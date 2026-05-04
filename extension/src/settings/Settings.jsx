@@ -11,6 +11,7 @@ export default function Settings() {
   const [botToken,     setBotToken]     = useState('');
   const [chatId,       setChatId]       = useState('');
   const [allowedUsers, setAllowedUsers] = useState('');
+  const [mirror,       setMirror]       = useState('none');
   const [status,       setStatus]       = useState(null); // 'saved' | 'error:<msg>'
 
   useEffect(() => {
@@ -19,6 +20,7 @@ export default function Settings() {
       if (cfg.theme)                 setTheme(cfg.theme);
       if (cfg.telegram?.bot_token)   setBotToken(cfg.telegram.bot_token);
       if (cfg.telegram?.chat_id)     setChatId(String(cfg.telegram.chat_id));
+      if (cfg.telegram?.mirror)      setMirror(cfg.telegram.mirror);
       if (cfg.telegram?.allowed_users?.length)
         setAllowedUsers(cfg.telegram.allowed_users.join(', '));
     });
@@ -43,6 +45,7 @@ export default function Settings() {
             .map(s => { const n = Number(s.trim()); return isNaN(n) ? s.trim() : n; })
             .filter(Boolean);
         }
+        telegram.mirror = mirror;
         update.telegram = telegram;
       } else {
         // Clear telegram if token removed
@@ -106,13 +109,23 @@ export default function Settings() {
         </Field>
         <Field
           label="Allowed user IDs"
-          hint="Comma-separated Telegram numeric user IDs. Leave empty to allow anyone who can reach the bot."
+          hint="Comma-separated Telegram numeric user IDs who may issue /commands and @mentions. Empty = nobody authorized (secure default)."
         >
           <input
             value={allowedUsers}
             onChange={e => setAllowedUsers(e.target.value)}
             placeholder="123456789, 987654321"
           />
+        </Field>
+        <Field
+          label="Mirror plain messages to brain"
+          hint="When a plain message (no @mention or /command) arrives, forward it to the active session."
+        >
+          <select value={mirror} onChange={e => setMirror(e.target.value)}>
+            <option value="none">None — @mentions and /commands only</option>
+            <option value="allowed">Allowed users only</option>
+            <option value="all">Everyone</option>
+          </select>
         </Field>
       </section>
 

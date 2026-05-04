@@ -1159,16 +1159,26 @@ function App() {
         allowedUsers: cfg.telegram.allowed_users ?? [],
         chatId: cfg.telegram.chat_id ?? null,
         onIncoming: async (text, from) => {
-          const who = from.username || from.firstName || `tg:${from.userId}`;
-          // Local-only system note so the shell viewer sees Telegram traffic
-          // arriving. Tagged so it isn't echoed back to the Telegram user
-          // (they sent the message; they don't need to see the arrival
-          // notification).
+          const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'system',
             body: `(telegram message from ${who}) -> ${text}`,
             _localOnly: true,
           }]);
+
+          const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+
+          if (isCommand && !from.authorized) {
+            bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`);
+            return;
+          }
+
+          if (!isCommand) {
+            const mirror = cfg.telegram?.mirror ?? 'none';
+            const canMirror = mirror === 'all' || (mirror === 'allowed' && from.authorized);
+            if (!canMirror) return;
+          }
+
           if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
         },
         onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
