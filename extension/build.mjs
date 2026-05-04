@@ -28,13 +28,13 @@ const shared = {
   logLevel: 'info',
 };
 
-mkdirSync(resolve(__dirname, 'dist/tab'), { recursive: true });
+mkdirSync(resolve(__dirname, 'dist/tab'),      { recursive: true });
+mkdirSync(resolve(__dirname, 'dist/settings'), { recursive: true });
 
 await build({
   ...shared,
   entryPoints: [resolve(__dirname, 'src/background.js')],
   outfile: resolve(__dirname, 'dist/background.js'),
-  // background SW doesn't need React
   external: [],
 });
 
@@ -44,15 +44,21 @@ await build({
   outfile: resolve(__dirname, 'dist/tab/app.js'),
 });
 
+await build({
+  ...shared,
+  entryPoints: [resolve(__dirname, 'src/settings/index.jsx')],
+  outfile: resolve(__dirname, 'dist/settings/app.js'),
+});
+
 // Copy static assets
-copyFileSync(
-  resolve(__dirname, 'src/tab/index.html'),
-  resolve(__dirname, 'dist/tab/index.html'),
-);
-copyFileSync(
-  resolve(__dirname, 'src/tab/style.css'),
-  resolve(__dirname, 'dist/tab/style.css'),
-);
+for (const [src, dst] of [
+  ['src/tab/index.html',      'dist/tab/index.html'],
+  ['src/tab/style.css',       'dist/tab/style.css'],
+  ['src/settings/index.html', 'dist/settings/index.html'],
+  ['src/settings/style.css',  'dist/settings/style.css'],
+]) {
+  copyFileSync(resolve(__dirname, src), resolve(__dirname, dst));
+}
 
 console.log('\nextension/dist built ✓');
-console.log('Load extension: chrome://extensions → Load unpacked → select extension/');
+console.log('Settings: right-click extension icon → Options');

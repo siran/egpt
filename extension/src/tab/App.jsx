@@ -16,6 +16,7 @@ export default function App() {
   const [sessionsList, setSessionsList] = useState([]);
   const [activeSession, setActiveSession] = useState(null);
   const [tgStatus, setTgStatus] = useState('not connected');
+  const [userName, setUserName] = useState('human');
 
   const sessionsRef = useRef(new Map());   // name → { brain, targetId }
   const bridgeRef   = useRef(null);
@@ -182,7 +183,7 @@ export default function App() {
 
     if (trimmed.startsWith('/')) { handleCommand(trimmed); return; }
 
-    appendMsg('You', trimmed);
+    appendMsg(userName, trimmed);
 
     const m = trimmed.match(/^@(\S+)\s+([\s\S]*)$/);
     const sessionName = m ? m[1] : activeSession;
@@ -214,6 +215,21 @@ export default function App() {
     bridgeRef.current = bridge;
   }, [appendMsg]);
 
+  // Load identity on mount; restart bridge when storage changes externally (settings page)
+  useEffect(() => {
+    chrome.storage.sync.get(['userName'], cfg => {
+      if (cfg.userName) setUserName(cfg.userName);
+    });
+
+    const onChange = (changes, area) => {
+      if (area !== 'sync') return;
+      if (changes.userName) setUserName(changes.userName.newValue ?? 'human');
+      if (changes.telegram) startBridge();
+    };
+    chrome.storage.onChanged.addListener(onChange);
+    return () => chrome.storage.onChanged.removeListener(onChange);
+  }, [startBridge]);
+
   useEffect(() => {
     startBridge();
     return () => bridgeRef.current?.stop();
@@ -228,7 +244,7 @@ export default function App() {
   // ── render ────────────────────────────────────────────────────
 
   const authorClass = (author) =>
-    author === 'You' ? 'you' : author === 'egpt' ? 'egpt' : 'brain';
+    author === userName ? 'you' : author === 'egpt' ? 'egpt' : 'brain';
 
   return (
     <div id="egpt-app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>

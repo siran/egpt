@@ -10,5 +10,9 @@
   },
   "action": {
     "default_title": "Open egpt"
+  },
+  "options_ui": {
+    "page": "dist/settings/index.html",
+    "open_in_tab": true
   }
 }

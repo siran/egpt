@@ -1,0 +1,104 @@
+:root {
+  --bg:      #1e1e2e;
+  --surface: #181825;
+  --overlay: #313244;
+  --text:    #cdd6f4;
+  --subtext: #a6adc8;
+  --blue:    #89b4fa;
+  --mauve:   #cba6f7;
+  --cyan:    #89dceb;
+  --green:   #a6e3a1;
+  --red:     #f38ba8;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 32px;
+  max-width: 600px;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 32px;
+}
+.brand      { color: var(--cyan); font-size: 20px; font-weight: bold; }
+.page-title { color: var(--subtext); font-size: 14px; }
+
+/* ── Sections ────────────────────────────────────────────────── */
+section {
+  margin-bottom: 32px;
+  border: 1px solid var(--overlay);
+  border-radius: 6px;
+  padding: 20px;
+}
+h2 {
+  color: var(--mauve);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 16px;
+}
+
+/* ── Fields ──────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+.field:last-child { margin-bottom: 0; }
+
+.field-label {
+  color: var(--blue);
+  font-size: 12px;
+}
+
+input, select {
+  background: var(--surface);
+  border: 1px solid var(--overlay);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 10px;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.15s;
+}
+input:focus, select:focus { border-color: var(--blue); }
+input::placeholder { color: var(--subtext); opacity: 0.6; }
+
+select option { background: var(--surface); }
+
+.hint {
+  color: var(--subtext);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── Actions ─────────────────────────────────────────────────── */
+.actions { display: flex; justify-content: flex-end; }
+
+.save-btn {
+  background: var(--blue);
+  border: none;
+  border-radius: 4px;
+  color: var(--surface);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: bold;
+  padding: 8px 24px;
+  transition: opacity 0.15s;
+}
+.save-btn:hover   { opacity: 0.85; }
+.save-btn.error   { background: var(--red); }
