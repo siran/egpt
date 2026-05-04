@@ -3187,7 +3187,8 @@ function App() {
 
     if (text.startsWith('/')) {
       const handled = await handleSlash(text);
-      if (handled) return;
+      if (!handled) sysOut(`!! unknown command: ${text.split(/\s+/)[0]}`);
+      return;
     }
 
     // Routing:
@@ -3229,8 +3230,8 @@ function App() {
           : `no ${token} session; /open ${token} [name]`);
         return;
       } else {
-        recipients = Object.keys(activeSessions);
-        userPayload = text;
+        sysOut(`!! unknown session "@${token}" — /sessions to list, /open <brain> [name] to add`);
+        return;
       }
     } else {
       recipients = Object.keys(activeSessions);
