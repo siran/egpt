@@ -124,9 +124,10 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 
 ## What's coming
 
-- 🛠 **Browser extension** — egpt is plain ES modules (JS all the way down); the extension port runs the same CDP brains and Telegram bridge inside Chrome itself, with a tab-based UI replacing the Ink terminal. `ccode`/`codex` are the only true shell dependencies; everything else is browser-native.
-- 🛠 **Admin / queue / flush** — when multiple humans are chatting in a Telegram group, the admin controls when the queue gets flushed to the brains (avoids noise polluting brain context)
-- 🛠 **Federation (v2)** — multiple egpt daemons connected by a peer bridge; one conversation can span home server + laptop + phone
+- 🛠 **Browser extension** — egpt is plain ES modules; the extension port runs the same Telegram bridge and CDP brains inside a Chrome tab, replacing Ink with a DOM-based terminal UI. `ccode`/`codex` are the only shell-only dependencies. The extension joins the same Telegram room as any running shell instances — they coexist as peers, each owning the brains they can reach.
+- 🛠 **`/agents`** — broadcast a discovery query to the room; each live node replies with its session list; the result is a real-time map of every brain available across all connected machines and people.
+- 🛠 **Passive recording** — every node records the full Telegram stream to its local conversation copy, even for turns handled by another node. Currently nodes only write turns they route themselves.
+- 🛠 **Admin / queue / flush** — controls when a queue of messages gets flushed to brains; useful in shared rooms to prevent noise polluting brain context.
 
 ## Quick start
 
@@ -269,6 +270,33 @@ A small core, many bridges. The core is platform-agnostic logic; the bridges tra
 ```
 
 A new brain is one file in `brains/`. A new input is one file in (eventually) `bridges-node/humans/` or `bridges-extension/humans/`.
+
+## The distributed room
+
+The single-machine setup (one shell, one Chrome) is just the starting point. The deeper design is a **distributed room**: any number of egpt nodes — shells on different machines, browser extensions, phones via Telegram — sharing one conversation through the Telegram bot as a bus.
+
+Each node:
+1. Subscribes to the same Telegram bot
+2. Passively records every message to its own local conversation copy
+3. Acts only on messages addressed to brains it has attached
+4. Posts replies back to Telegram, which all other nodes then record
+
+No central server. No shared filesystem. No leader. Telegram message order is the canonical sequence. Each node's local `.md` file is a materialization of that stream.
+
+```
+machine A  egpt-shell   [codex1, ccode1]   ─┐
+machine B  egpt-shell   [codex2]            ├─── Telegram bot ───  conversation
+browser    egpt-ext     [cgpt1, claude1]   ─┘         │
+phone      Telegram app (human)           ────────────┘
+```
+
+`@codex2 look at ~/src/project` — typed from the browser extension, routed through Telegram to machine B, answered by codex2, reply delivered back to every node. No VPN. No SSH. No server.
+
+**Brain ownership**: each node is authoritative only for the sessions it has attached. `/agents` (coming) broadcasts a discovery query; each live node replies with its session list within a short window, giving a real-time map of every brain available in the room.
+
+**Multi-human rooms**: multiple people, each running their own egpt node, each contributing their own brains. The `allowed_users` list in `~/.egpt/config.json` is the only access control. When one person's daily limit on a free-tier account is hit, another person's isn't — natural failover across accounts, machines, and providers.
+
+**Works on free tiers**: egpt drives the web UI, not the API. A free chatgpt.com account gives the same model envelope (memory, tools, reasoning modes) as a paid subscription, just with daily limits. A group pooling free-tier accounts across ChatGPT, Claude, and Codex gets a capable multi-agent room for zero ongoing cost — no API billing, no shared credentials, no infrastructure beyond a Telegram bot token.
 
 ## Layout
 
