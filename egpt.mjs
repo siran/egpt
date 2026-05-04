@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -45,6 +45,14 @@ let _showPrompts = EGPT_CONFIG.show_prompts ?? false;
 const DEFAULT_OP_FILE = join(EGPT_HOME, 'default-op.txt');
 let _defaultOp = null;
 try { _defaultOp = readFileSync(DEFAULT_OP_FILE, 'utf8').trim() || null; } catch {}
+
+function persistDefaultOp(name) {
+  try {
+    mkdirSync(EGPT_HOME, { recursive: true });
+    if (name) writeFileSync(DEFAULT_OP_FILE, name, 'utf8');
+    else { try { unlinkSync(DEFAULT_OP_FILE); } catch {} }
+  } catch {}
+}
 
 // Return the operator session name to use for a command:
 // 1. explicit (passed in) — always wins
@@ -89,7 +97,7 @@ function brainForName(name) {
 
 function brainNamesForHelp() {
   const aliases = Object.entries(BRAIN_ALIASES).map(([alias, target]) => `${alias}->${target}`);
-  return [...Object.keys(BRAINS), ...aliases].join(', ');
+  return [...Object.keys(BRAINS), ...aliases];
 }
 
 function nextName(brainName, sessions) {
@@ -859,7 +867,65 @@ if (cliArg?.startsWith('-')) {
   process.exit(2);
 }
 
-const FILE = cliArg ?? './conversation.md';
+// FILE is mutable: /conversation <id> can switch the room to a different
+// conversation file at runtime. All async handlers read FILE from this
+// module-level binding, so a switch propagates immediately.
+let FILE = cliArg ?? './conversation.md';
+
+// Search dirs for `/conversations` (list) and `/conversation <name>` resolution.
+// First match wins. ./conversations/ is the primary working dir.
+const CONVERSATION_DIRS = [
+  resolve(process.cwd(), 'conversations'),
+  join(homedir(), 'conversations'),
+];
+
+async function listConversationFiles() {
+  const out = [];
+  const seen = new Set();
+  // Top-level conversation.md in cwd is always shown if present.
+  const topLevel = resolve(process.cwd(), 'conversation.md');
+  try {
+    const st = await stat(topLevel);
+    if (st.isFile()) { out.push({ path: topLevel, label: 'cwd' }); seen.add(topLevel); }
+  } catch {}
+  // CONVERSATION_DIRS[0] = ./conversations (project-local)
+  // CONVERSATION_DIRS[1] = ~/conversations (user-level)
+  const dirLabels = ['./conversations', '~/conversations'];
+  for (let i = 0; i < CONVERSATION_DIRS.length; i++) {
+    const dir = CONVERSATION_DIRS[i];
+    let entries = [];
+    try { entries = await readdir(dir); } catch { continue; }
+    for (const f of entries.sort()) {
+      if (!f.endsWith('.md')) continue;
+      const path = join(dir, f);
+      if (seen.has(path)) continue;
+      seen.add(path);
+      out.push({ path, label: dirLabels[i] });
+    }
+  }
+  return out;
+}
+
+function resolveConversationSpec(spec) {
+  const raw = String(spec ?? '').trim();
+  if (!raw) return null;
+  // Absolute / ~ / explicit relative path
+  if (isAbsolute(raw) || raw.startsWith('~') || raw.startsWith('./') || raw.startsWith('../') || raw.startsWith('.\\') || raw.startsWith('..\\')) {
+    return expandUserPath(raw);
+  }
+  // Bare name: try `<name>.md` (or use as-is if it already ends in .md) in
+  // each conversation dir, then cwd.
+  const base = raw.endsWith('.md') ? raw : `${raw}.md`;
+  for (const dir of CONVERSATION_DIRS) {
+    const candidate = join(dir, base);
+    if (existsSync(candidate)) return candidate;
+  }
+  const cwdCandidate = resolve(process.cwd(), base);
+  if (existsSync(cwdCandidate)) return cwdCandidate;
+  // Default: write into ./conversations/ if that exists, else cwd.
+  if (existsSync(CONVERSATION_DIRS[0])) return join(CONVERSATION_DIRS[0], base);
+  return cwdCandidate;
+}
 
 // preflight: warn if claude is missing but don't refuse to start. egpt is
 // the room itself; CDP brains and most slash commands work without claude.
@@ -876,11 +942,16 @@ const FILE = cliArg ?? './conversation.md';
 
 if (!existsSync(FILE)) writeFileSync(FILE, `# Conversation\n\n---\n\n`);
 
-const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 16);
+const _pad2 = (n) => String(n).padStart(2, '0');
+// On-disk timestamp in conversation.md. Local time (matches fmtTs display).
+const ts = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+};
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
 const fmtTs = (ms) => {
   const d = new Date(ms);
-  return `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+  return `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
 };
 
 // Resolve a user-typed tab spec to a chrome targetId.
@@ -1232,12 +1303,12 @@ function App() {
           const { startCdpProxy } = await import('./tools/cdp-proxy.mjs');
           proxyHandle = await startCdpProxy({ onLog: () => {} });
           setItems(p => [...p, {
-            id: Date.now(), author: 'system', _localOnly: true,
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
             body: 'CDP proxy auto-started (:9221 → :9222)',
           }]);
         } catch (e) {
           setItems(p => [...p, {
-            id: Date.now(), author: 'system', _localOnly: true,
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
             body: `CDP proxy failed to start: ${e.message}`,
           }]);
           return;
@@ -1449,7 +1520,8 @@ function App() {
         ...(bio ? { bio: String(bio) } : {}),
       };
       const activeSessions = { ...sessions, [sessionName]: session };
-      setSessions(activeSessions);
+      // Functional updater so a concurrent attach can't overwrite us.
+      setSessions(s => ({ ...s, [sessionName]: session }));
       await writeBrainProfileState(sessionName, session);
 
       const summaries = profileStartupSummaries(profile);
@@ -1483,11 +1555,58 @@ function App() {
 
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/file') { sysOut(FILE); return true; }
+    if (cmd === '/conversations') {
+      try {
+        const files = await listConversationFiles();
+        if (!files.length) {
+          sysOut(`(no conversation files found)\n  search dirs:\n    ${CONVERSATION_DIRS.map(dp).join('\n    ')}\n    ${dp(resolve(process.cwd(), 'conversation.md'))}`);
+          return true;
+        }
+        const rows = await Promise.all(files.map(async (f) => {
+          let mtime = 0, size = 0;
+          try { const st = await stat(f.path); mtime = st.mtimeMs; size = st.size; } catch {}
+          const active = f.path === resolve(FILE) ? ' ← active' : '';
+          const fmtSize = size < 1024 ? `${size}B` : `${(size / 1024).toFixed(1)}K`;
+          return { ...f, mtime, size, fmtSize, active };
+        }));
+        rows.sort((a, b) => b.mtime - a.mtime);
+        const lines = rows.map(r => {
+          const name = basename(r.path).replace(/\.md$/, '');
+          return `${name.padEnd(28)} ${r.fmtSize.padEnd(7)} ${r.label.padEnd(18)} ${dp(r.path)}${r.active}`;
+        });
+        sysOut(`conversations:\n${lines.join('\n')}\n\n/conversation <name>  to switch`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/conversation') {
+      const spec = arg.trim();
+      if (!spec) {
+        sysOut(`current: ${dp(FILE)}\n  /conversations          list available\n  /conversation <name>    switch to <name> (creates if missing)`);
+        return true;
+      }
+      let nextPath;
+      try { nextPath = resolveConversationSpec(spec); }
+      catch (e) { sysOut(`!! ${e.message}`); return true; }
+      if (!nextPath) { sysOut('!! could not resolve conversation path'); return true; }
+      try {
+        await mkdir(dirname(nextPath), { recursive: true });
+        if (!existsSync(nextPath)) writeFileSync(nextPath, `# Conversation\n\n---\n\n`);
+        FILE = nextPath;
+        // Clear the displayed transcript so the user sees the new room fresh.
+        // Sessions are kept — the user may want to reuse attached brains.
+        setItems([{
+          id: Date.now() + Math.random(), author: 'system',
+          body: `switched conversation -> ${dp(FILE)}`,
+        }]);
+        sentItemsCountRef.current = 0;
+      } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
+      return true;
+    }
     if (cmd === '/help') {
       const bt = brainNamesForHelp();
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
-        body: helpText(bt ? [bt] : []),
-        _tgBody: helpHtml(bt ? [bt] : []),
+        body: helpText(bt, { surface: 'shell' }),
+        _tgBody: helpHtml(bt, { surface: 'shell' }),
       }]);
       return true;
     }
@@ -1940,7 +2059,7 @@ function App() {
           extraSessions[name] = entry;
           setSessions(s => ({ ...s, [name]: entry }));
           _defaultOp = name;
-          try { writeFileSync(DEFAULT_OP_FILE, name, 'utf8'); } catch {}
+          persistDefaultOp(name);
           sysOut(`attached ${emoji} ${name} (codex) — new default operator`);
           viaOp = name;
         } else {
@@ -1963,7 +2082,7 @@ function App() {
           instruction ?? 'fetch the page and summarize its main content',
           ...(browseUrl ? [`URL: ${browseUrl}`] : []),
         ].join('\n');
-        const browseVars = { task: browseTask, cdp_host: cdp.cdpHost };
+        const browseVars = { task: browseTask, cdp_host: cdp.cdpHost() };
         const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);
@@ -2146,7 +2265,7 @@ function App() {
         `  /bio <name> <text>      set a short bio visible to others in /sessions and /rules\n` +
         `Admins may also /emoji, /handle, /bio any participant.`;
       await append('system', rules);
-      setItems(p => [...p, { id: Date.now(), author: 'system', body: rules }]);
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: rules }]);
       return true;
     }
     if (cmd === '/mirror') {
@@ -2215,10 +2334,9 @@ function App() {
       return true;
     }
     if (cmd === '/refresh') {
-      // /refresh [@<name>]
-      //   CDP brain:  re-poll the tab and append whatever the AI currently shows.
-      //   Operator:   replay the last user message that was addressed to (or
-      //               broadcast to) this session — triggers a fresh response.
+      // /refresh [@<name>] — re-poll a CDP tab and append whatever the
+      // assistant message currently shows. Recovery for premature stream-end
+      // detection. CDP-only: subprocess operators have no tab to peek.
       const target = arg.trim().replace(/^@/, '');
       let session, sessionName;
       if (target) {
@@ -2233,31 +2351,17 @@ function App() {
         sessionName = cdps[0][0]; session = cdps[0][1];
       }
       const brain = brainForName(session.brain);
-      if (brain?.peek) {
-        // CDP path: re-poll tab
-        try {
-          const text = await brain.peek(session.options);
-          if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
-          setItems(p => [...p, { id: Date.now(), author: sessionName, body: text }]);
-          await append(sessionName, text);
-          sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
-        } catch (e) { sysOut(`!! ${e.message}`); }
-      } else {
-        // Operator path: replay last user message sent to (or broadcast to) this session
-        const fileText = await readFile(FILE, 'utf8');
-        const msgs = parseMessages(fileText);
-        const lastUserMsg = [...msgs].reverse().find(m =>
-          m.author === 'You' &&
-          (!m.body.startsWith('@') || m.body.startsWith(`@${sessionName} `) || m.body.startsWith(`@${sessionName}\n`))
-        );
-        if (!lastUserMsg) { sysOut(`no user message to replay for ${sessionName}`); return true; }
-        const payload = lastUserMsg.body.startsWith(`@${sessionName}`)
-          ? lastUserMsg.body.slice(sessionName.length + 1).trim()
-          : lastUserMsg.body;
-        sysOut(`replaying last message to ${sessionName}…`);
-        setBusy(true);
-        try { await runBrainTurn(sessionName, payload); } finally { setBusy(false); }
+      if (!brain?.peek) {
+        sysOut(`/refresh only works on CDP sessions; "${sessionName}" is ${session.brain}`);
+        return true;
       }
+      try {
+        const text = await brain.peek(session.options);
+        if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
+        setItems(p => [...p, { id: Date.now() + Math.random(), author: sessionName, body: text }]);
+        await append(sessionName, text);
+        sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
+      } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
     if (cmd === '/summaries' || cmd === '/list-saved' || cmd === '/saved') {
@@ -2516,29 +2620,6 @@ function App() {
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
-    if (cmd === '/brain') {
-      const sub = (arg.split(/\s+/)[0] || 'status').toLowerCase();
-      if (sub === 'status') {
-        try {
-          const tabs = await cdp.listTabs();
-          sysOut(`brain running on ${cdp.cdpHost} · ${tabs.length} pages`);
-        } catch (e) {
-          sysOut(`brain not reachable on ${cdp.cdpHost}: ${e.message}`);
-        }
-        return true;
-      }
-      if (sub === 'stop' || sub === 'close') {
-        try {
-          await cdp.closeBrowser();
-          sysOut('brain closed');
-        } catch (e) {
-          sysOut(`!! ${e.message}`);
-        }
-        return true;
-      }
-      sysOut('usage: /brain [status|stop]');
-      return true;
-    }
     if (cmd === '/sessions') {
       // /sessions default <name>  — set the default operator session
       // /sessions default clear   — clear the default
@@ -2547,13 +2628,13 @@ function App() {
         const target = parts[1];
         if (!target || target === 'clear' || target === 'none') {
           _defaultOp = null;
-          try { unlinkSync(DEFAULT_OP_FILE); } catch {}
+          persistDefaultOp(null);
           sysOut('default operator cleared');
         } else if (!sessions[target]) {
           sysOut(`!! no session named "${target}"`);
         } else {
           _defaultOp = target;
-          try { writeFileSync(DEFAULT_OP_FILE, target, 'utf8'); } catch {}
+          persistDefaultOp(target);
           sysOut(`default operator -> ${target} (persisted)`);
         }
         return true;
@@ -2787,7 +2868,7 @@ function App() {
                '       /attach <profile>                 start a YAML brain profile\n' +
                '       /attach <brain>                  attach CDP tabs or create a local session\n' +
                '       /attach <brain> <name> [tabSpec] explicit attach\n' +
-               'brains: ' + brainNamesForHelp() +
+               'brains: ' + brainNamesForHelp().join(', ') +
                '\nprofile dirs:\n' + profileDirsText());
         return true;
       }
@@ -2862,7 +2943,7 @@ function App() {
       const brainName = canonicalBrainName(parts[0]);
       let sessionName = parts[1];
       if (!brainName) {
-        sysOut('usage: /open <brain> [name]\n  name auto-generated (e.g. cgpt2) if omitted.\n  brains: ' + brainNamesForHelp());
+        sysOut('usage: /open <brain> [name]\n  name auto-generated (e.g. cgpt2) if omitted.\n  brains: ' + brainNamesForHelp().join(', '));
         return true;
       }
       const brain = brainForName(brainName);
@@ -3078,7 +3159,7 @@ function App() {
 
     // Wizard mode: /create-profile interactive questions intercept all input.
     if (wizardRef.current) {
-      setItems(p => [...p, { id: Date.now(), author: 'You', body: text }]);
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'You', body: text }]);
       wizardRef.current.answer(text);
       return;
     }
@@ -3089,7 +3170,7 @@ function App() {
     // app. Echoes from the local shell still forward to Telegram so a
     // remote viewer sees what the shell user typed.
     setItems(p => [...p, {
-      id: Date.now(), author: 'You', body: text,
+      id: Date.now() + Math.random(), author: 'You', body: text,
       ...(meta.fromTelegram ? { _localOnly: true } : {}),
     }]);
 
@@ -3119,11 +3200,10 @@ function App() {
       if (!target && brain && !brain.urlMatch) {
         const emoji = nextEmoji(activeSessions);
         const sessionName = nextName(brainName, activeSessions);
-        activeSessions = {
-          ...activeSessions,
-          [sessionName]: { brain: brainName, options: { cwd: process.cwd() }, emoji },
-        };
-        setSessions(activeSessions);
+        const newEntry = { brain: brainName, options: { cwd: process.cwd() }, emoji };
+        activeSessions = { ...activeSessions, [sessionName]: newEntry };
+        // Functional updater so a concurrent attach can't overwrite us.
+        setSessions(s => ({ ...s, [sessionName]: newEntry }));
         sysOut(`session "${sessionName}" -> ${emoji} ${brainName} (auto-opened for @${token})`);
         target = sessionName;
       }

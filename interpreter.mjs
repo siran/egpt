@@ -1,5 +1,9 @@
 // interpreter.mjs — shared input parser and command registry
 // Used by egpt.mjs (shell) and extension/src/tab/App.jsx (browser).
+//
+// The registry is the source of truth for which commands exist on which
+// surface. /help on each surface filters by `surface` so users only see
+// commands they can actually run there.
 
 /**
  * Parse raw user input into a typed descriptor.
@@ -22,73 +26,111 @@ export function parseInput(text) {
 
 // ── Command registry ──────────────────────────────────────────────────────────
 // Each entry is either a section header { section } or a command descriptor.
-// 'usage' is the one-line form shown in /help.
-// 'desc'  is the short description.
-// Commands absent from a platform are shown greyed/noted — they're room-level
-// vocabulary and any node can route them.
+// 'usage'   one-line form shown in /help.
+// 'desc'    short description.
+// 'surface' which surfaces support this command:
+//             'shell'      shell only (egpt.mjs)
+//             'extension'  browser extension only (App.jsx)
+//             'both'       both surfaces
+// helpText/helpHtml filter by surface so neither side advertises commands the
+// other implements. If 'surface' is omitted on a section header, the section
+// is shown when any of its commands are visible.
 
 export const COMMANDS = [
   { section: 'ROOM' },
-  { cmd: '/rules',          usage: '/rules',                                         desc: 'write room etiquette' },
-  { cmd: '/last',           usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
-  { cmd: '/clear',          usage: '/clear',                                         desc: 'clear display' },
-  { cmd: '/status',         usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },
-  { cmd: '/file',           usage: '/file',                                          desc: 'show conversation file path' },
-  { cmd: '/exit',           usage: '/exit',                                          desc: 'quit egpt' },
+  { cmd: '/rules',          surface: 'shell',     usage: '/rules',                                         desc: 'write room etiquette' },
+  { cmd: '/last',           surface: 'shell',     usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
+  { cmd: '/clear',          surface: 'extension', usage: '/clear',                                         desc: 'clear display' },
+  { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },
+  { cmd: '/file',           surface: 'shell',     usage: '/file',                                          desc: 'show conversation file path' },
+  { cmd: '/conversations',  surface: 'shell',     usage: '/conversations',                                 desc: 'list available conversation files' },
+  { cmd: '/conversation',   surface: 'shell',     usage: '/conversation <name|path>',                      desc: 'switch to a conversation file' },
+  { cmd: '/exit',           surface: 'shell',     usage: '/exit',                                          desc: 'quit egpt' },
 
   { section: 'SESSIONS' },
-  { cmd: '/brain',          usage: '/brain <type> [name]',                           desc: 'open a brain tab and attach it' },
-  { cmd: '/attach',         usage: '/attach [brain|profile] [name] ...',             desc: 'attach CDP tab, brain profile, or rescan' },
-  { cmd: '/detach',         usage: '/detach <name>',                                 desc: 'remove session from room' },
-  { cmd: '/use',            usage: '/use <name>',                                    desc: 'set active session' },
-  { cmd: '/sessions',       usage: '/sessions [default [name|clear]]',               desc: 'list sessions; manage default operator' },
-  { cmd: '/handle',         usage: '/handle <old> <new>',                            desc: 'rename a session' },
-  { cmd: '/emoji',          usage: '/emoji [name emoji]',                            desc: 'show or set session avatar' },
-  { cmd: '/bio',            usage: '/bio [name [text]]',                             desc: 'show or set session bio' },
+  { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session' },
+  { cmd: '/attach',         surface: 'both',      usage: '/attach [brain|profile] [name] [tab]',           desc: 'attach CDP tab, brain profile, or rescan' },
+  { cmd: '/detach',         surface: 'both',      usage: '/detach <name>',                                 desc: 'remove session from room' },
+  { cmd: '/use',            surface: 'extension', usage: '/use <name>',                                    desc: 'set active session' },
+  { cmd: '/sessions',       surface: 'both',      usage: '/sessions [default [name|clear]]',               desc: 'list sessions; manage default operator' },
+  { cmd: '/handle',         surface: 'shell',     usage: '/handle <old> <new>',                            desc: 'rename a session' },
+  { cmd: '/emoji',          surface: 'shell',     usage: '/emoji [name emoji]',                            desc: 'show or set session avatar' },
+  { cmd: '/bio',            surface: 'shell',     usage: '/bio [name [text]]',                             desc: 'show or set session bio' },
 
   { section: 'PROFILES  (~/.egpt/brains/*.yaml)' },
-  { cmd: '/profiles',       usage: '/profiles',                                      desc: 'list YAML brain profiles' },
-  { cmd: '/create-profile', usage: '/create-profile [name]',                         desc: 'interactive profile wizard' },
-  { cmd: '/profile',        usage: '/profile <name> <url-or-id>',                   desc: 'quick-create profile from ChatGPT/Claude URL' },
+  { cmd: '/profiles',       surface: 'shell',     usage: '/profiles',                                      desc: 'list YAML brain profiles' },
+  { cmd: '/create-profile', surface: 'shell',     usage: '/create-profile [name]',                         desc: 'interactive profile wizard' },
+  { cmd: '/profile',        surface: 'shell',     usage: '/profile <name> <url-or-id>',                    desc: 'quick-create profile from ChatGPT/Claude URL' },
 
   { section: 'BROWSER (CDP)' },
-  { cmd: '/tabs',           usage: '/tabs [all]',                                    desc: 'list open Chrome pages' },
-  { cmd: '/refresh',        usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
-  { cmd: '/browse',         usage: '/browse <url>',                                  desc: 'open URL in Chrome, return page text' },
-  { cmd: '/continue',       usage: '/continue',                                      desc: 'resume after captcha / login pause' },
-  { cmd: '/mirror',         usage: '/mirror [@src] [@tgt]',                          desc: 'forward message between sessions' },
+  { cmd: '/tabs',           surface: 'both',      usage: '/tabs [all]',                                    desc: 'list open Chrome pages' },
+  { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
+  { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },
+  { cmd: '/continue',       surface: 'shell',     usage: '/continue',                                      desc: 'resume after captcha / login pause' },
+  { cmd: '/mirror',         surface: 'shell',     usage: '/mirror [@src] [@tgt]',                          desc: 'forward message between sessions' },
 
   { section: 'FILES' },
-  { cmd: '/send-file',      usage: '/send-file [via=<op>] [path] @<s> ["instr"]',   desc: 'prepare and send file excerpt to session' },
-  { cmd: '/paste-file',     usage: '/paste-file <session> <path> [--before M]',     desc: 'paste local file directly into session' },
+  { cmd: '/send-file',      surface: 'shell',     usage: '/send-file [via=op] [path] @name ["instr"]',     desc: 'prepare and send file excerpt to session' },
+  { cmd: '/paste-file',     surface: 'shell',     usage: '/paste-file <name> <path> [--before M]',         desc: 'paste local file directly into session' },
 
   { section: 'OPERATORS' },
-  { cmd: '/summarize',      usage: '/summarize [all|last N] <name>',                 desc: 'summarize conversation for a session' },
-  { cmd: '/inject',         usage: '/inject <name> [session]',                      desc: 'drop saved summary into room or session' },
-  { cmd: '/save',           usage: '/save <name>',                                   desc: 'save last message verbatim' },
-  { cmd: '/summaries',      usage: '/summaries',                                     desc: 'list saved summaries' },
-  { cmd: '/prompts',        usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
+  { cmd: '/history',        surface: 'shell',     usage: '/history [N]',                                   desc: 'list recent ccode sessions on disk' },
+  { cmd: '/session',        surface: 'shell',     usage: '/session [name] [id|none] [cwd]',                desc: 'manage ccode resume id for a session' },
+  { cmd: '/summarize',      surface: 'shell',     usage: '/summarize [all|last N] <name>',                 desc: 'summarize conversation, save to ~/.egpt/summaries' },
+  { cmd: '/inject',         surface: 'shell',     usage: '/inject <name> [session]',                       desc: 'drop saved summary into room or session' },
+  { cmd: '/save',           surface: 'shell',     usage: '/save <name>',                                   desc: 'save last message verbatim' },
+  { cmd: '/summaries',      surface: 'shell',     usage: '/summaries',                                     desc: 'list saved summaries' },
+  { cmd: '/prompts',        surface: 'shell',     usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
+
+  { section: 'ROOMS  (WIP — /load-room not yet wired)' },
+  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms' },
+  { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },
-  { cmd: '/telegram',       usage: '/telegram disconnect | @node [ttl:T]',           desc: 'manage Telegram bridge or hand off' },
-  { cmd: '/config',         usage: '/config [key [value]]',                          desc: 'read or write config' },
-  { cmd: '/themes',         usage: '/themes',                                        desc: 'list available themes' },
-  { cmd: '/theme',          usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
-  { cmd: '/help',           usage: '/help',                                          desc: 'show this list' },
+  { cmd: '/telegram',       surface: 'extension', usage: '/telegram disconnect | @node [ttl:T]',           desc: 'manage Telegram bridge or hand off' },
+  { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
+  { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
+  { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
+  { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'show this list' },
 ];
 
+// All known command tokens (across all surfaces). Used by surfaces to validate
+// "is this even a known command?" so we can route helpfully on unknown ones.
 export const COMMAND_SET = new Set(
-  COMMANDS.filter(c => c.cmd).map(c => c.cmd)
+  COMMANDS.filter(c => c.cmd).map(c => c.cmd),
 );
+
+/** Set of command tokens valid on a given surface. */
+export function commandSetFor(surface) {
+  return new Set(
+    COMMANDS
+      .filter(c => c.cmd && (c.surface === 'both' || c.surface === surface))
+      .map(c => c.cmd),
+  );
+}
 
 // ── Help renderers ────────────────────────────────────────────────────────────
 
 const PAD = 44; // usage column width
 
-/** Plain-text help for terminal / extension display. */
-export function helpText(brainTypes = []) {
-  const lines = [''];
+function visibleEntries(surface) {
+  if (!surface) return COMMANDS;
+  const out = [];
+  let pendingSection = null;
   for (const entry of COMMANDS) {
+    if (entry.section) { pendingSection = entry; continue; }
+    if (entry.surface !== 'both' && entry.surface !== surface) continue;
+    if (pendingSection) { out.push(pendingSection); pendingSection = null; }
+    out.push(entry);
+  }
+  return out;
+}
+
+/** Plain-text help. Pass `{ surface }` to filter. */
+export function helpText(brainTypes = [], { surface } = {}) {
+  const entries = visibleEntries(surface);
+  const lines = [''];
+  for (const entry of entries) {
     if (entry.section) {
       lines.push(`── ${entry.section} ${'─'.repeat(Math.max(0, PAD - entry.section.length - 4))}`);
       continue;
@@ -100,10 +142,11 @@ export function helpText(brainTypes = []) {
   return lines.join('\n');
 }
 
-/** Telegram HTML help (used by shell's Telegram bridge). */
-export function helpHtml(brainTypes = []) {
+/** Telegram HTML help (used by the shell's Telegram bridge). */
+export function helpHtml(brainTypes = [], { surface } = {}) {
+  const entries = visibleEntries(surface);
   const lines = ['🤖 <b>egpt help</b>', ''];
-  for (const entry of COMMANDS) {
+  for (const entry of entries) {
     if (entry.section) {
       lines.push(`\n<b>${entry.section}</b>`);
       continue;
