@@ -138,6 +138,7 @@ start_extension() {
   "${chrome}" \
     --load-extension="$(to_native_path "${EXTENSION_DIR}")" \
     --user-data-dir="$(to_native_path "${EXT_PROFILE}")" \
+    --silent-debugger-extension-api \
     --no-first-run \
     --disable-features=ChromeWhatsNewUI \
     --new-window \
@@ -178,6 +179,7 @@ start_both() {
   "${chrome}" \
     --load-extension="$(to_native_path "${EXTENSION_DIR}")" \
     --user-data-dir="$(to_native_path "${EXT_PROFILE}")" \
+    --silent-debugger-extension-api \
     --no-first-run \
     --disable-features=ChromeWhatsNewUI \
     --new-window \
