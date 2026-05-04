@@ -3,6 +3,7 @@ import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import * as chatgpt from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeBrain from '../../../brains/claude-cdp.mjs';
+import { listTabs } from '../tools/cdp-ext.js';
 
 const BRAIN_TYPES = { chatgpt, claude: claudeBrain };
 const CONV_ID = 'main';
@@ -60,7 +61,7 @@ export default function App() {
     } catch (e) {
       const err = `error: ${e.message}`;
       updateMsg(msgId, err, false);
-      tgBridge?.send?.(`${sessionName}: ${err}`);
+      bridgeRef.current?.send(`${sessionName}: ${err}`);
     }
   }, [appendMsg, updateMsg]);
 
@@ -131,7 +132,6 @@ export default function App() {
         break;
       }
       case '/tabs': {
-        const { listTabs } = await import('../tools/cdp-ext.js');
         const tabs = await listTabs();
         if (tabs.length === 0) { appendMsg('egpt', 'No open tabs found.'); return; }
         appendMsg('egpt', tabs.map(t => `  ${t.id}  ${t.url.slice(0, 70)}`).join('\n'));
@@ -144,9 +144,11 @@ export default function App() {
           appendMsg('egpt', JSON.stringify(cfg, null, 2));
           return;
         }
-        const val = valParts.join(' ');
+        const raw = valParts.join(' ');
+        let val = raw;
+        try { val = JSON.parse(raw); } catch {}
         await chrome.storage.sync.set({ [key]: val });
-        appendMsg('egpt', `Set ${key} = ${val}`);
+        appendMsg('egpt', `Set ${key} = ${JSON.stringify(val)}`);
         if (key === 'telegram') startBridge();
         break;
       }
