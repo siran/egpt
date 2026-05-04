@@ -4,9 +4,11 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join }                     from 'node:path';
 import { homedir }                  from 'node:os';
 
-function resolveCdpHost() {
+// Resolve the CDP host fresh on every call. The cdp-token file may appear
+// after egpt has booted (manual proxy start), so caching the host once at
+// module-load means we'd never see the proxy. Cheap to recompute.
+export function cdpHost() {
   if (process.env.EGPT_CDP_HOST) return process.env.EGPT_CDP_HOST;
-  // If a token file exists the proxy is in use; build host with token path.
   const tokenFile = join(homedir(), '.egpt', 'cdp-token');
   if (existsSync(tokenFile)) {
     const token = readFileSync(tokenFile, 'utf8').trim();
@@ -15,15 +17,14 @@ function resolveCdpHost() {
   return 'localhost:9222';
 }
 
-export const cdpHost = resolveCdpHost();
-
 async function fetchJson(path) {
+  const host = cdpHost();
   let res;
-  try { res = await fetch(`http://${cdpHost}${path}`); }
+  try { res = await fetch(`http://${host}${path}`); }
   catch (e) {
     throw new Error(
-      `Cannot reach Chrome at ${cdpHost}. ` +
-      `Run launch-brain.sh (or chrome --remote-debugging-port=${cdpHost.split(':')[1]}) first.`
+      `Cannot reach Chrome at ${host}. ` +
+      `Run launch-brain.sh (or chrome --remote-debugging-port=${host.split(':')[1]}) first.`
     );
   }
   if (!res.ok) throw new Error(`Chrome ${path} returned ${res.status}`);

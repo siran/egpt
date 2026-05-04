@@ -20,6 +20,9 @@ const DEFAULT_CODEX_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 const DEFAULT_CODEX_REASONING_EFFORT = 'low';
 const CODEX_LOG_DIR = join(homedir(), '.egpt', 'codex');
+// Messages that begin with one of these markers are operator tasks
+// (browse, send-file, etc.) and trigger the codex-task template + bumped effort.
+const TASK_MARKER_RE = /^\[(?:browse|send-file|file)\s+task\b/i;
 
 export function stateDetail(options = {}) {
   const parts = [`cwd: ${options.cwd ?? process.cwd()}`];
@@ -261,7 +264,7 @@ async function buildCodexPrompt({ history, message }, options) {
 
   // Task messages (from /browse via=op, /send-file, etc.) use commands/codex-task.md.
   // They arrive without a thread and start with a bracketed task marker.
-  if (!options.sessionId && /^\[(?:browse|send-file|file)\s+task\b/i.test(text)) {
+  if (!options.sessionId && TASK_MARKER_RE.test(text)) {
     const result = await buildCommandPrompt('codex-task', {
       session_name:     sessionName,
       reasoning_effort: codexReasoningEffort(options),
@@ -298,7 +301,7 @@ async function runCodex(turn, onUpdate, options) {
   const prompt = await buildCodexPrompt(turn, { ...options, cwd });
 
   // Task messages (browse, send-file, etc.) require code execution — bump low -> medium.
-  const isTask = /^\[(?:browse|send-file|file)\s+task\b/i.test(stripUserPrefix(turn.message ?? ''));
+  const isTask = TASK_MARKER_RE.test(stripUserPrefix(turn.message ?? ''));
   const baseEffort = codexReasoningEffort(options);
   const effort = isTask && baseEffort === 'low' ? 'medium' : baseEffort;
 
