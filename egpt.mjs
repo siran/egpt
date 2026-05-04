@@ -1155,9 +1155,10 @@ function App() {
       catch { return; }
       if (!cfg.telegram?.bot_token) return;
       bridge = startTelegramBridge({
-        botToken: cfg.telegram.bot_token,
+        botToken:     cfg.telegram.bot_token,
+        nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
         allowedUsers: cfg.telegram.allowed_users ?? [],
-        chatId: cfg.telegram.chat_id ?? null,
+        chatId:       cfg.telegram.chat_id ?? null,
         onIncoming: async (text, from) => {
           const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
           setItems(p => [...p, {

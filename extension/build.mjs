@@ -7,8 +7,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
 
 // Redirect tools/cdp.mjs → extension's chrome.debugger adapter.
-// Matches any import ending with tools/cdp.mjs regardless of how many
-// directory levels up it goes (brains use '../tools/cdp.mjs').
 const cdpShim = {
   name: 'cdp-shim',
   setup(b) {

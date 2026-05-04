@@ -6,10 +6,46 @@ import * as claudeBrain from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../tools/cdp-ext.js';
 
 const BRAIN_TYPES = { chatgpt, claude: claudeBrain };
-const CONV_ID = 'main';
+
+const BRAIN_URLS = {
+  chatgpt: 'https://chatgpt.com',
+  claude:  'https://claude.ai',
+};
+
+const BRAIN_PREFIX = {
+  chatgpt: 'cgpt',
+  claude:  'claude',
+};
 
 let _msgIdSeq = 0;
 const mkId = () => ++_msgIdSeq;
+
+function waitForTabLoad(tabId) {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      reject(new Error('tab load timeout (30s)'));
+    }, 30_000);
+
+    function onUpdated(id, info) {
+      if (id !== tabId || info.status !== 'complete') return;
+      clearTimeout(deadline);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      resolve();
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+
+    // Race: tab may already be complete by the time we attach the listener
+    chrome.tabs.get(tabId, tab => {
+      if (chrome.runtime.lastError) return;
+      if (tab?.status === 'complete') {
+        clearTimeout(deadline);
+        chrome.tabs.onUpdated.removeListener(onUpdated);
+        resolve();
+      }
+    });
+  });
+}
 
 export default function App() {
   const [messages, setMessages] = useState([]);
@@ -38,6 +74,15 @@ export default function App() {
     setSessionsList([...sessionsRef.current.entries()].map(([name, s]) => ({
       name, brainType: s.brain.name, targetId: s.targetId,
     })));
+
+  const nextSessionName = (brainType) => {
+    const prefix = BRAIN_PREFIX[brainType] ?? brainType;
+    for (let i = 1; i <= 99; i++) {
+      const name = `${prefix}${i}`;
+      if (!sessionsRef.current.has(name)) return name;
+    }
+    return `${prefix}${Date.now()}`;
+  };
 
   // ── brain submission ──────────────────────────────────────────
 
@@ -113,6 +158,33 @@ export default function App() {
     appendMsg('egpt', `> ${cmd}`);
 
     switch (slash) {
+      case '/brain': {
+        const [brainType, customName] = parts.slice(1);
+        if (!brainType) {
+          appendMsg('egpt', `Usage: /brain <type> [name]\nTypes: ${Object.keys(BRAIN_URLS).join('  ')}`);
+          return;
+        }
+        const brain = BRAIN_TYPES[brainType];
+        const url   = BRAIN_URLS[brainType];
+        if (!brain || !url) {
+          appendMsg('egpt', `Unknown brain type "${brainType}". Available: ${Object.keys(BRAIN_URLS).join('  ')}`);
+          return;
+        }
+        const name = customName || nextSessionName(brainType);
+        appendMsg('egpt', `Opening ${url}…`);
+        try {
+          const tab = await chrome.tabs.create({ url, active: false });
+          appendMsg('egpt', `Waiting for tab ${tab.id} to load…`);
+          await waitForTabLoad(tab.id);
+          sessionsRef.current.set(name, { brain, targetId: tab.id });
+          syncSessionsList();
+          if (!activeSession) setActiveSession(name);
+          appendMsg('egpt', `Ready: ${name} → ${brainType} (tab ${tab.id})`);
+        } catch (e) {
+          appendMsg('egpt', `/brain failed: ${e.message}`);
+        }
+        break;
+      }
       case '/attach': {
         const [name, brainType, targetIdStr] = parts.slice(1);
         if (!name || !brainType || !targetIdStr) {
@@ -165,8 +237,9 @@ export default function App() {
       case '/config': {
         const [key, ...valParts] = parts.slice(1);
         if (!key) {
-          const cfg = await chrome.storage.sync.get(null);
-          appendMsg('egpt', JSON.stringify(cfg, null, 2));
+          const sync = await chrome.storage.sync.get(null);
+          const local = await chrome.storage.local.get(null);
+          appendMsg('egpt', JSON.stringify({ sync, local }, null, 2));
           return;
         }
         const raw = valParts.join(' ');
@@ -177,19 +250,46 @@ export default function App() {
         if (key === 'telegram') startBridge();
         break;
       }
+      case '/telegram': {
+        const target = parts[1];
+        if (!target) {
+          appendMsg('egpt', 'Usage: /telegram disconnect | /telegram @nodeName [ttl:T]');
+          return;
+        }
+        const ttlArg = parts.find(p => p.startsWith('ttl:'));
+        const ttl    = ttlArg ? parseInt(ttlArg.slice(4), 10) : null;
+        if (target === 'disconnect') {
+          bridgeRef.current?.stop();
+          bridgeRef.current = null;
+          setTgStatus('disconnected');
+          appendMsg('egpt', 'telegram: disconnected');
+        } else {
+          const node = target.replace(/^@/, '');
+          appendMsg('egpt', `telegram: handing off to ${node}${ttl ? ` (ttl ${ttl}s)` : ''}`);
+          bridgeRef.current?.stop();
+          bridgeRef.current = null;
+          setTgStatus(`handed off to ${node}`);
+          if (ttl) setTimeout(() => startBridge(), ttl * 1000);
+        }
+        break;
+      }
       case '/clear':
         setMessages([]);
         break;
       case '/help':
         appendMsg('egpt', [
-          '/attach <name> <brain> <tabId>  attach a brain session',
+          '/brain <type> [name]            open a brain tab and attach it',
+          '/attach <name> <brain> <tabId>  attach an existing tab as a brain',
           '/detach <name>                  detach a session',
           '/use <name>                     switch active session',
           '/sessions                       list attached sessions',
           '/tabs                           list open Chrome tabs (id + url)',
           '/config [key [value]]           read or set config',
+          '/telegram disconnect            stop Telegram polling',
+          '/telegram @node [ttl:T]         hand off polling to another node',
           '/clear                          clear the conversation',
           '',
+          'Brain types: chatgpt  claude',
           'Enter to send   Shift+Enter for newline',
           'Prefix with @name to route to a specific session',
         ].join('\n'));
@@ -214,7 +314,7 @@ export default function App() {
     const prompt = m ? m[2] : trimmed;
 
     if (!sessionName) {
-      appendMsg('egpt', 'No session active. Use /attach <name> <brain> <tabId> to attach one.');
+      appendMsg('egpt', 'No session active. Use /brain chatgpt to open one.');
       return;
     }
     runBrain(sessionName, prompt);
@@ -226,15 +326,18 @@ export default function App() {
     bridgeRef.current?.stop();
     bridgeRef.current = null;
     const { telegram } = await chrome.storage.sync.get('telegram');
-    if (!telegram?.bot_token) { setTgStatus('no token — /config telegram {"bot_token":"…"}'); return; }
-    setTgStatus('connecting…');
+    if (!telegram?.bot_token) {
+      setTgStatus('no bot token — add one in Settings');
+      return;
+    }
     const bridge = startTelegramBridge({
-      botToken: telegram.bot_token,
+      botToken:     telegram.bot_token,
+      nodeName:     'extension',
       allowedUsers: telegram.allowed_users ?? [],
-      chatId: telegram.chat_id ?? null,
-      onIncoming: (text, meta) => handleIncomingRef.current(text, meta),
-      onLog: msg => setTgStatus(msg),
-      onError: msg => appendMsg('egpt', `⚠ ${msg}`),
+      chatId:       telegram.chat_id ?? null,
+      onIncoming:   (text, meta) => handleIncomingRef.current(text, meta),
+      onLog:        msg => setTgStatus(msg),
+      onError:      msg => appendMsg('egpt', `⚠ ${msg}`),
     });
     bridgeRef.current = bridge;
   }, [appendMsg]);
@@ -245,8 +348,7 @@ export default function App() {
       if (cfg.userName) setUserName(cfg.userName);
     });
 
-    const onChange = (changes, area) => {
-      if (area !== 'sync') return;
+    const onChange = (changes) => {
       if (changes.userName) setUserName(changes.userName.newValue ?? 'human');
       if (changes.telegram) startBridge();
     };

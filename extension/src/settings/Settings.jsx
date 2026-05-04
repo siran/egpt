@@ -16,11 +16,11 @@ export default function Settings() {
 
   useEffect(() => {
     chrome.storage.sync.get(['userName', 'theme', 'telegram'], cfg => {
-      if (cfg.userName)              setHandle(cfg.userName);
-      if (cfg.theme)                 setTheme(cfg.theme);
-      if (cfg.telegram?.bot_token)   setBotToken(cfg.telegram.bot_token);
-      if (cfg.telegram?.chat_id)     setChatId(String(cfg.telegram.chat_id));
-      if (cfg.telegram?.mirror)      setMirror(cfg.telegram.mirror);
+      if (cfg.userName)                  setHandle(cfg.userName);
+      if (cfg.theme)                     setTheme(cfg.theme);
+      if (cfg.telegram?.bot_token)       setBotToken(cfg.telegram.bot_token);
+      if (cfg.telegram?.chat_id)         setChatId(String(cfg.telegram.chat_id));
+      if (cfg.telegram?.mirror)          setMirror(cfg.telegram.mirror);
       if (cfg.telegram?.allowed_users?.length)
         setAllowedUsers(cfg.telegram.allowed_users.join(', '));
     });
@@ -48,7 +48,6 @@ export default function Settings() {
         telegram.mirror = mirror;
         update.telegram = telegram;
       } else {
-        // Clear telegram if token removed
         update.telegram = null;
       }
 
@@ -88,7 +87,11 @@ export default function Settings() {
 
       <section>
         <h2>Telegram</h2>
-        <Field label="Bot token" hint="From @BotFather. Use the same token as the shell so they share the same room.">
+        <p className="hint">
+          Create a bot with <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">@BotFather</a> to
+          get a token. Add the bot to any groups you want to mirror to.
+        </p>
+        <Field label="Bot token" hint="From @BotFather. Looks like 123456:ABCdef…">
           <input
             value={botToken}
             onChange={e => setBotToken(e.target.value)}
@@ -99,7 +102,7 @@ export default function Settings() {
         </Field>
         <Field
           label="Chat ID"
-          hint="Optional. Outgoing messages go here before the first incoming message. Auto-detected otherwise."
+          hint="Optional. Outgoing messages go here before the first incoming. Auto-detected otherwise."
         >
           <input
             value={chatId}

@@ -1,6 +1,21 @@
 // tools/cdp.mjs — shared CDP plumbing for browser-driven brains and tools
 
-export const cdpHost = process.env.EGPT_CDP_HOST ?? 'localhost:9222';
+import { readFileSync, existsSync } from 'node:fs';
+import { join }                     from 'node:path';
+import { homedir }                  from 'node:os';
+
+function resolveCdpHost() {
+  if (process.env.EGPT_CDP_HOST) return process.env.EGPT_CDP_HOST;
+  // If a token file exists the proxy is in use; build host with token path.
+  const tokenFile = join(homedir(), '.egpt', 'cdp-token');
+  if (existsSync(tokenFile)) {
+    const token = readFileSync(tokenFile, 'utf8').trim();
+    return `localhost:9222/${token}`;
+  }
+  return 'localhost:9222';
+}
+
+export const cdpHost = resolveCdpHost();
 
 async function fetchJson(path) {
   let res;
