@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "egpt",
+  "version": "0.0.1",
+  "description": "Multi-brain AI orchestrator — browser extension",
+  "permissions": ["storage", "tabs", "debugger"],
+  "host_permissions": ["http://localhost:*/"],
+  "background": {
+    "service_worker": "dist/background.js"
+  },
+  "action": {
+    "default_title": "Open egpt"
+  }
+}

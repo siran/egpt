@@ -4,3 +4,4 @@ conversations/
 *.local.md
 .egpt/
 *.log
+extension/dist/
