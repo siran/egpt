@@ -73,13 +73,10 @@ The brains are tools. The conversation log is the work. egpt makes the work prim
 
 You keep a Chrome instance logged in to the web brains. The daemon (shell or extension) talks to its tabs over CDP. No API keys to manage, no token bills to watch.
 
-**Chrome setup (one time):** Chrome 112+ only opens its debug port when launched with an explicit `--user-data-dir`. Create a shortcut (or modify your existing one) with this Target:
+**Chrome setup (one time):** Chrome 112+ only opens its debug port when launched with an explicit `--user-data-dir`. Create a shortcut (or modify the Target of an existing one):
 
 ```
-"C:\Program Files\Google\Chrome\Application\chrome.exe"
-  --remote-debugging-port=9221
-  --user-data-dir="%USERPROFILE%\.egpt\egpt-brain"
-  --no-first-run --new-window
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9221 --user-data-dir="%USERPROFILE%\.egpt\egpt-brain" --no-first-run --new-window
 ```
 
 Linux/macOS: `google-chrome --remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain`

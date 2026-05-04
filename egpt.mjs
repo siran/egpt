@@ -1214,13 +1214,38 @@ function App() {
     }
   }, [items.length]);
 
-  // Startup auto-attach: if Chrome is already running with chatgpt/claude tabs
-  // open, register each as a session with an auto-generated name (cgpt1,
-  // claude1, etc.) so they're addressable as @cgpt1, @claude1, ... right away.
-  // Silently does nothing if Chrome isn't running.
+  // Startup: auto-start CDP proxy if Chrome is on :9221 but proxy not yet on
+  // :9222, then auto-attach any chatgpt/claude tabs already open.
   useEffect(() => {
+    let proxyHandle = null;
     let cancelled = false;
     (async () => {
+      if (!(await cdp.isRunning())) {
+        // Proxy not up — check if Chrome is directly on 9221
+        try {
+          await fetch('http://localhost:9221/json/version');
+        } catch {
+          return; // Chrome not running at all — empty room, fine
+        }
+        try {
+          const { startCdpProxy } = await import('./tools/cdp-proxy.mjs');
+          proxyHandle = await startCdpProxy({ onLog: () => {} });
+          setItems(p => [...p, {
+            id: Date.now(), author: 'system', _localOnly: true,
+            body: 'CDP proxy auto-started (:9221 → :9222)',
+          }]);
+        } catch (e) {
+          setItems(p => [...p, {
+            id: Date.now(), author: 'system', _localOnly: true,
+            body: `CDP proxy failed to start: ${e.message}`,
+          }]);
+          return;
+        }
+      }
+
+      if (cancelled) return;
+
+      // Auto-attach any chatgpt/claude tabs already open.
       try {
         const tabs = await cdp.listTabs();
         if (cancelled) return;
@@ -1230,7 +1255,6 @@ function App() {
           if (isInternalUrl(tab.url)) continue;
           const brainName = brainForUrl(tab.url);
           if (!brainName) continue;
-          // skip if the targetId is already attached
           if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
           const name = nextName(brainName, working);
           const emoji = nextEmoji(working);
@@ -1246,9 +1270,12 @@ function App() {
             body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
           }]);
         }
-      } catch { /* Chrome not running — empty room, fine */ }
+      } catch { /* proxy up but no matching tabs — fine */ }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      proxyHandle?.stop();
+    };
   }, []);
 
   // Top-level hotkeys. Ctrl+C exits cleanly (raw-mode means SIGINT never fires
