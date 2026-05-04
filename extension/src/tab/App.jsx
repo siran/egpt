@@ -4,6 +4,7 @@ import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import * as chatgpt from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeBrain from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../tools/cdp-ext.js';
+import { parseInput, helpText } from '../../../interpreter.mjs';
 
 const BRAIN_TYPES = { chatgpt, claude: claudeBrain };
 
@@ -277,25 +278,10 @@ export default function App() {
         setMessages([]);
         break;
       case '/help':
-        appendMsg('egpt', [
-          '/brain <type> [name]            open a brain tab and attach it',
-          '/attach <name> <brain> <tabId>  attach an existing tab as a brain',
-          '/detach <name>                  detach a session',
-          '/use <name>                     switch active session',
-          '/sessions                       list attached sessions',
-          '/tabs                           list open Chrome tabs (id + url)',
-          '/config [key [value]]           read or set config',
-          '/telegram disconnect            stop Telegram polling',
-          '/telegram @node [ttl:T]         hand off polling to another node',
-          '/clear                          clear the conversation',
-          '',
-          'Brain types: chatgpt  claude',
-          'Enter to send   Shift+Enter for newline',
-          'Prefix with @name to route to a specific session',
-        ].join('\n'));
+        appendMsg('egpt', helpText(Object.keys(BRAIN_TYPES)));
         break;
       default:
-        appendMsg('egpt', `Unknown command: ${slash}. Type /help for commands.`);
+        appendMsg('egpt', `!! unknown command: ${slash}`);
     }
   }, [activeSession, appendMsg]);
 
@@ -305,13 +291,24 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    if (trimmed.startsWith('/')) { handleCommand(trimmed); return; }
+    const parsed = parseInput(trimmed);
+
+    if (parsed.type === 'command') { handleCommand(trimmed); return; }
 
     appendMsg(userName, trimmed);
 
-    const m = trimmed.match(/^@(\S+)\s+([\s\S]*)$/);
-    const sessionName = m ? m[1] : activeSession;
-    const prompt = m ? m[2] : trimmed;
+    let sessionName, prompt;
+    if (parsed.type === 'mention') {
+      sessionName = parsed.target;
+      prompt = parsed.body || trimmed;
+      if (!sessionsRef.current.has(sessionName)) {
+        appendMsg('egpt', `!! unknown session "@${sessionName}" — /sessions to list, /brain <type> [name] to open`);
+        return;
+      }
+    } else {
+      sessionName = activeSession;
+      prompt = trimmed;
+    }
 
     if (!sessionName) {
       appendMsg('egpt', 'No session active. Use /brain chatgpt to open one.');

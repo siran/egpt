@@ -18,6 +18,7 @@ import * as cdp from './tools/cdp.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
+import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1483,103 +1484,10 @@ function App() {
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/file') { sysOut(FILE); return true; }
     if (cmd === '/help') {
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true, body: [
-        '── ROOM ─────────────────────────────────────────────',
-        'message — broadcast to all sessions',
-        '@name message — address one session only',
-        '/rules — write room etiquette into the file',
-        '/last [N] — tail N messages (default 10)',
-        '/file — show conversation file path',
-        '/exit — quit egpt',
-        '',
-        '── SESSIONS ─────────────────────────────────────────',
-        '/sessions — list active sessions',
-        '/open brain [name] — open a fresh tab/session',
-        '/attach [brain] [name] | [profile] — rescan Chrome / attach tab / start profile',
-        '/detach name — remove from room',
-        '/handle old new — rename a session',
-        '/emoji [name emoji] — show/set avatar',
-        '/bio [name [text]] — show/set session bio',
-        '',
-        '── BRAIN PROFILES (~/.egpt/brains/*.yaml) ───────────',
-        '/profiles — list all YAML profiles',
-        '/create-profile [name] — interactive wizard',
-        '/profile name url-or-id — quick-create from ChatGPT/Claude URL',
-        '/attach profile [session-name] — start a profile',
-        '  fields: name · type (codex|ccode|cdp_chat|cdp_claude)',
-        '          model · effort (low|medium|high) · cwd · url · emoji · bio',
-        '',
-        '── BROWSER (CDP) ────────────────────────────────────',
-        '/browse "task" — drive Chrome via CDP (auto-attaches an operator if none active)',
-        '/tabs [all] — list open pages',
-        '/refresh [@name] — re-poll tab or replay last message',
-        '/mirror [@src] [@tgt] — forward message between sessions',
-        '/continue — resume after captcha/login pause',
-        '/send-file [via=op] [path] @session ["instruction"] — prep & paste file',
-        '/paste-file session path — paste raw file directly',
-        '',
-        '── OPERATORS ────────────────────────────────────────',
-        '/summarize [all|last N] name — summarize conversation',
-        '/inject name [session] — drop summary into room or session',
-        '/save name — save last message verbatim',
-        '/summaries — list saved summaries',
-        '@codex exec: cmd — run shell command in codex\'s cwd',
-        '',
-        '── MISC ─────────────────────────────────────────────',
-        '/status — room snapshot: participants, interfaces, models',
-        '/prompts [on|off] — show full prompt sent to operators',
-        '/themes — list themes  ·  /theme <name> — switch theme (live)',
-        '/config [key] [value] — read/write local .egpt/config.json',
-        'Brains: ' + brainNamesForHelp(),
-        '─────────────────────────────────────────────────────',
-      ].join('\n'),
-      _tgBody: [
-        `${EGPT_EMOJI} <b>egpt help</b>`,
-        '',
-        '💬 <b>Room</b>',
-        '<code>message</code> — broadcast to all sessions',
-        '<code>@name message</code> — address one session',
-        '<code>/rules</code> — write room etiquette into the file',
-        '<code>/last [N]</code> — tail N conversation messages',
-        '',
-        '🤖 <b>Sessions</b>',
-        '<code>/sessions</code> — list active sessions',
-        '<code>/open brain [name]</code> — open new tab/session',
-        '<code>/attach [brain] [name] | [profile]</code> — rescan Chrome / attach tab / start profile',
-        '<code>/detach name</code> — remove from room',
-        '<code>/handle old new</code> — rename session',
-        '<code>/emoji [name emoji]</code> — set avatar',
-        '',
-        '🌐 <b>Browser (CDP)</b>',
-        '<code>/browse "task"</code> — drive Chrome via CDP (auto-attaches operator if none active)',
-        '<code>/tabs [all]</code> — list open pages',
-        '<code>/refresh [@name]</code> — re-poll tab or replay last message',
-        '<code>/mirror [@src] [@tgt]</code> — forward message between sessions',
-        '<code>/continue</code> — resume after captcha/login pause',
-        '',
-        '📁 <b>Files</b>',
-        '<code>/send-file [via=op] [path] @session ["instruction"]</code>',
-        '<code>/paste-file session path</code>',
-        '',
-        '⚙️ <b>Operators</b>',
-        '<code>/summarize [all|last N] name</code> — summarize conversation',
-        '<code>/inject name [session]</code> — drop summary into room',
-        '<code>/save name</code> — save last message verbatim',
-        '<code>@codex exec: cmd</code> — run shell command',
-        '',
-        '🧩 <b>Profiles</b>',
-        '<code>/profiles</code> — list YAML profiles',
-        '<code>/create-profile [name]</code> — interactive wizard',
-        '<code>/attach profile [name]</code> — start a profile',
-        '',
-        '🔧 <b>Misc</b>',
-        '<code>/status</code> — room snapshot',
-        '<code>/prompts [on|off]</code> — show operator prompts',
-        '<code>/themes</code> — list themes · <code>/theme &lt;name&gt;</code> — switch live',
-        '<code>/config [key] [value]</code> — read/write local config',
-        '<code>/file</code> — conversation file path',
-        '<code>/exit</code> — quit egpt',
-      ].join('\n'),
+      const bt = brainNamesForHelp();
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
+        body: helpText(bt ? [bt] : []),
+        _tgBody: helpHtml(bt ? [bt] : []),
       }]);
       return true;
     }
@@ -3185,9 +3093,11 @@ function App() {
       ...(meta.fromTelegram ? { _localOnly: true } : {}),
     }]);
 
-    if (text.startsWith('/')) {
+    const parsed = parseInput(text);
+
+    if (parsed.type === 'command') {
       const handled = await handleSlash(text);
-      if (!handled) sysOut(`!! unknown command: ${text.split(/\s+/)[0]}`);
+      if (!handled) sysOut(`!! unknown command: ${parsed.cmd}`);
       return;
     }
 
@@ -3198,12 +3108,11 @@ function App() {
     //   - any other message → broadcasts to every session in the room (CDP
     //     brains and local operators alike). Each may reply or stay silent
     //     per the polite-silence convention.
-    const mention = text.match(/^@(\S+)(?:\s+([\s\S]*))?$/);
     let activeSessions = sessions;
     let recipients;
     let userPayload;
-    if (mention) {
-      const token = mention[1];
+    if (parsed.type === 'mention') {
+      const token = parsed.target;
       let target = resolveAddressedSession(token, activeSessions);
       const brainName = canonicalBrainName(token);
       const brain = brainForName(token);
@@ -3220,7 +3129,7 @@ function App() {
       }
       if (target) {
         recipients = [target];
-        userPayload = (mention[2] ?? '').trim() || '?';
+        userPayload = parsed.body || '?';
       } else if (brain) {
         const matches = Object.entries(activeSessions)
           .filter(([_, s]) => canonicalBrainName(s.brain) === brainName)
