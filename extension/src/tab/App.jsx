@@ -1,22 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
-import * as chatgpt from '../../../brains/chatgpt-cdp.mjs';
-import * as claudeBrain from '../../../brains/claude-cdp.mjs';
+import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
+import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../tools/cdp-ext.js';
-import { parseInput, helpText } from '../../../interpreter.mjs';
+import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
 
-const BRAIN_TYPES = { chatgpt, claude: claudeBrain };
-
-const BRAIN_URLS = {
-  chatgpt: 'https://chatgpt.com',
-  claude:  'https://claude.ai',
+// Use the same brain names as the shell so /help and /open/@-mentions
+// match across surfaces. Aliases let the user type the short form too.
+const BRAINS = {
+  [chatgptCdp.name]: chatgptCdp,
+  [claudeCdp.name]:  claudeCdp,
 };
+const BRAIN_ALIASES = { chatgpt: 'chatgpt-cdp', claude: 'claude-cdp' };
+const canonicalBrain = (n) => BRAIN_ALIASES[n] ?? n;
 
 const BRAIN_PREFIX = {
-  chatgpt: 'cgpt',
-  claude:  'claude',
+  'chatgpt-cdp': 'cgpt',
+  'claude-cdp':  'claude',
 };
+
+const EXT_COMMAND_SET = commandSetFor('extension');
 
 let _msgIdSeq = 0;
 const mkId = () => ++_msgIdSeq;
@@ -83,6 +87,27 @@ export default function App() {
       if (!sessionsRef.current.has(name)) return name;
     }
     return `${prefix}${Date.now()}`;
+  };
+
+  // Resolve a tab spec (Chrome tab ID, URL substring, or title prefix) to
+  // a Chrome tab ID. Mirrors the shell's tabSpec resolution.
+  const resolveTabSpec = async (spec, brain = null) => {
+    const norm = String(spec ?? '').trim();
+    if (!norm) return null;
+    const tabs = await listTabs();
+    const asInt = Number.parseInt(norm, 10);
+    if (Number.isFinite(asInt) && tabs.some(t => t.id === asInt)) return asInt;
+    let m = tabs.find(t => t.url === norm);
+    if (m) return m.id;
+    m = tabs.find(t => t.url.includes(norm));
+    if (m) return m.id;
+    m = tabs.find(t => (t.title ?? '').toLowerCase().startsWith(norm.toLowerCase()));
+    if (m) return m.id;
+    if (brain?.urlMatch) {
+      const candidates = tabs.filter(t => brain.urlMatch.test(t.url));
+      if (candidates.length === 1) return candidates[0].id;
+    }
+    return null;
   };
 
   // ── brain submission ──────────────────────────────────────────
@@ -158,23 +183,35 @@ export default function App() {
     const slash = '/' + parts[0];
     appendMsg('egpt', `> ${cmd}`);
 
+    if (COMMAND_SET.has(slash) && !EXT_COMMAND_SET.has(slash)) {
+      appendMsg('egpt', `!! ${slash} is a shell-only command; not available in the extension`);
+      return;
+    }
+
     switch (slash) {
-      case '/brain': {
-        const [brainType, customName] = parts.slice(1);
-        if (!brainType) {
-          appendMsg('egpt', `Usage: /brain <type> [name]\nTypes: ${Object.keys(BRAIN_URLS).join('  ')}`);
+      case '/open': {
+        // /open <brainType> [name]
+        // Opens a fresh tab to the brain's homeUrl and registers it as a
+        // new session. Mirrors the shell's /open semantics.
+        const [rawType, customName] = parts.slice(1);
+        if (!rawType) {
+          appendMsg('egpt', `Usage: /open <brain> [name]\nBrains: ${Object.keys(BRAINS).join('  ')}`);
           return;
         }
-        const brain = BRAIN_TYPES[brainType];
-        const url   = BRAIN_URLS[brainType];
-        if (!brain || !url) {
-          appendMsg('egpt', `Unknown brain type "${brainType}". Available: ${Object.keys(BRAIN_URLS).join('  ')}`);
+        const brainType = canonicalBrain(rawType);
+        const brain = BRAINS[brainType];
+        if (!brain || !brain.homeUrl) {
+          appendMsg('egpt', `Unknown brain type "${rawType}". Available: ${Object.keys(BRAINS).join('  ')}`);
           return;
         }
         const name = customName || nextSessionName(brainType);
-        appendMsg('egpt', `Opening ${url}…`);
+        if (sessionsRef.current.has(name)) {
+          appendMsg('egpt', `Session "${name}" already exists.`);
+          return;
+        }
+        appendMsg('egpt', `Opening ${brain.homeUrl}…`);
         try {
-          const tab = await chrome.tabs.create({ url, active: false });
+          const tab = await chrome.tabs.create({ url: brain.homeUrl, active: false });
           appendMsg('egpt', `Waiting for tab ${tab.id} to load…`);
           await waitForTabLoad(tab.id);
           sessionsRef.current.set(name, { brain, targetId: tab.id });
@@ -182,22 +219,68 @@ export default function App() {
           if (!activeSession) setActiveSession(name);
           appendMsg('egpt', `Ready: ${name} → ${brainType} (tab ${tab.id})`);
         } catch (e) {
-          appendMsg('egpt', `/brain failed: ${e.message}`);
+          appendMsg('egpt', `/open failed: ${e.message}`);
         }
         break;
       }
       case '/attach': {
-        const [name, brainType, targetIdStr] = parts.slice(1);
-        if (!name || !brainType || !targetIdStr) {
-          appendMsg('egpt', 'Usage: /attach <name> <brainType> <tabId>\nBrain types: chatgpt  claude');
+        // /attach                              rescan tabs, attach any matching
+        // /attach <brainType> [name] [tabSpec] explicit attach to existing tab
+        const args = parts.slice(1);
+        if (args.length === 0) {
+          // Rescan: attach every chatgpt/claude tab that isn't already a session
+          const tabs = await listTabs();
+          const additions = [];
+          for (const tab of tabs) {
+            const matchedType = Object.keys(BRAINS).find(k => BRAINS[k].urlMatch?.test(tab.url));
+            if (!matchedType) continue;
+            const taken = [...sessionsRef.current.values()].some(s => s.targetId === tab.id);
+            if (taken) continue;
+            const name = nextSessionName(matchedType);
+            sessionsRef.current.set(name, { brain: BRAINS[matchedType], targetId: tab.id });
+            additions.push(`${name} (${matchedType})`);
+          }
+          if (!additions.length) appendMsg('egpt', 'No new tabs to attach.');
+          else {
+            syncSessionsList();
+            if (!activeSession) setActiveSession([...sessionsRef.current.keys()][0]);
+            appendMsg('egpt', `Attached: ${additions.join(', ')}`);
+          }
           return;
         }
-        const brain = BRAIN_TYPES[brainType];
+        const [rawType, customName, ...tabSpecParts] = args;
+        const brainType = canonicalBrain(rawType);
+        const brain = BRAINS[brainType];
         if (!brain) {
-          appendMsg('egpt', `Unknown brain type "${brainType}". Available: ${Object.keys(BRAIN_TYPES).join('  ')}`);
+          appendMsg('egpt', `Unknown brain type "${rawType}". Available: ${Object.keys(BRAINS).join('  ')}`);
           return;
         }
-        const targetId = parseInt(targetIdStr, 10);
+        const tabSpec = tabSpecParts.join(' ').trim();
+        let targetId = null;
+        if (tabSpec) {
+          targetId = await resolveTabSpec(tabSpec, brain);
+          if (!targetId) {
+            appendMsg('egpt', `Could not resolve "${tabSpec}" to a tab. /tabs to list.`);
+            return;
+          }
+        } else {
+          const tabs = (await listTabs()).filter(t => brain.urlMatch?.test(t.url));
+          if (tabs.length === 0) {
+            appendMsg('egpt', `No open ${brainType} tabs. /open ${brainType} to create one.`);
+            return;
+          }
+          if (tabs.length > 1) {
+            const lst = tabs.map(t => `  ${t.id}  ${(t.title ?? '').slice(0, 50)}`).join('\n');
+            appendMsg('egpt', `Multiple ${brainType} tabs open. Specify tab ID:\n${lst}`);
+            return;
+          }
+          targetId = tabs[0].id;
+        }
+        const name = customName || nextSessionName(brainType);
+        if (sessionsRef.current.has(name)) {
+          appendMsg('egpt', `Session "${name}" already exists.`);
+          return;
+        }
         sessionsRef.current.set(name, { brain, targetId });
         syncSessionsList();
         if (!activeSession) setActiveSession(name);
@@ -278,7 +361,7 @@ export default function App() {
         setMessages([]);
         break;
       case '/help':
-        appendMsg('egpt', helpText(Object.keys(BRAIN_TYPES)));
+        appendMsg('egpt', helpText(Object.keys(BRAINS), { surface: 'extension' }));
         break;
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
