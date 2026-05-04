@@ -6,12 +6,17 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
 
-// Redirect tools/cdp.mjs → extension's chrome.debugger adapter.
+// Redirect tools/cdp.mjs → extension's chrome.debugger adapter, and
+// tools/bus.mjs → the chrome.debugger-based bus adapter. Same exported
+// names so consumer code is identical across surfaces.
 const cdpShim = {
   name: 'cdp-shim',
   setup(b) {
     b.onResolve({ filter: /\/tools\/cdp\.mjs$/ }, () => ({
       path: resolve(__dirname, 'src/tools/cdp-ext.js'),
+    }));
+    b.onResolve({ filter: /\/tools\/bus\.mjs$/ }, () => ({
+      path: resolve(__dirname, 'src/tools/bus-ext.js'),
     }));
   },
 };

@@ -15,6 +15,7 @@ import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
 import * as cdp from './tools/cdp.mjs';
+import * as bus from './tools/bus.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
@@ -997,6 +998,10 @@ const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
 const USER_EMOJI = '👤';
 const EGPT_EMOJI = '🧠';
 
+// Identifier this shell uses on the CDP control-plane bus. PID makes it
+// unique per process so two shells don't collide.
+const BUS_NODE_ID = `shell-${process.pid}`;
+
 // Visual avatars for sessions. Auto-assigned on session creation; users can
 // rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
 // before recycling — collisions are visually noisy but not functional.
@@ -1203,6 +1208,9 @@ function App() {
   const bridgeRef = useRef(null);
   const wizardRef = useRef(null);
   const sentItemsCountRef = useRef(0);
+  // Bus (control-plane CDP tab) state: targetId + subscription handle.
+  const busTargetIdRef = useRef(null);
+  const busSubRef = useRef(null);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -1353,10 +1361,52 @@ function App() {
           }]);
         }
       } catch { /* proxy up but no matching tabs — fine */ }
+
+      // Bus tab: open or find the shared control-plane tab and subscribe.
+      // Cross-process events (extension <-> shell) ride this. Each node
+      // posts node-online when it joins so the bus shows who's connected.
+      try {
+        if (cancelled) return;
+        const located = await bus.findOrOpenBusTab();
+        if (!located) return;
+        busTargetIdRef.current = located.targetId;
+        const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
+          if (cancelled) return;
+          if (ev.from === BUS_NODE_ID) return; // ignore our own echoes
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+            body: `bus: ${ev.type} from ${ev.from ?? '?'}${ev.to ? ` -> ${ev.to}` : ''}`,
+          }]);
+        });
+        busSubRef.current = sub;
+        await bus.postEvent(located.targetId, {
+          type: 'node-online', from: BUS_NODE_ID, role: 'shell',
+        });
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+          body: located.opened ? `bus tab opened (${bus.busUrl()})` : `bus tab attached`,
+        }]);
+      } catch (e) {
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+          body: `bus: not joined (${e.message})`,
+        }]);
+      }
     })();
     return () => {
       cancelled = true;
-      proxyHandle?.stop();
+      // Best-effort node-offline announce, then stop subscription + proxy.
+      const tid = busTargetIdRef.current;
+      const sub = busSubRef.current;
+      busTargetIdRef.current = null;
+      busSubRef.current = null;
+      (async () => {
+        if (tid) {
+          try { await bus.postEvent(tid, { type: 'node-offline', from: BUS_NODE_ID }); } catch {}
+        }
+        sub?.stop?.();
+        proxyHandle?.stop();
+      })();
     };
   }, []);
 

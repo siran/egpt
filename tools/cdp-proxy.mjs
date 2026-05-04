@@ -17,12 +17,14 @@ import { createServer }     from 'node:http';
 import { createConnection } from 'node:net';
 import { randomBytes }      from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join }             from 'node:path';
+import { dirname, join }    from 'node:path';
 import { homedir }          from 'node:os';
 import { fileURLToPath }    from 'node:url';
 
 const EGPT_HOME   = join(homedir(), '.egpt');
 const TOKEN_FILE  = join(EGPT_HOME, 'cdp-token');
+const PROXY_DIR   = dirname(fileURLToPath(import.meta.url));
+const BUS_HTML_PATH = join(PROXY_DIR, 'bus.html');
 
 export function loadOrCreateToken() {
   mkdirSync(EGPT_HOME, { recursive: true });
@@ -43,12 +45,37 @@ export function startCdpProxy({
   const prefix = `/${token}`;
 
   // ── HTTP handler ───────────────────────────────────────────────
+  // Set of paths that serve the bus log. We accept both the bare form
+  // (/bus.html) and the tokened form (/<token>/bus.html) so both the
+  // extension (which doesn't know the token) and the shell (which does)
+  // can resolve the same URL. Posting events requires a CDP attach to
+  // the tab, which still goes through the token-protected layer.
+  const busPaths = new Set([
+    '/bus.html', '/bus', '/bus/',
+    `${prefix}/bus.html`, `${prefix}/bus`, `${prefix}/bus/`,
+  ]);
+
   const server = createServer(async (req, res) => {
+    // Static bus log — served unauthenticated. See note above.
+    if (req.url && busPaths.has(req.url)) {
+      try {
+        const html = readFileSync(BUS_HTML_PATH, 'utf8');
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'no-cache',
+        }).end(html);
+      } catch (e) {
+        res.writeHead(500, { 'content-type': 'text/plain' }).end(`bus.html missing: ${e.message}`);
+      }
+      return;
+    }
+
     if (!req.url?.startsWith(prefix + '/') && req.url !== prefix) {
       res.writeHead(401, { 'content-type': 'text/plain' }).end('Unauthorized');
       return;
     }
     const path = req.url.slice(prefix.length) || '/';
+
     try {
       const upstream = await fetch(`http://localhost:${chromePort}${path}`);
       const body     = await upstream.text();

@@ -4,7 +4,12 @@ import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../tools/cdp-ext.js';
+import * as bus from '../../../tools/bus.mjs';
 import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
+
+// Identifier this extension instance uses on the bus. UUID-ish so
+// reloads don't collide.
+const BUS_NODE_ID = `ext-${Math.random().toString(36).slice(2, 10)}`;
 
 // Use the same brain names as the shell so /help and /open/@-mentions
 // match across surfaces. Aliases let the user type the short form too.
@@ -440,6 +445,50 @@ export default function App() {
     startBridge();
     return () => bridgeRef.current?.stop();
   }, [startBridge]);
+
+  // ── CDP control-plane bus ─────────────────────────────────────
+  // The extension and the egpt shell coordinate via a tab in the
+  // brain Chrome that serves bus.html. We open or find that tab,
+  // attach a debugger session for events, and post node-online so
+  // the shell sees us. Long content (brain replies, file pastes)
+  // never travels here — only short control events.
+  const busTargetIdRef = useRef(null);
+  const busSubRef = useRef(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const located = await bus.findOrOpenBusTab();
+        if (cancelled || !located) return;
+        busTargetIdRef.current = located.targetId;
+        const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
+          if (cancelled) return;
+          if (ev.from === BUS_NODE_ID) return; // ignore our own echoes
+          appendMsg('egpt', `bus: ${ev.type} from ${ev.from ?? '?'}${ev.to ? ` -> ${ev.to}` : ''}`);
+        });
+        busSubRef.current = sub;
+        await bus.postEvent(located.targetId, {
+          type: 'node-online', from: BUS_NODE_ID, role: 'extension',
+        });
+        appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached');
+      } catch (e) {
+        appendMsg('egpt', `bus: not joined (${e.message})`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      const tid = busTargetIdRef.current;
+      const sub = busSubRef.current;
+      busTargetIdRef.current = null;
+      busSubRef.current = null;
+      (async () => {
+        if (tid) {
+          try { await bus.postEvent(tid, { type: 'node-offline', from: BUS_NODE_ID }); } catch (_) {}
+        }
+        sub?.stop?.();
+      })();
+    };
+  }, [appendMsg]);
 
   // ── auto-scroll ───────────────────────────────────────────────
 
