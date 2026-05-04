@@ -110,48 +110,46 @@ export function commandSetFor(surface) {
 }
 
 // ── Help renderers ────────────────────────────────────────────────────────────
+//
+// /help is a common block: both surfaces render the FULL registry. Commands
+// that only exist on one surface get a marker — (shell) or (ext) — so users
+// see the whole egpt vocabulary and know which calls work locally vs. need
+// to be routed (today: typed in the other surface; eventually: through the
+// distributed-room CDP-tab bridge).
 
 const PAD = 44; // usage column width
 
-function visibleEntries(surface) {
-  if (!surface) return COMMANDS;
-  const out = [];
-  let pendingSection = null;
-  for (const entry of COMMANDS) {
-    if (entry.section) { pendingSection = entry; continue; }
-    if (entry.surface !== 'both' && entry.surface !== surface) continue;
-    if (pendingSection) { out.push(pendingSection); pendingSection = null; }
-    out.push(entry);
-  }
-  return out;
+function surfaceMark(entry) {
+  if (entry.surface === 'shell') return '  (shell)';
+  if (entry.surface === 'extension') return '  (ext)';
+  return '';
 }
 
-/** Plain-text help. Pass `{ surface }` to filter. */
-export function helpText(brainTypes = [], { surface } = {}) {
-  const entries = visibleEntries(surface);
+/** Plain-text help. Same output on every surface. */
+export function helpText(brainTypes = []) {
   const lines = [''];
-  for (const entry of entries) {
+  for (const entry of COMMANDS) {
     if (entry.section) {
       lines.push(`── ${entry.section} ${'─'.repeat(Math.max(0, PAD - entry.section.length - 4))}`);
       continue;
     }
-    lines.push(`${entry.usage.padEnd(PAD)}${entry.desc}`);
+    lines.push(`${entry.usage.padEnd(PAD)}${entry.desc}${surfaceMark(entry)}`);
   }
   if (brainTypes.length) lines.push('', `Brain types: ${brainTypes.join('  ')}`);
   lines.push('─'.repeat(PAD + 20), '');
   return lines.join('\n');
 }
 
-/** Telegram HTML help (used by the shell's Telegram bridge). */
-export function helpHtml(brainTypes = [], { surface } = {}) {
-  const entries = visibleEntries(surface);
+/** Telegram HTML help. Same content as helpText. */
+export function helpHtml(brainTypes = []) {
   const lines = ['🤖 <b>egpt help</b>', ''];
-  for (const entry of entries) {
+  for (const entry of COMMANDS) {
     if (entry.section) {
       lines.push(`\n<b>${entry.section}</b>`);
       continue;
     }
-    lines.push(`<code>${entry.usage}</code> — ${entry.desc}`);
+    const mark = surfaceMark(entry);
+    lines.push(`<code>${entry.usage}</code> — ${entry.desc}${mark ? ` <i>${mark.trim()}</i>` : ''}`);
   }
   if (brainTypes.length) lines.push('', `Brain types: ${brainTypes.join('  ')}`);
   return lines.join('\n');

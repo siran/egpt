@@ -516,7 +516,11 @@ Appearance & config:
   /theme <name|next|prev>       switch theme live (no restart needed)
   /config                       show local .egpt/config.json + valid keys
   /config <key>                 read a config value
-  /config <key> <value>         write a config value (keys: theme, show_prompts, unix_paths)
+  /config <key> <value>         write a config value
+                                keys: theme, show_prompts, unix_paths, tz_label
+                                (tz_label overrides the system tz suffix on
+                                 timestamps with a short city tag like NYC,
+                                 MAD, BEI — useful in distributed rooms)
 
 Conversation routing:
   @<name> <message>             address one session for THIS turn only

@@ -943,16 +943,26 @@ function resolveConversationSpec(spec) {
 if (!existsSync(FILE)) writeFileSync(FILE, `# Conversation\n\n---\n\n`);
 
 const _pad2 = (n) => String(n).padStart(2, '0');
-// On-disk timestamp in conversation.md. Local time (matches fmtTs display).
-const ts = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+// Timezone label shown next to local-time stamps. Defaults to the system's
+// short tz name (EST, EDT, GMT-5, etc.) via Intl. Override with config
+// key `tz_label` for cities like "NYC", "MAD", "BEI" — distributed rooms
+// where readers want to know the speaker's geography at a glance.
+function tzLabel() {
+  if (EGPT_CONFIG.tz_label) return String(EGPT_CONFIG.tz_label);
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date());
+    return parts.find(p => p.type === 'timeZoneName')?.value ?? '';
+  } catch { return ''; }
+}
+const _stamp = (d) => {
+  const tz = tzLabel();
+  const base = `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+  return tz ? `${base} ${tz}` : base;
 };
+// On-disk timestamp in conversation.md. Local time + tz label.
+const ts = () => _stamp(new Date());
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
-const fmtTs = (ms) => {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${_pad2(d.getMonth()+1)}-${_pad2(d.getDate())} ${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
-};
+const fmtTs = (ms) => _stamp(new Date(ms));
 
 // Resolve a user-typed tab spec to a chrome targetId.
 // Accepts: full chrome targetId, targetId prefix (≥6 chars), full URL, partial URL, UUID inside URL.
@@ -1605,8 +1615,8 @@ function App() {
     if (cmd === '/help') {
       const bt = brainNamesForHelp();
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
-        body: helpText(bt, { surface: 'shell' }),
-        _tgBody: helpHtml(bt, { surface: 'shell' }),
+        body: helpText(bt),
+        _tgBody: helpHtml(bt),
       }]);
       return true;
     }
@@ -1723,6 +1733,7 @@ function App() {
         theme:        'color theme name  (see /themes)',
         show_prompts: 'show full operator prompt before each turn  (true/false)',
         unix_paths:   'display filesystem paths in POSIX style  (true/false)',
+        tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
       };
       const parts = arg.trim().split(/\s+/);
       const key = parts[0];
@@ -2334,34 +2345,60 @@ function App() {
       return true;
     }
     if (cmd === '/refresh') {
-      // /refresh [@<name>] — re-poll a CDP tab and append whatever the
-      // assistant message currently shows. Recovery for premature stream-end
-      // detection. CDP-only: subprocess operators have no tab to peek.
+      // /refresh [@<name>]
+      //   CDP brain:  re-poll the tab and append whatever the AI currently shows.
+      //               Recovery for premature stream-end detection.
+      //   Operator:   replay the last user message that was addressed to (or
+      //               broadcast to — i.e., NOT addressed to a different session)
+      //               this session. Triggers a fresh response from the operator.
       const target = arg.trim().replace(/^@/, '');
       let session, sessionName;
       if (target) {
         if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
         sessionName = target; session = sessions[target];
       } else {
-        const cdps = Object.entries(sessions).filter(([_, s]) => brainForName(s.brain)?.urlMatch);
-        if (cdps.length !== 1) {
-          sysOut(`usage: /refresh [@<session>]\n  ${cdps.length === 0 ? 'no CDP sessions in the room' : `multiple CDP sessions — specify one: ${cdps.map(([n]) => n).join(', ')}`}`);
-          return true;
+        if (Object.keys(sessions).length === 1) {
+          sessionName = Object.keys(sessions)[0]; session = sessions[sessionName];
+        } else {
+          const cdps = Object.entries(sessions).filter(([_, s]) => brainForName(s.brain)?.urlMatch);
+          if (cdps.length !== 1) {
+            const all = Object.keys(sessions);
+            sysOut(`usage: /refresh [@<session>]\n  ${all.length === 0 ? 'no sessions in the room' : `pick one: ${all.join(', ')}`}`);
+            return true;
+          }
+          sessionName = cdps[0][0]; session = cdps[0][1];
         }
-        sessionName = cdps[0][0]; session = cdps[0][1];
       }
       const brain = brainForName(session.brain);
-      if (!brain?.peek) {
-        sysOut(`/refresh only works on CDP sessions; "${sessionName}" is ${session.brain}`);
-        return true;
+      if (brain?.peek) {
+        // CDP path: re-poll the tab and append the latest assistant text.
+        try {
+          const text = await brain.peek(session.options);
+          if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
+          setItems(p => [...p, { id: Date.now() + Math.random(), author: sessionName, body: text }]);
+          await append(sessionName, text);
+          sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
+        } catch (e) { sysOut(`!! ${e.message}`); }
+      } else {
+        // Operator path: replay the last user message that this session
+        // would have seen (broadcast OR explicitly addressed to it). A
+        // message addressed to a DIFFERENT session is not replayed.
+        const fileText = await readFile(FILE, 'utf8');
+        const msgs = parseMessages(fileText);
+        const wasForSession = (body) => {
+          if (!body.startsWith('@')) return true; // broadcast
+          // body looks like "@name ..." — match on @<sessionName> followed by ws/EOL
+          return body.startsWith(`@${sessionName} `) || body.startsWith(`@${sessionName}\n`) || body === `@${sessionName}`;
+        };
+        const lastUserMsg = [...msgs].reverse().find(m => m.author === 'You' && wasForSession(m.body));
+        if (!lastUserMsg) { sysOut(`no user message to replay for ${sessionName}`); return true; }
+        const payload = lastUserMsg.body.startsWith(`@${sessionName}`)
+          ? lastUserMsg.body.slice(sessionName.length + 1).trim()
+          : lastUserMsg.body;
+        sysOut(`replaying last message to ${sessionName}…`);
+        setBusy(true);
+        try { await runBrainTurn(sessionName, payload); } finally { setBusy(false); }
       }
-      try {
-        const text = await brain.peek(session.options);
-        if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
-        setItems(p => [...p, { id: Date.now() + Math.random(), author: sessionName, body: text }]);
-        await append(sessionName, text);
-        sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
     if (cmd === '/summaries' || cmd === '/list-saved' || cmd === '/saved') {

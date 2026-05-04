@@ -361,7 +361,7 @@ export default function App() {
         setMessages([]);
         break;
       case '/help':
-        appendMsg('egpt', helpText(Object.keys(BRAINS), { surface: 'extension' }));
+        appendMsg('egpt', helpText(Object.keys(BRAINS)));
         break;
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
