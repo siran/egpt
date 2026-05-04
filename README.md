@@ -128,7 +128,7 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 - ✅ Auto-recovery: when a tab dies, the daemon silently rebinds to a single matching open tab
 - ✅ Browser lifecycle: `launch-brain.sh brain | proxy | stop | status`, persistent profile dir at `~/.egpt/egpt-brain`, Ctrl+C closes Chrome cleanly via CDP `Browser.close`
 - ✅ **Token-authenticated CDP proxy** (`tools/cdp-proxy.mjs`) — Chrome listens on 9221 (localhost-only); proxy on 9222 requires a secret token in the URL path so LAN access is safe without `--remote-allow-origins`
-- ✅ **Browser extension** (`extension/`) — same brains and Telegram bridge running inside Chrome; uses `chrome.debugger` API instead of external ports; `/brain chatgpt` opens and attaches a ChatGPT tab in the same Chrome window
+- ✅ **Browser extension** (`extension/`) — same brains and Telegram bridge running inside Chrome; uses `chrome.debugger` API instead of external ports; `/open chatgpt-cdp` opens and attaches a ChatGPT tab in the same Chrome window
 - ✅ `/refresh` — re-poll the current CDP tab and append the full assistant message (recovery from premature streaming-end detection)
 - ✅ `/last [N]` — replay the last N messages from the conversation file
 - ✅ **Terminal themes** — 10 built-in color themes (`/themes` to list, `/theme <name>` or `/theme next|prev` to switch live)
@@ -154,8 +154,8 @@ npm run build:ext                            # build the browser extension
 #    and --user-data-dir=%USERPROFILE%\.egpt\egpt-brain)
 # 2. Load the extension: chrome://extensions → Developer mode → Load unpacked → extension/
 # 3. Click the egpt icon and type:
-#      /brain chatgpt            ← opens + attaches a ChatGPT tab
-#      /brain claude             ← same for Claude
+#      /open chatgpt-cdp         ← opens + attaches a ChatGPT tab
+#      /open claude-cdp          ← same for Claude
 
 # ── shell (Ink terminal UI) ──────────────────────────────────────────────────
 # Open Chrome via the egpt shortcut first, then:
@@ -222,26 +222,53 @@ Sobre la pregunta original...
 ## Slash commands
 
 ```
-/exit · /file · /help
-/open <brain> [name]            open/register a new session
-/profiles                       list YAML brain profiles
-/profile <name> <urlOrId>       create a ChatGPT/Claude URL profile
-/attach <profile>               start a configured brain profile
+/exit · /file · /help · /status · /last [N] · /rules
+
+Conversation files:
+/conversations                  list available conversation files
+/conversation <name|path>       switch the room to a different conversation file
+
+Sessions:
+/open <brain> [name]            open a new tab/subprocess and register a session
 /attach                         re-scan Chrome and attach matching tabs
-/attach <brain>                 attach CDP tabs or create a local session
-/attach <brain> <name> [tab]    explicit attach; tabSpec: targetId | url | uuid | prefix
+/attach <profile> [name]        start a configured YAML brain profile
+/attach <brain> [name] [tab]    attach CDP tabs or create a local session
+                                (tabSpec: targetId | url | uuid | prefix)
+/detach <name>                  remove a session from the room
 /sessions                       list registered sessions
+/handle · /emoji · /bio         rename / set avatar / set bio
+/profiles · /profile · /create-profile   YAML brain profiles
+
+Browser brains (CDP):
 /tabs [all]                     list pages in the brain Chrome (chrome:// hidden)
-/brain [status|stop]            brain Chrome lifecycle (CDP-based)
-/refresh                        re-poll current CDP tab; append full text
+/refresh [@name]                re-poll a CDP tab; append full text
                                 (use when streaming was cut off)
+/browse [via=<op>] [url] [@<n>] ["instr"]
+                                drive Chrome via CDP, or delegate to operator
+/continue                       resume after a browser.waitForHuman() pause
+/mirror [@src] [@tgt]           forward a message between sessions
+
+Files:
 /send-file [via=<op>] [<path>] @<session> ["<instruction>"]
                                 prepare excerpt, or send prepared file
 /paste-file <session> <path>     paste a local file/excerpt into one session
                                 (--before/--after markers, --ask prompt)
-/last [N]                       show last N messages from the file (default 10)
+
+Operators / ccode resume:
+/history [N] · /session [name] [<id>|none] [cwd]
 @codex exec: <command>          run shell command in codex cwd
 @codex exec: cd <dir>           change codex cwd for later commands
+
+Reusable distillations:
+/save · /summarize · /summaries · /inject · /prompts
+
+Appearance & config:
+/themes · /theme <name|next|prev> · /config [key [value]]
+
+Brain Chrome lifecycle is run from the shell, not from inside egpt:
+~/src/egpt/launch-brain.sh        # start brain + extension Chrome + proxy
+~/src/egpt/launch-brain.sh stop   # close brain Chrome via CDP
+~/src/egpt/launch-brain.sh status
 ```
 
 `/send-file` uses a local operator (`codex`/`ccode`) to prepare an excerpt, then
@@ -329,33 +356,38 @@ phone      Telegram app (human)           ────────────�
 ```
 egpt/
 ├── egpt.mjs               # main app: Ink UI + slash commands + session state
+├── interpreter.mjs        # shared input parser + command registry (shell + extension)
 ├── brains/
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
 │   ├── claude-cdp.mjs     # Claude.ai selectors + inject + poll
 │   ├── claude-code.mjs    # subprocess `claude --print --output-format stream-json`
-│   └── codex.mjs          # subprocess `codex exec` + direct `exec:` shell operator
+│   ├── codex.mjs          # subprocess `codex exec` + direct `exec:` shell operator
+│   └── type/              # repo-defined YAML brain profiles + skeleton
 ├── bridges/
 │   └── telegram.mjs       # Telegram Bot API bridge; competitive polling, handoff protocol
 ├── tools/
 │   ├── cdp.mjs            # CDP plumbing for shell: listTabs, streamFromTab, etc.
 │   ├── cdp-proxy.mjs      # token-auth reverse proxy (Chrome:9221 → LAN:9222)
+│   ├── browser-tools.mjs  # CDP control library for operator scripts
 │   ├── template.mjs       # command prompt template loader
 │   └── theme.mjs          # terminal color theme loader
 ├── extension/             # Chrome MV3 extension (same brains, no external ports)
 │   ├── manifest.json
 │   ├── build.mjs          # esbuild; shims tools/cdp.mjs → chrome.debugger adapter
 │   └── src/
-│       ├── tab/           # main UI (App.jsx, Input.jsx, style.css)
+│       ├── tab/           # main UI (App.jsx, Input.jsx, style.css, index.html)
 │       ├── settings/      # settings page (bot token, allowed users, mirror mode)
-│       ├── background.js  # service worker
-│       └── tools/
-│           └── cdp-ext.js # chrome.debugger adapter (drop-in for tools/cdp.mjs)
+│       ├── tools/cdp-ext.js  # chrome.debugger adapter (drop-in for tools/cdp.mjs)
+│       ├── storage.js     # IndexedDB conversation history
+│       └── background.js  # service worker (opens the tab)
 ├── commands/              # operator prompt templates with {{variable}} substitution
 ├── themes/                # terminal color themes (10 shipped)
 ├── launch-brain.sh        # Chrome launcher + proxy manager (Linux/macOS/MSYS2/Windows)
-│                          #   brain   — launch Chrome + proxy
-│                          #   proxy   — proxy only (Chrome already open via shortcut)
-│                          #   stop    — close via CDP Browser.close
+│                          #   brain      — launch Chrome + proxy
+│                          #   extension  — launch extension Chrome
+│                          #   both       — both at once
+│                          #   proxy      — proxy only (Chrome already open via shortcut)
+│                          #   stop       — close via CDP Browser.close
 │                          #   status
 ├── package.json
 ├── README.md

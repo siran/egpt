@@ -48,7 +48,7 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 ~/src/egpt/launch-brain.sh stop               # close cleanly via CDP
 
 # log in to chatgpt.com / claude.ai once in the brain Chrome window
-# the profile persists at ~/.egpt/brain-profile
+# the profile persists at ~/.egpt/egpt-brain
 
 # in egpt (brain Chrome running):
 # at startup egpt scans tabs and auto-attaches:
@@ -242,8 +242,12 @@ Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You ca
 ### What egpt does at startup
 
 1. Starts the room using the chosen Markdown conversation file.
-2. If brain Chrome is running on port 9222, scans tabs and auto-attaches each matching one as `cgpt1`, `claude1`, etc.
-3. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
+2. Detects brain Chrome on port 9221 (its private debug port). If found and the
+   token-auth proxy isn't already running on 9222, egpt auto-starts the proxy
+   and writes `~/.egpt/cdp-token` so future calls go through it.
+3. Once the proxy is up (port 9222), scans tabs and auto-attaches each
+   matching one as `cgpt1`, `claude1`, etc.
+4. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
 
 If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1`, `/open codex`, or `/attach codex`.
 
@@ -443,63 +447,88 @@ to send a larger excerpt intentionally.
 
 ## Slash command reference
 
+The shell's `/help` is generated from `interpreter.mjs`, which is the source
+of truth. The list below mirrors it; if they ever diverge, the registry wins.
+
 ```
-General:
+Room:
   /exit                         leave egpt
   /file                         show the conversation file path
+  /status                       room snapshot: sessions, files, config
+  /conversations                list available conversation files
+  /conversation <name|path>     switch the room to a different conversation file
+                                (creates it with a stub header if missing)
+  /last [N]                     show last N messages from the file (default 10)
+  /rules                        write room-rules system message into the file
   /help                         this list
 
 Sessions (named participants in the room):
-  /open <brain> [name]          open a new tab + register session (auto-name if no name)
-  /profiles                     list YAML brain profiles
-  /profile <name> <urlOrId>      create a ChatGPT/Claude URL profile
-  /attach <profile>             start a configured brain profile
+  /open <brain> [name]          open a new tab/subprocess and register a session
   /attach                       rescan Chrome and attach any new tabs
-  /attach <brain>               attach CDP tabs or create a local session
-  /attach <brain> <name> [tab]  explicit attach
+  /attach <profile> [name]      start a YAML brain profile
+  /attach <brain> [name] [tab]  attach CDP tabs or create a local session
+  /detach <name>                remove a session from the room
   /sessions                     list registered sessions
+  /sessions default <name>      set the default operator session (persisted)
+  /sessions default clear       clear the default
+  /handle <old> <new>           rename a session
+  /emoji [name emoji]           show or set a session avatar
+  /bio [name [text]]            show or set a session bio
+
+Profiles (~/.egpt/brains/*.yaml):
+  /profiles                     list YAML brain profiles
+  /profile <name> <urlOrId>     create a ChatGPT/Claude URL profile
+  /create-profile [name]        interactive profile wizard
 
 Browser brains:
   /tabs [all]                   list pages in brain Chrome (chrome:// hidden)
-  /brain [status|stop]          brain Chrome lifecycle (CDP-based)
-  /refresh                      re-poll current CDP tab; append the latest assistant text
+  /refresh [@<session>]         re-poll a CDP tab; append latest assistant text
                                 (recovery for premature streaming termination)
-  /browse ["task"]              drive Chrome via CDP (auto-attaches operator if none active)
+  /browse [via=<op>] [url] [@name] ["instr"]
+                                drive Chrome via CDP (auto-attaches operator if none active)
+  /continue                     resume after browser.waitForHuman() pause
+  /mirror [@<src>] [@<tgt>]     forward a message between sessions
+
+Files:
   /send-file [via=<op>] [<path>] @<session> ["<instruction>"]
                                 prepare excerpt, or send prepared file
   /paste-file <session> <path>  paste a local file/excerpt into one session
                                 supports --before/--after markers and --ask
 
-Appearance:
+Local brains/operators:
+  /history [N]                  list recent ccode sessions on disk (newest first)
+  /session [<name>] <id>        --resume the session against an existing JSONL
+                                (cwd auto-detected unless overridden)
+  /session [<name>] none        back to stateless mode
+  @codex exec: <command>        run shell command in codex cwd
+  @codex exec: cd <dir>         change codex cwd for later commands
+
+Reusable distillations (~/.egpt/summaries/<name>.md):
+  /save <name>                  save the latest non-system message verbatim
+  /summarize [all|last N] <name> [<brain>]
+                                fresh agent compresses the room → summary file
+  /summaries                    list saved summaries
+  /inject <name> [session]      drop a saved summary into the room or one session
+  /prompts [on|off]             show/hide the full prompt sent to operators
+
+Appearance & config:
   /themes                       list available color themes
-  /theme <name>                 switch theme live (no restart needed)
-  /theme next|prev              rotate through themes
+  /theme <name|next|prev>       switch theme live (no restart needed)
   /config                       show local .egpt/config.json + valid keys
   /config <key>                 read a config value
   /config <key> <value>         write a config value (keys: theme, show_prompts, unix_paths)
 
-Local brains/operators:
-  /history [N]                  list recent ccode sessions on disk (newest first)
-  /session [<id>]               continue an existing ccode session via --resume
-                                (cwd auto-detected from the JSONL)
-  /session <id> <cwd>           explicit cwd if auto-detection fails
-  /session none                 back to stateless mode
-  @codex exec: <command>        run shell command in codex cwd
-  @codex exec: cd <dir>         change codex cwd for later commands
-
-Conversation:
-  /rules                        write room-rules system message into the file
-  /last [N]                     show last N messages from the file (default 10)
-  @<name> <message>             address a session for THIS turn only
-
-Reusable distillations (~/.egpt/summaries/<name>.md):
-  /save <name>                  save the latest non-system message verbatim
-  /summarize <name>              fresh agent compresses the room → summary file
-  /summaries                    list saved summaries
-  /inject <name> [session]      drop a saved summary into the room or one session
+Conversation routing:
+  @<name> <message>             address one session for THIS turn only
+  <message>                     broadcast to every session in the room
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
 Brains: ccode, codex, chatgpt-cdp, claude-cdp
+
+Brain Chrome lifecycle is managed by launch-brain.sh, NOT a slash command:
+  ~/src/egpt/launch-brain.sh        # start brain + extension Chrome + proxy
+  ~/src/egpt/launch-brain.sh stop   # close brain Chrome via CDP
+  ~/src/egpt/launch-brain.sh status # running? how many pages?
 ```
 
 ---
@@ -516,14 +545,15 @@ Manage from any terminal — no need to be inside egpt:
 ~/src/egpt/launch-brain.sh restart [url]
 
 # Override port or profile via env vars:
-PORT=9223 ~/src/egpt/launch-brain.sh start
-PROFILE=~/.brain-experiment ~/src/egpt/launch-brain.sh start
+BRAIN_PORT=9223     ~/src/egpt/launch-brain.sh start
+PROXY_PORT=9224     ~/src/egpt/launch-brain.sh start
+BRAIN_PROFILE=~/.brain-experiment ~/src/egpt/launch-brain.sh start
 ```
 
 Notes:
 
 - The launcher traps `SIGINT` and `SIGTERM`. So `Ctrl+C` in the terminal where you launched it closes the brain Chrome via CDP cleanly (not a hard kill).
-- The default profile is `$HOME/.egpt/brain-profile` — completely separate from your normal Chrome profile, persists across reboots so you don't have to re-log in.
+- The default profile is `$HOME/.egpt/egpt-brain` — completely separate from your normal Chrome profile, persists across reboots so you don't have to re-log in.
 - The launcher refuses to start if a brain is already running on the port. Use `restart` to swap.
 
 ---
@@ -548,33 +578,53 @@ Notes:
 ```
 ~/src/egpt/
 ├── egpt.mjs               # main app — Ink UI, slash commands, room state
+├── interpreter.mjs        # shared input parser + command registry (shell + extension)
 ├── brains/
-│   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
-│   │                      #   streamFromTab, closeBrowser, isRunning
 │   ├── claude-code.mjs    # subprocess brain (stateless or --resume)
 │   ├── codex.mjs          # Codex CLI + exec: shell operator
 │   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
-│   └── claude-cdp.mjs     # Claude.ai (same shape, different selectors)
+│   ├── claude-cdp.mjs     # Claude.ai (same shape, different selectors)
+│   └── type/              # repo-defined YAML brain profiles + skeleton
 ├── bridges/
-│   └── telegram.mjs       # Telegram bot bridge (long-poll + send)
+│   └── telegram.mjs       # Telegram Bot API bridge (long-poll + send)
 ├── tools/
+│   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
+│   │                      #   streamFromTab, browseTab, closeBrowser, isRunning
+│   ├── cdp-proxy.mjs      # token-auth reverse proxy (Chrome:9221 → LAN:9222)
+│   ├── browser-tools.mjs  # CDP control library for operator scripts
 │   ├── template.mjs       # command prompt template loader
 │   └── theme.mjs          # color theme loader + listThemes()
 ├── commands/              # operator prompt templates ({{variable}} substitution)
 │   ├── browse.md          # CDP browser-automation task
 │   ├── codex-task.md
-│   └── inject.md
+│   ├── inject.md
+│   ├── send-file.md
+│   └── summarize.md
+├── extension/             # Chrome MV3 extension (same brains, no external ports)
+│   ├── manifest.json
+│   ├── build.mjs          # esbuild; shims tools/cdp.mjs → chrome.debugger adapter
+│   └── src/
+│       ├── tab/           # main UI (App.jsx, Input.jsx, style.css, index.html)
+│       ├── settings/      # settings page (Settings.jsx, style.css)
+│       ├── tools/cdp-ext.js  # chrome.debugger adapter (drop-in for tools/cdp.mjs)
+│       ├── storage.js     # IndexedDB conversation history
+│       └── background.js  # service worker (opens the tab)
 ├── themes/                # 10 built-in color themes (override in ~/.egpt/themes/)
 │   ├── catppuccin.json    # shipped default
 │   └── ...
 ├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2/Windows)
-├── package.json           # type:module · ink + react
+├── package.json           # type:module · ink + react + yaml + codemirror
 ├── README.md              # what & why
 └── MANUAL.md              # this file
 
 ~/.egpt/
 ├── config.json            # global config (bot tokens, theme, etc.) — DO NOT commit
-├── brain-profile/         # persistent Chrome profile for the brain Chrome
+├── egpt-brain/            # persistent Chrome profile for the brain Chrome
+├── egpt-extension/        # persistent Chrome profile for the extension Chrome
+├── cdp-token              # token for the localhost-LAN CDP proxy
+├── brain-state/<name>.json # runtime state per attached brain profile
+├── prepared-files/        # excerpts staged by /send-file
+├── codex/<session>.jsonl  # egpt's mirror of codex events
 ├── summaries/<name>.md    # saved & summarized conversations
 └── themes/<name>.json     # user theme overrides (same keys as themes/*.json)
 
@@ -582,7 +632,10 @@ Notes:
 └── config.json            # overrides ~/.egpt/config.json (keys: theme, show_prompts, unix_paths)
 ```
 
-About a thousand lines of code, no build step, two runtime dependencies (`ink`, `react`).
+A few thousand lines of code. The shell has no build step (plain Node ESM); the
+browser extension is bundled with esbuild via `npm run build:ext`. Runtime
+dependencies: `ink`, `react`, `react-dom`, `yaml`, plus CodeMirror for the
+extension input.
 
 ---
 
