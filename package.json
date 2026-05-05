@@ -1,6 +1,6 @@
 {
   "name": "egpt",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Multi-bridge chat orchestrator — file is the conversation",
   "type": "module",
   "bin": {
