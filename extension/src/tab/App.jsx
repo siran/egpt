@@ -390,7 +390,7 @@ export default function App() {
       sessionName = parsed.target;
       prompt = parsed.body || trimmed;
       if (!sessionsRef.current.has(sessionName)) {
-        appendMsg('egpt', `!! unknown session "@${sessionName}" — /sessions to list, /brain <type> [name] to open`);
+        appendMsg('egpt', `!! unknown session "@${sessionName}" — /sessions to list, /open <brain> [name] to add`);
         return;
       }
     } else {
@@ -399,7 +399,7 @@ export default function App() {
     }
 
     if (!sessionName) {
-      appendMsg('egpt', 'No session active. Use /brain chatgpt to open one.');
+      appendMsg('egpt', 'No session active. Use /open chatgpt-cdp to open one.');
       return;
     }
     runBrain(sessionName, prompt);
