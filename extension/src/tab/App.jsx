@@ -6,6 +6,7 @@ import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../tools/cdp-ext.js';
 import * as bus from '../../../tools/bus.mjs';
 import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
+import { resolveRoute, planMirrors } from '../../../room.mjs';
 
 // Identifier this extension instance uses on the bus. UUID-ish so
 // reloads don't collide.
@@ -19,6 +20,7 @@ const BRAINS = {
 };
 const BRAIN_ALIASES = { chatgpt: 'chatgpt-cdp', claude: 'claude-cdp' };
 const canonicalBrain = (n) => BRAIN_ALIASES[n] ?? n;
+const brainForName = (n) => BRAINS[canonicalBrain(n)] ?? null;
 
 const BRAIN_PREFIX = {
   'chatgpt-cdp': 'cgpt',
@@ -133,7 +135,7 @@ export default function App() {
 
   const runBrain = useCallback(async (sessionName, prompt) => {
     const session = sessionsRef.current.get(sessionName);
-    if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return; }
+    if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
     const tgStream = bridgeRef.current?.startStreamMessage?.(`${sessionName}\n⌛ thinking…`);
@@ -149,10 +151,12 @@ export default function App() {
       );
       updateMsg(msgId, finalText, false);
       tgStream?.finish(`${sessionName}\n${finalText}`);
+      return finalText ?? '';
     } catch (e) {
       const err = `error: ${e.message}`;
       updateMsg(msgId, err, false);
       bridgeRef.current?.send(`${sessionName}: ${err}`);
+      return null;
     }
   }, [appendMsg, updateMsg]);
 
@@ -487,52 +491,78 @@ export default function App() {
 
     const parsed = parseInput(trimmed);
 
-    if (parsed.type === 'command') { handleCommand(trimmed); return; }
+    // Pure routing decision via the shared room nucleus. Same module the
+    // shell uses, so command/mention/peer-forward/broadcast/error semantics
+    // can't drift between surfaces.
+    const sessionsView = new Map(
+      [...sessionsRef.current.entries()].map(([n, s]) => [n, { brainName: s.brain.name }]),
+    );
+    const peerSessionsView = new Map(
+      [...peerNodesRef.current.entries()].map(([id, p]) => [id, p.sessions ?? []]),
+    );
+    const decision = resolveRoute(parsed, trimmed, {
+      sessions: sessionsView,
+      peerSessions: peerSessionsView,
+      brainForName,
+      canonicalBrainName: canonicalBrain,
+    });
+
+    if (decision.kind === 'command') { handleCommand(trimmed); return; }
 
     appendMsg(userName, trimmed);
 
-    let sessionName, prompt;
-    if (parsed.type === 'mention') {
-      sessionName = parsed.target;
-      prompt = parsed.body || trimmed;
-      if (!sessionsRef.current.has(sessionName)) {
-        // Local doesn't have it. Try peers — maybe another node owns it.
-        const peerMatches = [];
-        for (const [nodeId, peer] of peerNodesRef.current) {
-          if (peer.sessions?.some(s => s.name === sessionName)) peerMatches.push(nodeId);
-        }
-        if (peerMatches.length === 1) {
-          const tid = busTargetIdRef.current;
-          if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @${sessionName}`); return; }
-          try {
-            await bus.postEvent(tid, {
-              type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
-              target: sessionName, to_node: peerMatches[0], body: prompt, user: userName,
-            });
-            appendMsg('egpt', `@${sessionName} -> ${peerMatches[0]} via bus`);
-          } catch (e) {
-            appendMsg('egpt', `!! forward failed: ${e.message}`);
-          }
-          return;
-        }
-        if (peerMatches.length > 1) {
-          appendMsg('egpt', `!! @${sessionName} is ambiguous across peers: ${peerMatches.join(', ')}`);
-          return;
-        }
-        appendMsg('egpt', `!! unknown session "@${sessionName}" — /sessions to list, /open <brain> [name] to add`);
-        return;
-      }
-    } else {
-      sessionName = activeSession;
-      prompt = trimmed;
-    }
-
-    if (!sessionName) {
+    if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
+    if (decision.kind === 'empty') {
       appendMsg('egpt', 'No session active. Use /open chatgpt-cdp to open one.');
       return;
     }
-    runBrain(sessionName, prompt);
-  }, [activeSession, appendMsg, handleCommand, runBrain, userName]);
+    if (decision.kind === 'peer-mention') {
+      const tid = busTargetIdRef.current;
+      if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @${decision.target}`); return; }
+      try {
+        await bus.postEvent(tid, {
+          type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
+          target: decision.target, to_node: decision.toNode,
+          body: decision.body, user: userName,
+        });
+        appendMsg('egpt', `@${decision.target} -> ${decision.toNode} via bus`);
+      } catch (e) {
+        appendMsg('egpt', `!! forward failed: ${e.message}`);
+      }
+      return;
+    }
+    if (decision.kind === 'auto-open') {
+      // The extension only carries CDP brains; auto-open is for local
+      // operators (codex, claude-code) which live in the shell. If we ever
+      // see this here, the user wants a brain this surface can't host.
+      appendMsg('egpt', `!! @${decision.originalToken} needs a shell node — /open ${decision.brainName} on the shell, or address an existing tab here`);
+      return;
+    }
+
+    // decision.kind === 'turn' — broadcast or single recipient.
+    const recipients = decision.recipients;
+    if (decision.broadcast) {
+      appendMsg('egpt', `broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
+    }
+    const replies = [];
+    for (const recipient of recipients) {
+      const reply = await runBrain(recipient, decision.payload);
+      if (reply !== null && reply !== undefined) replies.push({ author: recipient, text: reply });
+    }
+
+    // Phase B — one-hop CDP-to-CDP mirroring. planMirrors decides which
+    // (recipient, message) pairs need a mirror push.
+    const mirrorSessions = new Map(
+      [...sessionsRef.current.entries()].map(([n, s]) => [n, { brainName: s.brain.name }]),
+    );
+    const mirrorPlan = planMirrors(replies, recipients, mirrorSessions, brainForName);
+    if (mirrorPlan.length > 0) {
+      appendMsg('egpt', `mirroring ${mirrorPlan.length} reply/replies to other CDP brains…`);
+      for (const { to, message } of mirrorPlan) {
+        await runBrain(to, message);
+      }
+    }
+  }, [appendMsg, handleCommand, runBrain, userName]);
 
   // ── Telegram bridge ───────────────────────────────────────────
 

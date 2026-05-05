@@ -447,7 +447,7 @@ Current coverage (whole project, `vitest.config.mjs` includes every source file 
 
 `tests/interpreter.test.mjs` (22 tests) covers input classification, command-registry integrity, and help-renderer structure. `tests/room.test.mjs` (24 tests) covers the routing decision tree: command dispatch, direct local @-mention, brain-alias auto-open vs CDP "open one first", peer routing (single match, ambiguous, local-wins-over-peer), broadcast vs single-recipient, empty-room, and one-hop CDP-to-CDP mirror planning.
 
-`egpt.mjs`'s submit handler imports `room.mjs` so the routing decisions are tested through the same pure functions the production code uses. The brain calls, .md writes, bus posts, and React state updates remain in `egpt.mjs` as the side-effecting layer; only the *decision* lives in `room.mjs`. App.jsx will follow the same pattern.
+Both surfaces — `egpt.mjs`'s submit handler and the extension's `App.jsx` — import `room.mjs`, so the routing decisions are tested through the same pure functions the production code uses on either surface. The brain calls, .md writes, bus posts, and React state updates remain in the surface files as the side-effecting layer; only the *decision* lives in `room.mjs`. The shell and extension cannot drift on routing without breaking the shared tests.
 
 ## Caveats and known limits
 
