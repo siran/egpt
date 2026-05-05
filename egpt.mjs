@@ -1310,7 +1310,11 @@ function App() {
           if (!canMirror) return;
         }
 
-        if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
+        if (submitRef.current) await submitRef.current(text, {
+          fromTelegram: true,
+          telegramChatId: from.chatId,
+          telegramUser: who,
+        });
       },
       onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
       onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
@@ -3488,9 +3492,17 @@ function App() {
     {
       const tid = busTargetIdRef.current;
       if (tid) {
+        // When the input came from Telegram, attribute the utterance to
+        // the Telegram user and tag the surface as 'telegram[chatId]' so
+        // peers see where it actually originated, not the shell node
+        // that happens to be carrying the bot.
+        const fromTg = !!meta.fromTelegram;
+        const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]` : null;
+        const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME) : USER_NAME;
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
-          role: 'shell', user: USER_NAME, body: text,
+          role: 'shell', user: utteranceUser, body: text,
+          ...(via ? { via } : {}),
         }).catch(() => {});
       }
     }
@@ -3722,7 +3734,10 @@ function App() {
         // Faithful echo of what a user typed on another surface. Pure
         // visibility — we do NOT route this through resolveRoute (the
         // originating surface already routed it to its local brains).
-        const tag = `${ev.user ?? 'human'}@${ev.from ?? 'unknown'}`;
+        // ev.via overrides ev.from when the message originated from a
+        // side-channel like Telegram (carried by a bus node but not
+        // typed at it).
+        const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
           _localOnly: true,  // don't bounce to Telegram; the originator handles that

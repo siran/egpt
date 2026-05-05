@@ -816,7 +816,9 @@ export default function App() {
         // Faithful echo of what a user typed on another surface. Pure
         // visibility — we do NOT route this through resolveRoute (the
         // originating surface already drove its local brains).
-        const tag = `${ev.user ?? 'human'}@${ev.from ?? 'unknown'}`;
+        // ev.via overrides ev.from when the message came from a
+        // side-channel like Telegram.
+        const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
         return;
       }
