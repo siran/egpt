@@ -59,11 +59,15 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     '--new-window',
   ];
   if (extensionDir) {
+    // --load-extension loads the extension for this browser session even if
+    // it isn't permanently installed in the profile. We do NOT pass
+    // --disable-extensions-except — that would suppress every other
+    // extension the user installed in this profile (password manager,
+    // ad blocker, etc.) and make spawned Chrome look different from a
+    // manual launch. Users who want the egpt extension to persist across
+    // manual launches should install it via chrome://extensions →
+    // Developer Mode → Load unpacked → extension/dist.
     args.push(`--load-extension=${extensionDir}`);
-    // --disable-extensions-except restricts loading to only this one in the
-    // session profile so user-installed extensions in the brain profile
-    // don't interfere with CDP attaches.
-    args.push(`--disable-extensions-except=${extensionDir}`);
   }
   args.push(url);
 

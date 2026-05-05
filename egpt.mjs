@@ -3443,6 +3443,20 @@ function App() {
       ...(meta.fromTelegram ? { _localOnly: true } : {}),
     }]);
 
+    // Mirror the utterance to peer surfaces on the bus so the room shows
+    // the same conversation regardless of which surface someone is looking
+    // at. Pure visibility — peer surfaces render the line and do NOT
+    // re-route to their brains (we already drove ours below).
+    {
+      const tid = busTargetIdRef.current;
+      if (tid) {
+        bus.postEvent(tid, {
+          type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
+          role: 'shell', user: USER_NAME, body: text,
+        }).catch(() => {});
+      }
+    }
+
     const parsed = parseInput(text);
 
     // Pure routing decision. resolveRoute looks at sessions + peerSessions
@@ -3657,6 +3671,20 @@ function App() {
         } catch (e) {
           sysOut(`!! bus command failed: ${e.message}`);
         }
+        return;
+      }
+      case 'room-utterance': {
+        // Faithful echo of what a user typed on another surface. Pure
+        // visibility — we do NOT route this through resolveRoute (the
+        // originating surface already routed it to its local brains).
+        const peer = peerNodesRef.current.get(ev.from);
+        const role = peer?.role ?? ev.role ?? 'node';
+        const shortId = String(ev.from ?? '').slice(-4);
+        const tag = `${ev.user ?? 'human'}@${role}-${shortId}`;
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
+          _localOnly: true,  // don't bounce to Telegram; the originator handles that
+        }]);
         return;
       }
       default:
