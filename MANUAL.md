@@ -42,10 +42,10 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 # ────────────────────────────────────────────────────────────────────────
 # Multi-brain: bring in ChatGPT and/or Claude.ai
 # ────────────────────────────────────────────────────────────────────────
-# Just run egpt — the shell auto-spawns Chrome with the extension loaded
-# if it isn't already running, starts the CDP proxy, and joins the bus.
-# Log into chatgpt.com / claude.ai once in the Chrome window it opens;
-# the profile persists at ~/.egpt/egpt-brain so you only do it once.
+# Run egpt, then /chrome inside it to launch Chrome with the extension
+# loaded. The shell starts the CDP proxy and joins the bus when Chrome
+# is reachable. Log into chatgpt.com / claude.ai once in that Chrome
+# window — the profile persists at ~/.egpt/egpt-brain.
 
 # in egpt (brain Chrome running):
 # at startup egpt scans tabs and auto-attaches:
@@ -246,7 +246,7 @@ Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You ca
    matching one as `cgpt1`, `claude1`, etc.
 4. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
 
-If Chrome isn't running, slash commands still work in empty-room mode. Add a local brain with `/open ccode ccode1`, `/open codex`, or `/attach codex`.
+If Chrome isn't running, slash commands still work in empty-room mode. Type `/chrome` to launch a brain Chrome with the extension, or add a local brain with `/open ccode ccode1`, `/open codex`, or `/attach codex`.
 
 ### Brain profiles
 
@@ -330,7 +330,7 @@ Drive a tab in a CDP-exposed Chrome instance. Each session is bound to one tab; 
 Setup:
 
 ```bash
-node egpt.mjs                                 # auto-spawns Chrome with extension on :9221
+node egpt.mjs                                 # then /chrome inside to launch the brain Chrome
 # log in to chatgpt.com / claude.ai once if needed (profile persists at ~/.egpt/egpt-brain)
 # start or open a conversation in that tab
 ```
@@ -534,15 +534,13 @@ Close the Chrome window manually when you're done.
 
 ## Brain Chrome lifecycle
 
-The shell handles it. On startup, `egpt.mjs`:
+Spawn is explicit; attach is automatic. On startup, `egpt.mjs`:
 
 1. Checks for the proxy on `:9222`. If up, attaches.
 2. Else checks for raw Chrome on `:9221`. If up, starts the proxy and attaches.
-3. Else spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain --load-extension=<repo>/extension/dist`, waits for it, then starts the proxy and attaches.
+3. Else surfaces a hint: type `/chrome` to launch one, or start Chrome yourself.
 
-A 5-second poll keeps trying if any step fails — useful if you launch Chrome
-manually after the shell, or if the connection drops and Chrome comes back.
-The poll stops doing real work as soon as the bus is joined.
+`/chrome` (shell command) spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain --load-extension=<repo>/extension/dist`. A 5-second poll then picks up the new instance and proceeds with proxy + attach. The same poll handles a manually-launched Chrome (e.g. via desktop shortcut) and recovery if the connection drops.
 
 Chrome is spawned **detached**, so it survives shell restart. Close it
 manually when you're done with the session. The profile at
@@ -574,7 +572,7 @@ Or on Windows (PowerShell):
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | restart the shell — it auto-spawns Chrome on startup; or run Chrome manually with the flags in the lifecycle section above |
+| `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | type `/chrome` inside egpt to launch one, or run Chrome manually with the flags in the lifecycle section above |
 | Streaming reply seems frozen, no progress | Premature finalize OR locale-specific selector miss | `Ctrl+R` to reset, then `/refresh` to pull the actual final text from the tab |
 | `auto-bound cgpt1 to tab abc12345…` | Old tab closed; egpt found a single matching replacement | Normal recovery — nothing to do |
 | Multiple `cgpt` tabs open and a brain-name address is ambiguous | Ambiguity is intentional — pick one | `@cgpt2 ...` (use the explicit name) |

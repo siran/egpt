@@ -63,6 +63,7 @@ export const COMMANDS = [
   { cmd: '/profile',        surface: 'shell',     usage: '/profile <name> <url-or-id>',                    desc: 'quick-create profile from ChatGPT/Claude URL' },
 
   { section: 'BROWSER (CDP)' },
+  { cmd: '/chrome',         surface: 'shell',     usage: '/chrome',                                        desc: 'launch the brain Chrome with the extension loaded' },
   { cmd: '/tabs',           surface: 'both',      usage: '/tabs [all]',                                    desc: 'list open Chrome pages' },
   { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
   { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },

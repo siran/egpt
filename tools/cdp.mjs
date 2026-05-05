@@ -24,7 +24,7 @@ async function fetchJson(path) {
   catch (e) {
     throw new Error(
       `Cannot reach Chrome at ${host}. ` +
-      `egpt's shell auto-spawns Chrome on startup; if it's down, restart the shell or run chrome --remote-debugging-port=${host.split(':')[1]} manually.`
+      `Run /chrome inside egpt to launch one with the extension, or start Chrome yourself with --remote-debugging-port=${host.split(':')[1]}.`
     );
   }
   if (!res.ok) throw new Error(`Chrome ${path} returned ${res.status}`);

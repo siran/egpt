@@ -21,6 +21,7 @@ import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
+import { CONFIG_SCHEMA } from './config-schema.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1386,12 +1387,51 @@ function App() {
   }, [items.length]);
 
   // Startup: auto-start CDP proxy if Chrome is on :9221 but proxy not yet on
-  // :9222, then auto-attach any chatgpt/claude tabs already open.
+  // :9222, then auto-attach any chatgpt/claude tabs already open. Does
+  // NOT spawn Chrome — the user invokes /chrome for that, or starts
+  // their own Chrome with --remote-debugging-port=9221.
+  // Explicit spawn — bound to /chrome. Idempotent (no-op if Chrome is
+  // already up), and waits until CDP responds before returning.
+  const spawnChromeWithExtension = async () => {
+    try {
+      await fetch('http://localhost:9221/json/version');
+      sysOut('Chrome already running on :9221');
+      return true;
+    } catch { /* not yet — proceed to spawn */ }
+    if (await cdp.isRunning()) {
+      sysOut('Chrome already running (proxy up on :9222)');
+      return true;
+    }
+    const extDist = join(APP_DIR, 'extension', 'dist');
+    if (!existsSync(join(extDist, 'background.js'))) {
+      sysOut('!! extension/dist not built — run: npm run build:ext');
+      return false;
+    }
+    try {
+      const launcher = await import('./tools/chrome-launcher.mjs');
+      if (!launcher.findChromeExecutable()) {
+        sysOut('!! Chrome executable not found in standard locations');
+        return false;
+      }
+      sysOut('starting Chrome with extension…');
+      await launcher.spawnChrome({
+        port: 9221,
+        userDataDir: join(EGPT_HOME, 'egpt-brain'),
+        extensionDir: extDist,
+      });
+      await launcher.waitForChromeReady(9221);
+      sysOut('Chrome ready — proxy will auto-attach within 5s');
+      return true;
+    } catch (e) {
+      sysOut(`!! could not start Chrome: ${e.message}`);
+      return false;
+    }
+  };
+
   useEffect(() => {
     let proxyHandle = null;
     let cancelled = false;
     let pollHandle = null;
-    let chromeSpawnAttempted = false;
     let lastNoticeBody = null;
 
     const notice = (body, opts = {}) => {
@@ -1408,47 +1448,25 @@ function App() {
 
     // Idempotent: each tick checks current state and only does work that
     // is missing. Safe to call from both initial mount and the poll
-    // interval. The poll interval is what picks up Chrome that the user
-    // launches AFTER the shell, or Chrome that comes back from a crash.
+    // interval. The poll picks up Chrome the user launches via /chrome
+    // or starts manually with --remote-debugging-port=9221, and Chrome
+    // that comes back from a crash. We never spawn Chrome here — that's
+    // /chrome's job, not a side effect of running egpt.
     const tryConnect = async () => {
       if (cancelled) return;
       if (busSubRef.current) return; // already fully connected — nothing to do.
 
       // 1. Ensure Chrome is reachable, either via the proxy (:9222) or
-      //    directly (:9221). If neither is up, spawn it once.
+      //    directly (:9221). If neither is up, surface a hint once and
+      //    keep polling — when Chrome appears we'll attach.
       if (!(await cdp.isRunning())) {
         let chromeUp = false;
         try { await fetch('http://localhost:9221/json/version'); chromeUp = true; }
         catch { /* not yet */ }
 
         if (!chromeUp) {
-          if (chromeSpawnAttempted) {
-            notice('waiting for Chrome…');
-            return;
-          }
-          chromeSpawnAttempted = true;
-          const extDist = join(APP_DIR, 'extension', 'dist');
-          if (!existsSync(join(extDist, 'background.js'))) {
-            notice('extension/dist not built — run: npm run build:ext');
-            return;
-          }
-          try {
-            const launcher = await import('./tools/chrome-launcher.mjs');
-            if (!launcher.findChromeExecutable()) {
-              notice('!! Chrome executable not found in standard locations');
-              return;
-            }
-            notice('starting Chrome with extension…');
-            await launcher.spawnChrome({
-              port: 9221,
-              userDataDir: join(EGPT_HOME, 'egpt-brain'),
-              extensionDir: extDist,
-            });
-            await launcher.waitForChromeReady(9221);
-          } catch (e) {
-            notice(`!! could not start Chrome: ${e.message}`);
-            return;
-          }
+          notice('Chrome not running — type /chrome to launch it with the extension, or start it yourself with --remote-debugging-port=9221');
+          return;
         }
 
         try {
@@ -1971,14 +1989,9 @@ function App() {
       return true;
     }
     if (cmd === '/config') {
-      // Allowed config keys with descriptions
-      const CONFIG_SCHEMA = {
-        theme:        'color theme name  (see /themes)',
-        show_prompts: 'show full operator prompt before each turn  (true/false)',
-        unix_paths:   'display filesystem paths in POSIX style  (true/false)',
-        tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
-        node_name:    'name this node uses on the bus (e.g. home, chr1); takes effect on next shell restart',
-      };
+      // Allowed config keys are registered in config-schema.mjs and
+      // covered by an integrity test that cross-checks against
+      // EGPT_CONFIG references in this file.
       const parts = arg.trim().split(/\s+/);
       const key = parts[0];
       const rawVal = parts.slice(1).join(' ');
@@ -3261,6 +3274,14 @@ function App() {
       } catch (e) {
         sysOut(`!! ${e.message}`);
       }
+      return true;
+    }
+    if (cmd === '/chrome') {
+      // Explicit spawn. Brain Chrome is no longer auto-spawned at startup;
+      // shell only attaches if it finds Chrome already running. /chrome
+      // launches a fresh Chrome with the extension loaded under the
+      // ~/.egpt/egpt-brain profile.
+      await spawnChromeWithExtension();
       return true;
     }
     if (cmd === '/tabs') {
