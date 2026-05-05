@@ -22,7 +22,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 
-const { createElement: h, useState, useEffect, useRef, Fragment } = React;
+const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
 
