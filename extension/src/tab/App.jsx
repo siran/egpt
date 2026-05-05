@@ -8,12 +8,18 @@ import * as bus from '../../../tools/bus.mjs';
 import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
 import { resolveRoute, planMirrors } from '../../../room.mjs';
 
-// Identifier this extension instance uses on the bus. Short and friendly
-// so it reads well in surface tags ("An@chrome-9m4k"). Random suffix so
-// reloads of the same extension don't collide on the bus.
-const BUS_NODE_ID = `chrome-${Math.random().toString(36).slice(2, 6)}`;
-// Display tag for Telegram; matches BUS_NODE_ID since it's already short.
-const SURFACE_TAG = BUS_NODE_ID;
+// Identifier this extension instance uses on the bus. Default is
+// chrome-XXXX (random); user can set chrome.storage.sync.node_name to
+// something like 'chr1' or 'home' to override. We read storage on mount
+// and update BUS_NODE_ID before posting node-online — the bus useEffect
+// is gated on nodeNameReady to make sure the announce uses the chosen
+// name, not the default.
+//
+// Same room, same names mean same names on the bus — collision is the
+// user's responsibility.
+const DEFAULT_BUS_NODE_ID = `chrome-${Math.random().toString(36).slice(2, 6)}`;
+let BUS_NODE_ID = DEFAULT_BUS_NODE_ID;
+let SURFACE_TAG = BUS_NODE_ID;
 
 // Use the same brain names as the shell so /help and /open/@-mentions
 // match across surfaces. Aliases let the user type the short form too.
@@ -82,6 +88,10 @@ export default function App() {
   const [tgPolling, setTgPolling] = useState(false);
   // Bumped when peer state changes so /sessions re-renders.
   const [peersRev, setPeersRev] = useState(0);
+  // True once chrome.storage.sync has been read. The bus useEffect waits
+  // on this so the node-online announce uses the user-configured name
+  // (if any) rather than the random default.
+  const [nodeNameReady, setNodeNameReady] = useState(false);
 
   const sessionsRef = useRef(new Map());   // name → { brain, targetId }
   const bridgeRef   = useRef(null);
@@ -654,13 +664,21 @@ export default function App() {
 
   // Load identity on mount; restart bridge when storage changes externally (settings page)
   useEffect(() => {
-    chrome.storage.sync.get(['userName'], cfg => {
+    chrome.storage.sync.get(['userName', 'node_name'], cfg => {
       if (cfg.userName) setUserName(cfg.userName);
+      if (cfg.node_name) {
+        BUS_NODE_ID = cfg.node_name;
+        SURFACE_TAG = cfg.node_name;
+      }
+      setNodeNameReady(true);
     });
 
     const onChange = (changes) => {
       if (changes.userName) setUserName(changes.userName.newValue ?? 'human');
       if (changes.telegram) startBridge();
+      // node_name changes apply on next reload — bus already announced
+      // under the previous name; renaming live would require re-announce
+      // and peer cache invalidation, which we don't need right now.
     };
     chrome.storage.onChanged.addListener(onChange);
     return () => chrome.storage.onChanged.removeListener(onChange);
@@ -678,6 +696,7 @@ export default function App() {
   // transfers polling. Long content (brain replies, files) does NOT travel
   // here — only short control events.
   useEffect(() => {
+    if (!nodeNameReady) return;  // wait for node_name from storage before announcing
     let cancelled = false;
     (async () => {
       try {
@@ -715,7 +734,7 @@ export default function App() {
         sub?.stop?.();
       })();
     };
-  }, [appendMsg]);
+  }, [appendMsg, nodeNameReady]);
 
   // Bus dispatcher — refreshed each render so it always sees current state.
   handleBusEventRef.current = async (ev) => {
@@ -786,9 +805,9 @@ export default function App() {
       case 'mention-reply': {
         if (ev.to_node !== BUS_NODE_ID) return;
         const target = ev.target ?? ev.from;
-        const peer = peerNodesRef.current.get(ev.from);
-        const role = peer?.role ?? 'node';
-        const author = `${target}@${role}-${String(ev.from ?? '').slice(-4)}`;
+        // ev.from carries the peer's BUS_NODE_ID (auto-gen 'shell-13232'
+        // or user-named 'home') — use it directly as the surface tag.
+        const author = `${target}@${ev.from ?? 'unknown'}`;
         if (ev.error) log(`!! ${author}: ${ev.error}`);
         else appendMsg(author, ev.body ?? '(empty)');
         return;
@@ -797,10 +816,7 @@ export default function App() {
         // Faithful echo of what a user typed on another surface. Pure
         // visibility — we do NOT route this through resolveRoute (the
         // originating surface already drove its local brains).
-        const peer = peerNodesRef.current.get(ev.from);
-        const role = peer?.role ?? ev.role ?? 'node';
-        const shortId = String(ev.from ?? '').slice(-4);
-        const tag = `${ev.user ?? 'human'}@${role}-${shortId}`;
+        const tag = `${ev.user ?? 'human'}@${ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
         return;
       }

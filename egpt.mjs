@@ -1001,12 +1001,15 @@ const EGPT_EMOJI = '🧠';
 
 // Identifier this shell uses on the CDP control-plane bus. PID makes it
 // unique per process so two shells don't collide.
-const BUS_NODE_ID = `shell-${process.pid}`;
-// Short display tag for Telegram and any place where the BUS_NODE_ID
-// would be too long. Matches the cross-surface format ('shell-3232')
-// used by the mention-reply / room-utterance dispatchers when rendering
-// peer authors, so local and remote tags read consistently.
-const SURFACE_TAG = `shell-${BUS_NODE_ID.slice(-4)}`;
+// User-friendly node name. Set EGPT_CONFIG.node_name (in
+// ~/.egpt/config.json or .egpt/config.json) to something like 'home',
+// 'work', 'shell1' and the room sees you under that name. Default is
+// shell-<pid> when no name is configured. Collision risk is the user's
+// responsibility — same room, same names mean same names on the bus.
+const BUS_NODE_ID = EGPT_CONFIG.node_name ?? `shell-${process.pid}`;
+// Display tag for Telegram, mention-reply, and room-utterance. Same as
+// BUS_NODE_ID — when the user picks a name we just use it.
+const SURFACE_TAG = BUS_NODE_ID;
 
 // Visual avatars for sessions. Auto-assigned on session creation; users can
 // rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
@@ -3652,12 +3655,11 @@ function App() {
       case 'mention-reply': {
         if (ev.to_node !== BUS_NODE_ID) return;
         const target = ev.target ?? ev.from;
-        // Tag the brain reply with which surface ran it. The session lives
-        // on the peer node — without the surface tag the line looks
-        // ambiguous if the same name happens to exist locally too.
-        const peer = peerNodesRef.current.get(ev.from);
-        const role = peer?.role ?? 'node';
-        const author = `${target}@${role}-${String(ev.from ?? '').slice(-4)}`;
+        // Tag the brain reply with the peer's BUS_NODE_ID directly.
+        // Auto-generated IDs already carry the role prefix
+        // ('shell-13232'); user-named nodes carry the chosen name
+        // ('home'). Either way, ev.from is the right tag.
+        const author = `${target}@${ev.from ?? 'unknown'}`;
         if (ev.error) {
           log(`!! ${author}: ${ev.error}`);
         } else {
@@ -3694,10 +3696,7 @@ function App() {
         // Faithful echo of what a user typed on another surface. Pure
         // visibility — we do NOT route this through resolveRoute (the
         // originating surface already routed it to its local brains).
-        const peer = peerNodesRef.current.get(ev.from);
-        const role = peer?.role ?? ev.role ?? 'node';
-        const shortId = String(ev.from ?? '').slice(-4);
-        const tag = `${ev.user ?? 'human'}@${role}-${shortId}`;
+        const tag = `${ev.user ?? 'human'}@${ev.from ?? 'unknown'}`;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
           _localOnly: true,  // don't bounce to Telegram; the originator handles that
