@@ -1,15 +1,13 @@
 // bridges/telegram.mjs — Telegram Bot API bridge for egpt.
 //
-// Multiple nodes (extension, shells) compete to poll. Only one wins at a time:
-// getUpdates returns 409 when another node holds the connection. Losers back
-// off and retry every RETRY_409 ms. When the active poller wants to hand off,
-// it reads the handoff directive, leaves it UNCONFIRMED (offset stays at that
-// update_id), and stops. The next node to grab polling reads the same message
-// and, if addressed to it, sets offset = N+1 and continues.
+// Telegram is the off-LAN bridge. Recommended one bot token per node so each
+// off-LAN node has independent access; LAN coordination is via the CDP bus
+// (see tools/bus.mjs), not Telegram. With one-token-per-node there is no
+// contention for the polling slot.
 //
-// Handoff message (sent by user from their Telegram client):
-//   /telegram @nodeName [offset:N] [ttl:T]
-//   /telegram disconnect
+// If two nodes accidentally share a token, Bot API returns 409 Conflict to
+// one of them. We back off and retry — purely defensive; coordination is the
+// host's job, done via /telegram <node> over the bus.
 //
 // Config keys (from ~/.egpt/config.json → "telegram", or chrome.storage):
 //   bot_token     — required. From @BotFather.
@@ -66,6 +64,11 @@ export function startTelegramBridge({
   }
 
   // ── Polling loop ──────────────────────────────────────────────
+  //
+  // /telegram coordination is NOT in this file: the bridge is dumb (poll +
+  // confirm + deliver). The host parses /telegram via its slash-command
+  // handler and posts handoff events on the CDP bus. 409 Conflict here is
+  // purely defensive (someone else accidentally polling the same token).
 
   async function poll() {
     if (stopped) return;
@@ -79,10 +82,8 @@ export function startTelegramBridge({
       if (stopped) return;
 
       for (const upd of updates) {
-        const keep = await handleUpdate(upd);
-        // Advance offset only when we're "consuming" the update.
-        // For handoff-to-other, keep === false: leave update unconfirmed.
-        if (keep !== false) offset = upd.update_id + 1;
+        await handleUpdate(upd);
+        offset = upd.update_id + 1;
         if (stopped) return;
       }
 
@@ -90,7 +91,7 @@ export function startTelegramBridge({
     } catch (e) {
       if (stopped) return;
       if (e.status === 409) {
-        log('telegram: another node is polling — waiting…');
+        log('telegram: 409 conflict — another client polling this token; backing off');
         pollTimer = setTimeout(poll, RETRY_409);
       } else {
         err(`telegram poll error: ${e.message}`);
@@ -99,12 +100,9 @@ export function startTelegramBridge({
     }
   }
 
-  // ── Update handler ────────────────────────────────────────────
-  // Returns false to leave the update unconfirmed (handoff-to-other case).
-
   async function handleUpdate(upd) {
     const msg = upd.message;
-    if (!msg?.text) return true;
+    if (!msg?.text) return;
 
     const userId    = msg.from?.id ?? 0;
     const username  = msg.from?.username ?? null;
@@ -115,59 +113,11 @@ export function startTelegramBridge({
     const authorized = allowedUsers.length > 0 && allowedUsers.includes(userId);
     const text = msg.text.trim();
 
-    // ── /telegram handoff directive ───────────────────────────
-    const handoff = parseHandoff(text);
-    if (handoff) {
-      if (handoff.target === 'disconnect') {
-        log('telegram: disconnect directive — stopping');
-        stopped = true;
-        return true; // confirm: no node should re-read a disconnect
-      }
-
-      if (handoff.target !== nodeName) {
-        // Not addressed to us. Leave update unconfirmed so the target
-        // node will read it when it grabs polling.
-        log(`telegram: handoff to ${handoff.target} — stepping back`);
-        stopped = true;
-        if (handoff.ttl) {
-          pollTimer = setTimeout(() => {
-            if (!stopped) return;
-            stopped = false;
-            log(`telegram: TTL expired — attempting to reclaim`);
-            poll();
-          }, handoff.ttl * 1000);
-        }
-        return false; // ← do NOT advance offset
-      }
-
-      // Addressed to us. If message includes explicit offset, jump there.
-      if (handoff.offset != null) offset = handoff.offset;
-      log(`telegram: handoff accepted — polling as ${nodeName}`);
-      return true; // confirm and continue
-    }
-
-    // ── Regular message ───────────────────────────────────────
     try {
       await onIncoming?.(text, { userId, username, firstName, chatId: msgChat, authorized });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
     }
-    return true;
-  }
-
-  // ── Handoff parser ────────────────────────────────────────────
-  // /telegram @target [offset:N] [ttl:T]
-  // /telegram disconnect
-
-  function parseHandoff(text) {
-    const m = text.match(/^\/telegram\s+(\S+)(?:\s+offset:(\d+))?(?:\s+ttl:(\d+))?/i);
-    if (!m) return null;
-    const target = m[1].replace(/^@/, '');
-    return {
-      target,
-      offset: m[2] != null ? parseInt(m[2], 10) : null,
-      ttl:    m[3] != null ? parseInt(m[3], 10) : null,
-    };
   }
 
   // ── Send helpers ──────────────────────────────────────────────

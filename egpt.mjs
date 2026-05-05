@@ -1211,6 +1211,21 @@ function App() {
   // Bus (control-plane CDP tab) state: targetId + subscription handle.
   const busTargetIdRef = useRef(null);
   const busSubRef = useRef(null);
+  // Peer nodes seen on the bus. nodeId -> { role, sessions:[{name,brain}], polling, lastSeen }.
+  // These are "zombie" sessions: registered as participants but owned elsewhere.
+  // /sessions surfaces them; @<name> falls through to peer lookup; /telegram
+  // <node> uses this to route handoff.
+  const peerNodesRef = useRef(new Map());
+  const [peersRev, setPeersRev] = useState(0);
+  // Whether THIS node currently owns Telegram polling. Broadcast on change.
+  const [tgPolling, setTgPolling] = useState(false);
+  // Latest sessions snapshot accessible from bus event handlers (which run in
+  // a closure with stale state). Updated each render.
+  const sessionsLatestRef = useRef({});
+  // Bus event dispatcher — populated each render with the current closure
+  // so bus events always read fresh state. Keeps the bus subscription
+  // useEffect's [] deps stable.
+  const handleBusEventRef = useRef(null);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -1234,59 +1249,100 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Start Telegram bridge once if ~/.egpt/config.json has telegram.bot_token.
-  // Bridge calls submitRef.current(text) on incoming Telegram messages and
-  // we forward every new item from `items` back to the chat (see effect below).
-  useEffect(() => {
-    let bridge = null;
-    (async () => {
-      let cfg;
+  // Telegram bridge management. Auto-starts if ~/.egpt/config.json has a
+  // bot_token; /telegram <node> stops this node's bridge and hands polling to
+  // a peer over the bus; the named peer's startTgBridge() picks it up.
+  const tgCfgRef = useRef(null);
+
+  const startTgBridge = useCallback(async () => {
+    if (bridgeRef.current) return true;
+    let cfg = tgCfgRef.current;
+    if (!cfg) {
       try { cfg = JSON.parse(await readFile(join(homedir(), '.egpt', 'config.json'), 'utf8')); }
-      catch { return; }
-      if (!cfg.telegram?.bot_token) return;
-      bridge = startTelegramBridge({
-        botToken:     cfg.telegram.bot_token,
-        nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
-        allowedUsers: cfg.telegram.allowed_users ?? [],
-        chatId:       cfg.telegram.chat_id ?? null,
-        onIncoming: async (text, from) => {
-          const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system',
-            body: `(telegram message from ${who}) -> ${text}`,
-            _localOnly: true,
-          }]);
-
-          const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
-
-          if (isCommand && !from.authorized) {
-            bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`);
-            return;
-          }
-
-          if (!isCommand) {
-            const mirror = cfg.telegram?.mirror ?? 'none';
-            const canMirror = mirror === 'all' || (mirror === 'allowed' && from.authorized);
-            if (!canMirror) return;
-          }
-
-          if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
-        },
-        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
-        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
-      });
-      bridgeRef.current = bridge;
-      _globalBridge = bridge;
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
-      if (!bridge.chatId) {
-        setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-          body: 'telegram: no chat_id configured — shell-side messages will NOT reach Telegram until\n' +
-                '  the bot receives its first message, OR add "chat_id": <id> to ~/.egpt/config.json',
+      catch { return false; }
+      tgCfgRef.current = cfg;
+    }
+    if (!cfg.telegram?.bot_token) return false;
+    const bridge = startTelegramBridge({
+      botToken:     cfg.telegram.bot_token,
+      nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
+      allowedUsers: cfg.telegram.allowed_users ?? [],
+      chatId:       cfg.telegram.chat_id ?? null,
+      onIncoming: async (text, from) => {
+        const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: 'system',
+          body: `(telegram message from ${who}) -> ${text}`,
+          _localOnly: true,
         }]);
-      }
-    })();
-    return () => { bridge?.stop(); _globalBridge = null; };
+
+        const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+
+        if (isCommand && !from.authorized) {
+          bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`);
+          return;
+        }
+
+        if (!isCommand) {
+          const mirror = cfg.telegram?.mirror ?? 'none';
+          const canMirror = mirror === 'all' || (mirror === 'allowed' && from.authorized);
+          if (!canMirror) return;
+        }
+
+        if (submitRef.current) await submitRef.current(text, { fromTelegram: true });
+      },
+      onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
+      onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
+    });
+    bridgeRef.current = bridge;
+    _globalBridge = bridge;
+    setTgPolling(true);
+    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
+    if (!bridge.chatId) {
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+        body: 'telegram: no chat_id configured — shell-side messages will NOT reach Telegram until\n' +
+              '  the bot receives its first message, OR add "chat_id": <id> to ~/.egpt/config.json',
+      }]);
+    }
+    return true;
   }, []);
+
+  const stopTgBridge = useCallback(() => {
+    if (!bridgeRef.current) return false;
+    bridgeRef.current.stop();
+    bridgeRef.current = null;
+    _globalBridge = null;
+    setTgPolling(false);
+    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge stopped', _localOnly: true }]);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    startTgBridge();
+    return () => stopTgBridge();
+  }, [startTgBridge, stopTgBridge]);
+
+  // Broadcast our local sessions to the bus on change. Peers use this to
+  // know which @<name> they can forward our way. No-op until the bus is joined.
+  useEffect(() => {
+    const tid = busTargetIdRef.current;
+    if (!tid) return;
+    bus.postEvent(tid, {
+      type: 'sessions-update', from: BUS_NODE_ID, ts: Date.now(),
+      sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
+    }).catch(() => {});
+  }, [sessions]);
+
+  // Broadcast our polling state on change so /telegram (no arg) on peers
+  // can show a fresh picture without round-trips.
+  useEffect(() => {
+    const tid = busTargetIdRef.current;
+    if (!tid) return;
+    bus.postEvent(tid, {
+      type: 'telegram-status', from: BUS_NODE_ID, ts: Date.now(),
+      polling: tgPolling,
+    }).catch(() => {});
+  }, [tgPolling]);
 
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
   // bulk additions (/last replays) flush all of them, not just the tail.
@@ -1363,8 +1419,8 @@ function App() {
       } catch { /* proxy up but no matching tabs — fine */ }
 
       // Bus tab: open or find the shared control-plane tab and subscribe.
-      // Cross-process events (extension <-> shell) ride this. Each node
-      // posts node-online when it joins so the bus shows who's connected.
+      // Cross-process events (extension <-> shell) ride this. Each event is
+      // dispatched through handleBusEventRef so it always sees current state.
       try {
         if (cancelled) return;
         const located = await bus.findOrOpenBusTab();
@@ -1372,15 +1428,14 @@ function App() {
         busTargetIdRef.current = located.targetId;
         const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
           if (cancelled) return;
-          if (ev.from === BUS_NODE_ID) return; // ignore our own echoes
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: `bus: ${ev.type} from ${ev.from ?? '?'}${ev.to ? ` -> ${ev.to}` : ''}`,
-          }]);
+          handleBusEventRef.current?.(ev);
         });
         busSubRef.current = sub;
+        // Initial announce. Peers will pong back so we discover them too.
         await bus.postEvent(located.targetId, {
-          type: 'node-online', from: BUS_NODE_ID, role: 'shell',
+          type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
+          sessions: Object.entries(sessionsLatestRef.current).map(([n, s]) => ({ name: n, brain: s.brain })),
+          polling: tgPolling,
         });
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: 'system', _localOnly: true,
@@ -1775,6 +1830,62 @@ function App() {
       _currentTheme = target;
       setThemeRev(n => n + 1);
       sysOut(`theme: ${target}`);
+      return true;
+    }
+    if (cmd === '/telegram') {
+      const target = arg.trim();
+      // No-arg: report who's currently polling.
+      if (!target) {
+        const me = `  ${BUS_NODE_ID}  (this shell)  ${tgPolling ? 'polling' : 'idle'}`;
+        const peerLines = [];
+        for (const [nodeId, peer] of peerNodesRef.current) {
+          peerLines.push(`  ${nodeId}  (${peer.role ?? '?'})  ${peer.polling ? 'polling' : 'idle'}`);
+        }
+        sysOut(`telegram polling status:\n${me}` +
+               (peerLines.length ? '\n' + peerLines.join('\n') : '\n  (no peers on bus)') +
+               `\n\n/telegram <node>     hand polling to that node` +
+               `\n/telegram disconnect  stop polling on this node`);
+        return true;
+      }
+      if (target === 'disconnect') {
+        if (tgPolling) stopTgBridge();
+        else sysOut('telegram: not polling on this node');
+        return true;
+      }
+      // Hand off to a peer (or to ourselves to reclaim).
+      const tid = busTargetIdRef.current;
+      if (!tid) { sysOut('!! bus not joined — handoff requires bus'); return true; }
+      // Strip leading @ if present.
+      const to = target.replace(/^@/, '');
+      if (to === BUS_NODE_ID || to === 'shell') {
+        await startTgBridge();
+        return true;
+      }
+      // Validate peer exists; if not, post anyway (peer might join later, or the
+      // user knows what they're doing).
+      const peer = peerNodesRef.current.get(to);
+      if (!peer) {
+        // Try matching by role
+        const candidates = [...peerNodesRef.current.entries()].filter(([_, p]) => p.role === to);
+        if (candidates.length === 1) {
+          const [nodeId] = candidates[0];
+          if (tgPolling) stopTgBridge();
+          await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
+            ts: Date.now(), to: nodeId });
+          sysOut(`telegram: handoff posted to ${nodeId}`);
+          return true;
+        }
+        if (candidates.length > 1) {
+          sysOut(`!! ambiguous role "${to}"; pick one of: ${candidates.map(([n]) => n).join(', ')}`);
+          return true;
+        }
+        sysOut(`!! no peer "${to}" on bus — /telegram with no arg lists peers`);
+        return true;
+      }
+      if (tgPolling) stopTgBridge();
+      await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
+        ts: Date.now(), to });
+      sysOut(`telegram: handoff posted to ${to}`);
       return true;
     }
     if (cmd === '/config') {
@@ -2758,7 +2869,23 @@ function App() {
         return `${star}${emojiPad}${namePad}${brainPad}${detail}${bio}`;
       });
       const footer = _defaultOp ? `\n* = default operator (${_defaultOp})  /sessions default clear to unset` : '';
-      sysOut((rows.join('\n') || '(none)') + footer);
+
+      // Append peer (zombie) sessions: registered participants owned by other
+      // nodes. Visible here so the user sees the whole room and can address
+      // any of them with @<name>; the bus routes the mention to the owner.
+      const peerLines = [];
+      for (const [nodeId, peer] of peerNodesRef.current) {
+        const head = `~ ${nodeId}  (${peer.role ?? 'node'})${peer.polling ? '  [polling]' : ''}`;
+        peerLines.push(head);
+        for (const sess of peer.sessions ?? []) {
+          peerLines.push(`    ${(sess.name ?? '?').padEnd(14)}${sess.brain ?? '?'}`);
+        }
+      }
+      const peerBlock = peerLines.length
+        ? `\n\n── peers (zombie sessions) ───────────────────\n${peerLines.join('\n')}`
+        : '';
+
+      sysOut((rows.join('\n') || '(none)') + footer + peerBlock);
       return true;
     }
     if (cmd === '/rooms') {
@@ -3306,6 +3433,35 @@ function App() {
           : `no ${token} session; /open ${token} [name]`);
         return;
       } else {
+        // Local doesn't know this name. Check peers — maybe another node
+        // owns a session with this name. If exactly one peer has it, forward
+        // via the bus.
+        const peerMatches = [];
+        for (const [nodeId, peer] of peerNodesRef.current) {
+          if (peer.sessions?.some(s => s.name === token)) peerMatches.push(nodeId);
+        }
+        if (peerMatches.length === 1) {
+          const tid = busTargetIdRef.current;
+          if (!tid) {
+            sysOut(`!! bus not joined — can't forward @${token}`);
+            return;
+          }
+          const body = parsed.body || '?';
+          await append('You', text);
+          try {
+            await bus.postEvent(tid, {
+              type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
+              target: token, to_node: peerMatches[0], body, user: USER_NAME,
+            });
+            sysOut(`@${token} -> ${peerMatches[0]} via bus`);
+          } catch (e) {
+            sysOut(`!! forward failed: ${e.message}`);
+          }
+          return;
+        } else if (peerMatches.length > 1) {
+          sysOut(`!! @${token} is ambiguous across peers: ${peerMatches.join(', ')}`);
+          return;
+        }
         sysOut(`!! unknown session "@${token}" — /sessions to list, /open <brain> [name] to add`);
         return;
       }
@@ -3365,6 +3521,110 @@ function App() {
   // Keep the bridge's reference to submit() up to date with each render so
   // background message arrivals always run against the current closure.
   submitRef.current = submit;
+
+  // Refresh refs that bus events depend on. These run during render (legal
+  // because they are ref writes, not state mutations).
+  sessionsLatestRef.current = sessions;
+
+  // Bus event dispatcher — re-installed each render so it captures the latest
+  // sessions/runBrainTurn/tgPolling closures. The bus subscription was set up
+  // once with [] deps and just calls handleBusEventRef.current(ev), so it
+  // always runs through this fresh closure.
+  handleBusEventRef.current = async (ev) => {
+    if (ev.from === BUS_NODE_ID) return; // ignore self-echoes
+
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const post = async (event) => {
+      const tid = busTargetIdRef.current;
+      if (!tid) return;
+      try { await bus.postEvent(tid, { ts: Date.now(), from: BUS_NODE_ID, ...event }); } catch {}
+    };
+
+    switch (ev.type) {
+      case 'node-online': {
+        peerNodesRef.current.set(ev.from, {
+          role: ev.role, sessions: ev.sessions ?? [],
+          polling: !!ev.polling, lastSeen: ev.ts ?? Date.now(),
+        });
+        setPeersRev(r => r + 1);
+        log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
+        // Mutual discovery: pong with our state so the new peer learns about
+        // us. pong:true on the reply prevents an infinite ping-pong.
+        if (!ev.pong) {
+          await post({
+            type: 'node-online', role: 'shell', pong: true,
+            sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
+            polling: tgPolling,
+          });
+        }
+        return;
+      }
+      case 'node-offline': {
+        peerNodesRef.current.delete(ev.from);
+        setPeersRev(r => r + 1);
+        log(`bus: peer offline ${ev.from}`);
+        return;
+      }
+      case 'sessions-update': {
+        const peer = peerNodesRef.current.get(ev.from);
+        if (peer) { peer.sessions = ev.sessions ?? []; peer.lastSeen = ev.ts ?? Date.now(); }
+        setPeersRev(r => r + 1);
+        return;
+      }
+      case 'telegram-status': {
+        const peer = peerNodesRef.current.get(ev.from);
+        if (peer) { peer.polling = !!ev.polling; peer.lastSeen = ev.ts ?? Date.now(); }
+        setPeersRev(r => r + 1);
+        return;
+      }
+      case 'mention': {
+        if (ev.to_node !== BUS_NODE_ID) return;
+        if (!sessions[ev.target]) {
+          await post({ type: 'mention-reply', to_node: ev.from,
+            target: ev.target, error: `no session "${ev.target}" on this node` });
+          return;
+        }
+        log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
+        try {
+          const reply = await runBrainTurn(ev.target, `[${ev.user ?? 'remote'}]: ${ev.body}`, sessions);
+          await post({ type: 'mention-reply', to_node: ev.from,
+            target: ev.target, body: reply ?? '' });
+        } catch (e) {
+          await post({ type: 'mention-reply', to_node: ev.from,
+            target: ev.target, error: e.message });
+        }
+        return;
+      }
+      case 'mention-reply': {
+        if (ev.to_node !== BUS_NODE_ID) return;
+        const author = ev.target ?? ev.from;
+        if (ev.error) {
+          log(`!! ${author}: ${ev.error}`);
+        } else {
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author, body: ev.body ?? '(empty)',
+            _node: ev.from,
+          }]);
+          await append(author, ev.body ?? '');
+        }
+        return;
+      }
+      case 'telegram-handoff': {
+        if (ev.to !== BUS_NODE_ID) {
+          if (tgPolling) { stopTgBridge(); }
+          return;
+        }
+        log(`bus: handoff request from ${ev.from} — starting bridge`);
+        const ok = await startTgBridge();
+        if (!ok) log(`!! could not start bridge — bot_token missing in ~/.egpt/config.json?`);
+        return;
+      }
+      default:
+        log(`bus: ${ev.type} from ${ev.from ?? '?'}`);
+    }
+  };
 
   const color = a =>
     a === 'You' ? T.authorYou : a === 'system' ? T.authorSystem : T.authorBrain;
