@@ -42,13 +42,10 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 # ────────────────────────────────────────────────────────────────────────
 # Multi-brain: bring in ChatGPT and/or Claude.ai
 # ────────────────────────────────────────────────────────────────────────
-~/src/egpt/launch-brain.sh                    # start brain Chrome (chatgpt.com)
-~/src/egpt/launch-brain.sh start https://claude.ai/new
-~/src/egpt/launch-brain.sh status             # running? how many tabs?
-~/src/egpt/launch-brain.sh stop               # close cleanly via CDP
-
-# log in to chatgpt.com / claude.ai once in the brain Chrome window
-# the profile persists at ~/.egpt/egpt-brain
+# Just run egpt — the shell auto-spawns Chrome with the extension loaded
+# if it isn't already running, starts the CDP proxy, and joins the bus.
+# Log into chatgpt.com / claude.ai once in the Chrome window it opens;
+# the profile persists at ~/.egpt/egpt-brain so you only do it once.
 
 # in egpt (brain Chrome running):
 # at startup egpt scans tabs and auto-attaches:
@@ -333,12 +330,12 @@ Drive a tab in a CDP-exposed Chrome instance. Each session is bound to one tab; 
 Setup:
 
 ```bash
-~/src/egpt/launch-brain.sh                    # opens chatgpt.com on port 9222
-# log in if needed (profile persists)
+node egpt.mjs                                 # auto-spawns Chrome with extension on :9221
+# log in to chatgpt.com / claude.ai once if needed (profile persists at ~/.egpt/egpt-brain)
 # start or open a conversation in that tab
 ```
 
-Then in egpt, the tab gets auto-attached on startup. Or `/open chatgpt-cdp` to launch a fresh one.
+The tab gets auto-attached on startup. Or `/open chatgpt-cdp` to launch a fresh one.
 
 How it works internally:
 
@@ -529,36 +526,47 @@ Conversation routing:
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
 Brains: ccode, codex, chatgpt-cdp, claude-cdp
 
-Brain Chrome lifecycle is managed by launch-brain.sh, NOT a slash command:
-  ~/src/egpt/launch-brain.sh        # start brain + extension Chrome + proxy
-  ~/src/egpt/launch-brain.sh stop   # close brain Chrome via CDP
-  ~/src/egpt/launch-brain.sh status # running? how many pages?
+Brain Chrome lifecycle is automatic — the shell handles spawn + connect.
+Close the Chrome window manually when you're done.
 ```
 
 ---
 
 ## Brain Chrome lifecycle
 
-Manage from any terminal — no need to be inside egpt:
+The shell handles it. On startup, `egpt.mjs`:
+
+1. Checks for the proxy on `:9222`. If up, attaches.
+2. Else checks for raw Chrome on `:9221`. If up, starts the proxy and attaches.
+3. Else spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain --load-extension=<repo>/extension/dist`, waits for it, then starts the proxy and attaches.
+
+A 5-second poll keeps trying if any step fails — useful if you launch Chrome
+manually after the shell, or if the connection drops and Chrome comes back.
+The poll stops doing real work as soon as the bus is joined.
+
+Chrome is spawned **detached**, so it survives shell restart. Close it
+manually when you're done with the session. The profile at
+`~/.egpt/egpt-brain` persists your ChatGPT/Claude logins across runs.
+
+To start Chrome manually with the right flags (no shell needed):
 
 ```bash
-~/src/egpt/launch-brain.sh                    # default: chatgpt.com on 9222
-~/src/egpt/launch-brain.sh start [url]
-~/src/egpt/launch-brain.sh stop               # CDP Browser.close — clean shutdown
-~/src/egpt/launch-brain.sh status             # running? how many pages?
-~/src/egpt/launch-brain.sh restart [url]
-
-# Override port or profile via env vars:
-BRAIN_PORT=9223     ~/src/egpt/launch-brain.sh start
-PROXY_PORT=9224     ~/src/egpt/launch-brain.sh start
-BRAIN_PROFILE=~/.brain-experiment ~/src/egpt/launch-brain.sh start
+google-chrome \
+  --remote-debugging-port=9221 \
+  --user-data-dir=~/.egpt/egpt-brain \
+  --load-extension=~/src/egpt/extension/dist \
+  --no-first-run --new-window
 ```
 
-Notes:
+Or on Windows (PowerShell):
 
-- The launcher traps `SIGINT` and `SIGTERM`. So `Ctrl+C` in the terminal where you launched it closes the brain Chrome via CDP cleanly (not a hard kill).
-- The default profile is `$HOME/.egpt/egpt-brain` — completely separate from your normal Chrome profile, persists across reboots so you don't have to re-log in.
-- The launcher refuses to start if a brain is already running on the port. Use `restart` to swap.
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9221 `
+  --user-data-dir="$env:USERPROFILE\.egpt\egpt-brain" `
+  --load-extension="$env:USERPROFILE\src\egpt\extension\dist" `
+  --no-first-run --new-window
+```
 
 ---
 
@@ -566,7 +574,7 @@ Notes:
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | `~/src/egpt/launch-brain.sh start` |
+| `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | restart the shell — it auto-spawns Chrome on startup; or run Chrome manually with the flags in the lifecycle section above |
 | Streaming reply seems frozen, no progress | Premature finalize OR locale-specific selector miss | `Ctrl+R` to reset, then `/refresh` to pull the actual final text from the tab |
 | `auto-bound cgpt1 to tab abc12345…` | Old tab closed; egpt found a single matching replacement | Normal recovery — nothing to do |
 | Multiple `cgpt` tabs open and a brain-name address is ambiguous | Ambiguity is intentional — pick one | `@cgpt2 ...` (use the explicit name) |
@@ -595,6 +603,7 @@ Notes:
 │   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
 │   │                      #   streamFromTab, browseTab, closeBrowser, isRunning
 │   ├── cdp-proxy.mjs      # token-auth reverse proxy (Chrome:9221 → LAN:9222)
+│   ├── chrome-launcher.mjs# locate + spawn Chrome (one Chrome hosts brain tabs, extension, and bus)
 │   ├── browser-tools.mjs  # CDP control library for operator scripts
 │   ├── template.mjs       # command prompt template loader
 │   └── theme.mjs          # color theme loader + listThemes()
@@ -616,7 +625,6 @@ Notes:
 ├── themes/                # 10 built-in color themes (override in ~/.egpt/themes/)
 │   ├── catppuccin.json    # shipped default
 │   └── ...
-├── launch-brain.sh        # platform-aware Chrome launcher (Linux/macOS/MSYS2/Windows)
 ├── package.json           # type:module · ink + react + yaml + codemirror
 ├── README.md              # what & why
 └── MANUAL.md              # this file

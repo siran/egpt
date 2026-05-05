@@ -73,15 +73,17 @@ The brains are tools. The conversation log is the work. egpt makes the work prim
 
 You keep a Chrome instance logged in to the web brains. The daemon (shell or extension) talks to its tabs over CDP. No API keys to manage, no token bills to watch.
 
-**Chrome setup (one time):** Chrome 112+ only opens its debug port when launched with an explicit `--user-data-dir`. Create a shortcut (or modify the Target of an existing one):
+**Chrome setup (one time):** the shell auto-spawns Chrome on startup with the right flags (`--remote-debugging-port=9221`, `--user-data-dir=~/.egpt/egpt-brain`, `--load-extension=extension/dist`). The first time it runs, log into ChatGPT, Claude, and your Google account (for bookmark sync) in that Chrome window — the profile persists at `~/.egpt/egpt-brain` so you only do it once.
+
+Chrome is spawned **detached**: it survives shell restarts. Close it manually when you're done with the session.
+
+If you'd rather start Chrome yourself (e.g. via a desktop shortcut), point it at the same flags and the shell will detect and attach instead of spawning a second instance:
 
 ```
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9221 --user-data-dir="%USERPROFILE%\.egpt\egpt-brain" --no-first-run --new-window
+"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9221 --user-data-dir="%USERPROFILE%\.egpt\egpt-brain" --load-extension="%USERPROFILE%\src\egpt\extension\dist" --no-first-run --new-window
 ```
 
-Linux/macOS: `google-chrome --remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain`
-
-Log into ChatGPT, Claude, your Google account (for bookmark sync) in this profile once. The profile persists at `~/.egpt/egpt-brain`.
+Linux/macOS: `google-chrome --remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain --load-extension=~/src/egpt/extension/dist`
 
 ## Brain profiles
 
@@ -126,7 +128,7 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 - ✅ Multi-participant model: register as many sessions as you want (`/open chatgpt-cdp gpt1`, `/open claude-cdp claude1`); each shows up as a distinct author in the log
 - ✅ YAML brain profiles: `/profiles` lists configured presets and `/attach <profile>` starts one with model/effort/cwd plus optional summary injection
 - ✅ Auto-recovery: when a tab dies, the daemon silently rebinds to a single matching open tab
-- ✅ Browser lifecycle: `launch-brain.sh brain | proxy | stop | status`, persistent profile dir at `~/.egpt/egpt-brain`, Ctrl+C closes Chrome cleanly via CDP `Browser.close`
+- ✅ Browser lifecycle: shell auto-spawns Chrome on startup (with the extension loaded) if not already running, polls every 5s for late-arriving Chrome / recovery, persistent profile at `~/.egpt/egpt-brain`. Chrome is detached and survives shell restarts.
 - ✅ **Token-authenticated CDP proxy** (`tools/cdp-proxy.mjs`) — Chrome listens on 9221 (localhost-only); proxy on 9222 requires a secret token in the URL path so LAN access is safe without `--remote-allow-origins`
 - ✅ **Browser extension** (`extension/`) — same brains and Telegram bridge running inside Chrome; uses `chrome.debugger` API instead of external ports; `/open chatgpt-cdp` opens and attaches a ChatGPT tab in the same Chrome window
 - ✅ `/refresh` — re-poll the current CDP tab and append the full assistant message (recovery from premature streaming-end detection)
@@ -149,26 +151,12 @@ cd ~/src/egpt
 npm install
 npm run build:ext                            # build the browser extension
 
-# ── extension-only (no shell needed) ────────────────────────────────────────
-# 1. Open Chrome via the egpt shortcut (sets --remote-debugging-port=9221
-#    and --user-data-dir=%USERPROFILE%\.egpt\egpt-brain)
-# 2. Load the extension: chrome://extensions → Developer mode → Load unpacked → extension/
-# 3. Click the egpt icon and type:
-#      /open chatgpt-cdp         ← opens + attaches a ChatGPT tab
-#      /open claude-cdp          ← same for Claude
-
 # ── shell (Ink terminal UI) ──────────────────────────────────────────────────
-# Open Chrome via the egpt shortcut first, then:
+# Just run egpt — it spawns Chrome with the extension loaded if it isn't
+# already running, starts the CDP proxy, joins the bus, and auto-attaches
+# any matching tabs. The first run, log into chatgpt.com / claude.ai in
+# the Chrome window it opens; the profile persists at ~/.egpt/egpt-brain.
 
-# in terminal A — start the CDP proxy (Chrome is already running via shortcut)
-./launch-brain.sh proxy
-
-# OR start Chrome + proxy together (no shortcut needed)
-./launch-brain.sh brain                      # opens chatgpt.com, starts proxy
-./launch-brain.sh status
-./launch-brain.sh stop
-
-# in terminal B — run the chat
 node egpt.mjs                                # uses ./conversation.md
 node egpt.mjs ~/conversations/foo.md         # explicit path
 node egpt.mjs --help                         # CLI usage
@@ -177,6 +165,12 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 
 # inside egpt
 /help                                        # all commands
+
+# ── extension-only (no shell needed) ────────────────────────────────────────
+# Click the egpt icon in the Chrome the shell launched (or in any Chrome
+# you started with --load-extension=extension/dist):
+#   /open chatgpt-cdp         ← opens + attaches a ChatGPT tab
+#   /open claude-cdp          ← same for Claude
 /profiles                                    # list configured YAML brain profiles
 /profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
                                              # create a minimal ChatGPT URL profile
@@ -265,10 +259,10 @@ Reusable distillations:
 Appearance & config:
 /themes · /theme <name|next|prev> · /config [key [value]]
 
-Brain Chrome lifecycle is run from the shell, not from inside egpt:
-~/src/egpt/launch-brain.sh        # start brain + extension Chrome + proxy
-~/src/egpt/launch-brain.sh stop   # close brain Chrome via CDP
-~/src/egpt/launch-brain.sh status
+Brain Chrome is auto-spawned by the shell on startup (with the extension
+loaded) if it isn't already running. Close the Chrome window manually when
+you're done; the shell only manages spawn + connection, not shutdown, so
+your tabs survive shell restarts.
 ```
 
 `/send-file` uses a local operator (`codex`/`ccode`) to prepare an excerpt, then
@@ -371,6 +365,9 @@ egpt/
 ├── tools/
 │   ├── cdp.mjs            # CDP plumbing for shell: listTabs, streamFromTab, etc.
 │   ├── cdp-proxy.mjs      # token-auth reverse proxy (Chrome:9221 → LAN:9222)
+│   ├── chrome-launcher.mjs# locate + spawn Chrome (one Chrome hosts brain tabs, extension, and bus)
+│   ├── bus.mjs            # control-plane bus client (find/post/subscribe to bus.html)
+│   ├── bus.html           # in-page bus board (visible CDP-driven event log)
 │   ├── browser-tools.mjs  # CDP control library for operator scripts
 │   ├── template.mjs       # command prompt template loader
 │   └── theme.mjs          # terminal color theme loader
@@ -385,13 +382,6 @@ egpt/
 │       └── background.js  # service worker (opens the tab)
 ├── commands/              # operator prompt templates with {{variable}} substitution
 ├── themes/                # terminal color themes (10 shipped)
-├── launch-brain.sh        # Chrome launcher + proxy manager (Linux/macOS/MSYS2/Windows)
-│                          #   brain      — launch Chrome + proxy
-│                          #   extension  — launch extension Chrome
-│                          #   both       — both at once
-│                          #   proxy      — proxy only (Chrome already open via shortcut)
-│                          #   stop       — close via CDP Browser.close
-│                          #   status
 ├── package.json
 ├── README.md
 └── MANUAL.md

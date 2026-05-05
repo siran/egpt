@@ -1366,47 +1366,99 @@ function App() {
   useEffect(() => {
     let proxyHandle = null;
     let cancelled = false;
-    (async () => {
+    let pollHandle = null;
+    let chromeSpawnAttempted = false;
+    let lastNoticeBody = null;
+
+    const notice = (body, opts = {}) => {
+      // Avoid spamming the transcript when the polling loop reports the
+      // same state repeatedly; only append a system row when the message
+      // text changes.
+      if (body === lastNoticeBody) return;
+      lastNoticeBody = body;
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system',
+        _localOnly: opts._localOnly ?? true, body,
+      }]);
+    };
+
+    // Idempotent: each tick checks current state and only does work that
+    // is missing. Safe to call from both initial mount and the poll
+    // interval. The poll interval is what picks up Chrome that the user
+    // launches AFTER the shell, or Chrome that comes back from a crash.
+    const tryConnect = async () => {
+      if (cancelled) return;
+      if (busSubRef.current) return; // already fully connected — nothing to do.
+
+      // 1. Ensure Chrome is reachable, either via the proxy (:9222) or
+      //    directly (:9221). If neither is up, spawn it once.
       if (!(await cdp.isRunning())) {
-        // Proxy not up — check if Chrome is directly on 9221
-        try {
-          await fetch('http://localhost:9221/json/version');
-        } catch {
-          return; // Chrome not running at all — empty room, fine
+        let chromeUp = false;
+        try { await fetch('http://localhost:9221/json/version'); chromeUp = true; }
+        catch { /* not yet */ }
+
+        if (!chromeUp) {
+          if (chromeSpawnAttempted) {
+            notice('waiting for Chrome…');
+            return;
+          }
+          chromeSpawnAttempted = true;
+          const extDist = join(APP_DIR, 'extension', 'dist');
+          if (!existsSync(join(extDist, 'background.js'))) {
+            notice('extension/dist not built — run: npm run build:ext');
+            return;
+          }
+          try {
+            const launcher = await import('./tools/chrome-launcher.mjs');
+            if (!launcher.findChromeExecutable()) {
+              notice('!! Chrome executable not found in standard locations');
+              return;
+            }
+            notice('starting Chrome with extension…');
+            await launcher.spawnChrome({
+              port: 9221,
+              userDataDir: join(EGPT_HOME, 'egpt-brain'),
+              extensionDir: extDist,
+            });
+            await launcher.waitForChromeReady(9221);
+          } catch (e) {
+            notice(`!! could not start Chrome: ${e.message}`);
+            return;
+          }
         }
+
         try {
           const { startCdpProxy } = await import('./tools/cdp-proxy.mjs');
           proxyHandle = await startCdpProxy({ onLog: () => {} });
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: 'CDP proxy auto-started (:9221 → :9222)',
-          }]);
+          notice('CDP proxy auto-started (:9221 → :9222)');
         } catch (e) {
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: `CDP proxy failed to start: ${e.message}`,
-          }]);
+          notice(`CDP proxy failed to start: ${e.message}`);
           return;
         }
       }
 
       if (cancelled) return;
 
-      // Auto-attach any chatgpt/claude tabs already open.
+      // 2. Auto-attach any chatgpt/claude tabs already open. Idempotent
+      //    against `sessionsLatestRef` so a second tick doesn't duplicate.
       try {
         const tabs = await cdp.listTabs();
         if (cancelled) return;
-        let working = {};
+        const claimed = new Set(
+          Object.values(sessionsLatestRef.current).map(s => s.options?.targetId).filter(Boolean),
+        );
+        let working = { ...sessionsLatestRef.current };
         const additions = {};
         for (const tab of tabs) {
           if (isInternalUrl(tab.url)) continue;
+          if (claimed.has(tab.id)) continue;
           const brainName = brainForUrl(tab.url);
           if (!brainName) continue;
-          if (Object.values(working).some(s => s.options?.targetId === tab.id)) continue;
           const name = nextName(brainName, working);
           const emoji = nextEmoji(working);
           additions[name] = { brain: brainName, options: { targetId: tab.id }, emoji };
           working[name] = additions[name];
+          claimed.add(tab.id);
         }
         if (Object.keys(additions).length > 0 && !cancelled) {
           setSessions(s => ({ ...s, ...additions }));
@@ -1417,11 +1469,10 @@ function App() {
             body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
           }]);
         }
-      } catch { /* proxy up but no matching tabs — fine */ }
+      } catch { /* proxy up but listTabs failed — try again next tick */ }
 
-      // Bus tab: open or find the shared control-plane tab and subscribe.
-      // Cross-process events (extension <-> shell) ride this. Each event is
-      // dispatched through handleBusEventRef so it always sees current state.
+      // 3. Bus tab: open or find the shared control-plane tab and subscribe.
+      //    Cross-process events (extension <-> shell) ride this.
       try {
         if (cancelled) return;
         const located = await bus.findOrOpenBusTab();
@@ -1432,26 +1483,29 @@ function App() {
           handleBusEventRef.current?.(ev);
         });
         busSubRef.current = sub;
-        // Initial announce. Peers will pong back so we discover them too.
         await bus.postEvent(located.targetId, {
           type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
           sessions: Object.entries(sessionsLatestRef.current).map(([n, s]) => ({ name: n, brain: s.brain })),
           polling: tgPolling,
         });
-        setItems(p => [...p, {
-          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-          body: located.opened ? `bus tab opened (${bus.busUrl()})` : `bus tab attached`,
-        }]);
+        notice(located.opened ? `bus tab opened (${bus.busUrl()})` : `bus tab attached`);
       } catch (e) {
-        setItems(p => [...p, {
-          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-          body: `bus: not joined (${e.message})`,
-        }]);
+        notice(`bus: not joined yet (${e.message})`);
       }
-    })();
+    };
+
+    tryConnect();
+    // Poll every 5s. Cheap (one /json/version fetch per tick when Chrome is
+    // up; one fetch + immediate failure when it isn't). Stops doing real
+    // work as soon as busSubRef is set.
+    pollHandle = setInterval(tryConnect, 5000);
+
     return () => {
       cancelled = true;
+      if (pollHandle) clearInterval(pollHandle);
       // Best-effort node-offline announce, then stop subscription + proxy.
+      // Chrome is left running on purpose: it was spawned detached so the
+      // user keeps their brain tabs and the bus across shell restarts.
       const tid = busTargetIdRef.current;
       const sub = busSubRef.current;
       busTargetIdRef.current = null;
