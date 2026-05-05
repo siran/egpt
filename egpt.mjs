@@ -1221,6 +1221,14 @@ function App() {
   const bridgeRef = useRef(null);
   const wizardRef = useRef(null);
   const sentItemsCountRef = useRef(0);
+  // Where sysOut output should land. 'local' = mark items _localOnly so
+  // they don't bounce to Telegram or peers; 'remote' = let them through.
+  // The submit handler flips this to 'remote' when meta.fromTelegram so
+  // /help and /sessions issued from Telegram reach Telegram. Default is
+  // 'local' — most sysOut calls (startup status, bus dispatcher logs,
+  // local slash commands) are operational noise that doesn't belong in
+  // the conversation feed.
+  const outputSinkRef = useRef('local');
   // Bus (control-plane CDP tab) state: targetId + subscription handle.
   const busTargetIdRef = useRef(null);
   const busSubRef = useRef(null);
@@ -1550,7 +1558,10 @@ function App() {
   });
 
   const sysOut = body =>
-    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body }]);
+    setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', body,
+      _localOnly: outputSinkRef.current === 'local',
+    }]);
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
@@ -3437,6 +3448,21 @@ function App() {
   const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
+
+    // Tell sysOut where this submit's output should go. fromTelegram means
+    // the user issued the command from Telegram and the response should
+    // flow back there; otherwise it stays local. Reset in finally so a
+    // crashing submit doesn't leak the 'remote' sink to later sysOut calls
+    // (e.g. bus event logs).
+    outputSinkRef.current = meta.fromTelegram ? 'remote' : 'local';
+    try {
+    return await submitInner(raw, text, meta);
+    } finally {
+      outputSinkRef.current = 'local';
+    }
+  };
+
+  const submitInner = async (raw, text, meta = {}) => {
 
     // Wizard mode: /create-profile interactive questions intercept all input.
     if (wizardRef.current) {
