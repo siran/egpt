@@ -228,8 +228,30 @@ export default function App() {
     const slash = '/' + parts[0];
     appendMsg('egpt', `> ${cmd}`);
 
+    // Commands belong to the room, not the platform. If a known command isn't
+    // implemented locally, look for a shell peer on the bus and forward there.
     if (COMMAND_SET.has(slash) && !EXT_COMMAND_SET.has(slash)) {
-      appendMsg('egpt', `!! ${slash} is a shell-only command; not available in the extension`);
+      const shellPeer = [...peerNodesRef.current.entries()]
+        .find(([_, p]) => p.role === 'shell');
+      if (!shellPeer) {
+        appendMsg('egpt', `!! no shell node on the bus to run ${slash} — start an egpt shell on this LAN`);
+        return;
+      }
+      const [shellNodeId] = shellPeer;
+      const tid = busTargetIdRef.current;
+      if (!tid) {
+        appendMsg('egpt', `!! bus not joined — can't forward ${slash}`);
+        return;
+      }
+      try {
+        await bus.postEvent(tid, {
+          type: 'command', from: BUS_NODE_ID, ts: Date.now(),
+          to_node: shellNodeId, cmd, user: userName,
+        });
+        appendMsg('egpt', `${slash} -> ${shellNodeId} via bus`);
+      } catch (e) {
+        appendMsg('egpt', `!! forward failed: ${e.message}`);
+      }
       return;
     }
 
@@ -453,7 +475,7 @@ export default function App() {
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
     }
-  }, [activeSession, appendMsg]);
+  }, [activeSession, appendMsg, userName]);
 
   handleCommandRef.current = handleCommand;
 
@@ -740,8 +762,7 @@ export default function App() {
         <span className="status-sessions">
           {sessionsList.length === 0
             ? 'no sessions'
-            : sessionsList.map(s => s.name).join('  ')}
-          {activeSession ? ` › ${activeSession}` : ''}
+            : sessionsList.map(s => s.name === activeSession ? `*${s.name}` : s.name).join('  ')}
         </span>
         <span className="status-tg">{tgStatus}</span>
       </div>

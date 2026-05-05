@@ -3621,6 +3621,17 @@ function App() {
         if (!ok) log(`!! could not start bridge — bot_token missing in ~/.egpt/config.json?`);
         return;
       }
+      case 'command': {
+        if (ev.to_node !== BUS_NODE_ID) return;
+        log(`bus: running ${ev.cmd} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
+        try {
+          const handled = await handleSlash(ev.cmd);
+          if (!handled) sysOut(`!! unknown command from bus: ${ev.cmd.split(/\s+/)[0]}`);
+        } catch (e) {
+          sysOut(`!! bus command failed: ${e.message}`);
+        }
+        return;
+      }
       default:
         log(`bus: ${ev.type} from ${ev.from ?? '?'}`);
     }
