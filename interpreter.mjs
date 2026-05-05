@@ -140,17 +140,23 @@ export function helpText(brainTypes = []) {
   return lines.join('\n');
 }
 
+// HTML-escape user-provided content. Telegram's HTML parse_mode rejects
+// unknown tags, and command usages contain literal <name>, <brain>,
+// <name|path> tokens that look like HTML to the parser.
+const esc = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 /** Telegram HTML help. Same content as helpText. */
 export function helpHtml(brainTypes = []) {
   const lines = ['🤖 <b>egpt help</b>', ''];
   for (const entry of COMMANDS) {
     if (entry.section) {
-      lines.push(`\n<b>${entry.section}</b>`);
+      lines.push(`\n<b>${esc(entry.section)}</b>`);
       continue;
     }
     const mark = surfaceMark(entry);
-    lines.push(`<code>${entry.usage}</code> — ${entry.desc}${mark ? ` <i>${mark.trim()}</i>` : ''}`);
+    lines.push(`<code>${esc(entry.usage)}</code> — ${esc(entry.desc)}${mark ? ` <i>${esc(mark.trim())}</i>` : ''}`);
   }
-  if (brainTypes.length) lines.push('', `Brain types: ${brainTypes.join('  ')}`);
+  if (brainTypes.length) lines.push('', `Brain types: ${esc(brainTypes.join('  '))}`);
   return lines.join('\n');
 }

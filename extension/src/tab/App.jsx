@@ -12,6 +12,8 @@ import { resolveRoute, planMirrors } from '../../../room.mjs';
 // so it reads well in surface tags ("An@chrome-9m4k"). Random suffix so
 // reloads of the same extension don't collide on the bus.
 const BUS_NODE_ID = `chrome-${Math.random().toString(36).slice(2, 6)}`;
+// Display tag for Telegram; matches BUS_NODE_ID since it's already short.
+const SURFACE_TAG = BUS_NODE_ID;
 
 // Use the same brain names as the shell so /help and /open/@-mentions
 // match across surfaces. Aliases let the user type the short form too.
@@ -153,7 +155,7 @@ export default function App() {
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
-    const tgPrefix = `<b>${escapeHtml(sessionName)}</b>`;
+    const tgPrefix = `<b>${escapeHtml(sessionName)}@${SURFACE_TAG}</b>`;
     const tgStream = bridgeRef.current?.startStreamMessage?.(`${tgPrefix}\n⌛ thinking…`);
 
     try {

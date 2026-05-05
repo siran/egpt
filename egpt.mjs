@@ -1002,6 +1002,11 @@ const EGPT_EMOJI = '🧠';
 // Identifier this shell uses on the CDP control-plane bus. PID makes it
 // unique per process so two shells don't collide.
 const BUS_NODE_ID = `shell-${process.pid}`;
+// Short display tag for Telegram and any place where the BUS_NODE_ID
+// would be too long. Matches the cross-surface format ('shell-3232')
+// used by the mention-reply / room-utterance dispatchers when rendering
+// peer authors, so local and remote tags read consistently.
+const SURFACE_TAG = `shell-${BUS_NODE_ID.slice(-4)}`;
 
 // Visual avatars for sessions. Auto-assigned on session creation; users can
 // rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
@@ -1050,12 +1055,16 @@ function mdToTgHtml(text) {
 function formatItemForTelegram(item, sessions) {
   if (item.author === 'system') {
     if (item._tgBody) return item._tgBody;
-    return `${EGPT_EMOJI} <i>${escapeHtml(item.body)}</i>`;
+    return `${EGPT_EMOJI} <b>egpt@${SURFACE_TAG}</b>\n<i>${escapeHtml(item.body)}</i>`;
   }
-  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}</b>\n${escapeHtml(item.body)}`;
+  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}@${SURFACE_TAG}</b>\n${escapeHtml(item.body)}`;
+  // Peer brain replies arrive with author already tagged ('codex1@shell-3232'
+  // from the mention-reply dispatcher) — preserve that. Local sessions get
+  // the local SURFACE_TAG appended.
+  const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
   const sess = sessions[item.author];
   const emoji = sess?.emoji ?? '❓';
-  return `${emoji} <b>${escapeHtml(item.author)}</b>\n${mdToTgHtml(item.body)}`;
+  return `${emoji} <b>${escapeHtml(tagged)}</b>\n${mdToTgHtml(item.body)}`;
 }
 
 // Parse messages.md back into objects (for /last).
@@ -3338,7 +3347,7 @@ function App() {
     // same "thinking → text" experience as the local shell. The eventual
     // committed item is tagged _localOnly so we don't double-deliver.
     const sessEmoji = sessionMap[routedTo]?.emoji ?? '❓';
-    const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}</b>`;
+    const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}@${SURFACE_TAG}</b>`;
     const tg = bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`);
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
