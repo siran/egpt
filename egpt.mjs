@@ -3484,11 +3484,13 @@ function App() {
       return;
     }
     if (decision.kind === 'empty') {
-      // Egpt is the room itself; with nobody in it, just echo back. Slash
-      // commands still work for managing files, sessions, summaries, etc.
-      // We don't append the user's text to .md here — nothing to address it
-      // to, and the transcript becomes confusing if it has lone messages.
-      sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
+      // No local participants. The room may still have peer participants
+      // — the room-utterance event already mirrored what was typed, so
+      // those peers see it. Only show the "empty room" hint when nobody,
+      // local or peer, can hear.
+      if (peerNodesRef.current.size === 0) {
+        sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
+      }
       return;
     }
     if (decision.kind === 'peer-mention') {
@@ -3640,7 +3642,13 @@ function App() {
       }
       case 'mention-reply': {
         if (ev.to_node !== BUS_NODE_ID) return;
-        const author = ev.target ?? ev.from;
+        const target = ev.target ?? ev.from;
+        // Tag the brain reply with which surface ran it. The session lives
+        // on the peer node — without the surface tag the line looks
+        // ambiguous if the same name happens to exist locally too.
+        const peer = peerNodesRef.current.get(ev.from);
+        const role = peer?.role ?? 'node';
+        const author = `${target}@${role}-${String(ev.from ?? '').slice(-4)}`;
         if (ev.error) {
           log(`!! ${author}: ${ev.error}`);
         } else {

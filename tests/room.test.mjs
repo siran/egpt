@@ -162,7 +162,7 @@ describe('resolveRoute — peer @-mention forwarding', () => {
   it('errors with /sessions hint when nothing matches anywhere', () => {
     const r = route('@nobody hi', ctx());
     expect(r.kind).toBe('error');
-    expect(r.message).toMatch(/unknown session/);
+    expect(r.message).toMatch(/no participant @nobody/);
     expect(r.message).toMatch(/\/sessions/);
   });
 });

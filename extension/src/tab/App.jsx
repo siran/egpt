@@ -8,9 +8,10 @@ import * as bus from '../../../tools/bus.mjs';
 import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
 import { resolveRoute, planMirrors } from '../../../room.mjs';
 
-// Identifier this extension instance uses on the bus. UUID-ish so
-// reloads don't collide.
-const BUS_NODE_ID = `ext-${Math.random().toString(36).slice(2, 10)}`;
+// Identifier this extension instance uses on the bus. Short and friendly
+// so it reads well in surface tags ("An@chrome-9m4k"). Random suffix so
+// reloads of the same extension don't collide on the bus.
+const BUS_NODE_ID = `chrome-${Math.random().toString(36).slice(2, 6)}`;
 
 // Use the same brain names as the shell so /help and /open/@-mentions
 // match across surfaces. Aliases let the user type the short form too.
@@ -142,29 +143,35 @@ export default function App() {
 
   // ── brain submission ──────────────────────────────────────────
 
+  // Telegram bridge sends with parse_mode: 'HTML', so any text we hand it
+  // must be HTML-safe. Brain replies can contain raw < > & — escape them.
+  const escapeHtml = (s) => String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
   const runBrain = useCallback(async (sessionName, prompt) => {
     const session = sessionsRef.current.get(sessionName);
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
-    const tgStream = bridgeRef.current?.startStreamMessage?.(`${sessionName}\n⌛ thinking…`);
+    const tgPrefix = `<b>${escapeHtml(sessionName)}</b>`;
+    const tgStream = bridgeRef.current?.startStreamMessage?.(`${tgPrefix}\n⌛ thinking…`);
 
     try {
       const finalText = await session.brain.stream(
         { message: prompt },
         partial => {
           updateMsg(msgId, partial, true);
-          tgStream?.update(`${sessionName}\n${partial}`);
+          tgStream?.update(`${tgPrefix}\n${escapeHtml(partial)}`);
         },
         { targetId: session.targetId },
       );
       updateMsg(msgId, finalText, false);
-      tgStream?.finish(`${sessionName}\n${finalText}`);
+      tgStream?.finish(`${tgPrefix}\n${escapeHtml(finalText)}`);
       return finalText ?? '';
     } catch (e) {
       const err = `error: ${e.message}`;
       updateMsg(msgId, err, false);
-      bridgeRef.current?.send(`${sessionName}: ${err}`);
+      bridgeRef.current?.send(`${tgPrefix}\n${escapeHtml(err)}`);
       return null;
     }
   }, [appendMsg, updateMsg]);
@@ -469,7 +476,7 @@ export default function App() {
         const tid = busTargetIdRef.current;
         if (!tid) { appendMsg('egpt', '!! bus not joined — handoff requires bus'); return; }
         const to = target.replace(/^@/, '');
-        if (to === BUS_NODE_ID || to === 'extension') {
+        if (to === BUS_NODE_ID || to === 'chrome' || to === 'extension') {
           await startBridge();
           return;
         }
@@ -524,7 +531,7 @@ export default function App() {
       if (tid) {
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
-          role: 'extension', user: userName, body: trimmed,
+          role: 'chrome', user: userName, body: trimmed,
         }).catch(() => {});
       }
     }
@@ -553,7 +560,12 @@ export default function App() {
 
     if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
     if (decision.kind === 'empty') {
-      appendMsg('egpt', 'No session active. Use /open chatgpt-cdp to open one.');
+      // No local sessions. Peers may still be in the room — the
+      // room-utterance posted at the top already mirrored what was
+      // typed. Suppress the hint when peers are present.
+      if (peerNodesRef.current.size === 0) {
+        appendMsg('egpt', 'no one in the room — /open chatgpt-cdp to add a participant, or wait for a peer to join the bus');
+      }
       return;
     }
     if (decision.kind === 'peer-mention') {
@@ -617,7 +629,7 @@ export default function App() {
     }
     const bridge = startTelegramBridge({
       botToken:     telegram.bot_token,
-      nodeName:     'extension',
+      nodeName:     'chrome',
       allowedUsers: telegram.allowed_users ?? [],
       chatId:       telegram.chat_id ?? null,
       onIncoming:   (text, meta) => handleIncomingRef.current(text, meta),
@@ -680,7 +692,7 @@ export default function App() {
           name: n, brain: s.brain.name,
         }));
         await bus.postEvent(located.targetId, {
-          type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'extension',
+          type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'chrome',
           sessions: sessionsList, polling: false,
         });
         appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached');
@@ -724,7 +736,7 @@ export default function App() {
           const sessionsList = [...sessionsRef.current.entries()].map(([n, s]) => ({
             name: n, brain: s.brain.name,
           }));
-          await post({ type: 'node-online', role: 'extension', pong: true,
+          await post({ type: 'node-online', role: 'chrome', pong: true,
             sessions: sessionsList, polling: tgPolling });
         }
         return;
@@ -771,7 +783,10 @@ export default function App() {
       }
       case 'mention-reply': {
         if (ev.to_node !== BUS_NODE_ID) return;
-        const author = ev.target ?? ev.from;
+        const target = ev.target ?? ev.from;
+        const peer = peerNodesRef.current.get(ev.from);
+        const role = peer?.role ?? 'node';
+        const author = `${target}@${role}-${String(ev.from ?? '').slice(-4)}`;
         if (ev.error) log(`!! ${author}: ${ev.error}`);
         else appendMsg(author, ev.body ?? '(empty)');
         return;

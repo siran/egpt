@@ -118,10 +118,13 @@ export function resolveRoute(parsed, fullText, ctx) {
       };
     }
 
-    // 4. Nothing matched.
+    // 4. Nothing matched. Truthful framing: this token isn't a participant
+    //    in the room, anywhere we can see. Don't suggest /open — that
+    //    presumes the user wanted to address a brain type, but they may
+    //    have misremembered a session name. /sessions tells the truth.
     return {
       kind: 'error',
-      message: `unknown session "@${token}" — /sessions to list, /open <brain> [name] to add`,
+      message: `no participant @${token} has joined the room — /sessions to see who's here`,
     };
   }
 

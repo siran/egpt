@@ -133,6 +133,7 @@ export function startTelegramBridge({
       await apiFetch('sendMessage', {
         chat_id:              chatId,
         text:                 chunk,
+        parse_mode:           'HTML',
         link_preview_options: { is_disabled: true },
       });
     }
@@ -153,6 +154,7 @@ export function startTelegramBridge({
         const sent = await apiFetch('sendMessage', {
           chat_id:              targetChat,
           text:                 initialText.slice(0, 4096),
+          parse_mode:           'HTML',
           link_preview_options: { is_disabled: true },
         });
         msgId = sent.message_id;
@@ -173,6 +175,7 @@ export function startTelegramBridge({
             chat_id:              targetChat,
             message_id:           msgId,
             text:                 text.slice(0, 4096),
+            parse_mode:           'HTML',
             link_preview_options: { is_disabled: true },
           });
           lastSent   = text;
