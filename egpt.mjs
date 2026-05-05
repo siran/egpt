@@ -20,6 +20,7 @@ import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
+import { resolveRoute, planMirrors } from './room.mjs';
 
 const { createElement: h, useState, useEffect, useRef, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -3390,92 +3391,71 @@ function App() {
 
     const parsed = parseInput(text);
 
-    if (parsed.type === 'command') {
+    // Pure routing decision. resolveRoute looks at sessions + peerSessions
+    // and returns one of: command, turn, auto-open, peer-mention, error,
+    // empty. The dispatch below handles each kind with the side effects
+    // (state updates, .md writes, bus posts, brain calls).
+    const sessionsView = new Map(
+      Object.entries(sessions).map(([n, s]) => [n, { brainName: s.brain }]),
+    );
+    const peerSessionsView = new Map(
+      [...peerNodesRef.current.entries()].map(([id, p]) => [id, p.sessions ?? []]),
+    );
+    const decision = resolveRoute(parsed, text, {
+      sessions: sessionsView, peerSessions: peerSessionsView,
+      brainForName, canonicalBrainName,
+    });
+
+    if (decision.kind === 'command') {
       const handled = await handleSlash(text);
-      if (!handled) sysOut(`!! unknown command: ${parsed.cmd}`);
+      if (!handled) sysOut(`!! unknown command: ${decision.cmd}`);
       return;
     }
-
-    // Routing:
-    //   - "@name ..." → that single session only. The full text (with @name
-    //     prefix) lands in the .md; only the addressed brain's tab gets the
-    //     payload injected.
-    //   - any other message → broadcasts to every session in the room (CDP
-    //     brains and local operators alike). Each may reply or stay silent
-    //     per the polite-silence convention.
-    let activeSessions = sessions;
-    let recipients;
-    let userPayload;
-    if (parsed.type === 'mention') {
-      const token = parsed.target;
-      let target = resolveAddressedSession(token, activeSessions);
-      const brainName = canonicalBrainName(token);
-      const brain = brainForName(token);
-      if (!target && brain && !brain.urlMatch) {
-        const emoji = nextEmoji(activeSessions);
-        const sessionName = nextName(brainName, activeSessions);
-        const newEntry = { brain: brainName, options: { cwd: process.cwd() }, emoji };
-        activeSessions = { ...activeSessions, [sessionName]: newEntry };
-        // Functional updater so a concurrent attach can't overwrite us.
-        setSessions(s => ({ ...s, [sessionName]: newEntry }));
-        sysOut(`session "${sessionName}" -> ${emoji} ${brainName} (auto-opened for @${token})`);
-        target = sessionName;
-      }
-      if (target) {
-        recipients = [target];
-        userPayload = parsed.body || '?';
-      } else if (brain) {
-        const matches = Object.entries(activeSessions)
-          .filter(([_, s]) => canonicalBrainName(s.brain) === brainName)
-          .map(([n]) => n);
-        sysOut(matches.length
-          ? `@${token} is ambiguous; address one of: ${matches.join(', ')}`
-          : `no ${token} session; /open ${token} [name]`);
-        return;
-      } else {
-        // Local doesn't know this name. Check peers — maybe another node
-        // owns a session with this name. If exactly one peer has it, forward
-        // via the bus.
-        const peerMatches = [];
-        for (const [nodeId, peer] of peerNodesRef.current) {
-          if (peer.sessions?.some(s => s.name === token)) peerMatches.push(nodeId);
-        }
-        if (peerMatches.length === 1) {
-          const tid = busTargetIdRef.current;
-          if (!tid) {
-            sysOut(`!! bus not joined — can't forward @${token}`);
-            return;
-          }
-          const body = parsed.body || '?';
-          await append('You', text);
-          try {
-            await bus.postEvent(tid, {
-              type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
-              target: token, to_node: peerMatches[0], body, user: USER_NAME,
-            });
-            sysOut(`@${token} -> ${peerMatches[0]} via bus`);
-          } catch (e) {
-            sysOut(`!! forward failed: ${e.message}`);
-          }
-          return;
-        } else if (peerMatches.length > 1) {
-          sysOut(`!! @${token} is ambiguous across peers: ${peerMatches.join(', ')}`);
-          return;
-        }
-        sysOut(`!! unknown session "@${token}" — /sessions to list, /open <brain> [name] to add`);
-        return;
-      }
-    } else {
-      recipients = Object.keys(activeSessions);
-      userPayload = text;
+    if (decision.kind === 'error') {
+      sysOut(`!! ${decision.message}`);
+      return;
     }
-    if (recipients.length === 0) {
+    if (decision.kind === 'empty') {
       // Egpt is the room itself; with nobody in it, just echo back. Slash
       // commands still work for managing files, sessions, summaries, etc.
       // We don't append the user's text to .md here — nothing to address it
       // to, and the transcript becomes confusing if it has lone messages.
       sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
       return;
+    }
+    if (decision.kind === 'peer-mention') {
+      const tid = busTargetIdRef.current;
+      if (!tid) { sysOut(`!! bus not joined — can't forward @${decision.target}`); return; }
+      await append('You', text);
+      try {
+        await bus.postEvent(tid, {
+          type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
+          target: decision.target, to_node: decision.toNode,
+          body: decision.body, user: USER_NAME,
+        });
+        sysOut(`@${decision.target} -> ${decision.toNode} via bus`);
+      } catch (e) {
+        sysOut(`!! forward failed: ${e.message}`);
+      }
+      return;
+    }
+
+    // From here on it's a local turn (kind === 'turn' or 'auto-open').
+    let activeSessions = sessions;
+    let recipients;
+    let userPayload;
+    if (decision.kind === 'auto-open') {
+      const emoji = nextEmoji(activeSessions);
+      const sessionName = nextName(decision.brainName, activeSessions);
+      const newEntry = { brain: decision.brainName, options: { cwd: process.cwd() }, emoji };
+      activeSessions = { ...activeSessions, [sessionName]: newEntry };
+      setSessions(s => ({ ...s, [sessionName]: newEntry }));
+      sysOut(`session "${sessionName}" -> ${emoji} ${decision.brainName} (auto-opened for @${decision.originalToken})`);
+      recipients = [sessionName];
+      userPayload = decision.payload;
+    } else {
+      recipients = decision.recipients;
+      userPayload = decision.payload;
     }
 
     // The .md keeps the original text (including any @mention prefix).
@@ -3487,7 +3467,7 @@ function App() {
     // Phase A — broadcast/single. Each brain receives just `[An]: <message>`
     // (no fancy framing; the brain's tab keeps its own native history).
     const messageForBrains = `[${USER_NAME}]: ${userPayload}`;
-    if (recipients.length > 1) {
+    if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
     const replies = [];
@@ -3496,25 +3476,18 @@ function App() {
       if (reply !== null) replies.push({ author: recipient, text: reply });
     }
 
-    // Phase B — one-hop mirror among CDP recipients. When brain B replied
-    // substantively, push "[B]: <reply>" into every OTHER CDP brain's tab so
-    // they see it. Receiving brains may reply or stay silent (per /rules).
-    // We do NOT mirror the secondary replies; cascade is bounded to one hop.
-    const cdpRecipients = recipients.filter(r => brainForName(activeSessions[r]?.brain)?.urlMatch);
-    if (cdpRecipients.length > 1 && replies.length > 0) {
-      const mirrorables = replies.filter(r => brainForName(activeSessions[r.author]?.brain)?.urlMatch);
-      if (mirrorables.length > 0) {
-        sysOut(`mirroring ${mirrorables.length} reply/replies to other CDP brains…`);
-        for (const { author, text: replyText } of mirrorables) {
-          const mirrorMsg = `[${author}]: ${replyText}`;
-          for (const other of cdpRecipients) {
-            if (other === author) continue;
-            await runBrainTurn(other, mirrorMsg, activeSessions);
-          }
-        }
+    // Phase B — one-hop mirror among CDP recipients. planMirrors decides
+    // which (recipient, message) pairs need a mirror push.
+    const sessionsForMirror = new Map(
+      Object.entries(activeSessions).map(([n, s]) => [n, { brainName: s.brain }]),
+    );
+    const mirrorPlan = planMirrors(replies, recipients, sessionsForMirror, brainForName);
+    if (mirrorPlan.length > 0) {
+      sysOut(`mirroring ${mirrorPlan.length} reply/replies to other CDP brains…`);
+      for (const { to, message } of mirrorPlan) {
+        await runBrainTurn(to, message, activeSessions);
       }
     }
-
     setBusy(false);
   };
 
