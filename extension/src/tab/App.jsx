@@ -18,9 +18,18 @@ const BRAINS = {
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
 };
-const BRAIN_ALIASES = { chatgpt: 'chatgpt-cdp', claude: 'claude-cdp' };
+const BRAIN_ALIASES = {
+  chatgpt: 'chatgpt-cdp',
+  claude: 'claude-cdp',
+  ccode: 'claude-code',
+};
 const canonicalBrain = (n) => BRAIN_ALIASES[n] ?? n;
 const brainForName = (n) => BRAINS[canonicalBrain(n)] ?? null;
+// Brains the shell hosts but the extension can't (local subprocesses).
+// /attach and /open with one of these get forwarded to a shell peer
+// instead of erroring out locally — same room, the operation just runs
+// on the surface that can carry it.
+const SHELL_ONLY_BRAINS = new Set(['codex', 'claude-code']);
 
 const BRAIN_PREFIX = {
   'chatgpt-cdp': 'cgpt',
@@ -232,9 +241,10 @@ export default function App() {
     const slash = '/' + parts[0];
     appendMsg('egpt', `> ${cmd}`);
 
-    // Commands belong to the room, not the platform. If a known command isn't
-    // implemented locally, look for a shell peer on the bus and forward there.
-    if (COMMAND_SET.has(slash) && !EXT_COMMAND_SET.has(slash)) {
+    // Forward `cmd` verbatim to a shell peer over the bus. Used both for
+    // commands the extension doesn't implement at all and for /attach or
+    // /open against a brain the extension can't host.
+    const forwardToShell = async () => {
       const shellPeer = [...peerNodesRef.current.entries()]
         .find(([_, p]) => p.role === 'shell');
       if (!shellPeer) {
@@ -256,7 +266,24 @@ export default function App() {
       } catch (e) {
         appendMsg('egpt', `!! forward failed: ${e.message}`);
       }
+    };
+
+    // Commands belong to the room, not the platform. If a known command
+    // isn't implemented locally, forward it to a shell peer.
+    if (COMMAND_SET.has(slash) && !EXT_COMMAND_SET.has(slash)) {
+      await forwardToShell();
       return;
+    }
+
+    // /attach <brain> and /open <brain> against a shell-only brain (codex,
+    // claude-code) — the extension can host CDP brains only, so the user's
+    // intent here is unambiguous: run it where it can run.
+    if ((slash === '/attach' || slash === '/open') && parts[1]) {
+      const brainType = canonicalBrain(parts[1]);
+      if (SHELL_ONLY_BRAINS.has(brainType)) {
+        await forwardToShell();
+        return;
+      }
     }
 
     switch (slash) {
@@ -489,6 +516,19 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Mirror everything (including commands) to peer surfaces so the room
+    // shows what's happening regardless of which surface someone is looking
+    // at. Pure visibility — peers render the line and do NOT re-route.
+    {
+      const tid = busTargetIdRef.current;
+      if (tid) {
+        bus.postEvent(tid, {
+          type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
+          role: 'extension', user: userName, body: trimmed,
+        }).catch(() => {});
+      }
+    }
+
     const parsed = parseInput(trimmed);
 
     // Pure routing decision via the shared room nucleus. Same module the
@@ -510,20 +550,6 @@ export default function App() {
     if (decision.kind === 'command') { handleCommand(trimmed); return; }
 
     appendMsg(userName, trimmed);
-
-    // Mirror the utterance to peer surfaces on the bus so the room shows
-    // the same conversation regardless of which surface someone is looking
-    // at. Pure visibility — peers render the line and do NOT re-route to
-    // their brains (we drive ours below).
-    {
-      const tid = busTargetIdRef.current;
-      if (tid) {
-        bus.postEvent(tid, {
-          type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
-          role: 'extension', user: userName, body: trimmed,
-        }).catch(() => {});
-      }
-    }
 
     if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
     if (decision.kind === 'empty') {
