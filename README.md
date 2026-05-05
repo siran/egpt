@@ -116,7 +116,7 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 ## What works today
 
 - ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
-- ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — Bot API competitive polling; multiple nodes share one bot token, coordinate via 409 Conflict as a bus; route incoming messages into the same room, mirror brain replies back to the chat
+- ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — Bot API long polling. One bot token per node is the recommended setup, so each off-LAN node has independent access; LAN coordination uses the CDP bus, not Telegram. Incoming messages route into the same room; brain replies stream back to the chat.
 - ✅ Plain Markdown file as conversation source-of-truth (`tail -f`-friendly, vim-editable, grep-able)
 - ✅ Four working brains/operators:
   - `ccode` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json` (`claude-code` is accepted as a legacy alias)
@@ -326,30 +326,33 @@ A new brain is one file in `brains/`. A new input is one file in (eventually) `b
 
 ## The distributed room
 
-The single-machine setup (one shell, one Chrome) is just the starting point. The deeper design is a **distributed room**: any number of egpt nodes — shells on different machines, browser extensions, phones via Telegram — sharing one conversation through the Telegram bot as a bus.
+The single-machine setup (one shell, one Chrome) is just the starting point. The deeper design is a **distributed room**: any number of egpt nodes — shells on different machines, the browser extension, phones via Telegram — sharing one conversation through two channels:
+
+- **CDP bus** — for LAN coordination. A tab in the brain Chrome (`tools/bus.html`) that every local egpt node attaches to. It carries short control events: node presence, cross-node mention forwarding, Telegram polling handoff. Long content (full brain replies, file pastes) does not travel here — it stays in `conversation.md` and Telegram.
+- **Telegram bot** — for off-LAN bridges only. Recommended: one bot token per off-LAN node, so each one has independent access and there is no contention for the polling slot. LAN nodes don't need Telegram at all.
 
 Each node:
-1. Subscribes to the same Telegram bot
-2. Passively records every message to its own local conversation copy
-3. Acts only on messages addressed to brains it has attached
-4. Posts replies back to Telegram, which all other nodes then record
-
-No central server. No shared filesystem. No leader. Telegram message order is the canonical sequence. Each node's local `.md` file is a materialization of that stream.
+1. Joins the bus on startup and announces its sessions
+2. Sees peer nodes as **zombie sessions** in `/sessions` — addressable handles owned by another node
+3. When `@<name>` matches a zombie session, the local node posts a mention event on the bus; the owning node picks it up, runs the turn, and posts the reply back
 
 ```
-machine A  egpt-shell   [codex1, ccode1]   ─┐
-machine B  egpt-shell   [codex2]            ├─── Telegram bot ───  conversation
-browser    egpt-ext     [cgpt1, claude1]   ─┘         │
-phone      Telegram app (human)           ────────────┘
+machine A  egpt-shell   [codex1, ccode1]  ─┐
+machine B  egpt-shell   [codex2]            ├──  CDP bus (LAN)
+browser    egpt-ext     [cgpt1, claude1]  ─┘            │
+                                                         │
+phone      Telegram app (human)  ── Telegram bot ────────┘  (off-LAN)
 ```
 
-`@codex2 look at ~/src/project` — typed from the browser extension, routed through Telegram to machine B, answered by codex2, reply delivered back to every node. No VPN. No SSH. No server.
+`@codex2 look at ~/src/project` — typed from the browser extension, routed through the CDP bus to machine B, answered by codex2, reply delivered back over the bus. No VPN. No SSH. No server.
 
-**Brain ownership**: each node is authoritative only for the sessions it has attached. `/agents` (coming) broadcasts a discovery query; each live node replies with its session list within a short window, giving a real-time map of every brain available in the room.
+**Brain ownership**: each node is authoritative only for the sessions it has attached. The bus's `node-online` event includes each node's session list, so peers know which `@<name>` to forward where. `/agents` (coming) is a live re-discovery on demand.
+
+**Telegram polling**: a single bot token can only be long-polled by one client at a time. Within egpt, polling is owned by exactly one node at a time — no competition. `/telegram` (no arg) reports who currently owns it. `/telegram <node>` transfers polling to another node over the bus. With the recommended one-token-per-node setup, none of this matters because each node polls its own bot.
 
 **Multi-human rooms**: multiple people, each running their own egpt node, each contributing their own brains. The `allowed_users` list in `~/.egpt/config.json` is the only access control. When one person's daily limit on a free-tier account is hit, another person's isn't — natural failover across accounts, machines, and providers.
 
-**Works on free tiers**: egpt drives the web UI, not the API. A free chatgpt.com account gives the same model envelope (memory, tools, reasoning modes) as a paid subscription, just with daily limits. A group pooling free-tier accounts across ChatGPT, Claude, and Codex gets a capable multi-agent room for zero ongoing cost — no API billing, no shared credentials, no infrastructure beyond a Telegram bot token.
+**Works on free tiers**: egpt drives the web UI, not the API. A free chatgpt.com account gives the same model envelope (memory, tools, reasoning modes) as a paid subscription, just with daily limits. A group pooling free-tier accounts across ChatGPT, Claude, and Codex gets a capable multi-agent room for zero ongoing cost — no API billing, no shared credentials, no infrastructure beyond a Telegram bot token per off-LAN node.
 
 ## Layout
 
