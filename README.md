@@ -426,6 +426,28 @@ Each turn:
 
 Both web UIs render via React; they don't expose the SSE token stream cleanly to extensions or CDP scripts. Polling the rendered DOM is brittle but universal. The 1-second stability window is a deliberate tradeoff against false "done" signals during LaTeX/code rendering pauses.
 
+## Tests
+
+Vitest. Tests live in `tests/`.
+
+```bash
+npm test                # one-shot
+npm run test:watch      # re-run on save
+npx vitest run --coverage   # whole-project coverage report (HTML in coverage/)
+```
+
+Current coverage (whole project, `vitest.config.mjs` includes every source file even when not imported by a test):
+
+| Area                     | Lines | Notes |
+|--------------------------|-------|-------|
+| `interpreter.mjs`        | 100%  | parseInput, command-set integrity, helpText / helpHtml |
+| Everything else          | 0%    | egpt.mjs, App.jsx, brains, bridges, tools — untested |
+| **Project total**        | **~1%** | First step; the routing nucleus is next |
+
+The interpreter test file (`tests/interpreter.test.mjs`) covers 22 cases across three groups: input classification (command vs mention vs message, including edge cases like bare `@`, mid-line emails, multiline mentions, unicode), command-registry integrity (no duplicate tokens; `shell ∪ extension = COMMAND_SET`), and help-renderer structure (every command appears; surface markers correct).
+
+The submit-handler routing in `egpt.mjs` and `App.jsx` will be tested after extracting the room logic into a pure `room.mjs` so it can be driven without rendering Ink.
+
 ## Caveats and known limits
 
 - **Selectors break.** When ChatGPT or Claude redesigns their UI, the inject/poll scripts in `brains/*-cdp.mjs` will need tweaking. They're written defensively (multiple fallback selectors), but not future-proof.

@@ -5,3 +5,4 @@ conversations/
 .egpt/
 *.log
 extension/dist/
+coverage/
