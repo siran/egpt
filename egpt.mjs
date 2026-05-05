@@ -1977,6 +1977,7 @@ function App() {
         show_prompts: 'show full operator prompt before each turn  (true/false)',
         unix_paths:   'display filesystem paths in POSIX style  (true/false)',
         tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
+        node_name:    'name this node uses on the bus (e.g. home, chr1); takes effect on next shell restart',
       };
       const parts = arg.trim().split(/\s+/);
       const key = parts[0];
