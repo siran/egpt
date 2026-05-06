@@ -207,6 +207,19 @@ If cdp1 is on shell:
 ✅ Reply renders as `cdp1@<shell-id>: <reply>` (with @-tag indicating
 which node ran it).
 
+### 3.9 — room-reply broadcast (local brain reply mirrors to peers)
+
+In shell A: `@cdp1 say something`
+
+✅ Shell A renders `🐻 cdp1` row with the reply (local).
+Within ~1s, extension UI shows `cdp1@<shell-id>: <reply>` (broadcast
+via room-reply). Same line, both surfaces, no extra command needed.
+
+In extension UI: `@cgpt2 hi` (assuming cgpt2 is local to extension)
+
+✅ Extension UI renders cgpt2's reply locally. Shell A shows
+`cgpt2@chrome-XXXX: <reply>` (room-reply broadcast). Symmetric.
+
 ## 4. Telegram bridge
 
 **Setup**: bot token configured in `~/.egpt/config.json` under the

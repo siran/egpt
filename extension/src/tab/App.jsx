@@ -611,7 +611,17 @@ export default function App() {
     const replies = [];
     for (const recipient of recipients) {
       const reply = await runBrain(recipient, decision.payload);
-      if (reply !== null && reply !== undefined) replies.push({ author: recipient, text: reply });
+      if (reply !== null && reply !== undefined) {
+        replies.push({ author: recipient, text: reply });
+        // Broadcast brain reply to peers — the room is noisy by design.
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, {
+            type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
+            role: 'chrome', session: recipient, body: reply,
+          }).catch(() => {});
+        }
+      }
     }
 
     // Phase B — one-hop CDP-to-CDP mirroring. planMirrors decides which
@@ -794,8 +804,14 @@ export default function App() {
             { message: `[${ev.user ?? 'remote'}]: ${ev.body}` },
             () => {}, { targetId: session.targetId },
           );
+          // Directed reply to the asker.
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, body: finalText ?? '' });
+          // Room-visible echo so every peer sees it, not just the asker.
+          if (finalText !== null && finalText !== undefined) {
+            await post({ type: 'room-reply', role: 'chrome',
+              session: ev.target, body: finalText });
+          }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, error: e.message });
@@ -819,6 +835,13 @@ export default function App() {
         // ev.via overrides ev.from when the message came from a
         // side-channel like Telegram.
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
+        appendMsg(tag, ev.body ?? '');
+        return;
+      }
+      case 'room-reply': {
+        // Broadcast brain reply from a peer surface. Render with the
+        // session@node tag so the originating surface is visible.
+        const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
         return;
       }

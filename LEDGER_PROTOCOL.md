@@ -279,6 +279,36 @@ Otherwise pass `cmd` to local `handleSlash`. There is currently no
 `command-reply` event; the originating node sees only its own
 "`<cmd>` -> `<to_node>` via bus" confirmation. See "Open questions".
 
+### `room-reply`
+
+Mirrors a brain reply produced on this node to the room so every peer
+sees the same conversation. Posted after a brain turn finishes
+successfully — both for local user-initiated turns and for turns
+triggered by an inbound `mention`.
+
+```jsonc
+{
+  "type": "room-reply",
+  "from": "home",
+  "ts":   ...,
+  "role": "shell",        // sender's role
+  "session": "codex1",    // which brain on this node produced the reply
+  "body": "<reply text>"
+}
+```
+
+Behavior on receive: filter self-echoes (`from === self.node_name`).
+Render as `<session>@<from>: <body>` in the local UI / ledger.
+Implementations MUST NOT route this through `resolveRoute` — it's
+informational, not actionable.
+
+When a `mention` from a peer triggered the turn, the responding node
+sends both `mention-reply` (directed at the asker, may carry an
+`error` field) and `room-reply` (broadcast). The asker's dispatcher
+may render both; rooms are noisy by design and a slight duplicate is
+preferred to losing the broadcast view of what the brain said. (A
+future correlation_id could dedup if it becomes a real problem.)
+
 ### `room-utterance`
 
 Mirrors what a user typed on one surface to the room so peers see the
@@ -357,13 +387,16 @@ What's implemented today (commit `36cd96f` and later) vs. planned.
 | mention-reply      | ✅      | ⏳     | bridge form: brain reply sent back through the chat |
 | command            | ✅      | ⏳     | slash-command forwarding; bridge form needs reply event |
 | room-utterance     | ✅      | ✅     | bridge: every chat message IS a room-utterance for the others |
+| **room-reply**      | ✅      | ⏳     | mirror local brain replies to peers — closes the "one room" symmetry |
 | **command-reply** ⏳| ⏳      | ⏳     | shell sends back forwarded command output |
 
-There is intentionally no `room-reply` event for auto-mirroring brain
-replies to peers. The admin's tool for that is `/mirror` — explicit
-agency over what gets shared, since brain replies can be long and not
-always interesting to other nodes. Auto-broadcast every reply would
-turn the bus into noise.
+A room is noisy by design. Every brain reply produced on any node
+broadcasts as `room-reply` so peers see the same conversation
+regardless of which surface they're looking at. Volume control is the
+user's, not the protocol's: scroll, `/clear`, `/save` what's worth
+keeping, mute peers if needed. `/mirror` is a separate concern —
+forwarding a message between brain sessions inside the room. Both
+exist; they don't replace each other.
 
 ## Open questions
 

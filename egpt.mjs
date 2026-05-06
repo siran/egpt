@@ -3615,7 +3615,19 @@ function App() {
     const replies = [];
     for (const recipient of recipients) {
       const reply = await runBrainTurn(recipient, messageForBrains, activeSessions);
-      if (reply !== null) replies.push({ author: recipient, text: reply });
+      if (reply !== null) {
+        replies.push({ author: recipient, text: reply });
+        // Broadcast every brain reply to peer surfaces. The room is
+        // noisy by design — peers see the same conversation regardless
+        // of which surface they're looking at.
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, {
+            type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
+            role: 'shell', session: recipient, body: reply,
+          }).catch(() => {});
+        }
+      }
     }
 
     // Phase B — one-hop mirror among CDP recipients. planMirrors decides
@@ -3704,8 +3716,16 @@ function App() {
         log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
         try {
           const reply = await runBrainTurn(ev.target, `[${ev.user ?? 'remote'}]: ${ev.body}`, sessions);
+          // Directed reply to the asker (may carry error).
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, body: reply ?? '' });
+          // Broadcast reply to the whole room so every peer sees it,
+          // not just the asker. mention-reply is the formal directed
+          // answer; room-reply is the room-visible echo.
+          if (reply !== null && reply !== undefined) {
+            await post({ type: 'room-reply', role: 'shell',
+              session: ev.target, body: reply });
+          }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, error: e.message });
@@ -3763,6 +3783,16 @@ function App() {
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
           _localOnly: true,  // don't bounce to Telegram; the originator handles that
+        }]);
+        return;
+      }
+      case 'room-reply': {
+        // Broadcast brain reply from a peer. Render with the
+        // session@node tag so the originating surface is visible.
+        const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
+          _localOnly: true,
         }]);
         return;
       }
