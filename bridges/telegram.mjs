@@ -30,6 +30,7 @@ export function startTelegramBridge({
   onLog,
   onError,
   onYield,    // called once when 409 forces us to release the polling slot
+  onChatId,   // called once when the bridge captures its first chat (host can persist)
 }) {
   if (!botToken) throw new Error('telegram bridge: botToken is required');
 
@@ -38,6 +39,7 @@ export function startTelegramBridge({
 
   let offset    = 0;
   let lastChat  = chatId ?? null;
+  let chatIdNotified = !!chatId;  // skip onChatId if host pre-configured it
   let stopped   = false;
   let pollTimer = null;
   let sendChain = Promise.resolve();
@@ -115,7 +117,13 @@ export function startTelegramBridge({
     const username  = msg.from?.username ?? null;
     const firstName = msg.from?.first_name ?? 'human';
     const msgChat   = msg.chat?.id ?? null;
-    if (msgChat) lastChat = msgChat;
+    if (msgChat) {
+      lastChat = msgChat;
+      if (!chatIdNotified) {
+        chatIdNotified = true;
+        try { onChatId?.(msgChat); } catch (_) {}
+      }
+    }
 
     const authorized = allowedUsers.length > 0 && allowedUsers.includes(userId);
     const text = msg.text.trim();

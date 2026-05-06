@@ -719,6 +719,20 @@ export default function App() {
         setTgStatus('yielded — another node is polling');
         appendMsg('egpt', 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.');
       },
+      onChatId: async (id) => {
+        // First captured chat — persist to chrome.storage.sync so
+        // future runs know the outbound target.
+        try {
+          const { telegram = {} } = await chrome.storage.sync.get('telegram');
+          if (telegram.chat_id === id) return;
+          await chrome.storage.sync.set({
+            telegram: { ...telegram, chat_id: id },
+          });
+          appendMsg('egpt', `telegram: outbound chat ${id} captured and saved`);
+        } catch (e) {
+          appendMsg('egpt', `!! telegram: could not persist chat_id (${e.message})`);
+        }
+      },
     });
     bridgeRef.current = bridge;
     setTgPolling(true);

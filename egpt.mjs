@@ -1338,17 +1338,36 @@ function App() {
           body: 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.',
         }]);
       },
+      onChatId: async (id) => {
+        // First captured chat — persist so future runs know the outbound
+        // target without waiting for an inbound. Also update the live
+        // ref + bridge.chatId getter so /telegram (no arg) reflects it.
+        const cfgPath = join(EGPT_HOME, 'config.json');
+        let saved = {};
+        try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+        if (!saved.telegram || typeof saved.telegram !== 'object') saved.telegram = {};
+        if (saved.telegram.chat_id === id) return;
+        saved.telegram.chat_id = id;
+        try {
+          await mkdir(EGPT_HOME, { recursive: true });
+          await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+          if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+            body: `telegram: outbound chat ${id} captured and saved`,
+          }]);
+        } catch (e) {
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+            body: `!! telegram: could not persist chat_id (${e.message})`,
+          }]);
+        }
+      },
     });
     bridgeRef.current = bridge;
     _globalBridge = bridge;
     setTgPolling(true);
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
-    if (!bridge.chatId) {
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-        body: 'telegram: no chat_id configured — shell-side messages will NOT reach Telegram until\n' +
-              '  the bot receives its first message, OR add "chat_id": <id> to ~/.egpt/config.json',
-      }]);
-    }
     return true;
   }, []);
 
