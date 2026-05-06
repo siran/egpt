@@ -1940,9 +1940,12 @@ function App() {
       return true;
     }
     if (cmd === '/telegram') {
-      const target = arg.trim();
-      // No-arg: report who's currently polling.
-      if (!target) {
+      const argParts = arg.trim().split(/\s+/).filter(Boolean);
+      const sub = argParts[0] ?? '';
+      const subArg = argParts.slice(1).join(' ').trim();
+
+      // No-arg: report who's currently polling + subcommand hints.
+      if (!sub) {
         const me = `  ${BUS_NODE_ID}  (this shell)  ${tgPolling ? 'polling' : 'idle'}`;
         const peerLines = [];
         for (const [nodeId, peer] of peerNodesRef.current) {
@@ -1950,20 +1953,75 @@ function App() {
         }
         sysOut(`telegram polling status:\n${me}` +
                (peerLines.length ? '\n' + peerLines.join('\n') : '\n  (no peers on bus)') +
-               `\n\n/telegram <node>     hand polling to that node` +
-               `\n/telegram disconnect  stop polling on this node`);
+               `\n\n/telegram <node>            hand polling to that node` +
+               `\n/telegram disconnect         stop polling on this node` +
+               `\n/telegram allow <userId>     authorize a Telegram user to issue commands` +
+               `\n/telegram revoke <userId>    remove a user's authorization` +
+               `\n/telegram allowed            list authorized users`);
         return true;
       }
-      if (target === 'disconnect') {
+      if (sub === 'disconnect') {
         if (tgPolling) stopTgBridge();
         else sysOut('telegram: not polling on this node');
+        return true;
+      }
+      if (sub === 'allow' || sub === 'revoke') {
+        const idStr = subArg.replace(/^@/, '');
+        const userId = parseInt(idStr, 10);
+        if (!Number.isFinite(userId)) {
+          sysOut(`!! /telegram ${sub} <userId> — userId must be the numeric Telegram id (the bot prints it when an unauthorized user tries a command)`);
+          return true;
+        }
+        // Read global config (~/.egpt/config.json), update allowed_users,
+        // write back. Mutate the live tgCfgRef array in place when possible
+        // so the running bridge sees the change without a restart; if the
+        // bridge captured a different array reference, restart.
+        const cfgPath = join(EGPT_HOME, 'config.json');
+        let cfg = {};
+        try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+        if (!cfg.telegram || typeof cfg.telegram !== 'object') cfg.telegram = {};
+        if (!Array.isArray(cfg.telegram.allowed_users)) cfg.telegram.allowed_users = [];
+        if (sub === 'allow') {
+          if (!cfg.telegram.allowed_users.includes(userId)) cfg.telegram.allowed_users.push(userId);
+        } else {
+          cfg.telegram.allowed_users = cfg.telegram.allowed_users.filter(id => id !== userId);
+        }
+        await mkdir(EGPT_HOME, { recursive: true });
+        await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+
+        const live = tgCfgRef.current?.telegram?.allowed_users;
+        if (Array.isArray(live)) {
+          // Mutate in place so the bridge's closure picks up the change.
+          live.splice(0, live.length, ...cfg.telegram.allowed_users);
+          sysOut(`telegram: ${sub === 'allow' ? 'allowed' : 'revoked'} user ${userId} (live)`);
+        } else if (bridgeRef.current) {
+          // Bridge had a different reference — restart.
+          stopTgBridge();
+          tgCfgRef.current = cfg;
+          await startTgBridge();
+          sysOut(`telegram: ${sub === 'allow' ? 'allowed' : 'revoked'} user ${userId} (bridge restarted)`);
+        } else {
+          sysOut(`telegram: ${sub === 'allow' ? 'allowed' : 'revoked'} user ${userId} (no bridge running here; will apply when this node next polls)`);
+        }
+        return true;
+      }
+      if (sub === 'allowed') {
+        const cfgPath = join(EGPT_HOME, 'config.json');
+        let cfg = {};
+        try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+        const ids = cfg.telegram?.allowed_users ?? [];
+        if (ids.length === 0) {
+          sysOut('telegram: no allowed users — commands and mentions from any Telegram user are rejected');
+        } else {
+          sysOut(`telegram allowed users (~/.egpt/config.json):\n${ids.map(id => `  ${id}`).join('\n')}`);
+        }
         return true;
       }
       // Hand off to a peer (or to ourselves to reclaim).
       const tid = busTargetIdRef.current;
       if (!tid) { sysOut('!! bus not joined — handoff requires bus'); return true; }
       // Strip leading @ if present.
-      const to = target.replace(/^@/, '');
+      const to = sub.replace(/^@/, '');
       if (to === BUS_NODE_ID || to === 'shell') {
         await startTgBridge();
         return true;

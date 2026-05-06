@@ -88,7 +88,7 @@ export const COMMANDS = [
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },
-  { cmd: '/telegram',       surface: 'both',      usage: '/telegram | <node> | disconnect',                desc: 'show polling node, hand off, or disconnect (LAN handoff via bus)' },
+  { cmd: '/telegram',       surface: 'both',      usage: '/telegram [<node>|disconnect|allow <id>|revoke <id>|allowed]', desc: 'manage telegram polling, handoff, and authorized users' },
   { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
   { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },

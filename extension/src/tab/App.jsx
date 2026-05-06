@@ -480,9 +480,10 @@ export default function App() {
         break;
       }
       case '/telegram': {
-        const target = parts[1];
+        const sub = parts[1];
+        const subArg = parts.slice(2).join(' ').trim();
         // No-arg: report polling state of this node + peers from the bus.
-        if (!target) {
+        if (!sub) {
           const me = `  ${BUS_NODE_ID}  (this extension)  ${tgPolling ? 'polling' : 'idle'}`;
           const peerLines = [];
           for (const [nodeId, peer] of peerNodesRef.current) {
@@ -491,18 +492,55 @@ export default function App() {
           appendMsg('egpt',
             `telegram polling status:\n${me}` +
             (peerLines.length ? '\n' + peerLines.join('\n') : '\n  (no peers on bus)') +
-            `\n\n/telegram <node>     hand polling to that node` +
-            `\n/telegram disconnect  stop polling on this node`);
+            `\n\n/telegram <node>            hand polling to that node` +
+            `\n/telegram disconnect         stop polling on this node` +
+            `\n/telegram allow <userId>     authorize a Telegram user to issue commands` +
+            `\n/telegram revoke <userId>    remove a user's authorization` +
+            `\n/telegram allowed            list authorized users`);
           return;
         }
-        if (target === 'disconnect') {
+        if (sub === 'disconnect') {
           if (tgPolling) { stopBridge(); appendMsg('egpt', 'telegram: disconnected'); }
           else appendMsg('egpt', 'telegram: not polling on this extension');
           return;
         }
+        if (sub === 'allow' || sub === 'revoke') {
+          const idStr = subArg.replace(/^@/, '');
+          const userId = parseInt(idStr, 10);
+          if (!Number.isFinite(userId)) {
+            appendMsg('egpt', `!! /telegram ${sub} <userId> — userId must be the numeric Telegram id`);
+            return;
+          }
+          const { telegram = {} } = await chrome.storage.sync.get('telegram');
+          const allowed = Array.isArray(telegram.allowed_users) ? [...telegram.allowed_users] : [];
+          if (sub === 'allow') {
+            if (!allowed.includes(userId)) allowed.push(userId);
+          } else {
+            const idx = allowed.indexOf(userId);
+            if (idx >= 0) allowed.splice(idx, 1);
+          }
+          await chrome.storage.sync.set({
+            telegram: { ...telegram, allowed_users: allowed },
+          });
+          // The chrome.storage.onChanged listener (see useEffect for
+          // 'userName' / 'telegram') will restart the bridge with the
+          // new allowed_users on next storage event.
+          appendMsg('egpt', `telegram: ${sub === 'allow' ? 'allowed' : 'revoked'} user ${userId}`);
+          return;
+        }
+        if (sub === 'allowed') {
+          const { telegram = {} } = await chrome.storage.sync.get('telegram');
+          const ids = telegram.allowed_users ?? [];
+          if (ids.length === 0) {
+            appendMsg('egpt', 'telegram: no allowed users — commands and mentions from any Telegram user are rejected');
+          } else {
+            appendMsg('egpt', `telegram allowed users:\n${ids.map(id => `  ${id}`).join('\n')}`);
+          }
+          return;
+        }
         const tid = busTargetIdRef.current;
         if (!tid) { appendMsg('egpt', '!! bus not joined — handoff requires bus'); return; }
-        const to = target.replace(/^@/, '');
+        const to = sub.replace(/^@/, '');
         if (to === BUS_NODE_ID || to === 'chrome' || to === 'extension') {
           await startBridge();
           return;
