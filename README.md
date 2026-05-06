@@ -434,9 +434,11 @@ Current coverage (whole project, `vitest.config.mjs` includes every source file 
 | Everything else          | 0%    | egpt.mjs, App.jsx, brains, bridges, tools — untested |
 | **Project total**        | **~2%** | Routing nucleus extracted; brain mocks + bus tests next |
 
-`tests/interpreter.test.mjs` (22 tests) covers input classification, command-registry integrity, and help-renderer structure. `tests/room.test.mjs` (24 tests) covers the routing decision tree: command dispatch, direct local @-mention, brain-alias auto-open vs CDP "open one first", peer routing (single match, ambiguous, local-wins-over-peer), broadcast vs single-recipient, empty-room, and one-hop CDP-to-CDP mirror planning.
+`tests/interpreter.test.mjs` (22 tests) covers input classification, command-registry integrity, and help-renderer structure. `tests/room.test.mjs` (24 tests) covers the routing decision tree: command dispatch, direct local @-mention, brain-alias auto-open vs CDP "open one first", peer routing (single match, ambiguous, local-wins-over-peer), broadcast vs single-recipient, empty-room, and one-hop CDP-to-CDP mirror planning. `tests/integrity.test.mjs` (54 tests) cross-checks the COMMANDS registry against actual dispatch sites in both surfaces, and ensures every `EGPT_CONFIG.<key>` reference is registered in `CONFIG_SCHEMA`.
 
 Both surfaces — `egpt.mjs`'s submit handler and the extension's `App.jsx` — import `room.mjs`, so the routing decisions are tested through the same pure functions the production code uses on either surface. The brain calls, .md writes, bus posts, and React state updates remain in the surface files as the side-effecting layer; only the *decision* lives in `room.mjs`. The shell and extension cannot drift on routing without breaking the shared tests.
+
+For the surface behaviors that don't fit unit tests — Chrome spawn, bridge integration, multi-surface coordination, transcript rendering — there's a step-by-step manual checklist at [`TESTING.md`](TESTING.md). Run through the relevant section after any non-trivial change.
 
 ## Protocol
 

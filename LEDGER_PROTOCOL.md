@@ -357,8 +357,13 @@ What's implemented today (commit `36cd96f` and later) vs. planned.
 | mention-reply      | ✅      | ⏳     | bridge form: brain reply sent back through the chat |
 | command            | ✅      | ⏳     | slash-command forwarding; bridge form needs reply event |
 | room-utterance     | ✅      | ✅     | bridge: every chat message IS a room-utterance for the others |
-| **room-reply** ⏳   | ⏳      | ⏳     | mirror local brain replies to peers — closes the "one room" symmetry |
 | **command-reply** ⏳| ⏳      | ⏳     | shell sends back forwarded command output |
+
+There is intentionally no `room-reply` event for auto-mirroring brain
+replies to peers. The admin's tool for that is `/mirror` — explicit
+agency over what gets shared, since brain replies can be long and not
+always interesting to other nodes. Auto-broadcast every reply would
+turn the bus into noise.
 
 ## Open questions
 
