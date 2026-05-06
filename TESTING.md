@@ -266,6 +266,26 @@ While doing 4.4, watch the extension UI.
 ✅ Extension UI shows `<your-tg-name>@telegram[<chatId>]: @codex1 hola…`
 (the room-utterance mirror, with `via:` showing telegram chat id).
 
+### 4.6 — Telegram replicates plain text to peers (no mirror policy needed)
+
+In Telegram, send plain text (no `/`, no `@`): `hello from telegram`
+
+✅ Shell A shows the system note `(telegram message from <you>) -> hello…`.
+Extension UI shows `<your-tg-name>@telegram[<chatId>]: hello from telegram`.
+
+This works regardless of `cfg.telegram.mirror` — replication is
+unconditional. The mirror policy only controls whether plain text
+ALSO triggers a brain call (broadcast to local sessions). With
+`mirror: 'none'` (default), peers see the text but no brain runs.
+
+### 4.7 — peer typing reaches Telegram
+
+In extension UI, type plain text: `hello from extension`
+
+✅ Telegram chat receives `❓ <b>human@chrome-XXXX</b>\nhello from
+extension` (forwarded by the shell node owning the bot, since the
+`room-utterance` it received from the extension has no `via:` field).
+
 ### 4.6 — non-allowed users are gated for commands
 
 (Optional, requires a second Telegram account.)

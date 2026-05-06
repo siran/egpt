@@ -205,6 +205,21 @@ export default function App() {
       return;
     }
 
+    // Replicate every Telegram message to peers — every message in the
+    // room is part of the room. via:'telegram[chatId]' tags the surface
+    // of origin so peers see where it came from, not the node carrying
+    // the bot.
+    {
+      const tid = busTargetIdRef.current;
+      if (tid) {
+        bus.postEvent(tid, {
+          type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
+          role: 'chrome', user: author, body: trimmed,
+          via: `telegram[${meta.chatId ?? '?'}]`,
+        }).catch(() => {});
+      }
+    }
+
     if (parsed.type === 'command') {
       // Route slash commands (e.g. /telegram extension) through the command
       // handler so Telegram users can drive the room from off-LAN. Resolved

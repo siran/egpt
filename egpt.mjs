@@ -1305,16 +1305,23 @@ function App() {
           return;
         }
 
-        if (!isCommand) {
+        // Replication is unconditional: every Telegram message in the
+        // room is part of the room. The legacy `mirror` policy now only
+        // controls whether a plain-text Telegram message ALSO triggers
+        // a brain call (broadcast to local sessions). skipRoute tells
+        // submitInner to post room-utterance and stop, without routing.
+        let skipRoute = false;
+        if (!isCommand && parseInput(text.trim()).type === 'message') {
           const mirror = cfg.telegram?.mirror ?? 'none';
-          const canMirror = mirror === 'all' || (mirror === 'allowed' && from.authorized);
-          if (!canMirror) return;
+          const canRoute = mirror === 'all' || (mirror === 'allowed' && from.authorized);
+          skipRoute = !canRoute;
         }
 
         if (submitRef.current) await submitRef.current(text, {
           fromTelegram: true,
           telegramChatId: from.chatId,
           telegramUser: who,
+          skipRoute,
         });
       },
       onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
@@ -3529,6 +3536,12 @@ function App() {
       }
     }
 
+    // skipRoute: replication-only mode. Used when a Telegram plain-text
+    // message reaches the room but the mirror policy says don't trigger
+    // brain calls. The room-utterance is already on the bus; we stop
+    // before resolveRoute dispatches anywhere.
+    if (meta.skipRoute) return;
+
     const parsed = parseInput(text);
 
     // Pure routing decision. resolveRoute looks at sessions + peerSessions
@@ -3780,9 +3793,18 @@ function App() {
         // side-channel like Telegram (carried by a bus node but not
         // typed at it).
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
+        // _localOnly suppression rule:
+        //   * when ev.via is set, the message ALREADY exists in that
+        //     side-channel (e.g. Telegram). Forwarding would echo it
+        //     back into the same chat. Skip.
+        //   * when ev.via is absent, the message originated by typing
+        //     at a peer surface and does NOT yet exist on Telegram.
+        //     The polling node (this one if it has the bridge) MUST
+        //     forward — otherwise Telegram viewers don't see what
+        //     other surfaces are saying.
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
-          _localOnly: true,  // don't bounce to Telegram; the originator handles that
+          _localOnly: !!ev.via,
         }]);
         return;
       }
