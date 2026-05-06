@@ -967,6 +967,43 @@ const ts = () => _stamp(new Date());
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
 const fmtTs = (ms) => _stamp(new Date(ms));
 
+// On-screen time only (HH:MM + short tz). Date is shown via day-change
+// separators inserted into the rendered list, like a chat client.
+const fmtTimeOnly = (ms) => {
+  const d = new Date(ms);
+  const tz = tzLabel();
+  const hhmm = `${_pad2(d.getHours())}:${_pad2(d.getMinutes())}`;
+  return tz ? `${hhmm} ${tz}` : hhmm;
+};
+
+// Day label for the separator row. "Today" / "Yesterday" / weekday + date.
+function _dayLabel(d) {
+  const dayKey = d.toDateString();
+  const today = new Date().toDateString();
+  if (dayKey === today) return 'Today';
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  if (dayKey === y.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Walk the items list and interleave separator items at day boundaries.
+// Stable across renders (deterministic on `items`), so Ink's <Static>
+// only emits the new tail on each call.
+function withDaySeparators(items) {
+  const out = [];
+  let lastDay = null;
+  for (const item of items) {
+    const d = new Date(Math.floor(item.id));
+    const dayKey = d.toDateString();
+    if (dayKey !== lastDay) {
+      out.push({ id: `day-${dayKey}`, _separator: true, body: _dayLabel(d) });
+      lastDay = dayKey;
+    }
+    out.push(item);
+  }
+  return out;
+}
+
 // Resolve a user-typed tab spec to a chrome targetId.
 // Accepts: full chrome targetId, targetId prefix (≥6 chars), full URL, partial URL, UUID inside URL.
 async function resolveTabId(spec, brain = null) {
@@ -3598,12 +3635,17 @@ function App() {
     }
 
     // Echo everything the user types into the transcript. If the input came
-    // from Telegram, tag the echo _localOnly so it doesn't get sent back to
-    // the same Telegram user — they already saw their own message in their
-    // app. Echoes from the local shell still forward to Telegram so a
-    // remote viewer sees what the shell user typed.
+    // from Telegram, attribute the echo to the actual Telegram user (with
+    // the via tag) instead of the local 'You', and tag _localOnly so the
+    // echo doesn't get sent back to the same Telegram chat — that user
+    // already saw their own message. Echoes from the local shell still
+    // forward to Telegram so a remote viewer sees what the shell user
+    // typed.
+    const echoAuthor = (meta.fromTelegram && meta.telegramUser)
+      ? `${meta.telegramUser}@telegram[${meta.telegramChatId ?? '?'}]`
+      : 'You';
     setItems(p => [...p, {
-      id: Date.now() + Math.random(), author: 'You', body: text,
+      id: Date.now() + Math.random(), author: echoAuthor, body: text,
       ...(meta.fromTelegram ? { _localOnly: true } : {}),
     }]);
 
@@ -3674,12 +3716,12 @@ function App() {
     if (decision.kind === 'peer-mention') {
       const tid = busTargetIdRef.current;
       if (!tid) { sysOut(`!! bus not joined — can't forward @${decision.target}`); return; }
-      await append('You', text);
+      await append(echoAuthor, text);
       try {
         await bus.postEvent(tid, {
           type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
           target: decision.target, to_node: decision.toNode,
-          body: decision.body, user: USER_NAME,
+          body: decision.body, user: meta.telegramUser ?? USER_NAME,
           // tg_chat_id rides along so the responding node can route its
           // mention-reply back to the same Telegram chat that asked.
           ...(meta.fromTelegram && meta.telegramChatId
@@ -3712,14 +3754,17 @@ function App() {
     }
 
     // The .md keeps the original text (including any @mention prefix).
-    await append('You', text);
+    await append(echoAuthor, text);
 
     setBusy(true);
     setError(null);
 
-    // Phase A — broadcast/single. Each brain receives just `[An]: <message>`
+    // Phase A — broadcast/single. Each brain receives just `[<author>]: <message>`
     // (no fancy framing; the brain's tab keeps its own native history).
-    const messageForBrains = `[${USER_NAME}]: ${userPayload}`;
+    // For Telegram-originated input, the brain sees the actual Telegram
+    // user instead of the local USER_NAME.
+    const brainAuthor = (meta.fromTelegram && meta.telegramUser) ? meta.telegramUser : USER_NAME;
+    const messageForBrains = `[${brainAuthor}]: ${userPayload}`;
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
@@ -3963,13 +4008,19 @@ function App() {
     a === 'You' ? T.authorYou : a === 'system' ? T.authorSystem : T.authorBrain;
 
   return h(Fragment, null,
-    h(Static, { items }, item => {
+    h(Static, { items: withDaySeparators(items) }, item => {
+      // Day-change separator — chat-style: "── Today ──", "── Yesterday ──",
+      // or "── Wednesday, May 6, 2026 ──".
+      if (item._separator) {
+        return h(Box, { key: item.id, marginTop: 1 },
+          h(Text, { color: T.meta }, `── ${item.body} ──`));
+      }
       const isSystem = item.author === 'system';
       const isUser = item.author === 'You';
       const sess = sessions[item.author];
       const emoji = isSystem ? `${EGPT_EMOJI} ` : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
       const label = isUser ? USER_NAME : isSystem ? 'egpt' : item.author;
-      const time = fmtTs(Math.floor(item.id));
+      const time = fmtTimeOnly(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
