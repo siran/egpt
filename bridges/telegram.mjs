@@ -154,9 +154,9 @@ export function startTelegramBridge({
     }
   }
 
-  function startStreamMessage(initialText) {
-    if (!lastChat) return null;
-    const targetChat = lastChat;
+  function startStreamMessage(initialText, { chatId } = {}) {
+    const targetChat = chatId ?? lastChat;
+    if (!targetChat) return null;
     let msgId       = null;
     let pending     = null;
     let lastSent    = initialText;
@@ -223,9 +223,10 @@ export function startTelegramBridge({
   poll();
 
   return {
-    send(text) {
-      if (!lastChat) return;
-      enqueue(() => sendText(lastChat, text));
+    send(text, { chatId } = {}) {
+      const target = chatId ?? lastChat;
+      if (!target) return;
+      enqueue(() => sendText(target, text));
     },
     startStreamMessage,
     stop() {

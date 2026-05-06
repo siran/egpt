@@ -160,13 +160,13 @@ export default function App() {
   const escapeHtml = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const runBrain = useCallback(async (sessionName, prompt) => {
+  const runBrain = useCallback(async (sessionName, prompt, { tgChatId } = {}) => {
     const session = sessionsRef.current.get(sessionName);
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
     const tgPrefix = `<b>${escapeHtml(sessionName)}@${SURFACE_TAG}</b>`;
-    const tgStream = bridgeRef.current?.startStreamMessage?.(`${tgPrefix}\n⌛ thinking…`);
+    const tgStream = bridgeRef.current?.startStreamMessage?.(`${tgPrefix}\n⌛ thinking…`, { chatId: tgChatId });
 
     try {
       const finalText = await session.brain.stream(
@@ -183,7 +183,7 @@ export default function App() {
     } catch (e) {
       const err = `error: ${e.message}`;
       updateMsg(msgId, err, false);
-      bridgeRef.current?.send(`${tgPrefix}\n${escapeHtml(err)}`);
+      bridgeRef.current?.send(`${tgPrefix}\n${escapeHtml(err)}`, { chatId: tgChatId });
       return null;
     }
   }, [appendMsg, updateMsg]);
@@ -231,7 +231,7 @@ export default function App() {
       const name = parsed.target;
       const prompt = parsed.body || trimmed;
       if (sessionsRef.current.has(name)) {
-        runBrain(name, prompt);
+        runBrain(name, prompt, { tgChatId: meta.chatId });
       } else {
         // Try peer routing.
         const peerMatches = [];
@@ -245,6 +245,7 @@ export default function App() {
               await bus.postEvent(tid, {
                 type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
                 target: name, to_node: peerMatches[0], body: prompt, user: author,
+                ...(meta.chatId ? { tg_chat_id: meta.chatId } : {}),
               });
             } catch (_) {}
           }
@@ -261,7 +262,7 @@ export default function App() {
       (mirror === 'allowed' && meta.authorized);
 
     if (canMirror && activeSession) {
-      runBrain(activeSession, text);
+      runBrain(activeSession, text, { tgChatId: meta.chatId });
     }
   }, [appendMsg, runBrain, activeSession]);
 
@@ -883,7 +884,8 @@ export default function App() {
         if (ev.to_node !== BUS_NODE_ID) return;
         if (!sessionsRef.current.has(ev.target)) {
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: `no session "${ev.target}" in extension` });
+            target: ev.target, error: `no session "${ev.target}" in extension`,
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           return;
         }
         log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
@@ -893,9 +895,11 @@ export default function App() {
             { message: `[${ev.user ?? 'remote'}]: ${ev.body}` },
             () => {}, { targetId: session.targetId },
           );
-          // Directed reply to the asker.
+          // Directed reply to the asker. Echo tg_chat_id so the asker
+          // routes back to the originating Telegram chat.
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, body: finalText ?? '' });
+            target: ev.target, body: finalText ?? '',
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           // Room-visible echo so every peer sees it, not just the asker.
           if (finalText !== null && finalText !== undefined) {
             await post({ type: 'room-reply', role: 'chrome',
@@ -903,7 +907,8 @@ export default function App() {
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: e.message });
+            target: ev.target, error: e.message,
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
         }
         return;
       }
@@ -913,8 +918,21 @@ export default function App() {
         // ev.from carries the peer's BUS_NODE_ID (auto-gen 'shell-13232'
         // or user-named 'home') — use it directly as the surface tag.
         const author = `${target}@${ev.from ?? 'unknown'}`;
-        if (ev.error) log(`!! ${author}: ${ev.error}`);
-        else appendMsg(author, ev.body ?? '(empty)');
+        if (ev.error) {
+          log(`!! ${author}: ${ev.error}`);
+          if (ev.tg_chat_id && bridgeRef.current) {
+            bridgeRef.current.send(`!! ${escapeHtml(`${author}: ${ev.error}`)}`,
+              { chatId: ev.tg_chat_id });
+          }
+        } else {
+          appendMsg(author, ev.body ?? '(empty)');
+          // tg_chat_id means the original request came from a Telegram
+          // chat; route the reply back there directly.
+          if (ev.tg_chat_id && bridgeRef.current) {
+            bridgeRef.current.send(`<b>${escapeHtml(author)}</b>\n${escapeHtml(ev.body ?? '')}`,
+              { chatId: ev.tg_chat_id });
+          }
+        }
         return;
       }
       case 'room-utterance': {

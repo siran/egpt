@@ -228,7 +228,11 @@ decided `@<session>` is on a peer, so it forwards.
   "to_node": "home",       // destination node (must equal receiver's node_name)
   "target": "codex1",      // session name on the destination
   "body":   "exec: pwd",   // payload (the part after @target)
-  "user":   "An"           // who originated the request (display only)
+  "user":   "An",          // who originated the request (display only)
+  "tg_chat_id": 12345      // optional; present iff the request came from Telegram
+                           //   so the responding node can echo it back in
+                           //   mention-reply and the asker can route the reply
+                           //   to that specific chat (not lastChat)
 }
 ```
 
@@ -248,14 +252,20 @@ Response to a `mention`.
   "to_node": "chr1",       // back to the originator
   "target": "codex1",      // session that produced the reply (echoed for display)
   "body":   "C:/Users/an", // brain's response, or
-  "error":  "no session 'codex1' on this node"
+  "error":  "no session 'codex1' on this node",
+  "tg_chat_id": 12345      // optional; echoed verbatim from the corresponding
+                           //   mention if it had one. The asker uses it to
+                           //   route the reply back to the originating chat.
 }
 ```
 
 Behavior on receive: if `to_node !== self.node_name`, ignore.
 Render in local UI as `<target>@<from>: <body>` (or `!! <error>`).
 Implementations SHOULD NOT route this through `resolveRoute` — it's
-a faithful echo, not user input.
+a faithful echo, not user input. If `tg_chat_id` is set and a
+Telegram bridge is active, send the formatted reply directly to that
+chat (overriding `lastChat`); mark the local item `_localOnly` so
+the items-flush effect doesn't double-deliver.
 
 ### `command`
 

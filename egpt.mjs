@@ -3431,9 +3431,10 @@ function App() {
   // with [author]: when broadcasting or mirroring. Returns the brain's reply
   // text (string) on a substantive answer, or null on silence/error so the
   // caller knows whether to mirror it.
-  async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions) {
+  async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions, callOpts = {}) {
     const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
+    const tgChatId = callOpts.tgChatId ?? null;
     const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = brainForName(session.brain);
@@ -3484,7 +3485,10 @@ function App() {
     // committed item is tagged _localOnly so we don't double-deliver.
     const sessEmoji = sessionMap[routedTo]?.emoji ?? '❓';
     const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}@${SURFACE_TAG}</b>`;
-    const tg = bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`);
+    // tgChatId routes the streaming reply to the chat that originated
+    // the request (when from Telegram). Without it the bridge falls
+    // back to lastChat — wrong chat if anything else hit the bot since.
+    const tg = bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId });
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
       // Telegram's 4096-char message cap (even with our prefix).
@@ -3676,6 +3680,11 @@ function App() {
           type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
           target: decision.target, to_node: decision.toNode,
           body: decision.body, user: USER_NAME,
+          // tg_chat_id rides along so the responding node can route its
+          // mention-reply back to the same Telegram chat that asked.
+          ...(meta.fromTelegram && meta.telegramChatId
+            ? { tg_chat_id: meta.telegramChatId, tg_via: `telegram[${meta.telegramChatId}]` }
+            : {}),
         });
         sysOut(`@${decision.target} -> ${decision.toNode} via bus`);
       } catch (e) {
@@ -3714,9 +3723,10 @@ function App() {
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
+    const tgChatId = meta.fromTelegram ? meta.telegramChatId ?? null : null;
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains, activeSessions);
+      const reply = await runBrainTurn(recipient, messageForBrains, activeSessions, { tgChatId });
       if (reply !== null) {
         replies.push({ author: recipient, text: reply });
         // Broadcast every brain reply to peer surfaces. The room is
@@ -3828,15 +3838,19 @@ function App() {
         if (ev.to_node !== BUS_NODE_ID) return;
         if (!sessions[ev.target]) {
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: `no session "${ev.target}" on this node` });
+            target: ev.target, error: `no session "${ev.target}" on this node`,
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           return;
         }
         log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
         try {
           const reply = await runBrainTurn(ev.target, `[${ev.user ?? 'remote'}]: ${ev.body}`, sessions);
-          // Directed reply to the asker (may carry error).
+          // Directed reply to the asker (may carry error). Echo
+          // tg_chat_id back so the asker can route to the originating
+          // Telegram chat instead of the asker's lastChat.
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, body: reply ?? '' });
+            target: ev.target, body: reply ?? '',
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           // Broadcast reply to the whole room so every peer sees it,
           // not just the asker. mention-reply is the formal directed
           // answer; room-reply is the room-visible echo.
@@ -3846,7 +3860,8 @@ function App() {
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: e.message });
+            target: ev.target, error: e.message,
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
         }
         return;
       }
@@ -3860,12 +3875,28 @@ function App() {
         const author = `${target}@${ev.from ?? 'unknown'}`;
         if (ev.error) {
           log(`!! ${author}: ${ev.error}`);
+          // Errors still go to the originating Telegram chat if known.
+          if (ev.tg_chat_id && bridgeRef.current) {
+            const formatted = `${EGPT_EMOJI} <i>!! ${escapeHtml(`${author}: ${ev.error}`)}</i>`;
+            bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
+          }
         } else {
+          // tg_chat_id means the original request came from a Telegram
+          // chat; route the reply back there directly. Mark the item
+          // _localOnly so items-flush doesn't ALSO send it (which would
+          // hit lastChat — possibly a different chat).
+          const tgRouted = ev.tg_chat_id != null;
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author, body: ev.body ?? '(empty)',
-            _node: ev.from,
+            _node: ev.from, _localOnly: tgRouted,
           }]);
           await append(author, ev.body ?? '');
+          if (tgRouted && bridgeRef.current) {
+            const sess = sessions[author] ?? sessions[target];
+            const emoji = sess?.emoji ?? '❓';
+            const formatted = `${emoji} <b>${escapeHtml(author)}</b>\n${mdToTgHtml(ev.body ?? '')}`;
+            bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
+          }
         }
         return;
       }
