@@ -710,6 +710,15 @@ export default function App() {
       onIncoming:   (text, meta) => handleIncomingRef.current(text, meta),
       onLog:        msg => setTgStatus(msg),
       onError:      msg => appendMsg('egpt', `⚠ ${msg}`),
+      onYield:      () => {
+        // Another node holds the polling slot. Drop our bridge state;
+        // the dispatcher's auto-claim will retry when the holder
+        // releases (peer node-offline or telegram-status:false).
+        bridgeRef.current = null;
+        setTgPolling(false);
+        setTgStatus('yielded — another node is polling');
+        appendMsg('egpt', 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.');
+      },
     });
     bridgeRef.current = bridge;
     setTgPolling(true);
@@ -826,9 +835,16 @@ export default function App() {
         return;
       }
       case 'node-offline': {
+        const wasPolling = !!peerNodesRef.current.get(ev.from)?.polling;
         peerNodesRef.current.delete(ev.from);
         setPeersRev(r => r + 1);
         log(`bus: peer offline ${ev.from}`);
+        // Polling slot opened — try to claim if we have a bot token
+        // configured but aren't currently bridged.
+        if (wasPolling && !bridgeRef.current) {
+          const delay = 500 + Math.random() * 1500;
+          setTimeout(() => { if (!bridgeRef.current) startBridge(); }, delay);
+        }
         return;
       }
       case 'sessions-update': {
@@ -839,8 +855,14 @@ export default function App() {
       }
       case 'telegram-status': {
         const peer = peerNodesRef.current.get(ev.from);
+        const wasPolling = !!peer?.polling;
         if (peer) { peer.polling = !!ev.polling; peer.lastSeen = ev.ts ?? Date.now(); }
         setPeersRev(r => r + 1);
+        // Peer voluntarily released. Same auto-claim as node-offline.
+        if (wasPolling && !ev.polling && !bridgeRef.current) {
+          const delay = 500 + Math.random() * 1500;
+          setTimeout(() => { if (!bridgeRef.current) startBridge(); }, delay);
+        }
         return;
       }
       case 'mention': {

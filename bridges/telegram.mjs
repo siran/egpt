@@ -29,6 +29,7 @@ export function startTelegramBridge({
   onIncoming,
   onLog,
   onError,
+  onYield,    // called once when 409 forces us to release the polling slot
 }) {
   if (!botToken) throw new Error('telegram bridge: botToken is required');
 
@@ -91,12 +92,18 @@ export function startTelegramBridge({
     } catch (e) {
       if (stopped) return;
       if (e.status === 409) {
-        log('telegram: 409 conflict — another client polling this token; backing off');
-        pollTimer = setTimeout(poll, RETRY_409);
-      } else {
-        err(`telegram poll error: ${e.message}`);
-        pollTimer = setTimeout(poll, RETRY_ERR);
+        // Another node is already polling this token. Yield permanently
+        // (no retry loop — the noise was unhelpful and the right answer
+        // is "let the holder hold it"). The host decides whether to
+        // auto-resume when the holder releases (via onYield + bus state).
+        log('telegram: 409 conflict — another node is polling this token; yielding');
+        stopped = true;
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        try { onYield?.(); } catch (_) {}
+        return;
       }
+      err(`telegram poll error: ${e.message}`);
+      pollTimer = setTimeout(poll, RETRY_ERR);
     }
   }
 

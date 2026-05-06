@@ -1326,6 +1326,18 @@ function App() {
       },
       onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
       onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
+      onYield: () => {
+        // 409 from Telegram means another node holds the polling slot.
+        // Drop our bridge state so we stop showing as 'polling' on the
+        // bus; an auto-claim will fire on the next peer release event.
+        bridgeRef.current = null;
+        _globalBridge = null;
+        setTgPolling(false);
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+          body: 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.',
+        }]);
+      },
     });
     bridgeRef.current = bridge;
     _globalBridge = bridge;
@@ -3760,9 +3772,18 @@ function App() {
         return;
       }
       case 'node-offline': {
+        const wasPolling = !!peerNodesRef.current.get(ev.from)?.polling;
         peerNodesRef.current.delete(ev.from);
         setPeersRev(r => r + 1);
         log(`bus: peer offline ${ev.from}`);
+        // The polling slot just opened up. If we have a bot_token but
+        // aren't currently bridged (likely because we yielded earlier),
+        // schedule a claim attempt with jitter so multiple yielded
+        // peers don't all start simultaneously and re-409 each other.
+        if (wasPolling && !bridgeRef.current) {
+          const delay = 500 + Math.random() * 1500;
+          setTimeout(() => { if (!bridgeRef.current) startTgBridge(); }, delay);
+        }
         return;
       }
       case 'sessions-update': {
@@ -3773,8 +3794,15 @@ function App() {
       }
       case 'telegram-status': {
         const peer = peerNodesRef.current.get(ev.from);
+        const wasPolling = !!peer?.polling;
         if (peer) { peer.polling = !!ev.polling; peer.lastSeen = ev.ts ?? Date.now(); }
         setPeersRev(r => r + 1);
+        // A peer voluntarily released polling. Same auto-claim logic
+        // as node-offline.
+        if (wasPolling && !ev.polling && !bridgeRef.current) {
+          const delay = 500 + Math.random() * 1500;
+          setTimeout(() => { if (!bridgeRef.current) startTgBridge(); }, delay);
+        }
         return;
       }
       case 'mention': {

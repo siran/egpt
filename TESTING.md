@@ -286,6 +286,41 @@ In extension UI, type plain text: `hello from extension`
 extension` (forwarded by the shell node owning the bot, since the
 `room-utterance` it received from the extension has no `via:` field).
 
+### 4.8 — 409 yield + auto-claim handoff
+
+**Setup**: same `bot_token` configured on BOTH shell (`~/.egpt/config.json`)
+and extension (`chrome.storage.sync.telegram.bot_token`).
+
+1. Start shell A. It claims polling.
+
+✅ Shell A: `telegram bridge enabled`, no 409.
+
+2. Open the extension tab (extension also tries to claim).
+
+✅ Extension UI: `telegram: yielded — another node holds the polling
+slot. Will auto-resume when they release; /telegram <self> to
+force-reclaim.` Status bar shows `yielded — another node is polling`.
+**No 409 noise loop.**
+
+3. In shell A: `/telegram disconnect`
+
+✅ Shell A: `telegram bridge stopped`. Within ~2s, extension
+auto-claims and shows `telegram bridge enabled` (no manual action
+needed; the dispatcher's auto-claim fired on `telegram-status:false`
+from shell).
+
+4. Quit shell A entirely (Ctrl+C). Wait ~2s.
+
+✅ If extension was the holder, no change. If extension had
+yielded earlier and a new shell B started: when the previous
+holder went offline (`node-offline`), the auto-claim picks it up
+in the surviving node.
+
+5. `/telegram` (no args) on either surface
+
+✅ Shows polling state across the room — one node `polling`, others
+`idle`. The room is consistent without manual handoff.
+
 ### 4.6 — non-allowed users are gated for commands
 
 (Optional, requires a second Telegram account.)
