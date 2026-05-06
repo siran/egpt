@@ -345,7 +345,7 @@ phone      Telegram app (human)  ── Telegram bot ────────┘
 
 **Multi-human rooms**: multiple people, each running their own egpt node, each contributing their own brains. The `allowed_users` list in `~/.egpt/config.json` is the only access control. When one person's daily limit on a free-tier account is hit, another person's isn't — natural failover across accounts, machines, and providers.
 
-**Works on free tiers**: egpt drives the web UI, not the API. A free chatgpt.com account gives the same model envelope (memory, tools, reasoning modes) as a paid subscription, just with daily limits. A group pooling free-tier accounts across ChatGPT, Claude, and Codex gets a capable multi-agent room for zero ongoing cost — no API billing, no shared credentials, no infrastructure beyond a Telegram bot token per off-LAN node.
+**Works on any tier — free or paid**: egpt drives the web UI, not the API, so you get whatever the account gets. A free chatgpt.com account works (with daily limits and the free model envelope). A paid subscription works *better* (more capable models, higher limits, longer context, premium features like deep research) — and you still pay zero on top of the subscription you already have. No API billing, no shared credentials, no infrastructure beyond a Telegram bot token per off-LAN node. A group can pool subscriptions or free-tier accounts across ChatGPT, Claude, and Codex for natural failover when one person hits a limit.
 
 ## Layout
 
@@ -437,6 +437,10 @@ Current coverage (whole project, `vitest.config.mjs` includes every source file 
 `tests/interpreter.test.mjs` (22 tests) covers input classification, command-registry integrity, and help-renderer structure. `tests/room.test.mjs` (24 tests) covers the routing decision tree: command dispatch, direct local @-mention, brain-alias auto-open vs CDP "open one first", peer routing (single match, ambiguous, local-wins-over-peer), broadcast vs single-recipient, empty-room, and one-hop CDP-to-CDP mirror planning.
 
 Both surfaces — `egpt.mjs`'s submit handler and the extension's `App.jsx` — import `room.mjs`, so the routing decisions are tested through the same pure functions the production code uses on either surface. The brain calls, .md writes, bus posts, and React state updates remain in the surface files as the side-effecting layer; only the *decision* lives in `room.mjs`. The shell and extension cannot drift on routing without breaking the shared tests.
+
+## Protocol
+
+The wire format that nodes use to coordinate is documented in [`LEDGER_PROTOCOL.md`](LEDGER_PROTOCOL.md). Lineage: small envelope and bridge attribution borrowed from Matrix; channel/presence pattern from IRC; AI-participants-as-room-members is the egpt-shaped piece. Read that doc to build a second implementation (different language, different surface).
 
 ## Caveats and known limits
 
