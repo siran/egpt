@@ -1824,6 +1824,9 @@ function App() {
       //    against `sessionsLatestRef` so a second tick doesn't duplicate.
       //    Skipped in default room — that's the lobby and can't host
       //    brains (one-time hint shown so the user knows what to do).
+      //    The bus-join below is NOT skipped: cross-node coordination
+      //    (extension <-> shell, telegram polling handoff, etc.) must
+      //    work in the lobby too — that's where most users start.
       try {
         if (currentRoomRef.current === 'default') {
           const tabs = await cdp.listTabs().catch(() => []);
@@ -1832,8 +1835,7 @@ function App() {
             defaultRoomHintShown.current = true;
             notice(`found ${matching.length} brain tab(s) but you're in the default lobby. To attach: /room create <name> && /room join <name> && /attach`);
           }
-          return;
-        }
+        } else {
         const tabs = await cdp.listTabs();
         if (cancelled) return;
         const claimed = new Set(
@@ -1860,6 +1862,7 @@ function App() {
             id: Date.now() + Math.random(), author: 'system', _localOnly: true,
             body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
           }]);
+        }
         }
       } catch { /* proxy up but listTabs failed — try again next tick */ }
 
