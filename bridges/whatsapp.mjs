@@ -67,12 +67,25 @@ export async function startWhatsAppBridge({
   let myNumber       = null;     // bare number for mention-detection
   let sock           = null;
   let reconnectTimer = null;
+  // Track WAMessage IDs we sent ourselves so we can filter the echoes
+  // WhatsApp sends back to all linked devices (us included). 60-second
+  // window is plenty — IDs live shorter than that on the wire.
+  const _sentIds = new Map();    // id -> ts
+  function rememberSent(id) {
+    if (!id) return;
+    _sentIds.set(id, Date.now());
+    const cutoff = Date.now() - 60_000;
+    for (const [k, t] of _sentIds) if (t < cutoff) _sentIds.delete(k);
+  }
 
   function connect() {
     if (stopped) return;
     sock = makeWASocket({
       ...(version ? { version } : {}),
       auth: state,
+      // Identifies us in WhatsApp's Settings -> Linked devices list
+      // as 'egpt' instead of the default 'Chrome'.
+      browser: ['egpt', 'Chrome', '0.2.0'],
       // Logger: silence baileys's pino output unless something is wrong.
       logger: silentLogger(),
       // Don't print history of past chats on first sync — too noisy.
@@ -117,8 +130,26 @@ export async function startWhatsAppBridge({
   }
 
   async function handleMessage(msg) {
-    if (msg.key?.fromMe) return;            // ignore our own outbound
     if (!msg.message) return;               // protocol message / ignored type
+
+    // fromMe handling:
+    //   * Messages with an id we just sent via baileys: skip
+    //     (WhatsApp echoes our outbound to every linked device).
+    //   * Messages typed from your phone to your own self-DM
+    //     (chat with yourself): pass through — useful for solo
+    //     testing, and the room treats them as user input.
+    //   * Other fromMe (typing on phone to a friend, or another
+    //     linked device): skip — the bridge would otherwise react
+    //     to your own outbound.
+    if (msg.key?.fromMe) {
+      const id = msg.key.id;
+      if (id && _sentIds.has(id)) {
+        _sentIds.delete(id);
+        return;
+      }
+      const isSelfDM = msg.key.remoteJid === myJid;
+      if (!isSelfDM) return;
+    }
 
     // Pull text out of whatever variant baileys delivered.
     const text = textOf(msg.message);
@@ -177,7 +208,9 @@ export async function startWhatsAppBridge({
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return;
-      sock.sendMessage(target, { text }).catch(e => err(`send: ${e.message}`));
+      sock.sendMessage(target, { text })
+        .then(r => rememberSent(r?.key?.id))
+        .catch(e => err(`send: ${e.message}`));
     },
     startStreamMessage(initialText, { chatId } = {}) {
       // No native streaming on WhatsApp. Buffer then send once on finish.
@@ -188,8 +221,10 @@ export async function startWhatsAppBridge({
         update(text) { pending = text; },
         async finish(text) {
           pending = text;
-          try { await sock.sendMessage(target, { text: pending }); }
-          catch (e) { err(`stream finish: ${e.message}`); }
+          try {
+            const r = await sock.sendMessage(target, { text: pending });
+            rememberSent(r?.key?.id);
+          } catch (e) { err(`stream finish: ${e.message}`); }
         },
       };
     },
