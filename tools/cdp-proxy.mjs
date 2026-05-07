@@ -55,6 +55,17 @@ export function startCdpProxy({
     `${prefix}/bus.html`, `${prefix}/bus`, `${prefix}/bus/`,
   ]);
 
+  // Loopback addresses bypass the token requirement: Chrome already
+  // exposes the same CDP unauthenticated on chromePort (localhost-only),
+  // and the extension running inside Chrome has no way to know the
+  // token without an out-of-band channel. Same-host clients (shell,
+  // extension) can therefore use either the bare path or the tokened
+  // form. LAN clients still need the token.
+  const isLoopback = (req) => {
+    const a = req.socket?.remoteAddress;
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+  };
+
   const server = createServer(async (req, res) => {
     // Static bus log — served unauthenticated. See note above.
     if (req.url && busPaths.has(req.url)) {
@@ -70,11 +81,12 @@ export function startCdpProxy({
       return;
     }
 
-    if (!req.url?.startsWith(prefix + '/') && req.url !== prefix) {
+    const tokened = req.url?.startsWith(prefix + '/') || req.url === prefix;
+    if (!tokened && !isLoopback(req)) {
       res.writeHead(401, { 'content-type': 'text/plain' }).end('Unauthorized');
       return;
     }
-    const path = req.url.slice(prefix.length) || '/';
+    const path = tokened ? (req.url.slice(prefix.length) || '/') : req.url;
 
     try {
       const upstream = await fetch(`http://localhost:${chromePort}${path}`);
@@ -98,12 +110,13 @@ export function startCdpProxy({
 
   // ── WebSocket tunnel ───────────────────────────────────────────
   server.on('upgrade', (req, socket, head) => {
-    if (!req.url?.startsWith(prefix + '/') && req.url !== prefix) {
+    const tokened = req.url?.startsWith(prefix + '/') || req.url === prefix;
+    if (!tokened && !isLoopback(req)) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
-    const path     = req.url.slice(prefix.length) || '/';
+    const path = tokened ? (req.url.slice(prefix.length) || '/') : req.url;
     const upstream = createConnection(chromePort, 'localhost');
 
     upstream.on('connect', () => {
@@ -128,13 +141,17 @@ export function startCdpProxy({
 
   return new Promise((resolve, reject) => {
     server.listen(proxyPort, proxyHost, () => {
+      // Resolve to the actually-bound port — callers passing
+      // proxyPort: 0 (let-OS-pick, typically tests) need to know
+      // which one the kernel assigned.
+      const boundPort = server.address().port;
       onLog(`CDP proxy ready`);
       onLog(`  token:  ${token}`);
-      onLog(`  proxy:  http://localhost:${proxyPort}/${token}/json`);
+      onLog(`  proxy:  http://localhost:${boundPort}/${token}/json`);
       onLog(`  chrome: http://localhost:${chromePort}/json  (private)`);
       resolve({
         token,
-        port: proxyPort,
+        port: boundPort,
         stop: () => new Promise(r => server.close(r)),
       });
     });
