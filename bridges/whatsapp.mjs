@@ -171,7 +171,12 @@ export async function startWhatsAppBridge({
     const chatJid0 = msg.key.remoteJid;
     if (!chatJid0) return;
     const isGroup0 = chatJid0.endsWith('@g.us');
-    const isSelfDM = !isGroup0 && chatJid0 === myJid;
+    // self-DM detection: compare BARE numbers, not full JIDs. myJid
+    // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
+    // but remoteJid for incoming messages doesn't ('16468217865@s.whatsapp.net').
+    // Comparing strings directly always fails for self-DMs.
+    const chatNumber = chatJid0.split('@')[0]?.split(':')[0];
+    const isSelfDM = !isGroup0 && chatNumber === myNumber;
     const fromMe = !!msg.key?.fromMe;
 
     // Awareness rules — decide whether this message reaches onIncoming.
