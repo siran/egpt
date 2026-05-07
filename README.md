@@ -83,6 +83,10 @@ The shell never spawns Chrome on startup; it only attaches if Chrome is already 
 
 Linux/macOS: `google-chrome --remote-debugging-port=9221 --user-data-dir=~/.egpt/chrome/profiles/brain --load-extension=~/src/egpt/extension/dist`
 
+**Firefox option:** the extension also builds a Firefox-compatible variant at `extension/dist-firefox/`. The Firefox build uses the same WebSocket-based CDP code path as the Node shell — it controls a Chrome instance running on `localhost:9222` (or, with a token, a remote Chrome via the proxy on `:9221`). Firefox cannot host the bus tab itself (no CDP server in Firefox), so a Chrome on the same host or on the LAN is still required.
+
+Load it via `about:debugging` → "This Firefox" → "Load Temporary Add-on…" → pick `extension/dist-firefox/manifest.json`. Set `cdp_host` in extension settings to point at your Chrome (default `localhost:9222`).
+
 ## Brain profiles
 
 Reusable participants can be described as YAML profiles. `/attach alex` looks for `alex.yaml` in `./.egpt/brains/`, `~/.egpt/brains/`, or the repo's `brains/type/` / `brains/types/` directories.

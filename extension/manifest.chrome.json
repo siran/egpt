@@ -4,15 +4,19 @@
   "version": "0.0.1",
   "description": "Multi-brain AI orchestrator — browser extension",
   "permissions": ["storage", "tabs"],
-  "host_permissions": ["http://localhost:*/", "ws://localhost:*/", "https://api.telegram.org/"],
+  "host_permissions": [
+    "http://localhost:*/",
+    "ws://localhost:*/",
+    "https://api.telegram.org/"
+  ],
   "background": {
-    "service_worker": "dist/background.js"
+    "service_worker": "background.js"
   },
   "action": {
     "default_title": "Open egpt"
   },
   "options_ui": {
-    "page": "dist/settings/index.html",
+    "page": "settings/index.html",
     "open_in_tab": true
   }
 }

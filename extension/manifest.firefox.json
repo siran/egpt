@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "egpt",
+  "version": "0.0.1",
+  "description": "Multi-brain AI orchestrator — browser extension (Firefox)",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:*/",
+    "ws://localhost:*/",
+    "https://api.telegram.org/"
+  ],
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "action": {
+    "default_title": "Open egpt"
+  },
+  "options_ui": {
+    "page": "settings/index.html",
+    "open_in_tab": true
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "egpt@local.dev",
+      "strict_min_version": "121.0"
+    }
+  }
+}

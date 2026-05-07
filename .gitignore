@@ -5,4 +5,5 @@ conversations/
 .egpt/
 *.log
 extension/dist/
+extension/dist-firefox/
 coverage/
