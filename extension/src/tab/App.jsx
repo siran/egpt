@@ -768,12 +768,35 @@ export default function App() {
       setNodeNameReady(true);
     });
 
-    const onChange = (changes) => {
+    const onChange = async (changes) => {
       if (changes.userName) setUserName(changes.userName.newValue ?? 'human');
       if (changes.telegram) startBridge();
-      // node_name changes apply on next reload — bus already announced
-      // under the previous name; renaming live would require re-announce
-      // and peer cache invalidation, which we don't need right now.
+      if (changes.node_name) {
+        // Live rename: drop old node-offline, swap BUS_NODE_ID +
+        // SURFACE_TAG, re-announce node-online. Past rendered rows keep
+        // their original tag; new ones get the new tag.
+        const newName = changes.node_name.newValue;
+        const oldName = BUS_NODE_ID;
+        if (newName && newName !== oldName) {
+          const tid = busTargetIdRef.current;
+          if (tid) {
+            try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (_) {}
+          }
+          BUS_NODE_ID = newName;
+          SURFACE_TAG = newName;
+          if (tid) {
+            const sessionsList = [...sessionsRef.current.entries()].map(([n, s]) => ({
+              name: n, brain: s.brain.name,
+            }));
+            try {
+              await bus.postEvent(tid, {
+                type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'chrome',
+                sessions: sessionsList, polling: tgPolling,
+              });
+            } catch (_) {}
+          }
+        }
+      }
     };
     chrome.storage.onChanged.addListener(onChange);
     return () => chrome.storage.onChanged.removeListener(onChange);

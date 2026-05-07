@@ -1044,10 +1044,12 @@ const EGPT_EMOJI = '🧠';
 // 'work', 'shell1' and the room sees you under that name. Default is
 // shell-<pid> when no name is configured. Collision risk is the user's
 // responsibility — same room, same names mean same names on the bus.
-const BUS_NODE_ID = EGPT_CONFIG.node_name ?? `shell-${process.pid}`;
-// Display tag for Telegram, mention-reply, and room-utterance. Same as
-// BUS_NODE_ID — when the user picks a name we just use it.
-const SURFACE_TAG = BUS_NODE_ID;
+//
+// `let` (not const) so /config node_name can rename live: the handler
+// posts node-offline under the old name, updates these, then posts
+// node-online with the new one.
+let BUS_NODE_ID = EGPT_CONFIG.node_name ?? `shell-${process.pid}`;
+let SURFACE_TAG = BUS_NODE_ID;
 
 // Visual avatars for sessions. Auto-assigned on session creation; users can
 // rebind with /emoji <session> <new>. The palette runs ~20 distinct critters
@@ -2238,6 +2240,31 @@ function App() {
         setThemeRev(n => n + 1);
       }
       if (key === 'show_prompts') _showPrompts = !!val;
+      if (key === 'node_name') {
+        // Live rename: announce node-offline under the old name first
+        // so peers drop the old entry, swap BUS_NODE_ID + SURFACE_TAG,
+        // then re-announce as node-online with the new name. Local UI
+        // and Telegram tags pick up the new SURFACE_TAG on the next
+        // render — past rows keep their original tag (they're locked
+        // in by Ink's <Static>, which is correct: history is history).
+        const oldName = BUS_NODE_ID;
+        const newName = String(val);
+        const tid = busTargetIdRef.current;
+        if (tid && oldName !== newName) {
+          try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (_) {}
+        }
+        BUS_NODE_ID = newName;
+        SURFACE_TAG = newName;
+        if (tid && oldName !== newName) {
+          try {
+            await bus.postEvent(tid, {
+              type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
+              sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
+              polling: tgPolling,
+            });
+          } catch (_) {}
+        }
+      }
       sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(LOCAL_CONFIG_PATH)}`);
       return true;
     }
