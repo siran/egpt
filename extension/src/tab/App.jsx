@@ -658,6 +658,15 @@ export default function App() {
       appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
     }
+    if (decision.kind === 'persona') {
+      // @egpt — node-global default brain. Shell-only for now (the
+      // default brain is typically claude-code, a local subprocess
+      // that can't run inside Chrome). DM the bot via Telegram or
+      // WhatsApp from a shell-paired account, or type @egpt in a
+      // shell on the LAN.
+      appendMsg('egpt', '@egpt needs a shell node — start an egpt shell on this LAN, or DM the bot via Telegram/WhatsApp');
+      return;
+    }
     if (decision.kind === 'peer-mention') {
       const tid = busTargetIdRef.current;
       if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @${decision.target}`); return; }

@@ -3972,6 +3972,52 @@ function App() {
     return runBrainTurn(opSession, result.text, sessionMap ?? sessions);
   }
 
+  // Run the node-global "default brain" persona that responds to @egpt
+  // mentions. Lives outside any room — has its own persistent
+  // conversation thread saved at ~/.egpt/config.json default_brain.session_id.
+  // First call spawns fresh; subsequent calls resume.
+  async function runDefaultBrainTurn(text) {
+    const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
+    const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
+    const brain = brainForName(brainType);
+    if (!brain) return `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
+    const sessionOpts = {
+      sessionId: dbCfg.session_id ?? null,
+      cwd: dbCfg.cwd ?? process.cwd(),
+      sessionName: 'egpt',
+      userName: USER_NAME,
+    };
+    try {
+      const result = await brain.stream(
+        { history: '', message: text },
+        () => {},   // no streaming UI for persona; deliver final text only
+        sessionOpts,
+      );
+      const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+      const newSessionId = result?.optionsPatch?.sessionId;
+      if (newSessionId && newSessionId !== dbCfg.session_id) {
+        await persistDefaultBrainSessionId(brainType, newSessionId);
+      }
+      return final.trim() || '(no reply)';
+    } catch (e) {
+      return `!! egpt: ${e.message}`;
+    }
+  }
+
+  async function persistDefaultBrainSessionId(brainType, sessionId) {
+    const cfgPath = join(EGPT_HOME, 'config.json');
+    let cfg = {};
+    try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
+    if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
+    cfg.default_brain.type = brainType;
+    cfg.default_brain.session_id = sessionId;
+    EGPT_CONFIG.default_brain = cfg.default_brain;
+    try {
+      await mkdir(EGPT_HOME, { recursive: true });
+      await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+    } catch (e) { sysOut(`!! couldn't persist default_brain.session_id: ${e.message}`); }
+  }
+
   // Run a single brain-turn for one session.
   // `messageText` is exactly what gets injected into the brain (or piped to
   // ccode in resume mode). The caller is responsible for prefixing
@@ -4262,6 +4308,38 @@ function App() {
       // don't auto-call a brain. Hint how to opt in.
       const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
       sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
+      return;
+    }
+    if (decision.kind === 'persona') {
+      // @egpt — node-global default brain. Lives outside any room.
+      // Persistent thread; replies go back through whichever bridge
+      // (if any) carried the request.
+      await append(echoAuthor, text);
+      setBusy(true);
+      try {
+        const reply = await runDefaultBrainTurn(decision.body);
+        const replyAuthor = `egpt@${SURFACE_TAG}`;
+        const fromBridge = !!meta.fromTelegram || !!meta.fromWhatsApp;
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(),
+          author: replyAuthor,
+          body: reply,
+          // Bridges deliver via direct send below; mark _localOnly
+          // when we're routing back to a specific chat so items-flush
+          // doesn't double-deliver via lastChat.
+          _localOnly: fromBridge,
+        }]);
+        await append(replyAuthor, reply);
+        if (meta.fromTelegram && bridgeRef.current) {
+          bridgeRef.current.send(`🤖 <b>egpt</b>\n${mdToTgHtml(reply)}`,
+            { chatId: meta.telegramChatId });
+        }
+        if (meta.fromWhatsApp && waBridgeRef.current) {
+          waBridgeRef.current.send(`🤖 egpt: ${reply}`, { chatId: meta.waChatId });
+        }
+      } finally {
+        setBusy(false);
+      }
       return;
     }
     if (decision.kind === 'peer-mention') {

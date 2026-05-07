@@ -32,6 +32,12 @@
 //       `/use <name>` to consent to plain-text routing. Caller may still
 //       have posted room-utterance for peer visibility before resolveRoute.
 //
+//   { kind: 'persona', body }
+//       The user wrote `@egpt …` — the node-global "default brain"
+//       persona. Caller routes to its persistent default-brain session
+//       (auto-spawned on first use, resumed thereafter). Works in any
+//       room including the default lobby; not tied to room sessions.
+//
 // The room module never touches React state, files, or networks. The caller
 // owns the side effects.
 
@@ -75,6 +81,14 @@ export function resolveRoute(parsed, fullText, ctx) {
   if (parsed.type === 'mention') {
     const token = parsed.target;
     const body = parsed.body || '?';
+
+    // Special case: '@egpt' is the node-global default-brain persona.
+    // Always returns kind:'persona' regardless of room state — works
+    // even in the default lobby. The persona has its own persistent
+    // conversation thread, separate from any room session.
+    if (token.toLowerCase() === 'egpt') {
+      return { kind: 'persona', body };
+    }
 
     // 1. Direct hit on a local session name.
     if (ctx.sessions.has(token)) {

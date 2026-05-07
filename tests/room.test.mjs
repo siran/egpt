@@ -45,6 +45,39 @@ function ctx({ sessions = [], peers = [], activeSessions = [] } = {}) {
 
 const route = (text, c) => resolveRoute(parseInput(text), text, c);
 
+// ── @egpt persona ──────────────────────────────────────────────────────────
+
+describe('resolveRoute — @egpt persona', () => {
+  it('returns kind:"persona" for @egpt with body', () => {
+    expect(route('@egpt what is the price of bitcoin?', ctx())).toEqual({
+      kind: 'persona', body: 'what is the price of bitcoin?',
+    });
+  });
+
+  it('uses ? as body when @egpt has no question', () => {
+    expect(route('@egpt', ctx())).toEqual({ kind: 'persona', body: '?' });
+  });
+
+  it('matches @egpt case-insensitively', () => {
+    expect(route('@EGPT hi', ctx())).toEqual({ kind: 'persona', body: 'hi' });
+    expect(route('@Egpt hi', ctx())).toEqual({ kind: 'persona', body: 'hi' });
+  });
+
+  it('does NOT match @egpt-suffix tokens', () => {
+    // @egpt-bot, @egpts etc. are not the persona — fall through to
+    // normal session/peer routing (and error if no match).
+    const r = route('@egpt-bot hi', ctx());
+    expect(r.kind).toBe('error');
+  });
+
+  it('persona takes precedence over a session named "egpt"', () => {
+    // If somebody named a session "egpt", @egpt still hits the persona,
+    // not that session. The persona is reserved.
+    const c = ctx({ sessions: [['egpt', 'codex']] });
+    expect(route('@egpt hello', c)).toEqual({ kind: 'persona', body: 'hello' });
+  });
+});
+
 // ── Slash commands ─────────────────────────────────────────────────────────
 
 describe('resolveRoute — commands', () => {
