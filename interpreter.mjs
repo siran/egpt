@@ -46,6 +46,7 @@ export const COMMANDS = [
   { cmd: '/conversations',  surface: 'shell',     usage: '/conversations',                                 desc: 'list available conversation files' },
   { cmd: '/conversation',   surface: 'shell',     usage: '/conversation <name|path>',                      desc: 'switch to a conversation file' },
   { cmd: '/exit',           surface: 'shell',     usage: '/exit',                                          desc: 'quit egpt' },
+  { cmd: '/version',        surface: 'shell',     usage: '/version',                                       desc: 'show current commit, branch, last tag, and dirty state' },
   { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; egpt-daemon pulls + rebuilds + restarts' },
   { cmd: '/restart',        surface: 'shell',     usage: '/restart',                                       desc: 'exit with code 43; egpt-daemon respawns from current disk (picks up external git pulls)' },
   { cmd: '/rewind',         surface: 'shell',     usage: '/rewind <ref>',                                  desc: 'exit with code 44; egpt-daemon checks out <ref>, installs, builds, restarts' },

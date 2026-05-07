@@ -1195,6 +1195,14 @@ function MultiLineInput({ onSubmit }) {
     }
     if (key.ctrl && input === 'a') { setC(0); return; }
     if (key.ctrl && input === 'e') { setC(lines[r].length); return; }
+    // Literal Home/End keys arrive as escape sequences on most terminals
+    // (xterm, Windows Terminal, mintty). Ink doesn't expose them as a key
+    // flag, so match the raw bytes. Same for Ctrl+Home / Ctrl+End to jump
+    // to start / end of the whole multi-line input.
+    if (input === '\x1b[H' || input === '\x1b[1~' || input === '\x1b[7~') { setC(0); return; }
+    if (input === '\x1b[F' || input === '\x1b[4~' || input === '\x1b[8~') { setC(lines[r].length); return; }
+    if (input === '\x1b[1;5H') { setR(0); setC(0); return; }
+    if (input === '\x1b[1;5F') { setR(lines.length - 1); setC(lines[lines.length - 1].length); return; }
     if (input && !key.ctrl && !key.meta) {
       const next = [...lines];
       // Multi-line paste: split on \n, splice into the lines array, set cursor
@@ -1863,6 +1871,25 @@ function App() {
     const arg = rest.join(' ').trim();
 
     if (cmd === '/exit') { exit(); return true; }
+    if (cmd === '/version') {
+      // Snapshot current git state so the user can see what's running
+      // before /upgrade or /rewind.
+      const sha    = spawnSync('git', ['rev-parse', '--short', 'HEAD'],     { cwd: APP_DIR, stdio: 'pipe' });
+      const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: APP_DIR, stdio: 'pipe' });
+      const tag    = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd: APP_DIR, stdio: 'pipe' });
+      const dirty  = spawnSync('git', ['status', '--porcelain'],            { cwd: APP_DIR, stdio: 'pipe' });
+      const recent = spawnSync('git', ['tag', '--sort=-creatordate'],       { cwd: APP_DIR, stdio: 'pipe' });
+      const get = (r) => (r.stdout?.toString() ?? '').trim();
+      const dirtyText = get(dirty) ? '  (working tree dirty)' : '';
+      const tagList = get(recent).split('\n').slice(0, 5).filter(Boolean).join(', ');
+      sysOut(
+        `commit: ${get(sha) || '???'}${dirtyText}\n` +
+        `branch: ${get(branch) || '???'}\n` +
+        `last tag: ${get(tag) || '(none)'}\n` +
+        `recent tags: ${tagList || '(none)'}`,
+      );
+      return true;
+    }
     if (cmd === '/use') {
       const target = arg.trim();
       if (!target) {
@@ -4185,7 +4212,10 @@ function App() {
         h(Text, { color: T.statusFile }, `  ${basename(FILE)}  `),
         h(Text, { color: T.statusSessions },
           Object.keys(sessions).length
-            ? Object.entries(sessions).map(([n, s]) => `${s.emoji ?? ''}${n}`).join(' ')
+            ? Object.entries(sessions).map(([n, s]) => {
+                const star = n === activeSession ? '*' : '';
+                return `${star}${s.emoji ?? ''}${n}`;
+              }).join(' ')
             : '(empty room)')),
       streaming && (() => {
         // Show only the trailing portion of long streamed text — keeps the

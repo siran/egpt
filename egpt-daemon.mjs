@@ -47,21 +47,39 @@ function log(msg) {
   process.stdout.write(`[egpt-daemon ${new Date().toISOString()}] ${msg}\n`);
 }
 
+function gitVersion() {
+  const sha = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
+  const tag = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd: ROOT, stdio: 'pipe' });
+  const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
+  return {
+    sha:    (sha.stdout?.toString() ?? '').trim() || '???',
+    tag:    (tag.stdout?.toString() ?? '').trim() || '(no tag)',
+    branch: (branch.stdout?.toString() ?? '').trim() || '???',
+  };
+}
+
 function runUpgrade() {
-  log('upgrade requested — git pull && npm install && npm run build:ext');
-  const steps = [
-    ['git', ['pull', '--ff-only']],
-    [npm,   ['install']],
-    [npm,   ['run', 'build:ext']],
-  ];
-  for (const [cmd, args] of steps) {
+  const before = gitVersion().sha;
+  log(`upgrade requested — git pull (currently ${before})`);
+  const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: ROOT, stdio: 'inherit' });
+  if (pull.status !== 0) {
+    log('git pull failed; continuing with current code');
+    return false;
+  }
+  const after = gitVersion();
+  if (after.sha === before) {
+    log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — no rebuild needed`);
+    return true;
+  }
+  log(`pulled ${before} -> ${after.sha} — running npm install && npm run build:ext`);
+  for (const [cmd, args] of [[npm, ['install']], [npm, ['run', 'build:ext']]]) {
     const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
     if (r.status !== 0) {
-      log(`upgrade step failed (${cmd} ${args.join(' ')}); restarting anyway with previous code`);
+      log(`upgrade step exited ${r.status} (${cmd} ${args.join(' ')}); continuing with current build`);
       return false;
     }
   }
-  log('upgrade complete');
+  log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
   return true;
 }
 
@@ -158,5 +176,9 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'));
 
-log(`egpt-daemon up — keeping node egpt.mjs alive in ${ROOT}`);
+{
+  const v = gitVersion();
+  log(`egpt-daemon up — keeping node egpt.mjs alive in ${ROOT}`);
+  log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
+}
 spawnShell();
