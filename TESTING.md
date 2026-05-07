@@ -83,7 +83,7 @@ In shell A, type: `/chrome`
 
 ✅ Sequence:
 - `starting Chrome with extension…`
-- A new Chrome window opens, profile = `~/.egpt/egpt-brain`. The egpt
+- A new Chrome window opens, profile = `~/.egpt/chrome/profiles/brain`. The egpt
   extension icon appears in the toolbar.
 - After ~2-5s: `Chrome ready — proxy will auto-attach within 5s`
 - Within 5s: `CDP proxy auto-started (:9221 → :9222)` and
@@ -102,7 +102,7 @@ In the brain Chrome window:
 1. Open chatgpt.com, log in.
 2. Open claude.ai, log in.
 
-✅ Profile persists at `~/.egpt/egpt-brain`. Future `/chrome` runs
+✅ Profile persists at `~/.egpt/chrome/profiles/brain`. Future `/chrome` runs
 skip login.
 
 ### 2.4 — auto-attach existing tabs

@@ -5,7 +5,7 @@ import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
-import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -178,6 +178,16 @@ async function readJsonlMetadata(path) {
 // note or sends it directly to one session. /summaries lists what's available.
 const SUMMARIES_DIR = join(EGPT_HOME, 'summaries');
 const BRAIN_STATE_DIR = join(EGPT_HOME, 'brain-state');
+// Persistent Chrome user-data-dirs the shell controls. The 'brain' profile
+// hosts the headed Chrome where you log into chatgpt.com / claude.ai; the
+// shell launches it from /chrome with --remote-debugging-port=9221 and
+// --load-extension=<repo>/extension/dist. Renamed from ~/.egpt/egpt-brain
+// in 2026-05 so chrome/ groups all chrome-related state under one root,
+// leaving room for chrome/profiles/extension/ etc. when the extension
+// gets its own dedicated browser. The legacy path is still recognized
+// for one-time auto-migration when Chrome isn't holding it open.
+const CHROME_BRAIN_PROFILE        = join(EGPT_HOME, 'chrome', 'profiles', 'brain');
+const LEGACY_CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'egpt-brain');
 const USER_BRAIN_PROFILE_DIR = join(EGPT_HOME, 'brains');
 const PROJECT_BRAIN_PROFILE_DIR = join(process.cwd(), '.egpt', 'brains');
 const REPO_BRAIN_PROFILE_DIR = join(APP_DIR, 'brains', 'type');
@@ -1718,10 +1728,34 @@ function App() {
         sysOut('!! Chrome executable not found in standard locations');
         return false;
       }
+      // Resolve the brain profile dir, auto-migrating from the legacy
+      // ~/.egpt/egpt-brain path if Chrome isn't holding it open. Chrome
+      // creates SingletonLock / SingletonCookie inside its user-data-dir
+      // while it owns the profile, so their absence means it's safe to
+      // move. If Chrome is still running on the old dir we just use it
+      // and tell the user how to migrate; the next clean start will do it.
+      let brainProfile = CHROME_BRAIN_PROFILE;
+      if (!existsSync(CHROME_BRAIN_PROFILE) && existsSync(LEGACY_CHROME_BRAIN_PROFILE)) {
+        const locked = existsSync(join(LEGACY_CHROME_BRAIN_PROFILE, 'SingletonLock'))
+                    || existsSync(join(LEGACY_CHROME_BRAIN_PROFILE, 'SingletonCookie'));
+        if (locked) {
+          sysOut('!! brain profile at legacy path (~/.egpt/egpt-brain). Close Chrome and run /chrome again to auto-migrate to ~/.egpt/chrome/profiles/brain');
+          brainProfile = LEGACY_CHROME_BRAIN_PROFILE;
+        } else {
+          try {
+            await mkdir(dirname(CHROME_BRAIN_PROFILE), { recursive: true });
+            await rename(LEGACY_CHROME_BRAIN_PROFILE, CHROME_BRAIN_PROFILE);
+            sysOut('migrated brain profile: ~/.egpt/egpt-brain → ~/.egpt/chrome/profiles/brain');
+          } catch (e) {
+            sysOut(`!! profile migration failed: ${e.message} — using legacy path`);
+            brainProfile = LEGACY_CHROME_BRAIN_PROFILE;
+          }
+        }
+      }
       sysOut('starting Chrome with extension…');
       await launcher.spawnChrome({
         port: 9221,
-        userDataDir: join(EGPT_HOME, 'egpt-brain'),
+        userDataDir: brainProfile,
         extensionDir: extDist,
       });
       await launcher.waitForChromeReady(9221);
@@ -3938,7 +3972,8 @@ function App() {
       // Explicit spawn. Brain Chrome is no longer auto-spawned at startup;
       // shell only attaches if it finds Chrome already running. /chrome
       // launches a fresh Chrome with the extension loaded under the
-      // ~/.egpt/egpt-brain profile.
+      // ~/.egpt/chrome/profiles/brain profile (auto-migrating from the
+      // legacy ~/.egpt/egpt-brain on first clean launch).
       await spawnChromeWithExtension();
       return true;
     }

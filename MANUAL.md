@@ -45,7 +45,7 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 # Run egpt, then /chrome inside it to launch Chrome with the extension
 # loaded. The shell starts the CDP proxy and joins the bus when Chrome
 # is reachable. Log into chatgpt.com / claude.ai once in that Chrome
-# window — the profile persists at ~/.egpt/egpt-brain.
+# window — the profile persists at ~/.egpt/chrome/profiles/brain.
 
 # in egpt (brain Chrome running):
 # at startup egpt scans tabs and auto-attaches:
@@ -331,7 +331,7 @@ Setup:
 
 ```bash
 node egpt.mjs                                 # then /chrome inside to launch the brain Chrome
-# log in to chatgpt.com / claude.ai once if needed (profile persists at ~/.egpt/egpt-brain)
+# log in to chatgpt.com / claude.ai once if needed (profile persists at ~/.egpt/chrome/profiles/brain)
 # start or open a conversation in that tab
 ```
 
@@ -540,18 +540,18 @@ Spawn is explicit; attach is automatic. On startup, `egpt.mjs`:
 2. Else checks for raw Chrome on `:9221`. If up, starts the proxy and attaches.
 3. Else surfaces a hint: type `/chrome` to launch one, or start Chrome yourself.
 
-`/chrome` (shell command) spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/egpt-brain --load-extension=<repo>/extension/dist`. A 5-second poll then picks up the new instance and proceeds with proxy + attach. The same poll handles a manually-launched Chrome (e.g. via desktop shortcut) and recovery if the connection drops.
+`/chrome` (shell command) spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/chrome/profiles/brain --load-extension=<repo>/extension/dist`. A 5-second poll then picks up the new instance and proceeds with proxy + attach. The same poll handles a manually-launched Chrome (e.g. via desktop shortcut) and recovery if the connection drops.
 
 Chrome is spawned **detached**, so it survives shell restart. Close it
 manually when you're done with the session. The profile at
-`~/.egpt/egpt-brain` persists your ChatGPT/Claude logins across runs.
+`~/.egpt/chrome/profiles/brain` persists your ChatGPT/Claude logins across runs.
 
 To start Chrome manually with the right flags (no shell needed):
 
 ```bash
 google-chrome \
   --remote-debugging-port=9221 \
-  --user-data-dir=~/.egpt/egpt-brain \
+  --user-data-dir=~/.egpt/chrome/profiles/brain \
   --load-extension=~/src/egpt/extension/dist \
   --no-first-run --new-window
 ```
@@ -561,7 +561,7 @@ Or on Windows (PowerShell):
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
   --remote-debugging-port=9221 `
-  --user-data-dir="$env:USERPROFILE\.egpt\egpt-brain" `
+  --user-data-dir="$env:USERPROFILE\.egpt\chrome\profiles\brain" `
   --load-extension="$env:USERPROFILE\src\egpt\extension\dist" `
   --no-first-run --new-window
 ```
@@ -629,8 +629,9 @@ Or on Windows (PowerShell):
 
 ~/.egpt/
 ├── config.json            # global config (bot tokens, theme, etc.) — DO NOT commit
-├── egpt-brain/            # persistent Chrome profile for the brain Chrome
-├── egpt-extension/        # persistent Chrome profile for the extension Chrome
+├── chrome/profiles/
+│   ├── brain/             # persistent Chrome profile for the brain Chrome
+│   └── extension/         # (future) dedicated Chrome for the extension
 ├── cdp-token              # token for the localhost-LAN CDP proxy
 ├── brain-state/<name>.json # runtime state per attached brain profile
 ├── prepared-files/        # excerpts staged by /send-file
