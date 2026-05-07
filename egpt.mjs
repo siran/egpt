@@ -1871,11 +1871,40 @@ function App() {
       return true;
     }
     if (cmd === '/restart') {
-      // Exit with code 43 so egpt-daemon restarts without running the
-      // git pull + npm install + build step. For when you just want a
-      // fresh process — config reload, recover from a wedged state, etc.
-      sysOut('exiting with code 43 — egpt-daemon (if running) will restart without upgrading');
+      // Exit with code 43 so egpt-daemon respawns the shell without
+      // running git pull / npm install / build. NOTE: this still picks
+      // up any code changes already on disk — implicit upgrade if you
+      // git-pulled externally. /upgrade is the explicit pull-then-restart;
+      // /restart is "respawn from current disk state".
+      sysOut('exiting with code 43 — egpt-daemon (if running) will respawn the shell');
       setTimeout(() => _exitClean(43), 100);
+      return true;
+    }
+    if (cmd === '/rewind') {
+      // /rewind <ref> — checkout a previous git ref (commit, tag, branch),
+      // then npm install + build:ext, then restart. For dropping back to
+      // a known-good version when an upgrade brought in a regression.
+      const ref = arg.trim();
+      if (!ref) {
+        const tags = spawnSync('git', ['tag', '--sort=-creatordate'], { cwd: APP_DIR });
+        const tagList = (tags.stdout?.toString() ?? '').trim().split('\n').slice(0, 10).join(', ');
+        sysOut(`usage: /rewind <ref>     (commit SHA, tag, branch, or HEAD~N)\nrecent tags: ${tagList || '(none)'}`);
+        return true;
+      }
+      const verify = spawnSync('git', ['rev-parse', '--verify', ref], { cwd: APP_DIR });
+      if (verify.status !== 0) {
+        sysOut(`!! unknown git ref "${ref}" — /rewind with no arg lists tags`);
+        return true;
+      }
+      try {
+        await mkdir(EGPT_HOME, { recursive: true });
+        await writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref);
+      } catch (e) {
+        sysOut(`!! could not write rewind sidecar: ${e.message}`);
+        return true;
+      }
+      sysOut(`exiting with code 44 — egpt-daemon (if running) will checkout ${ref}, install, build, restart`);
+      setTimeout(() => _exitClean(44), 100);
       return true;
     }
     if (cmd === '/upgrade') {

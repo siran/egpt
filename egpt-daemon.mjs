@@ -2,12 +2,15 @@
 // egpt-daemon.mjs — keeps `node egpt.mjs` running.
 //
 // Spawns the shell as a child, restarts on crash with exponential backoff.
-// Three distinguished exit codes from the shell:
+// Four distinguished exit codes from the shell:
 //
 //   0    user wanted out (typed /exit, or SIGINT). Daemon stops too.
 //   42   /upgrade — run `git pull && npm install && npm run build:ext`,
 //        then restart.
 //   43   /restart — restart immediately, no git pull, no build.
+//   44   /rewind — read ~/.egpt/rewind-target.txt for a git ref, run
+//        `git checkout <ref> && npm install && npm run build:ext`,
+//        then restart.
 //
 // Any other exit code is treated as a crash and triggers restart with backoff.
 //
@@ -21,14 +24,18 @@
 // `node /path/to/egpt-daemon.mjs`. See README for details.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { dirname } from 'node:path';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+const REWIND_SIDECAR = join(homedir(), '.egpt', 'rewind-target.txt');
 const RESTART_MIN_MS = 2_000;       // baseline crash-restart delay
 const RESTART_MAX_MS = 60_000;      // cap on backoff
 const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
+const REWIND_EXIT_CODE  = 44;
 const CLEAN_EXIT_CODE   = 0;
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -58,6 +65,36 @@ function runUpgrade() {
   return true;
 }
 
+function runRewind() {
+  let ref = null;
+  try {
+    ref = readFileSync(REWIND_SIDECAR, 'utf8').trim();
+    unlinkSync(REWIND_SIDECAR);
+  } catch (e) {
+    log(`rewind requested but sidecar not readable (${e.message}); restarting anyway`);
+    return false;
+  }
+  if (!ref) {
+    log('rewind sidecar empty; restarting anyway');
+    return false;
+  }
+  log(`rewind requested → git checkout ${ref} && npm install && npm run build:ext`);
+  const steps = [
+    ['git', ['checkout', ref]],
+    [npm,   ['install']],
+    [npm,   ['run', 'build:ext']],
+  ];
+  for (const [cmd, args] of steps) {
+    const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+    if (r.status !== 0) {
+      log(`rewind step failed (${cmd} ${args.join(' ')}); restarting anyway with current code`);
+      return false;
+    }
+  }
+  log(`rewind to ${ref} complete`);
+  return true;
+}
+
 function spawnShell() {
   if (stopping) return;
   log('starting node egpt.mjs');
@@ -82,6 +119,13 @@ function spawnShell() {
 
     if (code === RESTART_EXIT_CODE) {
       log('restart requested — no upgrade, no backoff');
+      backoff = RESTART_MIN_MS;
+      setImmediate(spawnShell);
+      return;
+    }
+
+    if (code === REWIND_EXIT_CODE) {
+      runRewind();
       backoff = RESTART_MIN_MS;
       setImmediate(spawnShell);
       return;

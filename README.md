@@ -452,10 +452,12 @@ The wire format that nodes use to coordinate is documented in [`LEDGER_PROTOCOL.
 node egpt-daemon.mjs
 ```
 
-It spawns the shell as a child, restarts on crash with exponential backoff (2s → 60s cap), and recognizes two special exit codes:
+It spawns the shell as a child, restarts on crash with exponential backoff (2s → 60s cap), and recognizes four special exit codes:
 
 - **0** — clean exit (you typed `/exit`, or Ctrl+C the shell). egpt-daemon stops too — that's what you wanted.
-- **42** — `/upgrade`. egpt-daemon runs `git pull --ff-only && npm install && npm run build:ext`, then restarts the shell. Inside egpt, the slash command `/upgrade` exits with this code.
+- **42** — `/upgrade`. egpt-daemon runs `git pull --ff-only && npm install && npm run build:ext`, then restarts the shell.
+- **43** — `/restart`. egpt-daemon respawns the shell from current disk state. Picks up any code changes already pulled externally (so it's an implicit upgrade if you `git pull`-ed by hand) but does no install/build itself.
+- **44** — `/rewind <ref>`. The shell writes `~/.egpt/rewind-target.txt` with the target ref (commit SHA, tag, branch, `HEAD~N`); egpt-daemon runs `git checkout <ref> && npm install && npm run build:ext`, then restarts. Use it to drop back to a known-good tag (`/rewind unified-room`) when an upgrade brings in a regression.
 
 To stop everything, Ctrl+C the daemon (or `SIGTERM` it).
 
