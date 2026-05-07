@@ -18,4 +18,8 @@ export const CONFIG_SCHEMA = {
   unix_paths:   'display filesystem paths in POSIX style  (true/false)',
   tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
   node_name:    'name this node uses on the bus (e.g. home, chr1); takes effect on next shell restart',
+  // whatsapp: nested object with keys { enabled, allowed_users, chat_id }.
+  // The bridge starts when this block is present (and not enabled:false).
+  // First run: scans QR; auth persists at ~/.egpt/wa-auth/.
+  whatsapp:     'whatsapp bridge config: { enabled: true, allowed_users: [...], chat_id: "<jid>" }',
 };

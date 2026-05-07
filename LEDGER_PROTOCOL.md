@@ -104,7 +104,9 @@ Every event is a flat JSON object with at least these fields:
 - **room id**: `[a-z][a-z0-9_-]*` recommended. Future namespacing
   (`#name@host` IRC-style or `!opaque:host` Matrix-style) is open.
 - **via**: free-form bracket-tagged surface name. Convention:
-  `telegram[<chatId>]`, `whatsapp[<chatId>]`, `signal[<group>]`.
+  `telegram[<chatId>]`, `whatsapp[<jid>]` (where `<jid>` is the WhatsApp
+  chat JID, e.g. `1234567890@s.whatsapp.net` for DMs or `xxxxx@g.us` for
+  groups), `signal[<group>]`.
 
 ## Ledger flavors
 

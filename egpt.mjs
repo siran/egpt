@@ -19,6 +19,7 @@ import * as bus from './tools/bus.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
+import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
@@ -1517,6 +1518,87 @@ function App() {
     startTgBridge();
     return () => stopTgBridge();
   }, [startTgBridge, stopTgBridge]);
+
+  // ── WhatsApp bridge (baileys, personal account) ──────────────────────
+  // Enabled when EGPT_CONFIG.whatsapp.enabled === true (or any truthy
+  // whatsapp config block is present). First run shows a QR to scan with
+  // your phone; auth state persists at ~/.egpt/wa-auth/.
+  const waBridgeRef = useRef(null);
+  const startWaBridge = useCallback(async () => {
+    if (waBridgeRef.current) return true;
+    const cfg = EGPT_CONFIG.whatsapp;
+    if (!cfg || cfg.enabled === false) return false;
+    try {
+      const bridge = await startWhatsAppBridge({
+        allowedUsers: cfg.allowed_users ?? [],
+        onIncoming: async (text, from) => {
+          const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+            body: `(whatsapp message from ${who}) -> ${text}`,
+          }]);
+          const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+          if (isCommand && !from.authorized) {
+            bridge.send(`${who} is not authorized to emit commands or mentions`,
+              { chatId: from.chatId });
+            return;
+          }
+          // Lifecycle commands restricted to 1:1 chats, same as Telegram.
+          const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
+          const firstTok = text.trimStart().split(/\s+/)[0];
+          if (LIFECYCLE.has(firstTok) && from.chatType !== 'private') {
+            bridge.send(`${firstTok} only works in a 1:1 chat — DM me and try again`,
+              { chatId: from.chatId });
+            return;
+          }
+          if (submitRef.current) await submitRef.current(text, {
+            fromWhatsApp: true,
+            waChatId: from.chatId,
+            waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
+          });
+        },
+        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `whatsapp: ${msg}`, _localOnly: true }]),
+        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${msg}`, _localOnly: true }]),
+        onChatId: async (id) => {
+          // First captured chat — persist to ~/.egpt/config.json so future
+          // runs default outbound to that JID.
+          const cfgPath = join(EGPT_HOME, 'config.json');
+          let saved = {};
+          try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+          if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
+          if (saved.whatsapp.chat_id === id) return;
+          saved.whatsapp.chat_id = id;
+          try {
+            await mkdir(EGPT_HOME, { recursive: true });
+            await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+            setItems(p => [...p, {
+              id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+              body: `whatsapp: outbound chat ${id} captured and saved`,
+            }]);
+          } catch (_) {}
+        },
+      });
+      waBridgeRef.current = bridge;
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge enabled', _localOnly: true }]);
+      return true;
+    } catch (e) {
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${e.message}`, _localOnly: true }]);
+      return false;
+    }
+  }, []);
+
+  const stopWaBridge = useCallback(() => {
+    if (!waBridgeRef.current) return false;
+    waBridgeRef.current.stop();
+    waBridgeRef.current = null;
+    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge stopped', _localOnly: true }]);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    startWaBridge();
+    return () => stopWaBridge();
+  }, [startWaBridge, stopWaBridge]);
 
   // Broadcast our local sessions to the bus on change. Peers use this to
   // know which @<name> they can forward our way. No-op until the bus is joined.
@@ -3817,6 +3899,12 @@ function App() {
     const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
     const tgChatId = callOpts.tgChatId ?? null;
+    const waChatId = callOpts.waChatId ?? null;
+    // Bridge selection rule: when a turn was triggered by an upstream
+    // bridge (Telegram OR WhatsApp), only that bridge gets the reply
+    // (route back to the chat that asked). For local typing, both
+    // bridges send (each to their lastChat).
+    const fromAnyBridge = !!tgChatId || !!waChatId;
     const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = brainForName(session.brain);
@@ -3867,10 +3955,18 @@ function App() {
     // committed item is tagged _localOnly so we don't double-deliver.
     const sessEmoji = sessionMap[routedTo]?.emoji ?? '❓';
     const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}@${SURFACE_TAG}</b>`;
-    // tgChatId routes the streaming reply to the chat that originated
-    // the request (when from Telegram). Without it the bridge falls
-    // back to lastChat — wrong chat if anything else hit the bot since.
-    const tg = bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId });
+    // tgChatId / waChatId route the streaming reply to the chat that
+    // originated the request. When fromAnyBridge is true we only call
+    // the originating bridge; for local typing we call both (each goes
+    // to its lastChat).
+    const tg = (!fromAnyBridge || tgChatId)
+      ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
+      : null;
+    // WhatsApp doesn't render HTML — strip tags for the WA stream.
+    const waPrefix = `${routedTo}@${SURFACE_TAG}`;
+    const wa = (!fromAnyBridge || waChatId)
+      ? waBridgeRef.current?.startStreamMessage?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId })
+      : null;
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
       // Telegram's 4096-char message cap (even with our prefix).
@@ -3887,6 +3983,10 @@ function App() {
           lastStreamingText = partial;
           setStreaming({ author: routedTo, text: partial });
           tg?.update(tgFmt(partial));
+          // WhatsApp doesn't support edit-streaming the way Telegram
+          // does. We only forward update() so the bridge's buffer stays
+          // current; finish() does the single send.
+          wa?.update(`${waPrefix}\n${partial}`);
         },
         { ...opts, sessionName: routedTo, userName: USER_NAME },
       );
@@ -3927,27 +4027,30 @@ function App() {
         // both locally and on Telegram. The local entry carries _localOnly
         // when Telegram already saw the streaming msg, to avoid double-post.
         await tg?.finish(`${authorPrefix}\n—`);
+        await wa?.finish(`${waPrefix}\n—`);
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: routedTo, body: '—',
           _silent: true,
-          _localOnly: !!tg,
+          _localOnly: !!tg || !!wa,
         }]);
         return null;
       }
-      // Finalize the streaming Telegram msg with the full text. The local
-      // item carries _localOnly when Telegram already received it via the
-      // streaming edit, to avoid sending the reply twice.
+      // Finalize the streaming bridge messages with the full text. Local
+      // item is _localOnly when at least one bridge already received the
+      // reply, to avoid double-posting.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
       await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
+      await wa?.finish(`${waPrefix}\n${final}`);
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: routedTo, body: final,
-        _localOnly: !!tg,
+        _localOnly: !!tg || !!wa,
       }]);
       await append(`${routedTo}@${SURFACE_TAG}`, final);
       return final;
     } catch (e) {
       setStreaming(null);
       await tg?.finish(`${authorPrefix}\n!! ${escapeHtml(e.message)}`);
+      await wa?.finish(`${waPrefix}\n!! ${e.message}`);
       sysOut(`!! ${routedTo}: ${e.message}`);
       return null;
     }
@@ -3962,7 +4065,7 @@ function App() {
     // flow back there; otherwise it stays local. Reset in finally so a
     // crashing submit doesn't leak the 'remote' sink to later sysOut calls
     // (e.g. bus event logs).
-    outputSinkRef.current = meta.fromTelegram ? 'remote' : 'local';
+    outputSinkRef.current = (meta.fromTelegram || meta.fromWhatsApp) ? 'remote' : 'local';
     try {
     return await submitInner(raw, text, meta);
     } finally {
@@ -3991,9 +4094,11 @@ function App() {
     // either when the input came from Telegram OR when it's a command.
     const echoAuthor = (meta.fromTelegram && meta.telegramUser)
       ? `${meta.telegramUser}@telegram[${meta.telegramChatId ?? '?'}]`
+      : (meta.fromWhatsApp && meta.waUser)
+      ? `${meta.waUser}@whatsapp[${meta.waChatId ?? '?'}]`
       : 'You';
     const isSlashCommand = text.startsWith('/');
-    const echoLocalOnly = !!meta.fromTelegram || isSlashCommand;
+    const echoLocalOnly = !!meta.fromTelegram || !!meta.fromWhatsApp || isSlashCommand;
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: echoAuthor, body: text,
       ...(echoLocalOnly ? { _localOnly: true } : {}),
@@ -4006,13 +4111,18 @@ function App() {
     {
       const tid = busTargetIdRef.current;
       if (tid) {
-        // When the input came from Telegram, attribute the utterance to
-        // the Telegram user and tag the surface as 'telegram[chatId]' so
-        // peers see where it actually originated, not the shell node
-        // that happens to be carrying the bot.
+        // When the input came from Telegram or WhatsApp, attribute the
+        // utterance to the upstream user and tag the surface as
+        // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
+        // actually originated, not the shell node carrying the bridge.
         const fromTg = !!meta.fromTelegram;
-        const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]` : null;
-        const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME) : USER_NAME;
+        const fromWa = !!meta.fromWhatsApp;
+        const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]`
+          : fromWa ? `whatsapp[${meta.waChatId ?? '?'}]`
+          : null;
+        const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME)
+          : fromWa ? (meta.waUser ?? USER_NAME)
+          : USER_NAME;
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'shell', user: utteranceUser, body: text,
@@ -4121,15 +4231,18 @@ function App() {
     // (no fancy framing; the brain's tab keeps its own native history).
     // For Telegram-originated input, the brain sees the actual Telegram
     // user instead of the local USER_NAME.
-    const brainAuthor = (meta.fromTelegram && meta.telegramUser) ? meta.telegramUser : USER_NAME;
+    const brainAuthor = (meta.fromTelegram && meta.telegramUser) ? meta.telegramUser
+      : (meta.fromWhatsApp && meta.waUser) ? meta.waUser
+      : USER_NAME;
     const messageForBrains = `[${brainAuthor}]: ${userPayload}`;
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
     const tgChatId = meta.fromTelegram ? meta.telegramChatId ?? null : null;
+    const waChatId = meta.fromWhatsApp ? meta.waChatId ?? null : null;
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId });
+      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId, waChatId });
       if (reply !== null) {
         replies.push({ author: recipient, text: reply });
         // Broadcast every brain reply to peer surfaces. The room is

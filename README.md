@@ -117,6 +117,7 @@ Bare UUIDs become `https://chatgpt.com/c/<id>`. Use `--project`, `--repo`,
 
 - ✅ A terminal chat shell (Ink + plain Node, no build step) — multi-line input, ↑/↓ history recall, slash commands, streaming reply display
 - ✅ A **Telegram bridge** (`bridges/telegram.mjs`) — Bot API long polling. One bot token per node is the recommended setup, so each off-LAN node has independent access; LAN coordination uses the CDP bus, not Telegram. Incoming messages route into the same room; brain replies stream back to the chat.
+- ✅ A **WhatsApp bridge** (`bridges/whatsapp.mjs`) — personal-account login via `@whiskeysockets/baileys`. First run scans a QR code with your phone (Settings → Linked devices); auth persists at `~/.egpt/wa-auth/`. In group chats only messages mentioning you are processed. Same room model as Telegram: inbound becomes `room-utterance` with `via:'whatsapp[<jid>]'`; brain replies route back to the originating chat. Enable by adding `"whatsapp": { "enabled": true, "allowed_users": ["<your-number>"] }` to `~/.egpt/config.json`. Personal-account use of the WhatsApp Web protocol is a ToS gray area — fine for personal volume, ban-prone if abused.
 - ✅ Plain Markdown file as conversation source-of-truth (`tail -f`-friendly, vim-editable, grep-able)
 - ✅ Four working brains/operators:
   - `ccode` — local subprocess of `claude` CLI; full conversation history sent each turn; streaming via `stream-json` (`claude-code` is accepted as a legacy alias)

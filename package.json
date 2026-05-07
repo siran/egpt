@@ -16,7 +16,9 @@
     "@codemirror/commands": "^6.8.0",
     "@codemirror/state": "^6.5.0",
     "@codemirror/view": "^6.36.3",
+    "@whiskeysockets/baileys": "^7.0.0-rc10",
     "ink": "^5.0.1",
+    "qrcode-terminal": "^0.12.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "yaml": "^2.8.4"
