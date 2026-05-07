@@ -31,7 +31,7 @@ const canonicalBrainName = (n) => BRAIN_ALIASES[n] ?? n;
 const brainForName = (n) => BRAINS[canonicalBrainName(n)] ?? null;
 
 // Helper: build a routing context from arrays so each test stays readable.
-function ctx({ sessions = [], peers = [], activeSession = null } = {}) {
+function ctx({ sessions = [], peers = [], activeSessions = [] } = {}) {
   return {
     sessions: new Map(sessions.map(([name, brainName]) => [name, { brainName }])),
     peerSessions: new Map(
@@ -39,7 +39,7 @@ function ctx({ sessions = [], peers = [], activeSession = null } = {}) {
     ),
     brainForName,
     canonicalBrainName,
-    activeSession,
+    activeSessions,
   };
 }
 
@@ -175,37 +175,57 @@ describe('resolveRoute — plain message', () => {
     expect(route('hello', ctx())).toEqual({ kind: 'empty' });
   });
 
-  it('returns { kind: "idle" } when sessions exist but no activeSession is set', () => {
+  it('returns { kind: "idle" } when sessions exist but no activeSessions set', () => {
     // Plain text never auto-routes; user must @-mention or /use first.
     const c = ctx({ sessions: [['codex1', 'codex'], ['cgpt1', 'chatgpt-cdp']] });
     expect(route('hello room', c)).toEqual({ kind: 'idle' });
   });
 
-  it('returns { kind: "idle" } when one session exists but no activeSession is set', () => {
+  it('returns { kind: "idle" } when one session exists but no activeSessions set', () => {
     const c = ctx({ sessions: [['codex1', 'codex']] });
     expect(route('hello', c)).toEqual({ kind: 'idle' });
   });
 
-  it('routes plain text to activeSession when set and present', () => {
+  it('routes plain text to a single activeSession (broadcast false)', () => {
     const c = ctx({
       sessions: [['codex1', 'codex'], ['cgpt1', 'chatgpt-cdp']],
-      activeSession: 'cgpt1',
+      activeSessions: ['cgpt1'],
     });
     expect(route('hello', c)).toEqual({
       kind: 'turn', recipients: ['cgpt1'], payload: 'hello', broadcast: false,
     });
   });
 
-  it('returns { kind: "idle" } when activeSession is set but not present in sessions', () => {
+  it('broadcasts plain text to multiple activeSessions', () => {
+    const c = ctx({
+      sessions: [['cgpt1', 'chatgpt-cdp'], ['claude1', 'claude-cdp'], ['codex1', 'codex']],
+      activeSessions: ['cgpt1', 'claude1'],
+    });
+    expect(route('hello room', c)).toEqual({
+      kind: 'turn', recipients: ['cgpt1', 'claude1'], payload: 'hello room', broadcast: true,
+    });
+  });
+
+  it('drops activeSessions that no longer exist in the room', () => {
     const c = ctx({
       sessions: [['cgpt1', 'chatgpt-cdp']],
-      activeSession: 'codex1',  // not in sessions — stale /use
+      activeSessions: ['cgpt1', 'codex1'],   // codex1 was removed
+    });
+    expect(route('hello', c)).toEqual({
+      kind: 'turn', recipients: ['cgpt1'], payload: 'hello', broadcast: false,
+    });
+  });
+
+  it('returns { kind: "idle" } when all activeSessions are stale', () => {
+    const c = ctx({
+      sessions: [['cgpt1', 'chatgpt-cdp']],
+      activeSessions: ['codex1'],
     });
     expect(route('hello', c)).toEqual({ kind: 'idle' });
   });
 
   it('preserves the full text including newlines as the payload when routed', () => {
-    const c = ctx({ sessions: [['codex1', 'codex']], activeSession: 'codex1' });
+    const c = ctx({ sessions: [['codex1', 'codex']], activeSessions: ['codex1'] });
     const r = route('line one\nline two\nline three', c);
     expect(r.payload).toBe('line one\nline two\nline three');
   });

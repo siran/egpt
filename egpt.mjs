@@ -5,7 +5,7 @@ import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
-import { readFile, writeFile, appendFile, readdir, stat, open, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -967,6 +967,40 @@ const ts = () => _stamp(new Date());
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
 const fmtTs = (ms) => _stamp(new Date(ms));
 
+// ── Room persistence ───────────────────────────────────────────────────────
+// One YAML file per room at ~/.egpt/rooms/<name>.yaml. Default room is
+// the lobby — never persisted, never has brains.
+
+const ROOMS_DIR = join(EGPT_HOME, 'rooms');
+
+async function loadAllRooms() {
+  const out = {};
+  let files = [];
+  try { files = (await readdir(ROOMS_DIR)).filter(f => f.endsWith('.yaml')); }
+  catch { return out; }
+  for (const f of files) {
+    try {
+      const text = await readFile(join(ROOMS_DIR, f), 'utf8');
+      const parsed = YAML.parse(text) ?? {};
+      const name = (parsed.name ?? f.replace(/\.yaml$/, '')).trim();
+      if (name === 'default') continue;   // lobby is never persisted
+      out[name] = parsed.sessions ?? {};
+    } catch (_) { /* skip malformed */ }
+  }
+  return out;
+}
+
+async function saveRoomToDisk(name, sessionsMap) {
+  if (name === 'default') return;
+  await mkdir(ROOMS_DIR, { recursive: true });
+  const data = { name, saved: new Date().toISOString(), sessions: sessionsMap ?? {} };
+  await writeFile(join(ROOMS_DIR, `${name}.yaml`), YAML.stringify(data));
+}
+
+async function deleteRoomFile(name) {
+  try { await unlink(join(ROOMS_DIR, `${name}.yaml`)); } catch (_) {}
+}
+
 // On-screen time only (HH:MM + short tz). Date is shown via day-change
 // separators inserted into the rendered list, like a chat client.
 const fmtTimeOnly = (ms) => {
@@ -1253,9 +1287,12 @@ function App() {
   // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
   // if Chrome is already running.
   // Rooms scope sessions so a node can hold multiple working contexts at
-  // once and switch between them. v1 stores rooms in memory only — restart
-  // loses non-default room state. Persistence + lazy member instantiation +
-  // Telegram chat binding are follow-ups.
+  // once and switch between them. Each room is persisted as a YAML file
+  // under ~/.egpt/rooms/<name>.yaml. Session metadata (brain type,
+  // emoji, options) is saved; live runtime state (chrome targetIds,
+  // codex sessionIds) is also written but may go stale across restarts.
+  // Existing rebind logic (CDP brains find a tab by urlMatch; codex
+  // resumes by sessionId) handles staleness on first use.
   //
   // The shim keeps `sessions` and `setSessions` working for the existing
   // brain code: read = current room's session map, write = update under
@@ -1271,11 +1308,24 @@ function App() {
       return { ...rs, [currentRoom]: next };
     });
   };
-  // activeSession: the brain that plain-text input routes to (no @-mention
-  // needed). Set with /use <name>; cleared with /use clear. Without an
-  // activeSession, plain text stays in the room (mirrored to peers via
+  // Track which room state is already on disk so we can auto-save only
+  // changed rooms and clean up deleted ones. Set is mutated in place.
+  const persistedRoomsRef = useRef(new Set());
+  // True after the on-disk rooms have been merged in. Auto-save effect
+  // waits for this to avoid wiping the disk with empty initial state.
+  const roomsLoadedRef = useRef(false);
+  // currentRoom mirrored as a ref so the long-lived bus polling closure
+  // can read the latest value without a stale capture.
+  const currentRoomRef = useRef('default');
+  currentRoomRef.current = currentRoom;
+  // One-time hint when auto-attach finds tabs but we're in the lobby.
+  const defaultRoomHintShown = useRef(false);
+  // activeSessions: brains that plain-text input routes to (no @-mention
+  // needed). Set with `/use a,b,c` for multi-AI broadcast or `/use a` to
+  // switch to one. Cleared with `/use clear`. Without any active
+  // sessions, plain text stays in the room (mirrored to peers via
   // room-utterance) but never auto-broadcasts to brains.
-  const [activeSession, setActiveSession] = useState(null);
+  const [activeSessions, setActiveSessions] = useState([]);
   // Elapsed-time tracking so the user has progress feedback during the
   // brain's pre-generation "thinking" phase (which can be 5-15s for a long
   // conversation file). When busy goes true we record the start; an interval
@@ -1506,6 +1556,48 @@ function App() {
     }
   }, [items.length]);
 
+  // Load persisted rooms from disk on mount. Default room is in-memory
+  // only and not loaded. After load, mark roomsLoadedRef so the
+  // auto-save effect starts running.
+  useEffect(() => {
+    (async () => {
+      const loaded = await loadAllRooms();
+      const names = Object.keys(loaded);
+      if (names.length > 0) {
+        setRoomSessionsMap(rs => ({ ...rs, ...loaded }));
+        for (const n of names) persistedRoomsRef.current.add(n);
+        sysOut(`loaded ${names.length} room(s) from disk: ${names.join(', ')}`);
+      }
+      roomsLoadedRef.current = true;
+    })().catch(e => sysOut(`!! room load: ${e.message}`));
+  }, []);
+
+  // Auto-save rooms whenever the per-room session map changes. Default
+  // room is skipped (lobby — never persisted). Save is per-room so
+  // unrelated rooms aren't rewritten on every keystroke.
+  useEffect(() => {
+    if (!roomsLoadedRef.current) return;
+    const t = setTimeout(() => {
+      (async () => {
+        const seen = new Set();
+        for (const [name, sess] of Object.entries(roomSessionsMap)) {
+          if (name === 'default') continue;
+          seen.add(name);
+          try { await saveRoomToDisk(name, sess); persistedRoomsRef.current.add(name); }
+          catch (e) { sysOut(`!! room save (${name}): ${e.message}`); }
+        }
+        // Clean up rooms that were deleted in memory but still on disk.
+        for (const name of [...persistedRoomsRef.current]) {
+          if (!seen.has(name)) {
+            await deleteRoomFile(name);
+            persistedRoomsRef.current.delete(name);
+          }
+        }
+      })().catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+  }, [roomSessionsMap]);
+
   // Startup: auto-start CDP proxy if Chrome is on :9221 but proxy not yet on
   // :9222, then auto-attach any chatgpt/claude tabs already open. Does
   // NOT spawn Chrome — the user invokes /chrome for that, or starts
@@ -1603,7 +1695,18 @@ function App() {
 
       // 2. Auto-attach any chatgpt/claude tabs already open. Idempotent
       //    against `sessionsLatestRef` so a second tick doesn't duplicate.
+      //    Skipped in default room — that's the lobby and can't host
+      //    brains (one-time hint shown so the user knows what to do).
       try {
+        if (currentRoomRef.current === 'default') {
+          const tabs = await cdp.listTabs().catch(() => []);
+          const matching = tabs.filter(t => !isInternalUrl(t.url) && brainForUrl(t.url));
+          if (matching.length > 0 && !defaultRoomHintShown.current) {
+            defaultRoomHintShown.current = true;
+            notice(`found ${matching.length} brain tab(s) but you're in the default lobby. To attach: /room create <name> && /room join <name> && /attach`);
+          }
+          return;
+        }
         const tabs = await cdp.listTabs();
         if (cancelled) return;
         const claimed = new Set(
@@ -1854,7 +1957,7 @@ function App() {
         emoji,
         ...(bio ? { bio: String(bio) } : {}),
       };
-      const activeSessions = { ...sessions, [sessionName]: session };
+      const effectiveSessions = { ...sessions, [sessionName]: session };
       // Functional updater so a concurrent attach can't overwrite us.
       setSessions(s => ({ ...s, [sessionName]: session }));
       await writeBrainProfileState(sessionName, session);
@@ -1871,7 +1974,7 @@ function App() {
         setBusy(true);
         try {
           for (const summaryName of summaries) {
-            const { body } = await injectSummary(summaryName, sessionName, activeSessions);
+            const { body } = await injectSummary(summaryName, sessionName, effectiveSessions);
             sysOut(`profile "${profile.name}" injected "${summaryName}" into ${sessionName} (${body.length} chars)`);
           }
         } finally {
@@ -1911,22 +2014,27 @@ function App() {
     if (cmd === '/use') {
       const target = arg.trim();
       if (!target) {
-        sysOut(activeSession
-          ? `active session: ${activeSession} (plain text routes here without @-mention)`
-          : 'no active session — plain text stays in the room. /use <name> to designate one.');
+        sysOut(activeSessions.length
+          ? `active sessions: ${activeSessions.join(', ')} (plain text routes here without @-mention)`
+          : 'no active sessions — plain text stays in the room. /use <name> to designate one, /use a,b,c for multi-AI broadcast.');
         return true;
       }
       if (target === 'clear' || target === 'none') {
-        setActiveSession(null);
-        sysOut('active session cleared — plain text no longer auto-routes');
+        setActiveSessions([]);
+        sysOut('active sessions cleared — plain text no longer auto-routes');
         return true;
       }
-      if (!sessions[target]) {
-        sysOut(`!! no session named "${target}" — /sessions to list`);
+      // Comma-separated list = multi-active. Single name = switch to it.
+      const names = target.split(',').map(s => s.trim()).filter(Boolean);
+      const unknown = names.filter(n => !sessions[n]);
+      if (unknown.length) {
+        sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
         return true;
       }
-      setActiveSession(target);
-      sysOut(`active session -> ${target} (plain text routes here without @-mention)`);
+      setActiveSessions(names);
+      sysOut(names.length === 1
+        ? `active session -> ${names[0]} (plain text routes here without @-mention)`
+        : `active sessions -> ${names.join(', ')} (plain text broadcasts to all without @-mention)`);
       return true;
     }
     if (cmd === '/room') {
@@ -1969,7 +2077,7 @@ function App() {
         }
         if (target === currentRoom) { sysOut(`already in "${target}"`); return true; }
         setCurrentRoom(target);
-        setActiveSession(null);   // /use is per-room
+        setActiveSessions([]);   // /use is per-room
         sysOut(`joined room "${target}"`);
         return true;
       }
@@ -1977,7 +2085,7 @@ function App() {
         if (currentRoom === 'default') { sysOut('already in default room'); return true; }
         const left = currentRoom;
         setCurrentRoom('default');
-        setActiveSession(null);
+        setActiveSessions([]);
         sysOut(`left "${left}" — back in default room`);
         return true;
       }
@@ -3483,6 +3591,10 @@ function App() {
       return true;
     }
     if (cmd === '/attach') {
+      if (currentRoom === 'default') {
+        sysOut('!! default room is the lobby and cannot host brains. Create a room first:\n  /room create <name>\n  /room join <name>\n  /attach …');
+        return true;
+      }
       // Four forms:
       //   /attach <profile>                -> start a YAML brain profile
       //   /attach                          → re-scan Chrome, attach any new tabs
@@ -3611,6 +3723,10 @@ function App() {
       return true;
     }
     if (cmd === '/open') {
+      if (currentRoom === 'default') {
+        sysOut('!! default room is the lobby and cannot host brains. Create a room first:\n  /room create <name>\n  /room join <name>\n  /open …');
+        return true;
+      }
       const parts = arg.split(/\s+/);
       const brainName = canonicalBrainName(parts[0]);
       let sessionName = parts[1];
@@ -3925,7 +4041,7 @@ function App() {
     );
     const decision = resolveRoute(parsed, text, {
       sessions: sessionsView, peerSessions: peerSessionsView,
-      brainForName, canonicalBrainName, activeSession,
+      brainForName, canonicalBrainName, activeSessions,
     });
 
     if (decision.kind === 'command') {
@@ -3948,11 +4064,11 @@ function App() {
       return;
     }
     if (decision.kind === 'idle') {
-      // Plain text but no activeSession set. The message is already on
-      // the bus (room-utterance posted earlier) so peers see it; we just
+      // Plain text but no /use'd sessions. The message is already on the
+      // bus (room-utterance posted earlier) so peers see it; we just
       // don't auto-call a brain. Hint how to opt in.
       const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
-      sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> to make it the default for plain text.`);
+      sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
     }
     if (decision.kind === 'peer-mention') {
@@ -3978,14 +4094,14 @@ function App() {
     }
 
     // From here on it's a local turn (kind === 'turn' or 'auto-open').
-    let activeSessions = sessions;
+    let effectiveSessions = sessions;
     let recipients;
     let userPayload;
     if (decision.kind === 'auto-open') {
-      const emoji = nextEmoji(activeSessions);
-      const sessionName = nextName(decision.brainName, activeSessions);
+      const emoji = nextEmoji(effectiveSessions);
+      const sessionName = nextName(decision.brainName, effectiveSessions);
       const newEntry = { brain: decision.brainName, options: { cwd: process.cwd() }, emoji };
-      activeSessions = { ...activeSessions, [sessionName]: newEntry };
+      effectiveSessions = { ...effectiveSessions, [sessionName]: newEntry };
       setSessions(s => ({ ...s, [sessionName]: newEntry }));
       sysOut(`session "${sessionName}" -> ${emoji} ${decision.brainName} (auto-opened for @${decision.originalToken})`);
       recipients = [sessionName];
@@ -4013,7 +4129,7 @@ function App() {
     const tgChatId = meta.fromTelegram ? meta.telegramChatId ?? null : null;
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains, activeSessions, { tgChatId });
+      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId });
       if (reply !== null) {
         replies.push({ author: recipient, text: reply });
         // Broadcast every brain reply to peer surfaces. The room is
@@ -4032,13 +4148,13 @@ function App() {
     // Phase B — one-hop mirror among CDP recipients. planMirrors decides
     // which (recipient, message) pairs need a mirror push.
     const sessionsForMirror = new Map(
-      Object.entries(activeSessions).map(([n, s]) => [n, { brainName: s.brain }]),
+      Object.entries(effectiveSessions).map(([n, s]) => [n, { brainName: s.brain }]),
     );
     const mirrorPlan = planMirrors(replies, recipients, sessionsForMirror, brainForName);
     if (mirrorPlan.length > 0) {
       sysOut(`mirroring ${mirrorPlan.length} reply/replies to other CDP brains…`);
       for (const { to, message } of mirrorPlan) {
-        await runBrainTurn(to, message, activeSessions);
+        await runBrainTurn(to, message, effectiveSessions);
       }
     }
     setBusy(false);
@@ -4303,7 +4419,7 @@ function App() {
         h(Text, { color: T.statusSessions },
           Object.keys(sessions).length
             ? Object.entries(sessions).map(([n, s]) => {
-                const star = n === activeSession ? '*' : '';
+                const star = activeSessions.includes(n) ? '*' : '';
                 return `${star}${s.emoji ?? ''}${n}`;
               }).join(' ')
             : '(empty room)')),

@@ -52,11 +52,11 @@
  * @property {Map<string, PeerSession[]>} peerSessions  - nodeId -> sessions list
  * @property {(name: string) => Brain | null | undefined} brainForName
  * @property {(name: string) => string} canonicalBrainName
- * @property {string} [activeSession]  - if set, plain-text routes to this
- *                                       single session. Without it, plain
- *                                       text returns kind:'idle' instead
- *                                       of auto-broadcasting — auto-routing
- *                                       requires explicit consent (/use).
+ * @property {string[]} [activeSessions]  - sessions that plain-text routes
+ *                                          to (multi-AI broadcast). Without
+ *                                          any, plain text returns kind:'idle'
+ *                                          — auto-routing requires explicit
+ *                                          consent (/use).
  */
 
 /**
@@ -142,17 +142,18 @@ export function resolveRoute(parsed, fullText, ctx) {
   // parsed.type === 'message' (plain text)
   if (ctx.sessions.size === 0) return { kind: 'empty' };
   // Plain text only auto-routes to a brain when the user has explicitly
-  // chosen one with /use. Without that, the message stays in the room
-  // (peers still see it via room-utterance posted by the surface) but
-  // no brain runs. Auto-broadcasting to all sessions on every keystroke
-  // is too aggressive — typing "what should I have for lunch" shouldn't
-  // queue up a paid token spend.
-  if (ctx.activeSession && ctx.sessions.has(ctx.activeSession)) {
+  // chosen one or more with /use. Without that, the message stays in
+  // the room (peers still see it via room-utterance posted by the
+  // surface) but no brain runs. Multi-AI: /use a,b,c broadcasts plain
+  // text to all of them.
+  const active = (ctx.activeSessions ?? [])
+    .filter(name => ctx.sessions.has(name));
+  if (active.length > 0) {
     return {
       kind: 'turn',
-      recipients: [ctx.activeSession],
+      recipients: active,
       payload: fullText,
-      broadcast: false,
+      broadcast: active.length > 1,
     };
   }
   return { kind: 'idle' };

@@ -80,7 +80,9 @@ function waitForTabLoad(tabId) {
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [sessionsList, setSessionsList] = useState([]);
-  const [activeSession, setActiveSession] = useState(null);
+  // activeSessions: brains that plain-text input routes to (no @-mention
+  // needed). Set with /use a or /use a,b,c. Cleared with /use clear.
+  const [activeSessions, setActiveSessions] = useState([]);
   const [tgStatus, setTgStatus] = useState('not connected');
   const [userName, setUserName] = useState('human');
   // Whether THIS extension currently owns Telegram polling. /telegram <node>
@@ -261,10 +263,12 @@ export default function App() {
       mirror === 'all' ||
       (mirror === 'allowed' && meta.authorized);
 
-    if (canMirror && activeSession) {
-      runBrain(activeSession, text, { tgChatId: meta.chatId });
+    if (canMirror && activeSessions.length > 0) {
+      for (const name of activeSessions) {
+        runBrain(name, text, { tgChatId: meta.chatId });
+      }
     }
-  }, [appendMsg, runBrain, activeSession]);
+  }, [appendMsg, runBrain, activeSessions]);
 
   const handleIncomingRef = useRef(handleIncoming);
   handleIncomingRef.current = handleIncoming;
@@ -349,8 +353,7 @@ export default function App() {
           await waitForTabLoad(tab.id);
           sessionsRef.current.set(name, { brain, targetId: tab.id });
           syncSessionsList();
-          if (!activeSession) setActiveSession(name);
-          appendMsg('egpt', `Ready: ${name} → ${brainType} (tab ${tab.id})`);
+          appendMsg('egpt', `Ready: ${name} → ${brainType} (tab ${tab.id}). /use ${name} to make it the default for plain text.`);
         } catch (e) {
           appendMsg('egpt', `/open failed: ${e.message}`);
         }
@@ -376,8 +379,7 @@ export default function App() {
           if (!additions.length) appendMsg('egpt', 'No new tabs to attach.');
           else {
             syncSessionsList();
-            if (!activeSession) setActiveSession([...sessionsRef.current.keys()][0]);
-            appendMsg('egpt', `Attached: ${additions.join(', ')}`);
+            appendMsg('egpt', `Attached: ${additions.join(', ')}. /use <name> to route plain text to one.`);
           }
           return;
         }
@@ -416,8 +418,7 @@ export default function App() {
         }
         sessionsRef.current.set(name, { brain, targetId });
         syncSessionsList();
-        if (!activeSession) setActiveSession(name);
-        appendMsg('egpt', `Attached ${name} → ${brainType} (tab ${targetId})`);
+        appendMsg('egpt', `Attached ${name} → ${brainType} (tab ${targetId}). /use ${name} to make it the default for plain text.`);
         break;
       }
       case '/detach': {
@@ -425,18 +426,33 @@ export default function App() {
         if (!name) { appendMsg('egpt', 'Usage: /detach <name>'); return; }
         sessionsRef.current.delete(name);
         syncSessionsList();
-        if (activeSession === name) setActiveSession(null);
+        if (activeSessions.includes(name)) setActiveSessions(s => s.filter(x => x !== name));
         appendMsg('egpt', `Detached ${name}`);
         break;
       }
       case '/use': {
-        const name = parts[1];
-        if (!sessionsRef.current.has(name)) {
-          appendMsg('egpt', `Session "${name}" not attached.`);
-        } else {
-          setActiveSession(name);
-          appendMsg('egpt', `Active session → ${name}`);
+        const target = parts.slice(1).join(' ').trim();
+        if (!target) {
+          appendMsg('egpt', activeSessions.length
+            ? `active sessions: ${activeSessions.join(', ')}`
+            : 'no active sessions — /use <name> or /use a,b,c for multi-AI broadcast');
+          break;
         }
+        if (target === 'clear' || target === 'none') {
+          setActiveSessions([]);
+          appendMsg('egpt', 'active sessions cleared');
+          break;
+        }
+        const names = target.split(',').map(s => s.trim()).filter(Boolean);
+        const unknown = names.filter(n => !sessionsRef.current.has(n));
+        if (unknown.length) {
+          appendMsg('egpt', `!! unknown session(s): ${unknown.join(', ')}`);
+          break;
+        }
+        setActiveSessions(names);
+        appendMsg('egpt', names.length === 1
+          ? `Active session → ${names[0]}`
+          : `Active sessions → ${names.join(', ')} (multi-AI broadcast)`);
         break;
       }
       case '/sessions': {
@@ -579,7 +595,7 @@ export default function App() {
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
     }
-  }, [activeSession, appendMsg, userName]);
+  }, [activeSessions, appendMsg, userName]);
 
   handleCommandRef.current = handleCommand;
 
@@ -618,7 +634,7 @@ export default function App() {
       peerSessions: peerSessionsView,
       brainForName,
       canonicalBrainName: canonicalBrain,
-      activeSession,
+      activeSessions,
     });
 
     if (decision.kind === 'command') { handleCommand(trimmed); return; }
@@ -636,10 +652,10 @@ export default function App() {
       return;
     }
     if (decision.kind === 'idle') {
-      // Plain text but no activeSession set. Message is already on the
+      // Plain text but no /use'd sessions. Message is already on the
       // bus for peers; just don't auto-call a brain.
       const names = [...sessionsRef.current.keys()].slice(0, 3).join(', ') || '(none)';
-      appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> to make it the default for plain text.`);
+      appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
     }
     if (decision.kind === 'peer-mention') {
@@ -1042,7 +1058,7 @@ export default function App() {
         <span className="status-sessions">
           {sessionsList.length === 0
             ? 'no sessions'
-            : sessionsList.map(s => s.name === activeSession ? `*${s.name}` : s.name).join('  ')}
+            : sessionsList.map(s => activeSessions.includes(s.name) ? `*${s.name}` : s.name).join('  ')}
         </span>
         <span className="status-tg">{tgStatus}</span>
       </div>
@@ -1062,7 +1078,7 @@ export default function App() {
       </div>
 
       <div className="input-area">
-        <Input onSubmit={handleSubmit} activeSession={activeSession} />
+        <Input onSubmit={handleSubmit} activeSessions={activeSessions} />
       </div>
     </div>
   );

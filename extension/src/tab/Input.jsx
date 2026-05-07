@@ -5,7 +5,7 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 
 const placeholderCompartment = new Compartment();
 
-export default function Input({ onSubmit, activeSession }) {
+export default function Input({ onSubmit, activeSessions = [] }) {
   const containerRef = useRef(null);
   const viewRef = useRef(null);
   const onSubmitRef = useRef(onSubmit);
@@ -51,11 +51,13 @@ export default function Input({ onSubmit, activeSession }) {
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-    const hint = activeSession
-      ? `message to @${activeSession}   (Shift+Enter for newline)`
-      : 'type a message or /command   (Shift+Enter for newline)';
+    const hint = activeSessions.length === 0
+      ? 'type a message or /command   (Shift+Enter for newline)'
+      : activeSessions.length === 1
+      ? `message to @${activeSessions[0]}   (Shift+Enter for newline)`
+      : `message to ${activeSessions.map(s => `@${s}`).join(', ')}   (Shift+Enter for newline)`;
     view.dispatch({ effects: placeholderCompartment.reconfigure(placeholder(hint)) });
-  }, [activeSession]);
+  }, [activeSessions]);
 
   return <div ref={containerRef} />;
 }
