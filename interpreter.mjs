@@ -46,7 +46,7 @@ export const COMMANDS = [
   { cmd: '/conversations',  surface: 'shell',     usage: '/conversations',                                 desc: 'list available conversation files' },
   { cmd: '/conversation',   surface: 'shell',     usage: '/conversation <name|path>',                      desc: 'switch to a conversation file' },
   { cmd: '/exit',           surface: 'shell',     usage: '/exit',                                          desc: 'quit egpt' },
-  { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; the supervisor pulls + rebuilds + restarts' },
+  { cmd: '/upgrade',        surface: 'shell',     usage: '/upgrade',                                       desc: 'exit with code 42; egpt-daemon pulls + rebuilds + restarts' },
 
   { section: 'SESSIONS' },
   { cmd: '/open',           surface: 'both',      usage: '/open <brain> [name]',                           desc: 'open a new tab/subprocess and register a session' },

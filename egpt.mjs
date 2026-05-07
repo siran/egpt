@@ -1845,11 +1845,11 @@ function App() {
 
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/upgrade') {
-      // Exit with 42 so a wrapping supervisor (supervisor.mjs) runs
+      // Exit with 42 so a wrapping egpt-daemon (egpt-daemon.mjs) runs
       // git pull + npm install + npm run build:ext and restarts. If
-      // there's no supervisor, this just exits with 42 and the user
-      // restarts manually.
-      sysOut('exiting with code 42 — supervisor (if running) will pull, rebuild, and restart');
+      // the daemon isn't running, this just exits with 42 and the
+      // user restarts manually.
+      sysOut('exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart');
       setTimeout(() => _exitClean(42), 100);
       return true;
     }

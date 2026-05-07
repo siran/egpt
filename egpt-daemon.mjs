@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// supervisor.mjs — keeps `node egpt.mjs` running.
+// egpt-daemon.mjs — keeps `node egpt.mjs` running.
 //
 // Spawns the shell as a child, restarts on crash with exponential backoff.
 // Two distinguished exit codes from the shell:
 //
-//   0    user wanted out (typed /exit, or SIGINT). Supervisor stops too.
+//   0    user wanted out (typed /exit, or SIGINT). Daemon stops too.
 //   42   /upgrade — run `git pull && npm install && npm run build:ext`,
 //        then restart.
 //
@@ -12,12 +12,12 @@
 //
 // Cross-platform. To run on Windows logon:
 //
-//   schtasks /Create /TN "egpt-supervisor" `
-//     /TR "node \"%USERPROFILE%\src\egpt\supervisor.mjs\"" `
+//   schtasks /Create /TN "egpt-daemon" `
+//     /TR "node \"%USERPROFILE%\src\egpt\egpt-daemon.mjs\"" `
 //     /SC ONLOGON /RL HIGHEST /F
 //
 // On macOS / Linux: a launchd plist or systemd --user unit pointing at
-// `node /path/to/supervisor.mjs`. See README for details.
+// `node /path/to/egpt-daemon.mjs`. See README for details.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
@@ -35,7 +35,7 @@ let backoff = RESTART_MIN_MS;
 let child = null;
 
 function log(msg) {
-  process.stdout.write(`[supervisor ${new Date().toISOString()}] ${msg}\n`);
+  process.stdout.write(`[egpt-daemon ${new Date().toISOString()}] ${msg}\n`);
 }
 
 function runUpgrade() {
@@ -67,7 +67,7 @@ function spawnShell() {
     log(`shell exited code=${code} signal=${signal ?? '-'}`);
 
     if (code === CLEAN_EXIT_CODE) {
-      log('clean exit — supervisor stopping (user wanted out)');
+      log('clean exit — egpt-daemon stopping (user wanted out)');
       process.exit(0);
     }
 
@@ -93,7 +93,7 @@ function spawnShell() {
 
 function shutdown(sig) {
   stopping = true;
-  log(`${sig} received — stopping supervisor`);
+  log(`${sig} received — stopping egpt-daemon`);
   if (child) {
     try { child.kill('SIGTERM'); } catch (_) {}
   }
@@ -105,5 +105,5 @@ process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'));
 
-log(`supervisor up — keeping node egpt.mjs alive in ${ROOT}`);
+log(`egpt-daemon up — keeping node egpt.mjs alive in ${ROOT}`);
 spawnShell();

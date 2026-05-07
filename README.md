@@ -444,63 +444,63 @@ For the surface behaviors that don't fit unit tests — Chrome spawn, bridge int
 
 The wire format that nodes use to coordinate is documented in [`LEDGER_PROTOCOL.md`](LEDGER_PROTOCOL.md). Lineage: small envelope and bridge attribution borrowed from Matrix; channel/presence pattern from IRC; AI-participants-as-room-members is the egpt-shaped piece. Read that doc to build a second implementation (different language, different surface).
 
-## Run on boot (supervisor)
+## Run on boot (egpt-daemon)
 
-`supervisor.mjs` keeps `node egpt.mjs` running across crashes and self-upgrades. Run it instead of `node egpt.mjs` directly:
+`egpt-daemon.mjs` keeps `node egpt.mjs` running across crashes and self-upgrades. Run it instead of `node egpt.mjs` directly:
 
 ```
-node supervisor.mjs
+node egpt-daemon.mjs
 ```
 
 It spawns the shell as a child, restarts on crash with exponential backoff (2s → 60s cap), and recognizes two special exit codes:
 
-- **0** — clean exit (you typed `/exit`, or Ctrl+C the shell). Supervisor stops too — that's what you wanted.
-- **42** — `/upgrade`. Supervisor runs `git pull --ff-only && npm install && npm run build:ext`, then restarts the shell. Inside egpt, the slash command `/upgrade` exits with this code.
+- **0** — clean exit (you typed `/exit`, or Ctrl+C the shell). egpt-daemon stops too — that's what you wanted.
+- **42** — `/upgrade`. egpt-daemon runs `git pull --ff-only && npm install && npm run build:ext`, then restarts the shell. Inside egpt, the slash command `/upgrade` exits with this code.
 
-To stop everything, Ctrl+C the supervisor (or `SIGTERM` it).
+To stop everything, Ctrl+C the daemon (or `SIGTERM` it).
 
 ### Start at boot
 
 **Windows** (Task Scheduler — runs at logon):
 
 ```
-schtasks /Create /TN "egpt-supervisor" ^
-  /TR "node \"%USERPROFILE%\src\egpt\supervisor.mjs\"" ^
+schtasks /Create /TN "egpt-daemon" ^
+  /TR "node \"%USERPROFILE%\src\egpt\egpt-daemon.mjs\"" ^
   /SC ONLOGON /RL HIGHEST /F
 ```
 
-Then `schtasks /Run /TN "egpt-supervisor"` to start it once without rebooting. `/Delete /TN "egpt-supervisor"` to remove.
+Then `schtasks /Run /TN "egpt-daemon"` to start it once without rebooting. `/Delete /TN "egpt-daemon"` to remove.
 
-**macOS** (launchd, user agent — `~/Library/LaunchAgents/egpt.supervisor.plist`):
+**macOS** (launchd, user agent — `~/Library/LaunchAgents/egpt.daemon.plist`):
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-  <key>Label</key><string>egpt.supervisor</string>
+  <key>Label</key><string>egpt.daemon</string>
   <key>ProgramArguments</key>
-    <array><string>/usr/local/bin/node</string><string>/Users/you/src/egpt/supervisor.mjs</string></array>
+    <array><string>/usr/local/bin/node</string><string>/Users/you/src/egpt/egpt-daemon.mjs</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict></plist>
 ```
 
-`launchctl load ~/Library/LaunchAgents/egpt.supervisor.plist` to enable.
+`launchctl load ~/Library/LaunchAgents/egpt.daemon.plist` to enable.
 
-**Linux** (systemd user unit — `~/.config/systemd/user/egpt-supervisor.service`):
+**Linux** (systemd user unit — `~/.config/systemd/user/egpt-daemon.service`):
 
 ```ini
 [Unit]
-Description=egpt supervisor
+Description=egpt daemon
 
 [Service]
-ExecStart=/usr/bin/node /home/you/src/egpt/supervisor.mjs
+ExecStart=/usr/bin/node /home/you/src/egpt/egpt-daemon.mjs
 Restart=on-failure
 
 [Install]
 WantedBy=default.target
 ```
 
-`systemctl --user enable --now egpt-supervisor` to start at login.
+`systemctl --user enable --now egpt-daemon` to start at login.
 
 ## Caveats and known limits
 
