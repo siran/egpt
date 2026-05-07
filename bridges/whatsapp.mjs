@@ -89,6 +89,28 @@ export async function startWhatsAppBridge({
   let myNumber       = null;     // bare number for mention-detection
   let sock           = null;
   let reconnectTimer = null;
+
+  // libsignal (the signal-protocol package baileys depends on) emits
+  // raw console.log dumps for session rotation events:
+  //   'Closing session: SessionEntry { _chains: { ... } ... }'
+  //   'Identity key changed... '
+  // baileys's pino-silencer doesn't reach into libsignal because they
+  // use console directly. Patch console.log/error while the bridge is
+  // active and pass-through anything that isn't libsignal noise.
+  const _origLog   = console.log;
+  const _origError = console.error;
+  const isLibsignalNoise = (...args) => {
+    const first = args[0];
+    if (typeof first !== 'string') return false;
+    return first.startsWith('Closing session')
+        || first.startsWith('SessionEntry')
+        || first.startsWith('Closing open session')
+        || first.startsWith('Removing session')
+        || first.startsWith('Setting session as open')
+        || /^_chains\b/.test(first);
+  };
+  console.log   = (...args) => { if (!isLibsignalNoise(...args)) _origLog(...args); };
+  console.error = (...args) => { if (!isLibsignalNoise(...args)) _origError(...args); };
   // Track WAMessage IDs we sent ourselves so we can filter the echoes
   // WhatsApp sends back to all linked devices (us included). 60-second
   // window is plenty — IDs live shorter than that on the wire.
@@ -298,6 +320,12 @@ export async function startWhatsAppBridge({
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       try { sock?.end?.(undefined); } catch (_) {}
+      // Restore the console that we patched at start. If something
+      // else also patched console.log between then and now, the
+      // restoration ordering will be slightly off, but in practice
+      // we're the only patcher and stop() is rare.
+      console.log   = _origLog;
+      console.error = _origError;
     },
     get chatId() { return lastChat; },
     get myJid()  { return myJid; },
