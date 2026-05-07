@@ -43,6 +43,7 @@ export function startTelegramBridge({
   let stopped   = false;
   let pollTimer = null;
   let sendChain = Promise.resolve();
+  let botUsername = null;  // set by getMe on startup, used to recognize /cmd@us
 
   // ── Bot API fetch ─────────────────────────────────────────────
 
@@ -117,6 +118,7 @@ export function startTelegramBridge({
     const username  = msg.from?.username ?? null;
     const firstName = msg.from?.first_name ?? 'human';
     const msgChat   = msg.chat?.id ?? null;
+    const chatType  = msg.chat?.type ?? 'private';   // 'private' | 'group' | 'supergroup' | 'channel'
     if (msgChat) {
       lastChat = msgChat;
       if (!chatIdNotified) {
@@ -126,10 +128,27 @@ export function startTelegramBridge({
     }
 
     const authorized = allowedUsers.length > 0 && allowedUsers.includes(userId);
-    const text = msg.text.trim();
+    let text = msg.text.trim();
+
+    // In group / supergroup chats, only process messages explicitly
+    // addressed to this bot. Slash commands must carry @<our-username>;
+    // anything else is ignored at the bridge so unrelated group chatter
+    // doesn't reach the room. (1:1 chats are unaffected — every message
+    // is for us by definition.)
+    if (chatType !== 'private') {
+      const m = text.match(/^\/(\S+?)(?:@(\S+))?(\s[\s\S]*)?$/);
+      if (!m) return;                          // not a slash command — ignore
+      const targetBot = m[2];
+      if (!targetBot) return;                  // /cmd with no @bot — ambiguous, ignore
+      if (botUsername && targetBot.toLowerCase() !== botUsername.toLowerCase()) {
+        return;                                // command for some other bot
+      }
+      // Reconstruct without @us so downstream sees a clean /cmd ...
+      text = `/${m[1]}${m[3] ?? ''}`.trim();
+    }
 
     try {
-      await onIncoming?.(text, { userId, username, firstName, chatId: msgChat, authorized });
+      await onIncoming?.(text, { userId, username, firstName, chatId: msgChat, chatType, authorized });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
     }
@@ -220,6 +239,13 @@ export function startTelegramBridge({
   // ── Start ─────────────────────────────────────────────────────
 
   log(`telegram: starting as "${nodeName}"`);
+  // Fetch our bot's identity so we can recognize /cmd@us in groups.
+  // Best-effort — if it fails, group-chat addressing fails closed
+  // (no /cmd is recognized in groups until we know our username).
+  apiFetch('getMe', {}).then((me) => {
+    botUsername = me?.username ?? null;
+    if (botUsername) log(`telegram: identified as @${botUsername}`);
+  }).catch(e => err(`getMe failed: ${e.message}`));
   poll();
 
   return {

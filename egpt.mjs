@@ -1349,6 +1349,18 @@ function App() {
           return;
         }
 
+        // Lifecycle / process-control commands are only allowed in 1:1
+        // chats with the bot. Even with @us-addressing in a group, we
+        // refuse — group members shouldn't be able to crash, upgrade,
+        // or rewind the bot's host. DM the bot if you need these.
+        const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
+        const firstTok = text.trimStart().split(/\s+/)[0];
+        if (LIFECYCLE.has(firstTok) && from.chatType && from.chatType !== 'private') {
+          bridge.send(`${firstTok} only works in a 1:1 chat with this bot — DM me and try again`,
+            { chatId: from.chatId });
+          return;
+        }
+
         // Replication is unconditional: every Telegram message in the
         // room is part of the room. The legacy `mirror` policy now only
         // controls whether a plain-text Telegram message ALSO triggers
