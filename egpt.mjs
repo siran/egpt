@@ -1880,7 +1880,7 @@ function App() {
           sessions: Object.entries(sessionsLatestRef.current).map(([n, s]) => ({ name: n, brain: s.brain })),
           polling: tgPolling,
         });
-        notice(located.opened ? `bus tab opened (${bus.busUrl()})` : `bus tab attached`);
+        notice(located.opened ? `bus tab opened (${await bus.busUrl()})` : `bus tab attached`);
       } catch (e) {
         notice(`bus: not joined yet (${e.message})`);
       }
@@ -3028,7 +3028,7 @@ function App() {
           instruction ?? 'fetch the page and summarize its main content',
           ...(browseUrl ? [`URL: ${browseUrl}`] : []),
         ].join('\n');
-        const browseVars = { task: browseTask, cdp_host: cdp.cdpHost() };
+        const browseVars = { task: browseTask, cdp_host: await cdp.cdpHost() };
         const note = `[browse via ${viaOp}]${browseUrl ? ' ' + browseUrl : ''}${instruction ? '\n  ' + instruction : ''}`;
         setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
         await append('system', note);

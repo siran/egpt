@@ -18,8 +18,8 @@ export const BUS_PATH = '/bus.html';
 // is at CDP attach (which goes through the token-prefixed WebSocket).
 // Strip any token suffix from cdpHost() so both surfaces resolve the
 // same canonical URL: http://localhost:9222/bus.html.
-export function busUrl() {
-  const host = cdp.cdpHost().split('/')[0];
+export async function busUrl() {
+  const host = (await cdp.cdpHost()).split('/')[0];
   return `http://${host}${BUS_PATH}`;
 }
 
@@ -35,8 +35,9 @@ export async function findOrOpenBusTab({ open = true } = {}) {
   const found = tabs.find(t => isBusUrl(t.url));
   if (found) return { targetId: found.id, url: found.url, opened: false };
   if (!open) return null;
-  const targetId = await cdp.openTab(busUrl());
-  return { targetId, url: busUrl(), opened: true };
+  const url = await busUrl();
+  const targetId = await cdp.openTab(url);
+  return { targetId, url, opened: true };
 }
 
 // One-shot Runtime.evaluate against an arbitrary tab. Used to post events.
