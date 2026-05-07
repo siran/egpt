@@ -170,12 +170,6 @@ export async function startWhatsAppBridge({
 
     const chatJid0 = msg.key.remoteJid;
     if (!chatJid0) return;
-    // Skip pseudo-chats — these are delivery channels for other
-    // people's Status posts, newsletter pushes, and similar
-    // non-conversational content. They don't end in @g.us so they
-    // would otherwise fall into the 'personal' branch and route to
-    // onIncoming as if a DM.
-    if (chatJid0.endsWith('@broadcast') || chatJid0.endsWith('@newsletter')) return;
     const isGroup0 = chatJid0.endsWith('@g.us');
     // self-DM detection: compare BARE numbers, not full JIDs. myJid
     // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
