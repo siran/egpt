@@ -1903,9 +1903,13 @@ function App() {
     }
     if (cmd === '/help') {
       const bt = brainNamesForHelp();
+      // Respect outputSinkRef like sysOut does: local-issued /help stays
+      // in shell; Telegram-issued /help (sink === 'remote') goes back to
+      // Telegram. Avoids dumping the help blob into the chat unprompted.
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
         body: helpText(bt),
         _tgBody: helpHtml(bt),
+        _localOnly: outputSinkRef.current === 'local',
       }]);
       return true;
     }
@@ -3647,15 +3651,20 @@ function App() {
     // from Telegram, attribute the echo to the actual Telegram user (with
     // the via tag) instead of the local 'You', and tag _localOnly so the
     // echo doesn't get sent back to the same Telegram chat — that user
-    // already saw their own message. Echoes from the local shell still
-    // forward to Telegram so a remote viewer sees what the shell user
-    // typed.
+    // already saw their own message.
+    //
+    // Slash commands are operations, not conversation — even local ones
+    // should NOT replicate to Telegram. Otherwise viewers see noise like
+    // 'An@home /sessions' / 'An@home /restart'. So _localOnly fires
+    // either when the input came from Telegram OR when it's a command.
     const echoAuthor = (meta.fromTelegram && meta.telegramUser)
       ? `${meta.telegramUser}@telegram[${meta.telegramChatId ?? '?'}]`
       : 'You';
+    const isSlashCommand = text.startsWith('/');
+    const echoLocalOnly = !!meta.fromTelegram || isSlashCommand;
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: echoAuthor, body: text,
-      ...(meta.fromTelegram ? { _localOnly: true } : {}),
+      ...(echoLocalOnly ? { _localOnly: true } : {}),
     }]);
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
