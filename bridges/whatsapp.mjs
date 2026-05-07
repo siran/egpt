@@ -11,10 +11,25 @@
 // Auth state persists at ~/.egpt/wa-auth/. To re-pair (different number
 // or re-scan), delete that directory.
 //
-// Group-chat handling: in groups we only act on messages that mention us
-// or reply to one of ours — same "explicit addressing" model the Telegram
-// bridge uses with /cmd@bot. The @<our-number> mention is stripped from
-// the text before forwarding to onIncoming.
+// Per-chat awareness rules (configurable):
+//   self_chat:   'both' | 'incoming' | 'outgoing' | 'off'
+//                  defaults to 'both' — in chat-with-yourself, both your
+//                  phone-typed messages and any other-device echoes pass
+//                  through. Useful for solo testing.
+//   personal:    'both' | 'incoming' | 'outgoing' | 'off'
+//                  defaults to 'incoming' — DMs from other people are
+//                  processed; messages we type from another device are
+//                  not (we don't want the bridge reacting to our own
+//                  outbound to friends).
+//   groups:      'mentions' | 'all' | 'off'
+//                  defaults to 'mentions' — only group messages that
+//                  mention <our-number> or reply to ours are processed.
+//                  'all' processes every group message; 'off' ignores
+//                  groups entirely.
+//
+// In all cases, allowedUsers gates whether commands and @-mentions are
+// honored from a given sender — awareness only controls whether the
+// message reaches onIncoming at all.
 //
 // Streaming: WhatsApp doesn't support incremental message updates the way
 // Telegram's editMessageText does. startStreamMessage buffers and sends
@@ -42,11 +57,17 @@ const RECONNECT_MS = 5_000;
 export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
   allowedUsers  = [],
+  awareness     = {},        // see header docs; defaults applied below
   onIncoming,
   onLog,
   onError,
   onChatId,    // called once when first chat is captured (host can persist)
 }) {
+  const aware = {
+    self_chat: awareness.self_chat ?? 'both',
+    personal:  awareness.personal  ?? 'incoming',
+    groups:    awareness.groups    ?? 'mentions',
+  };
   const log = (m) => onLog?.(m);
   const err = (m) => onError?.(m);
 
@@ -136,23 +157,40 @@ export async function startWhatsAppBridge({
   async function handleMessage(msg) {
     if (!msg.message) return;               // protocol message / ignored type
 
-    // fromMe handling:
-    //   * Messages with an id we just sent via baileys: skip
-    //     (WhatsApp echoes our outbound to every linked device).
-    //   * Messages typed from your phone to your own self-DM
-    //     (chat with yourself): pass through — useful for solo
-    //     testing, and the room treats them as user input.
-    //   * Other fromMe (typing on phone to a friend, or another
-    //     linked device): skip — the bridge would otherwise react
-    //     to your own outbound.
+    // Filter our own bridge-sent echoes: WhatsApp delivers every outbound
+    // back to all linked devices including us. Sent-id tracking knows
+    // which messages we just sent — drop those before any awareness check.
     if (msg.key?.fromMe) {
       const id = msg.key.id;
       if (id && _sentIds.has(id)) {
         _sentIds.delete(id);
         return;
       }
-      const isSelfDM = msg.key.remoteJid === myJid;
-      if (!isSelfDM) return;
+    }
+
+    const chatJid0 = msg.key.remoteJid;
+    if (!chatJid0) return;
+    const isGroup0 = chatJid0.endsWith('@g.us');
+    const isSelfDM = !isGroup0 && chatJid0 === myJid;
+    const fromMe = !!msg.key?.fromMe;
+
+    // Awareness rules — decide whether this message reaches onIncoming.
+    //   self_chat:   chat-with-yourself (your phone-typed self-DMs and
+    //                any echoes from other devices in the same chat).
+    //   personal:    1:1 chats with someone else.
+    //   groups:      group chats — handled below since 'mentions' depends
+    //                on parsing the message body.
+    if (isSelfDM) {
+      if (aware.self_chat === 'off') return;
+      if (aware.self_chat === 'incoming' && fromMe) return;
+      if (aware.self_chat === 'outgoing' && !fromMe) return;
+    } else if (!isGroup0) {
+      if (aware.personal === 'off') return;
+      if (aware.personal === 'incoming' && fromMe) return;
+      if (aware.personal === 'outgoing' && !fromMe) return;
+    } else {
+      if (aware.groups === 'off') return;
+      // 'mentions' filtering happens after we have the body in hand.
     }
 
     // Pull text out of whatever variant baileys delivered.
@@ -183,16 +221,17 @@ export async function startWhatsAppBridge({
 
     let processed = text.trim();
 
-    // In groups, only act on messages that mention us or reply to ours.
-    // Otherwise we'd respond to every line of group chatter.
+    // In groups, awareness 'mentions' (default) requires the message to
+    // address us — either via @<our-number> or by replying to one of
+    // ours. 'all' lets every group message through. Strip the
+    // @<our-number> from the text in either case so command parsing
+    // sees a clean string.
     if (chatType !== 'private') {
       const ctx = msg.message.extendedTextMessage?.contextInfo ?? {};
       const mentions = ctx.mentionedJid ?? [];
       const isMentioned = myNumber && mentions.some(m => m.startsWith(`${myNumber}@`));
       const replyingToMe = myJid && ctx.participant === myJid;
-      if (!isMentioned && !replyingToMe) return;
-      // Strip the @<our-number> mention from the text so downstream
-      // command parsing sees a clean string.
+      if (aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
       if (myNumber) {
         processed = processed.replace(new RegExp(`@${myNumber}\\s*`, 'g'), '').trim();
       }

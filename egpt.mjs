@@ -1541,6 +1541,7 @@ function App() {
     try {
       const bridge = await startWhatsAppBridge({
         allowedUsers: cfg.allowed_users ?? [],
+        awareness:    cfg.awareness ?? {},
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           setItems(p => [...p, {
@@ -2294,12 +2295,20 @@ function App() {
     }
     if (cmd === '/help') {
       const bt = brainNamesForHelp();
+      // /help @<who> — deliver the help text to that recipient by
+      // prepending an @-mention to the body. @<who> in Telegram becomes
+      // a clickable mention (notifies the user). On WhatsApp it shows
+      // as plain text @-mention; native notification would require
+      // mentionedJid wiring (future).
+      const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
+      const prefix = recipient ? `(for @${recipient})\n\n` : '';
+      const tgPrefix = recipient ? `<i>(for @${escapeHtml(recipient)})</i>\n\n` : '';
       // Respect outputSinkRef like sysOut does: local-issued /help stays
       // in shell; Telegram-issued /help (sink === 'remote') goes back to
       // Telegram. Avoids dumping the help blob into the chat unprompted.
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
-        body: helpText(bt),
-        _tgBody: helpHtml(bt),
+        body: prefix + helpText(bt),
+        _tgBody: tgPrefix + helpHtml(bt),
         _localOnly: outputSinkRef.current === 'local',
       }]);
       return true;
@@ -3143,6 +3152,11 @@ function App() {
       return true;
     }
     if (cmd === '/rules') {
+      // /rules @<who> — prepend an @-mention so the recipient is named
+      // in the rules message. Same delivery path as plain /rules; the
+      // mention is just decorative until per-bridge mention encoding
+      // (notifications) is wired.
+      const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
       // Just emit the rules as a system message: written to the .md, shown in
       // the local transcript, mirrored to Telegram via the items.length effect.
       // CDP brains don't read the .md, so they won't see this until the admin
@@ -3167,8 +3181,9 @@ function App() {
         `  /handle <old> <new>     rename yourself\n` +
         `  /bio <name> <text>      set a short bio visible to others in /sessions and /rules\n` +
         `Admins may also /emoji, /handle, /bio any participant.`;
-      await append('system', rules);
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: rules }]);
+      const finalRules = recipient ? `(for @${recipient})\n\n${rules}` : rules;
+      await append('system', finalRules);
+      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: finalRules }]);
       return true;
     }
     if (cmd === '/mirror') {
