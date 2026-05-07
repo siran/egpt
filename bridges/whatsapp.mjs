@@ -58,6 +58,7 @@ export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
   allowedUsers  = [],
   awareness     = {},        // see header docs; defaults applied below
+  debug         = false,     // log every incoming upsert (type, jid, fromMe, text-preview) before any filter
   onIncoming,
   onLog,
   onError,
@@ -145,8 +146,17 @@ export async function startWhatsAppBridge({
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      // Only act on real-time messages, not history sync replays.
-      if (type !== 'notify') return;
+      if (debug) {
+        for (const m of messages) {
+          const peek = textOf(m.message ?? {})?.slice(0, 60) ?? null;
+          log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
+        }
+      }
+      // Accept 'notify' (push-real-time) AND 'append' (commonly used
+      // when WhatsApp delivers messages we sent on another linked
+      // device — the 'Message Yourself' case lands here on some
+      // baileys versions). 'prepend' is bulk history sync; skip.
+      if (type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
         try { await handleMessage(msg); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }

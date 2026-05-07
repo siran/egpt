@@ -1563,6 +1563,7 @@ function App() {
       const bridge = await startWhatsAppBridge({
         allowedUsers: cfg.allowed_users ?? [],
         awareness:    cfg.awareness ?? {},
+        debug:        cfg.debug === true,
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           setItems(p => [...p, {
