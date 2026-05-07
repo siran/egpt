@@ -900,10 +900,11 @@ export default function App() {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, body: finalText ?? '',
             ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
-          // Room-visible echo so every peer sees it, not just the asker.
+          // Room-visible echo so every peer sees it — but exclude the
+          // asker, who already got the directed mention-reply above.
           if (finalText !== null && finalText !== undefined) {
             await post({ type: 'room-reply', role: 'chrome',
-              session: ev.target, body: finalText });
+              session: ev.target, body: finalText, excluded_node: ev.from });
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
@@ -946,8 +947,10 @@ export default function App() {
         return;
       }
       case 'room-reply': {
-        // Broadcast brain reply from a peer surface. Render with the
-        // session@node tag so the originating surface is visible.
+        // Broadcast brain reply from a peer surface. Skip if we're the
+        // asker (we already got the directed mention-reply). Render
+        // with session@node tag.
+        if (ev.excluded_node === BUS_NODE_ID) return;
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
         return;

@@ -3897,11 +3897,11 @@ function App() {
             target: ev.target, body: reply ?? '',
             ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           // Broadcast reply to the whole room so every peer sees it,
-          // not just the asker. mention-reply is the formal directed
-          // answer; room-reply is the room-visible echo.
+          // EXCEPT the asker — they got the directed mention-reply
+          // already and would render it twice otherwise.
           if (reply !== null && reply !== undefined) {
             await post({ type: 'room-reply', role: 'shell',
-              session: ev.target, body: reply });
+              session: ev.target, body: reply, excluded_node: ev.from });
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
@@ -3990,8 +3990,10 @@ function App() {
         return;
       }
       case 'room-reply': {
-        // Broadcast brain reply from a peer. Render with the
-        // session@node tag so the originating surface is visible.
+        // Broadcast brain reply from a peer. Skip if we're the asker
+        // (we already got the directed mention-reply and would render
+        // the same body twice). Render with session@node tag.
+        if (ev.excluded_node === BUS_NODE_ID) return;
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',

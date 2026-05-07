@@ -303,21 +303,25 @@ triggered by an inbound `mention`.
   "ts":   ...,
   "role": "shell",        // sender's role
   "session": "codex1",    // which brain on this node produced the reply
-  "body": "<reply text>"
+  "body": "<reply text>",
+  "excluded_node": "chr1" // optional; the asker of a corresponding mention
+                          //   should skip this event (they already got the
+                          //   directed mention-reply and would otherwise
+                          //   render the same body twice)
 }
 ```
 
 Behavior on receive: filter self-echoes (`from === self.node_name`).
-Render as `<session>@<from>: <body>` in the local UI / ledger.
-Implementations MUST NOT route this through `resolveRoute` — it's
-informational, not actionable.
+If `excluded_node === self.node_name`, skip. Otherwise render as
+`<session>@<from>: <body>` in the local UI / ledger. Implementations
+MUST NOT route this through `resolveRoute` — it's informational, not
+actionable.
 
 When a `mention` from a peer triggered the turn, the responding node
 sends both `mention-reply` (directed at the asker, may carry an
-`error` field) and `room-reply` (broadcast). The asker's dispatcher
-may render both; rooms are noisy by design and a slight duplicate is
-preferred to losing the broadcast view of what the brain said. (A
-future correlation_id could dedup if it becomes a real problem.)
+`error` field) and `room-reply` with `excluded_node` = asker. The
+asker renders only the directed reply; other peers render only the
+broadcast. No duplicates either way.
 
 ### `room-utterance`
 
