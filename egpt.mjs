@@ -4038,8 +4038,12 @@ function App() {
       userName: USER_NAME,
     };
     try {
+      // Both slots get the user text. claude-code's stream pipes
+      // 'history' to stdin in cold-start (no sessionId) and 'message'
+      // in resume mode. With history='' we got 'Input must be provided'
+      // because --print rejects empty stdin.
       const result = await brain.stream(
-        { history: '', message: text },
+        { history: text, message: text },
         () => {},   // no streaming UI for persona; deliver final text only
         sessionOpts,
       );
