@@ -1582,7 +1582,7 @@ function App() {
           const summary = Object.entries(additions)
             .map(([n, s]) => `${s.emoji} ${n} (${s.brain})`).join(', ');
           setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system',
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
             body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
           }]);
         }
@@ -3983,18 +3983,18 @@ function App() {
         // side-channel like Telegram (carried by a bus node but not
         // typed at it).
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
-        // _localOnly suppression rule:
-        //   * when ev.via is set, the message ALREADY exists in that
-        //     side-channel (e.g. Telegram). Forwarding would echo it
-        //     back into the same chat. Skip.
-        //   * when ev.via is absent, the message originated by typing
-        //     at a peer surface and does NOT yet exist on Telegram.
-        //     The polling node (this one if it has the bridge) MUST
-        //     forward — otherwise Telegram viewers don't see what
-        //     other surfaces are saying.
+        // _localOnly suppression rule for Telegram forwarding:
+        //   * via set: message already exists in that side-channel —
+        //     forwarding would echo it back. Skip.
+        //   * peer typed a slash command: operations are local to the
+        //     issuing surface, not part of the conversation. Skip.
+        //   * otherwise: forward (the polling node carries peer chat
+        //     to Telegram so viewers see what other surfaces say).
+        const body = ev.body ?? '';
+        const isPeerSlashCommand = body.trimStart().startsWith('/');
         setItems(p => [...p, {
-          id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
-          _localOnly: !!ev.via,
+          id: Date.now() + Math.random(), author: tag, body,
+          _localOnly: !!ev.via || isPeerSlashCommand,
         }]);
         return;
       }

@@ -88,6 +88,13 @@ export function postEvent(targetId, event) {
 export async function subscribeBusEvents(targetId, onEvent) {
   const tab = await cdp.findTab(targetId);
   if (!tab) throw new Error(`bus tab ${(targetId ?? '?').slice(0, 8)}… not found`);
+  // Chrome's Runtime.enable replays past Runtime.consoleAPICalled events
+  // from the page's console buffer (so DevTools can show history when
+  // opened mid-session). We don't want that — old bus events would be
+  // re-dispatched as if new on every rejoin. Filter by CDP-side
+  // timestamp: anything older than the moment we subscribed is replay
+  // from the buffer. Small grace window for clock smoothing.
+  const subscribedAt = Date.now() - 1000;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(tab.webSocketDebuggerUrl);
     let nextId = 0;
@@ -113,6 +120,8 @@ export async function subscribeBusEvents(targetId, onEvent) {
         return;
       }
       if (data.method !== 'Runtime.consoleAPICalled') return;
+      const cdpTs = data.params?.timestamp;
+      if (typeof cdpTs === 'number' && cdpTs < subscribedAt) return;
       const args = data.params?.args ?? [];
       if (args[0]?.value !== 'egpt-bus') return;
       const raw = args[1]?.value;

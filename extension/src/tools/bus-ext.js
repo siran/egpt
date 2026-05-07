@@ -68,9 +68,16 @@ export async function postEvent(targetId, event) {
 export async function subscribeBusEvents(targetId, onEvent) {
   await ensureAttached(targetId);
   await chrome.debugger.sendCommand({ tabId: targetId }, 'Runtime.enable', {});
+  // Chrome replays past Runtime.consoleAPICalled events on enable so
+  // DevTools can show console history. We don't want that — old bus
+  // events would be re-dispatched on every rejoin. Filter by CDP-side
+  // timestamp; anything older than subscription time is replay.
+  const subscribedAt = Date.now() - 1000;
   const handler = (source, method, params) => {
     if (source.tabId !== targetId) return;
     if (method !== 'Runtime.consoleAPICalled') return;
+    const cdpTs = params?.timestamp;
+    if (typeof cdpTs === 'number' && cdpTs < subscribedAt) return;
     const args = params?.args ?? [];
     if (args[0]?.value !== 'egpt-bus') return;
     const raw = args[1]?.value;
