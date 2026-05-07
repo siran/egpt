@@ -87,8 +87,9 @@ export const COMMANDS = [
   { cmd: '/summaries',      surface: 'shell',     usage: '/summaries',                                     desc: 'list saved summaries' },
   { cmd: '/prompts',        surface: 'shell',     usage: '/prompts [on|off]',                              desc: 'show/hide full prompt sent to operators' },
 
-  { section: 'ROOMS  (WIP — /load-room not yet wired)' },
-  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms' },
+  { section: 'ROOMS' },
+  { cmd: '/room',           surface: 'shell',     usage: '/room [name|create <n>|join <n>|leave|delete <n>]', desc: 'show room info, switch, create, or delete' },
+  { cmd: '/rooms',          surface: 'shell',     usage: '/rooms',                                         desc: 'list saved rooms (legacy YAML snapshots, not the live room set)' },
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },

@@ -1252,7 +1252,25 @@ function App() {
   // The room starts empty — egpt is the host, not a participant. Use /open
   // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
   // if Chrome is already running.
-  const [sessions, setSessions] = useState({});
+  // Rooms scope sessions so a node can hold multiple working contexts at
+  // once and switch between them. v1 stores rooms in memory only — restart
+  // loses non-default room state. Persistence + lazy member instantiation +
+  // Telegram chat binding are follow-ups.
+  //
+  // The shim keeps `sessions` and `setSessions` working for the existing
+  // brain code: read = current room's session map, write = update under
+  // current room key. So /open, /attach, runBrainTurn, etc. don't need to
+  // know about rooms — they always operate on the current one.
+  const [roomSessionsMap, setRoomSessionsMap] = useState({ default: {} });
+  const [currentRoom, setCurrentRoom] = useState('default');
+  const sessions = roomSessionsMap[currentRoom] ?? {};
+  const setSessions = (updater) => {
+    setRoomSessionsMap(rs => {
+      const cur = rs[currentRoom] ?? {};
+      const next = typeof updater === 'function' ? updater(cur) : updater;
+      return { ...rs, [currentRoom]: next };
+    });
+  };
   // activeSession: the brain that plain-text input routes to (no @-mention
   // needed). Set with /use <name>; cleared with /use clear. Without an
   // activeSession, plain text stays in the room (mirrored to peers via
@@ -1909,6 +1927,75 @@ function App() {
       }
       setActiveSession(target);
       sysOut(`active session -> ${target} (plain text routes here without @-mention)`);
+      return true;
+    }
+    if (cmd === '/room') {
+      const argParts = arg.split(/\s+/).filter(Boolean);
+      const sub = argParts[0];
+      const target = argParts[1];
+
+      const fmtRoom = (name) => {
+        const sess = roomSessionsMap[name];
+        if (sess === undefined) {
+          return `room "${name}" doesn't exist — /room create ${name} to make it`;
+        }
+        const here = name === currentRoom ? '  (current)' : '';
+        const memberCount = Object.keys(sess).length;
+        const list = memberCount === 0
+          ? '(no members)'
+          : Object.entries(sess).map(([n, s]) => `${s.emoji ?? ''}${n} (${s.brain})`).join(', ');
+        return `room "${name}"${here}\n  members: ${list}`;
+      };
+
+      // No arg: show current room.
+      if (!sub) {
+        const all = Object.keys(roomSessionsMap).filter(r => r !== currentRoom);
+        const others = all.length ? `\n  other rooms: ${all.join(', ')}` : '';
+        sysOut(fmtRoom(currentRoom) + others);
+        return true;
+      }
+      if (sub === 'create') {
+        if (!target) { sysOut('usage: /room create <name>'); return true; }
+        if (roomSessionsMap[target]) { sysOut(`!! room "${target}" already exists`); return true; }
+        setRoomSessionsMap(rs => ({ ...rs, [target]: {} }));
+        sysOut(`room "${target}" created — /room join ${target} to enter`);
+        return true;
+      }
+      if (sub === 'join') {
+        if (!target) { sysOut('usage: /room join <name>'); return true; }
+        if (!roomSessionsMap[target]) {
+          sysOut(`!! room "${target}" doesn't exist — /room create ${target}`);
+          return true;
+        }
+        if (target === currentRoom) { sysOut(`already in "${target}"`); return true; }
+        setCurrentRoom(target);
+        setActiveSession(null);   // /use is per-room
+        sysOut(`joined room "${target}"`);
+        return true;
+      }
+      if (sub === 'leave') {
+        if (currentRoom === 'default') { sysOut('already in default room'); return true; }
+        const left = currentRoom;
+        setCurrentRoom('default');
+        setActiveSession(null);
+        sysOut(`left "${left}" — back in default room`);
+        return true;
+      }
+      if (sub === 'delete') {
+        if (!target) { sysOut('usage: /room delete <name>'); return true; }
+        if (target === 'default') { sysOut('!! cannot delete default room'); return true; }
+        if (!roomSessionsMap[target]) { sysOut(`!! room "${target}" doesn't exist`); return true; }
+        if (currentRoom === target) { setCurrentRoom('default'); setActiveSession(null); }
+        setRoomSessionsMap(rs => {
+          const next = { ...rs };
+          delete next[target];
+          return next;
+        });
+        sysOut(`room "${target}" deleted`);
+        return true;
+      }
+      // /room <name>: show info on that room.
+      sysOut(fmtRoom(sub));
       return true;
     }
     if (cmd === '/restart') {
@@ -4210,6 +4297,9 @@ function App() {
       h(Text, null,
         h(Text, { color: T.statusBrand, bold: true }, `${EGPT_EMOJI} egpt`),
         h(Text, { color: T.statusFile }, `  ${basename(FILE)}  `),
+        currentRoom !== 'default'
+          ? h(Text, { color: T.statusFile }, `[${currentRoom}]  `)
+          : null,
         h(Text, { color: T.statusSessions },
           Object.keys(sessions).length
             ? Object.entries(sessions).map(([n, s]) => {
