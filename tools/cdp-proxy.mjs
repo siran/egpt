@@ -120,9 +120,18 @@ export function startCdpProxy({
     const upstream = createConnection(chromePort, 'localhost');
 
     upstream.on('connect', () => {
-      // Reconstruct the HTTP upgrade request for Chrome.
+      // Reconstruct the HTTP upgrade request for Chrome. We strip:
+      //   host:   we set it ourselves to the upstream chromePort.
+      //   origin: Chrome 112+ rejects CDP WebSocket upgrades whose
+      //           Origin isn't in --remote-allow-origins. Browsers
+      //           (extension included) always send an Origin; Node
+      //           sends none. Stripping it makes Chrome see a
+      //           no-Origin localhost connection and accept it.
+      //           Without this, the extension's WS to the bus tab
+      //           fails with a generic 'CDP WS error' the moment
+      //           the proxy forwards the upgrade.
       const hdrs = Object.entries(req.headers)
-        .filter(([k]) => k !== 'host')
+        .filter(([k]) => k !== 'host' && k.toLowerCase() !== 'origin')
         .map(([k, v]) => `${k}: ${v}`)
         .join('\r\n');
       upstream.write(`GET ${path} HTTP/1.1\r\nHost: localhost:${chromePort}\r\n${hdrs}\r\n\r\n`);

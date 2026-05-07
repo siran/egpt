@@ -52,6 +52,13 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
   await mkdir(userDataDir, { recursive: true });
   const args = [
     `--remote-debugging-port=${port}`,
+    // Chrome 112+ rejects CDP WebSocket upgrades unless Origin is
+    // either absent or in --remote-allow-origins. The egpt extension
+    // talks to the bus tab from chrome-extension://<id>; the bridges
+    // and brain CDP code talk from a Node process (no Origin header).
+    // '*' covers both. Connections to chromePort are still localhost-
+    // only; the proxy on PROXY_PORT is what gates LAN access.
+    '--remote-allow-origins=*',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
     '--disable-features=ChromeWhatsNewUI',

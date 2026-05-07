@@ -19,6 +19,7 @@
 
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { createServer } from 'node:http';
+import { createConnection } from 'node:net';
 import { startCdpProxy } from '../tools/cdp-proxy.mjs';
 
 // ── mock chrome ──────────────────────────────────────────────────
@@ -29,6 +30,7 @@ import { startCdpProxy } from '../tools/cdp-proxy.mjs';
 
 function startMockChrome() {
   return new Promise((resolve) => {
+    let upgradeWaiter = null;
     const server = createServer((req, res) => {
       if (req.url === '/json/version') {
         res.writeHead(200, { 'content-type': 'application/json' });
@@ -51,7 +53,44 @@ function startMockChrome() {
       res.writeHead(404);
       res.end();
     });
+    // WebSocket upgrade — record headers, immediately 101 + close so
+    // the proxy sees a clean handshake. Tests that care assert what
+    // the upstream chrome saw via nextUpgrade().
+    server.on('upgrade', (req, socket) => {
+      const captured = { url: req.url, headers: { ...req.headers } };
+      socket.write('HTTP/1.1 101 Switching Protocols\r\n\r\n');
+      // Destroy (not end) — the proxy has piped both directions, so
+      // a half-close keeps the proxy-side socket parked indefinitely
+      // and afterAll() blocks on close().
+      socket.destroy();
+      if (upgradeWaiter) { upgradeWaiter(captured); upgradeWaiter = null; }
+    });
+    // Returns a Promise that resolves with the next upgrade request's
+    // captured fields. Arm it BEFORE triggering the WS to avoid races.
+    server.nextUpgrade = () => new Promise(r => { upgradeWaiter = r; });
     server.listen(0, '127.0.0.1', () => resolve(server));
+  });
+}
+
+// Send a raw HTTP/1.1 upgrade request through TCP — Node's built-in
+// WebSocket constructor doesn't let us set Origin, but raw TCP does.
+function rawWsUpgrade(host, port, path, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const sock = createConnection(port, host);
+    const headers = {
+      Host: `${host}:${port}`,
+      Connection: 'Upgrade',
+      Upgrade: 'websocket',
+      'Sec-WebSocket-Version': '13',
+      'Sec-WebSocket-Key': 'dGVzdC1rZXktMTIzNDU2Nzg=',
+      ...extraHeaders,
+    };
+    const lines = [`GET ${path} HTTP/1.1`];
+    for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
+    lines.push('', '');
+    sock.on('connect', () => sock.write(lines.join('\r\n')));
+    sock.on('error', reject);
+    sock.on('close', resolve);
   });
 }
 
@@ -75,9 +114,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await proxy.stop();
-  await new Promise(r => mockChrome.close(r));
-});
+  // Force-close everything. Some upgrade sockets stay parked — between
+  // the proxy's piped outgoing TCP and the mock's half-closed sockets,
+  // graceful close() can hang for the full hookTimeout. We don't care
+  // about clean shutdown in tests; just kill the listeners.
+  proxy.stop().catch(() => {});
+  mockChrome.closeAllConnections?.();
+  mockChrome.close();
+}, 2000);
 
 // ── tests ────────────────────────────────────────────────────────
 
@@ -139,4 +183,29 @@ describe('cdp-proxy forwarding', () => {
     const r = await fetch(`${baseUrl}/${token}/no-such-path`);
     expect(r.status).toBe(404);
   });
+
+  it('strips Origin from forwarded WebSocket upgrades', async () => {
+    // The regression: Chrome 112+ rejects CDP WS upgrades whose
+    // Origin isn't in --remote-allow-origins. The extension's
+    // chrome-extension://<id> origin used to make it through to
+    // Chrome unfiltered, and Chrome closed the upgrade — surfaced
+    // to the user as 'CDP WS error opening tab' in the tab UI.
+    const upgrade = mockChrome.nextUpgrade();
+    rawWsUpgrade('127.0.0.1', proxy.port, `/${token}/devtools/browser/abcd`, {
+      Origin: 'chrome-extension://malicious-fake',
+    }).catch(() => {});  // fire-and-forget; we only care about what reached upstream
+    const captured = await upgrade;
+    expect(captured.url).toBe('/devtools/browser/abcd');
+    expect(captured.headers.origin, 'origin must be stripped before forwarding to Chrome').toBeUndefined();
+    expect(captured.headers.upgrade?.toLowerCase()).toBe('websocket');
+  }, 3000);
+
+  it('strips Origin on loopback WS too (no-token path)', async () => {
+    const upgrade = mockChrome.nextUpgrade();
+    rawWsUpgrade('127.0.0.1', proxy.port, '/devtools/browser/abcd', {
+      Origin: 'chrome-extension://abc',
+    }).catch(() => {});
+    const captured = await upgrade;
+    expect(captured.headers.origin).toBeUndefined();
+  }, 3000);
 });
