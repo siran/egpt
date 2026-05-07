@@ -152,24 +152,28 @@ export async function startWhatsAppBridge({
           log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
         }
       }
-      // Accept 'notify' (push-real-time) AND 'append' (commonly used
-      // when WhatsApp delivers messages we sent on another linked
-      // device — the 'Message Yourself' case lands here on some
-      // baileys versions). 'prepend' is bulk history sync; skip.
-      if (type !== 'notify' && type !== 'append') return;
+      // Default mode: 'notify' (push-real-time) + 'append' (commonly
+      // used for own-device messages on linked devices — 'Message
+      // Yourself' lands here on some baileys versions). 'prepend' is
+      // bulk history sync; skip. Debug mode passes everything through
+      // so the user can see what baileys actually delivers and which
+      // filter (if any) was hiding it.
+      if (!debug && type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
-        try { await handleMessage(msg); }
+        try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
       }
     });
   }
 
-  async function handleMessage(msg) {
+  async function handleMessage(msg, { bypassAwareness = false } = {}) {
     if (!msg.message) return;               // protocol message / ignored type
 
     // Filter our own bridge-sent echoes: WhatsApp delivers every outbound
     // back to all linked devices including us. Sent-id tracking knows
     // which messages we just sent — drop those before any awareness check.
+    // (Kept even in debug mode so we don't loop the shell-mirror back
+    // into the shell as 'incoming'.)
     if (msg.key?.fromMe) {
       const id = msg.key.id;
       if (id && _sentIds.has(id)) {
@@ -195,17 +199,21 @@ export async function startWhatsAppBridge({
     //   personal:    1:1 chats with someone else.
     //   groups:      group chats — handled below since 'mentions' depends
     //                on parsing the message body.
-    if (isSelfDM) {
-      if (aware.self_chat === 'off') return;
-      if (aware.self_chat === 'incoming' && fromMe) return;
-      if (aware.self_chat === 'outgoing' && !fromMe) return;
-    } else if (!isGroup0) {
-      if (aware.personal === 'off') return;
-      if (aware.personal === 'incoming' && fromMe) return;
-      if (aware.personal === 'outgoing' && !fromMe) return;
-    } else {
-      if (aware.groups === 'off') return;
-      // 'mentions' filtering happens after we have the body in hand.
+    // Skipped entirely in debug mode so the user can see every message
+    // baileys delivers and judge which filter to keep / loosen.
+    if (!bypassAwareness) {
+      if (isSelfDM) {
+        if (aware.self_chat === 'off') return;
+        if (aware.self_chat === 'incoming' && fromMe) return;
+        if (aware.self_chat === 'outgoing' && !fromMe) return;
+      } else if (!isGroup0) {
+        if (aware.personal === 'off') return;
+        if (aware.personal === 'incoming' && fromMe) return;
+        if (aware.personal === 'outgoing' && !fromMe) return;
+      } else {
+        if (aware.groups === 'off') return;
+        // 'mentions' filtering happens after we have the body in hand.
+      }
     }
 
     // Pull text out of whatever variant baileys delivered.
@@ -246,7 +254,7 @@ export async function startWhatsAppBridge({
       const mentions = ctx.mentionedJid ?? [];
       const isMentioned = myNumber && mentions.some(m => m.startsWith(`${myNumber}@`));
       const replyingToMe = myJid && ctx.participant === myJid;
-      if (aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
+      if (!bypassAwareness && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
       if (myNumber) {
         processed = processed.replace(new RegExp(`@${myNumber}\\s*`, 'g'), '').trim();
       }
