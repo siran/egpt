@@ -94,6 +94,7 @@ export const COMMANDS = [
 
   { section: 'MISC' },
   { cmd: '/telegram',       surface: 'both',      usage: '/telegram [<node>|disconnect|allow <id>|revoke <id>|allowed]', desc: 'manage telegram polling, handoff, and authorized users' },
+  { cmd: '/whatsapp',       surface: 'shell',     usage: '/whatsapp [pair|disconnect|allow <num>|revoke <num>|allowed]', desc: 'manage whatsapp bridge: pair (re-QR), disconnect, allow/revoke numbers' },
   { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
   { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },

@@ -5,7 +5,7 @@ import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
-import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -1524,10 +1524,20 @@ function App() {
   // whatsapp config block is present). First run shows a QR to scan with
   // your phone; auth state persists at ~/.egpt/wa-auth/.
   const waBridgeRef = useRef(null);
-  const startWaBridge = useCallback(async () => {
+  const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
     if (!cfg || cfg.enabled === false) return false;
+    // Don't auto-pair on first run — would print a QR unprompted.
+    // `force` is set by /whatsapp pair to bypass this.
+    const credsPath = join(EGPT_HOME, 'wa-auth', 'creds.json');
+    if (!force && !existsSync(credsPath)) {
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+        body: 'whatsapp configured but not paired. Run /whatsapp pair to scan a QR with your phone.',
+      }]);
+      return false;
+    }
     try {
       const bridge = await startWhatsAppBridge({
         allowedUsers: cfg.allowed_users ?? [],
@@ -2513,6 +2523,79 @@ function App() {
       await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
         ts: Date.now(), to });
       sysOut(`telegram: handoff posted to ${to}`);
+      return true;
+    }
+    if (cmd === '/whatsapp') {
+      const argParts = arg.trim().split(/\s+/).filter(Boolean);
+      const sub = argParts[0];
+      const subArg = argParts.slice(1).join(' ').trim();
+      const cfgPath = join(EGPT_HOME, 'config.json');
+      const authDir = join(EGPT_HOME, 'wa-auth');
+
+      if (!sub) {
+        const status = waBridgeRef.current
+          ? `connected as ${waBridgeRef.current.myJid ?? '?'}\n  last chat: ${waBridgeRef.current.chatId ?? '(none)'}`
+          : 'not running';
+        sysOut(`whatsapp: ${status}\n` +
+          `\n/whatsapp pair                pair this device (wipes auth, shows new QR)` +
+          `\n/whatsapp disconnect          stop the bridge (auth preserved)` +
+          `\n/whatsapp allow <number>      authorize a phone number for commands` +
+          `\n/whatsapp revoke <number>     remove authorization` +
+          `\n/whatsapp allowed             list authorized numbers`);
+        return true;
+      }
+      if (sub === 'pair') {
+        if (waBridgeRef.current) {
+          try { waBridgeRef.current.stop(); } catch (_) {}
+          waBridgeRef.current = null;
+        }
+        try { await rm(authDir, { recursive: true, force: true }); }
+        catch (e) { sysOut(`!! couldn't wipe ${authDir}: ${e.message}`); return true; }
+        sysOut(`whatsapp: auth wiped at ${dp(authDir)}; restarting bridge — QR coming up`);
+        await startWaBridge(true);
+        return true;
+      }
+      if (sub === 'disconnect') {
+        if (!waBridgeRef.current) { sysOut('whatsapp: not running'); return true; }
+        try { waBridgeRef.current.stop(); } catch (_) {}
+        waBridgeRef.current = null;
+        sysOut('whatsapp: disconnected (auth preserved). /whatsapp pair to start over');
+        return true;
+      }
+      if (sub === 'allow' || sub === 'revoke') {
+        const number = subArg.replace(/[^\d]/g, '');
+        if (!number) {
+          sysOut(`!! /whatsapp ${sub} <number> — number must be the phone digits (with or without +, dashes, spaces)`);
+          return true;
+        }
+        let cfg = {};
+        try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
+        if (!cfg.whatsapp || typeof cfg.whatsapp !== 'object') cfg.whatsapp = {};
+        if (!Array.isArray(cfg.whatsapp.allowed_users)) cfg.whatsapp.allowed_users = [];
+        if (sub === 'allow') {
+          if (!cfg.whatsapp.allowed_users.some(u => String(u).replace(/[^\d]/g, '') === number)) {
+            cfg.whatsapp.allowed_users.push(number);
+          }
+        } else {
+          cfg.whatsapp.allowed_users = cfg.whatsapp.allowed_users.filter(
+            u => String(u).replace(/[^\d]/g, '') !== number,
+          );
+        }
+        await mkdir(EGPT_HOME, { recursive: true });
+        await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+        sysOut(`whatsapp: ${sub === 'allow' ? 'allowed' : 'revoked'} ${number} (takes effect on /whatsapp pair or shell restart)`);
+        return true;
+      }
+      if (sub === 'allowed') {
+        let cfg = {};
+        try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
+        const ids = cfg.whatsapp?.allowed_users ?? [];
+        sysOut(ids.length === 0
+          ? 'whatsapp: no allowed users — commands and mentions are rejected'
+          : `whatsapp allowed users:\n${ids.map(id => `  ${id}`).join('\n')}`);
+        return true;
+      }
+      sysOut(`!! unknown subcommand: ${sub}\n/whatsapp with no args lists subcommands`);
       return true;
     }
     if (cmd === '/config') {

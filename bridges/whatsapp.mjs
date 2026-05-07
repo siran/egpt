@@ -96,8 +96,12 @@ export async function startWhatsAppBridge({
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
-        log('whatsapp: scan this QR with your WhatsApp app (Settings → Linked devices → Link a device):');
-        qrcode.generate(qr, { small: true });
+        // Render QR to a string so Ink can print it cleanly via onLog,
+        // instead of qrcode-terminal writing directly to stdout (which
+        // tangles with Ink's render).
+        qrcode.generate(qr, { small: true }, (qrText) => {
+          log('whatsapp: scan this QR (WhatsApp → Settings → Linked devices → Link a device):\n' + qrText);
+        });
       }
       if (connection === 'open') {
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
