@@ -139,7 +139,12 @@ export async function startWhatsAppBridge({
     const userId = senderJid?.split(':')[0]?.split('@')[0] ?? '?';
     const username = msg.pushName ?? null;
     const firstName = username ?? `wa:${userId}`;
-    const authorized = allowedUsers.length > 0 && allowedUsers.includes(userId);
+    // Accept allowed-user entries with or without leading '+', spaces,
+    // dashes, parens — the WA JID always has the bare digits, but a
+    // human writing config might paste '+1 (646) 821-7865'.
+    const normalize = (s) => String(s).replace(/[^\d]/g, '');
+    const authorized = allowedUsers.length > 0
+      && allowedUsers.some(u => normalize(u) === normalize(userId));
 
     let processed = text.trim();
 
