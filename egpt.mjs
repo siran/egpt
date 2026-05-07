@@ -1243,6 +1243,11 @@ function App() {
   // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
   // if Chrome is already running.
   const [sessions, setSessions] = useState({});
+  // activeSession: the brain that plain-text input routes to (no @-mention
+  // needed). Set with /use <name>; cleared with /use clear. Without an
+  // activeSession, plain text stays in the room (mirrored to peers via
+  // room-utterance) but never auto-broadcasts to brains.
+  const [activeSession, setActiveSession] = useState(null);
   // Elapsed-time tracking so the user has progress feedback during the
   // brain's pre-generation "thinking" phase (which can be 5-15s for a long
   // conversation file). When busy goes true we record the start; an interval
@@ -1844,6 +1849,35 @@ function App() {
     const arg = rest.join(' ').trim();
 
     if (cmd === '/exit') { exit(); return true; }
+    if (cmd === '/use') {
+      const target = arg.trim();
+      if (!target) {
+        sysOut(activeSession
+          ? `active session: ${activeSession} (plain text routes here without @-mention)`
+          : 'no active session — plain text stays in the room. /use <name> to designate one.');
+        return true;
+      }
+      if (target === 'clear' || target === 'none') {
+        setActiveSession(null);
+        sysOut('active session cleared — plain text no longer auto-routes');
+        return true;
+      }
+      if (!sessions[target]) {
+        sysOut(`!! no session named "${target}" — /sessions to list`);
+        return true;
+      }
+      setActiveSession(target);
+      sysOut(`active session -> ${target} (plain text routes here without @-mention)`);
+      return true;
+    }
+    if (cmd === '/restart') {
+      // Exit with code 43 so egpt-daemon restarts without running the
+      // git pull + npm install + build step. For when you just want a
+      // fresh process — config reload, recover from a wedged state, etc.
+      sysOut('exiting with code 43 — egpt-daemon (if running) will restart without upgrading');
+      setTimeout(() => _exitClean(43), 100);
+      return true;
+    }
     if (cmd === '/upgrade') {
       // Exit with 42 so a wrapping egpt-daemon (egpt-daemon.mjs) runs
       // git pull + npm install + npm run build:ext and restarts. If
@@ -3709,7 +3743,7 @@ function App() {
     );
     const decision = resolveRoute(parsed, text, {
       sessions: sessionsView, peerSessions: peerSessionsView,
-      brainForName, canonicalBrainName,
+      brainForName, canonicalBrainName, activeSession,
     });
 
     if (decision.kind === 'command') {
@@ -3729,6 +3763,14 @@ function App() {
       if (peerNodesRef.current.size === 0) {
         sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
       }
+      return;
+    }
+    if (decision.kind === 'idle') {
+      // Plain text but no activeSession set. The message is already on
+      // the bus (room-utterance posted earlier) so peers see it; we just
+      // don't auto-call a brain. Hint how to opt in.
+      const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
+      sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> to make it the default for plain text.`);
       return;
     }
     if (decision.kind === 'peer-mention') {

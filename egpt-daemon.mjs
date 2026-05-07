@@ -2,11 +2,12 @@
 // egpt-daemon.mjs — keeps `node egpt.mjs` running.
 //
 // Spawns the shell as a child, restarts on crash with exponential backoff.
-// Two distinguished exit codes from the shell:
+// Three distinguished exit codes from the shell:
 //
 //   0    user wanted out (typed /exit, or SIGINT). Daemon stops too.
 //   42   /upgrade — run `git pull && npm install && npm run build:ext`,
 //        then restart.
+//   43   /restart — restart immediately, no git pull, no build.
 //
 // Any other exit code is treated as a crash and triggers restart with backoff.
 //
@@ -27,6 +28,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const RESTART_MIN_MS = 2_000;       // baseline crash-restart delay
 const RESTART_MAX_MS = 60_000;      // cap on backoff
 const UPGRADE_EXIT_CODE = 42;
+const RESTART_EXIT_CODE = 43;
 const CLEAN_EXIT_CODE   = 0;
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
@@ -73,6 +75,13 @@ function spawnShell() {
 
     if (code === UPGRADE_EXIT_CODE) {
       runUpgrade();
+      backoff = RESTART_MIN_MS;
+      setImmediate(spawnShell);
+      return;
+    }
+
+    if (code === RESTART_EXIT_CODE) {
+      log('restart requested — no upgrade, no backoff');
       backoff = RESTART_MIN_MS;
       setImmediate(spawnShell);
       return;

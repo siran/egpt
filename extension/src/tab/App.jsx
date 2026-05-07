@@ -618,6 +618,7 @@ export default function App() {
       peerSessions: peerSessionsView,
       brainForName,
       canonicalBrainName: canonicalBrain,
+      activeSession,
     });
 
     if (decision.kind === 'command') { handleCommand(trimmed); return; }
@@ -632,6 +633,13 @@ export default function App() {
       if (peerNodesRef.current.size === 0) {
         appendMsg('egpt', 'no one in the room — /open chatgpt-cdp to add a participant, or wait for a peer to join the bus');
       }
+      return;
+    }
+    if (decision.kind === 'idle') {
+      // Plain text but no activeSession set. Message is already on the
+      // bus for peers; just don't auto-call a brain.
+      const names = [...sessionsRef.current.keys()].slice(0, 3).join(', ') || '(none)';
+      appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> to make it the default for plain text.`);
       return;
     }
     if (decision.kind === 'peer-mention') {
@@ -1017,12 +1025,17 @@ export default function App() {
       </div>
 
       <div className="conversation" ref={convRef}>
-        {messages.map(m => (
+        {messages.map(m => {
+          // Always show @whereami so it's clear which surface uttered the
+          // line. Peer-rendered authors already include '@<peer-id>';
+          // bare local authors get our SURFACE_TAG appended.
+          const displayAuthor = m.author.includes('@') ? m.author : `${m.author}@${SURFACE_TAG}`;
+          return (
           <div key={m.id} className="msg">
-            <span className={`msg-author ${authorClass(m.author)}`}>{m.author}</span>
+            <span className={`msg-author ${authorClass(m.author)}`}>{displayAuthor}</span>
             <div className={`msg-body${m.streaming ? ' streaming' : ''}`}>{m.text}</div>
-          </div>
-        ))}
+          </div>);
+        })}
       </div>
 
       <div className="input-area">

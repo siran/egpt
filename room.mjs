@@ -26,6 +26,12 @@
 //   { kind: 'empty' }
 //       Plain message but the room has no sessions. Caller displays a hint.
 //
+//   { kind: 'idle' }
+//       Plain message and the room has sessions but no activeSession is
+//       set. Caller does NOT call any brain — the user must @-mention or
+//       `/use <name>` to consent to plain-text routing. Caller may still
+//       have posted room-utterance for peer visibility before resolveRoute.
+//
 // The room module never touches React state, files, or networks. The caller
 // owns the side effects.
 
@@ -46,6 +52,11 @@
  * @property {Map<string, PeerSession[]>} peerSessions  - nodeId -> sessions list
  * @property {(name: string) => Brain | null | undefined} brainForName
  * @property {(name: string) => string} canonicalBrainName
+ * @property {string} [activeSession]  - if set, plain-text routes to this
+ *                                       single session. Without it, plain
+ *                                       text returns kind:'idle' instead
+ *                                       of auto-broadcasting — auto-routing
+ *                                       requires explicit consent (/use).
  */
 
 /**
@@ -130,12 +141,21 @@ export function resolveRoute(parsed, fullText, ctx) {
 
   // parsed.type === 'message' (plain text)
   if (ctx.sessions.size === 0) return { kind: 'empty' };
-  return {
-    kind: 'turn',
-    recipients: [...ctx.sessions.keys()],
-    payload: fullText,
-    broadcast: ctx.sessions.size > 1,
-  };
+  // Plain text only auto-routes to a brain when the user has explicitly
+  // chosen one with /use. Without that, the message stays in the room
+  // (peers still see it via room-utterance posted by the surface) but
+  // no brain runs. Auto-broadcasting to all sessions on every keystroke
+  // is too aggressive — typing "what should I have for lunch" shouldn't
+  // queue up a paid token spend.
+  if (ctx.activeSession && ctx.sessions.has(ctx.activeSession)) {
+    return {
+      kind: 'turn',
+      recipients: [ctx.activeSession],
+      payload: fullText,
+      broadcast: false,
+    };
+  }
+  return { kind: 'idle' };
 }
 
 /**
