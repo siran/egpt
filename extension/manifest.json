@@ -3,8 +3,8 @@
   "name": "egpt",
   "version": "0.0.1",
   "description": "Multi-brain AI orchestrator — browser extension",
-  "permissions": ["storage", "tabs", "debugger"],
-  "host_permissions": ["http://localhost:*/", "https://api.telegram.org/"],
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://localhost:*/", "ws://localhost:*/", "https://api.telegram.org/"],
   "background": {
     "service_worker": "dist/background.js"
   },

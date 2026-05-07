@@ -3,7 +3,7 @@ import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
-import { listTabs } from '../tools/cdp-ext.js';
+import { listTabs } from '../../../tools/cdp.mjs';
 import * as bus from '../../../tools/bus.mjs';
 import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
 import { resolveRoute, planMirrors } from '../../../room.mjs';

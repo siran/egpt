@@ -6,27 +6,23 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
 
-// Redirect tools/cdp.mjs → extension's chrome.debugger adapter, and
-// tools/bus.mjs → the chrome.debugger-based bus adapter. Same exported
-// names so consumer code is identical across surfaces.
-const cdpShim = {
-  name: 'cdp-shim',
-  setup(b) {
-    b.onResolve({ filter: /\/tools\/cdp\.mjs$/ }, () => ({
-      path: resolve(__dirname, 'src/tools/cdp-ext.js'),
-    }));
-    b.onResolve({ filter: /\/tools\/bus\.mjs$/ }, () => ({
-      path: resolve(__dirname, 'src/tools/bus-ext.js'),
-    }));
-  },
-};
+// The extension now uses the shared tools/cdp.mjs and tools/bus.mjs
+// directly — no more chrome.debugger shim. cdp.mjs has runtime-only
+// dynamic imports for node:fs/path/os, which esbuild can't resolve in
+// a browser bundle; mark them external so the bundle keeps the
+// import expressions intact (they throw at runtime in the browser
+// and the try/catch in cdp.mjs falls through to the no-op default).
+//
+// The chrome.storage-backed host getter is installed by
+// extension/src/cdp-bootstrap.js, which every entry point must
+// import first (before any cdpHost() call).
 
 const shared = {
   bundle: true,
   platform: 'browser',
   format: 'esm',
   jsx: 'automatic',
-  plugins: [cdpShim],
+  external: ['node:fs', 'node:path', 'node:os'],
   sourcemap: watch ? 'inline' : false,
   logLevel: 'info',
 };
