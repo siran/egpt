@@ -283,6 +283,11 @@ export async function startWhatsAppBridge({
     },
     get chatId() { return lastChat; },
     get myJid()  { return myJid; },
+    get myNumber() { return myNumber; },
+    // The WhatsApp 'Message Yourself' chat — your own number as a JID.
+    // Useful as the default mirror target so shell-typed transcript
+    // shows up in your phone without configuring a chat_id.
+    get selfDmJid() { return myNumber ? `${myNumber}@s.whatsapp.net` : null; },
   };
 }
 

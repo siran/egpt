@@ -1155,6 +1155,17 @@ function formatItemForTelegram(item, sessions) {
   return `${emoji} <b>${escapeHtml(tagged)}</b>\n${mdToTgHtml(item.body)}`;
 }
 
+// Same shape, plain text. WhatsApp bodies don't support HTML so we
+// just emit author + content separated by a newline.
+function formatItemForWhatsApp(item, sessions) {
+  if (item.author === 'system') return `${EGPT_EMOJI} egpt@${SURFACE_TAG}\n${item.body}`;
+  if (item.author === 'You')    return `${USER_EMOJI} ${USER_NAME}@${SURFACE_TAG}\n${item.body}`;
+  const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
+  const sess = sessions[item.author];
+  const emoji = sess?.emoji ?? '❓';
+  return `${emoji} ${tagged}\n${item.body}`;
+}
+
 // Parse messages.md back into objects (for /last).
 function parseMessages(text) {
   const out = [];
@@ -1656,6 +1667,29 @@ function App() {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
       b.send(formatItemForTelegram(item, sessions));
+    }
+  }, [items.length]);
+
+  // Symmetric mirror to WhatsApp. Default target is the user's
+  // 'Message Yourself' chat (selfDmJid, derived from the bridge's
+  // own JID). Override via config: whatsapp.mirror_chat_id (a JID
+  // string), or 'none' to disable. _localOnly items stay out, same
+  // as Telegram — the (whatsapp message from X) arrival note and
+  // user-echo would just get echoed back to the same chat.
+  const sentToWaItemsCountRef = useRef(0);
+  useEffect(() => {
+    const wa = waBridgeRef.current;
+    if (!wa) return;
+    const opt = EGPT_CONFIG.whatsapp?.mirror_chat_id;
+    if (opt === 'none' || opt === false) return;
+    const target = (typeof opt === 'string' && opt) ? opt : wa.selfDmJid;
+    // Match Telegram's pattern: advance the counter even when target
+    // isn't ready yet, so items already on screen don't all flush as
+    // a backlog the moment the bridge connects.
+    while (sentToWaItemsCountRef.current < items.length) {
+      const item = items[sentToWaItemsCountRef.current++];
+      if (item._localOnly) continue;
+      if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
     }
   }, [items.length]);
 

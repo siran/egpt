@@ -21,7 +21,7 @@ export const CONFIG_SCHEMA = {
   // whatsapp: nested object with keys { enabled, allowed_users, chat_id }.
   // The bridge starts when this block is present (and not enabled:false).
   // First run: scans QR; auth persists at ~/.egpt/wa-auth/.
-  whatsapp:     'whatsapp bridge config: { enabled: true, allowed_users: [...], chat_id: "<jid>" }',
+  whatsapp:     'whatsapp bridge config: { enabled, allowed_users, chat_id (auto-captured), mirror_chat_id (default: self-DM), awareness {...} }',
   // default_brain: the persona that responds to @egpt mentions. Lives
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
