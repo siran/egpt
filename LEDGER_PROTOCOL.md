@@ -267,6 +267,10 @@ Telegram bridge is active, send the formatted reply directly to that
 chat (overriding `lastChat`); mark the local item `_localOnly` so
 the items-flush effect doesn't double-deliver.
 
+Note: a corresponding `room-reply` will also reach the asker (rooms
+are noisy by design — receivers do not filter messages). The asker
+renders both; the duplicate is preferred to losing the broadcast view.
+
 ### `command`
 
 Forwards a slash command from a node that can't run it locally to one
@@ -303,25 +307,20 @@ triggered by an inbound `mention`.
   "ts":   ...,
   "role": "shell",        // sender's role
   "session": "codex1",    // which brain on this node produced the reply
-  "body": "<reply text>",
-  "excluded_node": "chr1" // optional; the asker of a corresponding mention
-                          //   should skip this event (they already got the
-                          //   directed mention-reply and would otherwise
-                          //   render the same body twice)
+  "body": "<reply text>"
 }
 ```
 
 Behavior on receive: filter self-echoes (`from === self.node_name`).
-If `excluded_node === self.node_name`, skip. Otherwise render as
-`<session>@<from>: <body>` in the local UI / ledger. Implementations
-MUST NOT route this through `resolveRoute` — it's informational, not
-actionable.
+Render as `<session>@<from>: <body>` in the local UI / ledger.
+Implementations MUST NOT route this through `resolveRoute` — it's
+informational, not actionable.
 
 When a `mention` from a peer triggered the turn, the responding node
 sends both `mention-reply` (directed at the asker, may carry an
-`error` field) and `room-reply` with `excluded_node` = asker. The
-asker renders only the directed reply; other peers render only the
-broadcast. No duplicates either way.
+`error` field) and `room-reply` (broadcast). The asker renders both;
+the room is noisy by design and we don't suppress messages on
+receive.
 
 ### `room-utterance`
 

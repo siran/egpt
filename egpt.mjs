@@ -3598,7 +3598,7 @@ function App() {
         id: Date.now() + Math.random(), author: routedTo, body: final,
         _localOnly: !!tg,
       }]);
-      await append(routedTo, final);
+      await append(`${routedTo}@${SURFACE_TAG}`, final);
       return final;
     } catch (e) {
       setStreaming(null);
@@ -3896,12 +3896,12 @@ function App() {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, body: reply ?? '',
             ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
-          // Broadcast reply to the whole room so every peer sees it,
-          // EXCEPT the asker — they got the directed mention-reply
-          // already and would render it twice otherwise.
+          // Broadcast reply to the whole room so every peer sees it.
+          // The asker also receives this in addition to the directed
+          // mention-reply — by design, rooms don't filter messages.
           if (reply !== null && reply !== undefined) {
             await post({ type: 'room-reply', role: 'shell',
-              session: ev.target, body: reply, excluded_node: ev.from });
+              session: ev.target, body: reply });
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
@@ -3990,10 +3990,8 @@ function App() {
         return;
       }
       case 'room-reply': {
-        // Broadcast brain reply from a peer. Skip if we're the asker
-        // (we already got the directed mention-reply and would render
-        // the same body twice). Render with session@node tag.
-        if (ev.excluded_node === BUS_NODE_ID) return;
+        // Broadcast brain reply from a peer. Render with session@node
+        // tag. Don't filter by asker — see room is noisy by design.
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
@@ -4021,7 +4019,12 @@ function App() {
       const isUser = item.author === 'You';
       const sess = sessions[item.author];
       const emoji = isSystem ? `${EGPT_EMOJI} ` : isUser ? `${USER_EMOJI} ` : sess?.emoji ? `${sess.emoji} ` : '';
-      const label = isUser ? USER_NAME : isSystem ? 'egpt' : item.author;
+      const baseLabel = isUser ? USER_NAME : isSystem ? 'egpt' : item.author;
+      // Always show @whereami so a transcript reader knows where each
+      // line was uttered. Peer-rendered items (mention-reply, room-reply,
+      // room-utterance dispatchers) already include @<peer-id>; only
+      // tag with our SURFACE_TAG when one isn't already present.
+      const label = baseLabel.includes('@') ? baseLabel : `${baseLabel}@${SURFACE_TAG}`;
       const time = fmtTimeOnly(Math.floor(item.id));
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
