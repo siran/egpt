@@ -1844,6 +1844,15 @@ function App() {
     const arg = rest.join(' ').trim();
 
     if (cmd === '/exit') { exit(); return true; }
+    if (cmd === '/upgrade') {
+      // Exit with 42 so a wrapping supervisor (supervisor.mjs) runs
+      // git pull + npm install + npm run build:ext and restarts. If
+      // there's no supervisor, this just exits with 42 and the user
+      // restarts manually.
+      sysOut('exiting with code 42 — supervisor (if running) will pull, rebuild, and restart');
+      setTimeout(() => _exitClean(42), 100);
+      return true;
+    }
     if (cmd === '/file') { sysOut(FILE); return true; }
     if (cmd === '/conversations') {
       try {

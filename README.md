@@ -444,6 +444,64 @@ For the surface behaviors that don't fit unit tests — Chrome spawn, bridge int
 
 The wire format that nodes use to coordinate is documented in [`LEDGER_PROTOCOL.md`](LEDGER_PROTOCOL.md). Lineage: small envelope and bridge attribution borrowed from Matrix; channel/presence pattern from IRC; AI-participants-as-room-members is the egpt-shaped piece. Read that doc to build a second implementation (different language, different surface).
 
+## Run on boot (supervisor)
+
+`supervisor.mjs` keeps `node egpt.mjs` running across crashes and self-upgrades. Run it instead of `node egpt.mjs` directly:
+
+```
+node supervisor.mjs
+```
+
+It spawns the shell as a child, restarts on crash with exponential backoff (2s → 60s cap), and recognizes two special exit codes:
+
+- **0** — clean exit (you typed `/exit`, or Ctrl+C the shell). Supervisor stops too — that's what you wanted.
+- **42** — `/upgrade`. Supervisor runs `git pull --ff-only && npm install && npm run build:ext`, then restarts the shell. Inside egpt, the slash command `/upgrade` exits with this code.
+
+To stop everything, Ctrl+C the supervisor (or `SIGTERM` it).
+
+### Start at boot
+
+**Windows** (Task Scheduler — runs at logon):
+
+```
+schtasks /Create /TN "egpt-supervisor" ^
+  /TR "node \"%USERPROFILE%\src\egpt\supervisor.mjs\"" ^
+  /SC ONLOGON /RL HIGHEST /F
+```
+
+Then `schtasks /Run /TN "egpt-supervisor"` to start it once without rebooting. `/Delete /TN "egpt-supervisor"` to remove.
+
+**macOS** (launchd, user agent — `~/Library/LaunchAgents/egpt.supervisor.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>egpt.supervisor</string>
+  <key>ProgramArguments</key>
+    <array><string>/usr/local/bin/node</string><string>/Users/you/src/egpt/supervisor.mjs</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict></plist>
+```
+
+`launchctl load ~/Library/LaunchAgents/egpt.supervisor.plist` to enable.
+
+**Linux** (systemd user unit — `~/.config/systemd/user/egpt-supervisor.service`):
+
+```ini
+[Unit]
+Description=egpt supervisor
+
+[Service]
+ExecStart=/usr/bin/node /home/you/src/egpt/supervisor.mjs
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now egpt-supervisor` to start at login.
+
 ## Caveats and known limits
 
 - **Selectors break.** When ChatGPT or Claude redesigns their UI, the inject/poll scripts in `brains/*-cdp.mjs` will need tweaking. They're written defensively (multiple fallback selectors), but not future-proof.
