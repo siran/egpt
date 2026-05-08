@@ -231,15 +231,30 @@ export async function startWhatsAppBridge({
     const isSelfDM = !isGroup0 && chatNumber === myNumber;
     const fromMe = !!msg.key?.fromMe;
 
+    // Pull text out of whatever variant baileys delivered. We need it
+    // BEFORE the awareness check because @<persona> wake-words always
+    // pass through regardless of self/personal/group rules — that's
+    // how the user can summon egpt from any chat the bridge is linked
+    // to without setting personal:'both' or groups:'all'.
+    const text = textOf(msg.message);
+
+    // Wake-word: any message containing '@egpt' (as a token) bypasses
+    // awareness. Lets the user summon egpt from a friend DM (where
+    // personal:'incoming' would otherwise drop their fromMe text) or
+    // from a group (where groups:'mentions' would otherwise require
+    // @<my-number>, not @egpt). allowed_users gating downstream still
+    // restricts who actually triggers anything; non-allowed senders
+    // are silently ignored (no in-chat tattle).
+    const isWakeWord = !!text && /@egpt\b/i.test(text);
+
     // Awareness rules — decide whether this message reaches onIncoming.
     //   self_chat:   chat-with-yourself (your phone-typed self-DMs and
     //                any echoes from other devices in the same chat).
     //   personal:    1:1 chats with someone else.
     //   groups:      group chats — handled below since 'mentions' depends
     //                on parsing the message body.
-    // Skipped entirely in debug mode so the user can see every message
-    // baileys delivers and judge which filter to keep / loosen.
-    if (!bypassAwareness) {
+    // Skipped entirely in debug mode or for wake-word messages.
+    if (!bypassAwareness && !isWakeWord) {
       if (isSelfDM) {
         if (aware.self_chat === 'off') return;
         if (aware.self_chat === 'incoming' && fromMe) return;
@@ -254,8 +269,6 @@ export async function startWhatsAppBridge({
       }
     }
 
-    // Pull text out of whatever variant baileys delivered.
-    const text = textOf(msg.message);
     if (!text || !text.trim()) return;
 
     const chatJid = msg.key.remoteJid;
@@ -292,7 +305,7 @@ export async function startWhatsAppBridge({
       const mentions = ctx.mentionedJid ?? [];
       const isMentioned = myNumber && mentions.some(m => m.startsWith(`${myNumber}@`));
       const replyingToMe = myJid && ctx.participant === myJid;
-      if (!bypassAwareness && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
+      if (!bypassAwareness && !isWakeWord && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
       if (myNumber) {
         processed = processed.replace(new RegExp(`@${myNumber}\\s*`, 'g'), '').trim();
       }

@@ -1605,8 +1605,11 @@ function App() {
           }]);
           const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
           if (isCommand && !from.authorized) {
-            bridge.send(`${who} is not authorized to emit commands or mentions`,
-              { chatId: from.chatId });
+            // Silently drop. The bridge used to post a 'not authorized'
+            // reply back into the originating chat, which leaked the
+            // bot's existence to the unauthorized sender (and to
+            // everyone else in a group). The arrival note in the
+            // shell is enough audit trail for the operator.
             return;
           }
           // Lifecycle commands restricted to 1:1 chats, same as Telegram.
