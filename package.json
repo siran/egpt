@@ -26,7 +26,8 @@
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.5",
     "esbuild": "^0.25.0",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "ws": "^8.18.0"
   },
   "engines": {
     "node": ">=18"
