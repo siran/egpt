@@ -1,48 +1,31 @@
 // tools/cdp.mjs — shared CDP plumbing for browser-driven brains and tools.
 //
-// Browser-portable. In Node, the default host getter reads the cdp-token
-// from ~/.egpt/cdp-token (or honors $EGPT_CDP_HOST) on every call so the
-// token can appear after boot via manual proxy start. In a browser/
-// extension bundle the dynamic node: imports below fail to resolve at
-// runtime (string-var hide keeps esbuild from trying to bundle them);
-// the extension instead calls setCdpHostGetter() at boot to read the
-// host from chrome.storage (or whatever it likes).
+// Default target is Chrome's own remote-debugging port localhost:9221.
+// That port is bound to 127.0.0.1 by Chromium itself (not a flag — a
+// hardwired safety in the C++) so it's only reachable by processes
+// on the same machine. We trust same-machine processes; no token,
+// no proxy, no TLS needed. Cross-host coordination would re-introduce
+// the proxy + tokens + TLS, but that's a future axis we're not on.
+//
+// Browser-portable: in Node the default getter returns localhost:9221
+// (override via $EGPT_CDP_HOST); the extension overrides at boot via
+// setCdpHostGetter to read its own chrome.storage.
 
 let _hostGetter = null;
 
 const _isNode = typeof process !== 'undefined' && !!process.versions?.node;
 if (_isNode) {
-  try {
-    // String-variable indirection — esbuild's static analysis treats this
-    // as an unknown specifier and leaves it alone. At Node runtime the
-    // dynamic import succeeds; in browser bundles it throws and we fall
-    // back to the no-op default until setCdpHostGetter() is called.
-    const fsName   = 'node:fs';
-    const pathName = 'node:path';
-    const osName   = 'node:os';
-    const _fs   = await import(fsName);
-    const _path = await import(pathName);
-    const _os   = await import(osName);
-    _hostGetter = () => {
-      if (process.env.EGPT_CDP_HOST) return process.env.EGPT_CDP_HOST;
-      const tokenFile = _path.join(_os.homedir(), '.egpt', 'cdp-token');
-      if (_fs.existsSync(tokenFile)) {
-        const token = _fs.readFileSync(tokenFile, 'utf8').trim();
-        return `localhost:9222/${token}`;
-      }
-      return 'localhost:9222';
-    };
-  } catch (_) { /* not reachable in Node; in browser we never enter this branch */ }
+  _hostGetter = () => process.env.EGPT_CDP_HOST || 'localhost:9221';
 }
 
-/** Override the default host getter (Node reads disk; browser reads
+/** Override the default host getter (Node uses env var; browser reads
  *  chrome.storage). The getter may return a string or Promise<string>. */
 export function setCdpHostGetter(fn) { _hostGetter = fn; }
 
 /** Resolve the CDP host on every call. Always async to accommodate
  *  storage-backed getters; synchronous getters resolve immediately. */
 export async function cdpHost() {
-  return _hostGetter ? await _hostGetter() : 'localhost:9222';
+  return _hostGetter ? await _hostGetter() : 'localhost:9221';
 }
 
 async function fetchJson(path) {

@@ -1829,7 +1829,7 @@ function App() {
         extensionDir: extDist,
       });
       await launcher.waitForChromeReady(9221);
-      sysOut('Chrome ready — proxy will auto-attach within 5s');
+      sysOut('Chrome ready');
       return true;
     } catch (e) {
       sysOut(`!! could not start Chrome: ${e.message}`);
@@ -1838,7 +1838,6 @@ function App() {
   };
 
   useEffect(() => {
-    let proxyHandle = null;
     let cancelled = false;
     let pollHandle = null;
     let lastNoticeBody = null;
@@ -1867,27 +1866,13 @@ function App() {
       if (cancelled) return;
       if (busSubRef.current) return; // already fully connected — nothing to do.
 
-      // 1. Ensure Chrome is reachable, either via the proxy (:9222) or
-      //    directly (:9221). If neither is up, surface a hint once and
-      //    keep polling — when Chrome appears we'll attach.
+      // 1. Ensure Chrome is reachable on :9221 (its own loopback CDP
+      //    port). No proxy — we trust same-machine processes; LAN
+      //    coordination is a future axis that would re-introduce
+      //    proxy + token + TLS together, with proper justification.
       if (!(await cdp.isRunning())) {
-        let chromeUp = false;
-        try { await fetch('http://localhost:9221/json/version'); chromeUp = true; }
-        catch { /* not yet */ }
-
-        if (!chromeUp) {
-          notice('Chrome not running — type /chrome to launch it with the extension, or start it yourself with --remote-debugging-port=9221');
-          return;
-        }
-
-        try {
-          const { startCdpProxy } = await import('./tools/cdp-proxy.mjs');
-          proxyHandle = await startCdpProxy({ onLog: () => {} });
-          notice('CDP proxy auto-started (:9221 → :9222)');
-        } catch (e) {
-          notice(`CDP proxy failed to start: ${e.message}`);
-          return;
-        }
+        notice('Chrome not running — type /chrome to launch it with the extension, or start it yourself with --remote-debugging-port=9221 --remote-allow-origins=*');
+        return;
       }
 
       if (cancelled) return;
@@ -1967,7 +1952,7 @@ function App() {
     return () => {
       cancelled = true;
       if (pollHandle) clearInterval(pollHandle);
-      // Best-effort node-offline announce, then stop subscription + proxy.
+      // Best-effort node-offline announce, then stop subscription.
       // Chrome is left running on purpose: it was spawned detached so the
       // user keeps their brain tabs and the bus across shell restarts.
       const tid = busTargetIdRef.current;
@@ -1979,7 +1964,6 @@ function App() {
           try { await bus.postEvent(tid, { type: 'node-offline', from: BUS_NODE_ID }); } catch {}
         }
         sub?.stop?.();
-        proxyHandle?.stop();
       })();
     };
   }, []);
