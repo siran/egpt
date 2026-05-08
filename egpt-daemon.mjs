@@ -37,7 +37,9 @@ const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
 const REWIND_EXIT_CODE  = 44;
 const CLEAN_EXIT_CODE   = 0;
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// npm/node invocations now go through the OS shell (spawnSync with
+// shell:true) — see runUpgrade / runRewind. The previous explicit
+// .cmd path was fragile on msys2 Windows.
 
 let stopping = false;
 let backoff = RESTART_MIN_MS;
@@ -74,18 +76,13 @@ function runUpgrade() {
   // daemon, or extension/dist was wiped). The extra esbuild pass is
   // ~50ms — cheaper than confusion. npm install only runs when the
   // sha actually changed (it's the heavier step).
-  // shell:true on Windows so that npm.cmd resolves through cmd.exe.
-  // Without it, spawnSync returns status:null because Windows can't
-  // exec a .cmd file directly the way *nix execs an ELF — that's
-  // what the user hit ('build:ext exited null').
-  const spawnOpts = {
-    cwd: ROOT,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  };
+  // All build steps go through the OS shell (shell:true) and pass
+  // commands as single strings — most reliable across platforms,
+  // especially msys2 on Windows where direct .cmd / non-PE binary
+  // resolution was returning status:null.
   if (after.sha !== before) {
-    log(`pulled ${before} -> ${after.sha} — running npm install && npm run build:ext`);
-    const r = spawnSync(npm, ['install'], spawnOpts);
+    log(`pulled ${before} -> ${after.sha} — running npm install && node extension/build.mjs`);
+    const r = spawnSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
       log(`upgrade step exited ${r.status} (npm install)${r.error ? `: ${r.error.message}` : ''}; continuing with current build`);
       return false;
@@ -93,12 +90,12 @@ function runUpgrade() {
   } else {
     log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
   }
-  // Run the build script directly via node instead of `npm run build:ext`.
-  // npm.cmd on Windows + spawnSync was fragile (shell:true didn't always
-  // resolve, returning status:null). process.execPath is the absolute
-  // path to this very node binary — guaranteed to exist, no PATH lookup.
-  const buildResult = spawnSync(process.execPath, ['extension/build.mjs'], {
-    cwd: ROOT, stdio: 'inherit',
+  // Run extension/build.mjs via node. process.execPath alone wasn't
+  // working on the user's msys2 setup (status:null). Using shell:true
+  // and a string command lets the OS shell resolve 'node' from PATH,
+  // matching how the user invokes the daemon.
+  const buildResult = spawnSync('node extension/build.mjs', {
+    cwd: ROOT, stdio: 'inherit', shell: true,
   });
   if (buildResult.status !== 0) {
     log(`build:ext exited ${buildResult.status}${buildResult.error ? `: ${buildResult.error.message}` : ''}; continuing with current build`);
@@ -123,17 +120,14 @@ function runRewind() {
   }
   log(`rewind requested → git checkout ${ref} && npm install && node extension/build.mjs`);
   const steps = [
-    ['git', ['checkout', ref], false],
-    [npm,   ['install'], process.platform === 'win32'],
-    [process.execPath, ['extension/build.mjs'], false],
+    'git checkout ' + ref,
+    'npm install',
+    'node extension/build.mjs',
   ];
-  for (const [cmd, args, useShell] of steps) {
-    const r = spawnSync(cmd, args, {
-      cwd: ROOT, stdio: 'inherit',
-      shell: useShell,
-    });
+  for (const cmdline of steps) {
+    const r = spawnSync(cmdline, { cwd: ROOT, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
-      log(`rewind step failed (${cmd} ${args.join(' ')})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
+      log(`rewind step failed (${cmdline})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
   }

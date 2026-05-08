@@ -1635,12 +1635,11 @@ function App() {
           }
           // Egpt-chat vs observed-chat distinction. Full mirror only
           // happens for chats the user designates as egpt chats:
-          //   * the WA self-DM ('Message Yourself'), detected three
-          //     ways: bare-number match (16468...@s.whatsapp.net),
-          //     LID match (chatId equals the bridge's reported
-          //     selfDmJid which can be either form), OR the chatId
-          //     equals the configured cfg.chat_id (the auto-captured
-          //     'where the user typically reaches us' chat).
+          //   * the WA self-DM ('Message Yourself'), detected via
+          //     bare-number match, selfDmJid match, OR the
+          //     auto-captured cfg.chat_id (read fresh from
+          //     EGPT_CONFIG so onChatId-time updates apply
+          //     immediately, not just after a restart).
           //   * any chat ID listed in cfg.whatsapp.egpt_chats.
           // For other chats (friend DMs, groups), egpt listens but
           // doesn't echo to shell or broadcast on the bus. The
@@ -1652,10 +1651,12 @@ function App() {
           const chatNum = String(from.chatId ?? '').split('@')[0]?.split(':')[0];
           const isSelfByNumber = myNum && chatNum && chatNum === myNum;
           const isSelfBySelfDmJid = selfDmJid && from.chatId === selfDmJid;
-          const isSelfByConfig = cfg.chat_id && from.chatId === cfg.chat_id;
+          // Read fresh — onChatId updates EGPT_CONFIG when capturing.
+          const liveChatId = EGPT_CONFIG.whatsapp?.chat_id;
+          const isSelfByConfig = liveChatId && from.chatId === liveChatId;
           const isSelfDM = isSelfByNumber || isSelfBySelfDmJid || isSelfByConfig;
-          const explicitList = cfg.egpt_chats ?? [];
-          const isEgptChat = isSelfDM || explicitList.includes(from.chatId);
+          const liveEgptChats = EGPT_CONFIG.whatsapp?.egpt_chats ?? [];
+          const isEgptChat = isSelfDM || liveEgptChats.includes(from.chatId);
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -1666,8 +1667,12 @@ function App() {
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => logOut(`!! whatsapp: ${msg}`),
         onChatId: async (id) => {
-          // First captured chat — persist to ~/.egpt/config.json so future
-          // runs default outbound to that JID.
+          // First captured chat — persist to ~/.egpt/config.json AND
+          // update the in-memory EGPT_CONFIG so the egpt-chat
+          // detection picks up the new chat_id immediately. Without
+          // the in-memory update, the next message in the same chat
+          // would still be classified observe-only because the
+          // closure'd cfg holds a stale chat_id.
           const cfgPath = join(EGPT_HOME, 'config.json');
           let saved = {};
           try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
@@ -1677,6 +1682,11 @@ function App() {
           try {
             await mkdir(EGPT_HOME, { recursive: true });
             await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+            // In-memory mirror so the egpt-chat check sees the new value.
+            if (typeof EGPT_CONFIG.whatsapp !== 'object' || EGPT_CONFIG.whatsapp === null) {
+              EGPT_CONFIG.whatsapp = {};
+            }
+            EGPT_CONFIG.whatsapp.chat_id = id;
             logOut(`whatsapp: outbound chat ${id} captured and saved`);
           } catch (_) {}
         },
