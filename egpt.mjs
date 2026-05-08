@@ -4244,27 +4244,16 @@ function App() {
     return `[from shell:]\n${body}`;
   }
 
-  // System prompt appended for the @egpt persona. Tells the model that
-  // tools are available and to actually use them — without this, vague
-  // questions like "what's the price of bitcoin?" come back with "I
-  // don't have real-time data" because the model defaults to its
-  // training-time knowledge instead of calling WebFetch / WebSearch.
-  const DEFAULT_PERSONA_SYSTEM_PROMPT = [
-    'You are @egpt — a chat persona invoked from WhatsApp, Telegram, or the egpt shell.',
-    'You have full access to your tools (WebFetch, WebSearch, Read, Bash, etc.) and should use them whenever the user asks something that needs current information, file contents, or computation.',
-    'Examples that REQUIRE a tool call:',
-    '  • "what\'s the price of X?" → WebFetch a price API or WebSearch',
-    '  • "what\'s the weather in Y?" → WebFetch / WebSearch',
-    '  • "what\'s in file Z?" → Read',
-    '  • "summarize this URL" → WebFetch',
-    'Never answer "I don\'t have real-time data" without first attempting a WebFetch or WebSearch.',
-    'Keep replies concise — they appear in chat bubbles. Plain text, no markdown headers.',
-  ].join('\n');
-
-  // Run the node-global "default brain" persona that responds to @egpt
-  // mentions. Lives outside any room — has its own persistent
-  // conversation thread saved at ~/.egpt/config.json default_brain.session_id.
-  // First call spawns fresh; subsequent calls resume.
+  // Run the node-global "@egpt" persona — same brain machinery as a
+  // /attach-ed session, just lives outside any room (omnipresent
+  // butler giving continuity across rooms / bridges). The brain is
+  // invoked with the same options shape /attach uses; whatever the
+  // chosen brain does by default is what @egpt does. No persona-only
+  // system prompt or allowed-tools default — opt in via /config
+  // default_brain {...,"system_prompt":"...","allowed_tools":"all"}.
+  // Conversation continuity: brain returns optionsPatch.sessionId on
+  // the first turn; we persist it to ~/.egpt/config.json and pass it
+  // back as --resume on subsequent turns.
   async function runDefaultBrainTurn(text) {
     const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
     const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
@@ -4275,27 +4264,13 @@ function App() {
       cwd: dbCfg.cwd ?? process.cwd(),
       sessionName: 'egpt',
       userName: USER_NAME,
-      // Default: full tool access (--dangerously-skip-permissions).
-      // The user explicitly opted in — this is their machine and the
-      // @egpt persona should be as capable as Claude Code itself.
-      // Override with allowed_tools: "WebFetch WebSearch ..." to
-      // narrow, or "none" / "" to disable tools entirely.
-      allowedTools: dbCfg.allowed_tools ?? 'all',
-      // Nudge the @egpt persona to actually call tools rather than
-      // answer from training. Without this, vague prompts ("what's
-      // the price of X?") return "I don't have real-time data"
-      // instead of triggering WebFetch/WebSearch — the tools are
-      // available, the model just doesn't reach for them.
-      appendSystemPrompt: dbCfg.system_prompt ?? DEFAULT_PERSONA_SYSTEM_PROMPT,
-      // Surface the brain's spawn-args diagnostic into /log so the
-      // user can confirm permission flags were passed.
-      onLog: (msg) => logOut(msg),
+      // Optional knobs the user can set per-deployment via /config.
+      // Absent here unless explicitly configured — keeps @egpt's
+      // brain.stream call symmetric with /attach.
+      ...(dbCfg.allowed_tools  ? { allowedTools:        dbCfg.allowed_tools  } : {}),
+      ...(dbCfg.system_prompt  ? { appendSystemPrompt:  dbCfg.system_prompt  } : {}),
     };
     try {
-      // Both slots get the user text. claude-code's stream pipes
-      // 'history' to stdin in cold-start (no sessionId) and 'message'
-      // in resume mode. With history='' we got 'Input must be provided'
-      // because --print rejects empty stdin.
       const result = await brain.stream(
         { history: text, message: text },
         () => {},   // no streaming UI for persona; deliver final text only

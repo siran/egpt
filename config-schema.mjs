@@ -26,5 +26,5 @@ export const CONFIG_SCHEMA = {
   // default_brain: the persona that responds to @egpt mentions. Lives
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
-  default_brain: 'default brain (the @egpt persona): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "...", allowed_tools?: "all" | "<space-sep tool names>" (default "all" = --dangerously-skip-permissions; narrow with e.g. "WebFetch WebSearch Read") }',
+  default_brain: 'default brain (the @egpt persona — same machinery as /attach, just node-global): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "...", allowed_tools?: "all" | "<space-sep>" (opt-in; absent = brain default), system_prompt?: "..." (opt-in; absent = brain default). For "just works with tools" pick type:codex; type:claude-code refuses tools in --print mode unless allowed_tools is set }',
 };
