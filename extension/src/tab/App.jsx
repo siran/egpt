@@ -1140,15 +1140,17 @@ export default function App() {
 
   // ── WhatsApp-CDP bridge ───────────────────────────────────────
   //
-  // Opt-in via chrome.storage.sync.whatsapp_cdp.enabled. Drives a
-  // logged-in web.whatsapp.com tab via CDP. v1: receives + sends in
-  // the currently-active chat. Multi-chat / awareness rules / edit-
-  // streaming are deferred — see BRIDGES_CDP_SPEC.md for the v2 path.
-  const waCdpBridgeRef = useRef(null);
+  // Auto-detect: when a web.whatsapp.com tab is open in the brain
+  // Chrome, attach the bridge. When that tab closes, detach. Tab
+  // presence IS the on/off switch — close the tab when you don't want
+  // egpt observing. Set chrome.storage.sync.whatsapp_cdp.enabled to
+  // false to opt out entirely (rare; default is auto).
+  //
+  // v1 limits: single chat (the active one), buffered send (no edit
+  // streaming), no command/mention routing. See BRIDGES_CDP_SPEC.md.
+  const waCdpBridgeRef       = useRef(null);
+  const waCdpAttachedTabRef  = useRef(null);   // CDP target id of the currently-attached tab
 
-  // Incoming WA-CDP message handler. Same shape as the Telegram one
-  // but tagged with client:'wa-cdp' and via:'whatsapp[<chatId>]' so
-  // peers can tell which surface produced the utterance.
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
     const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
     appendMsg(author, text);
@@ -1167,28 +1169,40 @@ export default function App() {
   handleIncomingWaCdpRef.current = handleIncomingWaCdp;
 
   useEffect(() => {
-    let cancelled = false;
-    let bridge = null;
-    const start = async () => {
-      const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-      if (!whatsapp_cdp.enabled) return;
-      if (cancelled) return;
-      let waTabId = null;
-      try {
-        const tabs = await listTabs();
-        const wa = tabs.find(t => /web\.whatsapp\.com/.test(t.url ?? ''));
-        if (!wa) {
-          appendMsg('egpt', 'whatsapp-cdp: no web.whatsapp.com tab open. Open one, log in, and reload the extension to retry.');
-          return;
-        }
-        waTabId = wa.id;
-      } catch (e) {
-        appendMsg('egpt', `whatsapp-cdp: cdp.listTabs failed: ${e.message}`);
-        return;
+    let cancelled  = false;
+    let pollHandle = null;
+
+    const detach = (reason) => {
+      if (waCdpBridgeRef.current) {
+        try { waCdpBridgeRef.current.stop(); } catch (_) {}
+        waCdpBridgeRef.current = null;
+        waCdpAttachedTabRef.current = null;
+        if (reason) appendMsg('egpt', `whatsapp-cdp: detached (${reason})`);
       }
+    };
+
+    const tryAttach = async () => {
+      if (cancelled) return;
+      // Opt-out via whatsapp_cdp.enabled === false. Default (absent) = auto.
+      const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+      if (cfg.enabled === false) { detach('disabled in settings'); return; }
+
+      let tabs;
+      try { tabs = await listTabs(); }
+      catch { return; /* CDP host not up; try next tick */ }
+      const wa = tabs.find(t => /web\.whatsapp\.com/.test(t.url ?? ''));
+
+      // Attached tab still alive? Stay attached.
+      if (waCdpAttachedTabRef.current) {
+        if (wa && wa.id === waCdpAttachedTabRef.current) return;
+        detach('tab gone');
+      }
+
+      if (!wa) return;       // no WA Web tab — silently wait
+
       try {
-        bridge = await startWhatsAppCdpBridge({
-          targetId:   waTabId,
+        const bridge = await startWhatsAppCdpBridge({
+          targetId:   wa.id,
           onLog:      (msg) => appendMsg('egpt', msg),
           onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
           onChatId:   async (id) => {
@@ -1207,15 +1221,21 @@ export default function App() {
         });
         if (cancelled) { bridge.stop(); return; }
         waCdpBridgeRef.current = bridge;
+        waCdpAttachedTabRef.current = wa.id;
       } catch (e) {
-        appendMsg('egpt', `whatsapp-cdp: start failed: ${e.message}`);
+        appendMsg('egpt', `whatsapp-cdp: attach failed: ${e.message}`);
       }
     };
-    start();
+
+    // Run immediately; then poll. 5s is the same cadence the bus
+    // useEffect uses — cheap (one /json/list when Chrome is up).
+    tryAttach();
+    pollHandle = setInterval(tryAttach, 5000);
+
     return () => {
       cancelled = true;
-      waCdpBridgeRef.current?.stop();
-      waCdpBridgeRef.current = null;
+      if (pollHandle) clearInterval(pollHandle);
+      detach(null);
     };
   }, [appendMsg]);
 
