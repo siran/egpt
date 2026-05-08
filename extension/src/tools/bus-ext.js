@@ -2,27 +2,32 @@
 // extension context. Same API as the node module; uses chrome.debugger
 // + chrome.tabs instead of CDP-over-WebSocket.
 //
-// Why chrome.debugger instead of raw WebSocket: Chrome rejects WS
-// upgrades to /devtools/page/<id> for chrome-extension:// pages
-// (privileged, not allowed via --remote-allow-origins=*). Without
-// chrome.debugger, the extension would have to fall back to the
-// proxy-served http://localhost:9222/bus.html, re-introducing the
-// shell dependency. chrome.debugger is the privileged in-process
-// API that accepts attach to extension's own pages, so the
-// extension can host its bundled bus.html and stand alone.
+// Bus tab URL is the proxy-served http://localhost:9222/bus.html.
+// We tried hosting it at chrome-extension://<id>/bus.html so the
+// extension could stand alone, but Chrome rejects concurrent CDP
+// attach to chrome-extension:// pages: when the shell's WS-via-proxy
+// session is open on the tab, the extension's chrome.debugger.attach
+// fails with 'Another debugger is already attached'. Regular HTTP
+// pages don't have that limitation, so a single bus tab can host
+// both shell's WS session and extension's chrome.debugger session
+// simultaneously.
+//
+// Trade-off: the extension's bus join depends on the shell being up
+// (for the proxy to serve bus.html). Without the shell, the
+// extension still loads, polls Telegram, talks to brain tabs — it
+// just can't see other surfaces' activity until the shell starts
+// and the proxy comes up. The auto-retry tryConnect picks it up.
 
 export const BUS_PATH = '/bus.html';
 
-// The extension hosts its own bus.html (bundled from tools/bus.html
-// at build time, exposed via web_accessible_resources). Override
-// via chrome.storage.sync.bus_url if you want to point at a remote
-// bus tab instead.
+const PROXY_PORT_DEFAULT = 9222;
+
 async function configuredBusHost() {
   try {
     const got = await chrome.storage.sync.get('bus_url');
     if (typeof got?.bus_url === 'string' && got.bus_url.trim()) return got.bus_url.trim();
   } catch (_) {}
-  return chrome.runtime.getURL('bus.html');
+  return `http://localhost:${PROXY_PORT_DEFAULT}${BUS_PATH}`;
 }
 
 export async function busUrl() {

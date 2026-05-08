@@ -4413,10 +4413,18 @@ function App() {
     // should NOT replicate to Telegram. Otherwise viewers see noise like
     // 'An@home /sessions' / 'An@home /restart'. So _localOnly fires
     // either when the input came from Telegram OR when it's a command.
+    // Author tag for the visible echo: keep it short.
+    //   '@<user>@tg'  for telegram, '@<user>@wa' for whatsapp.
+    // The chatId stays in the bus event's via:`<surface>[<chatId>]`
+    // for routing, but observers reading the transcript don't need
+    // the JID — they have surface + user, which is what matters.
+    // Strip a leading '@' off telegramUser/waUser so we don't render
+    // double '@' (waUser is '@An' style; telegramUser is '@username').
+    const stripAt = (s) => (s ?? '').replace(/^@/, '');
     const echoAuthor = (meta.fromTelegram && meta.telegramUser)
-      ? `${meta.telegramUser}@telegram[${meta.telegramChatId ?? '?'}]`
+      ? `${stripAt(meta.telegramUser)}@tg`
       : (meta.fromWhatsApp && meta.waUser)
-      ? `${meta.waUser}@whatsapp[${meta.waChatId ?? '?'}]`
+      ? `${stripAt(meta.waUser)}@wa`
       : 'You';
     const isSlashCommand = text.startsWith('/');
     // Slash commands are operator tooling, not part of the conversation
