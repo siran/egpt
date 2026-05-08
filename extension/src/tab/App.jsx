@@ -852,14 +852,14 @@ export default function App() {
     const tryConnect = async () => {
       if (cancelled || busSubRef.current) return;
       try {
-        // Pass our own packaged bus.html so the extension hosts the
-        // bus tab itself (chrome-extension://<id>/bus.html), free of
-        // the proxy serving it. If a tab already exists at any URL
-        // ending in /bus.html (whether ours or http://localhost:9222/)
-        // we attach to it instead of opening another.
-        const located = await bus.findOrOpenBusTab({
-          openUrl: chrome.runtime.getURL('bus.html'),
-        });
+        // bus-ext.js (chrome.debugger adapter) already opens the
+        // extension's bundled bus.html via chrome.runtime.getURL.
+        // chrome.debugger.attach is the privileged API that lets us
+        // CDP-attach to chrome-extension://<id>/bus.html — raw WS
+        // upgrades to those URLs are rejected by Chrome, which is why
+        // we route extension-side CDP through chrome.debugger
+        // instead of the unified WebSocket path the shell uses.
+        const located = await bus.findOrOpenBusTab();
         if (cancelled || !located) return;
         busTargetIdRef.current = located.targetId;
         const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {

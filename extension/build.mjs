@@ -6,26 +6,43 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
 
-// The extension uses the shared tools/cdp.mjs and tools/bus.mjs directly
-// — no chrome.debugger shim. cdp.mjs has runtime-only dynamic imports
-// for node:fs/path/os, which esbuild can't resolve in a browser bundle;
-// mark them external so the bundle keeps the import expressions intact
-// (they throw at runtime in the browser and the try/catch in cdp.mjs
-// falls through to the no-op default until cdp-bootstrap.js installs
-// the chrome.storage-backed getter).
+// Chrome dist redirects tools/cdp.mjs and tools/bus.mjs to the
+// chrome.debugger-based adapters. The extension lives inside Chrome
+// and chrome.debugger is the privileged API that lets it attach CDP
+// to its own pages (including chrome-extension://<id>/bus.html — raw
+// WS upgrades to those are rejected). Same exported names so the
+// rest of the extension code is unchanged.
+//
+// cdp.mjs's Node-only dynamic imports are still marked external so
+// the browser bundle doesn't try to resolve node:fs/path/os.
 //
 // We produce two self-contained dists side by side:
 //   extension/dist/         — Chrome (manifest.json from manifest.chrome.json)
 //   extension/dist-firefox/ — Firefox (manifest.json from manifest.firefox.json)
 //
-// Both dirs hold the same JS bundles + assets; only the manifest differs.
 // Each dist is the load root for its browser:
 //   Chrome:  --load-extension=<repo>/extension/dist
 //            (or chrome://extensions → Load Unpacked)
 //   Firefox: about:debugging → Load Temporary Add-on → pick
 //            <repo>/extension/dist-firefox/manifest.json
 
-const shared = {
+// Chrome-only shim: redirect tools/cdp.mjs and tools/bus.mjs to the
+// chrome.debugger adapters. Firefox build skips this so it goes
+// through the raw-WebSocket path (which Firefox needs anyway, since
+// browser.debugger isn't a thing there for cross-host CDP).
+const cdpShim = {
+  name: 'cdp-shim',
+  setup(b) {
+    b.onResolve({ filter: /\/tools\/cdp\.mjs$/ }, () => ({
+      path: resolve(__dirname, 'src/tools/cdp-ext.js'),
+    }));
+    b.onResolve({ filter: /\/tools\/bus\.mjs$/ }, () => ({
+      path: resolve(__dirname, 'src/tools/bus-ext.js'),
+    }));
+  },
+};
+
+const baseShared = {
   bundle: true,
   platform: 'browser',
   format: 'esm',
@@ -35,25 +52,28 @@ const shared = {
   logLevel: 'info',
 };
 
+const chromeShared  = { ...baseShared, plugins: [cdpShim] };
+const firefoxShared = { ...baseShared };
+
 // ── Build Chrome dist ───────────────────────────────────────────────
 const chromeDist = resolve(__dirname, 'dist');
 mkdirSync(resolve(chromeDist, 'tab'),      { recursive: true });
 mkdirSync(resolve(chromeDist, 'settings'), { recursive: true });
 
 await build({
-  ...shared,
+  ...chromeShared,
   entryPoints: [resolve(__dirname, 'src/background.js')],
   outfile: resolve(chromeDist, 'background.js'),
 });
 
 await build({
-  ...shared,
+  ...chromeShared,
   entryPoints: [resolve(__dirname, 'src/tab/index.jsx')],
   outfile: resolve(chromeDist, 'tab/app.js'),
 });
 
 await build({
-  ...shared,
+  ...chromeShared,
   entryPoints: [resolve(__dirname, 'src/settings/index.jsx')],
   outfile: resolve(chromeDist, 'settings/app.js'),
 });
@@ -81,22 +101,40 @@ copyFileSync(
   resolve(chromeDist, 'manifest.json'),
 );
 
-// ── Mirror to Firefox dist (same JS, different manifest) ────────────
+// ── Build Firefox dist (separate JS bundle, no cdp-shim) ────────────
+// Firefox doesn't have chrome.debugger, so its bundle uses the raw-
+// WebSocket path through the unified tools/cdp.mjs and tools/bus.mjs.
+// Same source files, different bundle output.
 const firefoxDist = resolve(__dirname, 'dist-firefox');
 mkdirSync(resolve(firefoxDist, 'tab'),      { recursive: true });
 mkdirSync(resolve(firefoxDist, 'settings'), { recursive: true });
 
-const builtFiles = [
-  'background.js',
-  'tab/app.js',
+await build({
+  ...firefoxShared,
+  entryPoints: [resolve(__dirname, 'src/background.js')],
+  outfile: resolve(firefoxDist, 'background.js'),
+});
+
+await build({
+  ...firefoxShared,
+  entryPoints: [resolve(__dirname, 'src/tab/index.jsx')],
+  outfile: resolve(firefoxDist, 'tab/app.js'),
+});
+
+await build({
+  ...firefoxShared,
+  entryPoints: [resolve(__dirname, 'src/settings/index.jsx')],
+  outfile: resolve(firefoxDist, 'settings/app.js'),
+});
+
+const firefoxStaticAssets = [
   'tab/index.html',
   'tab/style.css',
-  'settings/app.js',
   'settings/index.html',
   'settings/style.css',
   'bus.html',
 ];
-for (const rel of builtFiles) {
+for (const rel of firefoxStaticAssets) {
   copyFileSync(resolve(chromeDist, rel), resolve(firefoxDist, rel));
 }
 copyFileSync(
