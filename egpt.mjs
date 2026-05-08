@@ -2011,6 +2011,17 @@ function App() {
         const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
           if (cancelled) return;
           handleBusEventRef.current?.(ev);
+        }, {
+          // When the bus tab dies (user closed it, extension respawned
+          // it, Chrome killed it for memory), clear our refs so the
+          // 5s tryConnect re-attaches to whichever tab is now live
+          // instead of short-circuiting on the dead subscription.
+          onClose: () => {
+            if (cancelled) return;
+            busTargetIdRef.current = null;
+            busSubRef.current = null;
+            notice('bus tab gone — reattaching on next tick');
+          },
         });
         busSubRef.current = sub;
         await bus.postEvent(located.targetId, {

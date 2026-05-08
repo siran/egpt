@@ -101,7 +101,7 @@ export function postEvent(targetId, event) {
  * `replaySinceMs` controls the look-back window (default: 5 minutes).
  */
 export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
-  const { replay = true, replaySinceMs = 5 * 60 * 1000 } = opts;
+  const { replay = true, replaySinceMs = 5 * 60 * 1000, onClose = null } = opts;
   const tab = await cdp.findTab(targetId);
   if (!tab) throw new Error(`bus tab ${(targetId ?? '?').slice(0, 8)}… not found`);
   // Chrome's Runtime.enable replays past Runtime.consoleAPICalled events
@@ -192,7 +192,19 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
       if (!resolved) { resolved = true; reject(new Error('bus subscribe WS error')); }
       stop();
     });
-    ws.addEventListener('close', () => { stopped = true; });
+    ws.addEventListener('close', () => {
+      // Surface the close to the host so it can clear its bus-sub
+      // ref and reconnect to whichever bus tab is now alive. Without
+      // this, the shell's tryConnect short-circuits at "already
+      // attached" forever — even though the underlying WS died when
+      // the bus tab was closed (e.g. user manually closed it; the
+      // extension respawns a fresh tab but the shell never sees it).
+      const wasAttached = !stopped;
+      stopped = true;
+      if (wasAttached && typeof onClose === 'function') {
+        try { onClose(); } catch (_) {}
+      }
+    });
 
     // Safety: resolve even if Runtime.enable's reply gets reordered or
     // the replay request hangs.
