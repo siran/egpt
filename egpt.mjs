@@ -21,6 +21,7 @@ import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
+import { recordSession, startNew, rewind, listHistory, summarize } from './persona-state.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
@@ -2467,6 +2468,59 @@ function App() {
       } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
       return true;
     }
+    if (cmd === '/egpt') {
+      // Manage the @egpt persona's session-history state.
+      // Subcommands: status (default), new, list, rewind [n|id-prefix].
+      // Pure logic lives in persona-state.mjs (tested in
+      // tests/persona-state.test.mjs); this handler is just I/O.
+      const parts = arg.trim().split(/\s+/);
+      const sub = (parts[0] || 'status').toLowerCase();
+      const subArg = parts.slice(1).join(' ').trim();
+      const state = readDefaultBrainState();
+
+      if (sub === 'help') {
+        sysOut('usage: /egpt [status | new | list | rewind [<n>|<id-prefix>]]');
+        return true;
+      }
+      if (sub === 'status') {
+        const sum = summarize(state);
+        sysOut(`egpt: ${sum.type}  active=${sum.activeShort}  history=${sum.historyCount}`);
+        return true;
+      }
+      if (sub === 'list') {
+        const list = listHistory(state);
+        if (!list.length) { sysOut('egpt: no sessions yet'); return true; }
+        const lines = list.map(h => {
+          const age = humanAge(h.at);
+          const marker = h.isActive ? '*' : ' ';
+          return `${marker} ${String(h.index).padStart(2)}  ${h.short}  ${h.type.padEnd(11)}  ${age}`;
+        });
+        sysOut(['egpt: sessions (newest first, * = active):', ...lines].join('\n'));
+        return true;
+      }
+      if (sub === 'new') {
+        const next = startNew(state);
+        if (next === state) { sysOut('egpt: already on a fresh state — next @egpt starts a new thread'); return true; }
+        await persistDefaultBrainState(next);
+        sysOut('egpt: cleared active session — next @egpt starts a new thread');
+        return true;
+      }
+      if (sub === 'rewind') {
+        let target = subArg;
+        if (target === '') target = 0;
+        else if (/^\d+$/.test(target)) target = parseInt(target, 10);
+        try {
+          const next = rewind(state, target);
+          await persistDefaultBrainState(next);
+          sysOut(`egpt: rewound to @${next.session_id.slice(0, 8)} (${next.type})`);
+        } catch (e) {
+          sysOut(`!! /egpt rewind: ${e.message}`);
+        }
+        return true;
+      }
+      sysOut(`!! /egpt: unknown subcommand "${sub}". usage: /egpt [status | new | list | rewind [<n>|<id-prefix>]]`);
+      return true;
+    }
     if (cmd === '/log' || cmd === '/logs') {
       // Show the last N log items (telemetry, room-state hints, debug
       // dumps, peer announces). Default N=30. They're in items[] but
@@ -4280,8 +4334,13 @@ function App() {
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const newSessionId = result?.optionsPatch?.sessionId;
-      if (newSessionId && newSessionId !== dbCfg.session_id) {
-        await persistDefaultBrainSessionId(brainType, newSessionId);
+      if (newSessionId) {
+        // Record into history (dedupes / refreshes timestamp if the
+        // brain returned the same id on a resumed turn). Always persist
+        // so the in-disk shape stays current — write is once per @egpt
+        // turn, cheap.
+        const next = recordSession(readDefaultBrainState(), newSessionId, { type: brainType });
+        await persistDefaultBrainState(next);
       }
       return final.trim() || '(no reply)';
     } catch (e) {
@@ -4289,18 +4348,44 @@ function App() {
     }
   }
 
-  async function persistDefaultBrainSessionId(brainType, sessionId) {
+  // Compact "Ns/Nm/Nh/Nd ago" for /egpt list. Local to this scope to
+  // keep the slash handler self-contained.
+  function humanAge(at) {
+    const sec = Math.max(0, Math.floor((Date.now() - at) / 1000));
+    if (sec < 60)    return `${sec}s ago`;
+    if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  }
+
+  // Read the persona state out of EGPT_CONFIG.default_brain into the
+  // shape persona-state.mjs functions expect. Reverse of
+  // persistDefaultBrainState below.
+  function readDefaultBrainState() {
+    const cfg = EGPT_CONFIG.default_brain ?? {};
+    return {
+      type:       cfg.type        ?? 'claude-code',
+      session_id: cfg.session_id  ?? null,
+      history:    Array.isArray(cfg.history) ? cfg.history : [],
+    };
+  }
+
+  // Persist a persona-state.mjs state object back to ~/.egpt/config.json
+  // and EGPT_CONFIG.default_brain. Preserves any unrelated fields the
+  // user has set on default_brain (allowed_tools, system_prompt, cwd).
+  async function persistDefaultBrainState(state) {
     const cfgPath = join(EGPT_HOME, 'config.json');
     let cfg = {};
     try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
     if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
-    cfg.default_brain.type = brainType;
-    cfg.default_brain.session_id = sessionId;
+    cfg.default_brain.type        = state.type;
+    cfg.default_brain.session_id  = state.session_id;
+    cfg.default_brain.history     = state.history;
     EGPT_CONFIG.default_brain = cfg.default_brain;
     try {
       await mkdir(EGPT_HOME, { recursive: true });
       await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
-    } catch (e) { sysOut(`!! couldn't persist default_brain.session_id: ${e.message}`); }
+    } catch (e) { sysOut(`!! couldn't persist default_brain: ${e.message}`); }
   }
 
   // Run a single brain-turn for one session.

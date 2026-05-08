@@ -101,6 +101,7 @@ export const COMMANDS = [
   { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'show this list' },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
+  { cmd: '/egpt',           surface: 'shell',     usage: '/egpt [status|new|list|rewind [<n>|<id-prefix>]]', desc: 'manage @egpt persona session: status (default), new (start fresh), list (history), rewind' },
 ];
 
 // All known command tokens (across all surfaces). Used by surfaces to validate
