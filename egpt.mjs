@@ -4246,11 +4246,18 @@ function App() {
 
   // Run the node-global "@egpt" persona — same brain machinery as a
   // /attach-ed session, just lives outside any room (omnipresent
-  // butler giving continuity across rooms / bridges). The brain is
-  // invoked with the same options shape /attach uses; whatever the
-  // chosen brain does by default is what @egpt does. No persona-only
-  // system prompt or allowed-tools default — opt in via /config
-  // default_brain {...,"system_prompt":"...","allowed_tools":"all"}.
+  // butler giving continuity across rooms / bridges).
+  //
+  // Defaults are set so the user's experience matches what they get in
+  // their console: codex auto-uses tools (its CLI does this natively);
+  // claude-code asks for permission interactively. The persona runs
+  // non-interactively, so for claude-code we default to 'all' (=
+  // --dangerously-skip-permissions) so the persona auto-answers 'yes'
+  // the way the user would in console. codex.stream ignores the opt,
+  // so passing it unconditionally is harmless.
+  // No system_prompt nudge by default — that would be adding behavior
+  // the user doesn't see in console.
+  // All defaults overridable via /config default_brain {...}.
   // Conversation continuity: brain returns optionsPatch.sessionId on
   // the first turn; we persist it to ~/.egpt/config.json and pass it
   // back as --resume on subsequent turns.
@@ -4264,11 +4271,8 @@ function App() {
       cwd: dbCfg.cwd ?? process.cwd(),
       sessionName: 'egpt',
       userName: USER_NAME,
-      // Optional knobs the user can set per-deployment via /config.
-      // Absent here unless explicitly configured — keeps @egpt's
-      // brain.stream call symmetric with /attach.
-      ...(dbCfg.allowed_tools  ? { allowedTools:        dbCfg.allowed_tools  } : {}),
-      ...(dbCfg.system_prompt  ? { appendSystemPrompt:  dbCfg.system_prompt  } : {}),
+      allowedTools: dbCfg.allowed_tools ?? 'all',
+      ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
     };
     try {
       const result = await brain.stream(
