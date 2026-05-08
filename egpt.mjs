@@ -1633,10 +1633,27 @@ function App() {
               { chatId: from.chatId });
             return;
           }
+          // Egpt-chat vs observed-chat distinction. Full mirror only
+          // happens for chats the user designates as egpt chats:
+          //   * the WA self-DM ('Message Yourself' — the user's own
+          //     number talking to itself), always.
+          //   * any chat ID listed in cfg.whatsapp.egpt_chats.
+          // For other chats (friend DMs, groups), egpt listens but
+          // doesn't echo to shell or broadcast on the bus. The
+          // operator still wants @egpt mentions to work in those
+          // chats — the persona dispatch path handles that, replying
+          // directly to the originating chat.
+          const myJid = waBridgeRef.current?.myJid ?? null;
+          const myNum = String(myJid ?? '').split(':')[0]?.split('@')[0];
+          const chatNum = String(from.chatId ?? '').split('@')[0]?.split(':')[0];
+          const isSelfDM = myNum && chatNum && chatNum === myNum;
+          const explicitList = cfg.egpt_chats ?? [];
+          const isEgptChat = isSelfDM || explicitList.includes(from.chatId);
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
+            observeOnly: !isEgptChat,
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
@@ -4494,11 +4511,24 @@ function App() {
     const echoSource = meta.fromTelegram ? 'telegram'
       : meta.fromWhatsApp ? 'whatsapp'
       : null;
-    setItems(p => [...p, {
-      id: Date.now() + Math.random(), author: echoAuthor, body: text,
-      ...(isSlashCommand ? { _localOnly: true } : {}),
-      ...(echoSource ? { _source: echoSource } : {}),
-    }]);
+    // observeOnly: this submit came from a chat the operator hasn't
+    // designated as an egpt chat (e.g. a friend's WhatsApp DM). egpt
+    // listens — to catch @egpt wake-words and reply to the originating
+    // chat — but the message itself doesn't appear in the room
+    // transcript and doesn't ride the bus. Without this gate, every
+    // friend-DM line and group line would echo into shell and mirror
+    // to telegram, which is noise the operator doesn't want.
+    if (!meta.observeOnly) {
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: echoAuthor, body: text,
+        ...(isSlashCommand ? { _localOnly: true } : {}),
+        ...(echoSource ? { _source: echoSource } : {}),
+      }]);
+    } else {
+      // Audit trail for observed chats: log to /log so the operator
+      // can review who said what without flooding the transcript.
+      logOut(`(observed) ${echoAuthor}: ${text}`);
+    }
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
     // the same conversation regardless of which surface someone is looking
@@ -4511,9 +4541,13 @@ function App() {
     // telegram / extension where they'd surface as conversational
     // noise. The local _localOnly flag also keeps them out of the
     // local items-mirror, but that doesn't reach peers.
+    //
+    // observeOnly also skips the bus broadcast — the same logic as the
+    // local echo. Other surfaces don't need to see chats the operator
+    // isn't actively participating in via egpt.
     {
       const tid = busTargetIdRef.current;
-      if (tid && !isSlashCommand) {
+      if (tid && !isSlashCommand && !meta.observeOnly) {
         // When the input came from Telegram or WhatsApp, attribute the
         // utterance to the upstream user and tag the surface as
         // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
@@ -4563,6 +4597,14 @@ function App() {
       brainForName, canonicalBrainName, activeSessions,
     });
 
+    // Observed chats: egpt only acts on @<persona> wake-words. Any
+    // other decision kind (commands, brain turns, peer-mentions, even
+    // contextual hints) is suppressed — the user didn't ask egpt to
+    // do anything; they're just chatting in a non-egpt chat that
+    // egpt happens to listen to. Persona dispatch (above) handles the
+    // @egpt case and replies directly to the originating chat.
+    if (meta.observeOnly && decision.kind !== 'persona') return;
+
     if (decision.kind === 'command') {
       const handled = await handleSlash(text);
       if (!handled) sysOut(`!! unknown command: ${decision.cmd}`);
@@ -4599,30 +4641,22 @@ function App() {
     if (decision.kind === 'persona') {
       // @egpt — node-global default brain. Lives outside any room.
       // Persistent thread; replies go back through whichever bridge
-      // (if any) carried the request, and ALSO mirror to other
-      // surfaces as a play-script reproduction so observers see the
-      // question + answer regardless of which chat carried it.
-      await append(echoAuthor, text);
+      // (if any) carried the request.
+      //
+      // For an egpt chat (shell, TG bot DM, WA self-DM, or an
+      // explicit egpt_chats entry) the reply ALSO mirrors to other
+      // surfaces as a play-script reproduction. For an observed
+      // chat (friend's DM, group), the reply is sent ONLY to the
+      // originating chat — never mirrored anywhere. The operator
+      // gets a /log entry as audit.
+      if (!meta.observeOnly) await append(echoAuthor, text);
       setBusy(true);
       try {
-        // Identify the prompt for the persona so claude has chat
-        // context: who said this, in which surface, in which chat.
         const personaPrompt = formatPersonaPrompt(meta, decision.body);
         const reply = await runDefaultBrainTurn(personaPrompt);
-        const replyAuthor = `egpt@${SURFACE_TAG}`;
-        // _source tag: the bridge that asked. Items-mirror to that
-        // bridge will skip (we direct-send below); items-mirror to
-        // OTHER bridges still fires (cross-surface visibility).
-        const replySource = meta.fromTelegram ? 'telegram'
-          : meta.fromWhatsApp ? 'whatsapp'
-          : null;
-        setItems(p => [...p, {
-          id: Date.now() + Math.random(),
-          author: replyAuthor,
-          body: reply,
-          ...(replySource ? { _source: replySource } : {}),
-        }]);
-        await append(replyAuthor, reply);
+
+        // Always send to the originating chat — that's the user's
+        // 'reply where the @egpt was issued' contract.
         if (meta.fromTelegram && bridgeRef.current) {
           bridgeRef.current.send(`🤖 <b>egpt</b>\n${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
@@ -4630,20 +4664,44 @@ function App() {
         if (meta.fromWhatsApp && waBridgeRef.current) {
           waBridgeRef.current.send(`🤖 egpt: ${reply}`, { chatId: meta.waChatId });
         }
-        // Broadcast on bus so peers (extension, future surfaces) see
-        // the persona reply as a play-script line. via: tags the
-        // originating chat so peers' mirrors don't echo back to the
-        // same bridge we already direct-sent to.
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
-            : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+
+        if (meta.observeOnly) {
+          // Observed-chat invocation: reply went to the originating
+          // chat above. Log to /log for operator audit; don't
+          // populate the transcript or broadcast on the bus.
+          const where = meta.waChatId ?? meta.telegramChatId ?? '?';
+          const preview = reply.length > 200 ? reply.slice(0, 200) + '…' : reply;
+          logOut(`(observed @egpt in ${where}): ${preview}`);
+        } else {
+          const replyAuthor = `egpt@${SURFACE_TAG}`;
+          // _source tag: the bridge that asked. Items-mirror to that
+          // bridge will skip (we direct-send above); items-mirror to
+          // OTHER bridges still fires (cross-surface visibility).
+          const replySource = meta.fromTelegram ? 'telegram'
+            : meta.fromWhatsApp ? 'whatsapp'
             : null;
-          bus.postEvent(tid, {
-            type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
-            session: 'egpt', body: reply,
-            ...(via ? { via } : {}),
-          }).catch(() => {});
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(),
+            author: replyAuthor,
+            body: reply,
+            ...(replySource ? { _source: replySource } : {}),
+          }]);
+          await append(replyAuthor, reply);
+          // Broadcast on bus so peers (extension, future surfaces) see
+          // the persona reply as a play-script line. via: tags the
+          // originating chat so peers' mirrors don't echo back to the
+          // same bridge we already direct-sent to.
+          const tid = busTargetIdRef.current;
+          if (tid) {
+            const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
+              : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+              : null;
+            bus.postEvent(tid, {
+              type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
+              session: 'egpt', body: reply,
+              ...(via ? { via } : {}),
+            }).catch(() => {});
+          }
         }
       } finally {
         setBusy(false);
