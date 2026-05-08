@@ -1535,10 +1535,30 @@ function App() {
     return true;
   }, []);
 
+  // Bus-aware Telegram startup. Instead of racing every other node
+  // to the polling slot at boot (which guaranteed a 409 on the loser
+  // and then a noisy yield), we wait briefly for the bus to settle
+  // and consult peerNodesRef for any peer already announcing
+  // `polling: true`. If found, defer — the telegram-status handler
+  // claims the slot when they release. If clear, start the bridge.
+  // Re-evaluated whenever peers change so a peer joining mid-window
+  // pre-empts our start.
   useEffect(() => {
-    startTgBridge();
+    if (bridgeRef.current) return;
+    const t = setTimeout(() => {
+      if (bridgeRef.current) return;
+      for (const [, peer] of peerNodesRef.current) {
+        if (peer.polling) return; // they own it; wait for yield
+      }
+      startTgBridge();
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [peersRev, startTgBridge]);
+
+  // Stop the bridge on unmount regardless of who started it.
+  useEffect(() => {
     return () => stopTgBridge();
-  }, [startTgBridge, stopTgBridge]);
+  }, [stopTgBridge]);
 
   // ── WhatsApp bridge (baileys, personal account) ──────────────────────
   // Enabled when EGPT_CONFIG.whatsapp.enabled === true (or any truthy
