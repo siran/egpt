@@ -1707,6 +1707,9 @@ function App() {
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
+      // _source tags the surface this item came from. Skip mirroring
+      // back to its own surface (avoid echo loops).
+      if (item._source === 'telegram') continue;
       if (b) b.send(formatItemForTelegram(item, sessions));
     }
   }, [items.length]);
@@ -1730,6 +1733,7 @@ function App() {
     while (sentToWaItemsCountRef.current < items.length) {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
+      if (item._source === 'whatsapp') continue;  // skip echo to origin
       if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
     }
   }, [items.length]);
@@ -4100,6 +4104,27 @@ function App() {
     return runBrainTurn(opSession, result.text, sessionMap ?? sessions);
   }
 
+  // Identify the persona prompt with the originating surface, chat,
+  // and user — claude-code needs context to know "who am I talking to
+  // and where" since the same thread spans WA / TG / shell / extension.
+  // The body the user typed is below the identifier. Without this, an
+  // @egpt question from a friend's DM looks indistinguishable from a
+  // self-DM or shell input, and replies lose their conversational
+  // anchoring across the play.
+  function formatPersonaPrompt(meta, body) {
+    if (meta.fromTelegram) {
+      const user = meta.telegramUser ?? 'someone';
+      const chat = meta.telegramChatId ?? 'unknown';
+      return `[in Telegram chat ${chat}, ${user} said:]\n${body}`;
+    }
+    if (meta.fromWhatsApp) {
+      const user = meta.waUser ?? 'someone';
+      const chat = meta.waChatId ?? 'unknown';
+      return `[in WhatsApp chat ${chat}, ${user} said:]\n${body}`;
+    }
+    return `[from shell:]\n${body}`;
+  }
+
   // Run the node-global "default brain" persona that responds to @egpt
   // mentions. Lives outside any room — has its own persistent
   // conversation thread saved at ~/.egpt/config.json default_brain.session_id.
@@ -4359,10 +4384,18 @@ function App() {
       ? `${meta.waUser}@whatsapp[${meta.waChatId ?? '?'}]`
       : 'You';
     const isSlashCommand = text.startsWith('/');
-    const echoLocalOnly = !!meta.fromTelegram || !!meta.fromWhatsApp || isSlashCommand;
+    // Slash commands are operator tooling, not part of the conversation
+    // — they stay local. Bridge-arrived messages mirror to OTHER bridges
+    // (e.g. WA arrival → TG mirror) but skip the bridge they came from
+    // (no echo loop). _source carries the origin so each surface's
+    // items-mirror can decide.
+    const echoSource = meta.fromTelegram ? 'telegram'
+      : meta.fromWhatsApp ? 'whatsapp'
+      : null;
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: echoAuthor, body: text,
-      ...(echoLocalOnly ? { _localOnly: true } : {}),
+      ...(isSlashCommand ? { _localOnly: true } : {}),
+      ...(echoSource ? { _source: echoSource } : {}),
     }]);
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
@@ -4445,21 +4478,28 @@ function App() {
     if (decision.kind === 'persona') {
       // @egpt — node-global default brain. Lives outside any room.
       // Persistent thread; replies go back through whichever bridge
-      // (if any) carried the request.
+      // (if any) carried the request, and ALSO mirror to other
+      // surfaces as a play-script reproduction so observers see the
+      // question + answer regardless of which chat carried it.
       await append(echoAuthor, text);
       setBusy(true);
       try {
-        const reply = await runDefaultBrainTurn(decision.body);
+        // Identify the prompt for the persona so claude has chat
+        // context: who said this, in which surface, in which chat.
+        const personaPrompt = formatPersonaPrompt(meta, decision.body);
+        const reply = await runDefaultBrainTurn(personaPrompt);
         const replyAuthor = `egpt@${SURFACE_TAG}`;
-        const fromBridge = !!meta.fromTelegram || !!meta.fromWhatsApp;
+        // _source tag: the bridge that asked. Items-mirror to that
+        // bridge will skip (we direct-send below); items-mirror to
+        // OTHER bridges still fires (cross-surface visibility).
+        const replySource = meta.fromTelegram ? 'telegram'
+          : meta.fromWhatsApp ? 'whatsapp'
+          : null;
         setItems(p => [...p, {
           id: Date.now() + Math.random(),
           author: replyAuthor,
           body: reply,
-          // Bridges deliver via direct send below; mark _localOnly
-          // when we're routing back to a specific chat so items-flush
-          // doesn't double-deliver via lastChat.
-          _localOnly: fromBridge,
+          ...(replySource ? { _source: replySource } : {}),
         }]);
         await append(replyAuthor, reply);
         if (meta.fromTelegram && bridgeRef.current) {
@@ -4468,6 +4508,21 @@ function App() {
         }
         if (meta.fromWhatsApp && waBridgeRef.current) {
           waBridgeRef.current.send(`🤖 egpt: ${reply}`, { chatId: meta.waChatId });
+        }
+        // Broadcast on bus so peers (extension, future surfaces) see
+        // the persona reply as a play-script line. via: tags the
+        // originating chat so peers' mirrors don't echo back to the
+        // same bridge we already direct-sent to.
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
+            : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+            : null;
+          bus.postEvent(tid, {
+            type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
+            session: 'egpt', body: reply,
+            ...(via ? { via } : {}),
+          }).catch(() => {});
         }
       } finally {
         setBusy(false);
@@ -4742,28 +4797,40 @@ function App() {
         // side-channel like Telegram (carried by a bus node but not
         // typed at it).
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
-        // _localOnly suppression rule for Telegram forwarding:
-        //   * via set: message already exists in that side-channel —
-        //     forwarding would echo it back. Skip.
-        //   * peer typed a slash command: operations are local to the
-        //     issuing surface, not part of the conversation. Skip.
-        //   * otherwise: forward (the polling node carries peer chat
-        //     to Telegram so viewers see what other surfaces say).
         const body = ev.body ?? '';
         const isPeerSlashCommand = body.trimStart().startsWith('/');
+        // Parse via -> _source: the bridge the message originated
+        // from. items-mirror to that surface skips this item (don't
+        // echo back); items-mirror to OTHER surfaces still fires so
+        // the play replicates everywhere except its own origin.
+        // Slash commands stay strictly local — operator tooling, not
+        // conversation.
+        const sourceFromVia =
+          ev.via?.startsWith?.('telegram') ? 'telegram'
+          : ev.via?.startsWith?.('whatsapp') ? 'whatsapp'
+          : null;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body,
-          _localOnly: !!ev.via || isPeerSlashCommand,
+          ...(isPeerSlashCommand ? { _localOnly: true } : {}),
+          ...(sourceFromVia ? { _source: sourceFromVia } : {}),
         }]);
         return;
       }
       case 'room-reply': {
-        // Broadcast brain reply from a peer. Render with session@node
-        // tag. Don't filter by asker — see room is noisy by design.
+        // Broadcast brain reply (or persona reply) from a peer. Render
+        // with session@node tag. The peer either tags via:<surface>[id]
+        // when the reply was direct-sent to a specific bridge chat
+        // already (so we don't double-deliver via items-mirror), or
+        // leaves via blank for plain shell replies that should
+        // replicate to every connected bridge.
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
+        const sourceFromVia =
+          ev.via?.startsWith?.('telegram') ? 'telegram'
+          : ev.via?.startsWith?.('whatsapp') ? 'whatsapp'
+          : null;
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
-          _localOnly: true,
+          ...(sourceFromVia ? { _source: sourceFromVia } : {}),
         }]);
         return;
       }

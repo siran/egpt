@@ -1005,13 +1005,12 @@ export default function App() {
         // side-channel like Telegram.
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
-        // Mirror to telegram if THIS node owns the polling slot. The
-        // originator's local mirror only fires while they hold the
-        // slot; if they've yielded (or never had it), the slot
-        // owner is the only one with a live bot bridge that can
-        // carry the line to TG. ev.via set means the message
-        // originated FROM telegram itself — don't echo back.
-        if (bridgeRef.current && !ev.via) {
+        // Mirror to telegram if THIS node owns the polling slot AND the
+        // event didn't originate from telegram itself (no echo loop).
+        // Other origins — whatsapp, shell, extension brain — should
+        // surface in the TG bot view as part of the play-script.
+        const fromTelegram = String(ev.via ?? '').startsWith('telegram');
+        if (bridgeRef.current && !fromTelegram) {
           bridgeRef.current.send(
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
@@ -1019,12 +1018,15 @@ export default function App() {
         return;
       }
       case 'room-reply': {
-        // Broadcast brain reply from a peer surface. Render with
+        // Brain or persona reply from a peer. Render with
         // session@node tag. Don't filter by asker — rooms are noisy
-        // by design.
+        // by design. Same telegram-origin skip as room-utterance: if
+        // the reply was already direct-sent to a TG chat (via tagged
+        // 'telegram[chat]'), don't echo it back through this bridge.
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
-        if (bridgeRef.current) {
+        const fromTelegram = String(ev.via ?? '').startsWith('telegram');
+        if (bridgeRef.current && !fromTelegram) {
           bridgeRef.current.send(
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
