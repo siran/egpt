@@ -316,3 +316,51 @@ Acceptance criteria for the v1 ship:
    vice versa) works without echo loops.
 4. All 200+ existing tests still pass; new bridge-contract tests pass.
 5. Documented manual smoke-test passes on a logged-in browser.
+
+---
+
+## 12. v1 manual smoke-test (current state)
+
+The WhatsApp-CDP bridge is shipped as v1 (single-chat, no streaming).
+To turn it on:
+
+1. Make sure the brain Chrome is running with `--remote-debugging-port=9221`.
+2. Open `https://web.whatsapp.com/` in that Chrome and link with your phone.
+   Wait for chats to load (the QR screen should be gone).
+3. Open the egpt extension UI tab. Open its **Settings** (right-click the
+   extension icon → Options).
+4. Add the config (the settings page accepts any chrome.storage.sync key
+   via the JSON editor):
+   ```json
+   {
+     "whatsapp_cdp": { "enabled": true }
+   }
+   ```
+   Or via the extension's slash-command surface from the bus:
+   `/config whatsapp_cdp.enabled true` (when run by a shell peer with
+   write access to the synced settings).
+5. Reload the extension at `chrome://extensions` → click reload → close
+   and reopen both the egpt tab and the bus.html tab so they pick up
+   fresh code.
+6. In the egpt extension UI you should see:
+   `whatsapp-cdp: attaching to https://web.whatsapp.com/` followed by
+   `whatsapp-cdp: bridge ready (single-chat mode — open the chat you want monitored)`.
+7. Open a chat in WA Web. Send a message from another device to that
+   chat — the egpt extension UI should `appendMsg` it and broadcast a
+   `room-utterance` event with `via:"whatsapp[<jid>]"` to peers.
+8. Type a message in the egpt extension input — it should appear in
+   the active WA Web chat (sent via `execCommand insertText` + send-button click).
+
+### v1 limitations to keep in mind during testing
+
+- **Single chat only**: the bridge listens to whatever chat is open. If you
+  switch to a different chat, the bridge starts listening to *that* one.
+  Background chats are not observed yet.
+- **No edit-streaming**: when @egpt replies, the message arrives whole;
+  no "typing…" indicator yet (that's v1.5).
+- **No command/mention routing**: typing `@egpt hi` in WA Web with this
+  bridge does **not** yet wake the persona. v1 just mirrors text. Use
+  the Node WA bridge if you need persona dispatch from a WA chat today.
+- **Selectors**: WA Web ships UI changes occasionally; if send or receive
+  stops working, the heuristics in `extension/src/bridges/whatsapp-cdp.js`
+  (the OBSERVE_SCRIPT and buildSendScript) are where to update.
