@@ -1710,6 +1710,9 @@ function App() {
       // _source tags the surface this item came from. Skip mirroring
       // back to its own surface (avoid echo loops).
       if (item._source === 'telegram') continue;
+      // _target restricts a sysOut response to one bridge — used for
+      // slash command output so /sessions in WA doesn't leak to TG.
+      if (item._target && item._target !== 'telegram') continue;
       if (b) b.send(formatItemForTelegram(item, sessions));
     }
   }, [items.length]);
@@ -1734,6 +1737,7 @@ function App() {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
       if (item._source === 'whatsapp') continue;  // skip echo to origin
+      if (item._target && item._target !== 'whatsapp') continue;
       if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
     }
   }, [items.length]);
@@ -2011,11 +2015,22 @@ function App() {
     }
   });
 
-  const sysOut = body =>
+  // outputSinkRef tracks where this submit's responses should land:
+  // 'local' (shell only, _localOnly=true) or a specific bridge name
+  // ('telegram' / 'whatsapp', goes to that bridge's chat ONLY via
+  // _target, not to other bridges). The previous design used 'remote'
+  // (binary), which made _localOnly=false and items-mirror ship the
+  // response to EVERY bridge — so /sessions in WA leaked to TG too.
+  const sysOut = body => {
+    const sink = outputSinkRef.current;
+    const meta = sink === 'local'
+      ? { _localOnly: true }
+      : { _target: sink };
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', body,
-      _localOnly: outputSinkRef.current === 'local',
+      ...meta,
     }]);
+  };
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
@@ -2420,12 +2435,16 @@ function App() {
       const prefix = recipient ? `(for @${recipient})\n\n` : '';
       const tgPrefix = recipient ? `<i>(for @${escapeHtml(recipient)})</i>\n\n` : '';
       // Respect outputSinkRef like sysOut does: local-issued /help stays
-      // in shell; Telegram-issued /help (sink === 'remote') goes back to
-      // Telegram. Avoids dumping the help blob into the chat unprompted.
+      // in shell; bridge-issued /help goes back to the originating
+      // bridge only (not to other bridges).
+      const sink = outputSinkRef.current;
+      const localityMeta = sink === 'local'
+        ? { _localOnly: true }
+        : { _target: sink };
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
         body: prefix + helpText(bt),
         _tgBody: tgPrefix + helpHtml(bt),
-        _localOnly: outputSinkRef.current === 'local',
+        ...localityMeta,
       }]);
       return true;
     }
@@ -4351,7 +4370,9 @@ function App() {
     // flow back there; otherwise it stays local. Reset in finally so a
     // crashing submit doesn't leak the 'remote' sink to later sysOut calls
     // (e.g. bus event logs).
-    outputSinkRef.current = (meta.fromTelegram || meta.fromWhatsApp) ? 'remote' : 'local';
+    outputSinkRef.current = meta.fromTelegram ? 'telegram'
+      : meta.fromWhatsApp ? 'whatsapp'
+      : 'local';
     try {
     return await submitInner(raw, text, meta);
     } finally {
@@ -4468,8 +4489,11 @@ function App() {
       // No local participants. The room may still have peer participants
       // — the room-utterance event already mirrored what was typed, so
       // those peers see it. Only show the "empty room" hint when nobody,
-      // local or peer, can hear.
-      if (peerNodesRef.current.size === 0) {
+      // local or peer, can hear AND the message came from the local
+      // shell (the hint coaches the operator typing here; bridge users
+      // weren't asking for advice — they were chatting / replicating).
+      const fromBridge = !!meta.fromTelegram || !!meta.fromWhatsApp;
+      if (peerNodesRef.current.size === 0 && !fromBridge) {
         sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
       }
       return;
@@ -4477,7 +4501,10 @@ function App() {
     if (decision.kind === 'idle') {
       // Plain text but no /use'd sessions. The message is already on the
       // bus (room-utterance posted earlier) so peers see it; we just
-      // don't auto-call a brain. Hint how to opt in.
+      // don't auto-call a brain. Hint how to opt in — but only for
+      // shell-local input. Bridge-arrived text is conversational, not
+      // an attempt to address a brain; the hint would be noise.
+      if (meta.fromTelegram || meta.fromWhatsApp) return;
       const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
       sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
