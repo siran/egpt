@@ -25,6 +25,7 @@ const EGPT_HOME   = join(homedir(), '.egpt');
 const TOKEN_FILE  = join(EGPT_HOME, 'cdp-token');
 const PROXY_DIR   = dirname(fileURLToPath(import.meta.url));
 const BUS_HTML_PATH = join(PROXY_DIR, 'bus.html');
+const BUS_JS_PATH   = join(PROXY_DIR, 'bus.js');
 
 export function loadOrCreateToken() {
   mkdirSync(EGPT_HOME, { recursive: true });
@@ -66,6 +67,10 @@ export function startCdpProxy({
     return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
   };
 
+  const busJsPaths = new Set([
+    '/bus.js', `${prefix}/bus.js`,
+  ]);
+
   const server = createServer(async (req, res) => {
     // Static bus log — served unauthenticated. See note above.
     if (req.url && busPaths.has(req.url)) {
@@ -77,6 +82,21 @@ export function startCdpProxy({
         }).end(html);
       } catch (e) {
         res.writeHead(500, { 'content-type': 'text/plain' }).end(`bus.html missing: ${e.message}`);
+      }
+      return;
+    }
+    // Sibling script — same paths, .js extension. Required because
+    // bus.html now loads its logic via <script src="bus.js"> rather
+    // than inline (MV3 CSP forbids inline scripts in extension pages).
+    if (req.url && busJsPaths.has(req.url)) {
+      try {
+        const js = readFileSync(BUS_JS_PATH, 'utf8');
+        res.writeHead(200, {
+          'content-type': 'application/javascript; charset=utf-8',
+          'cache-control': 'no-cache',
+        }).end(js);
+      } catch (e) {
+        res.writeHead(500, { 'content-type': 'text/plain' }).end(`bus.js missing: ${e.message}`);
       }
       return;
     }

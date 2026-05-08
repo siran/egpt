@@ -92,14 +92,19 @@ const staticAssets = [
 for (const [src, dst] of staticAssets) {
   copyFileSync(resolve(__dirname, src), resolve(chromeDist, dst));
 }
-// Bundle bus.html in the extension so it can host its own bus tab
-// (chrome-extension://<id>/bus.html) without depending on the
-// proxy serving it from :9222. Source of truth stays at
-// tools/bus.html — same file used by cdp-proxy.mjs for shell-only
-// setups.
+// Bundle bus.html (and its sibling bus.js) in the extension so it can
+// host its own bus tab (chrome-extension://<id>/bus.html) without
+// depending on the proxy serving it from :9222. The script is in a
+// separate file because MV3 CSP disallows inline <script> blocks.
+// Source of truth stays at tools/{bus.html,bus.js} — same files used
+// by cdp-proxy.mjs for shell-only setups.
 copyFileSync(
   resolve(__dirname, '../tools/bus.html'),
   resolve(chromeDist, 'bus.html'),
+);
+copyFileSync(
+  resolve(__dirname, '../tools/bus.js'),
+  resolve(chromeDist, 'bus.js'),
 );
 copyFileSync(
   resolve(__dirname, 'manifest.chrome.json'),
@@ -138,6 +143,7 @@ const firefoxStaticAssets = [
   'settings/index.html',
   'settings/style.css',
   'bus.html',
+  'bus.js',
 ];
 for (const rel of firefoxStaticAssets) {
   copyFileSync(resolve(chromeDist, rel), resolve(firefoxDist, rel));
