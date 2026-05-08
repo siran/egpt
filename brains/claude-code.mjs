@@ -121,6 +121,15 @@ export function stream({ history, message }, onUpdate, options = {}) {
         if (list.trim()) args.push('--allowedTools', list.trim());
       }
     }
+    // Nudge the persona toward actually using tools. Even with
+    // bypassPermissions and WebFetch/WebSearch in the tool list, a
+    // bare 'what's the price of bitcoin?' returns 'I don't have
+    // real-time data' from training-time priors instead of a tool
+    // call. The append-system-prompt is the cleanest lever — caller
+    // chooses what to nudge.
+    if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
+      args.push('--append-system-prompt', options.appendSystemPrompt.trim());
+    }
     const isResume = !!options.sessionId;
     if (isResume) args.push('--resume', options.sessionId);
 

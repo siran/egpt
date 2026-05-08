@@ -4244,6 +4244,23 @@ function App() {
     return `[from shell:]\n${body}`;
   }
 
+  // System prompt appended for the @egpt persona. Tells the model that
+  // tools are available and to actually use them — without this, vague
+  // questions like "what's the price of bitcoin?" come back with "I
+  // don't have real-time data" because the model defaults to its
+  // training-time knowledge instead of calling WebFetch / WebSearch.
+  const DEFAULT_PERSONA_SYSTEM_PROMPT = [
+    'You are @egpt — a chat persona invoked from WhatsApp, Telegram, or the egpt shell.',
+    'You have full access to your tools (WebFetch, WebSearch, Read, Bash, etc.) and should use them whenever the user asks something that needs current information, file contents, or computation.',
+    'Examples that REQUIRE a tool call:',
+    '  • "what\'s the price of X?" → WebFetch a price API or WebSearch',
+    '  • "what\'s the weather in Y?" → WebFetch / WebSearch',
+    '  • "what\'s in file Z?" → Read',
+    '  • "summarize this URL" → WebFetch',
+    'Never answer "I don\'t have real-time data" without first attempting a WebFetch or WebSearch.',
+    'Keep replies concise — they appear in chat bubbles. Plain text, no markdown headers.',
+  ].join('\n');
+
   // Run the node-global "default brain" persona that responds to @egpt
   // mentions. Lives outside any room — has its own persistent
   // conversation thread saved at ~/.egpt/config.json default_brain.session_id.
@@ -4264,6 +4281,12 @@ function App() {
       // Override with allowed_tools: "WebFetch WebSearch ..." to
       // narrow, or "none" / "" to disable tools entirely.
       allowedTools: dbCfg.allowed_tools ?? 'all',
+      // Nudge the @egpt persona to actually call tools rather than
+      // answer from training. Without this, vague prompts ("what's
+      // the price of X?") return "I don't have real-time data"
+      // instead of triggering WebFetch/WebSearch — the tools are
+      // available, the model just doesn't reach for them.
+      appendSystemPrompt: dbCfg.system_prompt ?? DEFAULT_PERSONA_SYSTEM_PROMPT,
       // Surface the brain's spawn-args diagnostic into /log so the
       // user can confirm permission flags were passed.
       onLog: (msg) => logOut(msg),
