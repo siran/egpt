@@ -26,5 +26,5 @@ export const CONFIG_SCHEMA = {
   // default_brain: the persona that responds to @egpt mentions. Lives
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
-  default_brain: 'default brain (the @egpt persona): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "..." }',
+  default_brain: 'default brain (the @egpt persona): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "...", allowed_tools?: "WebFetch WebSearch Read Glob Grep" (space-sep tool names; default lets @egpt fetch URLs and search the web) }',
 };

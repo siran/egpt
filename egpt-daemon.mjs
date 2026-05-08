@@ -27,7 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const REWIND_SIDECAR = join(homedir(), '.egpt', 'rewind-target.txt');
@@ -37,9 +37,13 @@ const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
 const REWIND_EXIT_CODE  = 44;
 const CLEAN_EXIT_CODE   = 0;
-// npm/node invocations now go through the OS shell (spawnSync with
-// shell:true) — see runUpgrade / runRewind. The previous explicit
-// .cmd path was fragile on msys2 Windows.
+// git and npm still go through spawnSync with shell:true (the only
+// way to invoke them portably across Windows .cmd shims, msys2,
+// macOS, and Linux). The extension build, however, runs via dynamic
+// import — see buildExtension(). Spawning `node extension/build.mjs`
+// was returning status:null on the user's msys2 Windows for reasons
+// we couldn't pin down; importing the build script in-process side-
+// steps the whole spawn / shell / PATH / .cmd resolution mess.
 
 let stopping = false;
 let backoff = RESTART_MIN_MS;
@@ -60,7 +64,26 @@ function gitVersion() {
   };
 }
 
-function runUpgrade() {
+// Run the extension's build script in-process via dynamic import.
+// This avoids the spawn/shell/PATH/.cmd zoo on msys2 Windows where
+// `spawnSync('node extension/build.mjs', { shell: true })` returned
+// status:null with no error. The build script uses top-level await,
+// so the import itself drives the build and resolves when done.
+// Cache-bust with a query string so repeated /upgrade re-imports the
+// freshly-pulled source instead of the cached module.
+async function buildExtension() {
+  log('building extension dist (in-process import)');
+  try {
+    const url = pathToFileURL(join(ROOT, 'extension', 'build.mjs')).href + `?t=${Date.now()}`;
+    await import(url);
+    return true;
+  } catch (e) {
+    log(`build:ext failed: ${e.message}; continuing with current build`);
+    return false;
+  }
+}
+
+async function runUpgrade() {
   const before = gitVersion().sha;
   log(`upgrade requested — git pull (currently ${before})`);
   const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: ROOT, stdio: 'inherit' });
@@ -73,39 +96,25 @@ function runUpgrade() {
   // shows 'Already up to date' looked tidy, but it broke the case
   // where the user's checkout is already at the latest sha and they
   // need to refresh dist (e.g., they pulled manually outside the
-  // daemon, or extension/dist was wiped). The extra esbuild pass is
-  // ~50ms — cheaper than confusion. npm install only runs when the
-  // sha actually changed (it's the heavier step).
-  // All build steps go through the OS shell (shell:true) and pass
-  // commands as single strings — most reliable across platforms,
-  // especially msys2 on Windows where direct .cmd / non-PE binary
-  // resolution was returning status:null.
+  // daemon, or extension/dist was wiped). npm install only runs when
+  // the sha actually changed (it's the heavier step).
   if (after.sha !== before) {
-    log(`pulled ${before} -> ${after.sha} — running npm install && node extension/build.mjs`);
+    log(`pulled ${before} -> ${after.sha} — running npm install`);
     const r = spawnSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
-      log(`upgrade step exited ${r.status} (npm install)${r.error ? `: ${r.error.message}` : ''}; continuing with current build`);
-      return false;
+      log(`npm install exited ${r.status}${r.error ? `: ${r.error.message}` : ''}; continuing with current deps`);
+      // Fall through and still attempt the build — esbuild's already
+      // installed in node_modules from the previous run.
     }
   } else {
     log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
   }
-  // Run extension/build.mjs via node. process.execPath alone wasn't
-  // working on the user's msys2 setup (status:null). Using shell:true
-  // and a string command lets the OS shell resolve 'node' from PATH,
-  // matching how the user invokes the daemon.
-  const buildResult = spawnSync('node extension/build.mjs', {
-    cwd: ROOT, stdio: 'inherit', shell: true,
-  });
-  if (buildResult.status !== 0) {
-    log(`build:ext exited ${buildResult.status}${buildResult.error ? `: ${buildResult.error.message}` : ''}; continuing with current build`);
-    return false;
-  }
+  await buildExtension();
   log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
   return true;
 }
 
-function runRewind() {
+async function runRewind() {
   let ref = null;
   try {
     ref = readFileSync(REWIND_SIDECAR, 'utf8').trim();
@@ -118,19 +127,15 @@ function runRewind() {
     log('rewind sidecar empty; restarting anyway');
     return false;
   }
-  log(`rewind requested → git checkout ${ref} && npm install && node extension/build.mjs`);
-  const steps = [
-    'git checkout ' + ref,
-    'npm install',
-    'node extension/build.mjs',
-  ];
-  for (const cmdline of steps) {
+  log(`rewind requested → git checkout ${ref} && npm install && build:ext`);
+  for (const cmdline of ['git checkout ' + ref, 'npm install']) {
     const r = spawnSync(cmdline, { cwd: ROOT, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
       log(`rewind step failed (${cmdline})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
   }
+  await buildExtension();
   log(`rewind to ${ref} complete`);
   return true;
 }
@@ -140,7 +145,7 @@ function spawnShell() {
   log('starting node egpt.mjs');
   child = spawn('node', ['egpt.mjs'], { cwd: ROOT, stdio: 'inherit' });
 
-  child.on('exit', (code, signal) => {
+  child.on('exit', async (code, signal) => {
     child = null;
     if (stopping) return;
     log(`shell exited code=${code} signal=${signal ?? '-'}`);
@@ -151,9 +156,9 @@ function spawnShell() {
     }
 
     if (code === UPGRADE_EXIT_CODE) {
-      runUpgrade();
+      await runUpgrade();
       backoff = RESTART_MIN_MS;
-      setImmediate(spawnShell);
+      spawnShell();
       return;
     }
 
@@ -165,9 +170,9 @@ function spawnShell() {
     }
 
     if (code === REWIND_EXIT_CODE) {
-      runRewind();
+      await runRewind();
       backoff = RESTART_MIN_MS;
-      setImmediate(spawnShell);
+      spawnShell();
       return;
     }
 
