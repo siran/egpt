@@ -31,10 +31,13 @@
 // honored from a given sender — awareness only controls whether the
 // message reaches onIncoming at all.
 //
-// Streaming: WhatsApp doesn't support incremental message updates the way
-// Telegram's editMessageText does. startStreamMessage buffers and sends
-// once on finish(). (Edit-based pseudo-streaming via baileys's edit
-// message support is a future option.)
+// Streaming: edit-based, modeled on Telegram. startStreamMessage sends
+// the initial text, then debounces edits at 2.5s as the brain produces
+// more. A 'composing' presence update (typing indicator) refreshes
+// every 8s alongside, so the recipient sees both the partial text and
+// "typing…" until finish() flushes the last edit. Trade-off: WhatsApp
+// shows an "Edited" badge after the first edit (Telegram's edits are
+// silent), so debounce is conservative to keep the visual churn low.
 //
 // ToS note: this uses the WhatsApp Web protocol via reverse-engineered
 // libraries. Personal-account use at low volume has been historically
@@ -402,18 +405,104 @@ export async function startWhatsAppBridge({
         .catch(e => err(`send: ${e.message}`));
     },
     startStreamMessage(initialText, { chatId } = {}) {
-      // No native streaming on WhatsApp. Buffer then send once on finish.
+      // Edit-based streaming, modeled on bridges/telegram.mjs:
+      //   1. Send the initial message and capture its key.
+      //   2. Each update() debounces an edit (2.5s — WA is more rate-
+      //      sensitive than Telegram, and the recipient sees an
+      //      "Edited" badge after the first edit, so we don't want
+      //      to spam).
+      //   3. A 'composing' presence update fires alongside, refreshed
+      //      every 8s so the typing indicator stays visible until
+      //      finish() (baileys auto-expires it after ~10s otherwise).
+      //   4. finish() flushes the last pending edit and clears typing.
       const target = chatId ?? lastChat;
       if (!target || !sock) return null;
-      let pending = initialText;
-      return {
-        update(text) { pending = text; },
-        async finish(text) {
-          pending = text;
-          try {
-            const r = await sock.sendMessage(target, { text: pending });
+
+      let msgKey      = null;
+      let pending     = null;
+      let lastSent    = initialText;
+      let lastEditAt  = Date.now();
+      let editTimer   = null;
+      let typingTimer = null;
+      let initialDone = false;
+      let finished    = false;
+
+      const refreshTyping = () => {
+        if (finished) return;
+        sock.sendPresenceUpdate?.('composing', target).catch(() => {});
+        if (typingTimer) clearTimeout(typingTimer);
+        typingTimer = setTimeout(refreshTyping, 8_000);
+      };
+      const stopTyping = () => {
+        if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
+        sock.sendPresenceUpdate?.('paused', target).catch(() => {});
+      };
+
+      // Initial send (async — updates that arrive before this resolves
+      // queue into `pending` and flush once initialDone is true).
+      (async () => {
+        try {
+          const r = await sock.sendMessage(target, { text: initialText });
+          msgKey = r?.key ?? null;
+          rememberSent(r?.key?.id);
+        } catch (e) { err(`stream start: ${e.message}`); }
+        initialDone = true;
+        if (pending !== null) maybeEdit();
+      })();
+      refreshTyping();
+
+      function flush() {
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        if (!initialDone || !msgKey) return;
+        if (pending === null || pending === lastSent) return;
+        const text = pending;
+        pending = null;
+        sock.sendMessage(target, { edit: msgKey, text })
+          .then((r) => {
             rememberSent(r?.key?.id);
+            lastSent = text;
+            lastEditAt = Date.now();
+          })
+          .catch((e) => err(`stream edit: ${e.message}`));
+      }
+
+      function maybeEdit() {
+        const since    = Date.now() - lastEditAt;
+        const interval = 2_500;
+        if (since >= interval) flush();
+        else if (!editTimer) {
+          editTimer = setTimeout(() => { editTimer = null; flush(); }, interval - since);
+        }
+      }
+
+      return {
+        update(text) {
+          if (finished) return;
+          pending = text;
+          refreshTyping();   // keep "typing…" alive while the brain is still producing
+          maybeEdit();
+        },
+        async finish(text) {
+          finished = true;
+          pending = text;
+          if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+          // Final edit synchronous-ish so the recipient sees the
+          // complete text before the typing indicator drops. If the
+          // initial send is still in-flight, fall back to a plain
+          // send (the recipient hasn't seen anything yet).
+          try {
+            if (initialDone && msgKey) {
+              if (pending !== null && pending !== lastSent) {
+                const r = await sock.sendMessage(target, { edit: msgKey, text: pending });
+                rememberSent(r?.key?.id);
+                lastSent = pending;
+              }
+            } else {
+              const r = await sock.sendMessage(target, { text: pending });
+              rememberSent(r?.key?.id);
+            }
           } catch (e) { err(`stream finish: ${e.message}`); }
+          stopTyping();
         },
       };
     },

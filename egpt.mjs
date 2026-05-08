@@ -1103,8 +1103,12 @@ function formatHandleClientNode(handle, client, node, localNode) {
   if (node && node !== localNode) return `${h}@${client}.${node}`;
   return `${h}@${client}`;
 }
-const USER_EMOJI = '🦅';
-const EGPT_EMOJI = '🧠';
+// Author-emoji defaults. Each is overridable via EGPT_CONFIG.emojis.{user, egpt, persona}
+// (set per-user in ~/.egpt/config.json or per-project in .egpt/config.json).
+// Resolved once at module load — change requires shell restart.
+const USER_EMOJI         = EGPT_CONFIG?.emojis?.user    ?? '🦅';
+const EGPT_EMOJI         = EGPT_CONFIG?.emojis?.egpt    ?? '🧠';   // egpt system voice — status, hints, errors
+const EGPT_PERSONA_EMOJI = EGPT_CONFIG?.emojis?.persona ?? '🐶';   // egpt persona reply voice — @egpt answers
 
 // Identifier this shell uses on the CDP control-plane bus. PID makes it
 // unique per process so two shells don't collide.
@@ -1162,6 +1166,23 @@ function mdToTgHtml(text) {
   }).join('');
 }
 
+// Pick an emoji for an item author when mirroring to a bridge.
+//   'system'         → EGPT_EMOJI (egpt's status/hint voice)
+//   'You'            → USER_EMOJI
+//   'egpt' / 'egpt@*'→ EGPT_PERSONA_EMOJI (persona reply voice)
+//   USER_NAME / USER_NAME@*  → USER_EMOJI (the user typing from any surface)
+//   '<name>@<surf>'  → sessions[<name>].emoji  (strip the @suffix for lookup;
+//                       sessions are keyed by bare name like 'cx', not 'cx@kg')
+//   fallback         → ❓ (should be rare — only truly unknown peer authors)
+function emojiForAuthor(author, sessions) {
+  if (author === 'system') return EGPT_EMOJI;
+  if (author === 'You')    return USER_EMOJI;
+  const bare = author.split('@')[0];
+  if (bare === 'egpt')      return EGPT_PERSONA_EMOJI;
+  if (bare === USER_NAME)   return USER_EMOJI;
+  return sessions?.[bare]?.emoji ?? '❓';
+}
+
 // Render an item for the Telegram chat. Uses HTML parse_mode.
 // System messages render italic; brain/session bodies get markdown rendered.
 function formatItemForTelegram(item, sessions) {
@@ -1174,8 +1195,7 @@ function formatItemForTelegram(item, sessions) {
   // from the mention-reply dispatcher) — preserve that. Local sessions get
   // the local SURFACE_TAG appended.
   const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
-  const sess = sessions[item.author];
-  const emoji = sess?.emoji ?? '❓';
+  const emoji = emojiForAuthor(item.author, sessions);
   return `${emoji} <b>${escapeHtml(tagged)}</b>\n${mdToTgHtml(item.body)}`;
 }
 
@@ -1185,8 +1205,7 @@ function formatItemForWhatsApp(item, sessions) {
   if (item.author === 'system') return `${EGPT_EMOJI} egpt@${SURFACE_TAG}\n${item.body}`;
   if (item.author === 'You')    return `${USER_EMOJI} ${USER_NAME}@${SURFACE_TAG}\n${item.body}`;
   const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
-  const sess = sessions[item.author];
-  const emoji = sess?.emoji ?? '❓';
+  const emoji = emojiForAuthor(item.author, sessions);
   return `${emoji} ${tagged}\n${item.body}`;
 }
 
@@ -4766,11 +4785,11 @@ function App() {
         // Always send to the originating chat — that's the user's
         // 'reply where the @egpt was issued' contract.
         if (meta.fromTelegram && bridgeRef.current) {
-          bridgeRef.current.send(`🤖 <b>egpt</b>\n${mdToTgHtml(reply)}`,
+          bridgeRef.current.send(`${EGPT_PERSONA_EMOJI} <b>egpt</b>\n${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
         }
         if (meta.fromWhatsApp && waBridgeRef.current) {
-          waBridgeRef.current.send(`🤖 egpt: ${reply}`, { chatId: meta.waChatId });
+          waBridgeRef.current.send(`${EGPT_PERSONA_EMOJI} egpt: ${reply}`, { chatId: meta.waChatId });
         }
 
         if (meta.observeOnly) {
