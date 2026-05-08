@@ -1079,6 +1079,28 @@ async function resolveTabId(spec, brain = null) {
 // User name as it appears to brains (in [An]: prefixes when broadcasting/mirroring).
 // Override with EGPT_USER_NAME if you're not An.
 const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
+
+// Strip a leading '@' from a handle string. WhatsApp's pushName comes
+// through as '@An' (we prepended @ in the bridge); Telegram usernames
+// already include '@'; some unnamed senders are 'wa:<digits>'. Drop
+// the lead so we don't render '@@An@wa' or similar in author tags.
+const stripAt = (s) => (s ?? '').replace(/^@/, '');
+
+// Build a display tag: handle[@client][.node].
+// Rules:
+//   * client absent → 'handle@node' (shell default — preserves the
+//     longstanding 'An@kg' look).
+//   * client present, same node as viewer → 'handle@client'
+//     (e.g. 'An@wa' or 'An@moto' — node is implicit since we're
+//     reading transcript at our local node).
+//   * client present, different node → 'handle@client.node'
+//     (e.g. 'An@ext.home' — peer node makes it explicit).
+function formatHandleClientNode(handle, client, node, localNode) {
+  const h = stripAt(handle);
+  if (!client) return `${h}@${node ?? '?'}`;
+  if (node && node !== localNode) return `${h}@${client}.${node}`;
+  return `${h}@${client}`;
+}
 const USER_EMOJI = '🦅';
 const EGPT_EMOJI = '🧠';
 
@@ -4405,18 +4427,22 @@ function App() {
     // should NOT replicate to Telegram. Otherwise viewers see noise like
     // 'An@home /sessions' / 'An@home /restart'. So _localOnly fires
     // either when the input came from Telegram OR when it's a command.
-    // Author tag for the visible echo: keep it short.
-    //   '@<user>@tg'  for telegram, '@<user>@wa' for whatsapp.
-    // The chatId stays in the bus event's via:`<surface>[<chatId>]`
-    // for routing, but observers reading the transcript don't need
-    // the JID — they have surface + user, which is what matters.
-    // Strip a leading '@' off telegramUser/waUser so we don't render
-    // double '@' (waUser is '@An' style; telegramUser is '@username').
-    const stripAt = (s) => (s ?? '').replace(/^@/, '');
+    // Author tag for the visible echo: handle@client[.node].
+    //   * shell-typed: 'You' (resolved to USER_NAME@SURFACE_TAG by the
+    //     renderer; preserves the existing 'An@kg' look — shell has no
+    //     client_name by default, so the tag drops the client part).
+    //   * bridge-typed: stripAt(handle)@<client_name> where client_name
+    //     comes from cfg.<bridge>.client_name (default 'wa', 'tg').
+    //     User can rename, e.g. whatsapp.client_name='moto' for a phone.
+    // The chatId stays in the bus event's via:`<surface>[<chatId>]` for
+    // routing back to the originating chat, but observers reading the
+    // transcript don't need the JID.
+    const waClient = EGPT_CONFIG.whatsapp?.client_name ?? 'wa';
+    const tgClient = EGPT_CONFIG.telegram?.client_name ?? 'tg';
     const echoAuthor = (meta.fromTelegram && meta.telegramUser)
-      ? `${stripAt(meta.telegramUser)}@tg`
+      ? `${stripAt(meta.telegramUser)}@${tgClient}`
       : (meta.fromWhatsApp && meta.waUser)
-      ? `${stripAt(meta.waUser)}@wa`
+      ? `${stripAt(meta.waUser)}@${waClient}`
       : 'You';
     const isSlashCommand = text.startsWith('/');
     // Slash commands are operator tooling, not part of the conversation
@@ -4459,9 +4485,15 @@ function App() {
         const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME)
           : fromWa ? (meta.waUser ?? USER_NAME)
           : USER_NAME;
+        // client: which surface this came from — 'tg' / 'wa' /
+        // user-renamed (e.g. 'moto'). Peers use this to render
+        // 'handle@client[.node]'. null when shell-typed: shell has no
+        // client_name by default and the tag stays 'handle@node'.
+        const client = fromTg ? tgClient : fromWa ? waClient : null;
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'shell', user: utteranceUser, body: text,
+          ...(client ? { client } : {}),
           ...(via ? { via } : {}),
         }).catch(() => {});
       }
@@ -4838,21 +4870,21 @@ function App() {
         return;
       }
       case 'room-utterance': {
-        // Faithful echo of what a user typed on another surface. Pure
-        // visibility — we do NOT route this through resolveRoute (the
-        // originating surface already routed it to its local brains).
-        // ev.via overrides ev.from when the message originated from a
-        // side-channel like Telegram (carried by a bus node but not
-        // typed at it).
-        const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
+        // Faithful echo of what a user typed on another surface.
+        // ev.client (post-Phase 1) carries the client_name; ev.via is
+        // kept for older peers and used as fallback. Tag becomes
+        // handle@client[.node].
+        const fallbackClient =
+          ev.via?.startsWith?.('telegram') ? 'tg'
+          : ev.via?.startsWith?.('whatsapp') ? 'wa'
+          : null;
+        const client = ev.client ?? fallbackClient;
+        const tag = formatHandleClientNode(ev.user ?? 'human', client, ev.from, BUS_NODE_ID);
         const body = ev.body ?? '';
         const isPeerSlashCommand = body.trimStart().startsWith('/');
-        // Parse via -> _source: the bridge the message originated
-        // from. items-mirror to that surface skips this item (don't
-        // echo back); items-mirror to OTHER surfaces still fires so
-        // the play replicates everywhere except its own origin.
-        // Slash commands stay strictly local — operator tooling, not
-        // conversation.
+        // _source mirrors the surface for items-mirror echo-suppression
+        // (don't echo a wa-arrived item back to wa). Independent of
+        // client_name renames — it's about the underlying transport.
         const sourceFromVia =
           ev.via?.startsWith?.('telegram') ? 'telegram'
           : ev.via?.startsWith?.('whatsapp') ? 'whatsapp'

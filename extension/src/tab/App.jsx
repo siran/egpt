@@ -215,9 +215,13 @@ export default function App() {
       const tid = busTargetIdRef.current;
       const isSlashCommand = trimmed.startsWith('/');
       if (tid && !isSlashCommand) {
+        // client: 'tg' here because this is the extension forwarding a
+        // Telegram-originated message. Peers render 'handle@tg' rather
+        // than the longer 'telegram[chatId]'.
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'chrome', user: author, body: trimmed,
+          client: 'tg',
           via: `telegram[${meta.chatId ?? '?'}]`,
         }).catch(() => {});
       }
@@ -617,9 +621,13 @@ export default function App() {
       const tid = busTargetIdRef.current;
       const isSlashCommand = trimmed.startsWith('/');
       if (tid && !isSlashCommand) {
+        // client: 'ext' for messages typed into the extension UI.
+        // (Eventually configurable via chrome.storage.client_name —
+        // e.g. user could rename to 'browser' or 'desk-chrome'.)
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'chrome', user: userName, body: trimmed,
+          client: 'ext',
         }).catch(() => {});
       }
     }
@@ -1030,12 +1038,20 @@ export default function App() {
         return;
       }
       case 'room-utterance': {
-        // Faithful echo of what a user typed on another surface. Pure
-        // visibility — we do NOT route this through resolveRoute (the
-        // originating surface already drove its local brains).
-        // ev.via overrides ev.from when the message came from a
-        // side-channel like Telegram.
-        const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
+        // Faithful echo of what a user typed on another surface.
+        // Tag: handle@client[.node]. ev.client carries the client_name
+        // (post-Phase 1); fall back to deriving from ev.via for older
+        // peers (telegram[chat]/whatsapp[chat] -> 'tg'/'wa').
+        const fallbackClient =
+          ev.via?.startsWith?.('telegram') ? 'tg'
+          : ev.via?.startsWith?.('whatsapp') ? 'wa'
+          : null;
+        const client = ev.client ?? fallbackClient;
+        const handle = String(ev.user ?? 'human').replace(/^@/, '');
+        const node = ev.from;
+        const tag = client
+          ? (node && node !== BUS_NODE_ID ? `${handle}@${client}.${node}` : `${handle}@${client}`)
+          : `${handle}@${node ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
         // Mirror to telegram if THIS node owns the polling slot AND the
         // event didn't originate from telegram itself (no echo loop).
