@@ -20,6 +20,7 @@ import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
+import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
@@ -1633,48 +1634,27 @@ function App() {
               { chatId: from.chatId });
             return;
           }
-          // Egpt-chat vs observed-chat distinction. Full mirror only
-          // happens for chats the user designates as egpt chats:
-          //   * the WA self-DM ('Message Yourself'), detected via
-          //     bare-number match, LID match, selfDmJid match, OR
-          //     the auto-captured cfg.chat_id (read fresh from
-          //     EGPT_CONFIG so onChatId-time updates apply
-          //     immediately, not just after a restart).
-          //   * any chat ID listed in cfg.whatsapp.egpt_chats.
-          // For other chats (friend DMs, groups), egpt listens but
-          // doesn't echo to shell or broadcast on the bus. The
-          // persona dispatch path still handles @egpt mentions and
-          // replies directly to the originating chat.
-          const myJid = waBridgeRef.current?.myJid ?? null;
-          const myLid = waBridgeRef.current?.myLid ?? null;
-          const myLidNumber = waBridgeRef.current?.myLidNumber ?? null;
-          const selfDmJid = waBridgeRef.current?.selfDmJid ?? null;
-          const myNum = String(myJid ?? '').split(':')[0]?.split('@')[0];
-          const chatNum = String(from.chatId ?? '').split('@')[0]?.split(':')[0];
-          const isSelfByNumber = myNum && chatNum && chatNum === myNum;
-          const isSelfByLid = myLidNumber && chatNum && chatNum === myLidNumber;
-          const isSelfBySelfDmJid = selfDmJid && from.chatId === selfDmJid;
-          // Read fresh — onChatId updates EGPT_CONFIG when capturing.
-          // Also validate: trust the persisted chat_id as "the egpt
-          // chat" only if it actually looks like a self-DM (matches
-          // phone number OR LID). A prior bug captured the user's
-          // first chat — even when that was a group — and persisted
-          // it; without this check, group messages keep getting
-          // misclassified as egpt chat. Non-self-DM egpt chats
-          // belong in egpt_chats[], not chat_id.
-          const liveChatId = EGPT_CONFIG.whatsapp?.chat_id;
-          const liveChatNum = String(liveChatId ?? '').split('@')[0]?.split(':')[0];
-          const liveChatIsSelfDM = liveChatId
-            && ((myNum && liveChatNum === myNum) || (myLidNumber && liveChatNum === myLidNumber));
-          const isSelfByConfig = liveChatIsSelfDM && from.chatId === liveChatId;
-          const isSelfDM = isSelfByNumber || isSelfByLid || isSelfBySelfDmJid || isSelfByConfig;
-          const liveEgptChats = EGPT_CONFIG.whatsapp?.egpt_chats ?? [];
-          const isEgptChat = isSelfDM || liveEgptChats.includes(from.chatId);
+          // Egpt-chat vs observed-chat distinction lives in
+          // bridges/whatsapp-classify.mjs so the rule set is
+          // testable. Read EGPT_CONFIG.whatsapp fresh — onChatId
+          // updates in-memory before any await, so the very message
+          // that triggered the capture sees the correct chat_id on
+          // this same tick.
+          const { observeOnly } = classifyWhatsAppChat({
+            chatId: from.chatId,
+            bridgeInfo: {
+              myJid:        waBridgeRef.current?.myJid ?? null,
+              myLid:        waBridgeRef.current?.myLid ?? null,
+              myLidNumber:  waBridgeRef.current?.myLidNumber ?? null,
+              selfDmJid:    waBridgeRef.current?.selfDmJid ?? null,
+            },
+            waConfig: EGPT_CONFIG.whatsapp ?? {},
+          });
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
-            observeOnly: !isEgptChat,
+            observeOnly,
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
@@ -4284,6 +4264,9 @@ function App() {
       // Override with allowed_tools: "WebFetch WebSearch ..." to
       // narrow, or "none" / "" to disable tools entirely.
       allowedTools: dbCfg.allowed_tools ?? 'all',
+      // Surface the brain's spawn-args diagnostic into /log so the
+      // user can confirm permission flags were passed.
+      onLog: (msg) => logOut(msg),
     };
     try {
       // Both slots get the user text. claude-code's stream pipes

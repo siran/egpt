@@ -50,6 +50,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 const RECONNECT_MS = 5_000;
@@ -332,10 +333,19 @@ export async function startWhatsAppBridge({
     // (the canonical egpt chat). Without this guard, whatever chat
     // the user happens to be in first — a group, a friend's DM —
     // gets persisted as the egpt chat_id, and self-DM messages then
-    // fail the egpt-chat check and end up observe-only.
-    if (!chatIdNotified && isSelfDM) {
-      chatIdNotified = true;
-      try { onChatId?.(chatJid); } catch (_) {}
+    // fail the egpt-chat check and end up observe-only. Single
+    // source of truth for "is this a self-DM" lives in the
+    // classifier; we don't pass waConfig because chat_id capture
+    // happens before any host-side persistence is relevant.
+    if (!chatIdNotified) {
+      const { shouldCaptureChatId } = classifyWhatsAppChat({
+        chatId: chatJid,
+        bridgeInfo: { myJid, myLid, myLidNumber, selfDmJid: myNumber ? `${myNumber}@s.whatsapp.net` : null },
+      });
+      if (shouldCaptureChatId) {
+        chatIdNotified = true;
+        try { onChatId?.(chatJid); } catch (_) {}
+      }
     }
 
     const userId = senderJid?.split(':')[0]?.split('@')[0] ?? '?';

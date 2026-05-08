@@ -7,7 +7,7 @@
 //   0    user wanted out (typed /exit, or SIGINT). Daemon stops too.
 //   42   /upgrade — run `git pull && npm install && npm run build:ext`,
 //        then restart.
-//   43   /restart — rebuild dist (no git pull) and restart.
+//   43   /restart — restart immediately, no git pull, no build.
 //   44   /rewind — read ~/.egpt/rewind-target.txt for a git ref, run
 //        `git checkout <ref> && npm install && npm run build:ext`,
 //        then restart.
@@ -163,17 +163,9 @@ function spawnShell() {
     }
 
     if (code === RESTART_EXIT_CODE) {
-      // /restart now also rebuilds dist. Previously it skipped the
-      // build for speed, but that meant a developer-edit + /restart
-      // loop left stale extension dist behind, and /upgrade was the
-      // only path that refreshed dist — annoying when the user
-      // edited locally without committing. The build is in-process
-      // (esbuild import) and only ~150ms, so always running it is
-      // cheaper than the confusion of stale dist.
-      log('restart requested — rebuilding dist, no git pull');
-      await buildExtension();
+      log('restart requested — no upgrade, no build, no backoff');
       backoff = RESTART_MIN_MS;
-      spawnShell();
+      setImmediate(spawnShell);
       return;
     }
 

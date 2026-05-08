@@ -105,13 +105,17 @@ export function stream({ history, message }, onUpdate, options = {}) {
     // allowlist the @egpt persona will hallucinate ("I don't have
     // web access") instead of fetching. Caller passes
     // options.allowedTools as either:
-    //   • 'all' / '*'         → --dangerously-skip-permissions (full access)
+    //   • 'all' / '*'         → --dangerously-skip-permissions
+    //                           AND --permission-mode bypassPermissions
+    //                           (belt + suspenders — different Claude Code
+    //                            builds honor one or the other)
     //   • space-sep string    → --allowedTools "<list>"
     //   • array of tool names → --allowedTools "<joined>"
     if (options.allowedTools) {
       const at = options.allowedTools;
       if (at === 'all' || at === '*') {
         args.push('--dangerously-skip-permissions');
+        args.push('--permission-mode', 'bypassPermissions');
       } else {
         const list = Array.isArray(at) ? at.join(' ') : String(at);
         if (list.trim()) args.push('--allowedTools', list.trim());
@@ -124,6 +128,13 @@ export function stream({ history, message }, onUpdate, options = {}) {
     const cwd = normalizeCwd(options.cwd);
     if (cwd) spawnOpts.cwd = cwd;
 
+    // Diagnostic: surface the actual claude args via onLog so the
+    // user can confirm via /log that tool-permission flags were
+    // passed. Cheap (one log line per turn) and saves a lot of
+    // "why is the persona claiming no web access" debugging.
+    if (typeof options.onLog === 'function') {
+      try { options.onLog(`claude-code: spawn claude ${args.join(' ')}`); } catch (_) {}
+    }
     const proc = spawn('claude', args, spawnOpts);
 
     let buf = '';
