@@ -4248,16 +4248,14 @@ function App() {
   // /attach-ed session, just lives outside any room (omnipresent
   // butler giving continuity across rooms / bridges).
   //
-  // Defaults are set so the user's experience matches what they get in
-  // their console: codex auto-uses tools (its CLI does this natively);
-  // claude-code asks for permission interactively. The persona runs
-  // non-interactively, so for claude-code we default to 'all' (=
-  // --dangerously-skip-permissions) so the persona auto-answers 'yes'
-  // the way the user would in console. codex.stream ignores the opt,
-  // so passing it unconditionally is harmless.
-  // No system_prompt nudge by default — that would be adding behavior
-  // the user doesn't see in console.
-  // All defaults overridable via /config default_brain {...}.
+  // Each brain runs with the option set it actually understands. No
+  // cross-brain knobs, no system-prompt nudges — both claude-code and
+  // codex behave the way the user knows them from the console:
+  //   claude-code: pass allowed_tools (default 'all' = the
+  //                non-interactive equivalent of clicking 'yes' on
+  //                claude-code's permission prompts)
+  //   codex:       no extra options — codex CLI handles tools natively
+  // Override per deployment via /config default_brain {...}.
   // Conversation continuity: brain returns optionsPatch.sessionId on
   // the first turn; we persist it to ~/.egpt/config.json and pass it
   // back as --resume on subsequent turns.
@@ -4271,8 +4269,8 @@ function App() {
       cwd: dbCfg.cwd ?? process.cwd(),
       sessionName: 'egpt',
       userName: USER_NAME,
-      allowedTools: dbCfg.allowed_tools ?? 'all',
-      ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
+      ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+      ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
     };
     try {
       const result = await brain.stream(
