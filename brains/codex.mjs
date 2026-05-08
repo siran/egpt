@@ -277,7 +277,7 @@ async function buildCodexPrompt({ history, message }, options) {
 
   if (options.sessionId) {
     return [
-      `[${options.userName ?? 'An'}]: ${text}`,
+      `[${options.userName ?? 'egptbot'}]: ${text}`,
       '',
       `Reply as ${sessionName} in the egpt room.`,
       `Codex thread id for this egpt session: ${options.sessionId}`,
@@ -288,7 +288,7 @@ async function buildCodexPrompt({ history, message }, options) {
   return [
     `Reply as ${sessionName} in an egpt room.`,
     `Configured reasoning effort for this invocation: ${codexReasoningEffort(options)}`,
-    `Current user message: [${options.userName ?? 'An'}]: ${text}`,
+    `Current user message: [${options.userName ?? 'egptbot'}]: ${text}`,
     `Answer that current message directly. If it is a greeting, just greet back briefly.`,
     `If there is nothing useful to add, reply with exactly "...".`,
   ].join('\n');

@@ -1079,9 +1079,11 @@ async function resolveTabId(spec, brain = null) {
   return null;
 }
 
-// User name as it appears to brains (in [An]: prefixes when broadcasting/mirroring).
-// Override with EGPT_USER_NAME if you're not An.
-const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
+// User name as it appears to brains and across surfaces. Resolution
+// order: EGPT_CONFIG.user_name (per-user / per-project config.json) →
+// EGPT_USER_NAME env var → 'egptbot' default. Set user_name in your
+// config to control the handle peers see.
+const USER_NAME = EGPT_CONFIG?.user_name ?? process.env.EGPT_USER_NAME ?? 'egptbot';
 
 // Strip a leading '@' from a handle string. WhatsApp's pushName comes
 // through as '@An' (we prepended @ in the bridge); Telegram usernames
@@ -1107,7 +1109,7 @@ function formatHandleClientNode(handle, client, node, localNode) {
 // Author-emoji defaults. Each is overridable via EGPT_CONFIG.emojis.{user, egpt, persona, human}
 // (set per-user in ~/.egpt/config.json or per-project in .egpt/config.json).
 // Resolved once at module load — change requires shell restart.
-const USER_EMOJI         = EGPT_CONFIG?.emojis?.user    ?? '🦅';   // shell user (USER_NAME — "An")
+const USER_EMOJI         = EGPT_CONFIG?.emojis?.user    ?? '🦅';   // shell user (USER_NAME)
 const EGPT_EMOJI         = EGPT_CONFIG?.emojis?.egpt    ?? '🧠';   // egpt system voice — status, hints, errors
 const EGPT_PERSONA_EMOJI = EGPT_CONFIG?.emojis?.persona ?? '🐶';   // egpt persona reply voice — @egpt answers
 const HUMAN_EMOJI        = EGPT_CONFIG?.emojis?.human   ?? '🌐';   // extension's default 'human' tag — distinct surface
@@ -5060,7 +5062,7 @@ function App() {
         // route to runDefaultBrainTurn so peers (like the extension)
         // can address @egpt and the shell does the brain work on
         // their behalf, then mention-reply back over the bus.
-        if (ev.target === 'egpt') {
+        if (ev.target === 'egpt' || ev.target === 'e') {
           log(`bus: running @egpt for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
           try {
             const reply = await runDefaultBrainTurn(`[${ev.user ?? 'remote'}]: ${ev.body}`);

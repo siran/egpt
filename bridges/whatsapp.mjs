@@ -298,7 +298,8 @@ export async function startWhatsAppBridge({
     // @<my-number>, not @egpt). allowed_users gating downstream still
     // restricts who actually triggers anything; non-allowed senders
     // are silently ignored (no in-chat tattle).
-    const isWakeWord = !!text && /@egpt\b/i.test(text);
+    // '@egpt' or its short alias '@e' (/ee/, like 'eel') wakes the persona.
+    const isWakeWord = !!text && /@(?:egpt|e)\b/i.test(text);
 
     // Awareness rules — decide whether this message reaches onIncoming.
     //   self_chat:   chat-with-yourself (your phone-typed self-DMs and

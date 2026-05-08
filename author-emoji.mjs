@@ -29,7 +29,7 @@
 
 export function emojiForAuthor(author, sessions, opts = {}) {
   const {
-    user_name      = 'An',
+    user_name      = 'egptbot',
     user_emoji     = '🦅',
     egpt_emoji     = '🧠',
     persona_emoji  = '🐶',
@@ -38,7 +38,7 @@ export function emojiForAuthor(author, sessions, opts = {}) {
   if (author === 'system') return egpt_emoji;
   if (author === 'You')    return user_emoji;
   const bare = String(author ?? '').split('@')[0];
-  if (bare === 'egpt')      return persona_emoji;
+  if (bare === 'egpt' || bare === 'e') return persona_emoji;  // 'e' is egpt's short alias (/ee/, like 'eel')
   if (bare === user_name)   return user_emoji;
   if (bare === 'human')     return human_emoji;
   return sessions?.[bare]?.emoji ?? '❓';

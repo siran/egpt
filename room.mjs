@@ -82,11 +82,13 @@ export function resolveRoute(parsed, fullText, ctx) {
     const token = parsed.target;
     const body = parsed.body || '?';
 
-    // Special case: '@egpt' is the node-global default-brain persona.
-    // Always returns kind:'persona' regardless of room state — works
-    // even in the default lobby. The persona has its own persistent
-    // conversation thread, separate from any room session.
-    if (token.toLowerCase() === 'egpt') {
+    // Special case: '@egpt' (or its short alias '@e' — egpt's nickname,
+    // pronounced /ee/, like the eel) is the node-global default-brain
+    // persona. Always returns kind:'persona' regardless of room state —
+    // works even in the default lobby. The persona has its own
+    // persistent conversation thread, separate from any room session.
+    const lower = token.toLowerCase();
+    if (lower === 'egpt' || lower === 'e') {
       return { kind: 'persona', body };
     }
 

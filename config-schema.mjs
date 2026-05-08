@@ -17,6 +17,7 @@ export const CONFIG_SCHEMA = {
   show_prompts: 'show full operator prompt before each turn  (true/false)',
   unix_paths:   'display filesystem paths in POSIX style  (true/false)',
   tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
+  user_name:    'handle for the human typing here, shown in cross-surface mirroring as <user_name>@<surface>. Default: "egptbot". Override via this config key, EGPT_USER_NAME env var, or per-bridge node_name in telegram/whatsapp blocks.',
   node_name:    'name this node uses on the bus (e.g. home, chr1); takes effect on next shell restart',
   telegram:     'telegram bridge config: { bot_token, allowed_users, chat_id, mirror, node_name, client_name (default "tg", appears in handle@client tags) }',
   // whatsapp: nested object with keys { enabled, allowed_users, chat_id }.

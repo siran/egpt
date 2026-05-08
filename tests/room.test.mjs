@@ -76,6 +76,19 @@ describe('resolveRoute — @egpt persona', () => {
     const c = ctx({ sessions: [['egpt', 'codex']] });
     expect(route('@egpt hello', c)).toEqual({ kind: 'persona', body: 'hello' });
   });
+
+  it("'@e' is the short alias (/ee/, like 'eel') and routes to the persona", () => {
+    expect(route('@e what time is it?', ctx())).toEqual({
+      kind: 'persona', body: 'what time is it?',
+    });
+    expect(route('@e', ctx())).toEqual({ kind: 'persona', body: '?' });
+    expect(route('@E hi', ctx())).toEqual({ kind: 'persona', body: 'hi' });
+  });
+
+  it("persona alias '@e' takes precedence over a session named 'e'", () => {
+    const c = ctx({ sessions: [['e', 'codex']] });
+    expect(route('@e hi', c)).toEqual({ kind: 'persona', body: 'hi' });
+  });
 });
 
 // ── Slash commands ─────────────────────────────────────────────────────────

@@ -62,6 +62,11 @@ describe('emojiForAuthor — egpt persona', () => {
     expect(emojiForAuthor('egpt@kg',         {}, OPTS)).toBe('🐶');
     expect(emojiForAuthor('egpt@chrome-abc', {}, OPTS)).toBe('🐶');
   });
+
+  it("'e' alias (/ee/, like 'eel') → persona emoji", () => {
+    expect(emojiForAuthor('e',     {}, OPTS)).toBe('🐶');
+    expect(emojiForAuthor('e@kg',  {}, OPTS)).toBe('🐶');
+  });
 });
 
 describe('emojiForAuthor — extension human tag (regression: was landing as ❓ in WA)', () => {
@@ -122,8 +127,14 @@ describe('emojiForAuthor — defaults (no opts)', () => {
     expect(emojiForAuthor('system',           {}, {})).toBe('🧠');
     expect(emojiForAuthor('You',              {}, {})).toBe('🦅');
     expect(emojiForAuthor('egpt@kg',          {}, {})).toBe('🐶');
+    expect(emojiForAuthor('e@kg',             {}, {})).toBe('🐶');
     expect(emojiForAuthor('human@chrome-abc', {}, {})).toBe('🌐');
-    // user_name defaults to 'An' (the project's canonical default).
-    expect(emojiForAuthor('An@kg',            {}, {})).toBe('🦅');
+    // user_name defaults to 'egptbot' — the project ships with no
+    // hardcoded human name. Override via EGPT_CONFIG.user_name or the
+    // EGPT_USER_NAME env var.
+    expect(emojiForAuthor('egptbot@kg',       {}, {})).toBe('🦅');
+    // 'An' is no longer the default — without an explicit user_name
+    // override it falls through to the unknown-author ❓.
+    expect(emojiForAuthor('An@kg',            {}, {})).toBe('❓');
   });
 });
