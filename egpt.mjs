@@ -22,6 +22,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize } from './persona-state.mjs';
+import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
@@ -1175,14 +1176,18 @@ function mdToTgHtml(text) {
 //   '<name>@<surf>'  → sessions[<name>].emoji  (strip the @suffix for lookup;
 //                       sessions are keyed by bare name like 'cx', not 'cx@kg')
 //   fallback         → ❓ (should be rare — only truly unknown peer authors)
+// Resolved opts for the pure helper in author-emoji.mjs. Module-level so
+// the lookup is constant-time and tests can exercise the helper with
+// synthetic option sets without touching this file.
+const _AUTHOR_EMOJI_OPTS = {
+  user_name:     USER_NAME,
+  user_emoji:    USER_EMOJI,
+  egpt_emoji:    EGPT_EMOJI,
+  persona_emoji: EGPT_PERSONA_EMOJI,
+  human_emoji:   HUMAN_EMOJI,
+};
 function emojiForAuthor(author, sessions) {
-  if (author === 'system') return EGPT_EMOJI;
-  if (author === 'You')    return USER_EMOJI;
-  const bare = author.split('@')[0];
-  if (bare === 'egpt')      return EGPT_PERSONA_EMOJI;
-  if (bare === USER_NAME)   return USER_EMOJI;
-  if (bare === 'human')     return HUMAN_EMOJI;
-  return sessions?.[bare]?.emoji ?? '❓';
+  return _emojiForAuthor(author, sessions, _AUTHOR_EMOJI_OPTS);
 }
 
 // Render an item for the Telegram chat. Uses HTML parse_mode.
