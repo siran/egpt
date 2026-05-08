@@ -66,8 +66,16 @@ export async function startWhatsAppBridge({
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
-    personal:  awareness.personal  ?? 'incoming',
-    groups:    awareness.groups    ?? 'mentions',
+    // Defaults are permissive ('both' / 'all'): the operator wants
+    // every WhatsApp message visible across surfaces (play-script
+    // model). Dial back via config.whatsapp.awareness if a particular
+    // channel turns out too noisy. The wake-word path (@egpt …) was
+    // a workaround when defaults were strict; with these defaults
+    // it's no longer load-bearing for visibility — it still opts a
+    // message out of any 'off'/'mentions' override the operator
+    // configures.
+    personal:  awareness.personal  ?? 'both',
+    groups:    awareness.groups    ?? 'all',
   };
   const log = (m) => onLog?.(m);
   const err = (m) => onError?.(m);
