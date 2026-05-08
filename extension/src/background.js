@@ -12,6 +12,7 @@
 //      the same bus tab without competing for a debugger session.
 
 const TAB_URL = 'tab/index.html';
+const BUS_URL = 'bus.html';
 
 chrome.action.onClicked.addListener(async () => {
   const tabUrl = chrome.runtime.getURL(TAB_URL);
@@ -23,6 +24,23 @@ chrome.action.onClicked.addListener(async () => {
     chrome.tabs.create({ url: tabUrl });
   }
 });
+
+// Ensure the bus tab exists. The extension hosts bus.html (bundled);
+// shell looks it up via /json/list and attaches. If shell starts
+// before the extension UI is ever clicked, the bus tab wouldn't
+// exist yet and shell would have nothing to find. Open it eagerly
+// on every plausible service-worker wake (install, browser startup,
+// SW spawn).
+async function ensureBusTab() {
+  const url = chrome.runtime.getURL(BUS_URL);
+  const existing = await chrome.tabs.query({ url });
+  if (existing.length === 0) {
+    try { await chrome.tabs.create({ url, active: false }); } catch (_) {}
+  }
+}
+chrome.runtime.onInstalled.addListener(ensureBusTab);
+chrome.runtime.onStartup.addListener(ensureBusTab);
+ensureBusTab();
 
 // ── Bus relay ────────────────────────────────────────────────────
 

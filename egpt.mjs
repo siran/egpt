@@ -1922,9 +1922,16 @@ function App() {
 
       // 3. Bus tab: open or find the shared control-plane tab and subscribe.
       //    Cross-process events (extension <-> shell) ride this.
+      //    Shell never opens the bus tab — only finds and attaches.
+      //    The extension hosts bus.html (chrome-extension://<id>/bus.html
+      //    bundled); its background.js opens the tab on extension load.
+      //    If we tried to open one ourselves, the URL would resolve to
+      //    http://localhost:9221/bus.html which Chrome doesn't serve,
+      //    leaving a tab pointing at a 404 page with no window.bus —
+      //    silent failure that breaks every cross-surface event.
       try {
         if (cancelled) return;
-        const located = await bus.findOrOpenBusTab();
+        const located = await bus.findOrOpenBusTab({ open: false });
         if (!located) return;
         busTargetIdRef.current = located.targetId;
         const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
