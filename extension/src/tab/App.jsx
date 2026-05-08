@@ -1001,6 +1001,17 @@ export default function App() {
         // side-channel like Telegram.
         const tag = `${ev.user ?? 'human'}@${ev.via ?? ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
+        // Mirror to telegram if THIS node owns the polling slot. The
+        // originator's local mirror only fires while they hold the
+        // slot; if they've yielded (or never had it), the slot
+        // owner is the only one with a live bot bridge that can
+        // carry the line to TG. ev.via set means the message
+        // originated FROM telegram itself — don't echo back.
+        if (bridgeRef.current && !ev.via) {
+          bridgeRef.current.send(
+            `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
+          );
+        }
         return;
       }
       case 'room-reply': {
@@ -1009,6 +1020,11 @@ export default function App() {
         // by design.
         const tag = `${ev.session ?? '?'}@${ev.from ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
+        if (bridgeRef.current) {
+          bridgeRef.current.send(
+            `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
+          );
+        }
         return;
       }
       case 'telegram-handoff': {

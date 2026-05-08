@@ -1694,13 +1694,17 @@ function App() {
   // from X)" arrival note, the user's own [You] echo when they typed via
   // Telegram). The bridge itself drops sends until a chat_id is known, so
   // pre-Telegram backlog never floods the chat when someone connects later.
+  //
+  // The counter advances even when bridgeRef is null (we yielded the polling
+  // slot). That avoids a backlog flood + duplicate-with-peer-mirror when we
+  // later reclaim: items typed during the yield should be carried to telegram
+  // by whichever peer holds the slot at that moment, not retroactively by us.
   useEffect(() => {
     const b = bridgeRef.current;
-    if (!b) return;
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
-      b.send(formatItemForTelegram(item, sessions));
+      if (b) b.send(formatItemForTelegram(item, sessions));
     }
   }, [items.length]);
 
