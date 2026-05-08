@@ -56,12 +56,13 @@
   </footer>
   <script>
     (function () {
-      // Compact, tab-resident message bus. Both the egpt shell (via the
-      // CDP proxy) and the egpt browser extension (via chrome.debugger)
-      // attach a CDP session to this tab and listen for `console.log`
-      // calls tagged 'egpt-bus'. Subscribers post events by calling
-      // `window.bus.post(ev)` from a Runtime.evaluate; the page renders a
-      // visible row and emits the corresponding console event.
+      // Compact, tab-resident message bus. The egpt shell attaches via
+      // CDP-over-WebSocket through the proxy on :9222, listening for
+      // `console.log('egpt-bus', …)` events and posting via
+      // Runtime.evaluate. The egpt extension attaches via the
+      // chrome.runtime port hook below — same window.bus, different
+      // transport — so the two coexist without competing for a
+      // chrome.debugger session.
       //
       // Long content (full brain replies, file pastes) does NOT travel
       // here — the bus carries only short control events. Long content

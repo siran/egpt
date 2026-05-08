@@ -26,16 +26,21 @@ const watch = process.argv.includes('--watch');
 //   Firefox: about:debugging → Load Temporary Add-on → pick
 //            <repo>/extension/dist-firefox/manifest.json
 
-// Chrome-only shim: redirect tools/cdp.mjs and tools/bus.mjs to the
-// chrome.debugger adapters. Firefox build skips this so it goes
-// through the raw-WebSocket path (which Firefox needs anyway, since
-// browser.debugger isn't a thing there for cross-host CDP).
-const cdpShim = {
-  name: 'cdp-shim',
+// Bus shim: redirect tools/bus.mjs to the chrome.runtime-port adapter
+// for the Chrome dist. The bus adapter doesn't use chrome.debugger
+// at all; it talks to the bus tab via chrome.runtime ports through
+// the extension's background relay. Firefox build skips this and
+// uses the unified raw-WS bus.mjs (which works fine since Firefox
+// extension just needs to attach to a Chrome on the LAN through the
+// proxy, not host its own bus tab).
+//
+// tools/cdp.mjs is NOT shimmed: brain-tab CDP (open/list/close,
+// Runtime.evaluate, streaming) goes through the unified raw-WS path
+// in both Chrome and Firefox builds. No chrome.debugger anywhere —
+// no banner, no 'Another debugger is already attached' on reload.
+const busShim = {
+  name: 'bus-shim',
   setup(b) {
-    b.onResolve({ filter: /\/tools\/cdp\.mjs$/ }, () => ({
-      path: resolve(__dirname, 'src/tools/cdp-ext.js'),
-    }));
     b.onResolve({ filter: /\/tools\/bus\.mjs$/ }, () => ({
       path: resolve(__dirname, 'src/tools/bus-ext.js'),
     }));
@@ -52,7 +57,7 @@ const baseShared = {
   logLevel: 'info',
 };
 
-const chromeShared  = { ...baseShared, plugins: [cdpShim] };
+const chromeShared  = { ...baseShared, plugins: [busShim] };
 const firefoxShared = { ...baseShared };
 
 // ── Build Chrome dist ───────────────────────────────────────────────
