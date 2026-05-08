@@ -104,6 +104,8 @@ export async function startWhatsAppBridge({
   let chatIdNotified = false;
   let myJid          = null;     // our own jid (e.g. '1234567890@s.whatsapp.net')
   let myNumber       = null;     // bare number for mention-detection
+  let myLid          = null;     // our own LID jid (privacy-format identity)
+  let myLidNumber    = null;     // bare number portion of myLid (for self-DM detection)
   let sock           = null;
   let reconnectTimer = null;
 
@@ -183,9 +185,17 @@ export async function startWhatsAppBridge({
       if (connection === 'open') {
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
+        // LID is WhatsApp's privacy-format identity. The user's own
+        // self-DM frequently arrives addressed as '<lidNumber>@lid'
+        // instead of '<phoneNumber>@s.whatsapp.net' — without
+        // capturing the LID we can't tell the LID self-DM apart from
+        // any random group/contact, which breaks chat_id auto-
+        // capture and the egpt-chat detection on the host side.
+        myLid = sock.user?.lid ?? null;
+        myLidNumber = myLid?.split(':')[0]?.split('@')[0] ?? null;
         connectedAt = Date.now();
         const display = sock.user?.name ?? myNumber ?? '?';
-        log(`whatsapp: connected as ${display} (${myNumber})`);
+        log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
       }
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode;
@@ -260,8 +270,14 @@ export async function startWhatsAppBridge({
     // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
     // but remoteJid for incoming messages doesn't ('16468217865@s.whatsapp.net').
     // Comparing strings directly always fails for self-DMs.
+    // Also accept LID self-DMs ('<lidNumber>@lid'): WhatsApp routes
+    // 'Message Yourself' through LID for privacy, and the LID number
+    // does NOT match the phone number — we have to compare against
+    // myLidNumber separately.
     const chatNumber = chatJid0.split('@')[0]?.split(':')[0];
-    const isSelfDM = !isGroup0 && chatNumber === myNumber;
+    const isSelfByPhone = chatNumber === myNumber;
+    const isSelfByLid = !!myLidNumber && chatNumber === myLidNumber;
+    const isSelfDM = !isGroup0 && (isSelfByPhone || isSelfByLid);
     const fromMe = !!msg.key?.fromMe;
 
     // Pull text out of whatever variant baileys delivered. We need it
@@ -311,7 +327,13 @@ export async function startWhatsAppBridge({
     const chatType = isGroup ? 'group' : 'private';
 
     lastChat = chatJid;
-    if (!chatIdNotified) {
+    // Auto-capture the WA chat_id ONLY from self-DM messages. The
+    // chat_id is meant to be the user's "Message Yourself" chat
+    // (the canonical egpt chat). Without this guard, whatever chat
+    // the user happens to be in first — a group, a friend's DM —
+    // gets persisted as the egpt chat_id, and self-DM messages then
+    // fail the egpt-chat check and end up observe-only.
+    if (!chatIdNotified && isSelfDM) {
       chatIdNotified = true;
       try { onChatId?.(chatJid); } catch (_) {}
     }
@@ -401,6 +423,8 @@ export async function startWhatsAppBridge({
     get chatId() { return lastChat; },
     get myJid()  { return myJid; },
     get myNumber() { return myNumber; },
+    get myLid() { return myLid; },
+    get myLidNumber() { return myLidNumber; },
     // The WhatsApp 'Message Yourself' chat — your own number as a JID.
     // Useful as the default mirror target so shell-typed transcript
     // shows up in your phone without configuring a chat_id.

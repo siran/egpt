@@ -1636,8 +1636,8 @@ function App() {
           // Egpt-chat vs observed-chat distinction. Full mirror only
           // happens for chats the user designates as egpt chats:
           //   * the WA self-DM ('Message Yourself'), detected via
-          //     bare-number match, selfDmJid match, OR the
-          //     auto-captured cfg.chat_id (read fresh from
+          //     bare-number match, LID match, selfDmJid match, OR
+          //     the auto-captured cfg.chat_id (read fresh from
           //     EGPT_CONFIG so onChatId-time updates apply
           //     immediately, not just after a restart).
           //   * any chat ID listed in cfg.whatsapp.egpt_chats.
@@ -1646,15 +1646,28 @@ function App() {
           // persona dispatch path still handles @egpt mentions and
           // replies directly to the originating chat.
           const myJid = waBridgeRef.current?.myJid ?? null;
+          const myLid = waBridgeRef.current?.myLid ?? null;
+          const myLidNumber = waBridgeRef.current?.myLidNumber ?? null;
           const selfDmJid = waBridgeRef.current?.selfDmJid ?? null;
           const myNum = String(myJid ?? '').split(':')[0]?.split('@')[0];
           const chatNum = String(from.chatId ?? '').split('@')[0]?.split(':')[0];
           const isSelfByNumber = myNum && chatNum && chatNum === myNum;
+          const isSelfByLid = myLidNumber && chatNum && chatNum === myLidNumber;
           const isSelfBySelfDmJid = selfDmJid && from.chatId === selfDmJid;
           // Read fresh — onChatId updates EGPT_CONFIG when capturing.
+          // Also validate: trust the persisted chat_id as "the egpt
+          // chat" only if it actually looks like a self-DM (matches
+          // phone number OR LID). A prior bug captured the user's
+          // first chat — even when that was a group — and persisted
+          // it; without this check, group messages keep getting
+          // misclassified as egpt chat. Non-self-DM egpt chats
+          // belong in egpt_chats[], not chat_id.
           const liveChatId = EGPT_CONFIG.whatsapp?.chat_id;
-          const isSelfByConfig = liveChatId && from.chatId === liveChatId;
-          const isSelfDM = isSelfByNumber || isSelfBySelfDmJid || isSelfByConfig;
+          const liveChatNum = String(liveChatId ?? '').split('@')[0]?.split(':')[0];
+          const liveChatIsSelfDM = liveChatId
+            && ((myNum && liveChatNum === myNum) || (myLidNumber && liveChatNum === myLidNumber));
+          const isSelfByConfig = liveChatIsSelfDM && from.chatId === liveChatId;
+          const isSelfDM = isSelfByNumber || isSelfByLid || isSelfBySelfDmJid || isSelfByConfig;
           const liveEgptChats = EGPT_CONFIG.whatsapp?.egpt_chats ?? [];
           const isEgptChat = isSelfDM || liveEgptChats.includes(from.chatId);
           if (submitRef.current) await submitRef.current(text, {
