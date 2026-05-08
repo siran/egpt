@@ -6,6 +6,14 @@ const attached = new Set();
 
 async function ensureAttached(tabId) {
   if (attached.has(tabId)) return;
+  // Best-effort detach first: if a previous extension instance left
+  // a stale chrome.debugger session on this tab (common on reload
+  // because chrome.debugger sessions don't always release cleanly
+  // when an extension is unloaded), the new attach would fail with
+  // 'Another debugger is already attached'. Detaching by tabId
+  // releases our extension's prior session if one exists; throws
+  // 'Debugger is not attached' otherwise, which we ignore.
+  try { await chrome.debugger.detach({ tabId }); } catch (_) {}
   await chrome.debugger.attach({ tabId }, '1.3');
   attached.add(tabId);
   chrome.debugger.onDetach.addListener(function h(src) {

@@ -52,6 +52,10 @@ export async function findOrOpenBusTab({ open = true } = {}) {
 const _attached = new Set();
 async function ensureAttached(tabId) {
   if (_attached.has(tabId)) return;
+  // See cdp-ext.js for rationale — try detach first to clear stale
+  // chrome.debugger sessions left behind by a previous extension
+  // instance (extension reload). Harmless if we weren't attached.
+  try { await chrome.debugger.detach({ tabId }); } catch (_) {}
   await chrome.debugger.attach({ tabId }, '1.3');
   _attached.add(tabId);
   chrome.debugger.onDetach.addListener(function h(src) {
