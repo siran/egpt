@@ -847,7 +847,10 @@ export default function App() {
   useEffect(() => {
     if (!nodeNameReady) return;  // wait for node_name from storage before announcing
     let cancelled = false;
-    (async () => {
+    let lastErrorMsg = null;
+
+    const tryConnect = async () => {
+      if (cancelled || busSubRef.current) return;
       try {
         const located = await bus.findOrOpenBusTab();
         if (cancelled || !located) return;
@@ -856,6 +859,7 @@ export default function App() {
           if (cancelled) return;
           handleBusEventRef.current?.(ev);
         });
+        if (cancelled) { sub.stop?.(); return; }
         busSubRef.current = sub;
         // Initial announce. Peers pong back so we discover them too.
         const sessionsList = [...sessionsRef.current.entries()].map(([n, s]) => ({
@@ -866,12 +870,27 @@ export default function App() {
           sessions: sessionsList, polling: false,
         });
         appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached');
+        lastErrorMsg = null;
       } catch (e) {
-        appendMsg('egpt', `bus: not joined (${e.message})`);
+        // Surface the failure once per error message — we retry on a
+        // 5s interval, so without dedup the UI would fill with the
+        // same 'bus: not joined' line every tick when the shell /
+        // proxy is down. Reset on success or on a different error.
+        if (e.message !== lastErrorMsg) {
+          lastErrorMsg = e.message;
+          appendMsg('egpt', `bus: not joined (${e.message}). Will retry every 5s — start the egpt shell to bring the proxy up.`);
+        }
       }
-    })();
+    };
+
+    tryConnect();
+    // Poll every 5s until busSubRef is set. Cheap (one /json/version
+    // when reachable; one fetch+immediate-failure when not). Auto-
+    // recovers if the shell starts after the extension tab opened.
+    const pollHandle = setInterval(tryConnect, 5000);
     return () => {
       cancelled = true;
+      clearInterval(pollHandle);
       const tid = busTargetIdRef.current;
       const sub = busSubRef.current;
       busTargetIdRef.current = null;
