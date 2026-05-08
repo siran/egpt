@@ -113,6 +113,12 @@ export function stream({ history, message }, onUpdate, options = {}) {
     let acc = '';
     let finalText = null;
     let stderrBuf = '';
+    // Captured from claude's stream-json events. The CLI emits a
+    // 'system'/'init' event at start with session_id; we surface it
+    // back to the host via optionsPatch so subsequent calls can pass
+    // it as --resume. Without this, every persona invocation starts
+    // a brand-new conversation.
+    let capturedSessionId = null;
 
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', chunk => {
@@ -124,6 +130,13 @@ export function stream({ history, message }, onUpdate, options = {}) {
         if (!t) continue;
         let ev;
         try { ev = JSON.parse(t); } catch { continue; }
+
+        // Capture session_id from any event that carries it (the
+        // system/init event is typical, but be liberal). First-wins
+        // so a single invocation locks onto one session id.
+        if (typeof ev.session_id === 'string' && !capturedSessionId) {
+          capturedSessionId = ev.session_id;
+        }
 
         if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
           const d = ev.event.delta;
@@ -168,7 +181,17 @@ export function stream({ history, message }, onUpdate, options = {}) {
 
     proc.on('close', code => {
       if (code !== 0) return reject(new Error(`claude exit ${code}: ${stderrBuf.trim() || 'no stderr'}`));
-      resolve(finalText ?? acc);
+      const text = finalText ?? acc;
+      // Object return form: runBrainTurn / runDefaultBrainTurn both
+      // recognize { text, optionsPatch } and persist optionsPatch
+      // back into the session config (so the next call gets
+      // --resume <session>). When session_id wasn't surfaced for
+      // any reason, optionsPatch is null and runBrainTurn falls
+      // back to its legacy string-handling path.
+      resolve({
+        text,
+        optionsPatch: capturedSessionId ? { sessionId: capturedSessionId } : null,
+      });
     });
     proc.on('error', err => {
       if (err.code === 'ENOENT') {
