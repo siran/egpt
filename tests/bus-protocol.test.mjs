@@ -24,7 +24,7 @@
 // args=['egpt-bus', JSON.stringify(ev)] to every active session
 // against this page. That's exactly what the real bus.html does.
 
-import { describe, it, beforeAll, afterAll, expect } from 'vitest';
+import { describe, it, beforeAll, beforeEach, afterAll, expect } from 'vitest';
 import { createServer } from 'node:http';
 import { setCdpHostGetter } from '../tools/cdp.mjs';
 import * as bus from '../tools/bus.mjs';
@@ -35,6 +35,7 @@ import { WebSocketServer } from 'ws';
 function startMockCdp() {
   const TAB_ID = 'bus-tab-1';
   const sessions = new Set();   // every active WS to /devtools/page/<TAB_ID>
+  const eventLog = [];          // server-side ring buffer mimicking bus.html's
 
   const server = createServer((req, res) => {
     const port = server.address().port;
@@ -85,17 +86,29 @@ function startMockCdp() {
           return;
         }
         if (cmd.method === 'Runtime.evaluate') {
-          // Recognize the bus.post(ev) pattern and broadcast.
-          // The shell's expr looks like:
-          //   (function(ev){ if (window.bus && window.bus.post)
-          //   return window.bus.post(ev); ... })({"type":"foo",...})
-          // We extract the trailing JSON object literal.
           const expr = cmd.params?.expression ?? '';
-          const m = expr.match(/\}\)\((\{[\s\S]*\})\)\s*$/);
-          if (m) {
+
+          // Replay query: window.bus?.getEvents?.(<since>)
+          const replayMatch = expr.match(/window\.bus\?\.getEvents\?\.\((\d+)\)/);
+          if (replayMatch) {
+            const since = parseInt(replayMatch[1], 10);
+            const past = eventLog.filter(e => (e.ts ?? 0) > since);
+            ws.send(JSON.stringify({
+              id: cmd.id,
+              result: { result: { value: JSON.stringify(past) } },
+            }));
+            return;
+          }
+
+          // Post-event: (function(ev){...})({"type":"foo",...})
+          const postMatch = expr.match(/\}\)\((\{[\s\S]*\})\)\s*$/);
+          if (postMatch) {
             try {
-              const ev = JSON.parse(m[1]);
-              broadcastBusEvent(sessions, ev);
+              const ev = JSON.parse(postMatch[1]);
+              const stamped = { ts: Date.now(), ...ev };
+              eventLog.push(stamped);
+              if (eventLog.length > 500) eventLog.shift();
+              broadcastBusEvent(sessions, stamped);
             } catch (_) { /* malformed event — ignore */ }
           }
           ws.send(JSON.stringify({ id: cmd.id, result: { result: { value: null } } }));
@@ -112,6 +125,7 @@ function startMockCdp() {
       resolve({
         server,
         port: server.address().port,
+        clearEventLog() { eventLog.length = 0; },
         stop() {
           for (const s of sessions) { try { s.close(); } catch (_) {} }
           return new Promise(r => server.close(r));
@@ -148,6 +162,12 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await mock.stop();
+});
+
+// Each test starts with an empty event log so replay tests don't see
+// each other's posts.
+beforeEach(() => {
+  mock.clearEventLog();
 });
 
 // ── tests ───────────────────────────────────────────────────────
@@ -216,6 +236,74 @@ describe('bus protocol round-trip', () => {
       await new Promise(r => setTimeout(r, 100));
       expect(recv.length).toBeGreaterThan(0);
       expect(recv[recv.length - 1].type).toBe('mention');
+    } finally {
+      sub.stop();
+    }
+  });
+
+  it('replays past events to a late subscriber, marked _replayed:true', async () => {
+    const located = await bus.findOrOpenBusTab({ open: false });
+    // Post events with NO subscribers attached.
+    await bus.postEvent(located.targetId, {
+      type: 'room-utterance', from: 'node-x', user: 'an', body: 'past line 1',
+    });
+    await bus.postEvent(located.targetId, {
+      type: 'room-utterance', from: 'node-x', user: 'an', body: 'past line 2',
+    });
+
+    // Late joiner subscribes — should see both via replay.
+    const recv = [];
+    const sub = await bus.subscribeBusEvents(located.targetId, ev => recv.push(ev));
+    try {
+      // No timeout needed: subscribe doesn't resolve until replay
+      // dispatch is complete.
+      const replayed = recv.filter(e => e._replayed);
+      expect(replayed.length).toBeGreaterThanOrEqual(2);
+      expect(replayed.find(e => e.body === 'past line 1')).toBeTruthy();
+      expect(replayed.find(e => e.body === 'past line 2')).toBeTruthy();
+    } finally {
+      sub.stop();
+    }
+  });
+
+  it('opt-out via { replay: false } skips the replay dispatch', async () => {
+    const located = await bus.findOrOpenBusTab({ open: false });
+    await bus.postEvent(located.targetId, {
+      type: 'room-utterance', from: 'node-y', user: 'an', body: 'silenced past',
+    });
+
+    const recv = [];
+    const sub = await bus.subscribeBusEvents(located.targetId, ev => recv.push(ev), { replay: false });
+    try {
+      // No replay dispatch — past events not delivered.
+      expect(recv.find(e => e.body === 'silenced past')).toBeUndefined();
+      // But fresh posts still arrive live.
+      await bus.postEvent(located.targetId, {
+        type: 'room-utterance', from: 'node-y', user: 'an', body: 'fresh',
+      });
+      await new Promise(r => setTimeout(r, 100));
+      expect(recv.find(e => e.body === 'fresh')).toBeTruthy();
+    } finally {
+      sub.stop();
+    }
+  });
+
+  it('replaySinceMs limits the look-back window', async () => {
+    const located = await bus.findOrOpenBusTab({ open: false });
+    // The mock stamps incoming events with Date.now(); with a tiny
+    // window, prior posts fall outside it.
+    await bus.postEvent(located.targetId, {
+      type: 'room-utterance', from: 'node-z', user: 'an', body: 'should-skip-window',
+    });
+    // 50ms wait so the look-back window comfortably excludes the post.
+    await new Promise(r => setTimeout(r, 50));
+
+    const recv = [];
+    const sub = await bus.subscribeBusEvents(located.targetId, ev => recv.push(ev), {
+      replaySinceMs: 10,
+    });
+    try {
+      expect(recv.find(e => e.body === 'should-skip-window')).toBeUndefined();
     } finally {
       sub.stop();
     }

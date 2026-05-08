@@ -4594,10 +4594,14 @@ function App() {
           polling: !!ev.polling, lastSeen: ev.ts ?? Date.now(),
         });
         setPeersRev(r => r + 1);
-        log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
+        if (!ev._replayed) {
+          log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
+        }
         // Mutual discovery: pong with our state so the new peer learns about
         // us. pong:true on the reply prevents an infinite ping-pong.
-        if (!ev.pong) {
+        // Skip on replayed events — peers already saw our live announce
+        // when we joined; ponging again would be bus noise.
+        if (!ev.pong && !ev._replayed) {
           await post({
             type: 'node-online', role: 'shell', pong: true,
             sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),

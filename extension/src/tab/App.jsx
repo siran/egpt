@@ -895,8 +895,12 @@ export default function App() {
           polling: !!ev.polling, lastSeen: ev.ts ?? Date.now(),
         });
         setPeersRev(r => r + 1);
-        log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
-        if (!ev.pong) {
+        if (!ev._replayed) {
+          log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
+        }
+        // Skip pong on replayed events — peers already heard our live
+        // announce when we joined; this would be bus noise.
+        if (!ev.pong && !ev._replayed) {
           const sessionsList = [...sessionsRef.current.entries()].map(([n, s]) => ({
             name: n, brain: s.brain.name,
           }));

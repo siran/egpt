@@ -85,8 +85,17 @@ export function postEvent(targetId, event) {
  * Subscribe to all events posted to the bus tab. Listens for the page's
  * `console.log('egpt-bus', JSON.stringify(ev))` emissions via CDP's
  * Runtime.consoleAPICalled. Returns { stop } — call stop() to unsubscribe.
+ *
+ * Replay-on-subscribe: by default, the bus tab's in-page event ring buffer
+ * (`window.bus.getEvents(since)`) is queried right after Runtime.enable
+ * and each retrieved event is dispatched through onEvent BEFORE the
+ * subscribe promise resolves. That way a node joining mid-session sees
+ * the recent play instead of joining a play already in progress with no
+ * memory of what came before. Pass `{ replay: false }` to opt out;
+ * `replaySinceMs` controls the look-back window (default: 5 minutes).
  */
-export async function subscribeBusEvents(targetId, onEvent) {
+export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
+  const { replay = true, replaySinceMs = 5 * 60 * 1000 } = opts;
   const tab = await cdp.findTab(targetId);
   if (!tab) throw new Error(`bus tab ${(targetId ?? '?').slice(0, 8)}… not found`);
   // Chrome's Runtime.enable replays past Runtime.consoleAPICalled events
@@ -95,12 +104,16 @@ export async function subscribeBusEvents(targetId, onEvent) {
   // re-dispatched as if new on every rejoin. Filter by CDP-side
   // timestamp: anything older than the moment we subscribed is replay
   // from the buffer. Small grace window for clock smoothing.
+  // (The opt-in replay above goes through Runtime.evaluate of
+  // window.bus.getEvents — a separate path that bypasses this filter.)
   const subscribedAt = Date.now() - 1000;
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(tab.webSocketDebuggerUrl);
     let nextId = 0;
     let stopped = false;
     let resolved = false;
+    const ENABLE_ID = 1;
+    const REPLAY_ID = 2;
 
     const stop = () => {
       if (stopped) return;
@@ -108,18 +121,56 @@ export async function subscribeBusEvents(targetId, onEvent) {
       try { ws.close(); } catch {}
     };
 
+    const finishSubscribe = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve({ stop });
+    };
+
     ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ id: ++nextId, method: 'Runtime.enable' }));
+      nextId = ENABLE_ID;
+      ws.send(JSON.stringify({ id: ENABLE_ID, method: 'Runtime.enable' }));
     });
 
     ws.addEventListener('message', e => {
       let data;
       try { data = JSON.parse(e.data.toString()); } catch { return; }
-      if (data.id === 1 && !resolved) {
-        resolved = true;
-        resolve({ stop });
+
+      // Runtime.enable ack — chain into a replay request, or finish if
+      // replay is disabled.
+      if (data.id === ENABLE_ID) {
+        if (!replay) { finishSubscribe(); return; }
+        const since = Date.now() - replaySinceMs;
+        nextId = REPLAY_ID;
+        ws.send(JSON.stringify({
+          id: REPLAY_ID,
+          method: 'Runtime.evaluate',
+          params: {
+            expression: `JSON.stringify(window.bus?.getEvents?.(${since}) || [])`,
+            returnByValue: true,
+          },
+        }));
         return;
       }
+
+      // Replay response — dispatch each past event through onEvent
+      // before completing the subscribe handshake. We dispatch in
+      // order (bus.html appends in-order, getEvents preserves it).
+      if (data.id === REPLAY_ID) {
+        try {
+          const json = data.result?.result?.value;
+          const past = JSON.parse(json ?? '[]');
+          for (const ev of past) {
+            if (!ev || typeof ev !== 'object') continue;
+            try { onEvent({ ...ev, _replayed: true }); }
+            catch (_) { /* per-event errors don't abort replay */ }
+          }
+        } catch (_) { /* malformed replay payload — give up on replay */ }
+        finishSubscribe();
+        return;
+      }
+
+      // Live event from Runtime.consoleAPICalled.
       if (data.method !== 'Runtime.consoleAPICalled') return;
       const cdpTs = data.params?.timestamp;
       if (typeof cdpTs === 'number' && cdpTs < subscribedAt) return;
@@ -137,9 +188,8 @@ export async function subscribeBusEvents(targetId, onEvent) {
     });
     ws.addEventListener('close', () => { stopped = true; });
 
-    // Safety: resolve even if Runtime.enable's reply gets reordered.
-    setTimeout(() => {
-      if (!resolved) { resolved = true; resolve({ stop }); }
-    }, 1500);
+    // Safety: resolve even if Runtime.enable's reply gets reordered or
+    // the replay request hangs.
+    setTimeout(finishSubscribe, 1500);
   });
 }
