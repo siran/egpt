@@ -1103,12 +1103,13 @@ function formatHandleClientNode(handle, client, node, localNode) {
   if (node && node !== localNode) return `${h}@${client}.${node}`;
   return `${h}@${client}`;
 }
-// Author-emoji defaults. Each is overridable via EGPT_CONFIG.emojis.{user, egpt, persona}
+// Author-emoji defaults. Each is overridable via EGPT_CONFIG.emojis.{user, egpt, persona, human}
 // (set per-user in ~/.egpt/config.json or per-project in .egpt/config.json).
 // Resolved once at module load — change requires shell restart.
-const USER_EMOJI         = EGPT_CONFIG?.emojis?.user    ?? '🦅';
+const USER_EMOJI         = EGPT_CONFIG?.emojis?.user    ?? '🦅';   // shell user (USER_NAME — "An")
 const EGPT_EMOJI         = EGPT_CONFIG?.emojis?.egpt    ?? '🧠';   // egpt system voice — status, hints, errors
 const EGPT_PERSONA_EMOJI = EGPT_CONFIG?.emojis?.persona ?? '🐶';   // egpt persona reply voice — @egpt answers
+const HUMAN_EMOJI        = EGPT_CONFIG?.emojis?.human   ?? '🌐';   // extension's default 'human' tag — distinct surface
 
 // Identifier this shell uses on the CDP control-plane bus. PID makes it
 // unique per process so two shells don't collide.
@@ -1178,8 +1179,9 @@ function emojiForAuthor(author, sessions) {
   if (author === 'system') return EGPT_EMOJI;
   if (author === 'You')    return USER_EMOJI;
   const bare = author.split('@')[0];
-  if (bare === 'egpt')                       return EGPT_PERSONA_EMOJI;
-  if (bare === USER_NAME || bare === 'human') return USER_EMOJI;
+  if (bare === 'egpt')      return EGPT_PERSONA_EMOJI;
+  if (bare === USER_NAME)   return USER_EMOJI;
+  if (bare === 'human')     return HUMAN_EMOJI;
   return sessions?.[bare]?.emoji ?? '❓';
 }
 

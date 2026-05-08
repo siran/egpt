@@ -27,5 +27,5 @@ export const CONFIG_SCHEMA = {
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
   default_brain: 'default brain (the @egpt persona — same machinery as /attach, just node-global): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "...", allowed_tools?: "all" | "<space-sep>" (claude-code only; default "all" auto-answers \'yes\' to permission prompts), system_prompt?: "..." (opt-in; absent = brain default) }',
-  emojis:       'author-emoji defaults for cross-surface mirroring (TG/WA): { user: "🦅" (you typing from any surface), egpt: "🧠" (egpt status/system voice), persona: "🐶" (egpt persona reply voice — answers to @egpt) }. Read once at shell startup; restart to apply changes.',
+  emojis:       'author-emoji defaults for cross-surface mirroring (TG/WA): { user: "🦅" (shell user — USER_NAME), egpt: "🧠" (egpt status/system voice), persona: "🐶" (egpt persona reply — @egpt answers), human: "🌐" (extension\'s default \'human\' tag — distinct surface) }. Read once at shell startup; restart to apply.',
 };
