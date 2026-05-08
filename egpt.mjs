@@ -1635,18 +1635,25 @@ function App() {
           }
           // Egpt-chat vs observed-chat distinction. Full mirror only
           // happens for chats the user designates as egpt chats:
-          //   * the WA self-DM ('Message Yourself' — the user's own
-          //     number talking to itself), always.
+          //   * the WA self-DM ('Message Yourself'), detected three
+          //     ways: bare-number match (16468...@s.whatsapp.net),
+          //     LID match (chatId equals the bridge's reported
+          //     selfDmJid which can be either form), OR the chatId
+          //     equals the configured cfg.chat_id (the auto-captured
+          //     'where the user typically reaches us' chat).
           //   * any chat ID listed in cfg.whatsapp.egpt_chats.
           // For other chats (friend DMs, groups), egpt listens but
           // doesn't echo to shell or broadcast on the bus. The
-          // operator still wants @egpt mentions to work in those
-          // chats — the persona dispatch path handles that, replying
-          // directly to the originating chat.
+          // persona dispatch path still handles @egpt mentions and
+          // replies directly to the originating chat.
           const myJid = waBridgeRef.current?.myJid ?? null;
+          const selfDmJid = waBridgeRef.current?.selfDmJid ?? null;
           const myNum = String(myJid ?? '').split(':')[0]?.split('@')[0];
           const chatNum = String(from.chatId ?? '').split('@')[0]?.split(':')[0];
-          const isSelfDM = myNum && chatNum && chatNum === myNum;
+          const isSelfByNumber = myNum && chatNum && chatNum === myNum;
+          const isSelfBySelfDmJid = selfDmJid && from.chatId === selfDmJid;
+          const isSelfByConfig = cfg.chat_id && from.chatId === cfg.chat_id;
+          const isSelfDM = isSelfByNumber || isSelfBySelfDmJid || isSelfByConfig;
           const explicitList = cfg.egpt_chats ?? [];
           const isEgptChat = isSelfDM || explicitList.includes(from.chatId);
           if (submitRef.current) await submitRef.current(text, {

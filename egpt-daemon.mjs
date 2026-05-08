@@ -93,7 +93,13 @@ function runUpgrade() {
   } else {
     log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
   }
-  const buildResult = spawnSync(npm, ['run', 'build:ext'], spawnOpts);
+  // Run the build script directly via node instead of `npm run build:ext`.
+  // npm.cmd on Windows + spawnSync was fragile (shell:true didn't always
+  // resolve, returning status:null). process.execPath is the absolute
+  // path to this very node binary — guaranteed to exist, no PATH lookup.
+  const buildResult = spawnSync(process.execPath, ['extension/build.mjs'], {
+    cwd: ROOT, stdio: 'inherit',
+  });
   if (buildResult.status !== 0) {
     log(`build:ext exited ${buildResult.status}${buildResult.error ? `: ${buildResult.error.message}` : ''}; continuing with current build`);
     return false;
@@ -115,18 +121,16 @@ function runRewind() {
     log('rewind sidecar empty; restarting anyway');
     return false;
   }
-  log(`rewind requested → git checkout ${ref} && npm install && npm run build:ext`);
+  log(`rewind requested → git checkout ${ref} && npm install && node extension/build.mjs`);
   const steps = [
-    ['git', ['checkout', ref]],
-    [npm,   ['install']],
-    [npm,   ['run', 'build:ext']],
+    ['git', ['checkout', ref], false],
+    [npm,   ['install'], process.platform === 'win32'],
+    [process.execPath, ['extension/build.mjs'], false],
   ];
-  for (const [cmd, args] of steps) {
-    // shell:true on Windows for the same reason as runUpgrade —
-    // npm.cmd can't be exec'd directly without going through cmd.exe.
+  for (const [cmd, args, useShell] of steps) {
     const r = spawnSync(cmd, args, {
       cwd: ROOT, stdio: 'inherit',
-      shell: process.platform === 'win32',
+      shell: useShell,
     });
     if (r.status !== 0) {
       log(`rewind step failed (${cmd} ${args.join(' ')})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
