@@ -1178,8 +1178,8 @@ function emojiForAuthor(author, sessions) {
   if (author === 'system') return EGPT_EMOJI;
   if (author === 'You')    return USER_EMOJI;
   const bare = author.split('@')[0];
-  if (bare === 'egpt')      return EGPT_PERSONA_EMOJI;
-  if (bare === USER_NAME)   return USER_EMOJI;
+  if (bare === 'egpt')                       return EGPT_PERSONA_EMOJI;
+  if (bare === USER_NAME || bare === 'human') return USER_EMOJI;
   return sessions?.[bare]?.emoji ?? '❓';
 }
 
@@ -5049,6 +5049,28 @@ function App() {
       }
       case 'mention': {
         if (ev.to_node !== BUS_NODE_ID) return;
+        // 'egpt' is the node-global persona, not a /attach session —
+        // route to runDefaultBrainTurn so peers (like the extension)
+        // can address @egpt and the shell does the brain work on
+        // their behalf, then mention-reply back over the bus.
+        if (ev.target === 'egpt') {
+          log(`bus: running @egpt for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
+          try {
+            const reply = await runDefaultBrainTurn(`[${ev.user ?? 'remote'}]: ${ev.body}`);
+            await post({ type: 'mention-reply', to_node: ev.from,
+              target: 'egpt', body: reply ?? '' });
+            // Broadcast to the room too — cross-surface visibility,
+            // same as a /attach session reply.
+            if (reply !== null && reply !== undefined) {
+              await post({ type: 'room-reply', role: 'shell',
+                session: 'egpt', body: reply });
+            }
+          } catch (e) {
+            await post({ type: 'mention-reply', to_node: ev.from,
+              target: 'egpt', error: e.message });
+          }
+          return;
+        }
         if (!sessions[ev.target]) {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, error: `no session "${ev.target}" on this node`,

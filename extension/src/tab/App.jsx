@@ -673,12 +673,30 @@ export default function App() {
       return;
     }
     if (decision.kind === 'persona') {
-      // @egpt — node-global default brain. Shell-only for now (the
-      // default brain is typically claude-code, a local subprocess
-      // that can't run inside Chrome). DM the bot via Telegram or
-      // WhatsApp from a shell-paired account, or type @egpt in a
-      // shell on the LAN.
-      appendMsg('egpt', '@egpt needs a shell node — start an egpt shell on this LAN, or DM the bot via Telegram/WhatsApp');
+      // @egpt — node-global default brain. The extension can't host
+      // a brain subprocess (claude-code / codex), so when a shell
+      // peer is online we forward the mention over the bus and the
+      // shell runs runDefaultBrainTurn on our behalf, posting the
+      // reply back as a mention-reply / room-reply event.
+      const shellPeer = [...peerNodesRef.current.entries()]
+        .find(([_, p]) => p.role === 'shell');
+      if (!shellPeer) {
+        appendMsg('egpt', '@egpt needs a shell node — start an egpt shell on this LAN, or DM the bot via Telegram/WhatsApp');
+        return;
+      }
+      const [shellNodeId] = shellPeer;
+      const tid = busTargetIdRef.current;
+      if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @egpt`); return; }
+      try {
+        await bus.postEvent(tid, {
+          type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
+          target: 'egpt', to_node: shellNodeId,
+          body: decision.body, user: userName,
+        });
+        appendMsg('egpt', `@egpt -> ${shellNodeId} via bus`);
+      } catch (e) {
+        appendMsg('egpt', `!! @egpt forward failed: ${e.message}`);
+      }
       return;
     }
     if (decision.kind === 'peer-mention') {
