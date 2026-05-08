@@ -67,17 +67,27 @@ function runUpgrade() {
     return false;
   }
   const after = gitVersion();
-  if (after.sha === before) {
-    log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — no rebuild needed`);
-    return true;
-  }
-  log(`pulled ${before} -> ${after.sha} — running npm install && npm run build:ext`);
-  for (const [cmd, args] of [[npm, ['install']], [npm, ['run', 'build:ext']]]) {
-    const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+  // Always rebuild the extension dist on /upgrade. Skipping when git
+  // shows 'Already up to date' looked tidy, but it broke the case
+  // where the user's checkout is already at the latest sha and they
+  // need to refresh dist (e.g., they pulled manually outside the
+  // daemon, or extension/dist was wiped). The extra esbuild pass is
+  // ~50ms — cheaper than confusion. npm install only runs when the
+  // sha actually changed (it's the heavier step).
+  if (after.sha !== before) {
+    log(`pulled ${before} -> ${after.sha} — running npm install && npm run build:ext`);
+    const r = spawnSync(npm, ['install'], { cwd: ROOT, stdio: 'inherit' });
     if (r.status !== 0) {
-      log(`upgrade step exited ${r.status} (${cmd} ${args.join(' ')}); continuing with current build`);
+      log(`upgrade step exited ${r.status} (npm install); continuing with current build`);
       return false;
     }
+  } else {
+    log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
+  }
+  const buildResult = spawnSync(npm, ['run', 'build:ext'], { cwd: ROOT, stdio: 'inherit' });
+  if (buildResult.status !== 0) {
+    log(`build:ext exited ${buildResult.status}; continuing with current build`);
+    return false;
   }
   log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
   return true;

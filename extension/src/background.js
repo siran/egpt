@@ -1,9 +1,16 @@
-// extension/src/background.js — service worker (minimal: just opens the tab)
-// All logic lives in the tab itself (it's an extension page with full chrome.* access).
+// extension/src/background.js — service worker.
+//
+// Two roles:
+//   1. Open the egpt UI tab when the toolbar action is clicked.
+//   2. Bus relay between the bundled bus.html tab and the UI tab(s).
+//      Bus.html (loaded as chrome-extension://<id>/bus.html) connects
+//      via chrome.runtime.connect({name:'egpt-bus'}); UI tabs connect
+//      via name:'egpt-bus-subscriber'. We forward 'event' and 'replay'
+//      messages from the bus tab to all subscribers, and 'post' /
+//      'replay-request' messages from subscribers to the bus tab.
+//      No chrome.debugger involved — extension and shell coexist on
+//      the same bus tab without competing for a debugger session.
 
-// Path is relative to the extension root — i.e. wherever manifest.json
-// lives. Both Chrome (extension/dist/) and Firefox (extension/dist-firefox/)
-// dists are self-contained, so 'tab/index.html' works in both.
 const TAB_URL = 'tab/index.html';
 
 chrome.action.onClicked.addListener(async () => {
@@ -14,5 +21,56 @@ chrome.action.onClicked.addListener(async () => {
     chrome.windows.update(existing[0].windowId, { focused: true });
   } else {
     chrome.tabs.create({ url: tabUrl });
+  }
+});
+
+// ── Bus relay ────────────────────────────────────────────────────
+
+const _busTabPorts  = new Set();   // ports opened by bus.html
+const _subscribers  = new Set();   // ports opened by UI tabs
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'egpt-bus') {
+    _busTabPorts.add(port);
+    port.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.type === 'event') {
+        for (const s of _subscribers) {
+          try { s.postMessage({ type: 'event', ev: msg.ev }); } catch (_) {}
+        }
+      } else if (msg.type === 'replay') {
+        // Forward the replay-response to whichever subscriber asked
+        // most recently. We don't track per-subscriber requests; in
+        // practice the burst of replay events is harmless if every
+        // subscriber receives a copy (each item arrives with
+        // _replayed: true and consumers dedupe by ts/from anyway).
+        for (const s of _subscribers) {
+          try { s.postMessage({ type: 'replay', past: msg.past }); } catch (_) {}
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => _busTabPorts.delete(port));
+    return;
+  }
+
+  if (port.name === 'egpt-bus-subscriber') {
+    _subscribers.add(port);
+    port.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.type === 'post') {
+        for (const bp of _busTabPorts) {
+          try { bp.postMessage({ type: 'post', ev: msg.ev }); } catch (_) {}
+        }
+      } else if (msg.type === 'replay-request') {
+        // Pick any bus tab port (typically there's one) and ask.
+        const [bp] = _busTabPorts;
+        if (bp) {
+          try { bp.postMessage({ type: 'replay-request', since: msg.since }); }
+          catch (_) {}
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => _subscribers.delete(port));
+    return;
   }
 });

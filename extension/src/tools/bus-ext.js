@@ -1,37 +1,42 @@
 // extension/src/tools/bus-ext.js — drop-in for tools/bus.mjs in the
-// extension context. Same API as the node module; uses chrome.debugger
-// + chrome.tabs instead of CDP-over-WebSocket.
+// extension context. Same exported API as the node module, but uses
+// chrome.runtime ports instead of chrome.debugger / raw WebSocket
+// for bus event delivery.
 //
-// Bus tab URL is the proxy-served http://localhost:9222/bus.html.
-// We tried hosting it at chrome-extension://<id>/bus.html so the
-// extension could stand alone, but Chrome rejects concurrent CDP
-// attach to chrome-extension:// pages: when the shell's WS-via-proxy
-// session is open on the tab, the extension's chrome.debugger.attach
-// fails with 'Another debugger is already attached'. Regular HTTP
-// pages don't have that limitation, so a single bus tab can host
-// both shell's WS session and extension's chrome.debugger session
-// simultaneously.
+// Why chrome.runtime ports:
+// * No chrome.debugger session means no 'egpt started debugging'
+//   banner and no 'Another debugger is already attached' reload
+//   conflict.
+// * No raw WS attach means no concurrency restriction on
+//   chrome-extension://<id>/bus.html (Chrome would reject
+//   extension's own WS attach to its own pages, and 'one debugger'
+//   semantics apply to debugger sessions only — chrome.runtime
+//   ports are an entirely different mechanism).
+// * The shell still uses raw WS via the proxy on the SAME bus tab;
+//   the two transports coexist freely because Chrome treats them
+//   as unrelated. So the extension can self-host its bus.html and
+//   the shell, when it later starts, joins as a peer through the
+//   proxy without conflict.
 //
-// Trade-off: the extension's bus join depends on the shell being up
-// (for the proxy to serve bus.html). Without the shell, the
-// extension still loads, polls Telegram, talks to brain tabs — it
-// just can't see other surfaces' activity until the shell starts
-// and the proxy comes up. The auto-retry tryConnect picks it up.
+// The bus tab (bundled at extension/dist/bus.html, served as
+// chrome-extension://<id>/bus.html) carries the chrome.runtime
+// hook that opens the long-lived port to the extension background.
+// background.js is the relay between the bus tab port and any UI
+// tabs that connect as 'egpt-bus-subscriber'.
 
 export const BUS_PATH = '/bus.html';
 
-const PROXY_PORT_DEFAULT = 9222;
-
-async function configuredBusHost() {
+async function busUrl() {
+  // Override via chrome.storage.sync.bus_url for advanced setups
+  // (e.g. pointing at a remote bus tab through the proxy on a
+  // different machine). Default: extension's own bundled bus.html.
   try {
     const got = await chrome.storage.sync.get('bus_url');
-    if (typeof got?.bus_url === 'string' && got.bus_url.trim()) return got.bus_url.trim();
+    if (typeof got?.bus_url === 'string' && got.bus_url.trim()) {
+      return got.bus_url.trim();
+    }
   } catch (_) {}
-  return `http://localhost:${PROXY_PORT_DEFAULT}${BUS_PATH}`;
-}
-
-export async function busUrl() {
-  return configuredBusHost();
+  return chrome.runtime.getURL('bus.html');
 }
 
 function isBusUrl(url) {
@@ -49,63 +54,61 @@ export async function findOrOpenBusTab({ open = true } = {}) {
   return { targetId: tab.id, url, opened: true };
 }
 
-const _attached = new Set();
-async function ensureAttached(tabId) {
-  if (_attached.has(tabId)) return;
-  // See cdp-ext.js for rationale — try detach first to clear stale
-  // chrome.debugger sessions left behind by a previous extension
-  // instance (extension reload). Harmless if we weren't attached.
-  try { await chrome.debugger.detach({ tabId }); } catch (_) {}
-  await chrome.debugger.attach({ tabId }, '1.3');
-  _attached.add(tabId);
-  chrome.debugger.onDetach.addListener(function h(src) {
-    if (src.tabId !== tabId) return;
-    _attached.delete(tabId);
-    chrome.debugger.onDetach.removeListener(h);
+// Singleton subscriber port to the background relay. Multiple
+// consumers (UI subscribe handlers) share it: the port carries every
+// event broadcast on the bus, and we fan out locally.
+let _port = null;
+const _eventHandlers = new Set();
+
+function ensurePort() {
+  if (_port) return _port;
+  _port = chrome.runtime.connect({ name: 'egpt-bus-subscriber' });
+  _port.onMessage.addListener((msg) => {
+    if (!msg) return;
+    if (msg.type === 'event') {
+      for (const h of _eventHandlers) {
+        try { h(msg.ev); } catch (_) {}
+      }
+    } else if (msg.type === 'replay') {
+      for (const ev of (msg.past ?? [])) {
+        if (!ev || typeof ev !== 'object') continue;
+        for (const h of _eventHandlers) {
+          try { h({ ...ev, _replayed: true }); } catch (_) {}
+        }
+      }
+    }
   });
+  _port.onDisconnect.addListener(() => {
+    _port = null;
+    // Background SW may have shut down. Next ensurePort() reconnects.
+  });
+  return _port;
 }
 
-export async function postEvent(targetId, event) {
-  await ensureAttached(targetId);
-  const safe = JSON.stringify(event ?? {});
-  const expression = `(function(ev){
-    if (window.bus && window.bus.post) return window.bus.post(ev);
-    var attempts = 0;
-    var iv = setInterval(function(){
-      if (window.bus && window.bus.post) { clearInterval(iv); window.bus.post(ev); }
-      else if (++attempts > 20) clearInterval(iv);
-    }, 100);
-    return null;
-  })(${safe})`;
-  await chrome.debugger.sendCommand({ tabId: targetId }, 'Runtime.evaluate', {
-    expression, returnByValue: true,
-  });
+export async function postEvent(_targetId, event) {
+  // _targetId is unused with the chrome.runtime path — background
+  // relays to whichever bus tab is connected. Kept in the signature
+  // for API symmetry with the node module.
+  const port = ensurePort();
+  try { port.postMessage({ type: 'post', ev: event }); } catch (_) {}
 }
 
-export async function subscribeBusEvents(targetId, onEvent) {
-  await ensureAttached(targetId);
-  await chrome.debugger.sendCommand({ tabId: targetId }, 'Runtime.enable', {});
-  // Chrome replays past Runtime.consoleAPICalled events on enable so
-  // DevTools can show console history. We don't want that — old bus
-  // events would be re-dispatched on every rejoin. Filter by CDP-side
-  // timestamp; anything older than subscription time is replay.
-  const subscribedAt = Date.now() - 1000;
-  const handler = (source, method, params) => {
-    if (source.tabId !== targetId) return;
-    if (method !== 'Runtime.consoleAPICalled') return;
-    const cdpTs = params?.timestamp;
-    if (typeof cdpTs === 'number' && cdpTs < subscribedAt) return;
-    const args = params?.args ?? [];
-    if (args[0]?.value !== 'egpt-bus') return;
-    const raw = args[1]?.value;
-    if (typeof raw !== 'string') return;
-    try { onEvent(JSON.parse(raw)); }
-    catch (_) { /* malformed; ignore */ }
-  };
-  chrome.debugger.onEvent.addListener(handler);
+export async function subscribeBusEvents(_targetId, onEvent, opts = {}) {
+  const { replay = true, replaySinceMs = 5 * 60 * 1000 } = opts;
+  const port = ensurePort();
+  _eventHandlers.add(onEvent);
+  if (replay) {
+    try {
+      port.postMessage({ type: 'replay-request', since: Date.now() - replaySinceMs });
+    } catch (_) {}
+  }
   return {
     stop() {
-      try { chrome.debugger.onEvent.removeListener(handler); } catch (_) {}
+      _eventHandlers.delete(onEvent);
+      // Don't close the port — other handlers may still be using it.
+      // Idle ports get GC'd when no handlers remain via a separate
+      // timer-based close, but skip that; in practice the extension
+      // tab life dominates.
     },
   };
 }

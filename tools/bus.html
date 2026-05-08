@@ -154,6 +154,49 @@
       document.getElementById('copy').addEventListener('click', () => {
         try { navigator.clipboard.writeText(events.map(e => JSON.stringify(e)).join('\n')); } catch (_) {}
       });
+
+      // Extension hook: when this page is loaded as
+      // chrome-extension://<id>/bus.html (the extension hosts its own
+      // bus), open a long-lived chrome.runtime port to the extension
+      // background. The extension then talks to the bus via the port
+      // — no chrome.debugger session, no banner, no conflict with
+      // the shell's WS-via-proxy attach. When the page is loaded over
+      // http (proxy-served, shell-only setup), chrome.runtime.id is
+      // undefined and this whole block is a no-op.
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id) {
+        let suppressForward = false;
+        let port = null;
+        function connect() {
+          try { port = chrome.runtime.connect({ name: 'egpt-bus' }); }
+          catch (_) { return setTimeout(connect, 1000); }
+          port.onMessage.addListener((msg) => {
+            if (!msg) return;
+            if (msg.type === 'post' && msg.ev) {
+              suppressForward = true;
+              try { window.bus.post(msg.ev); }
+              finally { suppressForward = false; }
+            } else if (msg.type === 'replay-request') {
+              const past = window.bus.getEvents(msg.since ?? 0);
+              try { port.postMessage({ type: 'replay', past }); } catch (_) {}
+            }
+          });
+          port.onDisconnect.addListener(() => {
+            port = null;
+            // Service worker may have shut down; reconnect on demand.
+            // Will succeed once SW is awake again.
+            setTimeout(connect, 1000);
+          });
+        }
+        // Forward live bus events to the extension. suppressForward
+        // prevents loops when the extension's own posts trickle back.
+        window.bus.on((ev) => {
+          if (suppressForward) return;
+          if (port) {
+            try { port.postMessage({ type: 'event', ev }); } catch (_) {}
+          }
+        });
+        connect();
+      }
     })();
   </script>
 </body>
