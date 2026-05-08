@@ -67,6 +67,15 @@ const staticAssets = [
 for (const [src, dst] of staticAssets) {
   copyFileSync(resolve(__dirname, src), resolve(chromeDist, dst));
 }
+// Bundle bus.html in the extension so it can host its own bus tab
+// (chrome-extension://<id>/bus.html) without depending on the
+// proxy serving it from :9222. Source of truth stays at
+// tools/bus.html — same file used by cdp-proxy.mjs for shell-only
+// setups.
+copyFileSync(
+  resolve(__dirname, '../tools/bus.html'),
+  resolve(chromeDist, 'bus.html'),
+);
 copyFileSync(
   resolve(__dirname, 'manifest.chrome.json'),
   resolve(chromeDist, 'manifest.json'),
@@ -85,6 +94,7 @@ const builtFiles = [
   'settings/app.js',
   'settings/index.html',
   'settings/style.css',
+  'bus.html',
 ];
 for (const rel of builtFiles) {
   copyFileSync(resolve(chromeDist, rel), resolve(firefoxDist, rel));

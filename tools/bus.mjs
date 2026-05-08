@@ -30,12 +30,18 @@ function isBusUrl(url) {
 }
 
 // Find an existing bus tab; open one if none exists. Returns { targetId, url, opened }.
-export async function findOrOpenBusTab({ open = true } = {}) {
+//
+// The extension passes openUrl: chrome.runtime.getURL('bus.html') so it
+// hosts its own bus tab without depending on the proxy serving bus.html
+// at :9222. The shell uses the default — http://<host>/bus.html — which
+// the cdp-proxy serves when running. Either path leaves a tab whose URL
+// ends with /bus.html, which isBusUrl matches the same way.
+export async function findOrOpenBusTab({ open = true, openUrl = null } = {}) {
   const tabs = await cdp.listTabs();
   const found = tabs.find(t => isBusUrl(t.url));
   if (found) return { targetId: found.id, url: found.url, opened: false };
   if (!open) return null;
-  const url = await busUrl();
+  const url = openUrl ?? await busUrl();
   const targetId = await cdp.openTab(url);
   return { targetId, url, opened: true };
 }
