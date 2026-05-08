@@ -1667,12 +1667,21 @@ function App() {
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => logOut(`!! whatsapp: ${msg}`),
         onChatId: async (id) => {
-          // First captured chat — persist to ~/.egpt/config.json AND
-          // update the in-memory EGPT_CONFIG so the egpt-chat
-          // detection picks up the new chat_id immediately. Without
-          // the in-memory update, the next message in the same chat
-          // would still be classified observe-only because the
-          // closure'd cfg holds a stale chat_id.
+          // CRITICAL: update the in-memory EGPT_CONFIG SYNCHRONOUSLY
+          // before any await. The bridge calls onChatId fire-and-
+          // forget and immediately fires onIncoming on the same
+          // message — if we delay the in-memory write behind an
+          // await readFile / writeFile, onIncoming sees stale state
+          // and classifies the very message that triggered the
+          // capture as observe-only. With this synchronous update,
+          // the egpt-chat check (which reads EGPT_CONFIG.whatsapp
+          // .chat_id fresh) sees the new value on the same tick.
+          if (typeof EGPT_CONFIG.whatsapp !== 'object' || EGPT_CONFIG.whatsapp === null) {
+            EGPT_CONFIG.whatsapp = {};
+          }
+          EGPT_CONFIG.whatsapp.chat_id = id;
+          // Then async-persist to disk so future runs default to
+          // this chat without recapture.
           const cfgPath = join(EGPT_HOME, 'config.json');
           let saved = {};
           try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
@@ -1682,11 +1691,6 @@ function App() {
           try {
             await mkdir(EGPT_HOME, { recursive: true });
             await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
-            // In-memory mirror so the egpt-chat check sees the new value.
-            if (typeof EGPT_CONFIG.whatsapp !== 'object' || EGPT_CONFIG.whatsapp === null) {
-              EGPT_CONFIG.whatsapp = {};
-            }
-            EGPT_CONFIG.whatsapp.chat_id = id;
             logOut(`whatsapp: outbound chat ${id} captured and saved`);
           } catch (_) {}
         },
@@ -2470,7 +2474,7 @@ function App() {
       } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
       return true;
     }
-    if (cmd === '/log') {
+    if (cmd === '/log' || cmd === '/logs') {
       // Show the last N log items (telemetry, room-state hints, debug
       // dumps, peer announces). Default N=30. They're in items[] but
       // hidden from the main render via _log; this slash command

@@ -100,6 +100,7 @@ export const COMMANDS = [
   { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
   { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'show this list' },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
+  { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
 ];
 
 // All known command tokens (across all surfaces). Used by surfaces to validate
