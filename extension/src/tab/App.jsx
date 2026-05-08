@@ -210,10 +210,11 @@ export default function App() {
     // Replicate every Telegram message to peers — every message in the
     // room is part of the room. via:'telegram[chatId]' tags the surface
     // of origin so peers see where it came from, not the node carrying
-    // the bot.
+    // the bot. Slash commands stay local (operator tooling).
     {
       const tid = busTargetIdRef.current;
-      if (tid) {
+      const isSlashCommand = trimmed.startsWith('/');
+      if (tid && !isSlashCommand) {
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'chrome', user: author, body: trimmed,
@@ -605,12 +606,17 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // Mirror everything (including commands) to peer surfaces so the room
-    // shows what's happening regardless of which surface someone is looking
-    // at. Pure visibility — peers render the line and do NOT re-route.
+    // Mirror to peer surfaces so the room shows what's happening
+    // regardless of which surface someone is looking at. Pure
+    // visibility — peers render the line and do NOT re-route.
+    //
+    // Slash commands skip the bus (operator tooling, channel-
+    // specific). Otherwise peers would mirror them to telegram / WA
+    // as conversational noise.
     {
       const tid = busTargetIdRef.current;
-      if (tid) {
+      const isSlashCommand = trimmed.startsWith('/');
+      if (tid && !isSlashCommand) {
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'chrome', user: userName, body: trimmed,

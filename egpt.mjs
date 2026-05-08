@@ -4402,9 +4402,16 @@ function App() {
     // the same conversation regardless of which surface someone is looking
     // at. Pure visibility — peer surfaces render the line and do NOT
     // re-route to their brains (we already drove ours below).
+    //
+    // Slash commands DON'T ride the bus: they're operator tooling
+    // (e.g. /restart, /sessions, /upgrade), channel-specific, and
+    // exposing them to bridges would have peers mirror them to
+    // telegram / extension where they'd surface as conversational
+    // noise. The local _localOnly flag also keeps them out of the
+    // local items-mirror, but that doesn't reach peers.
     {
       const tid = busTargetIdRef.current;
-      if (tid) {
+      if (tid && !isSlashCommand) {
         // When the input came from Telegram or WhatsApp, attribute the
         // utterance to the upstream user and tag the surface as
         // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
