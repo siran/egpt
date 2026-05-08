@@ -1535,20 +1535,33 @@ function App() {
     return true;
   }, []);
 
-  // Bus-aware Telegram startup. Instead of racing every other node
-  // to the polling slot at boot (which guaranteed a 409 on the loser
-  // and then a noisy yield), we wait briefly for the bus to settle
-  // and consult peerNodesRef for any peer already announcing
-  // `polling: true`. If found, defer — the telegram-status handler
-  // claims the slot when they release. If clear, start the bridge.
-  // Re-evaluated whenever peers change so a peer joining mid-window
-  // pre-empts our start.
+  // Bus-aware Telegram startup, once per shell lifetime.
+  //
+  // Boot phase (first 2s of bus-stable peers): consult peerNodesRef
+  // for any peer announcing `polling: true`. If found, defer.
+  // If clear, start. After this single attempt, the boot effect is
+  // done — all further claim/yield decisions ride the existing
+  // bus-event handlers (`node-offline` / `telegram-status` with
+  // polling=false → auto-claim with jitter; 409 from Bot API →
+  // onYield clears bridgeRef and stays yielded).
+  //
+  // The peersRev dependency is here ONLY to extend the 2s timer when
+  // peers churn before the timer fires; once the timer has fired, the
+  // attempted ref guard makes this a no-op for future changes.
+  // Without that guard the previous version oscillated: 409 → yield
+  // → peer announce → 2s timer → start → 409 → ... — exactly the
+  // race the user called out as wrong (the right semantic is "saw
+  // 409, somebody else is polling, stop").
+  const tgBootAttempted = useRef(false);
   useEffect(() => {
+    if (tgBootAttempted.current) return;
     if (bridgeRef.current) return;
     const t = setTimeout(() => {
+      if (tgBootAttempted.current) return;
+      tgBootAttempted.current = true;
       if (bridgeRef.current) return;
       for (const [, peer] of peerNodesRef.current) {
-        if (peer.polling) return; // they own it; wait for yield
+        if (peer.polling) return; // they own it; wait for yield event
       }
       startTgBridge();
     }, 2000);
