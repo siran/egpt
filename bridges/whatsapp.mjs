@@ -290,8 +290,15 @@ export async function startWhatsAppBridge({
     // dashes, parens — the WA JID always has the bare digits, but a
     // human writing config might paste '+1 (646) 821-7865'.
     const normalize = (s) => String(s).replace(/[^\d]/g, '');
-    const authorized = allowedUsers.length > 0
-      && allowedUsers.some(u => normalize(u) === normalize(userId));
+    // fromMe is authoritative: a message we sent (via any linked
+    // device — phone, beeper, the bridge itself) is, by definition,
+    // from the operator. Don't require it to match allowed_users —
+    // the senderJid for fromMe in a chat using WhatsApp's '@lid'
+    // privacy format is the OTHER party's lid, not our phone number,
+    // so a strict allowed_users check would lock the operator out
+    // of their own commands.
+    const authorized = fromMe || (allowedUsers.length > 0
+      && allowedUsers.some(u => normalize(u) === normalize(userId)));
 
     let processed = text.trim();
 
