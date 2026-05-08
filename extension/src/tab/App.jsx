@@ -1171,6 +1171,13 @@ export default function App() {
   useEffect(() => {
     let cancelled  = false;
     let pollHandle = null;
+    // Backoff: when attach keeps failing (most often a missing
+    // --remote-allow-origins=* on the user's Chrome), don't spam-
+    // retry every 5s. After 2 consecutive failures, slow to 60s and
+    // stop logging the same error repeatedly.
+    let consecutiveFailures = 0;
+    let cooldownUntil = 0;
+    let lastFailureMsg = null;
 
     const detach = (reason) => {
       if (waCdpBridgeRef.current) {
@@ -1183,22 +1190,20 @@ export default function App() {
 
     const tryAttach = async () => {
       if (cancelled) return;
-      // Opt-out via whatsapp_cdp.enabled === false. Default (absent) = auto.
+      if (Date.now() < cooldownUntil) return;
       const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
       if (cfg.enabled === false) { detach('disabled in settings'); return; }
 
       let tabs;
       try { tabs = await listTabs(); }
-      catch { return; /* CDP host not up; try next tick */ }
+      catch { return; }
       const wa = tabs.find(t => /web\.whatsapp\.com/.test(t.url ?? ''));
 
-      // Attached tab still alive? Stay attached.
       if (waCdpAttachedTabRef.current) {
         if (wa && wa.id === waCdpAttachedTabRef.current) return;
         detach('tab gone');
       }
-
-      if (!wa) return;       // no WA Web tab — silently wait
+      if (!wa) return;
 
       try {
         const bridge = await startWhatsAppCdpBridge({
@@ -1222,13 +1227,26 @@ export default function App() {
         if (cancelled) { bridge.stop(); return; }
         waCdpBridgeRef.current = bridge;
         waCdpAttachedTabRef.current = wa.id;
+        consecutiveFailures = 0;
+        lastFailureMsg = null;
       } catch (e) {
-        appendMsg('egpt', `whatsapp-cdp: attach failed: ${e.message}`);
+        consecutiveFailures += 1;
+        const msg = e.message ?? String(e);
+        // Only log when the error message changes, so a stuck setup
+        // doesn't clutter the log every retry.
+        if (msg !== lastFailureMsg) {
+          appendMsg('egpt', `whatsapp-cdp: attach failed: ${msg}`);
+          lastFailureMsg = msg;
+        }
+        if (consecutiveFailures >= 2) {
+          cooldownUntil = Date.now() + 60_000;
+          if (consecutiveFailures === 2) {
+            appendMsg('egpt', 'whatsapp-cdp: cooling off retries for 60s — fix the cause above and the bridge will reattach automatically');
+          }
+        }
       }
     };
 
-    // Run immediately; then poll. 5s is the same cadence the bus
-    // useEffect uses — cheap (one /json/list when Chrome is up).
     tryAttach();
     pollHandle = setInterval(tryAttach, 5000);
 

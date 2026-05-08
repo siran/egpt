@@ -171,8 +171,21 @@ export async function startWhatsAppCdpBridge({
   }
   onLog('whatsapp-cdp: attaching to ' + tab.url);
 
-  // Install the observer script in the page.
-  await evalOnce(targetId, OBSERVE_SCRIPT);
+  // Install the observer script in the page. evalOnce surfaces the
+  // most common WS-open failures (CDP origin restriction, chrome was
+  // started without --remote-allow-origins=*, target won't accept WS
+  // attach) with a single actionable error before we open the long-
+  // lived subscriber socket.
+  try {
+    await evalOnce(targetId, OBSERVE_SCRIPT);
+  } catch (e) {
+    throw new Error(
+      `attach failed (${e.message}). ` +
+      `Make sure Chrome was started with --remote-allow-origins=* ` +
+      `(the /chrome command does this; manual launches must include it). ` +
+      `Tab URL: ${tab.url}`
+    );
+  }
 
   // Long-lived WS for incoming events. Subscribes to
   // Runtime.consoleAPICalled and dispatches messages tagged 'egpt-wa-cdp'.
@@ -181,12 +194,14 @@ export async function startWhatsAppCdpBridge({
   let stopped = false;
   let lastChat = null;
   let chatIdNotified = false;
+  let everConnected = false;
   // Echo suppression: track msgIds of messages we sent so the
   // observer's fromMe=true echo doesn't re-enter the host as a fresh
   // incoming message.
   const _sentMsgIds = new Set();
 
   ws.addEventListener('open', () => {
+    everConnected = true;
     ws.send(JSON.stringify({ id: 1, method: 'Runtime.enable' }));
     onLog('whatsapp-cdp: bridge ready (single-chat mode — open the chat you want monitored)');
   });
@@ -236,7 +251,17 @@ export async function startWhatsAppCdpBridge({
     }
   });
 
-  ws.addEventListener('error', () => onError('whatsapp-cdp: WS error'));
+  ws.addEventListener('error', () => {
+    // The browser console will already have logged the WS error in
+    // detail; surface a single concise line for the user. If we never
+    // even connected, this is almost always the --remote-allow-origins
+    // issue — say so explicitly.
+    if (!everConnected) {
+      onError('whatsapp-cdp: WS attach failed before connect — check Chrome was started with --remote-allow-origins=*');
+    } else {
+      onError('whatsapp-cdp: WS error mid-stream');
+    }
+  });
   ws.addEventListener('close', () => {
     if (!stopped) onLog('whatsapp-cdp: WS closed (tab gone? login expired?)');
   });
