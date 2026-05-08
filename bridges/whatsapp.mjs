@@ -59,6 +59,14 @@ export async function startWhatsAppBridge({
   allowedUsers  = [],
   awareness     = {},        // see header docs; defaults applied below
   debug         = false,     // log every incoming upsert (type, jid, fromMe, text-preview) before any filter
+  // Drop messages whose timestamp is older than this many seconds
+  // before connect. Default 0 = no drop. WhatsApp delivers a burst
+  // of recently-buffered messages on linked-device handshake; an
+  // operator who's not a WhatsApp client typically doesn't want
+  // their shell flooded with the last hour of group chatter just
+  // because they restarted the daemon. Set to 60 to discard
+  // anything older than a minute before connect.
+  maxBacklogSeconds = 0,
   onIncoming,
   onLog,
   onError,
@@ -91,6 +99,7 @@ export async function startWhatsAppBridge({
   }
 
   let stopped        = false;
+  let connectedAt    = 0;     // ms; set to Date.now() when WS reaches 'open'
   let lastChat       = null;
   let chatIdNotified = false;
   let myJid          = null;     // our own jid (e.g. '1234567890@s.whatsapp.net')
@@ -174,6 +183,7 @@ export async function startWhatsAppBridge({
       if (connection === 'open') {
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
+        connectedAt = Date.now();
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber})`);
       }
@@ -214,6 +224,21 @@ export async function startWhatsAppBridge({
 
   async function handleMessage(msg, { bypassAwareness = false } = {}) {
     if (!msg.message) return;               // protocol message / ignored type
+
+    // Backlog filter: if maxBacklogSeconds is configured (>0), drop
+    // messages whose timestamp is older than (connectedAt - threshold).
+    // This is for the WA-burst-on-handshake case: baileys hands you
+    // recently-buffered messages immediately after WS open. An egpt
+    // operator restarting the shell typically doesn't want their
+    // transcript flooded with the last hour of group chatter; with
+    // maxBacklogSeconds=60 only the last minute pre-connect comes
+    // through. Default 0 = no filter (every delivered message passes).
+    if (maxBacklogSeconds > 0 && connectedAt > 0) {
+      const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
+      if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
+        return;
+      }
+    }
 
     // Filter our own bridge-sent echoes: WhatsApp delivers every outbound
     // back to all linked devices including us. Sent-id tracking knows

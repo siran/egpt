@@ -57,8 +57,15 @@ export async function findOrOpenBusTab({ open = true } = {}) {
 // Singleton subscriber port to the background relay. Multiple
 // consumers (UI subscribe handlers) share it: the port carries every
 // event broadcast on the bus, and we fan out locally.
+//
+// Auto-reconnect: when the service worker cycles (idle timeout, or
+// user reloads the extension), the port disconnects. We rebuild it
+// after a 1s backoff and re-issue the replay-request so the UI sees
+// the recent past again. Without this, every SW idle silently kills
+// cross-surface event flow until the user reloads the UI tab.
 let _port = null;
 const _eventHandlers = new Set();
+let _replaySinceMs = 5 * 60 * 1000;
 
 function ensurePort() {
   if (_port) return _port;
@@ -80,7 +87,15 @@ function ensurePort() {
   });
   _port.onDisconnect.addListener(() => {
     _port = null;
-    // Background SW may have shut down. Next ensurePort() reconnects.
+    // Reconnect if anyone still cares — handlers being non-empty
+    // means subscribers are alive. Replay-request fires again on the
+    // new port so the UI catches up on what flowed during the gap.
+    if (_eventHandlers.size > 0) {
+      setTimeout(() => {
+        const p = ensurePort();
+        try { p.postMessage({ type: 'replay-request', since: Date.now() - _replaySinceMs }); } catch (_) {}
+      }, 1000);
+    }
   });
   return _port;
 }
@@ -95,6 +110,7 @@ export async function postEvent(_targetId, event) {
 
 export async function subscribeBusEvents(_targetId, onEvent, opts = {}) {
   const { replay = true, replaySinceMs = 5 * 60 * 1000 } = opts;
+  _replaySinceMs = replaySinceMs;
   const port = ensurePort();
   _eventHandlers.add(onEvent);
   if (replay) {

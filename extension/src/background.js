@@ -40,6 +40,18 @@ async function ensureBusTab() {
 }
 chrome.runtime.onInstalled.addListener(ensureBusTab);
 chrome.runtime.onStartup.addListener(ensureBusTab);
+// Re-spawn the bus tab if the user closes it (or if Chrome killed it
+// for memory). Without this, closing the bus tab takes the extension
+// off the bus until the next reload — and shell can't find a tab
+// to attach to either.
+chrome.tabs.onRemoved.addListener(async (closedTabId) => {
+  // Only re-create if our bus tab was the one closed. The query
+  // happens AFTER the tab is gone — if no bus tab matches, we know
+  // the closed one was ours and we need a replacement.
+  const url = chrome.runtime.getURL(BUS_URL);
+  const remaining = await chrome.tabs.query({ url });
+  if (remaining.length === 0) ensureBusTab();
+});
 ensureBusTab();
 
 // ── Bus relay ────────────────────────────────────────────────────

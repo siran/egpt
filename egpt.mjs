@@ -1587,9 +1587,10 @@ function App() {
     }
     try {
       const bridge = await startWhatsAppBridge({
-        allowedUsers: cfg.allowed_users ?? [],
-        awareness:    cfg.awareness ?? {},
-        debug:        cfg.debug === true,
+        allowedUsers:      cfg.allowed_users ?? [],
+        awareness:         cfg.awareness ?? {},
+        debug:             cfg.debug === true,
+        maxBacklogSeconds: Number(cfg.max_backlog_seconds) || 0,
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           logOut(`(whatsapp message from ${who}) -> ${text}`);
