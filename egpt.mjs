@@ -4332,7 +4332,7 @@ function App() {
   // Conversation continuity: brain returns optionsPatch.sessionId on
   // the first turn; we persist it to ~/.egpt/config.json and pass it
   // back as --resume on subsequent turns.
-  async function runDefaultBrainTurn(text) {
+  async function runDefaultBrainTurn(text, onPartial = () => {}) {
     const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
     const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
@@ -4348,7 +4348,7 @@ function App() {
     try {
       const result = await brain.stream(
         { history: text, message: text },
-        () => {},   // no streaming UI for persona; deliver final text only
+        onPartial,
         sessionOpts,
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
@@ -4780,16 +4780,44 @@ function App() {
       setBusy(true);
       try {
         const personaPrompt = formatPersonaPrompt(meta, decision.body);
-        const reply = await runDefaultBrainTurn(personaPrompt);
 
-        // Always send to the originating chat — that's the user's
-        // 'reply where the @egpt was issued' contract.
-        if (meta.fromTelegram && bridgeRef.current) {
-          bridgeRef.current.send(`${EGPT_PERSONA_EMOJI} <b>egpt</b>\n${mdToTgHtml(reply)}`,
+        // Bridge-originated @egpt gets streaming UX: open a stream
+        // message with a 'thinking…' placeholder, debounced edits as
+        // tokens arrive, typing indicator alongside (WA), final flush
+        // on completion. Shell-originated @egpt sees the reply in
+        // items at the end (no per-bridge stream — items-mirror
+        // already broadcasts cross-surface).
+        const tgPrefix = `${EGPT_PERSONA_EMOJI} <b>egpt</b>\n`;
+        const waPrefix = `${EGPT_PERSONA_EMOJI} egpt\n`;
+        const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
+          ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
+              { chatId: meta.telegramChatId })
+          : null;
+        const waStream = (meta.fromWhatsApp && waBridgeRef.current?.startStreamMessage)
+          ? waBridgeRef.current.startStreamMessage(`${waPrefix}⌛ thinking…`,
+              { chatId: meta.waChatId })
+          : null;
+
+        const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
+          if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
+          if (waStream) waStream.update(`${waPrefix}${partial}`);
+        });
+
+        // Final delivery: prefer stream.finish() so the placeholder
+        // message becomes the final reply (rather than us sending a
+        // second message). Fallback to bridge.send() for surfaces
+        // that didn't have streamMessage (or weren't engaged).
+        if (tgStream) {
+          await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
+        } else if (meta.fromTelegram && bridgeRef.current) {
+          bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
         }
-        if (meta.fromWhatsApp && waBridgeRef.current) {
-          waBridgeRef.current.send(`${EGPT_PERSONA_EMOJI} egpt: ${reply}`, { chatId: meta.waChatId });
+        if (waStream) {
+          await waStream.finish(`${waPrefix}${reply}`);
+        } else if (meta.fromWhatsApp && waBridgeRef.current) {
+          waBridgeRef.current.send(`${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+            { chatId: meta.waChatId });
         }
 
         if (meta.observeOnly) {
