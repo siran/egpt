@@ -104,13 +104,18 @@ export function stream({ history, message }, onUpdate, options = {}) {
     // so it refuses every tool by default. Without an explicit
     // allowlist the @egpt persona will hallucinate ("I don't have
     // web access") instead of fetching. Caller passes
-    // options.allowedTools as a space-separated string or array of
-    // tool names; we pass it through as a single --allowedTools arg.
+    // options.allowedTools as either:
+    //   • 'all' / '*'         → --dangerously-skip-permissions (full access)
+    //   • space-sep string    → --allowedTools "<list>"
+    //   • array of tool names → --allowedTools "<joined>"
     if (options.allowedTools) {
-      const list = Array.isArray(options.allowedTools)
-        ? options.allowedTools.join(' ')
-        : String(options.allowedTools);
-      if (list.trim()) args.push('--allowedTools', list.trim());
+      const at = options.allowedTools;
+      if (at === 'all' || at === '*') {
+        args.push('--dangerously-skip-permissions');
+      } else {
+        const list = Array.isArray(at) ? at.join(' ') : String(at);
+        if (list.trim()) args.push('--allowedTools', list.trim());
+      }
     }
     const isResume = !!options.sessionId;
     if (isResume) args.push('--resume', options.sessionId);

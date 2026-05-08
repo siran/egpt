@@ -4265,10 +4265,12 @@ function App() {
       cwd: dbCfg.cwd ?? process.cwd(),
       sessionName: 'egpt',
       userName: USER_NAME,
-      // Read-only + web by default — enough for "what's the price of
-      // X" / "summarize this URL" without giving the persona file-
-      // mutation or shell access. User can override per-config.
-      allowedTools: dbCfg.allowed_tools ?? 'WebFetch WebSearch Read Glob Grep',
+      // Default: full tool access (--dangerously-skip-permissions).
+      // The user explicitly opted in — this is their machine and the
+      // @egpt persona should be as capable as Claude Code itself.
+      // Override with allowed_tools: "WebFetch WebSearch ..." to
+      // narrow, or "none" / "" to disable tools entirely.
+      allowedTools: dbCfg.allowed_tools ?? 'all',
     };
     try {
       // Both slots get the user text. claude-code's stream pipes
