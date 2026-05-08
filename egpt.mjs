@@ -1079,7 +1079,7 @@ async function resolveTabId(spec, brain = null) {
 // User name as it appears to brains (in [An]: prefixes when broadcasting/mirroring).
 // Override with EGPT_USER_NAME if you're not An.
 const USER_NAME = process.env.EGPT_USER_NAME ?? 'An';
-const USER_EMOJI = '👤';
+const USER_EMOJI = '🦅';
 const EGPT_EMOJI = '🧠';
 
 // Identifier this shell uses on the CDP control-plane bus. PID makes it
@@ -1434,11 +1434,7 @@ function App() {
       chatId:       cfg.telegram.chat_id ?? null,
       onIncoming: async (text, from) => {
         const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
-        setItems(p => [...p, {
-          id: Date.now() + Math.random(), author: 'system',
-          body: `(telegram message from ${who}) -> ${text}`,
-          _localOnly: true,
-        }]);
+        logOut(`(telegram message from ${who}) -> ${text}`);
 
         const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
 
@@ -1478,8 +1474,8 @@ function App() {
           skipRoute,
         });
       },
-      onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `telegram: ${msg}`, _localOnly: true }]),
-      onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! telegram: ${msg}`, _localOnly: true }]),
+      onLog:   (msg) => logOut(`telegram: ${msg}`),
+      onError: (msg) => logOut(`!! telegram: ${msg}`),
       onYield: () => {
         // 409 from Telegram means another node holds the polling slot.
         // Drop our bridge state so we stop showing as 'polling' on the
@@ -1506,13 +1502,10 @@ function App() {
           await mkdir(EGPT_HOME, { recursive: true });
           await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
           if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: `telegram: outbound chat ${id} captured and saved`,
-          }]);
+          logOut(`telegram: outbound chat ${id} captured and saved`);
         } catch (e) {
           setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+            id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true,
             body: `!! telegram: could not persist chat_id (${e.message})`,
           }]);
         }
@@ -1521,7 +1514,7 @@ function App() {
     bridgeRef.current = bridge;
     _globalBridge = bridge;
     setTgPolling(true);
-    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge enabled', _localOnly: true }]);
+    logOut('telegram bridge enabled');
     return true;
   }, []);
 
@@ -1599,10 +1592,7 @@ function App() {
         debug:        cfg.debug === true,
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: `(whatsapp message from ${who}) -> ${text}`,
-          }]);
+          logOut(`(whatsapp message from ${who}) -> ${text}`);
           const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
           if (isCommand && !from.authorized) {
             // Silently drop. The bridge used to post a 'not authorized'
@@ -1626,8 +1616,8 @@ function App() {
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
           });
         },
-        onLog:   (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `whatsapp: ${msg}`, _localOnly: true }]),
-        onError: (msg) => setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${msg}`, _localOnly: true }]),
+        onLog:   (msg) => logOut(`whatsapp: ${msg}`),
+        onError: (msg) => logOut(`!! whatsapp: ${msg}`),
         onChatId: async (id) => {
           // First captured chat — persist to ~/.egpt/config.json so future
           // runs default outbound to that JID.
@@ -1640,15 +1630,12 @@ function App() {
           try {
             await mkdir(EGPT_HOME, { recursive: true });
             await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
-            setItems(p => [...p, {
-              id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-              body: `whatsapp: outbound chat ${id} captured and saved`,
-            }]);
+            logOut(`whatsapp: outbound chat ${id} captured and saved`);
           } catch (_) {}
         },
       });
       waBridgeRef.current = bridge;
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge enabled', _localOnly: true }]);
+      logOut('whatsapp bridge enabled');
       return true;
     } catch (e) {
       setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${e.message}`, _localOnly: true }]);
@@ -1752,7 +1739,7 @@ function App() {
       if (names.length > 0) {
         setRoomSessionsMap(rs => ({ ...rs, ...loaded }));
         for (const n of names) persistedRoomsRef.current.add(n);
-        sysOut(`loaded ${names.length} room(s) from disk: ${names.join(', ')}`);
+        logOut(`loaded ${names.length} room(s) from disk: ${names.join(', ')}`);
       }
       roomsLoadedRef.current = true;
     })().catch(e => sysOut(`!! room load: ${e.message}`));
@@ -1859,12 +1846,14 @@ function App() {
     const notice = (body, opts = {}) => {
       // Avoid spamming the transcript when the polling loop reports the
       // same state repeatedly; only append a system row when the message
-      // text changes.
+      // text changes. notice() is operator-side audit (proxy state, peer
+      // online/offline, bus tab attached) — _log:true so it stays out of
+      // the conversation view and shows only via /log when asked.
       if (body === lastNoticeBody) return;
       lastNoticeBody = body;
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: 'system',
-        _localOnly: opts._localOnly ?? true, body,
+        _localOnly: opts._localOnly ?? true, _log: true, body,
       }]);
     };
 
@@ -1941,10 +1930,7 @@ function App() {
           setSessions(s => ({ ...s, ...additions }));
           const summary = Object.entries(additions)
             .map(([n, s]) => `${s.emoji} ${n} (${s.brain})`).join(', ');
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-            body: `auto-attached ${Object.keys(additions).length} tab(s): ${summary}`,
-          }]);
+          logOut(`auto-attached ${Object.keys(additions).length} tab(s): ${summary}`);
         }
         }
       } catch { /* proxy up but listTabs failed — try again next tick */ }
@@ -2031,6 +2017,18 @@ function App() {
       ...meta,
     }]);
   };
+
+  // logOut is for telemetry/audit lines — bridge connection events,
+  // room-state coaching ("the room is empty"), peer announces, debug
+  // dumps. They don't belong in the conversation transcript view; the
+  // shell hides _log:true items by default and exposes them via /log.
+  // sysOut stays for command responses (slash output) which the user
+  // explicitly asked for and should see inline.
+  const logOut = body =>
+    setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', body,
+      _localOnly: true, _log: true,
+    }]);
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
@@ -2422,6 +2420,22 @@ function App() {
         }]);
         sentItemsCountRef.current = 0;
       } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
+      return true;
+    }
+    if (cmd === '/log') {
+      // Show the last N log items (telemetry, room-state hints, debug
+      // dumps, peer announces). Default N=30. They're in items[] but
+      // hidden from the main render via _log; this slash command
+      // surfaces them on demand. Output goes only to the issuer's
+      // surface (sysOut respects outputSinkRef _target).
+      const n = parseInt(arg.trim(), 10) || 30;
+      const logs = items.filter(i => i._log).slice(-n);
+      if (!logs.length) { sysOut('(log is empty)'); return true; }
+      const lines = logs.map(i => {
+        const t = fmtTimeOnly(Math.floor(i.id));
+        return `${t}  ${i.body}`;
+      });
+      sysOut(`── log (last ${logs.length}) ──\n${lines.join('\n')}`);
       return true;
     }
     if (cmd === '/help') {
@@ -4494,7 +4508,7 @@ function App() {
       // weren't asking for advice — they were chatting / replicating).
       const fromBridge = !!meta.fromTelegram || !!meta.fromWhatsApp;
       if (peerNodesRef.current.size === 0 && !fromBridge) {
-        sysOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
+        logOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
       }
       return;
     }
@@ -4506,7 +4520,7 @@ function App() {
       // an attempt to address a brain; the hint would be noise.
       if (meta.fromTelegram || meta.fromWhatsApp) return;
       const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
-      sysOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
+      logOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
     }
     if (decision.kind === 'persona') {
@@ -4876,8 +4890,11 @@ function App() {
   const color = a =>
     a === 'You' ? T.authorYou : a === 'system' ? T.authorSystem : T.authorBrain;
 
+  // Hide log items (telemetry, room hints, debug) from the conversation
+  // transcript. They're still in `items` and reachable via /log.
+  const visibleItems = items.filter(item => !item._log);
   return h(Fragment, null,
-    h(Static, { items: withDaySeparators(items) }, item => {
+    h(Static, { items: withDaySeparators(visibleItems) }, item => {
       // Day-change separator — chat-style: "── Today ──", "── Yesterday ──",
       // or "── Wednesday, May 6, 2026 ──".
       if (item._separator) {
