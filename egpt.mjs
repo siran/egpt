@@ -2774,8 +2774,19 @@ function App() {
       // Allowed config keys are registered in config-schema.mjs and
       // covered by an integrity test that cross-checks against
       // EGPT_CONFIG references in this file.
+      //
+      // Three input forms now supported:
+      //   /config <key> <val>             — top-level key (e.g. node_name)
+      //   /config <key>.<sub> <val>       — nested key inside a top-level
+      //                                     block (e.g. whatsapp.client_name moto)
+      //   /config <subkey> <val>  (from a bridge) — when typed via
+      //                                     telegram or whatsapp, an
+      //                                     unknown bare key is interpreted
+      //                                     as the bridge's nested key —
+      //                                     '/config client_name moto'
+      //                                     from WA = whatsapp.client_name.
       const parts = arg.trim().split(/\s+/);
-      const key = parts[0];
+      let key = parts[0];
       const rawVal = parts.slice(1).join(' ');
       let localCfg = {};
       try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
@@ -2787,31 +2798,61 @@ function App() {
           : `local config empty  (${dp(LOCAL_CONFIG_PATH)})\n`) + `\nkeys:\n${schema}`);
         return true;
       }
-      if (!(key in CONFIG_SCHEMA)) {
+      // Bridge-context inference: if the user is on whatsapp/telegram
+      // and typed a bare key that doesn't match a top-level slot,
+      // assume they meant <bridge>.<key>. This matches the user's
+      // intuition of 'I'm typing from WA, so I'm configuring WA'.
+      if (!key.includes('.') && !(key in CONFIG_SCHEMA)) {
+        if (meta.fromWhatsApp) key = `whatsapp.${key}`;
+        else if (meta.fromTelegram) key = `telegram.${key}`;
+      }
+      // Split into top-level + nested sub-key if dotted.
+      const dotIdx = key.indexOf('.');
+      const topKey = dotIdx > 0 ? key.slice(0, dotIdx) : key;
+      const subKey = dotIdx > 0 ? key.slice(dotIdx + 1) : null;
+      if (!(topKey in CONFIG_SCHEMA)) {
         const valid = Object.keys(CONFIG_SCHEMA).join(', ');
         sysOut(`!! unknown config key: ${key}\nvalid keys: ${valid}`);
         return true;
       }
       if (!rawVal) {
-        const v = localCfg[key] ?? EGPT_CONFIG[key];
+        const top = localCfg[topKey] ?? EGPT_CONFIG[topKey];
+        const v = subKey ? top?.[subKey] : top;
         sysOut(v !== undefined ? `${key}: ${JSON.stringify(v)}` : `${key}: (not set)`);
         return true;
       }
       let val;
       try { val = JSON.parse(rawVal); } catch { val = rawVal; }
-      localCfg[key] = val;
+      // Apply: nested writes preserve the rest of the block.
+      if (subKey) {
+        const block = (typeof localCfg[topKey] === 'object' && localCfg[topKey] !== null)
+          ? localCfg[topKey] : {};
+        block[subKey] = val;
+        localCfg[topKey] = block;
+      } else {
+        localCfg[topKey] = val;
+      }
       try {
         await mkdir(dirname(LOCAL_CONFIG_PATH), { recursive: true });
         await writeFile(LOCAL_CONFIG_PATH, JSON.stringify(localCfg, null, 2) + '\n');
-        EGPT_CONFIG[key] = val;
+        // Mirror into the in-memory EGPT_CONFIG so handlers downstream
+        // see the change without a restart.
+        if (subKey) {
+          if (typeof EGPT_CONFIG[topKey] !== 'object' || EGPT_CONFIG[topKey] === null) {
+            EGPT_CONFIG[topKey] = {};
+          }
+          EGPT_CONFIG[topKey][subKey] = val;
+        } else {
+          EGPT_CONFIG[topKey] = val;
+        }
       } catch (e) { sysOut(`!! config write: ${e.message}`); return true; }
-      if (key === 'theme') {
+      if (topKey === 'theme' && !subKey) {
         Object.assign(T, loadTheme(val));
         _currentTheme = val;
         setThemeRev(n => n + 1);
       }
-      if (key === 'show_prompts') _showPrompts = !!val;
-      if (key === 'node_name') {
+      if (topKey === 'show_prompts' && !subKey) _showPrompts = !!val;
+      if (topKey === 'node_name' && !subKey) {
         // Live rename: announce node-offline under the old name first
         // so peers drop the old entry, swap BUS_NODE_ID + SURFACE_TAG,
         // then re-announce as node-online with the new name. Local UI

@@ -74,19 +74,28 @@ function runUpgrade() {
   // daemon, or extension/dist was wiped). The extra esbuild pass is
   // ~50ms — cheaper than confusion. npm install only runs when the
   // sha actually changed (it's the heavier step).
+  // shell:true on Windows so that npm.cmd resolves through cmd.exe.
+  // Without it, spawnSync returns status:null because Windows can't
+  // exec a .cmd file directly the way *nix execs an ELF — that's
+  // what the user hit ('build:ext exited null').
+  const spawnOpts = {
+    cwd: ROOT,
+    stdio: 'inherit',
+    shell: process.platform === 'win32',
+  };
   if (after.sha !== before) {
     log(`pulled ${before} -> ${after.sha} — running npm install && npm run build:ext`);
-    const r = spawnSync(npm, ['install'], { cwd: ROOT, stdio: 'inherit' });
+    const r = spawnSync(npm, ['install'], spawnOpts);
     if (r.status !== 0) {
-      log(`upgrade step exited ${r.status} (npm install); continuing with current build`);
+      log(`upgrade step exited ${r.status} (npm install)${r.error ? `: ${r.error.message}` : ''}; continuing with current build`);
       return false;
     }
   } else {
     log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
   }
-  const buildResult = spawnSync(npm, ['run', 'build:ext'], { cwd: ROOT, stdio: 'inherit' });
+  const buildResult = spawnSync(npm, ['run', 'build:ext'], spawnOpts);
   if (buildResult.status !== 0) {
-    log(`build:ext exited ${buildResult.status}; continuing with current build`);
+    log(`build:ext exited ${buildResult.status}${buildResult.error ? `: ${buildResult.error.message}` : ''}; continuing with current build`);
     return false;
   }
   log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
@@ -113,9 +122,14 @@ function runRewind() {
     [npm,   ['run', 'build:ext']],
   ];
   for (const [cmd, args] of steps) {
-    const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit' });
+    // shell:true on Windows for the same reason as runUpgrade —
+    // npm.cmd can't be exec'd directly without going through cmd.exe.
+    const r = spawnSync(cmd, args, {
+      cwd: ROOT, stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
     if (r.status !== 0) {
-      log(`rewind step failed (${cmd} ${args.join(' ')}); restarting anyway with current code`);
+      log(`rewind step failed (${cmd} ${args.join(' ')})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
   }
