@@ -91,25 +91,41 @@ export async function startWhatsAppBridge({
   let reconnectTimer = null;
 
   // libsignal (the signal-protocol package baileys depends on) emits
-  // raw console.log dumps for session rotation events:
-  //   'Closing session: SessionEntry { _chains: { ... } ... }'
-  //   'Identity key changed... '
-  // baileys's pino-silencer doesn't reach into libsignal because they
-  // use console directly. Patch console.log/error while the bridge is
-  // active and pass-through anything that isn't libsignal noise.
+  // session-management dumps via console.info / console.warn / .log /
+  // .error directly — bypassing baileys's pino-silencer. Patch the
+  // four console methods while the bridge is active. Any call whose
+  // first arg starts with a known libsignal prefix is dropped; the
+  // rest pass through unchanged.
+  // Source for the prefixes: node_modules/libsignal/src/{session_record,
+  // session_cipher, session_builder, queue_job, curve}.js.
   const _origLog   = console.log;
+  const _origInfo  = console.info;
+  const _origWarn  = console.warn;
   const _origError = console.error;
+  const NOISE_PREFIXES = [
+    'Closing session',          // session_record close
+    'Opening session',          // session_record open
+    'Closing open session',     // session_builder
+    'Closing stale open session', // session_builder
+    'Removing old closed session', // session_record
+    'Migrating session',        // session_record
+    'Session already closed',
+    'Session already open',
+    'Decrypted message with closed session',
+    'Failed to decrypt message',
+    'Session error',
+    'V1 session storage migration error',
+    'Unhandled bucket type',
+    'WARNING: Expected pubkey',
+  ];
   const isLibsignalNoise = (...args) => {
     const first = args[0];
     if (typeof first !== 'string') return false;
-    return first.startsWith('Closing session')
-        || first.startsWith('SessionEntry')
-        || first.startsWith('Closing open session')
-        || first.startsWith('Removing session')
-        || first.startsWith('Setting session as open')
-        || /^_chains\b/.test(first);
+    return NOISE_PREFIXES.some(p => first.startsWith(p));
   };
   console.log   = (...args) => { if (!isLibsignalNoise(...args)) _origLog(...args); };
+  console.info  = (...args) => { if (!isLibsignalNoise(...args)) _origInfo(...args); };
+  console.warn  = (...args) => { if (!isLibsignalNoise(...args)) _origWarn(...args); };
   console.error = (...args) => { if (!isLibsignalNoise(...args)) _origError(...args); };
   // Track WAMessage IDs we sent ourselves so we can filter the echoes
   // WhatsApp sends back to all linked devices (us included). 60-second
@@ -320,11 +336,13 @@ export async function startWhatsAppBridge({
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       try { sock?.end?.(undefined); } catch (_) {}
-      // Restore the console that we patched at start. If something
-      // else also patched console.log between then and now, the
-      // restoration ordering will be slightly off, but in practice
-      // we're the only patcher and stop() is rare.
+      // Restore the four console methods we patched at start. If
+      // something else patched between then and now, the ordering
+      // will be slightly off, but in practice we're the only
+      // patcher and stop() is rare.
       console.log   = _origLog;
+      console.info  = _origInfo;
+      console.warn  = _origWarn;
       console.error = _origError;
     },
     get chatId() { return lastChat; },
