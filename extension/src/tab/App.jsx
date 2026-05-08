@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
+import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../../../tools/cdp.mjs';
@@ -1136,6 +1137,87 @@ export default function App() {
       polling: tgPolling,
     }).catch(() => {});
   }, [tgPolling]);
+
+  // ── WhatsApp-CDP bridge ───────────────────────────────────────
+  //
+  // Opt-in via chrome.storage.sync.whatsapp_cdp.enabled. Drives a
+  // logged-in web.whatsapp.com tab via CDP. v1: receives + sends in
+  // the currently-active chat. Multi-chat / awareness rules / edit-
+  // streaming are deferred — see BRIDGES_CDP_SPEC.md for the v2 path.
+  const waCdpBridgeRef = useRef(null);
+
+  // Incoming WA-CDP message handler. Same shape as the Telegram one
+  // but tagged with client:'wa-cdp' and via:'whatsapp[<chatId>]' so
+  // peers can tell which surface produced the utterance.
+  const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
+    const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
+    appendMsg(author, text);
+    const tid = busTargetIdRef.current;
+    if (tid) {
+      bus.postEvent(tid, {
+        type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
+        role: 'chrome', user: author, body: text,
+        client: 'wa-cdp',
+        via: `whatsapp[${fromInfo.chatId ?? '?'}]`,
+      }).catch(() => {});
+    }
+    // v1: no command/mention routing. Add in v1.5 once stable.
+  }, [appendMsg, userName]);
+  const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);
+  handleIncomingWaCdpRef.current = handleIncomingWaCdp;
+
+  useEffect(() => {
+    let cancelled = false;
+    let bridge = null;
+    const start = async () => {
+      const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+      if (!whatsapp_cdp.enabled) return;
+      if (cancelled) return;
+      let waTabId = null;
+      try {
+        const tabs = await listTabs();
+        const wa = tabs.find(t => /web\.whatsapp\.com/.test(t.url ?? ''));
+        if (!wa) {
+          appendMsg('egpt', 'whatsapp-cdp: no web.whatsapp.com tab open. Open one, log in, and reload the extension to retry.');
+          return;
+        }
+        waTabId = wa.id;
+      } catch (e) {
+        appendMsg('egpt', `whatsapp-cdp: cdp.listTabs failed: ${e.message}`);
+        return;
+      }
+      try {
+        bridge = await startWhatsAppCdpBridge({
+          targetId:   waTabId,
+          onLog:      (msg) => appendMsg('egpt', msg),
+          onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
+          onChatId:   async (id) => {
+            try {
+              const { whatsapp_cdp: cur = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+              if (cur.chat_id === id) return;
+              await chrome.storage.sync.set({
+                whatsapp_cdp: { ...cur, chat_id: id },
+              });
+              appendMsg('egpt', `whatsapp-cdp: chat ${id} captured and saved`);
+            } catch (e) {
+              appendMsg('egpt', `!! whatsapp-cdp: could not persist chat_id (${e.message})`);
+            }
+          },
+          onIncoming: (text, fromInfo) => handleIncomingWaCdpRef.current?.(text, fromInfo),
+        });
+        if (cancelled) { bridge.stop(); return; }
+        waCdpBridgeRef.current = bridge;
+      } catch (e) {
+        appendMsg('egpt', `whatsapp-cdp: start failed: ${e.message}`);
+      }
+    };
+    start();
+    return () => {
+      cancelled = true;
+      waCdpBridgeRef.current?.stop();
+      waCdpBridgeRef.current = null;
+    };
+  }, [appendMsg]);
 
   // ── auto-scroll ───────────────────────────────────────────────
 
