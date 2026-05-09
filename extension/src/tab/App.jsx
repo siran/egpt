@@ -1260,22 +1260,42 @@ export default function App() {
   const waCdpBridgeRef = useRef(null);
 
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
-    // Tag locally so the egpt UI shows the WA message immediately
-    // (without waiting for the bus loop-back).
     const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
     appendMsg(author, text);
 
-    // Phase 1 of WA-as-remote-control: messages the user typed on
-    // their phone (fromMe=true) get routed through handleSubmit so
-    // slash commands and @brain mentions dispatch the same way as
-    // local typing. Background's echo suppression has already filtered
-    // our own debugger-sends, so what reaches us here is genuine
-    // phone-typed input. fromBridge='wa-cdp' tells handleSubmit to
-    // skip its own bus-post + WA mirror (the bridge already published).
-    if (fromInfo.fromMe) {
-      try { await handleSubmitRef.current?.(text, { fromBridge: 'wa-cdp' }); }
-      catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
-    }
+    if (!fromInfo.fromMe) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // Wake-word gate. The user's "Write to yourself" chat (matching
+    // whatsapp_cdp.chat_name) dispatches every message. In OTHER chats
+    // (friend DMs, groups) we require a leading '@egpt' or '@e' so
+    // egpt only acts when explicitly invoked — observed-only otherwise.
+    // If chat_name is unset, preserve the current always-dispatch
+    // behavior (implicit self-DM assumption); user opts into the
+    // stricter mode by setting chat_name.
+    let dispatchText = trimmed;
+    let shouldDispatch = true;
+
+    try {
+      const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+      const chatName = (whatsapp_cdp.chat_name ?? '').trim();
+      if (chatName && fromInfo.chatId !== chatName) {
+        // Non-self-DM chat. Require '@egpt' or '@e' wake-word.
+        const wake = trimmed.match(/^@(egpt|e)\b\s*(.*)$/i);
+        if (!wake) {
+          shouldDispatch = false;   // observed-only
+        } else {
+          dispatchText = wake[2].trim();
+          if (!dispatchText) shouldDispatch = false;  // bare @egpt → ignore
+        }
+      }
+    } catch (_) { /* storage read failed — fall through with default dispatch */ }
+
+    if (!shouldDispatch) return;
+
+    try { await handleSubmitRef.current?.(dispatchText, { fromBridge: 'wa-cdp' }); }
+    catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
   }, [appendMsg, userName]);
   const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);
   handleIncomingWaCdpRef.current = handleIncomingWaCdp;
