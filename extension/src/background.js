@@ -234,7 +234,7 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === 'send' && typeof msg.text === 'string') {
-        sendToFirstWaTab(msg.text, { chatName: msg.chatName })
+        sendToFirstWaTab(msg.text, { chatName: msg.chatName, chatJid: msg.chatJid })
           .then((status) => { try { port.postMessage({ type: 'send-ack', status }); } catch (_) {} })
           .catch((e)    => { try { port.postMessage({ type: 'send-error', error: e?.message ?? String(e) }); } catch (_) {} });
       } else if (msg.type === 'list-channels') {
@@ -283,15 +283,18 @@ async function sendToFirstWaTab(text, opts = {}) {
   }
   try {
     // Chat-target precedence:
-    //   1. opts.chatName  — explicit override from the caller (e.g. /join active or @waN one-shot)
-    //   2. config         — whatsapp_cdp.chat_name from chrome.storage.sync
-    //   3. (none)         — sends go to whatever's currently active
+    //   1. opts.chatJid / opts.chatName — explicit overrides from the
+    //      caller (e.g. /join active or @waN one-shot). JID is the
+    //      stable id; name is the fallback for matching.
+    //   2. config — whatsapp_cdp.chat_name from chrome.storage.sync
+    //   3. (none) — sends go to whatever's currently active
     let chatName = (typeof opts.chatName === 'string' && opts.chatName.trim()) ? opts.chatName.trim() : null;
-    if (!chatName) {
+    let chatJid  = (typeof opts.chatJid  === 'string' && opts.chatJid.trim())  ? opts.chatJid.trim()  : null;
+    if (!chatName && !chatJid) {
       const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
       chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
     }
-    if (chatName) await ensureActiveChat(target, chatName);
+    if (chatName || chatJid) await ensureActiveChat(target, { name: chatName, jid: chatJid });
 
     // Focus the WA composer so the next Input.insertText lands there.
     // Same selector heuristics as wa-content.js — pin updates in both
@@ -324,50 +327,91 @@ async function sendToFirstWaTab(text, opts = {}) {
   }
 }
 
-// If the WA Web tab's active conversation isn't `chatName`, find the
-// chat list row whose title (or aria-label) matches and dispatch a
-// real (Input.dispatchMouseEvent) click on its center. WA Web's click
-// handlers fire on both synthetic and real, BUT subsequent send via
-// Input.insertText also requires real input — keeping everything on
-// the chrome.debugger path makes the whole interaction trusted.
-async function ensureActiveChat(target, chatName) {
-  // Returns: { state: 'already' | 'found' | 'not-found', x?, y?, activeTitle? }
+// Switch the WA Web tab's active conversation to the target chat,
+// matching by JID first (stable across chat-list reorders) and falling
+// back to display name. Real Input.dispatchMouseEvent click — WA Web
+// rejects synthetic clicks, the trusted debugger path is the only
+// reliable lever.
+async function ensureActiveChat(target, chat) {
+  const { name = null, jid = null } = (typeof chat === 'string') ? { name: chat } : (chat || {});
+  if (!name && !jid) return;
+
   const probeExpr = `(() => {
     const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
-    const targetName = ${JSON.stringify(chatName)};
-    // Active chat title — try a few common header selectors.
+    const targetJid  = ${JSON.stringify(jid)};
+    const targetName = ${JSON.stringify(name)};
+
+    // Quick exit: already on the right chat (header title match).
     const header =
       document.querySelector('header [data-testid="conversation-info-header"]') ||
       document.querySelector('header span[dir="auto"][title]') ||
       document.querySelector('header span[dir="auto"]');
     const activeTitle = norm(header?.getAttribute?.('title') || header?.innerText || '');
-    if (activeTitle === norm(targetName)) {
+    if (targetName && activeTitle === norm(targetName)) {
       return { state: 'already', activeTitle };
     }
-    // Find the chat row in the list. WA Web typically wraps each chat
-    // in a [role="listitem"] or [role="row"]; the visible name is in a
-    // span[dir="auto"] descendant (sometimes with title= attr).
-    const rows = document.querySelectorAll('[role="listitem"], [role="row"], [aria-label="Chat list"] > div > div');
-    for (const row of rows) {
-      const titleEl = row.querySelector('span[dir="auto"][title]') ||
-                      row.querySelector('span[dir="auto"]');
-      const title = norm(titleEl?.getAttribute?.('title') || titleEl?.innerText || '');
-      if (title === norm(targetName)) {
-        const r = row.getBoundingClientRect();
-        if (r.width > 0 && r.height > 0) {
-          return { state: 'found', activeTitle, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+
+    const panel =
+      document.querySelector('[aria-label="Chat list" i]') ||
+      document.querySelector('[role="grid"][aria-label*="Chat" i]');
+    const rows = panel
+      ? panel.querySelectorAll('[role="listitem"], div[role="row"]')
+      : document.querySelectorAll('[role="listitem"], [role="row"]');
+
+    let matchRow = null;
+    let matchedBy = null;
+
+    // 1. JID match — preferred, unaffected by name collisions or
+    //    chat-list reorders between /channels and the actual send.
+    if (targetJid) {
+      for (const r of rows) {
+        if (r.getAttribute?.('data-id') === targetJid || r.getAttribute?.('data-jid') === targetJid) {
+          matchRow = r; matchedBy = 'jid'; break;
+        }
+        const subEl = r.querySelector?.('[data-id], [data-jid]');
+        if (subEl) {
+          const v = subEl.getAttribute('data-id') || subEl.getAttribute('data-jid');
+          if (v === targetJid) { matchRow = r; matchedBy = 'jid'; break; }
         }
       }
     }
-    return { state: 'not-found', activeTitle };
+    // 2. Name match — fallback. First-match-wins; ambiguous when two
+    //    contacts share a display name.
+    if (!matchRow && targetName) {
+      const tnorm = norm(targetName);
+      for (const r of rows) {
+        const titleEl = r.querySelector?.('span[dir="auto"][title]') ||
+                        r.querySelector?.('span[dir="auto"]');
+        const t = norm(titleEl?.getAttribute?.('title') || titleEl?.innerText || '');
+        if (t === tnorm) { matchRow = r; matchedBy = 'name'; break; }
+      }
+    }
+
+    if (!matchRow) {
+      return { state: 'not-found', activeTitle, target: targetJid || targetName };
+    }
+    const r = matchRow.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) {
+      return { state: 'off-screen', activeTitle, matchedBy };
+    }
+    return {
+      state: 'found',
+      activeTitle, matchedBy,
+      x: r.left + r.width / 2,
+      y: r.top + r.height / 2,
+    };
   })()`;
+
   const probe = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
     expression: probeExpr, returnByValue: true,
   });
   const v = probe?.result?.value ?? {};
   if (v.state === 'already') return;
   if (v.state === 'not-found') {
-    throw new Error(`chat "${chatName}" not found in WA list (active: "${v.activeTitle ?? ''}"). Set whatsapp_cdp.chat_name to the visible chat-list label.`);
+    throw new Error(`chat ${v.target ?? '(unknown)'} not found in WA list (active: "${v.activeTitle ?? ''}"). Run /channels again — the chat may have moved out of the panel's rendered window.`);
+  }
+  if (v.state === 'off-screen') {
+    throw new Error('matching chat row exists but is off-screen — scroll the WA chat list to bring it into view, then retry.');
   }
   // Real click via debugger Input — isTrusted=true, WA respects it.
   const click = (type) => chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
@@ -375,7 +419,6 @@ async function ensureActiveChat(target, chatName) {
   });
   await click('mousePressed');
   await click('mouseReleased');
-  // Give WA Web a tick to swap the conversation pane in.
   await new Promise(r => setTimeout(r, 300));
 }
 

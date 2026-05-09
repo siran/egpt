@@ -158,18 +158,30 @@ export async function startWhatsAppCdpBridge({
   onLog('whatsapp-cdp: subscribed (waiting for a web.whatsapp.com tab)');
 
   return {
-    async send(text, { chatId, chatName } = {}) {
+    async send(text, { chatId, chatName, chatJid } = {}) {
       if (!attached) {
         onError('whatsapp-cdp: no WA Web tab connected — open web.whatsapp.com');
         return;
       }
-      // Resolution order: explicit opts.chatName → active /join binding
-      // (getActiveChat) → null (background falls through to config).
-      let resolved = chatName ?? null;
-      if (!resolved) {
-        try { resolved = getActiveChat() ?? null; } catch (_) { resolved = null; }
+      // Resolution order: explicit opts (jid/name) → active /join
+      // binding via getActiveChat() → null (background falls through
+      // to whatsapp_cdp.chat_name from config). JID + name are paired
+      // so the receive end can match by JID first (stable across
+      // chat-list reorders), name as fallback.
+      let resolvedName = chatName ?? null;
+      let resolvedJid  = chatJid  ?? null;
+      if (!resolvedName && !resolvedJid) {
+        try {
+          const active = getActiveChat();
+          if (active && typeof active === 'object') {
+            resolvedJid  = active.jid  ?? null;
+            resolvedName = active.name ?? null;
+          } else if (typeof active === 'string') {
+            resolvedName = active;
+          }
+        } catch (_) {}
       }
-      try { port?.postMessage({ type: 'send', text, chatName: resolved }); }
+      try { port?.postMessage({ type: 'send', text, chatName: resolvedName, chatJid: resolvedJid }); }
       catch (e) { onError('whatsapp-cdp send: ' + (e?.message ?? e)); }
     },
     /** Scrape the WA Web chat list. Resolves with [{ name, preview }, ...]. */

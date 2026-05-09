@@ -654,7 +654,11 @@ export default function App() {
           const chats = await waCdpBridgeRef.current.listChannels({ limit });
           waChannelsRef.current = chats;
           if (!chats.length) { appendMsg('egpt', '/channels: no chats visible (chat list panel not open?)'); break; }
-          const lines = chats.map((c, i) => `  @wa${i + 1}  ${c.name}${c.preview ? `  — ${c.preview}` : ''}`);
+          const lines = chats.map((c, i) => {
+            const jidTag = c.jid ? `  [${c.jid}]` : '  [no-jid]';
+            const prev = c.preview ? `  — ${c.preview}` : '';
+            return `  @wa${i + 1}  ${c.name}${jidTag}${prev}`;
+          });
           appendMsg('egpt', `chats (top ${chats.length}, use /join @waN to bind):\n${lines.join('\n')}`);
         } catch (e) {
           appendMsg('egpt', `!! /channels: ${e.message}`);
@@ -719,8 +723,8 @@ export default function App() {
         }
         appendMsg(userName, trimmed);
         try {
-          await waCdpBridgeRef.current.send(body, { chatName: chat.name });
-          appendMsg('egpt', `→ @wa${idx + 1} (${chat.name})`);
+          await waCdpBridgeRef.current.send(body, { chatName: chat.name, chatJid: chat.jid });
+          appendMsg('egpt', `→ @wa${idx + 1} (${chat.name}${chat.jid ? ` ${chat.jid}` : ''})`);
         } catch (e) {
           appendMsg('egpt', `!! @wa send failed: ${e.message}`);
         }
@@ -1396,7 +1400,9 @@ export default function App() {
           onLog:      (msg) => appendMsg('egpt', msg),
           onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
           onState:    (state) => setWaState(state),
-          getActiveChat: () => waJoinedRef.current?.name ?? null,
+          getActiveChat: () => waJoinedRef.current
+            ? { jid: waJoinedRef.current.jid ?? null, name: waJoinedRef.current.name ?? null }
+            : null,
           onChatId:   async (id) => {
             try {
               const { whatsapp_cdp: cur = {} } = await chrome.storage.sync.get('whatsapp_cdp');

@@ -33,26 +33,45 @@
   // Scrape the WA Web chat list panel. Returns an ordered list of
   // visible chats (top-to-bottom in the panel — usually most-recent
   // first). Heuristic selectors; pin updates here when WA Web reships.
+  //
+  // Captures BOTH a stable `jid` (best-effort — WA Web has historically
+  // exposed it via [data-id]/[data-jid] on or under the chat row) and
+  // the human `name`. Send-time matching uses jid first, name as
+  // fallback. Without a stable id, name collisions or chat-list
+  // reordering between /channels and /join could mis-route the send.
   function scrapeChatList(limit = 20) {
-    // The chat list lives inside a [aria-label="Chat list"] grid. Each
-    // chat is a [role="listitem"] (modern) or fallback to row pattern.
     const panel =
       document.querySelector('[aria-label="Chat list" i]') ||
       document.querySelector('[role="grid"][aria-label*="Chat" i]');
     if (!panel) return [];
     const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
     const chats = [];
+    // JID shape: <digits>@<host> for personal chats; <digits>-<digits>@g.us for groups.
+    // Reject message-id-shaped values (pure hex without @).
+    const looksLikeJid = (v) => typeof v === 'string'
+      && /^[\w\d-]+@[\w.]+$/.test(v)
+      && !/^[A-F0-9]{16,}$/i.test(v);
     for (const row of rows) {
       const titleEl = row.querySelector('span[dir="auto"][title]')
                    || row.querySelector('span[dir="auto"]');
       const name = (titleEl?.getAttribute('title') || titleEl?.innerText || '').trim();
       if (!name) continue;
-      // Crude preview: any non-title span's text. Often shows last
-      // message / "typing…" / "you: …".
+      // Best-effort JID detection. Walk row + a small ancestor window
+      // (some WA bundles attach the JID a level above the listitem).
+      let jid = null;
+      const idCandidates = [
+        ...(row.attributes?.[Symbol.iterator] ? [row] : []),
+        ...row.querySelectorAll('[data-id], [data-jid]'),
+        row.parentElement,
+      ].filter(Boolean);
+      for (const el of idCandidates) {
+        const v = el.getAttribute?.('data-id') || el.getAttribute?.('data-jid');
+        if (looksLikeJid(v)) { jid = v; break; }
+      }
       const previewEl = [...row.querySelectorAll('span[dir="auto"]')]
         .find(s => s !== titleEl);
       const preview = (previewEl?.innerText || '').slice(0, 60).trim();
-      chats.push({ name, preview });
+      chats.push({ jid, name, preview });
       if (chats.length >= limit) break;
     }
     return chats;
