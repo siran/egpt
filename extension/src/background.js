@@ -338,16 +338,20 @@ async function ensureActiveChat(target, chat) {
 
   const probeExpr = `(() => {
     const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
+    // Modern WA Web header for group chats packs the chat name AND the
+    // participant list into the same title attribute as a multi-line
+    // string ("Group Name\\nParticipant1, Participant2, ..."). The
+    // 'already on this chat' check needs JUST the first line.
+    const firstLine = (s) => norm((s || '').split('\\n')[0]);
     const targetJid  = ${JSON.stringify(jid)};
     const targetName = ${JSON.stringify(name)};
 
-    // Quick exit: already on the right chat (header title match).
     const header =
       document.querySelector('header [data-testid="conversation-info-header"]') ||
       document.querySelector('header span[dir="auto"][title]') ||
       document.querySelector('header span[dir="auto"]');
-    const activeTitle = norm(header?.getAttribute?.('title') || header?.innerText || '');
-    if (targetName && activeTitle === norm(targetName)) {
+    const activeTitle = firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+    if (targetName && activeTitle === firstLine(targetName)) {
       return { state: 'already', activeTitle };
     }
 
@@ -414,11 +418,42 @@ async function ensureActiveChat(target, chat) {
     throw new Error('matching chat row exists but is off-screen — scroll the WA chat list to bring it into view, then retry.');
   }
   // Real click via debugger Input — isTrusted=true, WA respects it.
+  // Include mouseMoved so React's pointer-events handler arms the row
+  // (some bundles ignore press/release without prior pointer activity).
   const click = (type) => chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
     type, x: v.x, y: v.y, button: 'left', clickCount: 1,
   });
+  await click('mouseMoved');
   await click('mousePressed');
   await click('mouseReleased');
-  await new Promise(r => setTimeout(r, 300));
+  await new Promise(r => setTimeout(r, 500));
+
+  // Verify the switch actually stuck — re-probe the header. If the
+  // active chat is still NOT what we intended, refuse to send rather
+  // than silently insertText into the wrong conversation. This is the
+  // failure mode the user hit when @waN said '→ compren bitcoin!' but
+  // the message landed in whichever chat was already active.
+  if (name) {
+    const verifyExpr = `(() => {
+      const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
+      const firstLine = (s) => norm((s || '').split('\\n')[0]);
+      const header =
+        document.querySelector('header [data-testid="conversation-info-header"]') ||
+        document.querySelector('header span[dir="auto"][title]') ||
+        document.querySelector('header span[dir="auto"]');
+      return firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+    })()`;
+    const verify = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression: verifyExpr, returnByValue: true,
+    });
+    const newTitle = verify?.result?.value ?? '';
+    const expected = name.split('\n')[0].trim();
+    if (newTitle !== expected) {
+      throw new Error(
+        `chat switch didn't stick — WA header is still "${newTitle}", expected "${expected}". ` +
+        `Refusing to send (would land in the wrong chat). Re-run /channels and try again, or click the target chat manually.`
+      );
+    }
+  }
 }
 
