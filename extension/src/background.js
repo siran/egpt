@@ -296,6 +296,37 @@ async function sendToFirstWaTab(text, opts = {}) {
     }
     if (chatName || chatJid) await ensureActiveChat(target, { name: chatName, jid: chatJid });
 
+    // FINAL VERIFICATION — last check before keyboard input. ensureActiveChat
+    // already verifies after its click, but a paranoid second probe RIGHT
+    // before insertText catches:
+    //   - any race where WA Web swapped chats between ensureActiveChat
+    //     returning and us starting to type (rare but observed)
+    //   - cases where ensureActiveChat was skipped because we trusted
+    //     the caller's intent
+    // Throws cleanly rather than typing into the wrong conversation.
+    if (chatName) {
+      const verify = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression: `(() => {
+          const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
+          const firstLine = (s) => norm((s || '').split('\\n')[0]);
+          const header =
+            document.querySelector('header [data-testid="conversation-info-header"]') ||
+            document.querySelector('header span[dir="auto"][title]') ||
+            document.querySelector('header span[dir="auto"]');
+          return firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+        })()`,
+        returnByValue: true,
+      });
+      const currentTitle = verify?.result?.value ?? '';
+      const expected = chatName.split('\n')[0].trim();
+      if (currentTitle !== expected) {
+        throw new Error(
+          `pre-send safety check FAILED: WA header is "${currentTitle}", expected "${expected}". ` +
+          `Aborting before typing.`
+        );
+      }
+    }
+
     // Focus the WA composer so the next Input.insertText lands there.
     // Same selector heuristics as wa-content.js — pin updates in both
     // places when WA Web reships.
