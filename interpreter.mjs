@@ -41,7 +41,7 @@ export const COMMANDS = [
   { cmd: '/rules',          surface: 'shell',     usage: '/rules',                                         desc: 'write room etiquette' },
   { cmd: '/last',           surface: 'shell',     usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
   { cmd: '/clear',          surface: 'extension', usage: '/clear',                                         desc: 'clear display' },
-  { cmd: '/channels',       surface: 'extension', usage: '/channels [N=20]',                              desc: 'list visible WA Web chats numbered as @waN (extension WA-CDP only)' },
+  { cmd: '/channels',       surface: 'extension', usage: '/channels [N]',                                 desc: 'list visible WA Web chats numbered as @waN (default N from whatsapp_cdp.channels_default, fallback 10)' },
   { cmd: '/join',           surface: 'extension', usage: '/join @waN',                                    desc: 'bind extension outbound to chat N from /channels (extension WA-CDP only)' },
   { cmd: '/unjoin',         surface: 'extension', usage: '/unjoin',                                       desc: 'release the /join binding' },
   { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },

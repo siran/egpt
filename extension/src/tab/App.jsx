@@ -644,8 +644,12 @@ export default function App() {
         appendMsg('egpt', helpText(Object.keys(BRAINS)));
         break;
       case '/channels': {
-        const limit = parseInt(parts[1], 10) || 20;
         if (!waCdpBridgeRef.current) { appendMsg('egpt', '!! /channels: WA-CDP bridge not ready (open web.whatsapp.com)'); break; }
+        const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+        const configDefault = parseInt(cfg.channels_default, 10);
+        const defaultLimit = Number.isFinite(configDefault) && configDefault > 0 ? configDefault : 10;
+        const argLimit = parseInt(parts[1], 10);
+        const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : defaultLimit;
         try {
           const chats = await waCdpBridgeRef.current.listChannels({ limit });
           waChannelsRef.current = chats;
