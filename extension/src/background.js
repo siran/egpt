@@ -61,6 +61,24 @@ const _subscribers      = new Set();   // ports opened by UI tabs
 const _waContentPorts   = new Set();   // ports from web.whatsapp.com content scripts
 const _waCdpSubscribers = new Set();   // ports from the egpt UI tab's WA-CDP bridge
 
+// Echo suppression for WA-CDP. When sendToFirstWaTab dispatches a
+// message via chrome.debugger Input.*, the resulting WA Web message
+// appears in the DOM with fromMe=true and is picked up by our own
+// content-script MutationObserver — looking exactly like a user-typed
+// message. We'd then re-process it as input and (for plain text or
+// @brain mentions) potentially loop. Track each send as { text, ts };
+// when an incoming fromMe message matches text+(within 15s), consume
+// the entry and drop the event before fan-out / bus republish.
+const _recentSends = [];
+function recordSend(text) { _recentSends.push({ text, ts: Date.now() }); }
+function consumeEcho(text) {
+  const cutoff = Date.now() - 15_000;
+  while (_recentSends.length && _recentSends[0].ts < cutoff) _recentSends.shift();
+  const idx = _recentSends.findIndex(e => e.text === text);
+  if (idx >= 0) { _recentSends.splice(idx, 1); return true; }
+  return false;
+}
+
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'egpt-bus') {
     _busTabPorts.add(port);
@@ -125,6 +143,9 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === 'incoming') {
+        // Echo suppression: filter our own debugger-sends bouncing
+        // back via the WA Web DOM (fromMe=true match within 15s).
+        if (msg.fromMe && consumeEcho(msg.text)) return;
         const ev = {
           type:    'room-utterance',
           ts:      msg.ts ?? Date.now(),
@@ -227,6 +248,10 @@ async function sendToFirstWaTab(text) {
       returnByValue: true,
     });
     await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
+    // Record before pressing Enter — the send fires the moment Enter
+    // dispatches and the new fromMe row may appear in the DOM
+    // (and reach the content-script MutationObserver) within ms.
+    recordSend(text);
     const enterParams = {
       type: 'keyDown', key: 'Enter', code: 'Enter',
       windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,

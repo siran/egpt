@@ -182,6 +182,14 @@ export default function App() {
       );
       updateMsg(msgId, finalText, false);
       tgStream?.finish(`${tgPrefix}\n${escapeHtml(finalText)}`);
+      // Mirror to WhatsApp via the CDP bridge — only when no shell is
+      // on the bus (shell mirrors brain replies via baileys). Tag the
+      // line with the session name so the user on their phone can tell
+      // which brain answered.
+      const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+      if (waCdpBridgeRef.current && !hasShellPeer && finalText) {
+        try { waCdpBridgeRef.current.send(`[${sessionName}] ${finalText}`); } catch (_) {}
+      }
       return finalText ?? '';
     } catch (e) {
       const err = `error: ${e.message}`;
@@ -630,7 +638,12 @@ export default function App() {
 
   // ── submit handler ────────────────────────────────────────────
 
-  const handleSubmit = useCallback(async (text) => {
+  const handleSubmit = useCallback(async (text, opts = {}) => {
+    // fromBridge: this input came from a bridge (e.g. WA content
+    // script) and was already published to the bus by that bridge.
+    // Skip our own bus post and bridge-mirror to avoid echoing the
+    // user's own typed input back at them.
+    const { fromBridge = null } = opts;
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -641,25 +654,20 @@ export default function App() {
     // Slash commands skip the bus (operator tooling, channel-
     // specific). Otherwise peers would mirror them to telegram / WA
     // as conversational noise.
-    {
+    if (!fromBridge) {
       const tid = busTargetIdRef.current;
       const isSlashCommand = trimmed.startsWith('/');
       if (tid && !isSlashCommand) {
-        // client: 'ext' for messages typed into the extension UI.
-        // (Eventually configurable via chrome.storage.client_name —
-        // e.g. user could rename to 'browser' or 'desk-chrome'.)
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'chrome', user: userName, body: trimmed,
           client: 'ext',
         }).catch(() => {});
 
-        // WA mirror for self-typed messages. The bus event handler
-        // can't do this for us — it self-filters (ev.from===BUS_NODE_ID
-        // returns before reaching the room-utterance case), so the
-        // gate has to live here too. Same rule: only fire when no
-        // shell is on the bus (shell, when present, picks up the
-        // room-utterance and mirrors via baileys natively).
+        // WA mirror for self-typed (extension-typed) messages. Only
+        // when no shell is on the bus — shell mirrors via baileys
+        // natively. Skipped entirely when this came from a bridge
+        // (the bridge IS the source — mirroring back would echo).
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
         if (waCdpBridgeRef.current && !hasShellPeer) {
           try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
@@ -688,7 +696,11 @@ export default function App() {
 
     if (decision.kind === 'command') { handleCommand(trimmed); return; }
 
-    appendMsg(userName, trimmed);
+    // Local echo of the user's own typed input. When fromBridge, the
+    // bridge handler (handleIncomingWaCdp) already appended the
+    // message with its bridge-tagged author, so skip the second
+    // append here.
+    if (!fromBridge) appendMsg(userName, trimmed);
 
     if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
     if (decision.kind === 'empty') {
@@ -791,6 +803,12 @@ export default function App() {
       }
     }
   }, [appendMsg, handleCommand, runBrain, userName]);
+
+  // Stable ref so cross-render callers (handleIncomingWaCdp, etc.)
+  // can route input through the latest handleSubmit without
+  // re-creating the bridge wiring on every dependency change.
+  const handleSubmitRef = useRef(handleSubmit);
+  handleSubmitRef.current = handleSubmit;
 
   // ── Telegram bridge ───────────────────────────────────────────
 
@@ -1146,6 +1164,14 @@ export default function App() {
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
         }
+        // Mirror peer brain replies to WA when no shell is on the bus
+        // (shell otherwise handles WA mirroring via baileys). Anti-
+        // loop guard: skip events tagged as already-from-WA.
+        const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
+        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+        if (waCdpBridgeRef.current && !fromWhatsApp && !hasShellPeer && ev.body) {
+          try { waCdpBridgeRef.current.send(`[${ev.session ?? 'reply'}] ${ev.body}`); } catch (_) {}
+        }
         return;
       }
       case 'telegram-handoff': {
@@ -1204,12 +1230,22 @@ export default function App() {
   const waCdpBridgeRef = useRef(null);
 
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
-    // The bus already carries this same message (background published
-    // a room-utterance from the content script). We append locally so
-    // the egpt extension UI shows it without waiting for the bus loop
-    // back; the duplicate arrival is dedupable downstream by msgId.
+    // Tag locally so the egpt UI shows the WA message immediately
+    // (without waiting for the bus loop-back).
     const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
     appendMsg(author, text);
+
+    // Phase 1 of WA-as-remote-control: messages the user typed on
+    // their phone (fromMe=true) get routed through handleSubmit so
+    // slash commands and @brain mentions dispatch the same way as
+    // local typing. Background's echo suppression has already filtered
+    // our own debugger-sends, so what reaches us here is genuine
+    // phone-typed input. fromBridge='wa-cdp' tells handleSubmit to
+    // skip its own bus-post + WA mirror (the bridge already published).
+    if (fromInfo.fromMe) {
+      try { await handleSubmitRef.current?.(text, { fromBridge: 'wa-cdp' }); }
+      catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
+    }
   }, [appendMsg, userName]);
   const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);
   handleIncomingWaCdpRef.current = handleIncomingWaCdp;
