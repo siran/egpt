@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
+import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa-routing.js';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../../../tools/cdp.mjs';
@@ -322,15 +323,20 @@ export default function App() {
       // which brain answered.
       const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
       if (waCdpBridgeRef.current && !hasShellPeer && finalText) {
-        // replyTo (when set) routes the brain reply back to the
-        // exact chat the request came from, instead of the bridge's
-        // default target (whatsapp_cdp.chat_name or active /join).
-        try {
-          waCdpBridgeRef.current.send(
-            `[${sessionName}] ${finalText}`,
-            replyTo ? { chatName: replyTo } : undefined,
-          );
-        } catch (_) {}
+        // replyTo routes the reply back to the originating chat;
+        // waJoined routes it to the /join target. Without either,
+        // we don't mirror — the brain reply stays local. Pinned in
+        // tests/wa-routing.test.mjs (regression: whatsapp_cdp.chat_name
+        // in config used to silently route here, leaking @e replies
+        // to the user's self-DM).
+        if (shouldMirrorBrainReplyToWa({ replyTo, waJoined: !!waJoinedRef.current })) {
+          try {
+            waCdpBridgeRef.current.send(
+              `[${sessionName}] ${finalText}`,
+              replyTo ? { chatName: replyTo } : undefined,
+            );
+          } catch (_) {}
+        }
       }
       return finalText ?? '';
     } catch (e) {
@@ -932,22 +938,15 @@ export default function App() {
           client: 'ext',
         }).catch(() => {});
 
-        // WA mirror for self-typed (extension-typed) messages. Only
-        // when no shell is on the bus AND we have an explicit WA
-        // target (a /join binding or whatsapp_cdp.chat_name in
-        // config). Without an explicit target the user has not opted
-        // in, so we don't auto-route their typing into whichever
-        // chat happens to be open in WA Web.
+        // WA mirror for self-typed messages. Gate via the pure
+        // shouldMirrorTypedToWa helper (see extension/src/bridges/
+        // wa-routing.js + tests/wa-routing.test.mjs). Strict rule:
+        // mirror ONLY when /join is active. chat_name being set
+        // doesn't imply auto-mirror — that field's only role is
+        // identifying the self-DM for the inbound wake-word gate.
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
         if (waCdpBridgeRef.current && !hasShellPeer) {
-          let hasExplicitWa = !!waJoinedRef.current;
-          if (!hasExplicitWa) {
-            try {
-              const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-              hasExplicitWa = !!(whatsapp_cdp.chat_name && String(whatsapp_cdp.chat_name).trim());
-            } catch (_) {}
-          }
-          if (hasExplicitWa) {
+          if (shouldMirrorTypedToWa({ fromBridge, waJoined: !!waJoinedRef.current })) {
             try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
           }
         }
