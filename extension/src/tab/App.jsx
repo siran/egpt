@@ -354,12 +354,35 @@ export default function App() {
         }
         appendMsg('egpt', `Opening ${brain.homeUrl}…`);
         try {
+          // chrome.tabs.create returns a chrome.tabs.Tab with an
+          // integer id. CDP /json/list (which the brain modules use
+          // via tools/cdp.mjs) gives different, hex target ids — the
+          // two namespaces don't intersect. Translate by snapshotting
+          // CDP tabs that match this brain's URL before/after the
+          // open and taking the new one.
+          const beforeIds = new Set(
+            (await listTabs(brain.urlMatch)).map(t => t.id),
+          );
           const tab = await chrome.tabs.create({ url: brain.homeUrl, active: false });
-          appendMsg('egpt', `Waiting for tab ${tab.id} to load…`);
+          appendMsg('egpt', `Waiting for tab to load…`);
           await waitForTabLoad(tab.id);
-          sessionsRef.current.set(name, { brain, targetId: tab.id });
+          // Wait briefly for CDP to register the new target. The chrome.tabs
+          // tab is usable as soon as the navigation commits, but CDP can
+          // lag by a few hundred ms. Poll up to ~2s.
+          let cdpId = null;
+          for (let i = 0; i < 10; i++) {
+            const after = await listTabs(brain.urlMatch);
+            const newOne = after.find(t => !beforeIds.has(t.id));
+            if (newOne) { cdpId = newOne.id; break; }
+            await new Promise(r => setTimeout(r, 200));
+          }
+          if (!cdpId) {
+            appendMsg('egpt', `/open: opened the tab, but couldn't locate its CDP target — try /attach`);
+            return;
+          }
+          sessionsRef.current.set(name, { brain, targetId: cdpId });
           syncSessionsList();
-          appendMsg('egpt', `Ready: ${name} → ${brainType} (tab ${tab.id}). /use ${name} to make it the default for plain text.`);
+          appendMsg('egpt', `Ready: ${name} → ${brainType} (target ${cdpId.slice(0, 8)}…). /use ${name} to make it the default for plain text.`);
         } catch (e) {
           appendMsg('egpt', `/open failed: ${e.message}`);
         }

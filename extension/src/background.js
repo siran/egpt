@@ -186,6 +186,12 @@ chrome.runtime.onConnect.addListener((port) => {
 // browser") shows during the attach window. We attach right before
 // each send and detach immediately after to keep the banner exposure
 // minimal — flickers briefly per send rather than staying up.
+//
+// Channel awareness: if chrome.storage.sync.whatsapp_cdp.chat_name is
+// set, we ensure that chat is the active one BEFORE typing — switching
+// via a real Input.dispatchMouseEvent on the chat list row if needed.
+// Without chat_name configured, the message goes to whatever's open
+// (loud caveat printed in BRIDGES_CDP_SPEC.md).
 async function sendToFirstWaTab(text) {
   const port = [..._waContentPorts][0];
   if (!port) throw new Error('no WA content script connected');
@@ -205,6 +211,10 @@ async function sendToFirstWaTab(text) {
     throw new Error('debugger attach failed: ' + m);
   }
   try {
+    const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+    const chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
+    if (chatName) await ensureActiveChat(target, chatName);
+
     // Focus the WA composer so the next Input.insertText lands there.
     // Same selector heuristics as wa-content.js — pin updates in both
     // places when WA Web reships.
@@ -216,9 +226,7 @@ async function sendToFirstWaTab(text) {
       )?.focus()`,
       returnByValue: true,
     });
-    // Browser-level text insertion — fires real input events with isTrusted=true.
     await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
-    // Real Enter to send. WA Web's keydown handler accepts this.
     const enterParams = {
       type: 'keyDown', key: 'Enter', code: 'Enter',
       windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
@@ -232,5 +240,60 @@ async function sendToFirstWaTab(text) {
       try { await chrome.debugger.detach(target); } catch (_) {}
     }
   }
+}
+
+// If the WA Web tab's active conversation isn't `chatName`, find the
+// chat list row whose title (or aria-label) matches and dispatch a
+// real (Input.dispatchMouseEvent) click on its center. WA Web's click
+// handlers fire on both synthetic and real, BUT subsequent send via
+// Input.insertText also requires real input — keeping everything on
+// the chrome.debugger path makes the whole interaction trusted.
+async function ensureActiveChat(target, chatName) {
+  // Returns: { state: 'already' | 'found' | 'not-found', x?, y?, activeTitle? }
+  const probeExpr = `(() => {
+    const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
+    const targetName = ${JSON.stringify(chatName)};
+    // Active chat title — try a few common header selectors.
+    const header =
+      document.querySelector('header [data-testid="conversation-info-header"]') ||
+      document.querySelector('header span[dir="auto"][title]') ||
+      document.querySelector('header span[dir="auto"]');
+    const activeTitle = norm(header?.getAttribute?.('title') || header?.innerText || '');
+    if (activeTitle === norm(targetName)) {
+      return { state: 'already', activeTitle };
+    }
+    // Find the chat row in the list. WA Web typically wraps each chat
+    // in a [role="listitem"] or [role="row"]; the visible name is in a
+    // span[dir="auto"] descendant (sometimes with title= attr).
+    const rows = document.querySelectorAll('[role="listitem"], [role="row"], [aria-label="Chat list"] > div > div');
+    for (const row of rows) {
+      const titleEl = row.querySelector('span[dir="auto"][title]') ||
+                      row.querySelector('span[dir="auto"]');
+      const title = norm(titleEl?.getAttribute?.('title') || titleEl?.innerText || '');
+      if (title === norm(targetName)) {
+        const r = row.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          return { state: 'found', activeTitle, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        }
+      }
+    }
+    return { state: 'not-found', activeTitle };
+  })()`;
+  const probe = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    expression: probeExpr, returnByValue: true,
+  });
+  const v = probe?.result?.value ?? {};
+  if (v.state === 'already') return;
+  if (v.state === 'not-found') {
+    throw new Error(`chat "${chatName}" not found in WA list (active: "${v.activeTitle ?? ''}"). Set whatsapp_cdp.chat_name to the visible chat-list label.`);
+  }
+  // Real click via debugger Input — isTrusted=true, WA respects it.
+  const click = (type) => chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+    type, x: v.x, y: v.y, button: 'left', clickCount: 1,
+  });
+  await click('mousePressed');
+  await click('mouseReleased');
+  // Give WA Web a tick to swap the conversation pane in.
+  await new Promise(r => setTimeout(r, 300));
 }
 
