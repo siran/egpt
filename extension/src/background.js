@@ -38,20 +38,57 @@ async function ensureBusTab() {
     try { await chrome.tabs.create({ url, active: false }); } catch (_) {}
   }
 }
-chrome.runtime.onInstalled.addListener(ensureBusTab);
-chrome.runtime.onStartup.addListener(ensureBusTab);
-// Re-spawn the bus tab if the user closes it (or if Chrome killed it
-// for memory). Without this, closing the bus tab takes the extension
-// off the bus until the next reload — and shell can't find a tab
-// to attach to either.
-chrome.tabs.onRemoved.addListener(async (closedTabId) => {
-  // Only re-create if our bus tab was the one closed. The query
-  // happens AFTER the tab is gone — if no bus tab matches, we know
-  // the closed one was ours and we need a replacement.
+
+// Self-healing extension reload. When the user reloads the extension
+// at chrome://extensions (or it auto-updates), the existing bus.html
+// and egpt UI tabs are still running OLD background-context-bound
+// JS; ports are dead, content scripts in WA Web etc. have stale
+// chrome.runtime references. Close + respawn our own pages, and
+// reload any open content-script-target tabs so they reinject fresh.
+const CONTENT_SCRIPT_HOSTS = [
+  /web\.whatsapp\.com/,
+  // /web\.telegram\.org/,   // future: when TG-CDP content script ships
+];
+async function refreshExtensionPages() {
+  const tabUrl = chrome.runtime.getURL(TAB_URL);
+  const busUrl = chrome.runtime.getURL(BUS_URL);
+  let allTabs;
+  try { allTabs = await chrome.tabs.query({}); }
+  catch { return; }
+
+  const egptTabs = allTabs.filter(t => t.url === tabUrl);
+  const busTabs  = allTabs.filter(t => t.url === busUrl);
+  const csTabs   = allTabs.filter(t => CONTENT_SCRIPT_HOSTS.some(re => re.test(t.url ?? '')));
+  const hadEgpt  = egptTabs.length > 0;
+
+  // Close stale extension pages so they can't keep ghost ports alive.
+  for (const t of [...egptTabs, ...busTabs]) {
+    try { await chrome.tabs.remove(t.id); } catch (_) {}
+  }
+  // Bus tab is always required for the relay; spawn fresh.
+  try { await chrome.tabs.create({ url: busUrl, active: false }); } catch (_) {}
+  // Reopen the egpt UI only if the user had one before — first-install
+  // shouldn't auto-open it (that's still chrome.action.onClicked's job).
+  if (hadEgpt) {
+    try { await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
+  }
+  // Refresh any content-script tabs so the fresh script binds to
+  // the fresh background.
+  for (const t of csTabs) {
+    try { await chrome.tabs.reload(t.id); } catch (_) {}
+  }
+}
+
+chrome.runtime.onInstalled.addListener(refreshExtensionPages);
+chrome.runtime.onStartup.addListener(refreshExtensionPages);
+// Re-spawn the bus tab if the user closes it manually mid-session.
+chrome.tabs.onRemoved.addListener(async () => {
   const url = chrome.runtime.getURL(BUS_URL);
   const remaining = await chrome.tabs.query({ url });
   if (remaining.length === 0) ensureBusTab();
 });
+// SW cold-spawn safety net (e.g. browser already running, extension
+// loaded, SW fires for the first time): make sure the bus exists.
 ensureBusTab();
 
 // ── Bus relay ────────────────────────────────────────────────────
