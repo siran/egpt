@@ -30,48 +30,59 @@
   const _queue = [];
   const QUEUE_CAP = 100;
 
+  // JID shape: <digits>@<host> for personal chats; <digits>-<digits>@g.us
+  // for groups. Reject message-id-shaped values (pure hex without @).
+  const looksLikeJid = (v) => typeof v === 'string'
+    && /^[\w\d-]+@[\w.]+$/.test(v)
+    && !/^[A-F0-9]{16,}$/i.test(v);
+
+  function chatListPanel() {
+    return document.querySelector('[aria-label="Chat list" i]') ||
+           document.querySelector('[role="grid"][aria-label*="Chat" i]');
+  }
+
+  // Extract { jid, name, preview, unread } from a chat-list row.
+  // Returns null when the row has no name.
+  function extractRow(row) {
+    const titleEl = row.querySelector('span[dir="auto"][title]')
+                 || row.querySelector('span[dir="auto"]');
+    const name = (titleEl?.getAttribute('title') || titleEl?.innerText || '').trim();
+    if (!name) return null;
+    let jid = null;
+    const idCandidates = [
+      ...(row.attributes?.[Symbol.iterator] ? [row] : []),
+      ...row.querySelectorAll('[data-id], [data-jid]'),
+      row.parentElement,
+    ].filter(Boolean);
+    for (const el of idCandidates) {
+      const v = el.getAttribute?.('data-id') || el.getAttribute?.('data-jid');
+      if (looksLikeJid(v)) { jid = v; break; }
+    }
+    const previewEl = [...row.querySelectorAll('span[dir="auto"]')]
+      .find(s => s !== titleEl);
+    const preview = (previewEl?.innerText || '').slice(0, 200).trim();
+    // WA Web flags unread via aria-label="<N> unread message[s]" on a
+    // span inside the row, OR (older builds) data-icon="unread-count".
+    // Either is enough — we don't need to read the count.
+    const unread = !!(
+      row.querySelector('span[aria-label*="unread" i]') ||
+      row.querySelector('[data-icon="unread-count"]')
+    );
+    return { jid, name, preview, unread };
+  }
+
   // Scrape the WA Web chat list panel. Returns an ordered list of
-  // visible chats (top-to-bottom in the panel — usually most-recent
-  // first). Heuristic selectors; pin updates here when WA Web reships.
-  //
-  // Captures BOTH a stable `jid` (best-effort — WA Web has historically
-  // exposed it via [data-id]/[data-jid] on or under the chat row) and
-  // the human `name`. Send-time matching uses jid first, name as
-  // fallback. Without a stable id, name collisions or chat-list
-  // reordering between /channels and /join could mis-route the send.
+  // visible chats (top-to-bottom — usually most-recent first).
+  // Heuristic selectors; pin updates here when WA Web reships.
   function scrapeChatList(limit = 20) {
-    const panel =
-      document.querySelector('[aria-label="Chat list" i]') ||
-      document.querySelector('[role="grid"][aria-label*="Chat" i]');
+    const panel = chatListPanel();
     if (!panel) return [];
     const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
     const chats = [];
-    // JID shape: <digits>@<host> for personal chats; <digits>-<digits>@g.us for groups.
-    // Reject message-id-shaped values (pure hex without @).
-    const looksLikeJid = (v) => typeof v === 'string'
-      && /^[\w\d-]+@[\w.]+$/.test(v)
-      && !/^[A-F0-9]{16,}$/i.test(v);
     for (const row of rows) {
-      const titleEl = row.querySelector('span[dir="auto"][title]')
-                   || row.querySelector('span[dir="auto"]');
-      const name = (titleEl?.getAttribute('title') || titleEl?.innerText || '').trim();
-      if (!name) continue;
-      // Best-effort JID detection. Walk row + a small ancestor window
-      // (some WA bundles attach the JID a level above the listitem).
-      let jid = null;
-      const idCandidates = [
-        ...(row.attributes?.[Symbol.iterator] ? [row] : []),
-        ...row.querySelectorAll('[data-id], [data-jid]'),
-        row.parentElement,
-      ].filter(Boolean);
-      for (const el of idCandidates) {
-        const v = el.getAttribute?.('data-id') || el.getAttribute?.('data-jid');
-        if (looksLikeJid(v)) { jid = v; break; }
-      }
-      const previewEl = [...row.querySelectorAll('span[dir="auto"]')]
-        .find(s => s !== titleEl);
-      const preview = (previewEl?.innerText || '').slice(0, 60).trim();
-      chats.push({ jid, name, preview });
+      const r = extractRow(row);
+      if (!r) continue;
+      chats.push({ jid: r.jid, name: r.name, preview: r.preview });
       if (chats.length >= limit) break;
     }
     return chats;
@@ -227,6 +238,58 @@
 
   const observer = new MutationObserver(() => scan());
   observer.observe(document.body, { childList: true, subtree: true });
+
+  // ── Auto-focus on wake-word notifications ──────────────────────
+  //
+  // WA Web only mounts message DOM for the focused chat. Without
+  // this, a phone-typed '@e foo' lands in chat A but sits in the
+  // chat-list as just an unread badge — the MutationObserver above
+  // sees nothing until the user manually opens A.
+  //
+  // Strategy: poll the chat list for unread rows whose preview text
+  // matches the wake-word (@e / @egpt), and request that background
+  // CDP-click the row to open it. Background does the actual click
+  // because synthetic events don't switch chats (event.isTrusted).
+  //
+  // Defers when the user is mid-compose in the WA Web tab — yanking
+  // their focus mid-keystroke would be hostile. We wait until the
+  // composer is empty / unfocused, then proceed. The unread badge
+  // persists until WA reads the message, so deferring loses nothing.
+  const WAKE_RE = /^@(egpt|e)\b/i;
+  const _autoOpenedAt = new Map();   // key (jid|name) → ms
+  const AUTO_OPEN_DEDUPE_MS = 10_000;
+  const AUTO_OPEN_INTERVAL_MS = 1_500;
+
+  function findComposer() {
+    return document.querySelector('div[contenteditable="true"][data-tab="10"]')
+        || document.querySelector('footer div[contenteditable="true"]')
+        || document.querySelector('div[contenteditable="true"][role="textbox"]');
+  }
+  function userIsComposing() {
+    const c = findComposer();
+    if (!c) return false;
+    if (document.activeElement !== c) return false;
+    return ((c.innerText || '').trim().length > 0);
+  }
+
+  function autoOpenScan() {
+    if (userIsComposing()) return;
+    const panel = chatListPanel();
+    if (!panel) return;
+    const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
+    for (const row of rows) {
+      const r = extractRow(row);
+      if (!r || !r.unread) continue;
+      if (!WAKE_RE.test(r.preview)) continue;
+      const key = r.jid || r.name;
+      if (!key) continue;
+      const last = _autoOpenedAt.get(key) ?? 0;
+      if (Date.now() - last < AUTO_OPEN_DEDUPE_MS) continue;
+      _autoOpenedAt.set(key, Date.now());
+      safePost({ type: 'open-chat', chatJid: r.jid, chatName: r.name });
+    }
+  }
+  setInterval(autoOpenScan, AUTO_OPEN_INTERVAL_MS);
 
   connect();
 })();

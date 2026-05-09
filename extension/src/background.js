@@ -221,6 +221,14 @@ chrome.runtime.onConnect.addListener((port) => {
         for (const s of _waCdpSubscribers) {
           try { s.postMessage({ type: 'channels-list', requestId: msg.requestId, chats: msg.chats }); } catch (_) {}
         }
+      } else if (msg.type === 'open-chat') {
+        // Content script detected a wake-word notification on a non-
+        // active chat. Bring that chat into focus so the row's message
+        // DOM mounts and our MutationObserver picks up the text.
+        // Best-effort — failures are logged-and-swallowed; the user
+        // can still open it manually.
+        openChatViaDebugger(port._waTabId, { name: msg.chatName, jid: msg.chatJid })
+          .catch(() => {});
       }
     });
     port.onDisconnect.addListener(() => {
@@ -285,6 +293,15 @@ async function sendToFirstWaTab(text, opts = {}) {
     }
     throw new Error('debugger attach failed: ' + m);
   }
+  // Cover the WA Web tab with a "egpt is typing for you" overlay
+  // while we drive Input.* events. Two reasons: (a) gives the user
+  // visible feedback that the brief activity in the WA tab is the
+  // bridge, not someone hijacking it; (b) the overlay's pointer-
+  // events:auto blocks mouse input that would otherwise race with
+  // chat-switch / focus / typing — clicks during a send have caused
+  // composer-focus drift and aborted sends. Always removed in
+  // finally so it can't get stuck.
+  await showSendingOverlay(target).catch(() => {});
   try {
     // Chat-target precedence:
     //   1. opts.chatJid / opts.chatName — explicit overrides from the
@@ -390,9 +407,70 @@ async function sendToFirstWaTab(text, opts = {}) {
     await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', { ...enterParams, type: 'keyUp' });
     return 'ok';
   } finally {
+    await hideSendingOverlay(target).catch(() => {});
     if (attached) {
       try { await chrome.debugger.detach(target); } catch (_) {}
     }
+  }
+}
+
+// "egpt is typing for you" overlay — injected via Runtime.evaluate
+// during sends. Blocks pointer input on the WA Web tab so clicks
+// don't race with the Input.* sequence (chat-switch / focus drift).
+async function showSendingOverlay(target) {
+  await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    expression: `(() => {
+      let el = document.getElementById('__egpt_typing_overlay');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = '__egpt_typing_overlay';
+        el.style.cssText = [
+          'position:fixed','inset:0','background:rgba(15,20,25,0.55)','color:#fff',
+          'font:600 16px system-ui,sans-serif','display:flex','align-items:center',
+          'justify-content:center','z-index:2147483647','pointer-events:auto',
+          'cursor:wait','user-select:none','-webkit-user-select:none',
+        ].join(';');
+        el.textContent = 'egpt is typing for you…';
+        document.body.appendChild(el);
+      }
+    })()`,
+    returnByValue: true,
+  });
+}
+async function hideSendingOverlay(target) {
+  await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    expression: `document.getElementById('__egpt_typing_overlay')?.remove()`,
+    returnByValue: true,
+  });
+}
+
+// Bring a chat into focus by CDP-clicking its row in the chat list.
+// Triggered by the content script when it spots a wake-word
+// notification on a non-active chat — WA Web only mounts message
+// DOM for the focused chat, so without this the message stays an
+// unread badge and the MutationObserver never sees it.
+//
+// Best-effort: per-tab dedupe so back-to-back notifications don't
+// stack debugger attaches; swallows ensureActiveChat errors (chat
+// may have moved out of the rendered window before we got here).
+const _openInFlight = new Set();   // tabIds currently being opened
+async function openChatViaDebugger(tabId, chat) {
+  if (!tabId) return;
+  if (_openInFlight.has(tabId)) return;
+  _openInFlight.add(tabId);
+  const target = { tabId };
+  let attached = false;
+  try {
+    await chrome.debugger.attach(target, '1.3');
+    attached = true;
+    await ensureActiveChat(target, chat);
+  } catch (_) {
+    // swallow — best-effort
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach(target); } catch (_) {}
+    }
+    _openInFlight.delete(tabId);
   }
 }
 
