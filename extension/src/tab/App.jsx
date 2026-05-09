@@ -290,7 +290,7 @@ export default function App() {
   const escapeHtml = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const runBrain = useCallback(async (sessionName, prompt, { tgChatId, sender } = {}) => {
+  const runBrain = useCallback(async (sessionName, prompt, { tgChatId, sender, replyTo } = {}) => {
     const session = sessionsRef.current.get(sessionName);
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
@@ -322,7 +322,15 @@ export default function App() {
       // which brain answered.
       const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
       if (waCdpBridgeRef.current && !hasShellPeer && finalText) {
-        try { waCdpBridgeRef.current.send(`[${sessionName}] ${finalText}`); } catch (_) {}
+        // replyTo (when set) routes the brain reply back to the
+        // exact chat the request came from, instead of the bridge's
+        // default target (whatsapp_cdp.chat_name or active /join).
+        try {
+          waCdpBridgeRef.current.send(
+            `[${sessionName}] ${finalText}`,
+            replyTo ? { chatName: replyTo } : undefined,
+          );
+        } catch (_) {}
       }
       return finalText ?? '';
     } catch (e) {
@@ -1030,10 +1038,15 @@ export default function App() {
 
       // Local fallback — ensure the 'e' session exists and dispatch.
       // Sender comes from opts.sender if provided (bridge dispatch),
-      // else from the local userName (extension typing).
+      // else from the local userName (extension typing). replyTo
+      // routes the WA mirror back to the originating chat instead
+      // of the configured chat_name.
       try {
         await ensureEThread();
-        await runBrain('e', decision.body, { sender: opts.sender ?? userName });
+        await runBrain('e', decision.body, {
+          sender:  opts.sender   ?? userName,
+          replyTo: opts.fromChat ?? null,
+        });
         await persistEThreadUrl();
       } catch (e) {
         appendMsg('egpt', `!! @egpt failed: ${e.message}`);
@@ -1070,7 +1083,10 @@ export default function App() {
     }
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrain(recipient, decision.payload, { sender: opts.sender ?? userName });
+      const reply = await runBrain(recipient, decision.payload, {
+        sender:  opts.sender   ?? userName,
+        replyTo: opts.fromChat ?? null,
+      });
       if (reply !== null && reply !== undefined) {
         replies.push({ author: recipient, text: reply });
         // Broadcast brain reply to peers — the room is noisy by design.
@@ -1605,7 +1621,13 @@ export default function App() {
 
     if (!shouldDispatch) return;
 
-    try { await handleSubmitRef.current?.(dispatchText, { fromBridge: 'wa-cdp', sender: attributedSender }); }
+    try {
+      await handleSubmitRef.current?.(dispatchText, {
+        fromBridge: 'wa-cdp',
+        sender:     attributedSender,
+        fromChat:   fromInfo.chatId ?? null,   // route reply back to source
+      });
+    }
     catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
   }, [appendMsg, userName]);
   const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);

@@ -184,18 +184,22 @@ chrome.runtime.onConnect.addListener((port) => {
         // Echo suppression: filter our own debugger-sends bouncing
         // back via the WA Web DOM (fromMe=true match within 15s).
         if (msg.fromMe && consumeEcho(msg.text)) return;
+        // Author scraped by the content script from data-pre-plain-text
+        // ("[10:04, 5/9/2026] An: " → "An"). Use it for both the bus
+        // user field AND the wa.author passthrough so the egpt UI's
+        // bridge subscriber gets the same name. fromMe messages in
+        // self-DM still have a real WA-side name (the user's own).
+        const author = msg.author || null;
         const ev = {
           type:    'room-utterance',
           ts:      msg.ts ?? Date.now(),
-          from:    'wa-cdp-content',           // distinct producer id on the bus
+          from:    'wa-cdp-content',
           role:    'wa-cdp',
           client:  'wa-cdp',
           via:     `whatsapp[${msg.chatId ?? '?'}]`,
-          user:    msg.fromMe ? 'me' : (msg.chatId?.split('@')[0] ?? 'wa'),
+          user:    author || (msg.fromMe ? 'me' : (msg.chatId?.split('@')[0] ?? 'wa')),
           body:    msg.text,
-          // Extra fields downstream consumers can use without being on the
-          // 'standard' room-utterance contract — they're just passed through.
-          wa:      { chatId: msg.chatId, fromMe: msg.fromMe, msgId: msg.msgId },
+          wa:      { chatId: msg.chatId, fromMe: msg.fromMe, msgId: msg.msgId, author },
         };
         // Publish to bus tab → broadcast to all bus subscribers.
         for (const bp of _busTabPorts) {

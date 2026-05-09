@@ -128,11 +128,16 @@ export async function startWhatsAppCdpBridge({
         try { onChatId(wa.chatId); } catch (_) {}
       }
 
+      // author scraped by the content script from data-pre-plain-text
+      // (WA Web's per-message attribution attribute). Falls through to
+      // chatId-derived placeholder when missing (rare — WA usually
+      // includes it on every rendered row).
       const fromInfo = {
         chatId:    wa.chatId,
         userId:    wa.fromMe ? 'me' : (wa.chatId?.split('@')[0] ?? 'wa'),
         username:  null,
-        firstName: wa.fromMe ? 'me' : (wa.chatId?.split('@')[0] ?? 'wa'),
+        firstName: wa.author ?? (wa.fromMe ? 'me' : (wa.chatId?.split('@')[0] ?? 'wa')),
+        author:    wa.author ?? null,
         fromMe:    wa.fromMe,
         msgId:     wa.msgId,
       };
