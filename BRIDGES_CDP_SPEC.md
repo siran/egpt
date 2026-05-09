@@ -371,6 +371,33 @@ To opt out entirely (rare): set `whatsapp_cdp.enabled: false` in
 `chrome.storage.sync`. The default (absent) is auto-attach when a
 WA Web tab is open.
 
+### Send path: shell-aware fallback (no banner when shell is on the bus)
+
+| Condition | Receive (WA → bus) | Send (bus → WA) | "egpt started debugging" banner? |
+|-----------|--------------------|------------------|-----------------------------------|
+| Shell peer present on the bus | content script + bg republish | shell sees the bus event, sends via baileys | none |
+| No shell (extension-only)     | content script + bg republish | extension's bridge fires `chrome.debugger Input.*` | brief flicker per send |
+
+Receive direction always uses the content script — no debugger needed.
+Send-via-debugger is the **fallback path** that activates only when no
+shell peer is on the bus to do the solid baileys send.
+
+The gate lives in `extension/src/tab/App.jsx`'s `room-utterance` bus
+event handler:
+
+```js
+const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
+const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+if (waCdpBridgeRef.current && !fromWhatsApp && !hasShellPeer) {
+  waCdpBridgeRef.current.send(ev.body ?? '');
+}
+```
+
+When the shell joins the bus mid-session, the next `room-utterance`
+flips to the shell branch automatically — no reconfiguration needed.
+When the shell drops off, the extension takes over again on the next
+event.
+
 ### Why content script (not CDP)
 
 CDP attach from a `chrome-extension://<id>` origin requires Chrome to

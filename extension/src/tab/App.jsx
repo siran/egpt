@@ -1082,6 +1082,20 @@ export default function App() {
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
         }
+        // Mirror to WhatsApp via the CDP bridge — but ONLY when there
+        // is no shell on the bus. The shell, when present, has the
+        // baileys WA bridge and mirrors room-utterances natively (no
+        // chrome.debugger banner). Extension's WA-CDP bridge takes
+        // over only as the no-shell fallback. Same anti-loop guard
+        // (don't echo WA → WA).
+        const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
+        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+        if (waCdpBridgeRef.current && !fromWhatsApp && !hasShellPeer) {
+          // Async, fire-and-forget. Bridge surfaces failures via its
+          // own onError → appendMsg. Success is silent — this fires
+          // for every utterance and per-mirror logging would clutter.
+          try { waCdpBridgeRef.current.send(ev.body ?? ''); } catch (_) {}
+        }
         return;
       }
       case 'room-reply': {
