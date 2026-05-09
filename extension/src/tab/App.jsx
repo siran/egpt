@@ -698,6 +698,36 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // @waN <msg> ad-hoc send to a channel from /channels' cache.
+    // Doesn't bus-post, doesn't dispatch — it's a one-shot WA send,
+    // separate from the play-script. Only handled for local typing
+    // (skip when fromBridge — the bridge wouldn't be sending @waN
+    // back to itself).
+    if (!fromBridge) {
+      const waMatch = trimmed.match(/^@wa(\d+)\s+([\s\S]+)$/i);
+      if (waMatch) {
+        const idx = parseInt(waMatch[1], 10) - 1;
+        const body = waMatch[2].trim();
+        const chat = waChannelsRef.current[idx];
+        if (!chat) {
+          appendMsg('egpt', `!! @wa${idx + 1}: no channel cached at that index. /channels first.`);
+          return;
+        }
+        if (!waCdpBridgeRef.current) {
+          appendMsg('egpt', '!! @wa send: WA-CDP bridge not ready (open web.whatsapp.com)');
+          return;
+        }
+        appendMsg(userName, trimmed);
+        try {
+          await waCdpBridgeRef.current.send(body, { chatName: chat.name });
+          appendMsg('egpt', `→ @wa${idx + 1} (${chat.name})`);
+        } catch (e) {
+          appendMsg('egpt', `!! @wa send failed: ${e.message}`);
+        }
+        return;
+      }
+    }
+
     // Mirror to peer surfaces so the room shows what's happening
     // regardless of which surface someone is looking at. Pure
     // visibility — peers render the line and do NOT re-route.
@@ -716,12 +746,23 @@ export default function App() {
         }).catch(() => {});
 
         // WA mirror for self-typed (extension-typed) messages. Only
-        // when no shell is on the bus — shell mirrors via baileys
-        // natively. Skipped entirely when this came from a bridge
-        // (the bridge IS the source — mirroring back would echo).
+        // when no shell is on the bus AND we have an explicit WA
+        // target (a /join binding or whatsapp_cdp.chat_name in
+        // config). Without an explicit target the user has not opted
+        // in, so we don't auto-route their typing into whichever
+        // chat happens to be open in WA Web.
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
         if (waCdpBridgeRef.current && !hasShellPeer) {
-          try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
+          let hasExplicitWa = !!waJoinedRef.current;
+          if (!hasExplicitWa) {
+            try {
+              const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+              hasExplicitWa = !!(whatsapp_cdp.chat_name && String(whatsapp_cdp.chat_name).trim());
+            } catch (_) {}
+          }
+          if (hasExplicitWa) {
+            try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
+          }
         }
       }
     }
