@@ -1362,19 +1362,25 @@ export default function App() {
             : sessionsList.map(s => activeSessions.includes(s.name) ? `*${s.name}` : s.name).join('  ')}
         </span>
         <span className="status-tg">{tgStatus}</span>
-        <span
-          className={`status-wa wa-${waState}`}
-          title={
-            waState === 'attached' ? 'WA Web tab connected'
-            : waState === 'detached' ? 'WA Web tab closed/missing — open web.whatsapp.com'
-            : 'WA Web tab status unknown'
-          }
-          style={{
-            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-            marginLeft: 8,
-            background: waState === 'attached' ? '#3fb950' : waState === 'detached' ? '#f85149' : '#6e7681',
-          }}
-        />
+        <span className={`status-wa wa-${waState}`} style={{ marginLeft: 12 }}>
+          whatsapp: {waState === 'attached' ? 'connected'
+                    : waState === 'detached' ? 'disconnected'
+                    : 'unknown'}
+          <span
+            title={
+              waState === 'attached' ? 'WA Web tab connected'
+              : waState === 'detached' ? 'WA Web tab closed/missing — open web.whatsapp.com'
+              : 'WA Web tab status unknown'
+            }
+            style={{
+              display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+              marginLeft: 6, verticalAlign: 'middle',
+              background: waState === 'attached' ? '#3fb950'
+                        : waState === 'detached' ? '#f85149'
+                        : '#6e7681',
+            }}
+          />
+        </span>
       </div>
 
       <div className="conversation" ref={convRef}>

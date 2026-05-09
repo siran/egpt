@@ -61,17 +61,29 @@ async function refreshExtensionPages() {
   const csTabs   = allTabs.filter(t => CONTENT_SCRIPT_HOSTS.some(re => re.test(t.url ?? '')));
   const hadEgpt  = egptTabs.length > 0;
 
-  // Close stale extension pages so they can't keep ghost ports alive.
-  for (const t of [...egptTabs, ...busTabs]) {
+  // Open the new bus tab BEFORE closing old ones. The chrome.tabs.onRemoved
+  // listener fires synchronously when we remove the old bus and would query
+  // for remaining bus tabs; without a live one already present it auto-
+  // spawns ANOTHER, leaving us with two. Order matters.
+  let freshBus = null;
+  try { freshBus = await chrome.tabs.create({ url: busUrl, active: false }); } catch (_) {}
+  for (const t of busTabs) {
+    if (freshBus && t.id === freshBus.id) continue;
     try { await chrome.tabs.remove(t.id); } catch (_) {}
   }
-  // Bus tab is always required for the relay; spawn fresh.
-  try { await chrome.tabs.create({ url: busUrl, active: false }); } catch (_) {}
-  // Reopen the egpt UI only if the user had one before — first-install
-  // shouldn't auto-open it (that's still chrome.action.onClicked's job).
+
+  // Same dance for the egpt UI — open-then-close so transient empty
+  // windows can't trigger any reopen logic. Skip the open on first-
+  // install (no prior egpt tab to honor).
+  let freshEgpt = null;
   if (hadEgpt) {
-    try { await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
+    try { freshEgpt = await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
   }
+  for (const t of egptTabs) {
+    if (freshEgpt && t.id === freshEgpt.id) continue;
+    try { await chrome.tabs.remove(t.id); } catch (_) {}
+  }
+
   // Refresh any content-script tabs so the fresh script binds to
   // the fresh background.
   for (const t of csTabs) {

@@ -94,21 +94,25 @@
     return h?.getAttribute('title') || h?.innerText?.trim() || null;
   }
 
-  // Silent window after script load. The initial document.querySelectorAll
-  // catches rows present at load time, but if the user has only the chat
-  // list visible (no conversation pane open), there's nothing to catch.
-  // When they later click a chat, the entire conversation history flows
-  // in via DOM mutation — every row would emit as 'incoming', cascading
-  // into TG/extension dispatch loops. During the silent window we still
-  // mark rows as seen but skip the emit, treating any DOM additions as
-  // chat-load activity rather than new messages.
-  const startedAt = Date.now();
+  // Silent window — debounced PER-CHAT. Each time the active chat
+  // changes (user opens a different conversation), WA Web dumps that
+  // chat's history into the DOM via mutation. Without per-chat reset,
+  // only the FIRST chat-load (right after script load) is silenced;
+  // every subsequent chat-switch re-emits the entire history and
+  // cascades into TG mirror loops + extension dispatch. Now: any
+  // detected chat-change resets the silent window for SILENT_WINDOW_MS.
   const SILENT_WINDOW_MS = 5_000;
-  const isSilent = () => Date.now() - startedAt < SILENT_WINDOW_MS;
+  let silentUntil = Date.now() + SILENT_WINDOW_MS;   // initial load = silent
+  let lastChat = null;
+  const isSilent = () => Date.now() < silentUntil;
 
   function scan() {
     const rows = document.querySelectorAll('[data-id]');
     const chat = activeChat();
+    if (chat !== lastChat) {
+      lastChat = chat;
+      silentUntil = Date.now() + SILENT_WINDOW_MS;
+    }
     const silent = isSilent();
     for (const row of rows) {
       const id = row.getAttribute('data-id');
