@@ -29,6 +29,11 @@ export async function startWhatsAppCdpBridge({
   onError  = () => {},
   onChatId = null,
   onState  = () => {},   // (state: 'attached' | 'detached') — UI indicator hook
+  // Callback resolving the currently-bound chat name (e.g., from a
+  // /join binding in App.jsx). Called per send() to pick the target;
+  // explicit opts.chatName takes precedence. Returning null/undefined
+  // falls through to whatsapp_cdp.chat_name in background.
+  getActiveChat = () => null,
 } = {}) {
   let port = null;
   let stopped = false;
@@ -70,6 +75,11 @@ export async function startWhatsAppCdpBridge({
     }
   }
 
+  // Pending /channels requests, keyed by a per-call requestId. Each
+  // resolves when the matching 'channels-list' response arrives.
+  const _channelRequests = new Map();
+  let _nextRequestId = 1;
+
   function connect() {
     if (stopped) return;
     try { port = chrome.runtime.connect({ name: 'egpt-wa-cdp-subscriber' }); }
@@ -96,6 +106,14 @@ export async function startWhatsAppCdpBridge({
       if (msg.type === 'content-gone') {
         attached = false;
         reportState('detached');
+        return;
+      }
+      if (msg.type === 'channels-list') {
+        const pending = _channelRequests.get(msg.requestId);
+        if (pending) {
+          _channelRequests.delete(msg.requestId);
+          pending.resolve(msg.chats ?? []);
+        }
         return;
       }
       if (msg.type !== 'incoming') return;
@@ -140,22 +158,49 @@ export async function startWhatsAppCdpBridge({
   onLog('whatsapp-cdp: subscribed (waiting for a web.whatsapp.com tab)');
 
   return {
-    async send(text, { chatId } = {}) {
+    async send(text, { chatId, chatName } = {}) {
       if (!attached) {
         onError('whatsapp-cdp: no WA Web tab connected — open web.whatsapp.com');
         return;
       }
-      if (chatId && lastChat && chatId !== lastChat) {
-        onLog(`whatsapp-cdp: send target ${chatId} differs from active chat ${lastChat} — v1 sends to active only`);
+      // Resolution order: explicit opts.chatName → active /join binding
+      // (getActiveChat) → null (background falls through to config).
+      let resolved = chatName ?? null;
+      if (!resolved) {
+        try { resolved = getActiveChat() ?? null; } catch (_) { resolved = null; }
       }
-      try { port?.postMessage({ type: 'send', text }); }
+      try { port?.postMessage({ type: 'send', text, chatName: resolved }); }
       catch (e) { onError('whatsapp-cdp send: ' + (e?.message ?? e)); }
+    },
+    /** Scrape the WA Web chat list. Resolves with [{ name, preview }, ...]. */
+    async listChannels({ limit = 20, timeoutMs = 5_000 } = {}) {
+      if (!attached) throw new Error('no WA Web tab connected');
+      if (!port) throw new Error('subscriber port not open');
+      const requestId = _nextRequestId++;
+      return new Promise((resolve, reject) => {
+        const tmo = setTimeout(() => {
+          _channelRequests.delete(requestId);
+          reject(new Error('listChannels timed out'));
+        }, timeoutMs);
+        _channelRequests.set(requestId, {
+          resolve: (chats) => { clearTimeout(tmo); resolve(chats); },
+          reject:  (e)     => { clearTimeout(tmo); reject(e); },
+        });
+        try { port.postMessage({ type: 'list-channels', requestId, limit }); }
+        catch (e) {
+          _channelRequests.delete(requestId);
+          clearTimeout(tmo);
+          reject(e);
+        }
+      });
     },
     startStreamMessage: null,    // no edit-streaming in v1
     stop() {
       stopped = true;
       try { port?.disconnect(); } catch (_) {}
       port = null;
+      for (const p of _channelRequests.values()) p.reject(new Error('bridge stopped'));
+      _channelRequests.clear();
     },
     get chatId()      { return lastChat; },
     get myJid()       { return null; },

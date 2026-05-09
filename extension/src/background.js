@@ -211,6 +211,12 @@ chrome.runtime.onConnect.addListener((port) => {
         for (const s of _waCdpSubscribers) {
           try { s.postMessage({ type: 'ready', ts: msg.ts ?? Date.now() }); } catch (_) {}
         }
+      } else if (msg.type === 'channels-list') {
+        // Response to a /channels request; fan out to subscribers
+        // so the originating bridge promise can resolve.
+        for (const s of _waCdpSubscribers) {
+          try { s.postMessage({ type: 'channels-list', requestId: msg.requestId, chats: msg.chats }); } catch (_) {}
+        }
       }
     });
     port.onDisconnect.addListener(() => {
@@ -228,9 +234,15 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === 'send' && typeof msg.text === 'string') {
-        sendToFirstWaTab(msg.text)
+        sendToFirstWaTab(msg.text, { chatName: msg.chatName })
           .then((status) => { try { port.postMessage({ type: 'send-ack', status }); } catch (_) {} })
           .catch((e)    => { try { port.postMessage({ type: 'send-error', error: e?.message ?? String(e) }); } catch (_) {} });
+      } else if (msg.type === 'list-channels') {
+        // Forward to any/all WA content scripts; the first one to
+        // respond wins (they're usually one).
+        for (const cp of _waContentPorts) {
+          try { cp.postMessage({ type: 'list-channels', requestId: msg.requestId, limit: msg.limit }); } catch (_) {}
+        }
       }
     });
     port.onDisconnect.addListener(() => _waCdpSubscribers.delete(port));
@@ -251,7 +263,7 @@ chrome.runtime.onConnect.addListener((port) => {
 // via a real Input.dispatchMouseEvent on the chat list row if needed.
 // Without chat_name configured, the message goes to whatever's open
 // (loud caveat printed in BRIDGES_CDP_SPEC.md).
-async function sendToFirstWaTab(text) {
+async function sendToFirstWaTab(text, opts = {}) {
   const port = [..._waContentPorts][0];
   if (!port) throw new Error('no WA content script connected');
   const tabId = port._waTabId;
@@ -270,8 +282,15 @@ async function sendToFirstWaTab(text) {
     throw new Error('debugger attach failed: ' + m);
   }
   try {
-    const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-    const chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
+    // Chat-target precedence:
+    //   1. opts.chatName  — explicit override from the caller (e.g. /join active or @waN one-shot)
+    //   2. config         — whatsapp_cdp.chat_name from chrome.storage.sync
+    //   3. (none)         — sends go to whatever's currently active
+    let chatName = (typeof opts.chatName === 'string' && opts.chatName.trim()) ? opts.chatName.trim() : null;
+    if (!chatName) {
+      const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
+      chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
+    }
     if (chatName) await ensureActiveChat(target, chatName);
 
     // Focus the WA composer so the next Input.insertText lands there.

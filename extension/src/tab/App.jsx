@@ -643,6 +643,39 @@ export default function App() {
       case '/help':
         appendMsg('egpt', helpText(Object.keys(BRAINS)));
         break;
+      case '/channels': {
+        const limit = parseInt(parts[1], 10) || 20;
+        if (!waCdpBridgeRef.current) { appendMsg('egpt', '!! /channels: WA-CDP bridge not ready (open web.whatsapp.com)'); break; }
+        try {
+          const chats = await waCdpBridgeRef.current.listChannels({ limit });
+          waChannelsRef.current = chats;
+          if (!chats.length) { appendMsg('egpt', '/channels: no chats visible (chat list panel not open?)'); break; }
+          const lines = chats.map((c, i) => `  @wa${i + 1}  ${c.name}${c.preview ? `  — ${c.preview}` : ''}`);
+          appendMsg('egpt', `chats (top ${chats.length}, use /join @waN to bind):\n${lines.join('\n')}`);
+        } catch (e) {
+          appendMsg('egpt', `!! /channels: ${e.message}`);
+        }
+        break;
+      }
+      case '/join': {
+        const arg = (parts[1] || '').trim();
+        const m = arg.match(/^@wa(\d+)$/i);
+        if (!m) { appendMsg('egpt', '!! /join: usage /join @waN  (run /channels first to see N)'); break; }
+        const idx = parseInt(m[1], 10) - 1;
+        const chat = waChannelsRef.current[idx];
+        if (!chat) { appendMsg('egpt', `!! /join: no @wa${idx + 1} in cached list. /channels first.`); break; }
+        waJoinedRef.current = chat;
+        setWaJoined(chat);
+        appendMsg('egpt', `/join: bound to @wa${idx + 1} = "${chat.name}". Outbound goes there. /unjoin to release.`);
+        break;
+      }
+      case '/unjoin': {
+        const prev = waJoinedRef.current;
+        waJoinedRef.current = null;
+        setWaJoined(null);
+        appendMsg('egpt', prev ? `/unjoin: released "${prev.name}"` : '/unjoin: nothing was joined');
+        break;
+      }
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
     }
@@ -1257,6 +1290,13 @@ export default function App() {
   //
   // Opt out via chrome.storage.sync.whatsapp_cdp.enabled = false.
   const waCdpBridgeRef = useRef(null);
+  // Cached chat list from the most recent /channels call. /join @waN
+  // resolves N (1-based) against this. waJoinedRef holds the currently-
+  // bound chat (null when none); when set, all outbound from this
+  // extension routes there (preempts whatsapp_cdp.chat_name).
+  const waChannelsRef = useRef([]);
+  const waJoinedRef   = useRef(null);
+  const [waJoined, setWaJoined] = useState(null);
 
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
     const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
@@ -1311,6 +1351,7 @@ export default function App() {
           onLog:      (msg) => appendMsg('egpt', msg),
           onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
           onState:    (state) => setWaState(state),
+          getActiveChat: () => waJoinedRef.current?.name ?? null,
           onChatId:   async (id) => {
             try {
               const { whatsapp_cdp: cur = {} } = await chrome.storage.sync.get('whatsapp_cdp');
@@ -1365,6 +1406,7 @@ export default function App() {
           whatsapp: {waState === 'attached' ? 'connected'
                     : waState === 'detached' ? 'disconnected'
                     : 'unknown'}
+          {waJoined ? ` → ${waJoined.name}` : ''}
           <span
             title={
               waState === 'attached' ? 'WA Web tab connected'

@@ -30,10 +30,46 @@
   const _queue = [];
   const QUEUE_CAP = 100;
 
+  // Scrape the WA Web chat list panel. Returns an ordered list of
+  // visible chats (top-to-bottom in the panel — usually most-recent
+  // first). Heuristic selectors; pin updates here when WA Web reships.
+  function scrapeChatList(limit = 20) {
+    // The chat list lives inside a [aria-label="Chat list"] grid. Each
+    // chat is a [role="listitem"] (modern) or fallback to row pattern.
+    const panel =
+      document.querySelector('[aria-label="Chat list" i]') ||
+      document.querySelector('[role="grid"][aria-label*="Chat" i]');
+    if (!panel) return [];
+    const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
+    const chats = [];
+    for (const row of rows) {
+      const titleEl = row.querySelector('span[dir="auto"][title]')
+                   || row.querySelector('span[dir="auto"]');
+      const name = (titleEl?.getAttribute('title') || titleEl?.innerText || '').trim();
+      if (!name) continue;
+      // Crude preview: any non-title span's text. Often shows last
+      // message / "typing…" / "you: …".
+      const previewEl = [...row.querySelectorAll('span[dir="auto"]')]
+        .find(s => s !== titleEl);
+      const preview = (previewEl?.innerText || '').slice(0, 60).trim();
+      chats.push({ name, preview });
+      if (chats.length >= limit) break;
+    }
+    return chats;
+  }
+
   function connect() {
     try { port = chrome.runtime.connect({ name: 'egpt-wa-content' }); }
     catch { return setTimeout(connect, 1000); }
-    port.onMessage.addListener(() => {});
+    port.onMessage.addListener((msg) => {
+      if (!msg) return;
+      // Request/response for /channels listing — background forwards
+      // a 'list-channels' from the subscriber, we scrape and reply.
+      if (msg.type === 'list-channels') {
+        const chats = scrapeChatList(msg.limit ?? 20);
+        safePost({ type: 'channels-list', requestId: msg.requestId, chats });
+      }
+    });
     port.onDisconnect.addListener(() => {
       port = null;
       // Service worker may have idled; reconnect shortly.
