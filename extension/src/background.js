@@ -294,42 +294,44 @@ async function sendToFirstWaTab(text, opts = {}) {
       const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
       chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
     }
+    // Standard send workflow, with verification at each step:
+    //   1. switch chat (ensureActiveChat clicks the row)
+    //   2. verify title — we're on the intended chat
+    //   3. type    (Input.insertText)
+    //   4. verify body — composer holds exactly the text we typed
+    //   5. send    (Enter)
+    // Any verification failure aborts before the next step. This is
+    // the right shape for browser-driven UI automation; without each
+    // check, a single misfire silently writes to the wrong place.
+
+    // 1. switch chat
     if (chatName || chatJid) await ensureActiveChat(target, { name: chatName, jid: chatJid });
 
-    // FINAL VERIFICATION — last check before keyboard input. ensureActiveChat
-    // already verifies after its click, but a paranoid second probe RIGHT
-    // before insertText catches:
-    //   - any race where WA Web swapped chats between ensureActiveChat
-    //     returning and us starting to type (rare but observed)
-    //   - cases where ensureActiveChat was skipped because we trusted
-    //     the caller's intent
-    // Throws cleanly rather than typing into the wrong conversation.
-    if (chatName) {
-      const verify = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    // 2. verify title — header reflects the intended chat
+    const probeTitle = async () => {
+      const r = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
         expression: `(() => {
           const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
           const firstLine = (s) => norm((s || '').split('\\n')[0]);
-          const header =
+          const h =
             document.querySelector('header [data-testid="conversation-info-header"]') ||
             document.querySelector('header span[dir="auto"][title]') ||
             document.querySelector('header span[dir="auto"]');
-          return firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+          return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
         })()`,
         returnByValue: true,
       });
-      const currentTitle = verify?.result?.value ?? '';
+      return r?.result?.value ?? '';
+    };
+    if (chatName) {
+      const currentTitle = await probeTitle();
       const expected = chatName.split('\n')[0].trim();
       if (currentTitle !== expected) {
-        throw new Error(
-          `pre-send safety check FAILED: WA header is "${currentTitle}", expected "${expected}". ` +
-          `Aborting before typing.`
-        );
+        throw new Error(`title check failed: WA header is "${currentTitle}", expected "${expected}". Aborting before typing.`);
       }
     }
 
-    // Focus the WA composer so the next Input.insertText lands there.
-    // Same selector heuristics as wa-content.js — pin updates in both
-    // places when WA Web reships.
+    // Focus the composer so insertText lands there.
     await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
       expression: `(
         document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
@@ -338,10 +340,42 @@ async function sendToFirstWaTab(text, opts = {}) {
       )?.focus()`,
       returnByValue: true,
     });
+
+    // 3. type
     await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
-    // Record before pressing Enter — the send fires the moment Enter
-    // dispatches and the new fromMe row may appear in the DOM
-    // (and reach the content-script MutationObserver) within ms.
+
+    // 4. verify body — composer contains the text we typed. Catches
+    //    cases where insertText silently failed, focus drifted to a
+    //    different element, or WA Web rejected the input.
+    const probeComposer = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression: `(() => {
+        const el =
+          document.querySelector('div[contenteditable="true"][data-tab="10"]') ||
+          document.querySelector('footer div[contenteditable="true"]') ||
+          document.querySelector('div[contenteditable="true"][role="textbox"]');
+        return (el?.innerText || '').trim();
+      })()`,
+      returnByValue: true,
+    });
+    const composerText = (probeComposer?.result?.value ?? '').trim();
+    const expectedText = text.trim();
+    if (!composerText.includes(expectedText)) {
+      throw new Error(
+        `body check failed: composer contains "${composerText.slice(0, 80)}", expected to contain "${expectedText.slice(0, 80)}". Aborting before send.`
+      );
+    }
+
+    // Re-verify title once more — defensive against a chat-switch
+    // happening DURING the type step (unlikely but cheap to check).
+    if (chatName) {
+      const stillTitle = await probeTitle();
+      const expected = chatName.split('\n')[0].trim();
+      if (stillTitle !== expected) {
+        throw new Error(`title drift after typing: WA header is "${stillTitle}", expected "${expected}". Aborting before send.`);
+      }
+    }
+
+    // 5. send (real Enter via debugger Input — isTrusted=true)
     recordSend(text);
     const enterParams = {
       type: 'keyDown', key: 'Enter', code: 'Enter',
