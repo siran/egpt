@@ -94,19 +94,33 @@
     return h?.getAttribute('title') || h?.innerText?.trim() || null;
   }
 
+  // Silent window after script load. The initial document.querySelectorAll
+  // catches rows present at load time, but if the user has only the chat
+  // list visible (no conversation pane open), there's nothing to catch.
+  // When they later click a chat, the entire conversation history flows
+  // in via DOM mutation — every row would emit as 'incoming', cascading
+  // into TG/extension dispatch loops. During the silent window we still
+  // mark rows as seen but skip the emit, treating any DOM additions as
+  // chat-load activity rather than new messages.
+  const startedAt = Date.now();
+  const SILENT_WINDOW_MS = 5_000;
+  const isSilent = () => Date.now() - startedAt < SILENT_WINDOW_MS;
+
   function scan() {
     const rows = document.querySelectorAll('[data-id]');
     const chat = activeChat();
+    const silent = isSilent();
     for (const row of rows) {
       const id = row.getAttribute('data-id');
       if (!id || seen.has(id)) continue;
       seen.add(id);
+      if (silent) continue;       // history dump, not real-time input
       const text = textOf(row);
       if (!text) continue;
       safePost({
         type: 'incoming',
-        chatId:  chat,                  // the visible header label
-        fromMe:  true,                  // v1 self-DM assumption (see header note)
+        chatId:  chat,
+        fromMe:  true,
         msgId:   id,
         text,
         author:  authorOf(row),
@@ -115,8 +129,7 @@
     }
   }
 
-  // Initial scan: silence existing messages so a fresh page load
-  // doesn't flood the bus with chat history.
+  // Initial sweep: silence anything currently in the DOM.
   document.querySelectorAll('[data-id]').forEach(r => seen.add(r.getAttribute('data-id')));
 
   const observer = new MutationObserver(() => scan());
