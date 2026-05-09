@@ -35,17 +35,39 @@ export async function startWhatsAppCdpBridge({
   let lastChat = null;
   let chatIdNotified = false;
   let attached = false;
-  // Dedupe: only log + onState() callback on TRANSITIONS, not every
-  // message arrival. SW idle cycles in MV3 cause the subscriber port
-  // to disconnect/reconnect every ~30s; without this guard, every
-  // cycle re-fires 'bridge ready' and clutters the UI log.
+  // Dedupe + debounce. SW idle cycles in MV3 disconnect/reconnect
+  // every ~30s; on each reconnect the subscriber port briefly sees
+  // 'no-content' before the content port catches up and 'ready'
+  // arrives. Without debouncing, every cycle fires a detached →
+  // attached log pair and clutters the UI.
+  //
+  // Strategy: 'attached' is logged immediately on transition; 'detached'
+  // is delayed by DETACHED_DEBOUNCE_MS — if 'attached' arrives within
+  // that window, we cancel the pending log and don't transition.
   let lastReportedState = null;
+  let pendingDetachedTimer = null;
+  const DETACHED_DEBOUNCE_MS = 3_000;
+
   function reportState(s) {
-    if (lastReportedState === s) return;
-    lastReportedState = s;
-    if (s === 'attached')       onLog('whatsapp-cdp: bridge ready (content script in WA Web tab is connected)');
-    else if (s === 'detached')  onLog('whatsapp-cdp: WA Web tab disconnected (close/reload to recover)');
-    try { onState(s); } catch (_) {}
+    if (s === 'attached') {
+      if (pendingDetachedTimer) { clearTimeout(pendingDetachedTimer); pendingDetachedTimer = null; }
+      if (lastReportedState === 'attached') return;
+      lastReportedState = 'attached';
+      onLog('whatsapp-cdp: bridge ready (content script in WA Web tab is connected)');
+      try { onState('attached'); } catch (_) {}
+      return;
+    }
+    if (s === 'detached') {
+      if (lastReportedState === 'detached') return;
+      if (pendingDetachedTimer) return;   // already pending
+      pendingDetachedTimer = setTimeout(() => {
+        pendingDetachedTimer = null;
+        if (lastReportedState === 'detached') return;
+        lastReportedState = 'detached';
+        onLog('whatsapp-cdp: WA Web tab disconnected (close/reload to recover)');
+        try { onState('detached'); } catch (_) {}
+      }, DETACHED_DEBOUNCE_MS);
+    }
   }
 
   function connect() {

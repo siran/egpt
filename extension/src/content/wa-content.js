@@ -66,41 +66,50 @@
   // Track seen message ids so MutationObserver re-scans don't replay.
   const seen = new Set();
 
-  // WA Web data-id format: "<fromMe>_<chatJid>_<msgId>". chatJid can
-  // itself contain '_' in group ids — split, then reassemble the middle.
-  function parseDataId(id) {
-    if (!id) return null;
-    const parts = id.split('_');
-    if (parts.length < 3) return null;
-    return {
-      fromMe:  parts[0] === 'true',
-      chatJid: parts.slice(1, -1).join('_'),
-      msgId:   parts[parts.length - 1],
-    };
-  }
-
+  // WA Web's data-id used to encode '<fromMe>_<chatJid>_<msgId>'; modern
+  // builds drop the prefix and just use the bare msgId. So we extract:
+  //   - msgId from data-id
+  //   - text from the row's .copyable-text descendant
+  //   - author from the row's data-pre-plain-text="[time, date] Name: "
+  //   - active chat label from the conversation header
+  // fromMe detection is unreliable from DOM alone (in self-DM both
+  // directions show the same author), so v1 emits all rows as fromMe
+  // and relies on background's echo tracker to suppress our own
+  // debugger-sends bouncing back. Phase 2b will add multi-chat
+  // awareness with proper sender vs self detection.
   function textOf(row) {
     const el = row.querySelector('.copyable-text, [class*="copyable-text"]');
     if (!el) return '';
     return (el.innerText || '').trim();
   }
+  function authorOf(row) {
+    const ppt = row.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text');
+    if (!ppt) return null;
+    // Format: "[10:04, 5/9/2026] An: "
+    const m = ppt.match(/\]\s*(.+?):\s*$/);
+    return m ? m[1] : null;
+  }
+  function activeChat() {
+    const h = document.querySelector('header span[dir="auto"][title]');
+    return h?.getAttribute('title') || h?.innerText?.trim() || null;
+  }
 
   function scan() {
     const rows = document.querySelectorAll('[data-id]');
+    const chat = activeChat();
     for (const row of rows) {
       const id = row.getAttribute('data-id');
-      if (seen.has(id)) continue;
-      const parsed = parseDataId(id);
-      if (!parsed) { seen.add(id); continue; }
-      const text = textOf(row);
-      if (!text) { seen.add(id); continue; }
+      if (!id || seen.has(id)) continue;
       seen.add(id);
+      const text = textOf(row);
+      if (!text) continue;
       safePost({
         type: 'incoming',
-        chatId:  parsed.chatJid,
-        fromMe:  parsed.fromMe,
-        msgId:   parsed.msgId,
+        chatId:  chat,                  // the visible header label
+        fromMe:  true,                  // v1 self-DM assumption (see header note)
+        msgId:   id,
         text,
+        author:  authorOf(row),
         ts: Date.now(),
       });
     }
