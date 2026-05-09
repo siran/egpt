@@ -75,7 +75,7 @@ export const COMMANDS = [
   { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
   { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },
   { cmd: '/continue',       surface: 'shell',     usage: '/continue',                                      desc: 'resume after captcha / login pause' },
-  { cmd: '/mirror',         surface: 'shell',     usage: '/mirror [@src] [@tgt]',                          desc: 'forward message between sessions' },
+  { cmd: '/mirror',         surface: 'both',      usage: '/mirror [@<target>]',                            desc: 'forward last observed message: shell forwards between CDP brains; extension forwards to @e, @waN, or a session with [sender]: attribution' },
 
   { section: 'FILES' },
   { cmd: '/send-file',      surface: 'shell',     usage: '/send-file [via=op] [path] @name ["instr"]',     desc: 'prepare and send file excerpt to session' },

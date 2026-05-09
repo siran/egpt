@@ -188,6 +188,12 @@ export default function App() {
 
   const E_BRAIN_DEFAULT = 'chatgpt-cdp';
 
+  // Last message we observed on any monitored surface — used by
+  // /mirror to forward 'whatever was just said' to a target. Updated
+  // on every WA incoming, regardless of whether dispatch fired.
+  // Shape: { sender, text, source, chatId?, ts }.
+  const lastIncomingRef = useRef(null);
+
   const ensureEThread = useCallback(async () => {
     const existing = sessionsRef.current.get('e');
     if (existing) {
@@ -284,9 +290,16 @@ export default function App() {
   const escapeHtml = (s) => String(s ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  const runBrain = useCallback(async (sessionName, prompt, { tgChatId } = {}) => {
+  const runBrain = useCallback(async (sessionName, prompt, { tgChatId, sender } = {}) => {
     const session = sessionsRef.current.get(sessionName);
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
+
+    // Tag the prompt with [sender]: so the brain can follow multi-
+    // user conversations across surfaces. Skip the prefix for empty
+    // prompts (e.g. probing the brain) and when the caller didn't
+    // supply a sender (legacy callers — local typing without
+    // attribution context).
+    const taggedPrompt = (sender && prompt) ? `[${sender}]: ${prompt}` : prompt;
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
     const tgPrefix = `<b>${escapeHtml(sessionName)}@${SURFACE_TAG}</b>`;
@@ -294,7 +307,7 @@ export default function App() {
 
     try {
       const finalText = await session.brain.stream(
-        { message: prompt },
+        { message: taggedPrompt },
         partial => {
           updateMsg(msgId, partial, true);
           tgStream?.update(`${tgPrefix}\n${escapeHtml(partial)}`);
@@ -791,10 +804,62 @@ export default function App() {
         appendMsg('egpt', prev ? `/unjoin: released "${prev.name}"` : '/unjoin: nothing was joined');
         break;
       }
+      case '/mirror': {
+        // /mirror @target — forward the LAST observed message to
+        // target with [sender]: attribution. Targets:
+        //   @e  / @egpt  → the dedicated 'e' thread
+        //   @waN         → the Nth chat from the most-recent /channels
+        //   @<session>   → an attached local CDP brain
+        const last = lastIncomingRef.current;
+        if (!last) { appendMsg('egpt', '!! /mirror: no recent message to mirror'); break; }
+        const arg = (parts[1] || '').trim();
+        if (!arg.startsWith('@')) {
+          appendMsg('egpt', '/mirror: usage /mirror @<target>  (e.g. @e, @wa3, @cgpt1)');
+          break;
+        }
+        const target = arg.slice(1).toLowerCase();
+        const formatted = `[${last.sender}]: ${last.text}`;
+
+        // @e / @egpt — dedicated persona thread
+        if (target === 'e' || target === 'egpt') {
+          try {
+            await ensureEThread();
+            await runBrain('e', last.text, { sender: last.sender });
+            await persistEThreadUrl();
+          } catch (e) { appendMsg('egpt', `!! /mirror @e failed: ${e.message}`); }
+          break;
+        }
+
+        // @waN — WA channel from /channels cache
+        const waMatch = target.match(/^wa(\d+)$/);
+        if (waMatch) {
+          const idx = parseInt(waMatch[1], 10) - 1;
+          const chat = waChannelsRef.current[idx];
+          if (!chat) { appendMsg('egpt', `!! /mirror @wa${idx + 1}: not in cached list. /channels first.`); break; }
+          if (!waCdpBridgeRef.current) { appendMsg('egpt', '!! /mirror: WA-CDP bridge not ready'); break; }
+          try {
+            await waCdpBridgeRef.current.send(formatted, { chatName: chat.name, chatJid: chat.jid });
+            appendMsg('egpt', `→ /mirror @wa${idx + 1} (${chat.name}): ${formatted.slice(0, 60)}…`);
+          } catch (e) { appendMsg('egpt', `!! /mirror @wa${idx + 1} failed: ${e.message}`); }
+          break;
+        }
+
+        // @<session> — attached local brain
+        const sessionName = arg.slice(1);   // preserve case for session lookup
+        if (sessionsRef.current.has(sessionName)) {
+          try {
+            await runBrain(sessionName, last.text, { sender: last.sender });
+          } catch (e) { appendMsg('egpt', `!! /mirror @${sessionName} failed: ${e.message}`); }
+          break;
+        }
+
+        appendMsg('egpt', `!! /mirror: unknown target @${arg.slice(1)}. Try @e, @waN (after /channels), or a session name (/sessions to list).`);
+        break;
+      }
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
     }
-  }, [activeSessions, appendMsg, userName]);
+  }, [activeSessions, appendMsg, userName, runBrain, ensureEThread, persistEThreadUrl]);
 
   handleCommandRef.current = handleCommand;
 
@@ -805,6 +870,9 @@ export default function App() {
     // script) and was already published to the bus by that bridge.
     // Skip our own bus post and bridge-mirror to avoid echoing the
     // user's own typed input back at them.
+    // sender: used by runBrain to prefix the prompt as '[sender]: ...'
+    // so brains can follow multi-user attribution. For local typing,
+    // sender defaults to userName at dispatch sites.
     const { fromBridge = null } = opts;
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -961,12 +1029,11 @@ export default function App() {
       }
 
       // Local fallback — ensure the 'e' session exists and dispatch.
+      // Sender comes from opts.sender if provided (bridge dispatch),
+      // else from the local userName (extension typing).
       try {
         await ensureEThread();
-        await runBrain('e', decision.body);
-        // Persist the (possibly updated) URL so the conversation
-        // thread is resumable on the next extension load. After
-        // ChatGPT processes a turn the URL becomes /c/<uuid>.
+        await runBrain('e', decision.body, { sender: opts.sender ?? userName });
         await persistEThreadUrl();
       } catch (e) {
         appendMsg('egpt', `!! @egpt failed: ${e.message}`);
@@ -1003,7 +1070,7 @@ export default function App() {
     }
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrain(recipient, decision.payload);
+      const reply = await runBrain(recipient, decision.payload, { sender: opts.sender ?? userName });
       if (reply !== null && reply !== undefined) {
         replies.push({ author: recipient, text: reply });
         // Broadcast brain reply to peers — the room is noisy by design.
@@ -1470,41 +1537,69 @@ export default function App() {
   const [waJoined, setWaJoined] = useState(null);
 
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
-    const author = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
-    appendMsg(author, text);
+    // Author for the local UI tag — uses our local userName for fromMe
+    // messages; for others it's the WA-side display name (extracted by
+    // the content script from data-pre-plain-text).
+    const localAuthor = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
+    appendMsg(localAuthor, text);
+
+    // Author for ATTRIBUTION (the [name]: prefix that goes to brains).
+    // Uses the actual WA-side author when available so a friend's
+    // message keeps their name even when the extension owner is "An".
+    const attributedSender = fromInfo.author || localAuthor;
+
+    // Track every WA message as the 'last incoming' so /mirror can
+    // forward it. Done BEFORE the wake-word gate so observed-only
+    // messages are still mirror-able.
+    const trimmedRaw = text.trim();
+    if (trimmedRaw) {
+      lastIncomingRef.current = {
+        sender:  attributedSender,
+        text:    trimmedRaw,
+        source:  'wa-cdp',
+        chatId:  fromInfo.chatId ?? null,
+        ts:      Date.now(),
+      };
+    }
 
     if (!fromInfo.fromMe) return;
-    const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmedRaw) return;
 
-    // Wake-word gate. The user's "Write to yourself" chat (matching
-    // whatsapp_cdp.chat_name) dispatches every message. In OTHER chats
-    // (friend DMs, groups) we require a leading '@egpt' or '@e' so
-    // egpt only acts when explicitly invoked — observed-only otherwise.
-    // If chat_name is unset, preserve the current always-dispatch
-    // behavior (implicit self-DM assumption); user opts into the
-    // stricter mode by setting chat_name.
-    let dispatchText = trimmed;
+    // Wake-word gate + allowed_users gate.
+    let dispatchText = trimmedRaw;
     let shouldDispatch = true;
 
     try {
       const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
       const chatName = (whatsapp_cdp.chat_name ?? '').trim();
-      if (chatName && fromInfo.chatId !== chatName) {
-        // Non-self-DM chat. Require '@egpt' or '@e' wake-word.
-        const wake = trimmed.match(/^@(egpt|e)\b\s*(.*)$/i);
+      const allowedUsers = Array.isArray(whatsapp_cdp.allowed_users) ? whatsapp_cdp.allowed_users : null;
+      const inSelfDm = chatName && fromInfo.chatId === chatName;
+
+      // 1. Wake-word: required outside self-DM.
+      if (chatName && !inSelfDm) {
+        const wake = trimmedRaw.match(/^@(egpt|e)\b\s*(.*)$/i);
         if (!wake) {
-          shouldDispatch = false;   // observed-only
+          shouldDispatch = false;
         } else {
           dispatchText = wake[2].trim();
-          if (!dispatchText) shouldDispatch = false;  // bare @egpt → ignore
+          if (!dispatchText) shouldDispatch = false;
         }
       }
-    } catch (_) { /* storage read failed — fall through with default dispatch */ }
+
+      // 2. allowed_users: when the list is configured, only listed
+      //    senders can issue commands/mentions. Self-DM bypasses
+      //    (you're talking to yourself). When the list is unset,
+      //    preserve current behavior (any sender allowed).
+      if (shouldDispatch && allowedUsers && !inSelfDm) {
+        if (!allowedUsers.includes(attributedSender)) {
+          shouldDispatch = false;
+        }
+      }
+    } catch (_) { /* storage failed — fall through with default dispatch */ }
 
     if (!shouldDispatch) return;
 
-    try { await handleSubmitRef.current?.(dispatchText, { fromBridge: 'wa-cdp' }); }
+    try { await handleSubmitRef.current?.(dispatchText, { fromBridge: 'wa-cdp', sender: attributedSender }); }
     catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
   }, [appendMsg, userName]);
   const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);
