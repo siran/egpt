@@ -170,6 +170,113 @@ export default function App() {
     return null;
   };
 
+  // ── '@e' dedicated thread ─────────────────────────────────────
+  //
+  // The persona has its own conversation thread, persisted across
+  // extension loads. Storage shape:
+  //   chrome.storage.local.egpt_thread = { brain_type: 'chatgpt-cdp',
+  //                                        url: 'https://chatgpt.com/c/<uuid>' }
+  //
+  // ensureEThread guarantees sessionsRef has an 'e' entry pointing at
+  // a tab serving the saved URL. Order:
+  //   - if 'e' is already registered with a live tab → done.
+  //   - if a saved URL exists and a tab matches → register.
+  //   - else open a new chatgpt-cdp tab and register.
+  //
+  // persistEThreadUrl saves whatever URL the 'e' tab is currently on
+  // (post-dispatch ChatGPT navigates to /c/<uuid>).
+
+  const E_BRAIN_DEFAULT = 'chatgpt-cdp';
+
+  const ensureEThread = useCallback(async () => {
+    const existing = sessionsRef.current.get('e');
+    if (existing) {
+      // Confirm the bound tab is still alive.
+      try {
+        const tabs = await listTabs();
+        if (tabs.some(t => t.id === existing.targetId)) return;
+      } catch (_) {}
+    }
+
+    let saved = null;
+    try {
+      const got = await chrome.storage.local.get('egpt_thread');
+      saved = got?.egpt_thread ?? null;
+    } catch (_) {}
+
+    const brainType = saved?.brain_type || E_BRAIN_DEFAULT;
+    const brain = BRAINS[brainType];
+    if (!brain) throw new Error(`unknown brain type "${brainType}" for @e`);
+
+    // Saved URL → try to find an existing tab.
+    if (saved?.url) {
+      try {
+        const tabs = await listTabs();
+        const m = tabs.find(t => t.url === saved.url || t.url.startsWith(saved.url));
+        if (m) {
+          sessionsRef.current.set('e', { brain, targetId: m.id });
+          syncSessionsList();
+          return;
+        }
+      } catch (_) {}
+    }
+
+    // No live tab. Open a new one — to the saved URL if present
+    // (resumes the existing chatgpt thread), otherwise to the
+    // brain's homeUrl (fresh thread; URL will be saved post-dispatch).
+    const openUrl = saved?.url || brain.homeUrl;
+    appendMsg('egpt', `@e: opening ${saved?.url ? 'saved thread' : 'new thread'} (${brainType})…`);
+    const beforeIds = new Set((await listTabs(brain.urlMatch)).map(t => t.id));
+    const tab = await chrome.tabs.create({ url: openUrl, active: false });
+    await waitForTabLoad(tab.id);
+    let cdpId = null;
+    for (let i = 0; i < 10; i++) {
+      const after = await listTabs(brain.urlMatch);
+      const newOne = after.find(t => !beforeIds.has(t.id));
+      if (newOne) { cdpId = newOne.id; break; }
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (!cdpId) throw new Error('@e: opened tab but couldn\'t locate its CDP target');
+    sessionsRef.current.set('e', { brain, targetId: cdpId });
+    syncSessionsList();
+  }, [appendMsg]);
+
+  const persistEThreadUrl = useCallback(async () => {
+    const e = sessionsRef.current.get('e');
+    if (!e) return;
+    try {
+      const tabs = await listTabs();
+      const liveTab = tabs.find(t => t.id === e.targetId);
+      if (!liveTab?.url) return;
+      const brainType = e.brain.name || E_BRAIN_DEFAULT;
+      await chrome.storage.local.set({
+        egpt_thread: { brain_type: brainType, url: liveTab.url },
+      });
+    } catch (_) { /* non-fatal */ }
+  }, []);
+
+  // Restore 'e' session on startup if a saved URL matches an open tab.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const got = await chrome.storage.local.get('egpt_thread');
+        const saved = got?.egpt_thread;
+        if (!saved?.url || cancelled) return;
+        const brain = BRAINS[saved.brain_type || E_BRAIN_DEFAULT];
+        if (!brain) return;
+        const tabs = await listTabs();
+        const m = tabs.find(t => t.url === saved.url || t.url.startsWith(saved.url));
+        if (m && !cancelled) {
+          sessionsRef.current.set('e', { brain, targetId: m.id });
+          syncSessionsList();
+          appendMsg('egpt', `@e: restored thread (tab ${m.id.slice(0, 8)}…)`);
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [appendMsg]);
+
   // ── brain submission ──────────────────────────────────────────
 
   // Telegram bridge sends with parse_mode: 'HTML', so any text we hand it
@@ -827,15 +934,12 @@ export default function App() {
     if (decision.kind === 'persona') {
       // @egpt resolution order:
       //   1. shell peer on bus → forward mention; shell runs its
-      //      configured default_brain (claude-code / codex) and
-      //      mention-reply travels back over the bus.
-      //   2. no shell, but local CDP brain attached → dispatch
-      //      directly to that brain. The first attached session
-      //      wins (or the configured EGPT_DEFAULT_BRAIN, future).
-      //      Reply mirrors back via runBrain's existing WA-mirror
-      //      gate when the source was a bridge, or just lands in
-      //      the extension UI for local typing.
-      //   3. nothing — surface a helpful error.
+      //      configured default_brain (claude-code / codex).
+      //   2. no shell → use the dedicated 'e' session, bound to a
+      //      specific chatgpt.com /c/<uuid> conversation URL saved
+      //      in chrome.storage.local. Auto-open on first use; on
+      //      subsequent uses the same thread is resumed for true
+      //      conversational continuity.
       const shellPeer = [...peerNodesRef.current.entries()]
         .find(([_, p]) => p.role === 'shell');
 
@@ -856,18 +960,16 @@ export default function App() {
         return;
       }
 
-      // No shell — pick a local brain. First /attach-ed or /open-ed
-      // session is good enough for v1; configured default lands later.
-      const firstSessionEntry = [...sessionsRef.current.entries()][0];
-      if (!firstSessionEntry) {
-        appendMsg('egpt', '@egpt: no shell on the bus and no local brain attached. /attach (auto-find) or /open chatgpt-cdp first.');
-        return;
-      }
-      const [sessionName] = firstSessionEntry;
+      // Local fallback — ensure the 'e' session exists and dispatch.
       try {
-        await runBrain(sessionName, decision.body);
+        await ensureEThread();
+        await runBrain('e', decision.body);
+        // Persist the (possibly updated) URL so the conversation
+        // thread is resumable on the next extension load. After
+        // ChatGPT processes a turn the URL becomes /c/<uuid>.
+        await persistEThreadUrl();
       } catch (e) {
-        appendMsg('egpt', `!! @egpt -> ${sessionName} failed: ${e.message}`);
+        appendMsg('egpt', `!! @egpt failed: ${e.message}`);
       }
       return;
     }
