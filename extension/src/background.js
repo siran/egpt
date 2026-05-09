@@ -394,17 +394,28 @@ async function sendToFirstWaTab(text, opts = {}) {
 
 // Switch the WA Web tab's active conversation to the target chat.
 // Matching: JID first (stable across chat-list reorders), display
-// name as fallback. Click strategy: native row.click() via
-// Runtime.evaluate. WA Web's chat-list click handler does NOT check
-// event.isTrusted (only the send-button-style handlers do), so the
-// synthetic click works AND avoids the debugger Input route which
-// the user observed silently failing to switch chats. After the
-// click we verify the header changed; if it didn't, throw.
+// name as fallback.
+//
+// Click strategy (verified empirically against the live page via
+// CDP probe — see probe-debug.mjs in commit history):
+//   - Synthetic events DO NOT WORK on the chat-list row in modern
+//     WA Web bundles. row.click(), MouseEvent dispatch, PointerEvent
+//     dispatch — all silently fail. The chat-list handler appears to
+//     check event.isTrusted (same hardening as the send button).
+//   - chrome.debugger Input.dispatchMouseEvent (isTrusted=true) DOES
+//     work — confirmed switching from one chat to another.
+//
+// Sequence:
+//   1. Runtime.evaluate to find the row, scrollIntoView({block:'center'})
+//      so it's reliably in the viewport, return rect.
+//   2. Input.dispatchMouseEvent at rect's center: mouseMoved, mousePressed,
+//      mouseReleased.
+//   3. Wait, then verify the header changed.
 async function ensureActiveChat(target, chat) {
   const { name = null, jid = null } = (typeof chat === 'string') ? { name: chat } : (chat || {});
   if (!name && !jid) return;
 
-  const switchExpr = `(() => {
+  const probeExpr = `(() => {
     const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
     const firstLine = (s) => norm((s || '').split('\\n')[0]);
     const targetJid  = ${JSON.stringify(jid)};
@@ -456,30 +467,46 @@ async function ensureActiveChat(target, chat) {
       return { state: 'not-found', activeTitle, target: targetJid || targetName };
     }
 
-    // Bring into view (chat list is virtual-scrolled). Then click —
-    // try the row itself plus a likely inner clickable so React's
-    // delegated handler fires regardless of which descendant carries
-    // the listener in the current bundle.
+    // Bring into view, then read rect AFTER scroll so coords reflect
+    // the row's actual viewport position. Chat list is virtual-
+    // scrolled; rect read before scroll can be off.
     try { matchRow.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
-    matchRow.click();
-    const inner = matchRow.querySelector('[tabindex], [role="button"]') || matchRow.firstElementChild;
-    if (inner && inner !== matchRow) {
-      try { inner.click(); } catch (_) {}
+    const rect = matchRow.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return { state: 'off-screen', activeTitle };
     }
-    return { state: 'clicked', activeTitle, matchedBy };
+    return {
+      state: 'found',
+      activeTitle, matchedBy,
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    };
   })()`;
 
-  const switchResult = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-    expression: switchExpr, returnByValue: true,
+  const probe = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    expression: probeExpr, returnByValue: true,
   });
-  const v = switchResult?.result?.value ?? {};
+  const v = probe?.result?.value ?? {};
   if (v.state === 'already') return;
   if (v.state === 'not-found') {
     throw new Error(`chat ${v.target ?? '(unknown)'} not found in WA list (active: "${v.activeTitle ?? ''}"). Run /channels again — the chat may have moved out of the panel's rendered window.`);
   }
+  if (v.state === 'off-screen') {
+    throw new Error(`chat row is off-screen even after scrollIntoView — chat list may not be the visible panel.`);
+  }
+
+  // Real CDP click — isTrusted=true, the only kind WA Web's chat-list
+  // handler honors in modern bundles.
+  const click = (type) => chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+    type, x: v.x, y: v.y, button: type === 'mouseMoved' ? 'none' : 'left',
+    clickCount: type === 'mouseMoved' ? 0 : 1,
+  });
+  await click('mouseMoved');
+  await click('mousePressed');
+  await click('mouseReleased');
 
   // Wait for WA Web's React state to swap the conversation pane in.
-  await new Promise(r => setTimeout(r, 600));
+  await new Promise(r => setTimeout(r, 700));
 
   // Verify the switch actually stuck. If the click didn't take (some
   // bundle revisions ignore .click() on the row wrapper), throw with
