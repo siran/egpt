@@ -392,30 +392,32 @@ async function sendToFirstWaTab(text, opts = {}) {
   }
 }
 
-// Switch the WA Web tab's active conversation to the target chat,
-// matching by JID first (stable across chat-list reorders) and falling
-// back to display name. Real Input.dispatchMouseEvent click — WA Web
-// rejects synthetic clicks, the trusted debugger path is the only
-// reliable lever.
+// Switch the WA Web tab's active conversation to the target chat.
+// Matching: JID first (stable across chat-list reorders), display
+// name as fallback. Click strategy: native row.click() via
+// Runtime.evaluate. WA Web's chat-list click handler does NOT check
+// event.isTrusted (only the send-button-style handlers do), so the
+// synthetic click works AND avoids the debugger Input route which
+// the user observed silently failing to switch chats. After the
+// click we verify the header changed; if it didn't, throw.
 async function ensureActiveChat(target, chat) {
   const { name = null, jid = null } = (typeof chat === 'string') ? { name: chat } : (chat || {});
   if (!name && !jid) return;
 
-  const probeExpr = `(() => {
+  const switchExpr = `(() => {
     const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
-    // Modern WA Web header for group chats packs the chat name AND the
-    // participant list into the same title attribute as a multi-line
-    // string ("Group Name\\nParticipant1, Participant2, ..."). The
-    // 'already on this chat' check needs JUST the first line.
     const firstLine = (s) => norm((s || '').split('\\n')[0]);
     const targetJid  = ${JSON.stringify(jid)};
     const targetName = ${JSON.stringify(name)};
 
-    const header =
-      document.querySelector('header [data-testid="conversation-info-header"]') ||
-      document.querySelector('header span[dir="auto"][title]') ||
-      document.querySelector('header span[dir="auto"]');
-    const activeTitle = firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+    const headerOf = () => {
+      const h =
+        document.querySelector('header [data-testid="conversation-info-header"]') ||
+        document.querySelector('header span[dir="auto"][title]') ||
+        document.querySelector('header span[dir="auto"]');
+      return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
+    };
+    const activeTitle = headerOf();
     if (targetName && activeTitle === firstLine(targetName)) {
       return { state: 'already', activeTitle };
     }
@@ -429,9 +431,6 @@ async function ensureActiveChat(target, chat) {
 
     let matchRow = null;
     let matchedBy = null;
-
-    // 1. JID match — preferred, unaffected by name collisions or
-    //    chat-list reorders between /channels and the actual send.
     if (targetJid) {
       for (const r of rows) {
         if (r.getAttribute?.('data-id') === targetJid || r.getAttribute?.('data-jid') === targetJid) {
@@ -444,8 +443,6 @@ async function ensureActiveChat(target, chat) {
         }
       }
     }
-    // 2. Name match — fallback. First-match-wins; ambiguous when two
-    //    contacts share a display name.
     if (!matchRow && targetName) {
       const tnorm = norm(targetName);
       for (const r of rows) {
@@ -455,58 +452,47 @@ async function ensureActiveChat(target, chat) {
         if (t === tnorm) { matchRow = r; matchedBy = 'name'; break; }
       }
     }
-
     if (!matchRow) {
       return { state: 'not-found', activeTitle, target: targetJid || targetName };
     }
-    const r = matchRow.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) {
-      return { state: 'off-screen', activeTitle, matchedBy };
+
+    // Bring into view (chat list is virtual-scrolled). Then click —
+    // try the row itself plus a likely inner clickable so React's
+    // delegated handler fires regardless of which descendant carries
+    // the listener in the current bundle.
+    try { matchRow.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
+    matchRow.click();
+    const inner = matchRow.querySelector('[tabindex], [role="button"]') || matchRow.firstElementChild;
+    if (inner && inner !== matchRow) {
+      try { inner.click(); } catch (_) {}
     }
-    return {
-      state: 'found',
-      activeTitle, matchedBy,
-      x: r.left + r.width / 2,
-      y: r.top + r.height / 2,
-    };
+    return { state: 'clicked', activeTitle, matchedBy };
   })()`;
 
-  const probe = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
-    expression: probeExpr, returnByValue: true,
+  const switchResult = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+    expression: switchExpr, returnByValue: true,
   });
-  const v = probe?.result?.value ?? {};
+  const v = switchResult?.result?.value ?? {};
   if (v.state === 'already') return;
   if (v.state === 'not-found') {
     throw new Error(`chat ${v.target ?? '(unknown)'} not found in WA list (active: "${v.activeTitle ?? ''}"). Run /channels again — the chat may have moved out of the panel's rendered window.`);
   }
-  if (v.state === 'off-screen') {
-    throw new Error('matching chat row exists but is off-screen — scroll the WA chat list to bring it into view, then retry.');
-  }
-  // Real click via debugger Input — isTrusted=true, WA respects it.
-  // Include mouseMoved so React's pointer-events handler arms the row
-  // (some bundles ignore press/release without prior pointer activity).
-  const click = (type) => chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-    type, x: v.x, y: v.y, button: 'left', clickCount: 1,
-  });
-  await click('mouseMoved');
-  await click('mousePressed');
-  await click('mouseReleased');
-  await new Promise(r => setTimeout(r, 500));
 
-  // Verify the switch actually stuck — re-probe the header. If the
-  // active chat is still NOT what we intended, refuse to send rather
-  // than silently insertText into the wrong conversation. This is the
-  // failure mode the user hit when @waN said '→ compren bitcoin!' but
-  // the message landed in whichever chat was already active.
+  // Wait for WA Web's React state to swap the conversation pane in.
+  await new Promise(r => setTimeout(r, 600));
+
+  // Verify the switch actually stuck. If the click didn't take (some
+  // bundle revisions ignore .click() on the row wrapper), throw with
+  // the actual vs expected so the caller can surface a clear error.
   if (name) {
     const verifyExpr = `(() => {
       const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
       const firstLine = (s) => norm((s || '').split('\\n')[0]);
-      const header =
+      const h =
         document.querySelector('header [data-testid="conversation-info-header"]') ||
         document.querySelector('header span[dir="auto"][title]') ||
         document.querySelector('header span[dir="auto"]');
-      return firstLine(header?.getAttribute?.('title') || header?.innerText || '');
+      return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
     })()`;
     const verify = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
       expression: verifyExpr, returnByValue: true,
@@ -515,8 +501,8 @@ async function ensureActiveChat(target, chat) {
     const expected = name.split('\n')[0].trim();
     if (newTitle !== expected) {
       throw new Error(
-        `chat switch didn't stick — WA header is still "${newTitle}", expected "${expected}". ` +
-        `Refusing to send (would land in the wrong chat). Re-run /channels and try again, or click the target chat manually.`
+        `chat switch didn't take — WA header is still "${newTitle}", expected "${expected}". ` +
+        `Click the target chat manually in WA Web, then retry — or run /channels again if the chat has shifted in the list.`
       );
     }
   }
