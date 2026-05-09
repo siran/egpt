@@ -47,6 +47,23 @@ const busShim = {
   },
 };
 
+// Redirect tools/cdp.mjs imports to the chrome.debugger-based shim
+// in the extension build so streamFromTab + peekTab go through the
+// extension-privilege CDP channel (no raw WS, no --remote-allow-
+// origins=* requirement). The shim file ITSELF imports from
+// ../../../tools/cdp.mjs to re-export the read-only HTTP helpers
+// (listTabs etc.); we let that import pass through unredirected.
+const cdpShim = {
+  name: 'cdp-shim',
+  setup(b) {
+    const shimPath = resolve(__dirname, 'src/tools/cdp-debugger.js');
+    b.onResolve({ filter: /\/tools\/cdp\.mjs$/ }, (args) => {
+      if (args.importer === shimPath) return null;          // self-import, pass through
+      return { path: shimPath };
+    });
+  },
+};
+
 const baseShared = {
   bundle: true,
   platform: 'browser',
@@ -57,8 +74,8 @@ const baseShared = {
   logLevel: 'info',
 };
 
-const chromeShared  = { ...baseShared, plugins: [busShim] };
-const firefoxShared = { ...baseShared };
+const chromeShared  = { ...baseShared, plugins: [busShim, cdpShim] };
+const firefoxShared = { ...baseShared, plugins: [cdpShim] };
 
 // ── Build Chrome dist ───────────────────────────────────────────────
 const chromeDist = resolve(__dirname, 'dist');

@@ -825,29 +825,49 @@ export default function App() {
       return;
     }
     if (decision.kind === 'persona') {
-      // @egpt — node-global default brain. The extension can't host
-      // a brain subprocess (claude-code / codex), so when a shell
-      // peer is online we forward the mention over the bus and the
-      // shell runs runDefaultBrainTurn on our behalf, posting the
-      // reply back as a mention-reply / room-reply event.
+      // @egpt resolution order:
+      //   1. shell peer on bus → forward mention; shell runs its
+      //      configured default_brain (claude-code / codex) and
+      //      mention-reply travels back over the bus.
+      //   2. no shell, but local CDP brain attached → dispatch
+      //      directly to that brain. The first attached session
+      //      wins (or the configured EGPT_DEFAULT_BRAIN, future).
+      //      Reply mirrors back via runBrain's existing WA-mirror
+      //      gate when the source was a bridge, or just lands in
+      //      the extension UI for local typing.
+      //   3. nothing — surface a helpful error.
       const shellPeer = [...peerNodesRef.current.entries()]
         .find(([_, p]) => p.role === 'shell');
-      if (!shellPeer) {
-        appendMsg('egpt', '@egpt needs a shell node — start an egpt shell on this LAN, or DM the bot via Telegram/WhatsApp');
+
+      if (shellPeer) {
+        const [shellNodeId] = shellPeer;
+        const tid = busTargetIdRef.current;
+        if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @egpt`); return; }
+        try {
+          await bus.postEvent(tid, {
+            type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
+            target: 'egpt', to_node: shellNodeId,
+            body: decision.body, user: userName,
+          });
+          appendMsg('egpt', `@egpt -> ${shellNodeId} via bus`);
+        } catch (e) {
+          appendMsg('egpt', `!! @egpt forward failed: ${e.message}`);
+        }
         return;
       }
-      const [shellNodeId] = shellPeer;
-      const tid = busTargetIdRef.current;
-      if (!tid) { appendMsg('egpt', `!! bus not joined — can't forward @egpt`); return; }
+
+      // No shell — pick a local brain. First /attach-ed or /open-ed
+      // session is good enough for v1; configured default lands later.
+      const firstSessionEntry = [...sessionsRef.current.entries()][0];
+      if (!firstSessionEntry) {
+        appendMsg('egpt', '@egpt: no shell on the bus and no local brain attached. /attach (auto-find) or /open chatgpt-cdp first.');
+        return;
+      }
+      const [sessionName] = firstSessionEntry;
       try {
-        await bus.postEvent(tid, {
-          type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
-          target: 'egpt', to_node: shellNodeId,
-          body: decision.body, user: userName,
-        });
-        appendMsg('egpt', `@egpt -> ${shellNodeId} via bus`);
+        await runBrain(sessionName, decision.body);
       } catch (e) {
-        appendMsg('egpt', `!! @egpt forward failed: ${e.message}`);
+        appendMsg('egpt', `!! @egpt -> ${sessionName} failed: ${e.message}`);
       }
       return;
     }
