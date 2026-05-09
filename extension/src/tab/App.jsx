@@ -1586,12 +1586,18 @@ export default function App() {
         }
       }
 
-      // 2. allowed_users: when the list is configured, only listed
-      //    senders can issue commands/mentions. Self-DM bypasses
-      //    (you're talking to yourself). When the list is unset,
-      //    preserve current behavior (any sender allowed).
-      if (shouldDispatch && allowedUsers && !inSelfDm) {
-        if (!allowedUsers.includes(attributedSender)) {
+      // 2. Sender authorization. Self-DM always allowed (you're
+      //    talking to yourself). Outside self-DM:
+      //      - the main user (userName) is always allowed
+      //      - additional names in allowed_users are also allowed
+      //      - anyone else is observe-only
+      //    Default (allowed_users unset) = ONLY the main user.
+      //    A friend in your chat saying '@egpt /help' has no effect
+      //    until you explicitly add their WA display name to
+      //    whatsapp_cdp.allowed_users.
+      if (shouldDispatch && !inSelfDm) {
+        const allowList = [userName, ...(allowedUsers ?? [])];
+        if (!allowList.includes(attributedSender)) {
           shouldDispatch = false;
         }
       }
