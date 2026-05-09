@@ -56,8 +56,10 @@ ensureBusTab();
 
 // ── Bus relay ────────────────────────────────────────────────────
 
-const _busTabPorts  = new Set();   // ports opened by bus.html
-const _subscribers  = new Set();   // ports opened by UI tabs
+const _busTabPorts      = new Set();   // ports opened by bus.html
+const _subscribers      = new Set();   // ports opened by UI tabs
+const _waContentPorts   = new Set();   // ports from web.whatsapp.com content scripts
+const _waCdpSubscribers = new Set();   // ports from the egpt UI tab's WA-CDP bridge
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'egpt-bus') {
@@ -103,4 +105,74 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onDisconnect.addListener(() => _subscribers.delete(port));
     return;
   }
+
+  // ── WhatsApp content-script relay ──────────────────────────────
+  //
+  // Connections from extension/src/content/wa-content.js (one per
+  // open web.whatsapp.com tab). Acts as a peer producer on the bus:
+  // 'incoming' messages from the page are republished as room-utterance
+  // events on the bus, so every subscriber (egpt UI tab, shell, peers)
+  // sees them through their existing bus subscription. 'send' commands
+  // arriving from any WA-CDP subscriber are forwarded to all WA content
+  // scripts (typically one — the active chat receives the text).
+  if (port.name === 'egpt-wa-content') {
+    _waContentPorts.add(port);
+    port.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.type === 'incoming') {
+        const ev = {
+          type:    'room-utterance',
+          ts:      msg.ts ?? Date.now(),
+          from:    'wa-cdp-content',           // distinct producer id on the bus
+          role:    'wa-cdp',
+          client:  'wa-cdp',
+          via:     `whatsapp[${msg.chatId ?? '?'}]`,
+          user:    msg.fromMe ? 'me' : (msg.chatId?.split('@')[0] ?? 'wa'),
+          body:    msg.text,
+          // Extra fields downstream consumers can use without being on the
+          // 'standard' room-utterance contract — they're just passed through.
+          wa:      { chatId: msg.chatId, fromMe: msg.fromMe, msgId: msg.msgId },
+        };
+        // Publish to bus tab → broadcast to all bus subscribers.
+        for (const bp of _busTabPorts) {
+          try { bp.postMessage({ type: 'post', ev }); } catch (_) {}
+        }
+        // Also fan out to dedicated WA-CDP subscribers — the egpt UI
+        // tab uses this for tighter integration (chat_id capture, etc.)
+        // even though the same event already rides on the bus.
+        for (const s of _waCdpSubscribers) {
+          try { s.postMessage({ type: 'incoming', wa: ev.wa, text: msg.text, ts: ev.ts }); } catch (_) {}
+        }
+      } else if (msg.type === 'ready') {
+        for (const s of _waCdpSubscribers) {
+          try { s.postMessage({ type: 'ready', ts: msg.ts ?? Date.now() }); } catch (_) {}
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      _waContentPorts.delete(port);
+      for (const s of _waCdpSubscribers) {
+        try { s.postMessage({ type: 'content-gone' }); } catch (_) {}
+      }
+    });
+    return;
+  }
+
+  if (port.name === 'egpt-wa-cdp-subscriber') {
+    _waCdpSubscribers.add(port);
+    // Tell the new subscriber whether any WA content scripts are
+    // currently connected — saves it polling for tab presence.
+    try { port.postMessage({ type: _waContentPorts.size > 0 ? 'ready' : 'no-content', ts: Date.now() }); } catch (_) {}
+    port.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.type === 'send' && typeof msg.text === 'string') {
+        for (const cp of _waContentPorts) {
+          try { cp.postMessage({ type: 'send', text: msg.text }); } catch (_) {}
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => _waCdpSubscribers.delete(port));
+    return;
+  }
 });
+

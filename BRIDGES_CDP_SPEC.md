@@ -1,3 +1,16 @@
+# CDP / content-script WhatsApp / Telegram bridges — spec
+
+> **Note (post-v1)**: The WhatsApp bridge ships as a **content script**
+> declared in the manifest (`https://web.whatsapp.com/*`), not via CDP.
+> Content scripts auto-load when the matching page opens — no Chrome
+> launch flags, no `--remote-allow-origins=*`, no CDP attach. They talk
+> to the extension's background via `chrome.runtime` ports; background
+> republishes incoming messages as `room-utterance` events on the bus,
+> so peers (shell, other extensions) see them through their existing
+> bus subscription. Sections below describing CDP attach are kept for
+> Telegram-Web (which may use either approach) and as historical
+> context for the architecture decision.
+
 # CDP-driven WhatsApp / Telegram bridges — spec
 
 Goal: enable extension-only operation by adding bridges that drive
@@ -319,33 +332,49 @@ Acceptance criteria for the v1 ship:
 
 ---
 
-## 12. v1 manual smoke-test (current state)
+## 12. v1 manual smoke-test (current state — content-script architecture)
 
-The WhatsApp-CDP bridge is shipped as v1 (single-chat, no streaming).
+The WhatsApp bridge is shipped as v1 (single-chat, no streaming) using
+a content script declared in the manifest (`https://web.whatsapp.com/*`).
 **Tab presence is the on/off switch** — open `web.whatsapp.com`, the
-bridge attaches; close it, the bridge detaches. No config required.
+content script auto-loads and the bridge attaches; close it, the bridge
+detaches. No config required, no Chrome launch flags.
 
 To use it:
 
-1. Make sure the brain Chrome is running with `--remote-debugging-port=9221`.
-2. Open `https://web.whatsapp.com/` in that Chrome and link with your phone.
-   Wait for chats to load (the QR screen should be gone).
-3. Reload the extension at `chrome://extensions` → click reload → close
-   and reopen both the egpt tab and the bus.html tab so they pick up
-   fresh code.
-4. In the egpt extension UI you should see:
-   `whatsapp-cdp: attaching to https://web.whatsapp.com/` followed by
-   `whatsapp-cdp: bridge ready (single-chat mode — open the chat you want monitored)`.
-5. Open a chat in WA Web. Send a message from another device to that
-   chat — the egpt extension UI should `appendMsg` it and broadcast a
-   `room-utterance` event with `via:"whatsapp[<jid>]"` to peers.
-6. Type a message in the egpt extension input — it should appear in
-   the active WA Web chat (sent via `execCommand insertText` + send-button click).
-7. Close the WA Web tab when done — the bridge logs
-   `whatsapp-cdp: detached (tab gone)` and stops touching WhatsApp.
+1. Reload the extension at `chrome://extensions` → click reload (so
+   Chrome picks up the new content script declaration in the manifest).
+2. Open `https://web.whatsapp.com/` in that Chrome and link with your
+   phone. Wait for chats to load (the QR screen should be gone).
+3. Open the egpt extension UI tab. You should see:
+   `whatsapp-cdp: subscribed (waiting for a web.whatsapp.com tab)` then
+   `whatsapp-cdp: bridge ready (content script in WA Web tab is connected)`
+   (the second line appears within ~1 second of the WA Web page settling).
+4. Open a chat in WA Web. Send a message from another device to that
+   chat — the egpt extension UI should `appendMsg` it. **And** the
+   background republishes it as a `room-utterance` event on the bus,
+   so any other peer (shell, another extension) sees it through their
+   existing bus subscription.
+5. Type a message in the egpt extension input — the bridge `send()`
+   posts it to background, which forwards to the content script, which
+   types into the active WA chat and clicks send.
+6. Close the WA Web tab when done — the bridge logs
+   `whatsapp-cdp: WA Web tab closed (content script disconnected)` and
+   stops touching WhatsApp.
 
 To opt out entirely (rare): set `whatsapp_cdp.enabled: false` in
-`chrome.storage.sync`. The default (absent) is auto-attach.
+`chrome.storage.sync`. The default (absent) is auto-attach when a
+WA Web tab is open.
+
+### Why content script (not CDP)
+
+CDP attach from a `chrome-extension://<id>` origin requires Chrome to
+have been launched with `--remote-allow-origins=*` (or the extension's
+specific origin in the allow-list). Manual launches without that flag
+silently fail the WS connect. Content scripts run in the page's isolated
+world by default — declared in the manifest, no flags needed, no CDP
+attach, no `"started debugging"` banner. This is the standard extension
+mechanism for "manipulate this page's DOM"; the CDP route was overkill.
 
 ### v1 limitations to keep in mind during testing
 

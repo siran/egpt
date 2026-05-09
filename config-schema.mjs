@@ -24,7 +24,7 @@ export const CONFIG_SCHEMA = {
   // The bridge starts when this block is present (and not enabled:false).
   // First run: scans QR; auth persists at ~/.egpt/wa-auth/.
   whatsapp:     'whatsapp bridge config: { enabled, allowed_users, chat_id (auto-captured), mirror_chat_id (default: self-DM), awareness {...}, client_name (default "wa", appears in handle@client tags), max_backlog_seconds (default 0, drops pre-connect bursts older than N seconds), egpt_chats [...JIDs treated as full-mirror egpt chats; self-DM is always one] }',
-  whatsapp_cdp: 'extension-only WhatsApp via CDP (drives web.whatsapp.com). v1 single-chat: receives + sends in the currently-active conversation. { enabled (set to false to opt out; default auto-attach when a web.whatsapp.com tab is open), chat_id (auto-captured), client_name (default "wa-cdp") }. Tab presence IS the on/off switch — close the tab to stop. See BRIDGES_CDP_SPEC.md.',
+  whatsapp_cdp: 'extension-only WhatsApp via a content script in web.whatsapp.com (no CDP, no Chrome launch flags). v1 single-chat: receives + sends in the currently-active conversation. { enabled (set to false to opt out; default auto-attach when a web.whatsapp.com tab is open), chat_id (auto-captured), client_name (default "wa-cdp") }. Tab presence IS the on/off switch — close the tab to stop. Background republishes incoming WA messages as room-utterance bus events so peers see them automatically. See BRIDGES_CDP_SPEC.md.',
   // default_brain: the persona that responds to @egpt mentions. Lives
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.

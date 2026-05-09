@@ -12,6 +12,13 @@
   "background": {
     "scripts": ["background.js"]
   },
+  "content_scripts": [
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["content/wa-content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_title": "Open egpt"
   },
