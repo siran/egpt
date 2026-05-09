@@ -6,10 +6,14 @@
 // chrome.runtime port; background relays to/from the egpt UI tab and
 // (optionally) to the bus.
 //
-// Wire protocol over the port (in both directions):
+// Wire protocol over the port:
 //   { type: 'incoming', chatId, fromMe, msgId, text, ts }   (script → bg)
 //   { type: 'ready', ts }                                    (script → bg)
-//   { type: 'send', text }                                   (bg → script)
+//
+// Send is NOT routed through this script — WA Web rejects synthetic
+// DOM events (event.isTrusted=false). Background drives sends via
+// chrome.debugger Input.* events directly against the WA tab; this
+// content script is receive-only.
 //
 // Selectors are heuristic and will drift as WA Web ships UI changes.
 // They're all in this file — pin updates here when the bundle moves.
@@ -23,10 +27,12 @@
   function connect() {
     try { port = chrome.runtime.connect({ name: 'egpt-wa-content' }); }
     catch { return setTimeout(connect, 1000); }
-    port.onMessage.addListener((msg) => {
-      if (!msg) return;
-      if (msg.type === 'send') doSend(msg.text);
-    });
+    // No inbound messages from background today — sends are routed
+    // through chrome.debugger Input.* events directly to the tab
+    // (synthetic DOM events from this content script can't trigger
+    // WA Web's send button — WA checks event.isTrusted). The
+    // listener stays as a hook for future control messages.
+    port.onMessage.addListener(() => {});
     port.onDisconnect.addListener(() => {
       port = null;
       // Service worker may have idled; reconnect shortly.
@@ -89,26 +95,6 @@
 
   const observer = new MutationObserver(() => scan());
   observer.observe(document.body, { childList: true, subtree: true });
-
-  // Send: type into the WA Web composer and click send (or fall back
-  // to Enter). Returns true on success-ish, false if the input or
-  // send button can't be located.
-  function doSend(text) {
-    const input = document.querySelector('div[contenteditable="true"][data-tab="10"]')
-               || document.querySelector('footer div[contenteditable="true"]')
-               || document.querySelector('div[contenteditable="true"][role="textbox"]');
-    if (!input) return false;
-    input.focus();
-    document.execCommand('selectAll', false, null);
-    document.execCommand('delete',    false, null);
-    document.execCommand('insertText', false, text);
-    const sendBtn = document.querySelector('button[aria-label*="Send" i]')
-                 || document.querySelector('span[data-icon="send"]')?.closest('button')
-                 || document.querySelector('span[data-icon="wds-ic-send-filled"]')?.closest('button');
-    if (sendBtn) { sendBtn.click(); return true; }
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
-    return true;
-  }
 
   connect();
 })();

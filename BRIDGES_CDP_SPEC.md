@@ -356,8 +356,13 @@ To use it:
    so any other peer (shell, another extension) sees it through their
    existing bus subscription.
 5. Type a message in the egpt extension input — the bridge `send()`
-   posts it to background, which forwards to the content script, which
-   types into the active WA chat and clicks send.
+   posts it to background. Background uses **chrome.debugger** to
+   attach to the WA tab and dispatch real Input.insertText + Enter
+   events (synthetic DOM events from the content script can't trigger
+   WA Web's send button — WA checks event.isTrusted=true). The
+   "egpt started debugging this browser" banner flickers during the
+   attach window for each send (we attach right before, detach right
+   after, to keep the banner exposure minimal).
 6. Close the WA Web tab when done — the bridge logs
    `whatsapp-cdp: WA Web tab closed (content script disconnected)` and
    stops touching WhatsApp.

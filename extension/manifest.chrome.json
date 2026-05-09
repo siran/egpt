@@ -3,7 +3,7 @@
   "name": "egpt",
   "version": "0.0.1",
   "description": "Multi-brain AI orchestrator — browser extension",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "debugger"],
   "host_permissions": [
     "http://localhost:*/",
     "ws://localhost:*/",
