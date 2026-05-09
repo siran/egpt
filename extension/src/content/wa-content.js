@@ -89,20 +89,49 @@
     const m = ppt.match(/\]\s*(.+?):\s*$/);
     return m ? m[1] : null;
   }
+
+  // Parse the timestamp embedded in data-pre-plain-text.
+  // Format observed: "[HH:MM, M/D/YYYY] Author: "  (also "[H:MM AM/PM, ...]" in some locales).
+  // Returns ms-since-epoch, or null when unparsable. Used to filter
+  // history rows: anything older than the content-script load time
+  // (with grace) is past, never a real-time event no matter how it
+  // got into the DOM.
+  function parseRowTimestamp(row) {
+    const ppt = row.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text');
+    if (!ppt) return null;
+    const m = ppt.match(/\[(\d{1,2}):(\d{2})(?:\s*(AM|PM))?,\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\]/i);
+    if (!m) return null;
+    let [, hh, mn, ampm, mo, da, yr] = m;
+    hh = +hh; mn = +mn; mo = +mo; da = +da; yr = +yr;
+    if (ampm) {
+      if (ampm.toUpperCase() === 'PM' && hh < 12) hh += 12;
+      if (ampm.toUpperCase() === 'AM' && hh === 12) hh = 0;
+    }
+    // Try M/D/YYYY (en-US, the format observed here). If the resulting
+    // date is in the future (i.e., locale is D/M), try the other order.
+    let candidate = new Date(yr, mo - 1, da, hh, mn).getTime();
+    if (candidate > Date.now() + 86_400_000) {
+      candidate = new Date(yr, da - 1, mo, hh, mn).getTime();
+    }
+    return candidate;
+  }
   function activeChat() {
     const h = document.querySelector('header span[dir="auto"][title]');
     return h?.getAttribute('title') || h?.innerText?.trim() || null;
   }
 
-  // Silent window — debounced PER-CHAT. Each time the active chat
-  // changes (user opens a different conversation), WA Web dumps that
-  // chat's history into the DOM via mutation. Without per-chat reset,
-  // only the FIRST chat-load (right after script load) is silenced;
-  // every subsequent chat-switch re-emits the entire history and
-  // cascades into TG mirror loops + extension dispatch. Now: any
-  // detected chat-change resets the silent window for SILENT_WINDOW_MS.
+  // Silent window — debounced PER-CHAT. Each chat-switch dumps that
+  // chat's history into the DOM via mutation; without a per-chat
+  // reset, only the first chat-load is silenced and every subsequent
+  // switch re-emits everything. Backstop: timestamp filter — any row
+  // whose data-pre-plain-text timestamp predates the content script's
+  // load time is treated as history and silenced regardless of seen
+  // / silent-window state. The two layers cover each other when
+  // either fails.
   const SILENT_WINDOW_MS = 5_000;
-  let silentUntil = Date.now() + SILENT_WINDOW_MS;   // initial load = silent
+  const HISTORY_GRACE_MS = 5_000;
+  const loadTime = Date.now();
+  let silentUntil = loadTime + SILENT_WINDOW_MS;
   let lastChat = null;
   const isSilent = () => Date.now() < silentUntil;
 
@@ -118,9 +147,14 @@
       const id = row.getAttribute('data-id');
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      if (silent) continue;       // history dump, not real-time input
+      if (silent) continue;
       const text = textOf(row);
       if (!text) continue;
+      // Backstop: drop rows older than (loadTime - grace). Real-time
+      // messages will always be timestamped now-ish; history rows
+      // (from chat reloads, virtual-list re-renders, etc.) won't be.
+      const ts = parseRowTimestamp(row);
+      if (ts && ts < loadTime - HISTORY_GRACE_MS) continue;
       safePost({
         type: 'incoming',
         chatId:  chat,

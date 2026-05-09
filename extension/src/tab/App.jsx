@@ -730,17 +730,21 @@ export default function App() {
     if (decision.kind === 'empty') {
       // No local sessions. Peers may still be in the room — the
       // room-utterance posted at the top already mirrored what was
-      // typed. Suppress the hint when peers are present.
-      if (peerNodesRef.current.size === 0) {
+      // typed. Suppress the hint when peers are present, OR when this
+      // came from a bridge (the user on phone doesn't need the
+      // 'no one in the room' nag mirrored back at them every message).
+      if (peerNodesRef.current.size === 0 && !fromBridge) {
         appendMsg('egpt', 'no one in the room — /open chatgpt-cdp to add a participant, or wait for a peer to join the bus');
       }
       return;
     }
     if (decision.kind === 'idle') {
-      // Plain text but no /use'd sessions. Message is already on the
-      // bus for peers; just don't auto-call a brain.
-      const names = [...sessionsRef.current.keys()].slice(0, 3).join(', ') || '(none)';
-      appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
+      // Plain text but no /use'd sessions. Bridge-originated input
+      // gets no hint — same logic as 'empty' above.
+      if (!fromBridge) {
+        const names = [...sessionsRef.current.keys()].slice(0, 3).join(', ') || '(none)';
+        appendMsg('egpt', `message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
+      }
       return;
     }
     if (decision.kind === 'persona') {
