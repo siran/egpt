@@ -115,9 +115,19 @@ export default function App() {
 
   // ── helpers ──────────────────────────────────────────────────
 
+  // Output sink for bridge-originated dispatch. When set (by handleSubmit
+  // wrapping a fromBridge call), 'egpt' system messages (command output,
+  // errors, hints) ALSO get pushed to the originating bridge so the user
+  // sees them on the surface they typed from. Cleared after dispatch
+  // completes. Same pattern the shell uses via outputSinkRef.
+  const currentOutputSinkRef = useRef(null);
+
   const appendMsg = useCallback((author, text, opts = {}) => {
     const id = mkId();
     setMessages(prev => [...prev, { id, author, text, streaming: opts.streaming ?? false }]);
+    if (currentOutputSinkRef.current && author === 'egpt') {
+      try { currentOutputSinkRef.current(text); } catch (_) {}
+    }
     return id;
   }, []);
 
@@ -698,7 +708,17 @@ export default function App() {
       activeSessions,
     });
 
-    if (decision.kind === 'command') { handleCommand(trimmed); return; }
+    // Set the output sink so 'egpt' messages (commands, errors, hints)
+    // mirror back to the originating bridge for the duration of this
+    // dispatch. Try/finally guarantees the sink clears even on throw.
+    const sinkPrev = currentOutputSinkRef.current;
+    if (fromBridge === 'wa-cdp' && waCdpBridgeRef.current) {
+      currentOutputSinkRef.current = (text) => {
+        try { waCdpBridgeRef.current?.send(text); } catch (_) {}
+      };
+    }
+    try {
+      if (decision.kind === 'command') { await handleCommand(trimmed); return; }
 
     // Local echo of the user's own typed input. When fromBridge, the
     // bridge handler (handleIncomingWaCdp) already appended the
@@ -805,6 +825,12 @@ export default function App() {
       for (const { to, message } of mirrorPlan) {
         await runBrain(to, message);
       }
+    }
+    } finally {
+      // Restore the prior sink (usually null) so post-dispatch
+      // appendMsg('egpt', ...) calls (e.g. unrelated bus events) don't
+      // accidentally route to the bridge of a stale prior dispatch.
+      currentOutputSinkRef.current = sinkPrev;
     }
   }, [appendMsg, handleCommand, runBrain, userName]);
 
