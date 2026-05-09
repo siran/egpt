@@ -23,27 +23,44 @@
   window.__egptWaContentInstalled = true;
 
   let port = null;
+  // Queue of events that fire while port is null (MV3 SW idle window
+  // between disconnect and reconnect). Without this, phone-typed
+  // messages that arrive in that ~1s gap are lost. Capped to avoid
+  // unbounded growth if the SW never recovers.
+  const _queue = [];
+  const QUEUE_CAP = 100;
 
   function connect() {
     try { port = chrome.runtime.connect({ name: 'egpt-wa-content' }); }
     catch { return setTimeout(connect, 1000); }
-    // No inbound messages from background today — sends are routed
-    // through chrome.debugger Input.* events directly to the tab
-    // (synthetic DOM events from this content script can't trigger
-    // WA Web's send button — WA checks event.isTrusted). The
-    // listener stays as a hook for future control messages.
     port.onMessage.addListener(() => {});
     port.onDisconnect.addListener(() => {
       port = null;
       // Service worker may have idled; reconnect shortly.
       setTimeout(connect, 1000);
     });
-    safePost({ type: 'ready', ts: Date.now() });
+    // Always start with a ready ping.
+    try { port.postMessage({ type: 'ready', ts: Date.now() }); } catch (_) {}
+    // Drain anything that queued while we were disconnected — phone-
+    // typed messages, etc.
+    while (port && _queue.length > 0) {
+      const ev = _queue.shift();
+      try { port.postMessage(ev); }
+      catch { _queue.unshift(ev); break; }
+    }
   }
 
   function safePost(ev) {
-    if (!port) return;
-    try { port.postMessage(ev); } catch { /* port died — onDisconnect will retry */ }
+    if (!port) {
+      _queue.push(ev);
+      if (_queue.length > QUEUE_CAP) _queue.shift();
+      return;
+    }
+    try { port.postMessage(ev); }
+    catch {
+      _queue.push(ev);
+      if (_queue.length > QUEUE_CAP) _queue.shift();
+    }
   }
 
   // Track seen message ids so MutationObserver re-scans don't replay.

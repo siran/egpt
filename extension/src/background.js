@@ -61,23 +61,12 @@ const _subscribers      = new Set();   // ports opened by UI tabs
 const _waContentPorts   = new Set();   // ports from web.whatsapp.com content scripts
 const _waCdpSubscribers = new Set();   // ports from the egpt UI tab's WA-CDP bridge
 
-// Echo suppression for WA-CDP. When sendToFirstWaTab dispatches a
-// message via chrome.debugger Input.*, the resulting WA Web message
-// appears in the DOM with fromMe=true and is picked up by our own
-// content-script MutationObserver — looking exactly like a user-typed
-// message. We'd then re-process it as input and (for plain text or
-// @brain mentions) potentially loop. Track each send as { text, ts };
-// when an incoming fromMe message matches text+(within 15s), consume
-// the entry and drop the event before fan-out / bus republish.
-const _recentSends = [];
-function recordSend(text) { _recentSends.push({ text, ts: Date.now() }); }
-function consumeEcho(text) {
-  const cutoff = Date.now() - 15_000;
-  while (_recentSends.length && _recentSends[0].ts < cutoff) _recentSends.shift();
-  const idx = _recentSends.findIndex(e => e.text === text);
-  if (idx >= 0) { _recentSends.splice(idx, 1); return true; }
-  return false;
-}
+// Echo suppression for WA-CDP. Pure logic in bridges/wa-echo.js so it
+// can be unit-tested; we just wrap the singleton here.
+import { createEchoTracker } from './bridges/wa-echo.js';
+const _echo = createEchoTracker();
+const recordSend = (text) => _echo.record(text);
+const consumeEcho = (text) => _echo.consume(text);
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'egpt-bus') {

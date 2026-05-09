@@ -28,12 +28,25 @@ export async function startWhatsAppCdpBridge({
   onLog    = () => {},
   onError  = () => {},
   onChatId = null,
+  onState  = () => {},   // (state: 'attached' | 'detached') — UI indicator hook
 } = {}) {
   let port = null;
   let stopped = false;
   let lastChat = null;
   let chatIdNotified = false;
   let attached = false;
+  // Dedupe: only log + onState() callback on TRANSITIONS, not every
+  // message arrival. SW idle cycles in MV3 cause the subscriber port
+  // to disconnect/reconnect every ~30s; without this guard, every
+  // cycle re-fires 'bridge ready' and clutters the UI log.
+  let lastReportedState = null;
+  function reportState(s) {
+    if (lastReportedState === s) return;
+    lastReportedState = s;
+    if (s === 'attached')       onLog('whatsapp-cdp: bridge ready (content script in WA Web tab is connected)');
+    else if (s === 'detached')  onLog('whatsapp-cdp: WA Web tab disconnected (close/reload to recover)');
+    try { onState(s); } catch (_) {}
+  }
 
   function connect() {
     if (stopped) return;
@@ -43,21 +56,24 @@ export async function startWhatsAppCdpBridge({
     port.onMessage.addListener(async (msg) => {
       if (!msg) return;
       if (msg.type === 'ready') {
-        if (!attached) {
-          attached = true;
-          onLog('whatsapp-cdp: bridge ready (content script in WA Web tab is connected)');
-        }
+        attached = true;
+        reportState('attached');
         return;
       }
       if (msg.type === 'no-content') {
-        // No web.whatsapp.com tab open yet — wait silently. The
-        // background will send 'ready' the moment a content script
-        // connects.
+        // No web.whatsapp.com tab connected yet at the moment WE
+        // (re)subscribed. If we'd been previously attached the user
+        // closed/idled the tab; reflect that. If it's truly first
+        // boot, this transitions us into the 'detached' state which
+        // also lights the red indicator. 'ready' will arrive when
+        // the tab + content script appear.
+        attached = false;
+        reportState('detached');
         return;
       }
       if (msg.type === 'content-gone') {
         attached = false;
-        onLog('whatsapp-cdp: WA Web tab closed (content script disconnected)');
+        reportState('detached');
         return;
       }
       if (msg.type !== 'incoming') return;
@@ -90,9 +106,11 @@ export async function startWhatsAppCdpBridge({
     port.onDisconnect.addListener(() => {
       port = null;
       attached = false;
-      // Background may have idled (MV3 service worker lifecycle); rebuild
-      // the port shortly. Idempotent — content scripts stay connected to
-      // background across SW cycles via their own reconnect logic.
+      // SW idle / extension-reload cycle — rebuild the port shortly.
+      // Don't mark detached here: the next port might reconnect
+      // immediately and find a content script still alive. We only
+      // transition to 'detached' if the new connect's first message
+      // is 'no-content' / 'content-gone'.
       if (!stopped) setTimeout(connect, 1000);
     });
   }

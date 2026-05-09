@@ -85,6 +85,10 @@ export default function App() {
   // needed). Set with /use a or /use a,b,c. Cleared with /use clear.
   const [activeSessions, setActiveSessions] = useState([]);
   const [tgStatus, setTgStatus] = useState('not connected');
+  // 'attached' = green dot (content script in WA Web tab is connected);
+  // 'detached' = red dot (no WA tab, or it was closed); 'unknown' before
+  // the bridge has reported state. Surfaced in the status bar.
+  const [waState, setWaState] = useState('unknown');
   const [userName, setUserName] = useState('human');
   // Whether THIS extension currently owns Telegram polling. /telegram <node>
   // hands off; bus event 'telegram-handoff' may start/stop us.
@@ -1261,6 +1265,7 @@ export default function App() {
         const bridge = await startWhatsAppCdpBridge({
           onLog:      (msg) => appendMsg('egpt', msg),
           onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
+          onState:    (state) => setWaState(state),
           onChatId:   async (id) => {
             try {
               const { whatsapp_cdp: cur = {} } = await chrome.storage.sync.get('whatsapp_cdp');
@@ -1311,6 +1316,19 @@ export default function App() {
             : sessionsList.map(s => activeSessions.includes(s.name) ? `*${s.name}` : s.name).join('  ')}
         </span>
         <span className="status-tg">{tgStatus}</span>
+        <span
+          className={`status-wa wa-${waState}`}
+          title={
+            waState === 'attached' ? 'WA Web tab connected'
+            : waState === 'detached' ? 'WA Web tab closed/missing — open web.whatsapp.com'
+            : 'WA Web tab status unknown'
+          }
+          style={{
+            display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+            marginLeft: 8,
+            background: waState === 'attached' ? '#3fb950' : waState === 'detached' ? '#f85149' : '#6e7681',
+          }}
+        />
       </div>
 
       <div className="conversation" ref={convRef}>
