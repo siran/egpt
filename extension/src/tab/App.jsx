@@ -630,6 +630,17 @@ export default function App() {
           role: 'chrome', user: userName, body: trimmed,
           client: 'ext',
         }).catch(() => {});
+
+        // WA mirror for self-typed messages. The bus event handler
+        // can't do this for us — it self-filters (ev.from===BUS_NODE_ID
+        // returns before reaching the room-utterance case), so the
+        // gate has to live here too. Same rule: only fire when no
+        // shell is on the bus (shell, when present, picks up the
+        // room-utterance and mirrors via baileys natively).
+        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+        if (waCdpBridgeRef.current && !hasShellPeer) {
+          try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
+        }
       }
     }
 
