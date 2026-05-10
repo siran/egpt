@@ -1386,6 +1386,15 @@ export default function App() {
     if (!fromInfo.fromMe) return;
     if (!trimmedRaw) return;
 
+    // Yield to shell: when a shell node is on the bus, IT handles WA
+    // dispatch via baileys. The extension's WA-CDP still renders the
+    // message in the unified UI (above) for visibility, but stops
+    // here — no brain dispatch, no reply mirror. Without this gate
+    // both halves would dispatch the same '@e' to a brain in
+    // parallel and the user would see duplicate replies.
+    const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+    if (hasShellPeer) return;
+
     // Wake-word gate + allowed_users gate.
     let dispatchText = trimmedRaw;
     let shouldDispatch = true;

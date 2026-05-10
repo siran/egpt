@@ -24,7 +24,7 @@
 // background.js is the relay between the bus tab port and any UI
 // tabs that connect as 'egpt-bus-subscriber'.
 
-import { signEvent, verifyEvent, keyFromString } from '../../../tools/bus-sign.mjs';
+import { signEvent, verifyEvent, keyFromString, keyToString } from '../../../tools/bus-sign.mjs';
 
 export const BUS_PATH = '/bus.html';
 
@@ -166,10 +166,28 @@ function trackSeen(ev) {
 
 async function _verify(ev, where) {
   if (!_busKeyBytes) return true;   // permissive when no key configured
-  const result = await verifyEvent(ev, _busKeyBytes);
+  let result = await verifyEvent(ev, _busKeyBytes);
   if (result === 'invalid') {
-    try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${ev?.type ?? '?'}`); } catch (_) {}
-    return false;
+    // Race recovery: shell may have just pushed a new key into
+    // chrome.storage.local but our chrome.storage.onChanged listener
+    // hasn't fired yet, so we're still verifying with the previous
+    // key. Re-read storage NOW; if it's changed, update cached key
+    // and retry once. Without this, the first burst of signed events
+    // from shell after pairing would silently fail to verify and
+    // hasShellPeer never gets set on the extension side.
+    try {
+      const got = await chrome.storage.local.get('bus_key');
+      const fresh = (typeof got?.bus_key === 'string' && got.bus_key.trim()) ? got.bus_key.trim() : null;
+      const cachedB64 = _busKeyBytes ? keyToString(_busKeyBytes) : null;
+      if (fresh && fresh !== cachedB64) {
+        setBusKey(fresh);
+        result = await verifyEvent(ev, _busKeyBytes);
+      }
+    } catch (_) {}
+    if (result === 'invalid') {
+      try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${ev?.type ?? '?'}`); } catch (_) {}
+      return false;
+    }
   }
   return true;   // 'valid' or 'missing' (permissive)
 }
