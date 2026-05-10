@@ -43,6 +43,15 @@
 
   // Extract { jid, name, preview, unread } from a chat-list row.
   // Returns null when the row has no name.
+  //
+  // Preview: WA Web splits the chat-list preview into multiple element
+  // types. The sender prefix ("You", "Eduardo:") sits in one span[dir=
+  // "auto"]; the message body sits in unrelated elements. Reading just
+  // the first non-title span (what we used to do) gives the prefix,
+  // not the message — so '@e foo' never matched the wake regex even
+  // when present in the row's text. Fix: take the whole row's
+  // innerText, drop the chat title and the unread-count aria affordance,
+  // then match the wake regex anywhere in the result.
   function extractRow(row) {
     const titleEl = row.querySelector('span[dir="auto"][title]')
                  || row.querySelector('span[dir="auto"]');
@@ -58,16 +67,19 @@
       const v = el.getAttribute?.('data-id') || el.getAttribute?.('data-jid');
       if (looksLikeJid(v)) { jid = v; break; }
     }
-    const previewEl = [...row.querySelectorAll('span[dir="auto"]')]
-      .find(s => s !== titleEl);
-    const preview = (previewEl?.innerText || '').slice(0, 200).trim();
     // WA Web flags unread via aria-label="<N> unread message[s]" on a
     // span inside the row, OR (older builds) data-icon="unread-count".
-    // Either is enough — we don't need to read the count.
     const unread = !!(
       row.querySelector('span[aria-label*="unread" i]') ||
       row.querySelector('[data-icon="unread-count"]')
     );
+    const fullText = row.innerText || '';
+    const preview = fullText
+      .split('\n')
+      .map(s => s.trim())
+      .filter(line => line && line !== name && !/^\d+ unread/i.test(line))
+      .join(' ')
+      .slice(0, 300);
     return { jid, name, preview, unread };
   }
 
@@ -301,7 +313,11 @@
   // their focus mid-keystroke would be hostile. We wait until the
   // composer is empty / unfocused, then proceed. The unread badge
   // persists until WA reads the message, so deferring loses nothing.
-  const WAKE_RE = /^@(egpt|e)\b/i;
+  // Match @e or @egpt at the start of preview OR after whitespace —
+  // the chat-list preview now contains a leading sender prefix
+  // ('(You) 10:54 @e foo' / 'Eduardo: 10:54 @e foo'), so the wake
+  // word isn't always at position 0.
+  const WAKE_RE = /(?:^|\s)@(egpt|e)\b/i;
   const _autoOpenedAt = new Map();   // key (jid|name) → ms
   const AUTO_OPEN_DEDUPE_MS = 10_000;
   // The MutationObserver covers the live case (WA's WebSocket pushes a
