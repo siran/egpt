@@ -4,6 +4,8 @@ import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
 import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa-routing.js';
 import * as waCommands from '../commands/wa-commands.js';
+import * as sessionCommands from '../commands/session-commands.js';
+import * as miscCommands from '../commands/misc-commands.js';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../../../tools/cdp.mjs';
@@ -513,338 +515,102 @@ export default function App() {
       }
     }
 
-    switch (slash) {
-      case '/open': {
-        // /open <brainType> [name]
-        // Opens a fresh tab to the brain's homeUrl and registers it as a
-        // new session. Mirrors the shell's /open semantics.
-        const [rawType, customName] = parts.slice(1);
-        if (!rawType) {
-          appendMsg('egpt', `Usage: /open <brain> [name]\nBrains: ${Object.keys(BRAINS).join('  ')}`);
-          return;
-        }
-        const brainType = canonicalBrain(rawType);
-        const brain = BRAINS[brainType];
-        if (!brain || !brain.homeUrl) {
-          appendMsg('egpt', `Unknown brain type "${rawType}". Available: ${Object.keys(BRAINS).join('  ')}`);
-          return;
-        }
-        const name = customName || nextSessionName(brainType);
-        if (sessionsRef.current.has(name)) {
-          appendMsg('egpt', `Session "${name}" already exists.`);
-          return;
-        }
-        appendMsg('egpt', `Opening ${brain.homeUrl}…`);
-        try {
-          // chrome.tabs.create returns a chrome.tabs.Tab with an
-          // integer id. CDP /json/list (which the brain modules use
-          // via tools/cdp.mjs) gives different, hex target ids — the
-          // two namespaces don't intersect. Translate by snapshotting
-          // CDP tabs that match this brain's URL before/after the
-          // open and taking the new one.
-          const beforeIds = new Set(
-            (await listTabs(brain.urlMatch)).map(t => t.id),
-          );
-          const tab = await chrome.tabs.create({ url: brain.homeUrl, active: false });
-          appendMsg('egpt', `Waiting for tab to load…`);
-          await waitForTabLoad(tab.id);
-          // Wait briefly for CDP to register the new target. The chrome.tabs
-          // tab is usable as soon as the navigation commits, but CDP can
-          // lag by a few hundred ms. Poll up to ~2s.
-          let cdpId = null;
-          for (let i = 0; i < 10; i++) {
-            const after = await listTabs(brain.urlMatch);
-            const newOne = after.find(t => !beforeIds.has(t.id));
-            if (newOne) { cdpId = newOne.id; break; }
-            await new Promise(r => setTimeout(r, 200));
-          }
-          if (!cdpId) {
-            appendMsg('egpt', `/open: opened the tab, but couldn't locate its CDP target — try /attach`);
-            return;
-          }
-          sessionsRef.current.set(name, { brain, targetId: cdpId });
-          syncSessionsList();
-          appendMsg('egpt', `Ready: ${name} → ${brainType} (target ${cdpId.slice(0, 8)}…). /use ${name} to make it the default for plain text.`);
-        } catch (e) {
-          appendMsg('egpt', `/open failed: ${e.message}`);
-        }
-        break;
-      }
-      case '/attach': {
-        // /attach                              rescan tabs, attach any matching
-        // /attach <brainType> [name] [tabSpec] explicit attach to existing tab
-        const args = parts.slice(1);
-        if (args.length === 0) {
-          // Rescan: attach every chatgpt/claude tab that isn't already a session
-          const tabs = await listTabs();
-          const additions = [];
-          for (const tab of tabs) {
-            const matchedType = Object.keys(BRAINS).find(k => BRAINS[k].urlMatch?.test(tab.url));
-            if (!matchedType) continue;
-            const taken = [...sessionsRef.current.values()].some(s => s.targetId === tab.id);
-            if (taken) continue;
-            const name = nextSessionName(matchedType);
-            sessionsRef.current.set(name, { brain: BRAINS[matchedType], targetId: tab.id });
-            additions.push(`${name} (${matchedType})`);
-          }
-          if (!additions.length) appendMsg('egpt', 'No new tabs to attach.');
-          else {
-            syncSessionsList();
-            appendMsg('egpt', `Attached: ${additions.join(', ')}. /use <name> to route plain text to one.`);
-          }
-          return;
-        }
-        const [rawType, customName, ...tabSpecParts] = args;
-        const brainType = canonicalBrain(rawType);
-        const brain = BRAINS[brainType];
-        if (!brain) {
-          appendMsg('egpt', `Unknown brain type "${rawType}". Available: ${Object.keys(BRAINS).join('  ')}`);
-          return;
-        }
-        const tabSpec = tabSpecParts.join(' ').trim();
-        let targetId = null;
-        if (tabSpec) {
-          targetId = await resolveTabSpec(tabSpec, brain);
-          if (!targetId) {
-            appendMsg('egpt', `Could not resolve "${tabSpec}" to a tab. /tabs to list.`);
-            return;
-          }
-        } else {
-          const tabs = (await listTabs()).filter(t => brain.urlMatch?.test(t.url));
-          if (tabs.length === 0) {
-            appendMsg('egpt', `No open ${brainType} tabs. /open ${brainType} to create one.`);
-            return;
-          }
-          if (tabs.length > 1) {
-            const lst = tabs.map(t => `  ${t.id}  ${(t.title ?? '').slice(0, 50)}`).join('\n');
-            appendMsg('egpt', `Multiple ${brainType} tabs open. Specify tab ID:\n${lst}`);
-            return;
-          }
-          targetId = tabs[0].id;
-        }
-        const name = customName || nextSessionName(brainType);
-        if (sessionsRef.current.has(name)) {
-          appendMsg('egpt', `Session "${name}" already exists.`);
-          return;
-        }
-        sessionsRef.current.set(name, { brain, targetId });
-        syncSessionsList();
-        appendMsg('egpt', `Attached ${name} → ${brainType} (tab ${targetId}). /use ${name} to make it the default for plain text.`);
-        break;
-      }
-      case '/detach': {
-        const name = parts[1];
-        if (!name) { appendMsg('egpt', 'Usage: /detach <name>'); return; }
-        sessionsRef.current.delete(name);
-        syncSessionsList();
-        if (activeSessions.includes(name)) setActiveSessions(s => s.filter(x => x !== name));
-        appendMsg('egpt', `Detached ${name}`);
-        break;
-      }
-      case '/use': {
-        const target = parts.slice(1).join(' ').trim();
-        if (!target) {
-          appendMsg('egpt', activeSessions.length
-            ? `active sessions: ${activeSessions.join(', ')}`
-            : 'no active sessions — /use <name> or /use a,b,c for multi-AI broadcast');
-          break;
-        }
-        if (target === 'clear' || target === 'none') {
-          setActiveSessions([]);
-          appendMsg('egpt', 'active sessions cleared');
-          break;
-        }
-        const names = target.split(',').map(s => s.trim()).filter(Boolean);
-        const unknown = names.filter(n => !sessionsRef.current.has(n));
-        if (unknown.length) {
-          appendMsg('egpt', `!! unknown session(s): ${unknown.join(', ')}`);
-          break;
-        }
-        setActiveSessions(names);
-        appendMsg('egpt', names.length === 1
-          ? `Active session → ${names[0]}`
-          : `Active sessions → ${names.join(', ')} (multi-AI broadcast)`);
-        break;
-      }
-      case '/sessions': {
-        const list = [...sessionsRef.current.entries()];
-        const localBlock = list.length === 0
-          ? '(no local sessions)'
-          : list.map(([n, s]) => `  ${n}  ${s.brain.name}  tab:${s.targetId}`).join('\n');
-        const peerLines = [];
-        for (const [nodeId, peer] of peerNodesRef.current) {
-          const head = `~ ${nodeId}  (${peer.role ?? 'node'})${peer.polling ? '  [polling]' : ''}`;
-          peerLines.push(head);
-          for (const sess of peer.sessions ?? []) {
-            peerLines.push(`    ${(sess.name ?? '?').padEnd(14)}${sess.brain ?? '?'}`);
-          }
-        }
-        const peerBlock = peerLines.length
-          ? `\n\n── peers (zombie sessions) ───────────────────\n${peerLines.join('\n')}`
-          : '';
-        appendMsg('egpt', localBlock + peerBlock);
-        break;
-      }
-      case '/tabs': {
-        const tabs = await listTabs();
-        if (tabs.length === 0) { appendMsg('egpt', 'No open tabs found.'); return; }
-        appendMsg('egpt', tabs.map(t => `  ${t.id}  ${t.url.slice(0, 70)}`).join('\n'));
-        break;
-      }
-      case '/config': {
-        const [key, ...valParts] = parts.slice(1);
-        if (!key) {
-          const sync = await chrome.storage.sync.get(null);
-          const local = await chrome.storage.local.get(null);
-          appendMsg('egpt', JSON.stringify({ sync, local }, null, 2));
-          return;
-        }
-        const raw = valParts.join(' ');
-        let val = raw;
-        try { val = JSON.parse(raw); } catch {}
-        await chrome.storage.sync.set({ [key]: val });
-        appendMsg('egpt', `Set ${key} = ${JSON.stringify(val)}`);
-        if (key === 'telegram') startBridge();
-        break;
-      }
-      case '/telegram': {
-        const sub = parts[1];
-        const subArg = parts.slice(2).join(' ').trim();
-        // No-arg: report polling state of this node + peers from the bus.
-        if (!sub) {
-          const me = `  ${BUS_NODE_ID}  (this extension)  ${tgPolling ? 'polling' : 'idle'}`;
-          const peerLines = [];
-          for (const [nodeId, peer] of peerNodesRef.current) {
-            peerLines.push(`  ${nodeId}  (${peer.role ?? '?'})  ${peer.polling ? 'polling' : 'idle'}`);
-          }
-          appendMsg('egpt',
-            `telegram polling status:\n${me}` +
-            (peerLines.length ? '\n' + peerLines.join('\n') : '\n  (no peers on bus)') +
-            `\n\n/telegram <node>            hand polling to that node` +
-            `\n/telegram disconnect         stop polling on this node` +
-            `\n/telegram allow <userId>     authorize a Telegram user to issue commands` +
-            `\n/telegram revoke <userId>    remove a user's authorization` +
-            `\n/telegram allowed            list authorized users`);
-          return;
-        }
-        if (sub === 'disconnect') {
-          if (tgPolling) { stopBridge(); appendMsg('egpt', 'telegram: disconnected'); }
-          else appendMsg('egpt', 'telegram: not polling on this extension');
-          return;
-        }
-        if (sub === 'allow' || sub === 'revoke') {
-          const idStr = subArg.replace(/^@/, '');
-          const userId = parseInt(idStr, 10);
-          if (!Number.isFinite(userId)) {
-            appendMsg('egpt', `!! /telegram ${sub} <userId> — userId must be the numeric Telegram id`);
-            return;
-          }
-          const { telegram = {} } = await chrome.storage.sync.get('telegram');
-          const allowed = Array.isArray(telegram.allowed_users) ? [...telegram.allowed_users] : [];
-          if (sub === 'allow') {
-            if (!allowed.includes(userId)) allowed.push(userId);
-          } else {
-            const idx = allowed.indexOf(userId);
-            if (idx >= 0) allowed.splice(idx, 1);
-          }
-          await chrome.storage.sync.set({
-            telegram: { ...telegram, allowed_users: allowed },
-          });
-          // The chrome.storage.onChanged listener (see useEffect for
-          // 'userName' / 'telegram') will restart the bridge with the
-          // new allowed_users on next storage event.
-          appendMsg('egpt', `telegram: ${sub === 'allow' ? 'allowed' : 'revoked'} user ${userId}`);
-          return;
-        }
-        if (sub === 'allowed') {
-          const { telegram = {} } = await chrome.storage.sync.get('telegram');
-          const ids = telegram.allowed_users ?? [];
-          if (ids.length === 0) {
-            appendMsg('egpt', 'telegram: no allowed users — commands and mentions from any Telegram user are rejected');
-          } else {
-            appendMsg('egpt', `telegram allowed users:\n${ids.map(id => `  ${id}`).join('\n')}`);
-          }
-          return;
-        }
-        const tid = busTargetIdRef.current;
-        if (!tid) { appendMsg('egpt', '!! bus not joined — handoff requires bus'); return; }
-        const to = sub.replace(/^@/, '');
-        if (to === BUS_NODE_ID || to === 'chrome' || to === 'extension') {
-          await startBridge();
-          return;
-        }
-        const peer = peerNodesRef.current.get(to);
-        if (!peer) {
-          const candidates = [...peerNodesRef.current.entries()].filter(([_, p]) => p.role === to);
-          if (candidates.length === 1) {
-            const [nodeId] = candidates[0];
-            if (tgPolling) stopBridge();
-            await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-              ts: Date.now(), to: nodeId });
-            appendMsg('egpt', `telegram: handoff posted to ${nodeId}`);
-            return;
-          }
-          if (candidates.length > 1) {
-            appendMsg('egpt', `!! ambiguous role "${to}"; pick one of: ${candidates.map(([n]) => n).join(', ')}`);
-            return;
-          }
-          appendMsg('egpt', `!! no peer "${to}" on bus — /telegram with no arg lists peers`);
-          return;
-        }
-        if (tgPolling) stopBridge();
-        await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-          ts: Date.now(), to });
-        appendMsg('egpt', `telegram: handoff posted to ${to}`);
-        break;
-      }
-      case '/clear':
-        setMessages([]);
-        break;
-      case '/help':
-        appendMsg('egpt', helpText(Object.keys(BRAINS)));
-        break;
-      case '/channels':
-      case '/join':
-      case '/unjoin':
-      case '/mirror': {
-        // Extracted to extension/src/commands/wa-commands.js so the
-        // side effects (storage, bridge, state mutation, log/error)
-        // can be unit-tested with mocked deps. The React layer wires
-        // the ctx to the live refs/storage/bridge here; everything
-        // user-observable goes through log/error → appendMsg.
-        const rest = parts.slice(1).join(' ');
-        const ctx = {
-          bridge: waCdpBridgeRef.current,
-          storage: chrome.storage.sync,
-          log:    (text) => appendMsg('egpt', text),
-          error:  (text) => appendMsg('egpt', `!! ${text}`),
-          getChannels: () => waChannelsRef.current,
-          setChannels: (c) => { waChannelsRef.current = c; },
-          getJoined:   () => waJoinedRef.current,
-          setJoined:   (v) => { waJoinedRef.current = v; setWaJoined(v); },
-          getSessions: () => sessionsRef.current,
-          getLastIncoming: () => lastIncomingRef.current,
-          runBrainE: async (text, sender) => {
-            await ensureEThread();
-            await runBrain('e', text, { sender });
-            await persistEThreadUrl();
-          },
-          runBrainSession: async (name, text, sender) => {
-            await runBrain(name, text, { sender });
-          },
-        };
-        if (cmd === '/channels') await waCommands.channels(rest, ctx);
-        else if (cmd === '/join') await waCommands.join(rest, ctx);
-        else if (cmd === '/unjoin') await waCommands.unjoin(rest, ctx);
-        else if (cmd === '/mirror') await waCommands.mirror(rest, ctx);
-        break;
-      }
-      // ('/mirror' is handled by the merged WA-commands case above)
+    // Every locally-implemented slash command is now an entry in a
+    // dispatch table that calls the pure handler from the extracted
+    // commands/* modules. The React layer's only job here is to
+    // assemble a `ctx` that wires pure deps to the live refs / chrome
+    // APIs. Any handler can be exercised in isolation in tests by
+    // passing a mock ctx — see tests/{wa,session,misc}-commands.test.mjs.
+    const rest = parts.slice(1).join(' ');
+    const log    = (text) => appendMsg('egpt', text);
+    const error  = (text) => appendMsg('egpt', `!! ${text}`);
+    const baseCtx = {
+      log, error,
+      getSessions: () => sessionsRef.current,
+      setSession:  (name, value) => {
+        if (value == null) sessionsRef.current.delete(name);
+        else sessionsRef.current.set(name, value);
+      },
+      syncSessionsList,
+      getActiveSessions: () => activeSessions,
+      setActiveSessions: (arr) => setActiveSessions(arr),
+      getPeerNodes: () => peerNodesRef.current,
+    };
+    const waCtx = {
+      ...baseCtx,
+      bridge: waCdpBridgeRef.current,
+      storage: chrome.storage.sync,
+      getChannels: () => waChannelsRef.current,
+      setChannels: (c) => { waChannelsRef.current = c; },
+      getJoined:   () => waJoinedRef.current,
+      setJoined:   (v) => { waJoinedRef.current = v; setWaJoined(v); },
+      getLastIncoming: () => lastIncomingRef.current,
+      runBrainE: async (text, sender) => {
+        await ensureEThread();
+        await runBrain('e', text, { sender });
+        await persistEThreadUrl();
+      },
+      runBrainSession: async (name, text, sender) => {
+        await runBrain(name, text, { sender });
+      },
+    };
+    const sessionCtx = {
+      ...baseCtx,
+      brains: BRAINS,
+      canonicalBrain,
+      nextSessionName,
+      listTabs,
+      createTab: (opts) => chrome.tabs.create(opts),
+      waitForTabLoad,
+      resolveTabSpec,
+      sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+    };
+    const configCtx = {
+      log,
+      storageSync:  chrome.storage.sync,
+      storageLocal: chrome.storage.local,
+      onTelegramConfigChange: () => startBridge(),
+    };
+    const tgCtx = {
+      log, error,
+      storageSync:  chrome.storage.sync,
+      getNodeId:    () => BUS_NODE_ID,
+      getTgPolling: () => tgPolling,
+      startBridge:  () => startBridge(),
+      stopBridge:   () => stopBridge(),
+      getPeerNodes: () => peerNodesRef.current,
+      busTargetId:  () => busTargetIdRef.current,
+      postBusEvent: (tid, ev) => bus.postEvent(tid, ev),
+    };
+    const uiCtx = {
+      log,
+      clearMessages: () => setMessages([]),
+      getBrainNames: () => Object.keys(BRAINS),
+      formatHelp:    (names) => helpText(names),
+    };
 
+    switch (slash) {
+      // session-management
+      case '/use':       await sessionCommands.use(rest, sessionCtx); break;
+      case '/sessions':  await sessionCommands.sessions(rest, sessionCtx); break;
+      case '/detach':    await sessionCommands.detach(rest, sessionCtx); break;
+      case '/tabs':      await sessionCommands.tabs(rest, sessionCtx); break;
+      case '/open':      await sessionCommands.open(rest, sessionCtx); break;
+      case '/attach':    await sessionCommands.attach(rest, sessionCtx); break;
+      // misc
+      case '/config':    await miscCommands.config(rest, configCtx); break;
+      case '/telegram':  await miscCommands.telegram(rest, tgCtx); break;
+      case '/clear':     await miscCommands.clear(rest, uiCtx); break;
+      case '/help':      await miscCommands.help(rest, uiCtx); break;
+      // WA-CDP
+      case '/channels':  await waCommands.channels(rest, waCtx); break;
+      case '/join':      await waCommands.join(rest, waCtx); break;
+      case '/unjoin':    await waCommands.unjoin(rest, waCtx); break;
+      case '/mirror':    await waCommands.mirror(rest, waCtx); break;
       default:
-        appendMsg('egpt', `!! unknown command: ${slash}`);
+        error(`unknown command: ${slash}`);
     }
-  }, [activeSessions, appendMsg, userName, runBrain, ensureEThread, persistEThreadUrl]);
+  }, [activeSessions, appendMsg, userName, runBrain, ensureEThread, persistEThreadUrl, syncSessionsList, tgPolling]);
 
   handleCommandRef.current = handleCommand;
 
