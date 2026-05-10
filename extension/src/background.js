@@ -292,11 +292,42 @@ function titlesEqual(a, b) {
 // via a real Input.dispatchMouseEvent on the chat list row if needed.
 // Without chat_name configured, the message goes to whatever's open
 // (loud caveat printed in BRIDGES_CDP_SPEC.md).
+// Steal OS-level focus to the WA Web window. Chrome aggressively
+// throttles tabs in unfocused windows AND throttles the whole browser
+// when Chrome itself isn't the foreground OS app — e.g. clicks via
+// chrome.debugger Input.* don't take, MutationObservers run late or
+// not at all, the chat-switch silently fails. Page.bringToFront alone
+// only reorders within a window; it doesn't lift OS focus. The
+// trade-off the user has accepted is: yes, steal focus when WA work
+// happens, since the alternative is for inbound @e from phone to
+// silently no-op when Chrome is in the background. Also unminimizes
+// the window if needed.
+async function focusWaWindow(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.windowId == null) return;
+    let stateUpdate = {};
+    try {
+      const win = await chrome.windows.get(tab.windowId);
+      if (win.state === 'minimized') stateUpdate = { state: 'normal' };
+    } catch (_) {}
+    await chrome.windows.update(tab.windowId, { focused: true, ...stateUpdate });
+    if (!tab.active) {
+      try { await chrome.tabs.update(tabId, { active: true }); } catch (_) {}
+    }
+  } catch (_) { /* best-effort — debugger work still tries below */ }
+}
+
 async function sendToFirstWaTab(text, opts = {}) {
   const port = [..._waContentPorts][0];
   if (!port) throw new Error('no WA content script connected');
   const tabId = port._waTabId;
   if (!tabId) throw new Error('content script port has no tab id (sender info missing)');
+
+  // Steal OS focus to Chrome (specifically the WA window) BEFORE the
+  // debugger attach. Chrome's throttling of unfocused-app tabs would
+  // otherwise let our Input.* clicks fall on the floor.
+  await focusWaWindow(tabId);
 
   const target = { tabId };
   let attached = false;
@@ -498,6 +529,11 @@ async function openChatViaDebugger(tabId, chat) {
   if (!tabId) return;
   if (_openInFlight.has(tabId)) return;
   _openInFlight.add(tabId);
+  // Steal OS focus first (same reasoning as sendToFirstWaTab) — when
+  // a phone-typed '@e foo' arrives in WA, Chrome may be backgrounded;
+  // without focus the chat-switch click silently no-ops and the
+  // message never reaches the brain.
+  await focusWaWindow(tabId);
   const target = { tabId };
   let attached = false;
   try {
