@@ -330,6 +330,16 @@
   // word isn't always at position 0.
   const WAKE_RE = /(?:^|\s)@(egpt|e)\b/i;
   const _autoOpenedAt = new Map();   // key (jid|name) → ms
+  // Per-chat preview history. Used to detect when a chat-list row's
+  // preview CHANGED — that's the signal that something happened in
+  // that chat (new incoming message OR new outgoing message you
+  // typed from phone). Outgoing messages don't get an unread badge,
+  // so the previous "only act on unread" gate silently skipped
+  // phone-typed '@e' messages to non-active chats. With change
+  // detection we auto-open whenever a wake-word preview is new,
+  // regardless of unread state.
+  const _lastPreview = new Map();    // key → previous preview string
+  let _autoOpenSeeded = false;       // first scan only records, doesn't act
   const AUTO_OPEN_DEDUPE_MS = 10_000;
   // The MutationObserver covers the live case (WA's WebSocket pushes a
   // message → chat-list row mutates → observer fires → autoOpenScan
@@ -359,15 +369,27 @@
     const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
     for (const row of rows) {
       const r = extractRow(row);
-      if (!r || !r.unread) continue;
-      if (!WAKE_RE.test(r.preview)) continue;
+      if (!r) continue;
       const key = r.jid || r.name;
       if (!key) continue;
+      const prev = _lastPreview.get(key);
+      _lastPreview.set(key, r.preview);
+      // First pass after script load just snapshots state. Avoids
+      // auto-opening every chat that happens to have an old '@e foo'
+      // sitting at the top of its preview at boot time.
+      if (!_autoOpenSeeded) continue;
+      // Only act when the preview actually changed (something new
+      // happened in that chat). Catches incoming messages AND your
+      // own outgoing messages from phone — both shift the chat-list
+      // preview text, regardless of unread badge.
+      if (prev === r.preview) continue;
+      if (!WAKE_RE.test(r.preview)) continue;
       const last = _autoOpenedAt.get(key) ?? 0;
       if (Date.now() - last < AUTO_OPEN_DEDUPE_MS) continue;
       _autoOpenedAt.set(key, Date.now());
       safePost({ type: 'open-chat', chatJid: r.jid, chatName: r.name });
     }
+    _autoOpenSeeded = true;
   }
   setInterval(autoOpenScan, AUTO_OPEN_INTERVAL_MS);
   // Initial sweep — catches unreads already present at script load
