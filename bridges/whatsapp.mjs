@@ -52,11 +52,16 @@ import {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { promises as fs, existsSync } from 'node:fs';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 const RECONNECT_MS = 5_000;
+const CHATS_CACHE_PATH = join(homedir(), '.egpt', 'wa-chats.json');
+// Cap the persisted cache to avoid runaway growth — keep the most-
+// recently-active. 500 is generous for a normal WA usage pattern.
+const CHATS_CACHE_CAP = 500;
 
 export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
@@ -115,20 +120,70 @@ export async function startWhatsAppBridge({
   let reconnectTimer = null;
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
-  // () => false so we never get a bulk chat list — we accumulate
-  // chats as messages flow through.
+  // () => false so we never get a bulk chat list on each startup —
+  // we accumulate chats as messages flow through AND persist the map
+  // to ~/.egpt/wa-chats.json so subsequent runs start with the same
+  // view they had before. Without persistence, /channels right after
+  // a shell restart would only show the one chat that had pinged
+  // since boot.
   //
   // TWO timestamps per chat, deliberately separate:
   //   lastActivityTs — real message timestamp from messages.upsert.
   //                    Only set by _recordChat(..., { kind: 'activity' }).
-  //                    Zero means the chat has had no traffic since the
-  //                    bridge started (groups can sit dormant for years).
+  //                    Zero means the chat has had no traffic since
+  //                    the very first time we observed it.
   //   creationTs     — set by listChats from groupFetchAllParticipating's
-  //                    meta.creation. Useful as a fallback sort key for
-  //                    inactive groups but never confused with activity.
-  // Sort + filter is on lastActivityTs by default; inactive groups are
-  // hidden unless caller passes { all: true }.
+  //                    meta.creation. Useful as a fallback sort key
+  //                    for groups we belong to but never confused
+  //                    with real activity.
   const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name }
+
+  // Load persisted chats on bridge start. Silently best-effort —
+  // missing file / corrupt JSON just yields an empty map and we
+  // accumulate fresh. The pre-existing wa-auth directory next to
+  // the cache is mature, so adding a JSON next to it doesn't move
+  // the trust boundary.
+  try {
+    if (existsSync(CHATS_CACHE_PATH)) {
+      const raw = await fs.readFile(CHATS_CACHE_PATH, 'utf8');
+      const entries = JSON.parse(raw);
+      if (Array.isArray(entries)) {
+        for (const c of entries) {
+          if (c && typeof c.jid === 'string') {
+            _chats.set(c.jid, {
+              jid: c.jid,
+              isGroup: !!c.isGroup,
+              lastActivityTs: Number(c.lastActivityTs) || 0,
+              creationTs:     Number(c.creationTs)     || 0,
+              name: typeof c.name === 'string' ? c.name : null,
+            });
+          }
+        }
+      }
+    }
+  } catch (_) { /* corrupt / unreadable — fall through to empty */ }
+
+  // Debounced write. Many messages can arrive in a burst; we don't
+  // need to fsync after each one. 2s lets a burst settle, then one
+  // write captures the resulting state. The unref() keeps the timer
+  // from blocking process exit.
+  let _chatsWriteTimer = null;
+  function _scheduleChatsWrite() {
+    if (_chatsWriteTimer) return;
+    _chatsWriteTimer = setTimeout(async () => {
+      _chatsWriteTimer = null;
+      try {
+        // Cap by most-recent activity; truly idle entries fall off.
+        const all = [..._chats.values()].sort((a, b) =>
+          (b.lastActivityTs || b.creationTs) - (a.lastActivityTs || a.creationTs));
+        const trimmed = all.slice(0, CHATS_CACHE_CAP);
+        await fs.mkdir(dirname(CHATS_CACHE_PATH), { recursive: true });
+        await fs.writeFile(CHATS_CACHE_PATH, JSON.stringify(trimmed, null, 2), { mode: 0o600 });
+      } catch (_) { /* best-effort; in-memory state still works */ }
+    }, 2_000);
+    _chatsWriteTimer.unref?.();
+  }
+
   function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity' }) {
     if (!jid) return;
     const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null };
@@ -137,6 +192,7 @@ export async function startWhatsAppBridge({
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
     if (name) cur.name = name;
     _chats.set(jid, cur);
+    _scheduleChatsWrite();
   }
 
   // libsignal (the signal-protocol package baileys depends on) emits
