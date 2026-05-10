@@ -3,6 +3,7 @@ import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../bridges/telegram.mjs';
 import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
 import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa-routing.js';
+import * as waCommands from '../commands/wa-commands.js';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../../../tools/cdp.mjs';
@@ -802,99 +803,44 @@ export default function App() {
       case '/help':
         appendMsg('egpt', helpText(Object.keys(BRAINS)));
         break;
-      case '/channels': {
-        if (!waCdpBridgeRef.current) { appendMsg('egpt', '!! /channels: WA-CDP bridge not ready (open web.whatsapp.com)'); break; }
-        const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-        const configDefault = parseInt(cfg.channels_default, 10);
-        const defaultLimit = Number.isFinite(configDefault) && configDefault > 0 ? configDefault : 10;
-        const argLimit = parseInt(parts[1], 10);
-        const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : defaultLimit;
-        try {
-          const chats = await waCdpBridgeRef.current.listChannels({ limit });
-          waChannelsRef.current = chats;
-          if (!chats.length) { appendMsg('egpt', '/channels: no chats visible (chat list panel not open?)'); break; }
-          const lines = chats.map((c, i) => {
-            const jidTag = c.jid ? `  [${c.jid}]` : '  [no-jid]';
-            const prev = c.preview ? `  — ${c.preview}` : '';
-            return `  @wa${i + 1}  ${c.name}${jidTag}${prev}`;
-          });
-          appendMsg('egpt', `chats (top ${chats.length}, use /join @waN to bind):\n${lines.join('\n')}`);
-        } catch (e) {
-          appendMsg('egpt', `!! /channels: ${e.message}`);
-        }
-        break;
-      }
-      case '/join': {
-        const arg = (parts[1] || '').trim();
-        const m = arg.match(/^@wa(\d+)$/i);
-        if (!m) { appendMsg('egpt', '!! /join: usage /join @waN  (run /channels first to see N)'); break; }
-        const idx = parseInt(m[1], 10) - 1;
-        const chat = waChannelsRef.current[idx];
-        if (!chat) { appendMsg('egpt', `!! /join: no @wa${idx + 1} in cached list. /channels first.`); break; }
-        waJoinedRef.current = chat;
-        setWaJoined(chat);
-        appendMsg('egpt', `/join: bound to @wa${idx + 1} = "${chat.name}". Outbound goes there. /unjoin to release.`);
-        break;
-      }
-      case '/unjoin': {
-        const prev = waJoinedRef.current;
-        waJoinedRef.current = null;
-        setWaJoined(null);
-        appendMsg('egpt', prev ? `/unjoin: released "${prev.name}"` : '/unjoin: nothing was joined');
-        break;
-      }
+      case '/channels':
+      case '/join':
+      case '/unjoin':
       case '/mirror': {
-        // /mirror @target — forward the LAST observed message to
-        // target with [sender]: attribution. Targets:
-        //   @e  / @egpt  → the dedicated 'e' thread
-        //   @waN         → the Nth chat from the most-recent /channels
-        //   @<session>   → an attached local CDP brain
-        const last = lastIncomingRef.current;
-        if (!last) { appendMsg('egpt', '!! /mirror: no recent message to mirror'); break; }
-        const arg = (parts[1] || '').trim();
-        if (!arg.startsWith('@')) {
-          appendMsg('egpt', '/mirror: usage /mirror @<target>  (e.g. @e, @wa3, @cgpt1)');
-          break;
-        }
-        const target = arg.slice(1).toLowerCase();
-        const formatted = `[${last.sender}]: ${last.text}`;
-
-        // @e / @egpt — dedicated persona thread
-        if (target === 'e' || target === 'egpt') {
-          try {
+        // Extracted to extension/src/commands/wa-commands.js so the
+        // side effects (storage, bridge, state mutation, log/error)
+        // can be unit-tested with mocked deps. The React layer wires
+        // the ctx to the live refs/storage/bridge here; everything
+        // user-observable goes through log/error → appendMsg.
+        const rest = parts.slice(1).join(' ');
+        const ctx = {
+          bridge: waCdpBridgeRef.current,
+          storage: chrome.storage.sync,
+          log:    (text) => appendMsg('egpt', text),
+          error:  (text) => appendMsg('egpt', `!! ${text}`),
+          getChannels: () => waChannelsRef.current,
+          setChannels: (c) => { waChannelsRef.current = c; },
+          getJoined:   () => waJoinedRef.current,
+          setJoined:   (v) => { waJoinedRef.current = v; setWaJoined(v); },
+          getSessions: () => sessionsRef.current,
+          getLastIncoming: () => lastIncomingRef.current,
+          runBrainE: async (text, sender) => {
             await ensureEThread();
-            await runBrain('e', last.text, { sender: last.sender });
+            await runBrain('e', text, { sender });
             await persistEThreadUrl();
-          } catch (e) { appendMsg('egpt', `!! /mirror @e failed: ${e.message}`); }
-          break;
-        }
-
-        // @waN — WA channel from /channels cache
-        const waMatch = target.match(/^wa(\d+)$/);
-        if (waMatch) {
-          const idx = parseInt(waMatch[1], 10) - 1;
-          const chat = waChannelsRef.current[idx];
-          if (!chat) { appendMsg('egpt', `!! /mirror @wa${idx + 1}: not in cached list. /channels first.`); break; }
-          if (!waCdpBridgeRef.current) { appendMsg('egpt', '!! /mirror: WA-CDP bridge not ready'); break; }
-          try {
-            await waCdpBridgeRef.current.send(formatted, { chatName: chat.name, chatJid: chat.jid });
-            appendMsg('egpt', `→ /mirror @wa${idx + 1} (${chat.name}): ${formatted.slice(0, 60)}…`);
-          } catch (e) { appendMsg('egpt', `!! /mirror @wa${idx + 1} failed: ${e.message}`); }
-          break;
-        }
-
-        // @<session> — attached local brain
-        const sessionName = arg.slice(1);   // preserve case for session lookup
-        if (sessionsRef.current.has(sessionName)) {
-          try {
-            await runBrain(sessionName, last.text, { sender: last.sender });
-          } catch (e) { appendMsg('egpt', `!! /mirror @${sessionName} failed: ${e.message}`); }
-          break;
-        }
-
-        appendMsg('egpt', `!! /mirror: unknown target @${arg.slice(1)}. Try @e, @waN (after /channels), or a session name (/sessions to list).`);
+          },
+          runBrainSession: async (name, text, sender) => {
+            await runBrain(name, text, { sender });
+          },
+        };
+        if (cmd === '/channels') await waCommands.channels(rest, ctx);
+        else if (cmd === '/join') await waCommands.join(rest, ctx);
+        else if (cmd === '/unjoin') await waCommands.unjoin(rest, ctx);
+        else if (cmd === '/mirror') await waCommands.mirror(rest, ctx);
         break;
       }
+      // ('/mirror' is handled by the merged WA-commands case above)
+
       default:
         appendMsg('egpt', `!! unknown command: ${slash}`);
     }
