@@ -276,7 +276,13 @@
   // Initial sweep: silence anything currently in the DOM.
   document.querySelectorAll('[data-id]').forEach(r => seen.add(r.getAttribute('data-id')));
 
-  const observer = new MutationObserver(() => scan());
+  // Both scan() and autoOpenScan() (defined below) fire on every DOM
+  // mutation. MutationObserver is NOT subject to the per-tab timer
+  // throttling Chrome applies to hidden / background-window tabs,
+  // unlike setInterval. So when the WA tab isn't the active tab in
+  // its window, the observer-driven path keeps detecting incoming
+  // chat-list updates while the timer below would be near-frozen.
+  const observer = new MutationObserver(() => { scan(); autoOpenScan(); });
   observer.observe(document.body, { childList: true, subtree: true });
 
   // ── Auto-focus on wake-word notifications ──────────────────────
@@ -298,7 +304,14 @@
   const WAKE_RE = /^@(egpt|e)\b/i;
   const _autoOpenedAt = new Map();   // key (jid|name) → ms
   const AUTO_OPEN_DEDUPE_MS = 10_000;
-  const AUTO_OPEN_INTERVAL_MS = 1_500;
+  // The MutationObserver covers the live case (WA's WebSocket pushes a
+  // message → chat-list row mutates → observer fires → autoOpenScan
+  // runs). The setInterval is a slower belt-and-suspenders for state
+  // already present at script load (no mutation to react to) and any
+  // edge cases where the observer doesn't fire. Slow enough not to
+  // burn cycles when the tab is foreground; throttled to ~1Hz when
+  // hidden but that's fine — the observer-driven path is primary.
+  const AUTO_OPEN_INTERVAL_MS = 5_000;
 
   function findComposer() {
     return document.querySelector('div[contenteditable="true"][data-tab="10"]')
@@ -330,6 +343,9 @@
     }
   }
   setInterval(autoOpenScan, AUTO_OPEN_INTERVAL_MS);
+  // Initial sweep — catches unreads already present at script load
+  // before any mutation fires.
+  autoOpenScan();
 
   connect();
 })();
