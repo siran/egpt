@@ -21,7 +21,7 @@ import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
-import { recordSession, startNew, rewind, listHistory, summarize } from './persona-state.mjs';
+import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
@@ -2545,12 +2545,33 @@ function App() {
       const state = readDefaultBrainState();
 
       if (sub === 'help') {
-        sysOut('usage: /egpt [status | new | list | rewind [<n>|<id-prefix>]]');
+        sysOut('usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]');
         return true;
       }
       if (sub === 'status') {
         const sum = summarize(state);
-        sysOut(`egpt: ${sum.type}  active=${sum.activeShort}  history=${sum.historyCount}`);
+        const kind = sum.activeKind ? ` (${sum.activeKind})` : '';
+        sysOut(`egpt: ${sum.type}${kind}  active=${sum.activeShort}  history=${sum.historyCount}`);
+        return true;
+      }
+      if (sub === 'brain') {
+        // /egpt brain                  — show current
+        // /egpt brain <type>           — switch type, no ref (next @e fresh)
+        // /egpt brain <type> <ref>     — switch + bind to ref (URL or session_id)
+        const newType = (parts[1] || '').trim();
+        const ref     = parts.slice(2).join(' ').trim();
+        if (!newType) {
+          const sum = summarize(state);
+          sysOut(`egpt brain: ${sum.type}  active=${sum.activeShort}  (use /egpt brain <type> [<ref>] to switch)`);
+          return true;
+        }
+        const canonical = canonicalBrainName(newType);
+        const brain = brainForName(canonical);
+        if (!brain) { sysOut(`!! /egpt brain: unknown brain "${newType}"`); return true; }
+        const next = setBrain(state, canonical, ref || null);
+        await persistDefaultBrainState(next);
+        const sum = summarize(next);
+        sysOut(`egpt: brain → ${sum.type}${sum.activeShort && sum.activeFull ? `  active=${sum.activeShort}` : ' (no ref — next @e starts fresh)'}`);
         return true;
       }
       if (sub === 'list') {
@@ -2578,13 +2599,14 @@ function App() {
         try {
           const next = rewind(state, target);
           await persistDefaultBrainState(next);
-          sysOut(`egpt: rewound to @${next.session_id.slice(0, 8)} (${next.type})`);
+          const sum = summarize(next);
+          sysOut(`egpt: rewound to ${sum.activeShort} (${next.type})`);
         } catch (e) {
           sysOut(`!! /egpt rewind: ${e.message}`);
         }
         return true;
       }
-      sysOut(`!! /egpt: unknown subcommand "${sub}". usage: /egpt [status | new | list | rewind [<n>|<id-prefix>]]`);
+      sysOut(`!! /egpt: unknown subcommand "${sub}". usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]`);
       return true;
     }
     if (cmd === '/log' || cmd === '/logs') {
@@ -4425,6 +4447,50 @@ function App() {
     const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
     if (!brain) return `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
+
+    // URL-based brains (chatgpt-cdp, claude-cdp): the "thread" is the
+    // tab's URL. Find an open tab at that URL via CDP; auto-open if
+    // none exists. Then stream via brain.stream({...}, _, {targetId}).
+    // History (.url) is recorded after each turn so /egpt list/rewind
+    // works on URLs the same way it does on session_ids.
+    if (isUrlBrain(brainType)) {
+      const url = dbCfg.url;
+      if (!url) {
+        return `!! @e: ${brainType} is configured but no URL is set. Try /egpt brain ${brainType} <url> or use a CDP brain with a thread.`;
+      }
+      let targetId = null;
+      try {
+        const tabs = await cdp.listTabs(brain.urlMatch);
+        const m = tabs.find(t => t.url === url || t.url.startsWith(url));
+        if (m) targetId = m.id;
+        else {
+          // Open in a detached window so the brain has its own visible
+          // space — same pattern as the extension's ensureEThread.
+          // openTab returns the CDP target id directly.
+          targetId = await cdp.openTab(url);
+        }
+      } catch (e) {
+        return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
+      }
+      try {
+        const result = await brain.stream(
+          { message: text },
+          onPartial,
+          { targetId },
+        );
+        const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+        // Record the URL in history (no session_id for URL brains).
+        // Re-record on every turn so the timestamp stays fresh in
+        // /egpt list.
+        const next = recordSession(readDefaultBrainState(), url, { type: brainType });
+        await persistDefaultBrainState(next);
+        return final.trim() || '(no reply)';
+      } catch (e) {
+        return `!! @e: ${e.message}`;
+      }
+    }
+
+    // CLI brains (claude-code, codex, ccode): session_id + cwd path.
     const sessionOpts = {
       sessionId: dbCfg.session_id ?? null,
       cwd: dbCfg.cwd ?? process.cwd(),
@@ -4473,6 +4539,7 @@ function App() {
     return {
       type:       cfg.type        ?? 'claude-code',
       session_id: cfg.session_id  ?? null,
+      url:        cfg.url         ?? null,
       history:    Array.isArray(cfg.history) ? cfg.history : [],
     };
   }
@@ -4487,6 +4554,7 @@ function App() {
     if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
     cfg.default_brain.type        = state.type;
     cfg.default_brain.session_id  = state.session_id;
+    cfg.default_brain.url         = state.url;
     cfg.default_brain.history     = state.history;
     EGPT_CONFIG.default_brain = cfg.default_brain;
     try {
@@ -5068,6 +5136,24 @@ function App() {
     };
 
     switch (ev.type) {
+      case 'egpt-thread': {
+        // A peer (typically the extension) is announcing its current
+        // @e thread. Adopt it as our default brain so /e in shell
+        // continues the same conversation. Only acts on live events
+        // (skip replays so a stale broadcast doesn't override the
+        // user's local /egpt brain choice) and only when the peer's
+        // brain_type + url shape is sane.
+        if (ev._replayed) return;
+        if (!ev.brain_type || !ev.url) return;
+        if (!isUrlBrain(ev.brain_type)) return;
+        const cur = readDefaultBrainState();
+        if (cur.url === ev.url && cur.type === ev.brain_type) return;
+        const next = setBrain(cur, ev.brain_type, ev.url);
+        await persistDefaultBrainState(next);
+        const sum = summarize(next);
+        log(`bus: adopted @e thread from ${ev.from} → ${sum.type}  ${sum.activeShort}`);
+        return;
+      }
       case 'node-online': {
         peerNodesRef.current.set(ev.from, {
           role: ev.role, sessions: ev.sessions ?? [],

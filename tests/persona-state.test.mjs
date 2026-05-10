@@ -208,6 +208,103 @@ describe('persona-state — summarize (the /egpt status subcommand)', () => {
   });
 });
 
+describe('persona-state — URL-based brains (chatgpt-cdp, claude-cdp)', () => {
+  it('isUrlBrain identifies URL-keyed brain types', async () => {
+    const { isUrlBrain } = await import('../persona-state.mjs');
+    expect(isUrlBrain('chatgpt-cdp')).toBe(true);
+    expect(isUrlBrain('claude-cdp')).toBe(true);
+    expect(isUrlBrain('claude-code')).toBe(false);
+    expect(isUrlBrain('codex')).toBe(false);
+    expect(isUrlBrain('ccode')).toBe(false);
+  });
+
+  it('recordSession stores ref as url (not session_id) when the type is a URL brain', () => {
+    const s = recordSession(emptyState({ type: 'chatgpt-cdp' }), 'https://chatgpt.com/c/abc');
+    expect(s.url).toBe('https://chatgpt.com/c/abc');
+    expect(s.session_id).toBe(null);
+    expect(s.history[0]).toMatchObject({ url: 'https://chatgpt.com/c/abc', type: 'chatgpt-cdp' });
+    expect(s.history[0].id).toBeUndefined();
+  });
+
+  it('summarize for a URL brain exposes the full URL as activeFull and short-truncates at 50', () => {
+    let s = recordSession(emptyState({ type: 'chatgpt-cdp' }), 'https://chatgpt.com/c/' + 'x'.repeat(60));
+    const sum = summarize(s);
+    expect(sum.type).toBe('chatgpt-cdp');
+    expect(sum.activeKind).toBe('url');
+    expect(sum.activeFull.length).toBe('https://chatgpt.com/c/'.length + 60);
+    expect(sum.activeShort.length).toBeLessThanOrEqual(50);
+    expect(sum.activeShort.endsWith('…')).toBe(true);
+  });
+
+  it('listHistory exposes url + kind for URL entries', () => {
+    let s = emptyState({ type: 'chatgpt-cdp' });
+    s = recordSession(s, 'https://chatgpt.com/c/abc');
+    s = recordSession(s, 'https://chatgpt.com/c/def');
+    const list = listHistory(s);
+    expect(list).toHaveLength(2);
+    expect(list[0]).toMatchObject({ url: 'https://chatgpt.com/c/def', kind: 'url' });
+    expect(list[1]).toMatchObject({ url: 'https://chatgpt.com/c/abc', kind: 'url' });
+    expect(list[0].isActive).toBe(true);
+  });
+
+  it('rewind by URL prefix selects the right entry', () => {
+    let s = emptyState({ type: 'chatgpt-cdp' });
+    s = recordSession(s, 'https://chatgpt.com/c/aaa');
+    s = recordSession(s, 'https://chatgpt.com/c/bbb');
+    s = startNew(s);
+    const after = rewind(s, 'https://chatgpt.com/c/a');
+    expect(after.url).toBe('https://chatgpt.com/c/aaa');
+    expect(after.session_id).toBe(null);
+  });
+
+  it('startNew clears both session_id and url', () => {
+    let s = recordSession(emptyState({ type: 'chatgpt-cdp' }), 'https://chatgpt.com/c/x');
+    s = startNew(s);
+    expect(s.session_id).toBe(null);
+    expect(s.url).toBe(null);
+    expect(s.history).toHaveLength(1);   // history retained
+  });
+});
+
+describe('persona-state — setBrain', () => {
+  it('switches brain type without a ref, clears active, preserves history', async () => {
+    const { setBrain } = await import('../persona-state.mjs');
+    let s = recordSession(emptyState(), 'sess-1');
+    expect(s.session_id).toBe('sess-1');
+    s = setBrain(s, 'chatgpt-cdp');
+    expect(s.type).toBe('chatgpt-cdp');
+    expect(s.session_id).toBe(null);
+    expect(s.url).toBe(null);
+    expect(s.history).toHaveLength(1);
+  });
+
+  it('switches brain type WITH a ref records it as url for URL brains', async () => {
+    const { setBrain } = await import('../persona-state.mjs');
+    let s = emptyState();
+    s = setBrain(s, 'chatgpt-cdp', 'https://chatgpt.com/c/abc');
+    expect(s.type).toBe('chatgpt-cdp');
+    expect(s.url).toBe('https://chatgpt.com/c/abc');
+    expect(s.session_id).toBe(null);
+    expect(s.history[0].url).toBe('https://chatgpt.com/c/abc');
+  });
+
+  it('switches brain type WITH a ref records it as session_id for CLI brains', async () => {
+    const { setBrain } = await import('../persona-state.mjs');
+    let s = emptyState();
+    s = setBrain(s, 'ccode', 'session-abc');
+    expect(s.type).toBe('ccode');
+    expect(s.session_id).toBe('session-abc');
+    expect(s.url).toBe(null);
+  });
+
+  it('no-op when type is empty', async () => {
+    const { setBrain } = await import('../persona-state.mjs');
+    const before = recordSession(emptyState(), 'sess-1');
+    const after = setBrain(before, null);
+    expect(after).toEqual(before);
+  });
+});
+
 describe('persona-state — backward compat with existing default_brain configs', () => {
   it('a config with session_id but no history reads cleanly (history defaults to [])', () => {
     // Mimics the current shape on disk: { type, session_id } — no history yet.

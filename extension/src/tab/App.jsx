@@ -1025,6 +1025,21 @@ export default function App() {
           type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'chrome',
           sessions: sessionsList, polling: false,
         });
+        // Broadcast the @e thread the extension is currently bound to,
+        // so a peer shell can adopt the same conversation. Shape:
+        //   { brain_type, url } — both required. brain_type is one of
+        //   'chatgpt-cdp' / 'claude-cdp'. The shell side's
+        //   persona-state.setBrain consumes this directly.
+        try {
+          const got = await chrome.storage.local.get('egpt_thread');
+          const saved = got?.egpt_thread ?? null;
+          if (saved && saved.url && saved.brain_type) {
+            await bus.postEvent(located.targetId, {
+              type: 'egpt-thread', from: BUS_NODE_ID, ts: Date.now(),
+              brain_type: saved.brain_type, url: saved.url,
+            });
+          }
+        } catch (_) {}
         appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached', { noMirror: true });
         lastErrorMsg = null;
       } catch (e) {
