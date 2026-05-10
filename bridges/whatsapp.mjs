@@ -136,7 +136,15 @@ export async function startWhatsAppBridge({
   //                    meta.creation. Useful as a fallback sort key
   //                    for groups we belong to but never confused
   //                    with real activity.
-  const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name }
+  // Per-chat recent ring. Capped per entry — stored alongside chat
+  // metadata in _chats and persisted to disk. Used by listChats so
+  // /channels can show a few lines per group ("get a feel of each
+  // group" — user request). Caching them is still SILENT tracking
+  // (no UI / brain / mirror) per the deliver-vs-render rule —
+  // /channels is a user-pulled read, not push.
+  const RECENT_PER_CHAT = 10;        // ring cap
+  const RECENT_BODY_CAP  = 200;      // chars stored per message body
+  const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name, recent: [{ts,author,text}] }
 
   // Load persisted chats on bridge start. Silently best-effort —
   // missing file / corrupt JSON just yields an empty map and we
@@ -156,6 +164,9 @@ export async function startWhatsAppBridge({
               lastActivityTs: Number(c.lastActivityTs) || 0,
               creationTs:     Number(c.creationTs)     || 0,
               name: typeof c.name === 'string' ? c.name : null,
+              recent: Array.isArray(c.recent)
+                ? c.recent.filter(r => r && typeof r.text === 'string').slice(-RECENT_PER_CHAT)
+                : [],
             });
           }
         }
@@ -184,13 +195,34 @@ export async function startWhatsAppBridge({
     _chatsWriteTimer.unref?.();
   }
 
-  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity' }) {
+  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null }) {
     if (!jid) return;
-    const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null };
+    const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [] };
+    if (!Array.isArray(cur.recent)) cur.recent = [];
     cur.isGroup = isGroup;
     if (kind === 'activity') cur.lastActivityTs = Math.max(cur.lastActivityTs, ts);
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
     if (name) cur.name = name;
+    // Append a recent-message entry when we have a real body. Dedupe
+    // by ts+author so the same row arriving via both messages.upsert
+    // and messaging-history.set doesn't double-count.
+    if (body && typeof body === 'string' && ts > 0) {
+      const trimmed = body.trim();
+      if (trimmed) {
+        const text = trimmed.length > RECENT_BODY_CAP
+          ? trimmed.slice(0, RECENT_BODY_CAP - 1) + '…'
+          : trimmed;
+        const dupe = cur.recent.some(r => r.ts === ts && r.author === author && r.text === text);
+        if (!dupe) {
+          cur.recent.push({ ts, author: author ?? null, text });
+          // Keep newest at the end. Sort + slice to cap.
+          cur.recent.sort((a, b) => a.ts - b.ts);
+          if (cur.recent.length > RECENT_PER_CHAT) {
+            cur.recent.splice(0, cur.recent.length - RECENT_PER_CHAT);
+          }
+        }
+      }
+    }
     _chats.set(jid, cur);
     _scheduleChatsWrite();
   }
@@ -326,16 +358,25 @@ export async function startWhatsAppBridge({
       }
       // — SILENT track — every row, regardless of type, feeds the
       // chat-list tracker. No UI, no onIncoming, no brain dispatch.
-      // Message content is NOT examined; only jid + isGroup + ts +
-      // pushName for naming.
+      // We extract the body here to keep a small recent-messages ring
+      // per chat so /channels can surface a few lines as preview.
+      // The ring is a state cache the user pulls via /channels — not
+      // a push: it never auto-renders, never reaches a brain, never
+      // mirrors to other bridges. Same rule as the chat-list itself.
       for (const m of messages) {
         const jid = m.key?.remoteJid;
         if (!jid) continue;
         const isGroup = jid.endsWith('@g.us');
         const ts = (Number(m.messageTimestamp) || 0) * 1000;
-        const remoteName = (!m.key?.fromMe && typeof m.pushName === 'string' && m.pushName.trim())
-          ? m.pushName.trim() : null;
-        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity' });
+        const fromMe = !!m.key?.fromMe;
+        const pushedName = (typeof m.pushName === 'string' && m.pushName.trim()) ? m.pushName.trim() : null;
+        // Naming: the chat name only updates from pushName for 1:1
+        // chats received from the other side (preserves group
+        // subjects already on file). Author is whoever spoke.
+        const remoteName = (!fromMe && pushedName) ? pushedName : null;
+        const author = fromMe ? 'You' : (pushedName ?? null);
+        const body = textOf(m.message ?? {}) ?? null;
+        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity', author, body });
       }
       // — LOUD track — only real-time messages reach handleMessage,
       // which is the path that renders, mirrors, and may dispatch
@@ -577,7 +618,7 @@ export async function startWhatsAppBridge({
   // they only want active chats. Default is true because the user's
   // expectation is "what WA shows me when I open it" — every group
   // I'm in, with the recent ones at the top.
-  async function listChats({ limit = 20, all = true } = {}) {
+  async function listChats({ limit = 20, all = true, messagesPerChat = 0 } = {}) {
     if (!sock) return [];
     // Merge groups from server-side metadata into the in-memory map.
     // Only the CREATION timestamp goes in — never confused with
@@ -616,12 +657,17 @@ export async function startWhatsAppBridge({
       if (!name && c.isGroup) name = await _groupSubject(c.jid);
       if (!name) name = (c.jid.split('@')[0]?.split(':')[0] ?? c.jid);
       if (isSelfDmJid(c.jid)) name = `${name} (You)`;
+      // recent[] is stored oldest-first. Caller asked for N newest.
+      const recent = (messagesPerChat > 0 && Array.isArray(c.recent))
+        ? c.recent.slice(-messagesPerChat)
+        : [];
       return {
         jid: c.jid,
         name,
         isGroup:        c.isGroup,
         lastActivityTs: c.lastActivityTs,
         creationTs:     c.creationTs,
+        recent,
       };
     }));
     return out;

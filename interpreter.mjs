@@ -41,7 +41,7 @@ export const COMMANDS = [
   { cmd: '/rules',          surface: 'shell',     usage: '/rules',                                         desc: 'write room etiquette' },
   { cmd: '/last',           surface: 'shell',     usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
   { cmd: '/clear',          surface: 'extension', usage: '/clear',                                         desc: 'clear display' },
-  { cmd: '/channels',       surface: 'both',      usage: '/channels [N]',                                 desc: 'list the top-N most-active WA chats numbered as @waN — shell uses baileys, extension scrapes WA Web. /channels then @wa<N> <body> to send.' },
+  { cmd: '/channels',       surface: 'both',      usage: '/channels [N] [messages-per-chat]',             desc: 'list the top-N most-active WA chats numbered as @waN, with M recent message lines per chat (default 10 3). shell uses baileys; extension scrapes WA Web. /channels then @wa<N> <body> to send.' },
   { cmd: '/join',           surface: 'extension', usage: '/join @waN',                                    desc: 'bind extension outbound to chat N from /channels (extension WA-CDP only)' },
   { cmd: '/unjoin',         surface: 'extension', usage: '/unjoin',                                       desc: 'release the /join binding' },
   { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },

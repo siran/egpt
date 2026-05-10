@@ -2884,10 +2884,14 @@ function App() {
         sysOut('!! /channels: this whatsapp bridge build does not expose listChats — update bridges/whatsapp.mjs');
         return true;
       }
-      const argLimit = parseInt(arg.trim(), 10);
-      const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 20;
+      // /channels                 → top 10, 3 recent messages per chat
+      // /channels <N>             → top N, 3 recent per chat
+      // /channels <N> <M>         → top N, M recent per chat (M=0 = no preview)
+      const tokens = arg.trim().split(/\s+/).filter(t => /^\d+$/.test(t)).map(t => parseInt(t, 10));
+      const limit           = tokens[0] && tokens[0] > 0 ? tokens[0] : 10;
+      const messagesPerChat = tokens[1] != null ? Math.max(0, tokens[1]) : 3;
       try {
-        const chats = await wa.listChats({ limit });
+        const chats = await wa.listChats({ limit, messagesPerChat });
         if (!chats.length) {
           sysOut('/channels: no chats found (baileys not synced yet — give it a moment after /whatsapp start, or just wait for the first message)');
           return true;
@@ -2903,14 +2907,26 @@ function App() {
           if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
           return `${Math.floor(s / 86400)}d ago`;
         };
-        const lines = chats.map((c, i) => {
+        const blocks = chats.map((c, i) => {
           const tag = c.isGroup ? '[group]' : '[1:1]';
           const age = c.lastActivityTs > 0
             ? ageLabel(c.lastActivityTs)
             : (c.creationTs > 0 ? `dormant, created ${ageLabel(c.creationTs)}` : 'dormant');
-          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
+          const header = `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
+          if (!messagesPerChat || !Array.isArray(c.recent) || !c.recent.length) {
+            return header;
+          }
+          // Render newest-last so the preview reads chronologically,
+          // which matches how the user would see it in WA itself.
+          const previewLines = c.recent.map(r => {
+            const speaker = r.author ?? '?';
+            const oneLine = (r.text ?? '').replace(/\s+/g, ' ').trim();
+            const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
+            return `      [${speaker}] ${trimmed}`;
+          });
+          return [header, ...previewLines].join('\n');
         });
-        sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${lines.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
+        sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${blocks.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
       } catch (e) {
         sysOut(`!! /channels: ${e.message}`);
       }
