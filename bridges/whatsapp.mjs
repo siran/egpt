@@ -253,8 +253,13 @@ export async function startWhatsAppBridge({
       browser: ['egpt', 'Chrome', '0.2.0'],
       // Logger: silence baileys's pino output unless something is wrong.
       logger: silentLogger(),
-      // Don't print history of past chats on first sync — too noisy.
-      shouldSyncHistoryMessage: () => false,
+      // Sync history so we learn about chats that exist beyond the
+      // ones that ping us since boot — otherwise /channels right
+      // after a fresh start can only return the one or two chats
+      // that have happened to send something. We DON'T pipe the bulk
+      // history through onIncoming (the messages.upsert type filter
+      // below skips 'prepend'); we just record the chat sightings.
+      shouldSyncHistoryMessage: () => true,
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -308,16 +313,62 @@ export async function startWhatsAppBridge({
           log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
         }
       }
+      // Pre-record chat sightings BEFORE the type filter. Even bulk
+      // history rows (type='prepend') tell us a chat exists and was
+      // last active at a certain ts — that's what /channels needs.
+      // They are NOT passed to onIncoming (that filter is below) so
+      // the user isn't flooded with the last hour of group chatter
+      // every restart.
+      for (const m of messages) {
+        const jid = m.key?.remoteJid;
+        if (!jid) continue;
+        const isGroup = jid.endsWith('@g.us');
+        const ts = (Number(m.messageTimestamp) || 0) * 1000;
+        const remoteName = (!m.key?.fromMe && typeof m.pushName === 'string' && m.pushName.trim())
+          ? m.pushName.trim() : null;
+        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity' });
+      }
       // Default mode: 'notify' (push-real-time) + 'append' (commonly
       // used for own-device messages on linked devices — 'Message
       // Yourself' lands here on some baileys versions). 'prepend' is
-      // bulk history sync; skip. Debug mode passes everything through
-      // so the user can see what baileys actually delivers and which
-      // filter (if any) was hiding it.
+      // bulk history sync; skip from onIncoming. Debug mode passes
+      // everything through so the user can see what baileys actually
+      // delivers and which filter (if any) was hiding it.
       if (!debug && type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
+      }
+    });
+
+    // History sync — baileys delivers chats + their last conversation
+    // timestamps in one shot after connect when shouldSyncHistoryMessage
+    // is true. Capture all of them for /channels. Names come straight
+    // from WA's metadata for groups, pushName cache for 1:1.
+    sock.ev.on('messaging-history.set', ({ chats }) => {
+      if (!Array.isArray(chats)) return;
+      for (const chat of chats) {
+        if (!chat?.id) continue;
+        const isGroup = chat.id.endsWith('@g.us');
+        const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
+        const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
+        if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
+      }
+    });
+
+    // Live chat updates — fired when a new chat appears or an
+    // existing one's metadata changes. Mostly redundant with the
+    // messages.upsert pre-record above, but catches cases where WA
+    // surfaces a chat without an associated message (e.g., a name
+    // change, archive toggle).
+    sock.ev.on('chats.upsert', (chats) => {
+      if (!Array.isArray(chats)) return;
+      for (const chat of chats) {
+        if (!chat?.id) continue;
+        const isGroup = chat.id.endsWith('@g.us');
+        const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
+        const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
+        if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
       }
     });
   }
