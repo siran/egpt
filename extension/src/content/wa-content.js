@@ -223,8 +223,17 @@
   };
 
   function scan() {
-    const rows = document.querySelectorAll('[data-id]');
     const chat = activeChat();
+    // Bail when the header is empty (transitional state — chat-switch
+    // in flight, page loading, etc.). Without a chat name, downstream
+    // would emit chatId:null, replyTo would be null in handleSubmit,
+    // and the brain reply wouldn't mirror back to the originating
+    // chat. The MutationObserver re-fires once the header settles,
+    // so the row gets emitted on a later scan with the correct
+    // attribution. We DON'T add anything to `seen` here so the same
+    // row is reconsidered next pass.
+    if (!chat) return;
+    const rows = document.querySelectorAll('[data-id]');
     if (chat !== lastChat) {
       lastChat = chat;
       silentUntil = Date.now() + SILENT_WINDOW_MS;
