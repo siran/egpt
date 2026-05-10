@@ -311,10 +311,15 @@ async function sendToFirstWaTab(text, opts = {}) {
     //   3. (none) — sends go to whatever's currently active
     let chatName = (typeof opts.chatName === 'string' && opts.chatName.trim()) ? opts.chatName.trim() : null;
     let chatJid  = (typeof opts.chatJid  === 'string' && opts.chatJid.trim())  ? opts.chatJid.trim()  : null;
-    if (!chatName && !chatJid) {
-      const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-      chatName = (typeof cfg.chat_name === 'string' && cfg.chat_name.trim()) ? cfg.chat_name.trim() : null;
-    }
+    // No fallback to whatsapp_cdp.chat_name: it's only an INBOUND gate
+    // (which self-DM should bypass the wake-word) and was leaking as
+    // an outbound default sink, dumping every untargeted send into the
+    // user's "message yourself" chat. With no explicit target we now
+    // send to whatever's currently active in WA Web — caller's choice.
+
+    // Bring the WA Web tab to the front so its renderer isn't
+    // throttled mid-send and so the user can see what's happening.
+    try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
     // Standard send workflow, with verification at each step:
     //   1. switch chat (ensureActiveChat clicks the row)
     //   2. verify title — we're on the intended chat
@@ -463,6 +468,7 @@ async function openChatViaDebugger(tabId, chat) {
   try {
     await chrome.debugger.attach(target, '1.3');
     attached = true;
+    try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
     await ensureActiveChat(target, chat);
   } catch (_) {
     // swallow — best-effort

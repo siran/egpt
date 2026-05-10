@@ -183,7 +183,14 @@
   }
   function activeChat() {
     const h = document.querySelector('header span[dir="auto"][title]');
-    return h?.getAttribute('title') || h?.innerText?.trim() || null;
+    const raw = h?.getAttribute('title') || h?.innerText || '';
+    // First-line + whitespace-collapse, matching the title comparison in
+    // background.js sendToFirstWaTab. Some headers carry "last seen…"
+    // affordances on a second line; without normalization, replyTo
+    // would carry that string and ensureActiveChat would never match a
+    // chat-list row (whose title is just the chat name).
+    const norm = raw.split('\n')[0].replace(/\s+/g, ' ').trim();
+    return norm || null;
   }
 
   // Silent window — debounced PER-CHAT. Each chat-switch dumps that

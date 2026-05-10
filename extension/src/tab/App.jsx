@@ -1453,11 +1453,20 @@ export default function App() {
         // is no shell on the bus. The shell, when present, has the
         // baileys WA bridge and mirrors room-utterances natively (no
         // chrome.debugger banner). Extension's WA-CDP bridge takes
-        // over only as the no-shell fallback. Same anti-loop guard
-        // (don't echo WA → WA).
+        // over only as the no-shell fallback. Anti-loop guards:
+        //   - skip events that originated FROM WA (would echo).
+        //   - skip events that originated FROM THIS NODE — handleSubmit
+        //     already mirrored locally and (when /join is set) sent to
+        //     the WA chat directly. The bus echo coming back here would
+        //     re-send and dump into self-DM via the chat_name fallback,
+        //     leaking '@e foo' typed in the extension into "message
+        //     yourself".
+        //   - require waJoinedRef so we only auto-mirror when the user
+        //     has explicitly bound a WA destination.
         const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
+        const fromOwnNode  = ev.from === BUS_NODE_ID;
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-        if (waCdpBridgeRef.current && !fromWhatsApp && !hasShellPeer) {
+        if (waCdpBridgeRef.current && !fromWhatsApp && !fromOwnNode && !hasShellPeer && waJoinedRef.current) {
           // Async, fire-and-forget. Bridge surfaces failures via its
           // own onError → appendMsg. Success is silent — this fires
           // for every utterance and per-mirror logging would clutter.
@@ -1480,11 +1489,16 @@ export default function App() {
           );
         }
         // Mirror peer brain replies to WA when no shell is on the bus
-        // (shell otherwise handles WA mirroring via baileys). Anti-
-        // loop guard: skip events tagged as already-from-WA.
+        // (shell otherwise handles WA mirroring via baileys). Same
+        // guards as room-utterance: skip own broadcasts (runBrain
+        // mirrored locally and to replyTo when applicable), skip WA-
+        // origin (avoid loop), require waJoined so we only auto-mirror
+        // peer replies when the user has explicitly bound a WA
+        // destination.
         const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
+        const fromOwnNode  = ev.from === BUS_NODE_ID;
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-        if (waCdpBridgeRef.current && !fromWhatsApp && !hasShellPeer && ev.body) {
+        if (waCdpBridgeRef.current && !fromWhatsApp && !fromOwnNode && !hasShellPeer && ev.body && waJoinedRef.current) {
           try { waCdpBridgeRef.current.send(`[${ev.session ?? 'reply'}] ${ev.body}`); } catch (_) {}
         }
         return;

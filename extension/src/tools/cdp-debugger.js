@@ -85,6 +85,17 @@ export function streamFromTab({
       await chrome.debugger.attach(target, '1.3');
       attached = true;
 
+      // Bring the brain tab to the front in its window. Background
+      // tabs in Chrome get aggressive timer/network throttling (RAIL
+      // ~1Hz, network priority dropped); ChatGPT, Claude, etc. visibly
+      // stop streaming when their tab isn't visible. bringToFront
+      // makes the tab the active one in its window without focusing
+      // the WINDOW itself, so a brain tab in another monitor's
+      // background window will resume normal-rate streaming. Best-
+      // effort — failure here doesn't prevent the inject/poll loop
+      // from running.
+      try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
+
       // Initial poll — capture starting message id so we know when a
       // brand-new reply has appeared (vs the previous turn's last
       // assistant message).

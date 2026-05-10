@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(node --check egpt.mjs)",
+      "Bash(node --check interpreter.mjs)",
+      "Bash(node --check brains/codex.mjs)",
+      "Bash(node --check brains/claude-code.mjs)",
+      "Bash(node --check brains/chatgpt-cdp.mjs)",
+      "Bash(powershell *)",
+      "Bash(grep -o '\"content\":\\\\[\\\\{\"type\":\"text\",\"text\":\"[^\"]*')",
+      "Bash(node --check tools/bus.mjs)",
+      "Bash(node --check tools/cdp-proxy.mjs)",
+      "Bash(npm run *)",
+      "Bash(git add *)"
+    ]
+  }
+}
