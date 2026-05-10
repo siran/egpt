@@ -318,15 +318,19 @@ async function sendToFirstWaTab(text, opts = {}) {
     //   2. (none) — sends go to whatever's currently active
     let chatName = (typeof opts.chatName === 'string' && opts.chatName.trim()) ? opts.chatName.trim() : null;
     let chatJid  = (typeof opts.chatJid  === 'string' && opts.chatJid.trim())  ? opts.chatJid.trim()  : null;
-    // No fallback to whatsapp_cdp.chat_name: it's only an INBOUND gate
-    // (which self-DM should bypass the wake-word) and was leaking as
-    // an outbound default sink, dumping every untargeted send into the
-    // user's "message yourself" chat. With no explicit target we now
-    // send to whatever's currently active in WA Web — caller's choice.
 
     // Bring the WA Web tab to the front so its renderer isn't
     // throttled mid-send and so the user can see what's happening.
     try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
+
+    // Show the 'egpt is typing for you…' overlay immediately, with
+    // pointer-events:none so it doesn't swallow our own chat-switch
+    // click. Visible from the start = better feedback (the type/send
+    // phase alone is too fast to perceive a flash). After the switch
+    // we flip to pointer-events:auto so user clicks during the
+    // type/send phase are blocked and can't race with focus.
+    await showSendingOverlay(target, { blockEvents: false }).catch(() => {});
+
     // Standard send workflow, with verification at each step:
     //   1. switch chat (ensureActiveChat clicks the row)
     //   2. verify title — we're on the intended chat
@@ -337,19 +341,17 @@ async function sendToFirstWaTab(text, opts = {}) {
     // the right shape for browser-driven UI automation; without each
     // check, a single misfire silently writes to the wrong place.
 
-    // 1. switch chat — must happen BEFORE the typing overlay goes up.
-    //    The overlay's pointer-events:auto would otherwise eat the
-    //    Input.dispatchMouseEvent we send at the chat-list row coords
-    //    (the click hits the overlay element, not the row), and the
-    //    switch silently fails.
+    // 1. switch chat — overlay above is non-blocking so the click
+    //    lands on the chat-list row, not the overlay element.
     if (chatName || chatJid) await ensureActiveChat(target, { name: chatName, jid: chatJid });
 
-    // Cover the WA Web tab with a "egpt is typing for you" overlay
-    // for the typing/send phase. Goal: block stray user clicks on
-    // the composer/send button during the Input.* sequence (which
-    // would otherwise race with focus and abort the send), and give
-    // visible feedback. Always removed in finally so it can't stick.
-    await showSendingOverlay(target).catch(() => {});
+    // Lock down the overlay now that the click phase is done. The
+    // type/send Input.* events are dispatched at the page level
+    // (insertText, Enter via dispatchKeyEvent) and don't go through
+    // hit-testing, so pointer-events:auto on the overlay doesn't
+    // interfere — but it does block any stray user click on the
+    // composer or send button.
+    await showSendingOverlay(target, { blockEvents: true }).catch(() => {});
 
     // 2. verify title — header reflects the intended chat
     const probeTitle = async () => {
@@ -441,9 +443,16 @@ async function sendToFirstWaTab(text, opts = {}) {
 }
 
 // "egpt is typing for you" overlay — injected via Runtime.evaluate
-// during sends. Blocks pointer input on the WA Web tab so clicks
-// don't race with the Input.* sequence (chat-switch / focus drift).
-async function showSendingOverlay(target) {
+// during sends. Two phases:
+//   blockEvents:false  — visible feedback, pointer-events:none so
+//                        our own CDP chat-list click passes through
+//   blockEvents:true   — same overlay, pointer-events:auto so user
+//                        clicks on composer/send during the type/send
+//                        phase don't race with our Input.* sequence
+// Re-creates the element on first call; subsequent calls just toggle
+// the pointer-events style so there's no flicker between phases.
+async function showSendingOverlay(target, { blockEvents = true } = {}) {
+  const pe = blockEvents ? 'auto' : 'none';
   await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
     expression: `(() => {
       let el = document.getElementById('__egpt_typing_overlay');
@@ -453,12 +462,13 @@ async function showSendingOverlay(target) {
         el.style.cssText = [
           'position:fixed','inset:0','background:rgba(15,20,25,0.55)','color:#fff',
           'font:600 16px system-ui,sans-serif','display:flex','align-items:center',
-          'justify-content:center','z-index:2147483647','pointer-events:auto',
+          'justify-content:center','z-index:2147483647',
           'cursor:wait','user-select:none','-webkit-user-select:none',
         ].join(';');
         el.textContent = 'egpt is typing for you…';
         document.body.appendChild(el);
       }
+      el.style.pointerEvents = ${JSON.stringify(pe)};
     })()`,
     returnByValue: true,
   });

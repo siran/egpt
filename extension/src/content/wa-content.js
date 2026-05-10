@@ -196,17 +196,31 @@
   // Silent window — debounced PER-CHAT. Each chat-switch dumps that
   // chat's history into the DOM via mutation; without a per-chat
   // reset, only the first chat-load is silenced and every subsequent
-  // switch re-emits everything. Backstop: timestamp filter — any row
-  // whose data-pre-plain-text timestamp predates the content script's
-  // load time is treated as history and silenced regardless of seen
-  // / silent-window state. The two layers cover each other when
-  // either fails.
+  // switch re-emits everything.
+  //
+  // BUT — the silent window also used to swallow messages typed by
+  // the user within those N seconds, including '@e foo' wake-words
+  // sent right after switching to a chat. Fix: only silence rows that
+  // LOOK like history. A real-time message has a data-pre-plain-text
+  // timestamp within the last couple of minutes; a history dump from
+  // chat-switch carries arbitrarily-old timestamps. So in the silent
+  // window we silence ONLY rows whose timestamp is older than the
+  // freshness threshold — fresh rows pass through.
+  //
+  // Backstop: timestamp filter — any row whose timestamp predates the
+  // content script's load time is treated as history and silenced
+  // regardless of silent-window state.
   const SILENT_WINDOW_MS = 5_000;
+  const FRESH_ROW_MS     = 120_000;   // ts within 2 min of now == real-time
   const HISTORY_GRACE_MS = 5_000;
   const loadTime = Date.now();
   let silentUntil = loadTime + SILENT_WINDOW_MS;
   let lastChat = null;
   const isSilent = () => Date.now() < silentUntil;
+  const isFreshRow = (row) => {
+    const ts = parseRowTimestamp(row);
+    return !!(ts && (Date.now() - ts) <= FRESH_ROW_MS);
+  };
 
   function scan() {
     const rows = document.querySelectorAll('[data-id]');
@@ -220,7 +234,11 @@
       const id = row.getAttribute('data-id');
       if (!id || seen.has(id)) continue;
       seen.add(id);
-      if (silent) continue;
+      // In the silent window, only silence rows that look like history.
+      // Fresh-timestamp rows (typed in the last couple of minutes) are
+      // real-time messages — let them through, otherwise '@e foo' typed
+      // right after a chat-switch is invisibly dropped.
+      if (silent && !isFreshRow(row)) continue;
       const text = textOf(row);
       if (!text) continue;
       // Backstop: drop rows older than (loadTime - grace). Real-time
