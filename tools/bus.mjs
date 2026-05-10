@@ -11,8 +11,29 @@
 // Anything bigger stays in conversation.md and Telegram.
 
 import * as cdp from './cdp.mjs';
+import { signEvent, verifyEvent, keyFromString } from './bus-sign.mjs';
 
 export const BUS_PATH = '/bus.html';
+
+// Bus signing key. When set (via setBusKey), every outgoing event is
+// HMAC-signed and every incoming event is verified — invalid sigs
+// are dropped with a warning. Unsigned events still pass through
+// (permissive default for phased rollout). Phase 2 will add
+// optional encryption on top of this same key.
+let _busKeyBytes = null;
+let _onInvalidSig = null;       // override hook for tests/diagnostics
+export function setBusKey(b64OrNull) {
+  _busKeyBytes = b64OrNull ? keyFromString(b64OrNull) : null;
+}
+export function getBusKey() { return _busKeyBytes; }
+export function setBusInvalidSigHandler(fn) { _onInvalidSig = fn; }
+function _logInvalid(ev, where) {
+  if (_onInvalidSig) {
+    try { _onInvalidSig(ev, where); } catch (_) {}
+  } else {
+    try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${(ev?.type ?? '?')}`); } catch (_) {}
+  }
+}
 
 // The bus log is served unauthenticated by cdp-proxy; the auth boundary
 // is at CDP attach (which goes through the token-prefixed WebSocket).
@@ -71,8 +92,13 @@ async function evaluateOnTab(targetId, expression) {
 }
 
 /** Post a control event to the bus tab. Resolves when the page acknowledges. */
-export function postEvent(targetId, event) {
-  const safe = JSON.stringify(event ?? {});
+export async function postEvent(targetId, event) {
+  // Sign before serialization when a key is configured. Receivers
+  // with the same key will verify; receivers without a key (or with
+  // a different one) will treat as unsigned/forged depending on
+  // their own permissive flag.
+  const toSend = _busKeyBytes ? await signEvent(event ?? {}, _busKeyBytes) : (event ?? {});
+  const safe = JSON.stringify(toSend);
   // window.bus is created by bus.html; if the tab hasn't finished loading
   // we fall back to a small retry loop in-page to keep the call resilient.
   const expr = `(function(ev){
@@ -163,16 +189,23 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
       // before completing the subscribe handshake. We dispatch in
       // order (bus.html appends in-order, getEvents preserves it).
       if (data.id === REPLAY_ID) {
-        try {
-          const json = data.result?.result?.value;
-          const past = JSON.parse(json ?? '[]');
-          for (const ev of past) {
-            if (!ev || typeof ev !== 'object') continue;
-            try { onEvent({ ...ev, _replayed: true }); }
-            catch (_) { /* per-event errors don't abort replay */ }
-          }
-        } catch (_) { /* malformed replay payload — give up on replay */ }
-        finishSubscribe();
+        (async () => {
+          try {
+            const json = data.result?.result?.value;
+            const past = JSON.parse(json ?? '[]');
+            for (const ev of past) {
+              if (!ev || typeof ev !== 'object') continue;
+              if (_busKeyBytes) {
+                const result = await verifyEvent(ev, _busKeyBytes);
+                if (result === 'invalid') { _logInvalid(ev, 'replay'); continue; }
+                // 'missing' is permissive — pass through (peers may not yet sign)
+              }
+              try { onEvent({ ...ev, _replayed: true }); }
+              catch (_) { /* per-event errors don't abort replay */ }
+            }
+          } catch (_) { /* malformed replay payload — give up on replay */ }
+          finishSubscribe();
+        })();
         return;
       }
 
@@ -184,8 +217,20 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
       if (args[0]?.value !== 'egpt-bus') return;
       const raw = args[1]?.value;
       if (typeof raw !== 'string') return;
-      try { onEvent(JSON.parse(raw)); }
-      catch (_) { /* malformed event; ignore */ }
+      let parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (_) { return; /* malformed event; ignore */ }
+      if (_busKeyBytes) {
+        // Async verify — don't block the event loop on each event,
+        // but preserve order via a serial chain.
+        (async () => {
+          const result = await verifyEvent(parsed, _busKeyBytes);
+          if (result === 'invalid') { _logInvalid(parsed, 'live'); return; }
+          try { onEvent(parsed); } catch (_) {}
+        })();
+      } else {
+        try { onEvent(parsed); } catch (_) {}
+      }
     });
 
     ws.addEventListener('error', () => {

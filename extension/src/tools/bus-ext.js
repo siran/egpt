@@ -24,7 +24,36 @@
 // background.js is the relay between the bus tab port and any UI
 // tabs that connect as 'egpt-bus-subscriber'.
 
+import { signEvent, verifyEvent, keyFromString } from '../../../tools/bus-sign.mjs';
+
 export const BUS_PATH = '/bus.html';
+
+// Bus signing key. Loaded from chrome.storage.local.bus_key when set.
+// When present, every outgoing event is HMAC-signed and every incoming
+// event is verified — invalid sigs are dropped silently. Unsigned
+// events still pass through (permissive default for phased rollout).
+let _busKeyBytes = null;
+export function setBusKey(b64OrNull) {
+  _busKeyBytes = b64OrNull ? keyFromString(b64OrNull) : null;
+}
+export function getBusKey() { return _busKeyBytes; }
+// Auto-load from storage on module init. chrome.storage events
+// (set elsewhere) update the key so changes take effect without reload.
+(async () => {
+  try {
+    const got = await chrome.storage.local.get('bus_key');
+    if (typeof got?.bus_key === 'string' && got.bus_key.trim()) {
+      setBusKey(got.bus_key.trim());
+    }
+  } catch (_) {}
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.bus_key) return;
+      const v = changes.bus_key.newValue;
+      setBusKey(typeof v === 'string' && v.trim() ? v.trim() : null);
+    });
+  } catch (_) {}
+})();
 
 async function busUrl() {
   // Override via chrome.storage.sync.bus_url for advanced setups
@@ -99,19 +128,31 @@ function trackSeen(ev) {
   return false;
 }
 
+async function _verify(ev, where) {
+  if (!_busKeyBytes) return true;   // permissive when no key configured
+  const result = await verifyEvent(ev, _busKeyBytes);
+  if (result === 'invalid') {
+    try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${ev?.type ?? '?'}`); } catch (_) {}
+    return false;
+  }
+  return true;   // 'valid' or 'missing' (permissive)
+}
+
 function ensurePort() {
   if (_port) return _port;
   _port = chrome.runtime.connect({ name: 'egpt-bus-subscriber' });
-  _port.onMessage.addListener((msg) => {
+  _port.onMessage.addListener(async (msg) => {
     if (!msg) return;
     if (msg.type === 'event') {
       if (trackSeen(msg.ev)) return;   // already delivered (replay race)
+      if (!(await _verify(msg.ev, 'live'))) return;
       for (const h of _eventHandlers) {
         try { h(msg.ev); } catch (_) {}
       }
     } else if (msg.type === 'replay') {
       for (const ev of (msg.past ?? [])) {
         if (trackSeen(ev)) continue;   // already delivered earlier
+        if (!(await _verify(ev, 'replay'))) continue;
         for (const h of _eventHandlers) {
           try { h({ ...ev, _replayed: true }); } catch (_) {}
         }
@@ -141,7 +182,12 @@ export async function postEvent(_targetId, event) {
   // relays to whichever bus tab is connected. Kept in the signature
   // for API symmetry with the node module.
   const port = ensurePort();
-  try { port.postMessage({ type: 'post', ev: event }); } catch (_) {}
+  // Sign before sending when a key is configured. Receivers with the
+  // same key verify; receivers without (or with a different key) drop
+  // as 'invalid' or pass through as 'missing' depending on their
+  // permissive flag.
+  const toSend = _busKeyBytes ? await signEvent(event ?? {}, _busKeyBytes) : (event ?? {});
+  try { port.postMessage({ type: 'post', ev: toSend }); } catch (_) {}
 }
 
 export async function subscribeBusEvents(_targetId, onEvent, opts = {}) {

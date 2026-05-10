@@ -101,6 +101,7 @@ export const COMMANDS = [
   { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
   { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
+  { cmd: '/bus-key',        surface: 'extension', usage: '/bus-key [gen|set <key>|clear]',                 desc: 'manage bus signing key (HMAC); empty prints current, gen makes a new one, paste into shell EGPT_BUS_KEY' },
   { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'show this list' },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },

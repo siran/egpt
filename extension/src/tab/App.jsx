@@ -6,6 +6,7 @@ import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa
 import * as waCommands from '../commands/wa-commands.js';
 import * as sessionCommands from '../commands/session-commands.js';
 import * as miscCommands from '../commands/misc-commands.js';
+import { generateKey as generateBusKey } from '../../../tools/bus-sign.mjs';
 import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
 import * as claudeCdp from '../../../brains/claude-cdp.mjs';
 import { listTabs } from '../../../tools/cdp.mjs';
@@ -588,6 +589,11 @@ export default function App() {
       getBrainNames: () => Object.keys(BRAINS),
       formatHelp:    (names) => helpText(names),
     };
+    const busKeyCtx = {
+      log, error,
+      storageLocal: chrome.storage.local,
+      generateKey:  generateBusKey,
+    };
 
     switch (slash) {
       // session-management
@@ -602,6 +608,7 @@ export default function App() {
       case '/telegram':  await miscCommands.telegram(rest, tgCtx); break;
       case '/clear':     await miscCommands.clear(rest, uiCtx); break;
       case '/help':      await miscCommands.help(rest, uiCtx); break;
+      case '/bus-key':   await miscCommands.busKey(rest, busKeyCtx); break;
       // WA-CDP
       case '/channels':  await waCommands.channels(rest, waCtx); break;
       case '/join':      await waCommands.join(rest, waCtx); break;
