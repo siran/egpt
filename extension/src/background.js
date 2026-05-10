@@ -459,8 +459,22 @@ function runBrainStreamInSw({ targetId, injectScript, pollScript, timeoutMs = 18
 
       const initial = await evalOnce(pollScript);
       const initialId = initial?.id ?? null;
-      const sent = await evalOnce(injectScript);
-      if (!sent) return fail(new Error('Inject script returned falsy — selectors may not match the current page.'));
+      // Retry inject — when @e auto-opens a fresh chatgpt thread,
+      // the page can take a second or two for React to mount the
+      // composer (#prompt-textarea). The inject script returns false
+      // if the textarea isn't there yet. Retry up to ~6s before
+      // giving up.
+      let sent = false;
+      const INJECT_RETRIES = 12;
+      const INJECT_RETRY_MS = 500;
+      for (let i = 0; i < INJECT_RETRIES; i++) {
+        try {
+          sent = await evalOnce(injectScript);
+          if (sent) break;
+        } catch (_) {}
+        await new Promise(r => setTimeout(r, INJECT_RETRY_MS));
+      }
+      if (!sent) return fail(new Error(`Inject script returned falsy after ${INJECT_RETRIES} retries — page may not be ready (selectors not yet rendered).`));
 
       let lastText = '';
       let textStable = 0;
