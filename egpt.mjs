@@ -2889,11 +2889,23 @@ function App() {
           ? `connected as ${waBridgeRef.current.myJid ?? '?'}\n  last chat: ${waBridgeRef.current.chatId ?? '(none)'}`
           : 'not running';
         sysOut(`whatsapp: ${status}\n` +
-          `\n/whatsapp pair                pair this device (wipes auth, shows new QR)` +
+          `\n/whatsapp start               start the bridge with existing auth (use this first)` +
+          `\n/whatsapp pair                ONLY when auth is expired/invalid: wipe + show new QR` +
           `\n/whatsapp disconnect          stop the bridge (auth preserved)` +
           `\n/whatsapp allow <number>      authorize a phone number for commands` +
           `\n/whatsapp revoke <number>     remove authorization` +
           `\n/whatsapp allowed             list authorized numbers`);
+        return true;
+      }
+      if (sub === 'start' || sub === 'connect') {
+        // Non-destructive: reuse existing auth. Shell auto-runs this
+        // on boot via the useEffect that calls startWaBridge(); this
+        // command is for manually re-connecting after /whatsapp
+        // disconnect, or for kicking a stuck startup, without paying
+        // the cost of a re-pair when auth is still valid.
+        if (waBridgeRef.current) { sysOut('whatsapp: already running'); return true; }
+        const ok = await startWaBridge(false);
+        if (!ok) sysOut('whatsapp: start failed — auth may be missing. Run /whatsapp pair to (re-)pair.');
         return true;
       }
       if (sub === 'pair') {
