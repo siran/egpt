@@ -25,39 +25,53 @@ chrome.action.onClicked.addListener(async () => {
   }
 });
 
-// Ensure the bus tab exists. The extension hosts bus.html (bundled);
-// shell looks it up via /json/list and attaches. If shell starts
-// before the extension UI is ever clicked, the bus tab wouldn't
-// exist yet and shell would have nothing to find. Open it eagerly
-// on every plausible service-worker wake (install, browser startup,
-// SW spawn).
+// Shared serialization for ALL extension-page tab manipulation
+// (bus tab, egpt tab, refreshExtensionPages). Without this, the SW
+// spawn fires the bottom-of-file ensureBusTab() AT THE SAME TIME
+// chrome.runtime.onInstalled fires refreshExtensionPages — both see
+// zero buses (extension pages are in a torn-down state momentarily
+// after a reload), both create one, and the user ends up with two
+// bus tabs. Same race took out the egpt tab when refreshExtensionPages
+// queried tabs before the old egpt page was visible. Single-thread
+// it. Each function under this lock observes a stable view and acts
+// idempotently.
+let _tabLock = Promise.resolve();
+function withTabLock(fn) {
+  const p = _tabLock.catch(() => {}).then(fn);
+  _tabLock = p.catch(() => {});
+  return p;
+}
+
+// Ensure the bus tab exists, exactly one. Collapses any duplicates.
 async function ensureBusTab() {
-  const url = chrome.runtime.getURL(BUS_URL);
-  const existing = await chrome.tabs.query({ url });
-  if (existing.length === 0) {
-    try { await chrome.tabs.create({ url, active: false }); } catch (_) {}
-    return;
-  }
-  // Collapse duplicates that have accumulated (refreshExtensionPages
-  // races, manual reloads, etc.). Keep the first; remove the rest.
-  for (let i = 1; i < existing.length; i++) {
-    try { await chrome.tabs.remove(existing[i].id); } catch (_) {}
-  }
+  return withTabLock(async () => {
+    const url = chrome.runtime.getURL(BUS_URL);
+    const existing = await chrome.tabs.query({ url });
+    if (existing.length === 0) {
+      try { await chrome.tabs.create({ url, active: false }); } catch (_) {}
+      return;
+    }
+    for (let i = 1; i < existing.length; i++) {
+      try { await chrome.tabs.remove(existing[i].id); } catch (_) {}
+    }
+  });
 }
 
 // Open the egpt UI tab if it isn't already. Used by the WA-incoming
 // path: when an '@e foo' arrives and there's no WA-CDP subscriber,
 // we open the tab so the dispatch lands. Returns the tab id.
 async function ensureEgptTab() {
-  const url = chrome.runtime.getURL(TAB_URL);
-  const existing = await chrome.tabs.query({ url });
-  if (existing.length > 0) return existing[0].id;
-  try {
-    const tab = await chrome.tabs.create({ url, active: false });
-    return tab?.id ?? null;
-  } catch (_) {
-    return null;
-  }
+  return withTabLock(async () => {
+    const url = chrome.runtime.getURL(TAB_URL);
+    const existing = await chrome.tabs.query({ url });
+    if (existing.length > 0) return existing[0].id;
+    try {
+      const tab = await chrome.tabs.create({ url, active: false });
+      return tab?.id ?? null;
+    } catch (_) {
+      return null;
+    }
+  });
 }
 
 // Self-healing extension reload. When the user reloads the extension
@@ -70,25 +84,23 @@ const CONTENT_SCRIPT_HOSTS = [
   /web\.whatsapp\.com/,
   // /web\.telegram\.org/,   // future: when TG-CDP content script ships
 ];
-// Single-flight guard. onInstalled and onStartup can both fire on a
-// reload-during-startup, and onRemoved (below) calls ensureBusTab
-// which races with a refresh in flight. Without serialization, two
-// parallel refreshes each saw "1 bus tab" → each created a new one →
-// the user ended up with two bus tabs and the egpt tab missing.
-let _refreshInFlight = null;
 async function refreshExtensionPages() {
-  if (_refreshInFlight) return _refreshInFlight;
-  _refreshInFlight = (async () => {
+  return withTabLock(async () => {
     const tabUrl = chrome.runtime.getURL(TAB_URL);
     const busUrl = chrome.runtime.getURL(BUS_URL);
     let allTabs;
     try { allTabs = await chrome.tabs.query({}); }
     catch { return; }
 
-    const egptTabs = allTabs.filter(t => t.url === tabUrl);
-    const busTabs  = allTabs.filter(t => t.url === busUrl);
+    // url.startsWith catches transient post-reload states where the
+    // extension's own pages are still showing the chrome-extension://
+    // URL but with a hash or query suffix. Strict equality used to
+    // miss them, leaving hadEgpt=false on a reload where the egpt
+    // tab WAS open — so refresh dropped the egpt tab.
+    const matchUrl = (t, url) => typeof t.url === 'string' && t.url.split('#')[0].split('?')[0] === url;
+    const egptTabs = allTabs.filter(t => matchUrl(t, tabUrl));
+    const busTabs  = allTabs.filter(t => matchUrl(t, busUrl));
     const csTabs   = allTabs.filter(t => CONTENT_SCRIPT_HOSTS.some(re => re.test(t.url ?? '')));
-    const hadEgpt  = egptTabs.length > 0;
 
     // Open the new bus tab BEFORE closing old ones. The chrome.tabs.onRemoved
     // listener fires when we remove the old bus and queries for remaining
@@ -100,13 +112,12 @@ async function refreshExtensionPages() {
       try { await chrome.tabs.remove(t.id); } catch (_) {}
     }
 
-    // Same dance for the egpt UI — open-then-close so transient empty
-    // windows can't trigger any reopen logic. Skip the open on first-
-    // install (no prior egpt tab to honor).
+    // Always reopen egpt — drop the previous hadEgpt guard. After a
+    // reload the user expects the egpt tab to come back; the guard
+    // skipped the reopen whenever the post-reload tab query missed
+    // the prior egpt tab (URL hash, torn-down state, etc.).
     let freshEgpt = null;
-    if (hadEgpt) {
-      try { freshEgpt = await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
-    }
+    try { freshEgpt = await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
     for (const t of egptTabs) {
       if (freshEgpt && t.id === freshEgpt.id) continue;
       try { await chrome.tabs.remove(t.id); } catch (_) {}
@@ -117,8 +128,19 @@ async function refreshExtensionPages() {
     for (const t of csTabs) {
       try { await chrome.tabs.reload(t.id); } catch (_) {}
     }
-  })().finally(() => { _refreshInFlight = null; });
-  return _refreshInFlight;
+
+    // End-of-run reconcile: another path may have spawned a duplicate
+    // while we were creating ours (the lock prevents this in the
+    // current code, but defense-in-depth — keep exactly one of each).
+    const finalBuses = await chrome.tabs.query({ url: busUrl });
+    for (let i = 1; i < finalBuses.length; i++) {
+      try { await chrome.tabs.remove(finalBuses[i].id); } catch (_) {}
+    }
+    const finalEgpts = await chrome.tabs.query({ url: tabUrl });
+    for (let i = 1; i < finalEgpts.length; i++) {
+      try { await chrome.tabs.remove(finalEgpts[i].id); } catch (_) {}
+    }
+  });
 }
 
 chrome.runtime.onInstalled.addListener(refreshExtensionPages);
