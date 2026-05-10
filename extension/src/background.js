@@ -326,7 +326,156 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onDisconnect.addListener(() => _waCdpSubscribers.delete(port));
     return;
   }
+
+  // ── Brain dispatch (runs in SW so it isn't tab-throttled) ──────
+  // Egpt UI tab opens this port per brain call; we run the actual
+  // chrome.debugger attach + inject + poll loop here in the service
+  // worker. Polling at 250ms holds at full rate regardless of which
+  // tab the user is currently looking at.
+  if (port.name === 'egpt-brain') {
+    let _aborted = false;
+    port.onMessage.addListener(async (msg) => {
+      if (!msg || _aborted) return;
+      if (msg.type === 'run') {
+        try {
+          const text = await runBrainStreamInSw(
+            { targetId: msg.targetId, injectScript: msg.injectScript, pollScript: msg.pollScript, timeoutMs: msg.timeoutMs },
+            (partial) => { if (!_aborted) try { port.postMessage({ type: 'update', text: partial }); } catch (_) {} },
+          );
+          if (!_aborted) try { port.postMessage({ type: 'done', text }); } catch (_) {}
+        } catch (e) {
+          if (!_aborted) try { port.postMessage({ type: 'error', error: e?.message ?? String(e) }); } catch (_) {}
+        }
+      } else if (msg.type === 'peek') {
+        try {
+          const text = await runBrainPeekInSw(msg.targetId, msg.pollScript);
+          if (!_aborted) try { port.postMessage({ type: 'peek-result', text }); } catch (_) {}
+        } catch (e) {
+          if (!_aborted) try { port.postMessage({ type: 'error', error: e?.message ?? String(e) }); } catch (_) {}
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => { _aborted = true; });
+    return;
+  }
 });
+
+// ── Brain stream/peek runners (service-worker side) ───────────────
+//
+// chrome.debugger.attach is exclusive per target — two concurrent
+// runs collide ('Another debugger is already attached'). Queue per
+// targetId so back-to-back '@e' messages run sequentially. (Same
+// queue idea was previously in cdp-debugger.js when this code lived
+// in the egpt UI tab; kept here verbatim now that the impl moved.)
+const _brainQueues = new Map();
+function _enqueueBrain(targetId, fn) {
+  const prior = _brainQueues.get(targetId) ?? Promise.resolve();
+  const next = prior.catch(() => {}).then(fn);
+  const tail = next.catch(() => {});
+  _brainQueues.set(targetId, tail);
+  tail.finally(() => {
+    if (_brainQueues.get(targetId) === tail) _brainQueues.delete(targetId);
+  });
+  return next;
+}
+
+async function runBrainPeekInSw(targetId, pollScript) {
+  return _enqueueBrain(targetId, async () => {
+    const target = { targetId };
+    let attached = false;
+    try {
+      await chrome.debugger.attach(target, '1.3');
+      attached = true;
+      const r = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+        expression: pollScript, returnByValue: true,
+      });
+      if (r?.exceptionDetails) throw new Error(r.exceptionDetails.text || 'eval threw');
+      return r?.result?.value?.text ?? '';
+    } finally {
+      if (attached) { try { await chrome.debugger.detach(target); } catch (_) {} }
+    }
+  });
+}
+
+function runBrainStreamInSw({ targetId, injectScript, pollScript, timeoutMs = 180_000 }, onUpdate) {
+  return _enqueueBrain(targetId, () => new Promise(async (resolve, reject) => {
+    const target = { targetId };
+    let attached = false;
+    let pollHandle = null;
+    let timeoutHandle = null;
+    let settled = false;
+    const cleanup = async () => {
+      if (pollHandle) { clearInterval(pollHandle); pollHandle = null; }
+      if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = null; }
+      if (attached) { try { await chrome.debugger.detach(target); } catch (_) {} attached = false; }
+    };
+    const fail = async (err) => { if (settled) return; settled = true; await cleanup(); reject(err); };
+    const done = async (text) => { if (settled) return; settled = true; await cleanup(); resolve(text); };
+    const evalOnce = async (expression) => {
+      const r = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', { expression, returnByValue: true });
+      if (r?.exceptionDetails) throw new Error(r.exceptionDetails.text || 'eval threw');
+      return r?.result?.value;
+    };
+    try {
+      await chrome.debugger.attach(target, '1.3');
+      attached = true;
+      try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
+
+      const initial = await evalOnce(pollScript);
+      const initialId = initial?.id ?? null;
+      const sent = await evalOnce(injectScript);
+      if (!sent) return fail(new Error('Inject script returned falsy — selectors may not match the current page.'));
+
+      let lastText = '';
+      let textStable = 0;
+      let noStreamingCount = 0;
+      let sawNew = false;
+      let pollErrs = 0;
+      const pollStartMs = Date.now();
+      const STABLE_TICKS = 4;
+      const TEXT_STALE_FALLBACK_TICKS = 20;
+      const MIN_POLL_MS = 10_000;
+
+      pollHandle = setInterval(async () => {
+        try {
+          const v = await evalOnce(pollScript);
+          pollErrs = 0;
+          if (!v) return;
+          if (!sawNew) {
+            if (v.id && v.id !== initialId) sawNew = true;
+            else return;
+          }
+          if (v.text !== lastText) {
+            lastText = v.text;
+            try { onUpdate?.(lastText); } catch (_) {}
+            textStable = 0;
+          } else if (lastText) {
+            textStable++;
+          }
+          if (!v.streaming) noStreamingCount++; else noStreamingCount = 0;
+          if (noStreamingCount >= STABLE_TICKS && textStable >= STABLE_TICKS && lastText) {
+            await done(lastText);
+            return;
+          }
+          if (textStable >= TEXT_STALE_FALLBACK_TICKS && lastText &&
+              (Date.now() - pollStartMs) >= MIN_POLL_MS) {
+            await done(lastText);
+          }
+        } catch (_) {
+          pollErrs++;
+          if (pollErrs > 5) await fail(new Error('Repeated poll failures'));
+        }
+      }, 250);
+
+      timeoutHandle = setTimeout(async () => {
+        if (lastText) await done(lastText);
+        else await fail(new Error(`Timed out waiting for response (${timeoutMs}ms)`));
+      }, timeoutMs);
+    } catch (e) {
+      await fail(e);
+    }
+  }));
+}
 
 // Tolerant title comparison. WA Web's header carries trailing
 // parenthetical affordances on some chats — most importantly "(You)"
