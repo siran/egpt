@@ -116,16 +116,25 @@ export async function startWhatsAppBridge({
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
   // () => false so we never get a bulk chat list — we accumulate
-  // chats as messages flow through, plus a one-shot
-  // groupFetchAllParticipating() at /channels time to surface groups
-  // that have had no recent activity. Map keyed by chatJid.
-  const _chats = new Map();   // jid → { jid, isGroup, lastSeen, name }
-  function _recordChat({ jid, isGroup, name = null, ts = Date.now() }) {
+  // chats as messages flow through.
+  //
+  // TWO timestamps per chat, deliberately separate:
+  //   lastActivityTs — real message timestamp from messages.upsert.
+  //                    Only set by _recordChat(..., { kind: 'activity' }).
+  //                    Zero means the chat has had no traffic since the
+  //                    bridge started (groups can sit dormant for years).
+  //   creationTs     — set by listChats from groupFetchAllParticipating's
+  //                    meta.creation. Useful as a fallback sort key for
+  //                    inactive groups but never confused with activity.
+  // Sort + filter is on lastActivityTs by default; inactive groups are
+  // hidden unless caller passes { all: true }.
+  const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name }
+  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity' }) {
     if (!jid) return;
-    const cur = _chats.get(jid) ?? { jid, isGroup, lastSeen: 0, name: null };
+    const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null };
     cur.isGroup = isGroup;
-    cur.lastSeen = Math.max(cur.lastSeen, ts);
-    // Don't overwrite with null — keep whatever was learned earlier.
+    if (kind === 'activity') cur.lastActivityTs = Math.max(cur.lastActivityTs, ts);
+    else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
     if (name) cur.name = name;
     _chats.set(jid, cur);
   }
@@ -299,7 +308,7 @@ export async function startWhatsAppBridge({
     const remoteName = (!msg.key?.fromMe && typeof msg.pushName === 'string' && msg.pushName.trim())
       ? msg.pushName.trim()
       : null;
-    _recordChat({ jid: chatJid0, isGroup: isGroup0, name: remoteName, ts: msgTsMs });
+    _recordChat({ jid: chatJid0, isGroup: isGroup0, name: remoteName, ts: msgTsMs, kind: 'activity' });
     // self-DM detection: compare BARE numbers, not full JIDs. myJid
     // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
     // but remoteJid for incoming messages doesn't ('16468217865@s.whatsapp.net').
@@ -434,37 +443,58 @@ export async function startWhatsAppBridge({
     catch (_) { return null; }
   }
 
-  // List chats — groups via sock.groupFetchAllParticipating (one-shot
-  // metadata pull, returns ALL groups regardless of recent activity)
-  // plus 1:1s we've accumulated from incoming traffic. Sorted by
-  // lastSeen desc, capped at `limit`.
-  async function listChats({ limit = 20 } = {}) {
+  // List chats. Default: only chats with REAL recent activity since
+  // the bridge started, sorted newest first. Caller can pass
+  // { all: true } to also include groups we belong to that haven't
+  // had any traffic — they'll appear under their creation timestamp
+  // (which is what groupFetchAllParticipating gives us). Without
+  // that flag, a 458-day-old dormant group never clutters the list.
+  async function listChats({ limit = 20, all = false } = {}) {
     if (!sock) return [];
-    // Merge groups from server-side metadata into the in-memory map
+    // Merge groups from server-side metadata into the in-memory map.
+    // Only the CREATION timestamp goes in — never confused with
+    // activity, so an idle group doesn't masquerade as recent.
     try {
       const groups = await sock.groupFetchAllParticipating();
       for (const [jid, meta] of Object.entries(groups ?? {})) {
         const subject = meta?.subject ?? null;
-        const ts = (Number(meta?.creation) || 0) * 1000;
-        // For groups with no recent activity, lastSeen=creation ts
-        // (so they sort below recently-active chats but still appear).
-        const cur = _chats.get(jid);
-        _recordChat({
-          jid, isGroup: true, name: subject,
-          ts: Math.max(cur?.lastSeen ?? 0, ts),
-        });
+        const creationMs = (Number(meta?.creation) || 0) * 1000;
+        _recordChat({ jid, isGroup: true, name: subject, ts: creationMs, kind: 'creation' });
       }
     } catch (_) { /* offline / not yet connected — fall through with what we have */ }
 
-    const all = [..._chats.values()].sort((a, b) => b.lastSeen - a.lastSeen);
-    const top = all.slice(0, limit);
-    // Resolve missing group names lazily; 1:1 names came from pushName already.
+    // Filter + sort. Active chats first (lastActivityTs desc); inactive
+    // ones come behind by creation ts only if all=true.
+    const everything = [..._chats.values()];
+    const active   = everything.filter(c => c.lastActivityTs > 0)
+                               .sort((a, b) => b.lastActivityTs - a.lastActivityTs);
+    const inactive = all
+      ? everything.filter(c => c.lastActivityTs === 0)
+                  .sort((a, b) => b.creationTs - a.creationTs)
+      : [];
+    const top = [...active, ...inactive].slice(0, limit);
+
+    // Resolve missing names lazily.
+    const isSelfDmJid = (jid) => {
+      if (!jid) return false;
+      const bare = jid.split('@')[0]?.split(':')[0];
+      if (!bare) return false;
+      if (myNumber && bare === myNumber) return true;
+      if (myLidNumber && bare === myLidNumber) return true;
+      return false;
+    };
     const out = await Promise.all(top.map(async (c) => {
       let name = c.name;
       if (!name && c.isGroup) name = await _groupSubject(c.jid);
-      // Personal fallback: bare number from the JID
       if (!name) name = (c.jid.split('@')[0]?.split(':')[0] ?? c.jid);
-      return { jid: c.jid, name, isGroup: c.isGroup, lastSeen: c.lastSeen };
+      if (isSelfDmJid(c.jid)) name = `${name} (You)`;
+      return {
+        jid: c.jid,
+        name,
+        isGroup:        c.isGroup,
+        lastActivityTs: c.lastActivityTs,
+        creationTs:     c.creationTs,
+      };
     }));
     return out;
   }

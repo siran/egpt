@@ -1623,6 +1623,10 @@ function App() {
   // whatsapp config block is present). First run shows a QR to scan with
   // your phone; auth state persists at ~/.egpt/wa-auth/.
   const waBridgeRef = useRef(null);
+  // Cache the most recent /channels output so @waN can resolve N to a
+  // chat by the index the user just saw. Reset every /channels so the
+  // numbers always line up with the freshest view.
+  const _waChannelsCacheRef = useRef([]);
   const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
@@ -2885,15 +2889,25 @@ function App() {
       try {
         const chats = await wa.listChats({ limit });
         if (!chats.length) {
-          sysOut('/channels: no chats seen yet (waiting for traffic; groups appear once metadata syncs)');
+          sysOut('/channels: no active chats yet (waiting for traffic since bridge started)');
           return true;
         }
+        // Cache the listing so @waN refers back to the same index the
+        // user just saw. Reset on each /channels so the user can
+        // re-list and have indexes line up with the freshest view.
+        _waChannelsCacheRef.current = chats;
+        const ageLabel = (ts) => {
+          const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+          if (s < 60)    return `${s}s ago`;
+          if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
+          if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+          return `${Math.floor(s / 86400)}d ago`;
+        };
         const lines = chats.map((c, i) => {
           const tag = c.isGroup ? '[group]' : '[1:1]';
-          const ago = c.lastSeen ? `${Math.round((Date.now() - c.lastSeen) / 1000)}s ago` : '?';
-          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${c.jid}, ${ago})`;
+          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${ageLabel(c.lastActivityTs)})`;
         });
-        sysOut(`chats (top ${chats.length}, baileys):\n${lines.join('\n')}`);
+        sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${lines.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
       } catch (e) {
         sysOut(`!! /channels: ${e.message}`);
       }
@@ -4892,6 +4906,33 @@ function App() {
       const handled = await handleSlash(text);
       if (!handled) sysOut(`!! unknown command: ${decision.cmd}`);
       return;
+    }
+
+    // @waN <body> — ad-hoc send to the Nth chat from the most-recent
+    // /channels listing. Mirrors the extension's behavior. Only fires
+    // for shell-typed input (a bridge-sourced @waN would loop). The
+    // output line references the chat NAME so the user can confirm
+    // they're hitting the right group, not just a number.
+    if (!meta.fromTelegram && !meta.fromWhatsApp) {
+      const waMatch = text.match(/^@wa(\d+)\s+([\s\S]+)$/i);
+      if (waMatch) {
+        const idx = parseInt(waMatch[1], 10) - 1;
+        const body = waMatch[2].trim();
+        const chat = _waChannelsCacheRef.current[idx];
+        if (!chat) {
+          sysOut(`!! @wa${idx + 1}: no channel at that index. Run /channels first.`);
+          return;
+        }
+        const wa = waBridgeRef.current;
+        if (!wa) { sysOut('!! @wa send: whatsapp bridge not running'); return; }
+        try {
+          wa.send(body, { chatId: chat.jid });
+          sysOut(`→ @wa${idx + 1} "${chat.name}"`);
+        } catch (e) {
+          sysOut(`!! @wa send failed: ${e.message}`);
+        }
+        return;
+      }
     }
     if (decision.kind === 'error') {
       sysOut(`!! ${decision.message}`);
