@@ -908,10 +908,14 @@ export default function App() {
           appendMsg('egpt', '!! @wa send: WA-CDP bridge not ready (open web.whatsapp.com)');
           return;
         }
-        appendMsg(userName, trimmed);
+        // Render with the WA chat in the author tag so multiple
+        // parallel conversations are visually distinguishable in the
+        // unified room view: 'me→Galindo@wa: mira'. The @wa suffix
+        // also bypasses the displayAuthor render hack that would
+        // otherwise append @<node>.
+        appendMsg(`me→${chat.name}@wa`, body);
         try {
           await waCdpBridgeRef.current.send(body, { chatName: chat.name, chatJid: chat.jid });
-          appendMsg('egpt', `→ @wa${idx + 1} (${chat.name}${chat.jid ? ` ${chat.jid}` : ''})`);
         } catch (e) {
           appendMsg('egpt', `!! @wa send failed: ${e.message}`);
         }
@@ -986,8 +990,14 @@ export default function App() {
     // Local echo of the user's own typed input. When fromBridge, the
     // bridge handler (handleIncomingWaCdp) already appended the
     // message with its bridge-tagged author, so skip the second
-    // append here.
-    if (!fromBridge) appendMsg(userName, trimmed);
+    // append here. When /join'd to a WA chat, render with the WA
+    // destination in the author tag so the conversation flow is
+    // identifiable in the unified room view.
+    if (!fromBridge) {
+      const joined = waJoinedRef.current;
+      const author = joined ? `me→${joined.name}@wa` : userName;
+      appendMsg(author, trimmed);
+    }
 
     if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
     if (decision.kind === 'empty') {
@@ -1567,16 +1577,33 @@ export default function App() {
   const [waJoined, setWaJoined] = useState(null);
 
   const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
-    // Author for the local UI tag — uses our local userName for fromMe
-    // messages; for others it's the WA-side display name (extracted by
-    // the content script from data-pre-plain-text).
-    const localAuthor = fromInfo.fromMe ? userName : (fromInfo.firstName ?? 'wa');
-    appendMsg(localAuthor, text);
+    // Render with WA chat context in the author tag so the unified
+    // room view stays legible when multiple WA chats are active.
+    //   - mine:        'me→<chat>@wa'
+    //   - 1:1 other:   '<author>@wa'        (chat name == author, redundant)
+    //   - group other: '<author>@wa[<chat>]'
+    // Detection of 'mine' compares the scraped data-pre-plain-text
+    // author to userName (wa-content currently emits fromMe=true for
+    // every row by design — see comment in scan(); the real signal is
+    // the per-message author string).
+    const waAuthor = fromInfo.author ?? null;
+    const chatName = fromInfo.chatId ?? null;
+    const isMine = !!(waAuthor && userName && waAuthor === userName);
+    let displayAuthor;
+    if (isMine) {
+      displayAuthor = chatName ? `me→${chatName}@wa` : 'me@wa';
+    } else {
+      const speaker = waAuthor || fromInfo.firstName || 'wa';
+      const isGroup = chatName && chatName !== speaker;
+      displayAuthor = isGroup ? `${speaker}@wa[${chatName}]` : `${speaker}@wa`;
+    }
+    appendMsg(displayAuthor, text);
 
     // Author for ATTRIBUTION (the [name]: prefix that goes to brains).
     // Uses the actual WA-side author when available so a friend's
     // message keeps their name even when the extension owner is "An".
-    const attributedSender = fromInfo.author || localAuthor;
+    const localAuthor = isMine ? userName : (fromInfo.firstName ?? 'wa');
+    const attributedSender = waAuthor || localAuthor;
 
     // Track every WA message as the 'last incoming' so /mirror can
     // forward it. Done BEFORE the wake-word gate so observed-only
@@ -1700,7 +1727,9 @@ export default function App() {
   // ── render ────────────────────────────────────────────────────
 
   const authorClass = (author) =>
-    author === userName ? 'you' : author === 'egpt' ? 'egpt' : 'brain';
+    (author === userName || author.startsWith('me→') || author.startsWith('me@'))
+      ? 'you'
+      : author === 'egpt' ? 'egpt' : 'brain';
 
   return (
     <div id="egpt-app" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
