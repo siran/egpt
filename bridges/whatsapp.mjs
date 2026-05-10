@@ -113,6 +113,22 @@ export async function startWhatsAppBridge({
   let sock           = null;
   let reconnectTimer = null;
 
+  // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
+  // () => false so we never get a bulk chat list — we accumulate
+  // chats as messages flow through, plus a one-shot
+  // groupFetchAllParticipating() at /channels time to surface groups
+  // that have had no recent activity. Map keyed by chatJid.
+  const _chats = new Map();   // jid → { jid, isGroup, lastSeen, name }
+  function _recordChat({ jid, isGroup, name = null, ts = Date.now() }) {
+    if (!jid) return;
+    const cur = _chats.get(jid) ?? { jid, isGroup, lastSeen: 0, name: null };
+    cur.isGroup = isGroup;
+    cur.lastSeen = Math.max(cur.lastSeen, ts);
+    // Don't overwrite with null — keep whatever was learned earlier.
+    if (name) cur.name = name;
+    _chats.set(jid, cur);
+  }
+
   // libsignal (the signal-protocol package baileys depends on) emits
   // session-management dumps via console.info / console.warn / .log /
   // .error directly — bypassing baileys's pino-silencer. Patch the
@@ -270,6 +286,15 @@ export async function startWhatsAppBridge({
     const chatJid0 = msg.key.remoteJid;
     if (!chatJid0) return;
     const isGroup0 = chatJid0.endsWith('@g.us');
+    // Track every chat we see traffic in. For 1:1 chats the
+    // remote party's pushName (msg.pushName when fromMe=false) is
+    // the best available display name. For groups we'll fill the
+    // subject lazily via sock.groupMetadata at listChats() time.
+    const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000 || Date.now();
+    const remoteName = (!msg.key?.fromMe && typeof msg.pushName === 'string' && msg.pushName.trim())
+      ? msg.pushName.trim()
+      : null;
+    _recordChat({ jid: chatJid0, isGroup: isGroup0, name: remoteName, ts: msgTsMs });
     // self-DM detection: compare BARE numbers, not full JIDs. myJid
     // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
     // but remoteJid for incoming messages doesn't ('16468217865@s.whatsapp.net').
@@ -397,7 +422,50 @@ export async function startWhatsAppBridge({
   log('whatsapp: starting (baileys)');
   connect();
 
+  // Lazy group-subject lookup. Uses sock.groupMetadata which caches
+  // server-side. Falls back to the bare JID when we can't reach it.
+  async function _groupSubject(jid) {
+    try { return (await sock?.groupMetadata?.(jid))?.subject ?? null; }
+    catch (_) { return null; }
+  }
+
+  // List chats — groups via sock.groupFetchAllParticipating (one-shot
+  // metadata pull, returns ALL groups regardless of recent activity)
+  // plus 1:1s we've accumulated from incoming traffic. Sorted by
+  // lastSeen desc, capped at `limit`.
+  async function listChats({ limit = 20 } = {}) {
+    if (!sock) return [];
+    // Merge groups from server-side metadata into the in-memory map
+    try {
+      const groups = await sock.groupFetchAllParticipating();
+      for (const [jid, meta] of Object.entries(groups ?? {})) {
+        const subject = meta?.subject ?? null;
+        const ts = (Number(meta?.creation) || 0) * 1000;
+        // For groups with no recent activity, lastSeen=creation ts
+        // (so they sort below recently-active chats but still appear).
+        const cur = _chats.get(jid);
+        _recordChat({
+          jid, isGroup: true, name: subject,
+          ts: Math.max(cur?.lastSeen ?? 0, ts),
+        });
+      }
+    } catch (_) { /* offline / not yet connected — fall through with what we have */ }
+
+    const all = [..._chats.values()].sort((a, b) => b.lastSeen - a.lastSeen);
+    const top = all.slice(0, limit);
+    // Resolve missing group names lazily; 1:1 names came from pushName already.
+    const out = await Promise.all(top.map(async (c) => {
+      let name = c.name;
+      if (!name && c.isGroup) name = await _groupSubject(c.jid);
+      // Personal fallback: bare number from the JID
+      if (!name) name = (c.jid.split('@')[0]?.split(':')[0] ?? c.jid);
+      return { jid: c.jid, name, isGroup: c.isGroup, lastSeen: c.lastSeen };
+    }));
+    return out;
+  }
+
   return {
+    listChats,
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return;

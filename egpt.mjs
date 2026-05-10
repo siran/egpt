@@ -2841,6 +2841,35 @@ function App() {
       sysOut(`telegram: handoff posted to ${to}`);
       return true;
     }
+    if (cmd === '/channels') {
+      const wa = waBridgeRef.current;
+      if (!wa) {
+        sysOut('!! /channels: whatsapp bridge not running — /whatsapp pair to start');
+        return true;
+      }
+      if (typeof wa.listChats !== 'function') {
+        sysOut('!! /channels: this whatsapp bridge build does not expose listChats — update bridges/whatsapp.mjs');
+        return true;
+      }
+      const argLimit = parseInt(arg.trim(), 10);
+      const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 10;
+      try {
+        const chats = await wa.listChats({ limit });
+        if (!chats.length) {
+          sysOut('/channels: no chats seen yet (waiting for traffic; groups appear once metadata syncs)');
+          return true;
+        }
+        const lines = chats.map((c, i) => {
+          const tag = c.isGroup ? '[group]' : '[1:1]';
+          const ago = c.lastSeen ? `${Math.round((Date.now() - c.lastSeen) / 1000)}s ago` : '?';
+          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${c.jid}, ${ago})`;
+        });
+        sysOut(`chats (top ${chats.length}, baileys):\n${lines.join('\n')}`);
+      } catch (e) {
+        sysOut(`!! /channels: ${e.message}`);
+      }
+      return true;
+    }
     if (cmd === '/whatsapp') {
       const argParts = arg.trim().split(/\s+/).filter(Boolean);
       const sub = argParts[0];
