@@ -46,10 +46,38 @@ export async function peekTab(targetId, pollScript) {
   }
 }
 
+// Per-targetId serialization queue. chrome.debugger.attach is exclusive
+// on a target — a second attach while the first is still alive throws
+// "Another debugger is already attached to the target". This used to
+// surface as user-visible 'error: Another debugger is already attached'
+// when phone-typed '@e' messages arrived faster than the brain could
+// answer (subsequent dispatches collided with the in-flight one). We
+// queue per-target so calls run sequentially instead of crashing.
+const _streamQueues = new Map();   // targetId → tail Promise
+
 // Stream a brain reply via inject + poll loop, all over chrome.debugger.
 // Same heuristics as tools/cdp.mjs streamFromTab: poll initial state,
 // inject the prompt, then poll for stable+non-streaming output.
-export function streamFromTab({
+export function streamFromTab(opts) {
+  const tid = opts?.targetId;
+  if (!tid) return _streamFromTabImpl(opts);
+  // Tail-chain on the prior promise for this targetId. We catch on the
+  // prior so a previous failure doesn't cascade-reject everyone in the
+  // queue — each call gets its own clean attach attempt.
+  const prior = _streamQueues.get(tid) ?? Promise.resolve();
+  const next = prior.catch(() => {}).then(() => _streamFromTabImpl(opts));
+  // Keep the queue tail tracked but don't let the queue's own errors
+  // pollute the chain — store a swallowed version.
+  const queueTail = next.catch(() => {});
+  _streamQueues.set(tid, queueTail);
+  // Also clean up when this is the last call (so the map doesn't grow).
+  queueTail.finally(() => {
+    if (_streamQueues.get(tid) === queueTail) _streamQueues.delete(tid);
+  });
+  return next;
+}
+
+function _streamFromTabImpl({
   targetId,
   injectScript,
   pollScript,

@@ -361,12 +361,35 @@ async function focusWaWindow(tabId) {
   } catch (_) { /* best-effort — debugger work still tries below */ }
 }
 
+// Per-WA-tab serialization queue. chrome.debugger.attach is exclusive
+// on a target — two concurrent attaches collide ("Another debugger is
+// already attached"). Both outbound sends (sendToFirstWaTab) and
+// inbound auto-focus (openChatViaDebugger) attach to the same WA tab,
+// so we serialize ALL CDP work on a given tab through one queue.
+// Without this, back-to-back '@e' messages from a phone (arriving
+// faster than the brain answers) crashed with the 'already attached'
+// error mid-pipeline.
+const _waTabQueues = new Map();   // tabId → tail Promise
+function withWaTabQueue(tabId, fn) {
+  const prior = _waTabQueues.get(tabId) ?? Promise.resolve();
+  const next = prior.catch(() => {}).then(fn);
+  const queueTail = next.catch(() => {});
+  _waTabQueues.set(tabId, queueTail);
+  queueTail.finally(() => {
+    if (_waTabQueues.get(tabId) === queueTail) _waTabQueues.delete(tabId);
+  });
+  return next;
+}
+
 async function sendToFirstWaTab(text, opts = {}) {
   const port = [..._waContentPorts][0];
   if (!port) throw new Error('no WA content script connected');
   const tabId = port._waTabId;
   if (!tabId) throw new Error('content script port has no tab id (sender info missing)');
+  return withWaTabQueue(tabId, () => _sendToWaTabImpl(tabId, text, opts));
+}
 
+async function _sendToWaTabImpl(tabId, text, opts) {
   // Steal OS focus to Chrome (specifically the WA window) BEFORE the
   // debugger attach. Chrome's throttling of unfocused-app tabs would
   // otherwise let our Input.* clicks fall on the floor.
@@ -572,24 +595,29 @@ async function openChatViaDebugger(tabId, chat) {
   if (!tabId) return;
   if (_openInFlight.has(tabId)) return;
   _openInFlight.add(tabId);
-  // Steal OS focus first (same reasoning as sendToFirstWaTab) — when
-  // a phone-typed '@e foo' arrives in WA, Chrome may be backgrounded;
-  // without focus the chat-switch click silently no-ops and the
-  // message never reaches the brain.
-  await focusWaWindow(tabId);
-  const target = { tabId };
-  let attached = false;
   try {
-    await chrome.debugger.attach(target, '1.3');
-    attached = true;
-    try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
-    await ensureActiveChat(target, chat);
-  } catch (_) {
-    // swallow — best-effort
+    await withWaTabQueue(tabId, async () => {
+      // Steal OS focus first (same reasoning as sendToFirstWaTab) —
+      // when a phone-typed '@e foo' arrives in WA, Chrome may be
+      // backgrounded; without focus the chat-switch click silently
+      // no-ops and the message never reaches the brain.
+      await focusWaWindow(tabId);
+      const target = { tabId };
+      let attached = false;
+      try {
+        await chrome.debugger.attach(target, '1.3');
+        attached = true;
+        try { await chrome.debugger.sendCommand(target, 'Page.bringToFront'); } catch (_) {}
+        await ensureActiveChat(target, chat);
+      } catch (_) {
+        // swallow — best-effort
+      } finally {
+        if (attached) {
+          try { await chrome.debugger.detach(target); } catch (_) {}
+        }
+      }
+    });
   } finally {
-    if (attached) {
-      try { await chrome.debugger.detach(target); } catch (_) {}
-    }
     _openInFlight.delete(tabId);
   }
 }
