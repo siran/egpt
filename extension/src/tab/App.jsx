@@ -126,7 +126,15 @@ export default function App() {
   const appendMsg = useCallback((author, text, opts = {}) => {
     const id = mkId();
     setMessages(prev => [...prev, { id, author, text, streaming: opts.streaming ?? false }]);
-    if (currentOutputSinkRef.current && author === 'egpt') {
+    // Sink mirrors the message to the originating bridge (e.g. back
+    // to the WA chat that sent the dispatch) so command output and
+    // dispatch errors land where the user typed from. Internal
+    // system logs (bridge ready/disconnected, chat-id captured at
+    // bridge startup, etc.) opt OUT via {noMirror:true} — without
+    // this, a concurrent bridge event during a dispatch leaks the
+    // 'whatsapp-cdp: chat … captured and saved' log into the user's
+    // WA chat.
+    if (currentOutputSinkRef.current && author === 'egpt' && !opts.noMirror) {
       try { currentOutputSinkRef.current(text); } catch (_) {}
     }
     return id;
@@ -277,7 +285,7 @@ export default function App() {
         if (m && !cancelled) {
           sessionsRef.current.set('e', { brain, targetId: m.id });
           syncSessionsList();
-          appendMsg('egpt', `@e: restored thread (tab ${m.id.slice(0, 8)}…)`);
+          appendMsg('egpt', `@e: restored thread (tab ${m.id.slice(0, 8)}…)`, { noMirror: true });
         }
       } catch (_) {}
     })();
@@ -295,12 +303,18 @@ export default function App() {
     const session = sessionsRef.current.get(sessionName);
     if (!session) { appendMsg('egpt', `No session "${sessionName}" attached.`); return null; }
 
-    // Tag the prompt with [sender]: so the brain can follow multi-
-    // user conversations across surfaces. Skip the prefix for empty
-    // prompts (e.g. probing the brain) and when the caller didn't
-    // supply a sender (legacy callers — local typing without
-    // attribution context).
-    const taggedPrompt = (sender && prompt) ? `[${sender}]: ${prompt}` : prompt;
+    // Tag the prompt with [YYYY-MM-DD HH:MM <sender>]: so the brain
+    // can follow multi-user conversations AND temporal cadence (was
+    // this 2 minutes ago or 2 hours ago — answers like "today", "just
+    // now", "yesterday" become possible). Skip the prefix for empty
+    // prompts and when the caller didn't supply a sender (legacy
+    // callers — local typing without attribution context).
+    const stampNow = (() => {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    })();
+    const taggedPrompt = (sender && prompt) ? `[${stampNow} ${sender}]: ${prompt}` : prompt;
 
     const msgId = appendMsg(sessionName, '⌛ thinking…', { streaming: true });
     const tgPrefix = `<b>${escapeHtml(sessionName)}@${SURFACE_TAG}</b>`;
@@ -1171,9 +1185,9 @@ export default function App() {
           await chrome.storage.sync.set({
             telegram: { ...telegram, chat_id: id },
           });
-          appendMsg('egpt', `telegram: outbound chat ${id} captured and saved`);
+          appendMsg('egpt', `telegram: outbound chat ${id} captured and saved`, { noMirror: true });
         } catch (e) {
-          appendMsg('egpt', `!! telegram: could not persist chat_id (${e.message})`);
+          appendMsg('egpt', `!! telegram: could not persist chat_id (${e.message})`, { noMirror: true });
         }
       },
     });
@@ -1279,7 +1293,7 @@ export default function App() {
           type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'chrome',
           sessions: sessionsList, polling: false,
         });
-        appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached');
+        appendMsg('egpt', located.opened ? 'bus tab opened' : 'bus tab attached', { noMirror: true });
         lastErrorMsg = null;
       } catch (e) {
         // Surface the failure once per error message — we retry on a
@@ -1683,8 +1697,11 @@ export default function App() {
       if (cancelled) return;
       try {
         const bridge = await startWhatsAppCdpBridge({
-          onLog:      (msg) => appendMsg('egpt', msg),
-          onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`),
+          // Bridge state messages: noMirror so they don't leak into
+          // a WA chat if the bridge happens to fire during a wa-cdp
+          // dispatch (the sink would otherwise pick them up).
+          onLog:      (msg) => appendMsg('egpt', msg, { noMirror: true }),
+          onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`, { noMirror: true }),
           onState:    (state) => setWaState(state),
           getActiveChat: () => waJoinedRef.current
             ? { jid: waJoinedRef.current.jid ?? null, name: waJoinedRef.current.name ?? null }
@@ -1696,9 +1713,12 @@ export default function App() {
               await chrome.storage.sync.set({
                 whatsapp_cdp: { ...cur, chat_id: id },
               });
-              appendMsg('egpt', `whatsapp-cdp: chat ${id} captured and saved`);
+              // First-time chat-id capture often races with the very
+              // first wa-cdp dispatch on a fresh bridge, so this used
+              // to leak into the user's WA chat.
+              appendMsg('egpt', `whatsapp-cdp: chat ${id} captured and saved`, { noMirror: true });
             } catch (e) {
-              appendMsg('egpt', `!! whatsapp-cdp: could not persist chat_id (${e.message})`);
+              appendMsg('egpt', `!! whatsapp-cdp: could not persist chat_id (${e.message})`, { noMirror: true });
             }
           },
           onIncoming: (text, fromInfo) => handleIncomingWaCdpRef.current?.(text, fromInfo),
