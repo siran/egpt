@@ -306,6 +306,17 @@ export async function startWhatsAppBridge({
       }
     });
 
+    // TWO SEPARATE TRACKS in this handler. The pre-record loop is
+    // SILENT — it updates an in-memory Map (with a debounced disk
+    // write) so /channels has a chat list to show. The downstream
+    // call to handleMessage is the LOUD path — it renders the
+    // message in the shell UI, mirrors it to other bridges, and
+    // possibly dispatches to a brain. We MUST NOT conflate them:
+    // bulk history (type='prepend') must reach the silent tracker
+    // for /channels coverage but must NOT reach handleMessage, or
+    // the user gets flooded with the last hour of group chatter and
+    // (worse) the brain receives a stream of stale messages as if
+    // they were live questions.
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
       if (debug) {
         for (const m of messages) {
@@ -313,12 +324,10 @@ export async function startWhatsAppBridge({
           log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
         }
       }
-      // Pre-record chat sightings BEFORE the type filter. Even bulk
-      // history rows (type='prepend') tell us a chat exists and was
-      // last active at a certain ts — that's what /channels needs.
-      // They are NOT passed to onIncoming (that filter is below) so
-      // the user isn't flooded with the last hour of group chatter
-      // every restart.
+      // — SILENT track — every row, regardless of type, feeds the
+      // chat-list tracker. No UI, no onIncoming, no brain dispatch.
+      // Message content is NOT examined; only jid + isGroup + ts +
+      // pushName for naming.
       for (const m of messages) {
         const jid = m.key?.remoteJid;
         if (!jid) continue;
@@ -328,12 +337,15 @@ export async function startWhatsAppBridge({
           ? m.pushName.trim() : null;
         if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity' });
       }
-      // Default mode: 'notify' (push-real-time) + 'append' (commonly
-      // used for own-device messages on linked devices — 'Message
-      // Yourself' lands here on some baileys versions). 'prepend' is
-      // bulk history sync; skip from onIncoming. Debug mode passes
-      // everything through so the user can see what baileys actually
-      // delivers and which filter (if any) was hiding it.
+      // — LOUD track — only real-time messages reach handleMessage,
+      // which is the path that renders, mirrors, and may dispatch
+      // to a brain. 'notify' is the normal push-real-time delivery;
+      // 'append' is what some baileys versions use for own-device
+      // 'Message Yourself' echoes. 'prepend' is the bulk history
+      // sync — STOPS HERE; do not pass to handleMessage. Debug mode
+      // bypasses the gate intentionally (operator wants to see
+      // everything baileys actually delivers); leave debug off in
+      // normal production use.
       if (!debug && type !== 'notify' && type !== 'append') return;
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
@@ -343,8 +355,13 @@ export async function startWhatsAppBridge({
 
     // History sync — baileys delivers chats + their last conversation
     // timestamps in one shot after connect when shouldSyncHistoryMessage
-    // is true. Capture all of them for /channels. Names come straight
-    // from WA's metadata for groups, pushName cache for 1:1.
+    // is true. We READ ONLY THE chats ARRAY here. The event also
+    // carries a `.messages` array with the actual message bodies of
+    // the historical sync — we deliberately IGNORE that field so
+    // history content never enters the shell UI, never goes through
+    // onIncoming, never reaches a brain. The chats array gives us
+    // jid + conversationTimestamp + name, which is exactly enough
+    // for /channels and nothing more.
     sock.ev.on('messaging-history.set', ({ chats }) => {
       if (!Array.isArray(chats)) return;
       for (const chat of chats) {
