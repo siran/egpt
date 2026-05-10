@@ -239,10 +239,23 @@ export default function App() {
     // No live tab. Open a new one — to the saved URL if present
     // (resumes the existing chatgpt thread), otherwise to the
     // brain's homeUrl (fresh thread; URL will be saved post-dispatch).
+    // Open in a DETACHED window so the brain has its own visible
+    // space (user preference: easier to keep visible without
+    // interfering with their main browser window). focused:false
+    // so opening doesn't steal user focus from whatever they're
+    // doing. Falls back to plain tabs.create if windows.create
+    // throws (e.g. limited windowing context).
     const openUrl = saved?.url || brain.homeUrl;
-    appendMsg('egpt', `@e: opening ${saved?.url ? 'saved thread' : 'new thread'} (${brainType})…`);
+    appendMsg('egpt', `@e: opening ${saved?.url ? 'saved thread' : 'new thread'} (${brainType})…`, { noMirror: true });
     const beforeIds = new Set((await listTabs(brain.urlMatch)).map(t => t.id));
-    const tab = await chrome.tabs.create({ url: openUrl, active: false });
+    let tab = null;
+    try {
+      const win = await chrome.windows.create({ url: openUrl, focused: false, type: 'normal' });
+      tab = win?.tabs?.[0] ?? null;
+    } catch (_) {}
+    if (!tab) {
+      tab = await chrome.tabs.create({ url: openUrl, active: false });
+    }
     await waitForTabLoad(tab.id);
     let cdpId = null;
     for (let i = 0; i < 10; i++) {

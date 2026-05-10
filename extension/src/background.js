@@ -162,6 +162,20 @@ const _subscribers      = new Set();   // ports opened by UI tabs
 const _waContentPorts   = new Set();   // ports from web.whatsapp.com content scripts
 const _waCdpSubscribers = new Set();   // ports from the egpt UI tab's WA-CDP bridge
 
+// Recent 'incoming' wa-cdp messages, kept so a freshly-(re)connected
+// wa-cdp subscriber can catch up. Reproduces what the bus does for
+// room-utterance via replay, but for the dedicated wa-cdp subscriber
+// channel which had no equivalent buffer. The race we're closing:
+// after an SW idle/restart, the wa-content port reconnects first
+// and drains its queue, fanning into _waCdpSubscribers (which is
+// empty at that instant because the egpt UI's bridge port hasn't
+// reconnected yet). Result: the bus-side rendering shows the
+// message but handleIncomingWaCdp is never called → no brain
+// dispatch. Buffer + replay closes that gap.
+const _waIncomingBuffer = [];   // [{ wa, text, ts }]
+const WA_BUFFER_MAX = 50;
+const WA_BUFFER_MAX_AGE_MS = 90_000;
+
 // Echo suppression for WA-CDP. Pure logic in bridges/wa-echo.js so it
 // can be unit-tested; we just wrap the singleton here.
 import { createEchoTracker } from './bridges/wa-echo.js';
@@ -270,11 +284,23 @@ chrome.runtime.onConnect.addListener((port) => {
         for (const bp of _busTabPorts) {
           try { bp.postMessage({ type: 'post', ev }); } catch (_) {}
         }
-        // Also fan out to dedicated WA-CDP subscribers — the egpt UI
-        // tab uses this for tighter integration (chat_id capture, etc.)
-        // even though the same event already rides on the bus.
+        // Buffer + fan out to dedicated WA-CDP subscribers — the egpt
+        // UI tab uses this for tighter integration (chat_id capture,
+        // brain dispatch via handleIncomingWaCdp). The buffer means
+        // a wa-cdp subscriber that connects right after this fire
+        // (e.g. after an SW restart where the wa-content port came
+        // back first) can replay missed events.
+        const incomingMsg = { type: 'incoming', wa: ev.wa, text: msg.text, ts: ev.ts };
+        _waIncomingBuffer.push(incomingMsg);
+        // Trim by count
+        while (_waIncomingBuffer.length > WA_BUFFER_MAX) _waIncomingBuffer.shift();
+        // Trim by age (newest at end; remove from front while too old)
+        const cutoff = Date.now() - WA_BUFFER_MAX_AGE_MS;
+        while (_waIncomingBuffer.length && (_waIncomingBuffer[0].ts ?? 0) < cutoff) {
+          _waIncomingBuffer.shift();
+        }
         for (const s of _waCdpSubscribers) {
-          try { s.postMessage({ type: 'incoming', wa: ev.wa, text: msg.text, ts: ev.ts }); } catch (_) {}
+          try { s.postMessage(incomingMsg); } catch (_) {}
         }
       } else if (msg.type === 'ready') {
         for (const s of _waCdpSubscribers) {
@@ -308,6 +334,16 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'egpt-wa-cdp-subscriber') {
     _waCdpSubscribers.add(port);
     try { port.postMessage({ type: _waContentPorts.size > 0 ? 'ready' : 'no-content', ts: Date.now() }); } catch (_) {}
+    // Replay buffered 'incoming' messages so a freshly-(re)connected
+    // bridge catches up on anything that flowed while it was absent
+    // (typically a 1-2s window after an SW idle/restart, before the
+    // egpt UI's bridge port has reconnected). Bridge applies its own
+    // 90s max-age check — anything truly stale gets dropped there.
+    const cutoff = Date.now() - WA_BUFFER_MAX_AGE_MS;
+    for (const m of _waIncomingBuffer) {
+      if ((m.ts ?? 0) < cutoff) continue;
+      try { port.postMessage(m); } catch (_) {}
+    }
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === 'send' && typeof msg.text === 'string') {
