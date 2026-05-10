@@ -75,6 +75,7 @@ export async function startWhatsAppBridge({
   onLog,
   onError,
   onChatId,    // called once when first chat is captured (host can persist)
+  onQR,        // called with the rendered QR ASCII when WA wants a fresh pair; host can route to a visible surface
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -195,11 +196,15 @@ export async function startWhatsAppBridge({
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
-        // Render QR to a string so Ink can print it cleanly via onLog,
+        // Render QR to a string so Ink can print it cleanly,
         // instead of qrcode-terminal writing directly to stdout (which
-        // tangles with Ink's render).
+        // tangles with Ink's render). Route to onQR when provided so
+        // the host can surface it in a visible UI; fall back to
+        // onLog for backwards compat with older hosts.
         qrcode.generate(qr, { small: true }, (qrText) => {
-          log('whatsapp: scan this QR (WhatsApp → Settings → Linked devices → Link a device):\n' + qrText);
+          const msg = 'whatsapp: scan this QR (WhatsApp → Settings → Linked devices → Link a device):\n' + qrText;
+          if (typeof onQR === 'function') { try { onQR(qrText, msg); return; } catch (_) {} }
+          log(msg);
         });
       }
       if (connection === 'open') {

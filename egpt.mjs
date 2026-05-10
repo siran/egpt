@@ -1688,6 +1688,13 @@ function App() {
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => logOut(`!! whatsapp: ${msg}`),
+        onQR: (_qrText, msgWithHeader) => {
+          // QR code goes to sysOut (visible main transcript), not the
+          // hidden /log buffer. Otherwise `/whatsapp pair` would wipe
+          // auth, print 'restarting bridge — QR coming up', and then
+          // bury the QR where the user can't see it.
+          sysOut(msgWithHeader);
+        },
         onChatId: async (id) => {
           // CRITICAL: update the in-memory EGPT_CONFIG SYNCHRONOUSLY
           // before any await. The bridge calls onChatId fire-and-
