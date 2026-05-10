@@ -2885,11 +2885,11 @@ function App() {
         return true;
       }
       const argLimit = parseInt(arg.trim(), 10);
-      const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 10;
+      const limit = Number.isFinite(argLimit) && argLimit > 0 ? argLimit : 20;
       try {
         const chats = await wa.listChats({ limit });
         if (!chats.length) {
-          sysOut('/channels: no active chats yet (waiting for traffic since bridge started)');
+          sysOut('/channels: no chats found (baileys not synced yet — give it a moment after /whatsapp start, or just wait for the first message)');
           return true;
         }
         // Cache the listing so @waN refers back to the same index the
@@ -2905,7 +2905,10 @@ function App() {
         };
         const lines = chats.map((c, i) => {
           const tag = c.isGroup ? '[group]' : '[1:1]';
-          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${ageLabel(c.lastActivityTs)})`;
+          const age = c.lastActivityTs > 0
+            ? ageLabel(c.lastActivityTs)
+            : (c.creationTs > 0 ? `dormant, created ${ageLabel(c.creationTs)}` : 'dormant');
+          return `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
         });
         sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${lines.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
       } catch (e) {

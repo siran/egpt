@@ -567,13 +567,17 @@ export async function startWhatsAppBridge({
     catch (_) { return null; }
   }
 
-  // List chats. Default: only chats with REAL recent activity since
-  // the bridge started, sorted newest first. Caller can pass
-  // { all: true } to also include groups we belong to that haven't
-  // had any traffic — they'll appear under their creation timestamp
-  // (which is what groupFetchAllParticipating gives us). Without
-  // that flag, a 458-day-old dormant group never clutters the list.
-  async function listChats({ limit = 20, all = false } = {}) {
+  // List chats. Returns the user's full chat universe, ordered:
+  //   1. Active chats (have a lastActivityTs from real messages /
+  //      history-sync), sorted by lastActivityTs desc.
+  //   2. Then dormant groups (groupFetchAllParticipating returned
+  //      them, but we've never seen a message timestamp), sorted
+  //      by creationTs desc.
+  // Caller can pass { all: false } to drop the dormant section if
+  // they only want active chats. Default is true because the user's
+  // expectation is "what WA shows me when I open it" — every group
+  // I'm in, with the recent ones at the top.
+  async function listChats({ limit = 20, all = true } = {}) {
     if (!sock) return [];
     // Merge groups from server-side metadata into the in-memory map.
     // Only the CREATION timestamp goes in — never confused with
