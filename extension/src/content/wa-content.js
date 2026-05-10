@@ -182,13 +182,19 @@
     return candidate;
   }
   function activeChat() {
-    const h = document.querySelector('header span[dir="auto"][title]');
-    const raw = h?.getAttribute('title') || h?.innerText || '';
-    // First-line + whitespace-collapse, matching the title comparison in
-    // background.js sendToFirstWaTab. Some headers carry "last seen…"
-    // affordances on a second line; without normalization, replyTo
-    // would carry that string and ensureActiveChat would never match a
-    // chat-list row (whose title is just the chat name).
+    // Scope to #main — WA Web has multiple <header> elements (chat-
+    // list header, drawer headers, etc.) that match a bare 'header'
+    // selector but are NOT the conversation header. The conversation
+    // header lives inside #main with data-testid="conversation-header".
+    // Recent WA Web bundles also dropped the `title` attribute from
+    // header spans, so we read innerText instead and take the first
+    // line (subsequent lines carry "(You)", "Message yourself",
+    // "last seen…" etc.).
+    const h = document.querySelector('#main header [data-testid="conversation-info-header"]')
+           || document.querySelector('#main header')
+           || document.querySelector('header [data-testid="conversation-header"]');
+    if (!h) return null;
+    const raw = h.innerText || h.getAttribute('title') || '';
     const norm = raw.split('\n')[0].replace(/\s+/g, ' ').trim();
     return norm || null;
   }

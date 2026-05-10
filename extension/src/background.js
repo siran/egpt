@@ -353,17 +353,21 @@ async function sendToFirstWaTab(text, opts = {}) {
     // composer or send button.
     await showSendingOverlay(target, { blockEvents: true }).catch(() => {});
 
-    // 2. verify title — header reflects the intended chat
+    // 2. verify title — header reflects the intended chat. Scope to
+    //    #main: WA Web has multiple <header> elements (chat-list,
+    //    drawers) that aren't the conversation header. Recent bundles
+    //    also dropped the `title` attribute from header spans, so we
+    //    read innerText and first-line-normalize.
     const probeTitle = async () => {
       const r = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
         expression: `(() => {
           const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
           const firstLine = (s) => norm((s || '').split('\\n')[0]);
           const h =
-            document.querySelector('header [data-testid="conversation-info-header"]') ||
-            document.querySelector('header span[dir="auto"][title]') ||
-            document.querySelector('header span[dir="auto"]');
-          return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
+            document.querySelector('#main header [data-testid="conversation-info-header"]') ||
+            document.querySelector('#main header') ||
+            document.querySelector('header [data-testid="conversation-header"]');
+          return firstLine(h?.innerText || h?.getAttribute?.('title') || '');
         })()`,
         returnByValue: true,
       });
@@ -546,10 +550,10 @@ async function ensureActiveChat(target, chat) {
 
     const headerOf = () => {
       const h =
-        document.querySelector('header [data-testid="conversation-info-header"]') ||
-        document.querySelector('header span[dir="auto"][title]') ||
-        document.querySelector('header span[dir="auto"]');
-      return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
+        document.querySelector('#main header [data-testid="conversation-info-header"]') ||
+        document.querySelector('#main header') ||
+        document.querySelector('header [data-testid="conversation-header"]');
+      return firstLine(h?.innerText || h?.getAttribute?.('title') || '');
     };
     const activeTitle = headerOf();
     if (targetName && stripBadge(activeTitle) === stripBadge(targetName)) {
@@ -639,10 +643,10 @@ async function ensureActiveChat(target, chat) {
       const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
       const firstLine = (s) => norm((s || '').split('\\n')[0]);
       const h =
-        document.querySelector('header [data-testid="conversation-info-header"]') ||
-        document.querySelector('header span[dir="auto"][title]') ||
-        document.querySelector('header span[dir="auto"]');
-      return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
+        document.querySelector('#main header [data-testid="conversation-info-header"]') ||
+        document.querySelector('#main header') ||
+        document.querySelector('header [data-testid="conversation-header"]');
+      return firstLine(h?.innerText || h?.getAttribute?.('title') || '');
     })()`;
     const verify = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
       expression: verifyExpr, returnByValue: true,
