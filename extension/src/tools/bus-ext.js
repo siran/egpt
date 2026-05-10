@@ -106,6 +106,20 @@ let _lastSeenTs = 0;
 // or events arriving out-of-order. Capped to keep memory bounded.
 const _seenEventKeys = new Set();
 const SEEN_KEYS_CAP = 500;
+// Live-flood suppressor. See bus-flood.js for the algorithm; tracks
+// per-(from, body) bursts that aren't caught by the ts-based event-
+// key dedup. Logs once per flood-window via console.warn so the user
+// can spot suppressed peers without per-message noise.
+import { FloodTracker } from './bus-flood.js';
+const _flood = new FloodTracker({
+  onSuppress: (ev, count, threshold, windowMs) => {
+    try {
+      console.warn(`[bus-flood] suppressing duplicate '${(ev.body ?? '').slice(0, 40)}' from ${ev.from ?? '?'} (>${threshold} in ${windowMs}ms)`);
+    } catch (_) {}
+  },
+});
+const checkFlood = (ev) => _flood.check(ev);
+
 function eventKey(ev) {
   // ts + from + type + first 60 chars of body should uniquely
   // identify an event for our dedupe purposes.
@@ -144,14 +158,16 @@ function ensurePort() {
   _port.onMessage.addListener(async (msg) => {
     if (!msg) return;
     if (msg.type === 'event') {
-      if (trackSeen(msg.ev)) return;   // already delivered (replay race)
+      if (trackSeen(msg.ev)) return;       // already delivered (replay race)
+      if (checkFlood(msg.ev)) return;      // peer flooding the bus
       if (!(await _verify(msg.ev, 'live'))) return;
       for (const h of _eventHandlers) {
         try { h(msg.ev); } catch (_) {}
       }
     } else if (msg.type === 'replay') {
       for (const ev of (msg.past ?? [])) {
-        if (trackSeen(ev)) continue;   // already delivered earlier
+        if (trackSeen(ev)) continue;
+        if (checkFlood(ev)) continue;
         if (!(await _verify(ev, 'replay'))) continue;
         for (const h of _eventHandlers) {
           try { h({ ...ev, _replayed: true }); } catch (_) {}
