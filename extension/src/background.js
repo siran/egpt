@@ -246,9 +246,10 @@ chrome.runtime.onConnect.addListener((port) => {
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.type === 'send' && typeof msg.text === 'string') {
+        const requestId = msg.requestId ?? null;
         sendToFirstWaTab(msg.text, { chatName: msg.chatName, chatJid: msg.chatJid })
-          .then((status) => { try { port.postMessage({ type: 'send-ack', status }); } catch (_) {} })
-          .catch((e)    => { try { port.postMessage({ type: 'send-error', error: e?.message ?? String(e) }); } catch (_) {} });
+          .then((status) => { try { port.postMessage({ type: 'send-ack', requestId, status }); } catch (_) {} })
+          .catch((e)    => { try { port.postMessage({ type: 'send-error', requestId, error: e?.message ?? String(e) }); } catch (_) {} });
       } else if (msg.type === 'list-channels') {
         // Forward to any/all WA content scripts; the first one to
         // respond wins (they're usually one).
@@ -261,6 +262,22 @@ chrome.runtime.onConnect.addListener((port) => {
     return;
   }
 });
+
+// Tolerant title comparison. WA Web's header carries trailing
+// parenthetical affordances on some chats — most importantly "(You)"
+// for self-DM — that the chat-list row's title omits. Without
+// stripping these, the post-switch title verify fails and the send
+// aborts even though the click correctly switched to the right chat.
+// Strips at most ONE trailing "(...)" group; both sides are
+// whitespace-collapsed and trimmed.
+function titlesEqual(a, b) {
+  const norm = (s) => String(s ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\s*\([^()]*\)\s*$/, '')
+    .trim();
+  return norm(a) === norm(b);
+}
 
 // Send a WhatsApp message via chrome.debugger Input.* events. WA Web
 // checks event.isTrusted and rejects synthetic DOM events, so the
@@ -352,7 +369,7 @@ async function sendToFirstWaTab(text, opts = {}) {
     if (chatName) {
       const currentTitle = await probeTitle();
       const expected = chatName.split('\n')[0].trim();
-      if (currentTitle !== expected) {
+      if (!titlesEqual(currentTitle, expected)) {
         throw new Error(`title check failed: WA header is "${currentTitle}", expected "${expected}". Aborting before typing.`);
       }
     }
@@ -396,7 +413,10 @@ async function sendToFirstWaTab(text, opts = {}) {
     if (chatName) {
       const stillTitle = await probeTitle();
       const expected = chatName.split('\n')[0].trim();
-      if (stillTitle !== expected) {
+      // (titlesEqual handles WA's self-DM "(You)" affordance and
+      // similar trailing parenthetical badges that the chat-list row
+      // omits but the header carries.)
+      if (!titlesEqual(stillTitle, expected)) {
         throw new Error(`title drift after typing: WA header is "${stillTitle}", expected "${expected}". Aborting before send.`);
       }
     }
@@ -506,6 +526,10 @@ async function ensureActiveChat(target, chat) {
   const probeExpr = `(() => {
     const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
     const firstLine = (s) => norm((s || '').split('\\n')[0]);
+    // Strip a single trailing parenthetical badge — e.g. "(You)" on
+    // self-DM headers — so the chat-list row name (which omits it)
+    // matches the header (which includes it).
+    const stripBadge = (s) => firstLine(s).replace(/\\s*\\([^()]*\\)\\s*$/, '').trim();
     const targetJid  = ${JSON.stringify(jid)};
     const targetName = ${JSON.stringify(name)};
 
@@ -517,7 +541,7 @@ async function ensureActiveChat(target, chat) {
       return firstLine(h?.getAttribute?.('title') || h?.innerText || '');
     };
     const activeTitle = headerOf();
-    if (targetName && activeTitle === firstLine(targetName)) {
+    if (targetName && stripBadge(activeTitle) === stripBadge(targetName)) {
       return { state: 'already', activeTitle };
     }
 
@@ -614,7 +638,7 @@ async function ensureActiveChat(target, chat) {
     });
     const newTitle = verify?.result?.value ?? '';
     const expected = name.split('\n')[0].trim();
-    if (newTitle !== expected) {
+    if (!titlesEqual(newTitle, expected)) {
       throw new Error(
         `chat switch didn't take — WA header is still "${newTitle}", expected "${expected}". ` +
         `Click the target chat manually in WA Web, then retry — or run /channels again if the chat has shifted in the list.`

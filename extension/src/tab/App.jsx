@@ -330,12 +330,10 @@ export default function App() {
         // in config used to silently route here, leaking @e replies
         // to the user's self-DM).
         if (shouldMirrorBrainReplyToWa({ replyTo, waJoined: !!waJoinedRef.current })) {
-          try {
-            waCdpBridgeRef.current.send(
-              `[${sessionName}] ${finalText}`,
-              replyTo ? { chatName: replyTo } : undefined,
-            );
-          } catch (_) {}
+          waCdpBridgeRef.current.send(
+            `[${sessionName}] ${finalText}`,
+            replyTo ? { chatName: replyTo } : undefined,
+          ).catch((e) => appendMsg('egpt', `!! WA reply mirror failed: ${e?.message ?? e}`));
         }
       }
       return finalText ?? '';
@@ -947,7 +945,8 @@ export default function App() {
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
         if (waCdpBridgeRef.current && !hasShellPeer) {
           if (shouldMirrorTypedToWa({ fromBridge, waJoined: !!waJoinedRef.current })) {
-            try { waCdpBridgeRef.current.send(trimmed); } catch (_) {}
+            waCdpBridgeRef.current.send(trimmed)
+              .catch((e) => appendMsg('egpt', `!! WA mirror failed: ${e?.message ?? e}`));
           }
         }
       }
@@ -1470,7 +1469,8 @@ export default function App() {
           // Async, fire-and-forget. Bridge surfaces failures via its
           // own onError → appendMsg. Success is silent — this fires
           // for every utterance and per-mirror logging would clutter.
-          try { waCdpBridgeRef.current.send(ev.body ?? ''); } catch (_) {}
+          waCdpBridgeRef.current.send(ev.body ?? '')
+            .catch((e) => appendMsg('egpt', `!! WA peer mirror failed: ${e?.message ?? e}`));
         }
         return;
       }
@@ -1499,7 +1499,8 @@ export default function App() {
         const fromOwnNode  = ev.from === BUS_NODE_ID;
         const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
         if (waCdpBridgeRef.current && !fromWhatsApp && !fromOwnNode && !hasShellPeer && ev.body && waJoinedRef.current) {
-          try { waCdpBridgeRef.current.send(`[${ev.session ?? 'reply'}] ${ev.body}`); } catch (_) {}
+          waCdpBridgeRef.current.send(`[${ev.session ?? 'reply'}] ${ev.body}`)
+            .catch((e) => appendMsg('egpt', `!! WA peer reply mirror failed: ${e?.message ?? e}`));
         }
         return;
       }

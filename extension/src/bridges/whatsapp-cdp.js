@@ -78,7 +78,14 @@ export async function startWhatsAppCdpBridge({
   // Pending /channels requests, keyed by a per-call requestId. Each
   // resolves when the matching 'channels-list' response arrives.
   const _channelRequests = new Map();
+  // Pending send() calls — same shape, keyed by the requestId we
+  // attach to each outbound 'send'. Background acks (or errors) with
+  // the matching requestId once sendToFirstWaTab settles, so the
+  // caller's await actually reflects whether WA received the message
+  // (instead of just whether postMessage delivered to the SW).
+  const _sendRequests = new Map();
   let _nextRequestId = 1;
+  const SEND_TIMEOUT_MS = 30_000;
 
   function connect() {
     if (stopped) return;
@@ -113,6 +120,24 @@ export async function startWhatsAppCdpBridge({
         if (pending) {
           _channelRequests.delete(msg.requestId);
           pending.resolve(msg.chats ?? []);
+        }
+        return;
+      }
+      if (msg.type === 'send-ack') {
+        const p = _sendRequests.get(msg.requestId);
+        if (p) { _sendRequests.delete(msg.requestId); p.resolve(msg.status ?? 'ok'); }
+        return;
+      }
+      if (msg.type === 'send-error') {
+        const err = String(msg.error ?? 'send failed');
+        const p = _sendRequests.get(msg.requestId);
+        if (p) {
+          _sendRequests.delete(msg.requestId);
+          p.reject(new Error(err));
+        } else {
+          // No matching pending — most likely a legacy/race ack from
+          // an earlier session. Surface so it isn't silently swallowed.
+          onError('whatsapp-cdp send: ' + err);
         }
         return;
       }
@@ -165,12 +190,13 @@ export async function startWhatsAppCdpBridge({
   return {
     async send(text, { chatId, chatName, chatJid } = {}) {
       if (!attached) {
-        onError('whatsapp-cdp: no WA Web tab connected — open web.whatsapp.com');
-        return;
+        const err = new Error('whatsapp-cdp: no WA Web tab connected — open web.whatsapp.com');
+        onError(err.message);
+        throw err;
       }
       // Resolution order: explicit opts (jid/name) → active /join
-      // binding via getActiveChat() → null (background falls through
-      // to whatsapp_cdp.chat_name from config). JID + name are paired
+      // binding via getActiveChat() → null (background sends to
+      // whatever's currently active in WA Web). JID + name are paired
       // so the receive end can match by JID first (stable across
       // chat-list reorders), name as fallback.
       let resolvedName = chatName ?? null;
@@ -186,8 +212,28 @@ export async function startWhatsAppCdpBridge({
           }
         } catch (_) {}
       }
-      try { port?.postMessage({ type: 'send', text, chatName: resolvedName, chatJid: resolvedJid }); }
-      catch (e) { onError('whatsapp-cdp send: ' + (e?.message ?? e)); }
+      const requestId = _nextRequestId++;
+      const promise = new Promise((resolve, reject) => {
+        const tmo = setTimeout(() => {
+          if (_sendRequests.has(requestId)) {
+            _sendRequests.delete(requestId);
+            reject(new Error(`send timed out after ${SEND_TIMEOUT_MS}ms (no ack from background)`));
+          }
+        }, SEND_TIMEOUT_MS);
+        _sendRequests.set(requestId, {
+          resolve: (v) => { clearTimeout(tmo); resolve(v); },
+          reject:  (e) => { clearTimeout(tmo); reject(e); },
+        });
+      });
+      try {
+        port?.postMessage({ type: 'send', requestId, text, chatName: resolvedName, chatJid: resolvedJid });
+      } catch (e) {
+        _sendRequests.delete(requestId);
+        const err = new Error('whatsapp-cdp send: ' + (e?.message ?? e));
+        onError(err.message);
+        throw err;
+      }
+      return promise;
     },
     /** Scrape the WA Web chat list. Resolves with [{ name, preview }, ...]. */
     async listChannels({ limit = 20, timeoutMs = 5_000 } = {}) {
@@ -218,6 +264,8 @@ export async function startWhatsAppCdpBridge({
       port = null;
       for (const p of _channelRequests.values()) p.reject(new Error('bridge stopped'));
       _channelRequests.clear();
+      for (const p of _sendRequests.values()) p.reject(new Error('bridge stopped'));
+      _sendRequests.clear();
     },
     get chatId()      { return lastChat; },
     get myJid()       { return null; },
