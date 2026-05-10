@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { generateKey as generateBusKey } from '../../../tools/bus-sign.mjs';
 
 const THEMES = [
   'catppuccin', 'default', 'dracula', 'ember',
@@ -13,6 +14,11 @@ export default function Settings() {
   const [allowedUsers, setAllowedUsers] = useState('');
   const [mirror,       setMirror]       = useState('none');
   const [status,       setStatus]       = useState(null); // 'saved' | 'error:<msg>'
+  // Bus key lives in chrome.storage.LOCAL (not sync) so it doesn't
+  // replicate across devices on its own — pairing is a deliberate
+  // copy-paste step. Managed independently of the Save button below.
+  const [busKey,    setBusKey]    = useState('');
+  const [busStatus, setBusStatus] = useState(null);
 
   useEffect(() => {
     chrome.storage.sync.get(['userName', 'theme', 'telegram'], cfg => {
@@ -24,7 +30,43 @@ export default function Settings() {
       if (cfg.telegram?.allowed_users?.length)
         setAllowedUsers(cfg.telegram.allowed_users.join(', '));
     });
+    chrome.storage.local.get('bus_key', cfg => {
+      if (typeof cfg.bus_key === 'string') setBusKey(cfg.bus_key);
+    });
+    // Stay in sync if /bus-key (slash command) or another tab edits it
+    const listener = (changes, area) => {
+      if (area !== 'local' || !changes.bus_key) return;
+      const v = changes.bus_key.newValue;
+      setBusKey(typeof v === 'string' ? v : '');
+    };
+    try { chrome.storage.onChanged.addListener(listener); } catch (_) {}
+    return () => { try { chrome.storage.onChanged.removeListener(listener); } catch (_) {} };
   }, []);
+
+  async function busKeyAction(action) {
+    try {
+      if (action === 'gen') {
+        const k = await generateBusKey();
+        await chrome.storage.local.set({ bus_key: k });
+        setBusKey(k);
+        setBusStatus('generated');
+      } else if (action === 'save') {
+        const k = busKey.trim();
+        if (!k) { await chrome.storage.local.remove('bus_key'); setBusKey(''); setBusStatus('cleared'); }
+        else { await chrome.storage.local.set({ bus_key: k }); setBusKey(k); setBusStatus('saved'); }
+      } else if (action === 'clear') {
+        await chrome.storage.local.remove('bus_key');
+        setBusKey('');
+        setBusStatus('cleared');
+      } else if (action === 'copy') {
+        await navigator.clipboard.writeText(busKey);
+        setBusStatus('copied');
+      }
+      setTimeout(() => setBusStatus(null), 2000);
+    } catch (e) {
+      setBusStatus(`error: ${e.message}`);
+    }
+  }
 
   async function save() {
     try {
@@ -130,6 +172,46 @@ export default function Settings() {
             <option value="all">Everyone</option>
           </select>
         </Field>
+      </section>
+
+      <section>
+        <h2>Bus security</h2>
+        <p className="hint">
+          When set, every event posted to the bus is HMAC-signed with this key,
+          and incoming events without a matching signature are dropped. Stops
+          forged commands from any other extension or process that gains access
+          to the CDP port. Stored in <code>chrome.storage.local</code> (never
+          synced across devices). Empty = signing off, all events accepted.
+        </p>
+        <Field
+          label="Bus signing key"
+          hint="Paste the same value into your egpt-shell config (env var EGPT_BUS_KEY) so both halves verify each other."
+        >
+          <input
+            value={busKey}
+            onChange={e => setBusKey(e.target.value)}
+            type="text"
+            placeholder="(none — signing off)"
+            spellCheck={false}
+            autoComplete="off"
+            style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}
+          />
+        </Field>
+        <div className="actions" style={{ gap: 8, display: 'flex', flexWrap: 'wrap' }}>
+          <button onClick={() => busKeyAction('gen')}>Generate</button>
+          <button onClick={() => busKeyAction('save')}>Save</button>
+          <button onClick={() => busKeyAction('copy')} disabled={!busKey}>Copy</button>
+          <button onClick={() => busKeyAction('clear')} disabled={!busKey}>Clear</button>
+          {busStatus && (
+            <span className="hint" style={{ alignSelf: 'center' }}>
+              {busStatus === 'generated' && '✓ new key generated + stored'}
+              {busStatus === 'saved'     && '✓ saved'}
+              {busStatus === 'cleared'   && '✓ cleared (signing off)'}
+              {busStatus === 'copied'    && '✓ copied to clipboard'}
+              {busStatus?.startsWith('error') && busStatus}
+            </span>
+          )}
+        </div>
       </section>
 
       <div className="actions">
