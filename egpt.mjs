@@ -2017,6 +2017,26 @@ function App() {
         const located = await bus.findOrOpenBusTab({ open: false });
         if (!located) return;
         busTargetIdRef.current = located.targetId;
+        // Load / generate the shared bus signing key, push it into
+        // the extension's chrome.storage.local so both halves verify
+        // each other. Shell drives pairing — it's the trusted half
+        // (controls CDP), generates first or reuses ~/.egpt/bus.key.
+        // Threat boundary: anyone with CDP access could already do
+        // anything; using CDP here to SET the key isn't a new vector,
+        // it's the pairing channel.
+        try {
+          const key = await bus.loadOrCreateBusKey();
+          bus.setBusKey(key);
+          const result = await bus.pairBusKeyToExtension(located.targetId, key);
+          if (result?.state === 'set')         notice('bus: signing key generated + paired with extension');
+          else if (result?.state === 'replaced') notice('bus: signing key replaced extension\'s');
+          else if (result?.state === 'unchanged') notice('bus: signing key matches extension');
+          else if (result?.state === 'no-storage') notice('bus: extension storage not reachable — signing on shell side only');
+          else if (result?.state === 'error')  notice(`bus: pair error — ${result.error}`);
+        } catch (e) {
+          notice(`bus: key pair failed — ${e.message}; continuing without signing`);
+          bus.setBusKey(null);
+        }
         const sub = await bus.subscribeBusEvents(located.targetId, (ev) => {
           if (cancelled) return;
           handleBusEventRef.current?.(ev);

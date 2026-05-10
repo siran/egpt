@@ -11,7 +11,10 @@
 // Anything bigger stays in conversation.md and Telegram.
 
 import * as cdp from './cdp.mjs';
-import { signEvent, verifyEvent, keyFromString } from './bus-sign.mjs';
+import { signEvent, verifyEvent, generateKey, keyFromString } from './bus-sign.mjs';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
 
 export const BUS_PATH = '/bus.html';
 
@@ -27,6 +30,82 @@ export function setBusKey(b64OrNull) {
 }
 export function getBusKey() { return _busKeyBytes; }
 export function setBusInvalidSigHandler(fn) { _onInvalidSig = fn; }
+
+// Default path for the shell-side key file. Used by loadOrCreateBusKey
+// when no explicit override is given. Lives outside the source tree
+// so it survives repo re-clones.
+export const DEFAULT_KEY_PATH = path.join(os.homedir(), '.egpt', 'bus.key');
+
+// Load (or create) the shell-side bus key. Order of precedence:
+//   1. process.env.EGPT_BUS_KEY — for one-shot overrides, CI, etc.
+//   2. file at keyPath (default ~/.egpt/bus.key)
+//   3. generate a fresh key and write it to keyPath
+// Returns the base64url-encoded key string. Caller still has to call
+// setBusKey() — kept separate so this function stays a pure load.
+export async function loadOrCreateBusKey({ keyPath = DEFAULT_KEY_PATH } = {}) {
+  const envKey = (process.env?.EGPT_BUS_KEY ?? '').trim();
+  if (envKey) return envKey;
+  try {
+    const raw = await fs.readFile(keyPath, 'utf8');
+    const trimmed = raw.trim();
+    if (trimmed) return trimmed;
+  } catch (_) { /* missing — fall through to generate */ }
+  const fresh = await generateKey();
+  try {
+    await fs.mkdir(path.dirname(keyPath), { recursive: true });
+    await fs.writeFile(keyPath, fresh + '\n', { mode: 0o600 });
+  } catch (_) { /* persist best-effort; in-memory still works */ }
+  return fresh;
+}
+
+// Push a key into the extension's chrome.storage.local by evaluating
+// a small script on the bus tab. The bus tab is an extension page so
+// it has chrome.storage access. Returns 'set' | 'replaced' | 'unchanged'
+// so the caller can log what actually happened.
+//
+// Threat note: this only works for someone who already has CDP access
+// to the Chrome instance — which is the same trust boundary signing
+// is trying to defend against from external observers. Using CDP to
+// SET the key isn't a new attack vector. It's the pairing channel.
+export async function pairBusKeyToExtension(targetId, busKeyString) {
+  if (!busKeyString) throw new Error('pairBusKeyToExtension: empty key');
+  const safe = JSON.stringify(String(busKeyString));
+  const expr = `(async () => {
+    try {
+      if (!globalThis.chrome?.storage?.local) return { state: 'no-storage' };
+      const got = await chrome.storage.local.get('bus_key');
+      const current = got?.bus_key ?? null;
+      if (current === ${safe}) return { state: 'unchanged' };
+      await chrome.storage.local.set({ bus_key: ${safe} });
+      return { state: current ? 'replaced' : 'set' };
+    } catch (e) {
+      return { state: 'error', error: e && e.message ? e.message : String(e) };
+    }
+  })()`;
+  const tab = await cdp.findTab(targetId);
+  if (!tab) throw new Error(`pairBusKeyToExtension: bus tab ${(targetId ?? '?').slice(0, 8)}… not found`);
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(tab.webSocketDebuggerUrl);
+    const tmo = setTimeout(() => { try { ws.close(); } catch {} ; reject(new Error('pair timeout')); }, 5000);
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({
+        id: 1, method: 'Runtime.evaluate',
+        params: { expression: expr, returnByValue: true, awaitPromise: true },
+      }));
+    });
+    ws.addEventListener('message', (e) => {
+      let data;
+      try { data = JSON.parse(e.data.toString()); } catch { return; }
+      if (data.id === 1) {
+        clearTimeout(tmo);
+        try { ws.close(); } catch {}
+        if (data.error) reject(new Error(data.error.message));
+        else resolve(data.result?.result?.value ?? { state: 'unknown' });
+      }
+    });
+    ws.addEventListener('error', () => { clearTimeout(tmo); reject(new Error('pair WS error')); });
+  });
+}
 function _logInvalid(ev, where) {
   if (_onInvalidSig) {
     try { _onInvalidSig(ev, where); } catch (_) {}
