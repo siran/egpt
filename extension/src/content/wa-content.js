@@ -169,7 +169,28 @@
   function textOf(row) {
     const el = row.querySelector('.copyable-text, [class*="copyable-text"]');
     if (!el) return '';
-    return (el.innerText || '').trim();
+    // Walk the tree to extract text including <img alt="..."> for
+    // emojis. WA Web renders many emojis as <img> elements (custom
+    // emoji sprites, fallback for rare codepoints) — innerText alone
+    // returns "" for those, so the brain saw a stripped prompt with
+    // emojis silently dropped.
+    const parts = [];
+    const walk = (node) => {
+      if (node.nodeType === 3) {            // Node.TEXT_NODE
+        parts.push(node.textContent);
+      } else if (node.nodeType === 1) {     // Node.ELEMENT_NODE
+        if (node.tagName === 'IMG') {
+          const alt = node.getAttribute('alt');
+          if (alt) parts.push(alt);
+        } else if (node.tagName === 'BR') {
+          parts.push('\n');
+        } else {
+          for (const c of node.childNodes) walk(c);
+        }
+      }
+    };
+    walk(el);
+    return parts.join('').trim();
   }
   function authorOf(row) {
     const ppt = row.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text');
