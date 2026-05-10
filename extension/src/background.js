@@ -36,6 +36,27 @@ async function ensureBusTab() {
   const existing = await chrome.tabs.query({ url });
   if (existing.length === 0) {
     try { await chrome.tabs.create({ url, active: false }); } catch (_) {}
+    return;
+  }
+  // Collapse duplicates that have accumulated (refreshExtensionPages
+  // races, manual reloads, etc.). Keep the first; remove the rest.
+  for (let i = 1; i < existing.length; i++) {
+    try { await chrome.tabs.remove(existing[i].id); } catch (_) {}
+  }
+}
+
+// Open the egpt UI tab if it isn't already. Used by the WA-incoming
+// path: when an '@e foo' arrives and there's no WA-CDP subscriber,
+// we open the tab so the dispatch lands. Returns the tab id.
+async function ensureEgptTab() {
+  const url = chrome.runtime.getURL(TAB_URL);
+  const existing = await chrome.tabs.query({ url });
+  if (existing.length > 0) return existing[0].id;
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    return tab?.id ?? null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -49,46 +70,55 @@ const CONTENT_SCRIPT_HOSTS = [
   /web\.whatsapp\.com/,
   // /web\.telegram\.org/,   // future: when TG-CDP content script ships
 ];
+// Single-flight guard. onInstalled and onStartup can both fire on a
+// reload-during-startup, and onRemoved (below) calls ensureBusTab
+// which races with a refresh in flight. Without serialization, two
+// parallel refreshes each saw "1 bus tab" → each created a new one →
+// the user ended up with two bus tabs and the egpt tab missing.
+let _refreshInFlight = null;
 async function refreshExtensionPages() {
-  const tabUrl = chrome.runtime.getURL(TAB_URL);
-  const busUrl = chrome.runtime.getURL(BUS_URL);
-  let allTabs;
-  try { allTabs = await chrome.tabs.query({}); }
-  catch { return; }
+  if (_refreshInFlight) return _refreshInFlight;
+  _refreshInFlight = (async () => {
+    const tabUrl = chrome.runtime.getURL(TAB_URL);
+    const busUrl = chrome.runtime.getURL(BUS_URL);
+    let allTabs;
+    try { allTabs = await chrome.tabs.query({}); }
+    catch { return; }
 
-  const egptTabs = allTabs.filter(t => t.url === tabUrl);
-  const busTabs  = allTabs.filter(t => t.url === busUrl);
-  const csTabs   = allTabs.filter(t => CONTENT_SCRIPT_HOSTS.some(re => re.test(t.url ?? '')));
-  const hadEgpt  = egptTabs.length > 0;
+    const egptTabs = allTabs.filter(t => t.url === tabUrl);
+    const busTabs  = allTabs.filter(t => t.url === busUrl);
+    const csTabs   = allTabs.filter(t => CONTENT_SCRIPT_HOSTS.some(re => re.test(t.url ?? '')));
+    const hadEgpt  = egptTabs.length > 0;
 
-  // Open the new bus tab BEFORE closing old ones. The chrome.tabs.onRemoved
-  // listener fires synchronously when we remove the old bus and would query
-  // for remaining bus tabs; without a live one already present it auto-
-  // spawns ANOTHER, leaving us with two. Order matters.
-  let freshBus = null;
-  try { freshBus = await chrome.tabs.create({ url: busUrl, active: false }); } catch (_) {}
-  for (const t of busTabs) {
-    if (freshBus && t.id === freshBus.id) continue;
-    try { await chrome.tabs.remove(t.id); } catch (_) {}
-  }
+    // Open the new bus tab BEFORE closing old ones. The chrome.tabs.onRemoved
+    // listener fires when we remove the old bus and queries for remaining
+    // bus tabs; without a live one already present it auto-spawns ANOTHER.
+    let freshBus = null;
+    try { freshBus = await chrome.tabs.create({ url: busUrl, active: false }); } catch (_) {}
+    for (const t of busTabs) {
+      if (freshBus && t.id === freshBus.id) continue;
+      try { await chrome.tabs.remove(t.id); } catch (_) {}
+    }
 
-  // Same dance for the egpt UI — open-then-close so transient empty
-  // windows can't trigger any reopen logic. Skip the open on first-
-  // install (no prior egpt tab to honor).
-  let freshEgpt = null;
-  if (hadEgpt) {
-    try { freshEgpt = await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
-  }
-  for (const t of egptTabs) {
-    if (freshEgpt && t.id === freshEgpt.id) continue;
-    try { await chrome.tabs.remove(t.id); } catch (_) {}
-  }
+    // Same dance for the egpt UI — open-then-close so transient empty
+    // windows can't trigger any reopen logic. Skip the open on first-
+    // install (no prior egpt tab to honor).
+    let freshEgpt = null;
+    if (hadEgpt) {
+      try { freshEgpt = await chrome.tabs.create({ url: tabUrl, active: false }); } catch (_) {}
+    }
+    for (const t of egptTabs) {
+      if (freshEgpt && t.id === freshEgpt.id) continue;
+      try { await chrome.tabs.remove(t.id); } catch (_) {}
+    }
 
-  // Refresh any content-script tabs so the fresh script binds to
-  // the fresh background.
-  for (const t of csTabs) {
-    try { await chrome.tabs.reload(t.id); } catch (_) {}
-  }
+    // Refresh any content-script tabs so the fresh script binds to
+    // the fresh background.
+    for (const t of csTabs) {
+      try { await chrome.tabs.reload(t.id); } catch (_) {}
+    }
+  })().finally(() => { _refreshInFlight = null; });
+  return _refreshInFlight;
 }
 
 chrome.runtime.onInstalled.addListener(refreshExtensionPages);
@@ -184,6 +214,19 @@ chrome.runtime.onConnect.addListener((port) => {
         // Echo suppression: filter our own debugger-sends bouncing
         // back via the WA Web DOM (fromMe=true match within 15s).
         if (msg.fromMe && consumeEcho(msg.text)) return;
+        // Auto-open the egpt UI tab when an @e/@egpt arrives but
+        // there's no WA-CDP subscriber listening (i.e. user has
+        // closed the egpt tab). The egpt tab is what runs
+        // handleIncomingWaCdp → runBrain; without it, the message
+        // gets republished onto the bus and falls into the void.
+        // The freshly-opened tab requests bus replay on connect, so
+        // the @e dispatch lands as soon as it boots.
+        if (
+          _waCdpSubscribers.size === 0 &&
+          /(?:^|\s)@(egpt|e)\b/i.test(msg.text ?? '')
+        ) {
+          ensureEgptTab().catch(() => {});
+        }
         // Author scraped by the content script from data-pre-plain-text
         // ("[10:04, 5/9/2026] An: " → "An"). Use it for both the bus
         // user field AND the wa.author passthrough so the egpt UI's
