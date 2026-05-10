@@ -310,22 +310,12 @@ async function sendToFirstWaTab(text, opts = {}) {
     }
     throw new Error('debugger attach failed: ' + m);
   }
-  // Cover the WA Web tab with a "egpt is typing for you" overlay
-  // while we drive Input.* events. Two reasons: (a) gives the user
-  // visible feedback that the brief activity in the WA tab is the
-  // bridge, not someone hijacking it; (b) the overlay's pointer-
-  // events:auto blocks mouse input that would otherwise race with
-  // chat-switch / focus / typing — clicks during a send have caused
-  // composer-focus drift and aborted sends. Always removed in
-  // finally so it can't get stuck.
-  await showSendingOverlay(target).catch(() => {});
   try {
     // Chat-target precedence:
     //   1. opts.chatJid / opts.chatName — explicit overrides from the
     //      caller (e.g. /join active or @waN one-shot). JID is the
     //      stable id; name is the fallback for matching.
-    //   2. config — whatsapp_cdp.chat_name from chrome.storage.sync
-    //   3. (none) — sends go to whatever's currently active
+    //   2. (none) — sends go to whatever's currently active
     let chatName = (typeof opts.chatName === 'string' && opts.chatName.trim()) ? opts.chatName.trim() : null;
     let chatJid  = (typeof opts.chatJid  === 'string' && opts.chatJid.trim())  ? opts.chatJid.trim()  : null;
     // No fallback to whatsapp_cdp.chat_name: it's only an INBOUND gate
@@ -347,8 +337,19 @@ async function sendToFirstWaTab(text, opts = {}) {
     // the right shape for browser-driven UI automation; without each
     // check, a single misfire silently writes to the wrong place.
 
-    // 1. switch chat
+    // 1. switch chat — must happen BEFORE the typing overlay goes up.
+    //    The overlay's pointer-events:auto would otherwise eat the
+    //    Input.dispatchMouseEvent we send at the chat-list row coords
+    //    (the click hits the overlay element, not the row), and the
+    //    switch silently fails.
     if (chatName || chatJid) await ensureActiveChat(target, { name: chatName, jid: chatJid });
+
+    // Cover the WA Web tab with a "egpt is typing for you" overlay
+    // for the typing/send phase. Goal: block stray user clicks on
+    // the composer/send button during the Input.* sequence (which
+    // would otherwise race with focus and abort the send), and give
+    // visible feedback. Always removed in finally so it can't stick.
+    await showSendingOverlay(target).catch(() => {});
 
     // 2. verify title — header reflects the intended chat
     const probeTitle = async () => {
