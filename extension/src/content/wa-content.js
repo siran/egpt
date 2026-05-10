@@ -26,9 +26,13 @@
   // Queue of events that fire while port is null (MV3 SW idle window
   // between disconnect and reconnect). Without this, phone-typed
   // messages that arrive in that ~1s gap are lost. Capped to avoid
-  // unbounded growth if the SW never recovers.
+  // unbounded growth if the SW never recovers; events older than
+  // QUEUE_MAX_AGE_MS are dropped on drain so a multi-hour outage
+  // doesn't flood the brain with stale '@e' prompts when the SW
+  // eventually wakes back up.
   const _queue = [];
   const QUEUE_CAP = 100;
+  const QUEUE_MAX_AGE_MS = 60_000;   // 1 minute: tighter than 'fresh row'
 
   // JID shape: <digits>@<host> for personal chats; <digits>-<digits>@g.us
   // for groups. Reject message-id-shaped values (pure hex without @).
@@ -120,23 +124,30 @@
     // Always start with a ready ping.
     try { port.postMessage({ type: 'ready', ts: Date.now() }); } catch (_) {}
     // Drain anything that queued while we were disconnected — phone-
-    // typed messages, etc.
+    // typed messages, etc. Skip events older than QUEUE_MAX_AGE_MS so
+    // that a long SW outage (e.g. extension idle for hours) doesn't
+    // suddenly flood the brain with stale '@e' prompts on reconnect.
+    // Each enqueued event was tagged with _enqueuedAt by safePost.
+    const now = Date.now();
     while (port && _queue.length > 0) {
       const ev = _queue.shift();
-      try { port.postMessage(ev); }
+      if (ev._enqueuedAt && (now - ev._enqueuedAt) > QUEUE_MAX_AGE_MS) continue;
+      // Don't leak the internal stamp to the SW.
+      const { _enqueuedAt, ...clean } = ev;
+      try { port.postMessage(clean); }
       catch { _queue.unshift(ev); break; }
     }
   }
 
   function safePost(ev) {
     if (!port) {
-      _queue.push(ev);
+      _queue.push({ ...ev, _enqueuedAt: Date.now() });
       if (_queue.length > QUEUE_CAP) _queue.shift();
       return;
     }
     try { port.postMessage(ev); }
     catch {
-      _queue.push(ev);
+      _queue.push({ ...ev, _enqueuedAt: Date.now() });
       if (_queue.length > QUEUE_CAP) _queue.shift();
     }
   }

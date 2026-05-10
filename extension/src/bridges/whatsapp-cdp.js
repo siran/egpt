@@ -147,6 +147,19 @@ export async function startWhatsAppCdpBridge({
       const text = msg.text ?? '';
       if (!text) return;
 
+      // Defensive max-age. Lower layers (content-script `seen` set,
+      // history-grace ts filter, queue-drain age cap) already prevent
+      // stale messages from reaching here, but if any path slips one
+      // through — e.g. the brain dispatch queue blocked for several
+      // minutes on a slow brain and the message tail is now stale —
+      // drop it instead of dispatching. The ts is when wa-content
+      // scraped the row from DOM (Date.now() at scrape).
+      const MAX_DISPATCH_AGE_MS = 90_000;
+      if (msg.ts && (Date.now() - msg.ts) > MAX_DISPATCH_AGE_MS) {
+        onLog(`whatsapp-cdp: dropping stale '${text.slice(0, 40)}…' (${Math.round((Date.now() - msg.ts) / 1000)}s old)`);
+        return;
+      }
+
       lastChat = wa.chatId ?? lastChat;
       if (!chatIdNotified && onChatId && wa.chatId) {
         chatIdNotified = true;
