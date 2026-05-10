@@ -1,121 +1,204 @@
-// tests/bus-flood.test.mjs — per-source body-rate suppression.
+// tests/bus-flood.test.mjs — buffered flood detector with injected timer.
 //
-// Different from event-key dedup: events with distinct ts/sig are
-// considered distinct by the per-key dedup; this layer adds
-// "but if a peer keeps repeating the same body, drop the burst".
+// Goal: every body event is held briefly; if a duplicate arrives, BOTH
+// (held + duplicate) suppress and the detector enters flood mode. End
+// of flood = endQuietMs without another match. Releases the original
+// only if no duplicate arrived. Status notices fire via callbacks so
+// bus-ext.js can route them through the event channel.
 
 import { describe, it, expect } from 'vitest';
-import { FloodTracker, floodKey } from '../extension/src/tools/bus-flood.js';
+import {
+  HeldFloodDetector, floodKey,
+  DEFAULT_HOLD_MS, DEFAULT_END_QUIET_MS,
+} from '../extension/src/tools/bus-flood.js';
 
-function fakeClock(start = 0) {
-  let t = start;
-  return { now: () => t, advance: (ms) => { t += ms; } };
+// Tiny fake timer that the detector can use via injected setTimeout /
+// clearTimeout. advance(ms) fires all callbacks whose due-time has
+// elapsed. Tests get deterministic time control.
+function makeFakeTimer() {
+  let now = 0;
+  let nextId = 1;
+  const pending = new Map();   // id → { dueAt, fn, cancelled }
+  return {
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const id = nextId++;
+      pending.set(id, { dueAt: now + (ms ?? 0), fn, cancelled: false });
+      return id;
+    },
+    clearTimeout: (id) => {
+      const e = pending.get(id);
+      if (e) e.cancelled = true;
+    },
+    advance: (ms) => {
+      const target = now + ms;
+      // Repeatedly fire timers due at or before `target`, in due-order
+      while (true) {
+        let next = null;
+        for (const [id, e] of pending) {
+          if (e.cancelled) { pending.delete(id); continue; }
+          if (e.dueAt > target) continue;
+          if (!next || e.dueAt < next.dueAt) next = { id, ...e };
+        }
+        if (!next) break;
+        pending.delete(next.id);
+        now = next.dueAt;
+        next.fn();
+      }
+      now = target;
+    },
+    pendingCount: () => [...pending.values()].filter(e => !e.cancelled).length,
+  };
 }
 
 describe('floodKey', () => {
   it('uses from + body[0..60]', () => {
-    const k = floodKey({ from: 'kg', body: '> /help' });
-    expect(k).toBe('kg:> /help');
-  });
-
-  it('handles missing fields', () => {
+    expect(floodKey({ from: 'kg', body: '> /help' })).toBe('kg:> /help');
     expect(floodKey({})).toBe('?:');
-    expect(floodKey({ from: 'x' })).toBe('x:');
-    expect(floodKey({ body: 'y' })).toBe('?:y');
-  });
-
-  it('truncates long bodies (collisions accepted for very long bodies)', () => {
-    const long = 'a'.repeat(100);
-    expect(floodKey({ from: 'x', body: long }).length).toBeLessThan('x:'.length + 61);
   });
 });
 
-describe('FloodTracker', () => {
-  it('admits the first N events; drops subsequent identical', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, threshold: 5 });
-    const ev = { from: 'kg', body: '> /help' };
-    for (let i = 0; i < 5; i++) {
-      expect(t.check(ev)).toBe(false);
-      clock.advance(50);    // 50ms between events; well within window
-    }
-    for (let i = 0; i < 50; i++) {
-      expect(t.check(ev)).toBe(true);   // dropped
-      clock.advance(10);
-    }
-  });
-
-  it('resets after the window expires', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, windowMs: 5000, threshold: 5 });
-    const ev = { from: 'kg', body: 'x' };
-    // Saturate
-    for (let i = 0; i < 5; i++) t.check(ev);
-    expect(t.check(ev)).toBe(true);
-
-    // After the window, the next event starts a fresh count
-    clock.advance(5001);
-    expect(t.check(ev)).toBe(false);
-    // And 4 more before suppression kicks in again
-    for (let i = 0; i < 4; i++) expect(t.check(ev)).toBe(false);
-    expect(t.check(ev)).toBe(true);
-  });
-
-  it('tracks different (from, body) pairs independently', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, threshold: 3 });
-    expect(t.check({ from: 'a', body: 'x' })).toBe(false);
-    expect(t.check({ from: 'a', body: 'x' })).toBe(false);
-    expect(t.check({ from: 'a', body: 'x' })).toBe(false);
-    expect(t.check({ from: 'a', body: 'x' })).toBe(true);    // a/x flooded
-    expect(t.check({ from: 'b', body: 'x' })).toBe(false);   // b/x unrelated
-    expect(t.check({ from: 'a', body: 'y' })).toBe(false);   // a/y unrelated
-  });
-
-  it('different bodies from the same source are independent', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, threshold: 2 });
-    expect(t.check({ from: 'kg', body: 'one' })).toBe(false);
-    expect(t.check({ from: 'kg', body: 'one' })).toBe(false);
-    expect(t.check({ from: 'kg', body: 'one' })).toBe(true);
-    expect(t.check({ from: 'kg', body: 'two' })).toBe(false);   // distinct body
-  });
-
-  it('non-body events are never suppressed', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, threshold: 2 });
-    const noBody = { from: 'kg', type: 'node-online' };
-    for (let i = 0; i < 100; i++) expect(t.check(noBody)).toBe(false);
-  });
-
-  it('fires onSuppress exactly once per flood window', () => {
-    const clock = fakeClock(1000);
-    let calls = 0;
-    const t = new FloodTracker({
-      now: clock.now, threshold: 3, windowMs: 5000,
-      onSuppress: () => { calls++; },
+describe('HeldFloodDetector', () => {
+  function setup(opts = {}) {
+    const timer = makeFakeTimer();
+    const released = [];
+    const starts = [];
+    const ends = [];
+    const det = new HeldFloodDetector({
+      holdMs: 250,
+      endQuietMs: 1500,
+      setTimeout: timer.setTimeout,
+      clearTimeout: timer.clearTimeout,
+      onRelease:    (ev) => released.push(ev),
+      onFloodStart: (info) => starts.push(info),
+      onFloodEnd:   (info) => ends.push(info),
+      ...opts,
     });
-    const ev = { from: 'kg', body: 'flood' };
-    for (let i = 0; i < 50; i++) t.check(ev);
-    expect(calls).toBe(1);   // one warning for the whole window
+    return { det, timer, released, starts, ends };
+  }
 
-    clock.advance(5001);
-    // Reset; the next saturation should produce another single warning
-    for (let i = 0; i < 50; i++) t.check(ev);
-    expect(calls).toBe(2);
+  it('passes through non-body events without holding', () => {
+    const { det, released } = setup();
+    const r = det.submit({ from: 'a', type: 'node-online' });
+    expect(r).toBe('pass');
+    expect(released).toEqual([]);   // caller handles direct delivery
   });
 
-  it('reproduces the shell-loop case (119 events in 4 seconds)', () => {
-    const clock = fakeClock(1000);
-    const t = new FloodTracker({ now: clock.now, threshold: 5, windowMs: 5000 });
+  it('passes through events with non-string body', () => {
+    const { det } = setup();
+    expect(det.submit({ from: 'a', body: 42 })).toBe('pass');
+    expect(det.submit({ from: 'a', body: null })).toBe('pass');
+  });
+
+  it('holds a body event and releases it after holdMs if no duplicate', () => {
+    const { det, timer, released, starts, ends } = setup();
+    const ev = { from: 'kg', body: 'hello' };
+    expect(det.submit(ev)).toBe('held');
+    expect(released).toEqual([]);
+
+    timer.advance(249);
+    expect(released).toEqual([]);
+    timer.advance(2);
+    expect(released).toEqual([ev]);   // released after holdMs
+
+    expect(starts).toEqual([]);
+    expect(ends).toEqual([]);
+  });
+
+  it('on duplicate within holdMs: drops BOTH, fires onFloodStart immediately', () => {
+    const { det, timer, released, starts, ends } = setup();
     const ev = { from: 'kg', body: '> /help' };
-    let admitted = 0;
-    let dropped = 0;
+    expect(det.submit(ev)).toBe('held');
+    timer.advance(100);
+    expect(det.submit(ev)).toBe('dropped');
+
+    expect(starts).toEqual([{ fromKey: 'kg', bodySnippet: '> /help' }]);
+    expect(released).toEqual([]);   // original was NOT released
+
+    // No end-fire yet — endQuietMs hasn't elapsed
+    expect(ends).toEqual([]);
+  });
+
+  it('fires onFloodEnd with total count (held + duplicates) after endQuietMs of quiet', () => {
+    const { det, timer, ends } = setup();
+    const ev = { from: 'kg', body: 'x' };
+    det.submit(ev);          // held
+    det.submit(ev);          // drop #1
+    det.submit(ev);          // drop #2
+    det.submit(ev);          // drop #3
+    timer.advance(1499);
+    expect(ends).toEqual([]);
+    timer.advance(2);
+    expect(ends).toEqual([{ fromKey: 'kg', bodySnippet: 'x', totalCount: 4 }]);
+  });
+
+  it('continued duplicates reset the end-quiet timer', () => {
+    const { det, timer, ends } = setup();
+    const ev = { from: 'kg', body: 'x' };
+    det.submit(ev);
+    det.submit(ev);
+    timer.advance(1000);
+    det.submit(ev);           // extends the flood
+    timer.advance(1499);
+    expect(ends).toEqual([]); // not yet — last drop was 1499ms ago
+    timer.advance(2);
+    expect(ends).toEqual([{ fromKey: 'kg', bodySnippet: 'x', totalCount: 3 }]);
+  });
+
+  it('different (from, body) pairs are independent', () => {
+    const { det, timer, released, starts, ends } = setup();
+    det.submit({ from: 'a', body: 'x' });
+    det.submit({ from: 'a', body: 'x' });   // flood A
+    det.submit({ from: 'b', body: 'x' });   // independent — held
+    det.submit({ from: 'a', body: 'y' });   // independent — held
+
+    timer.advance(251);
+    // b/x and a/y release as normal (held, then released)
+    expect(released).toContainEqual({ from: 'b', body: 'x' });
+    expect(released).toContainEqual({ from: 'a', body: 'y' });
+    // a/x flooded — no release; one start notice fired
+    expect(starts).toEqual([{ fromKey: 'a', bodySnippet: 'x' }]);
+
+    timer.advance(1500);
+    expect(ends).toEqual([{ fromKey: 'a', bodySnippet: 'x', totalCount: 2 }]);
+  });
+
+  it('after flood ends, a new duplicate burst is detected fresh', () => {
+    const { det, timer, starts, ends } = setup();
+    const ev = { from: 'kg', body: 'x' };
+    det.submit(ev); det.submit(ev);    // flood
+    timer.advance(1600);                // flood ends
+    expect(ends).toHaveLength(1);
+
+    // Another burst on the same key
+    det.submit(ev); det.submit(ev);
+    timer.advance(1600);
+    expect(starts).toHaveLength(2);
+    expect(ends).toHaveLength(2);
+  });
+
+  it('reproduces the shell-loop case — 0 admitted, 119 suppressed, 1 notice pair', () => {
+    const { det, timer, released, starts, ends } = setup();
+    const ev = { from: 'kg', body: '> /help' };
+    // 119 events spread over 4 seconds (~30/sec)
     for (let i = 0; i < 119; i++) {
-      if (t.check(ev)) dropped++; else admitted++;
-      clock.advance(4000 / 119);    // ~30/sec across 4 seconds
+      det.submit(ev);
+      timer.advance(Math.floor(4000 / 119));
     }
-    expect(admitted).toBe(5);       // exactly threshold
-    expect(dropped).toBe(114);
+    // Drain end-quiet timer
+    timer.advance(1500);
+    expect(released).toEqual([]);              // NONE rendered
+    expect(starts).toHaveLength(1);            // single start notice
+    expect(ends).toEqual([{ fromKey: 'kg', bodySnippet: '> /help', totalCount: 119 }]);
+  });
+
+  it('reset() drops all pending timers and held state', () => {
+    const { det, timer, released, ends } = setup();
+    det.submit({ from: 'a', body: 'x' });
+    det.submit({ from: 'a', body: 'x' });   // flood — sets endTimer
+    det.reset();
+    timer.advance(5000);
+    expect(released).toEqual([]);
+    expect(ends).toEqual([]);
   });
 });

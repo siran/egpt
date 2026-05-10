@@ -1069,6 +1069,24 @@ export default function App() {
       if (!tid) return;
       try { await bus.postEvent(tid, { ts: Date.now(), from: BUS_NODE_ID, ...event }); } catch (_) {}
     };
+    // Bus-flood notices come from bus-ext.js (not from any peer) when
+    // a flood of identical messages is detected. Render as plain egpt
+    // system messages so the user knows what got swallowed. The
+    // detector never lets a single flood event through, so these are
+    // the ONLY visible record of the flood — by design, per user:
+    // 'just say the number, if user is interested they can reload'.
+    if (ev.type === 'bus-flood-start') {
+      appendMsg('egpt', ev.body, { noMirror: true });
+      return;
+    }
+    if (ev.type === 'bus-flood-end') {
+      appendMsg(
+        'egpt',
+        `${ev.body}. /reload bus to recover them from the bus tab.`,
+        { noMirror: true },
+      );
+      return;
+    }
     switch (ev.type) {
       case 'node-online': {
         peerNodesRef.current.set(ev.from, {

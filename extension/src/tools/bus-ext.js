@@ -106,19 +106,41 @@ let _lastSeenTs = 0;
 // or events arriving out-of-order. Capped to keep memory bounded.
 const _seenEventKeys = new Set();
 const SEEN_KEYS_CAP = 500;
-// Live-flood suppressor. See bus-flood.js for the algorithm; tracks
-// per-(from, body) bursts that aren't caught by the ts-based event-
-// key dedup. Logs once per flood-window via console.warn so the user
-// can spot suppressed peers without per-message noise.
-import { FloodTracker } from './bus-flood.js';
-const _flood = new FloodTracker({
-  onSuppress: (ev, count, threshold, windowMs) => {
-    try {
-      console.warn(`[bus-flood] suppressing duplicate '${(ev.body ?? '').slice(0, 40)}' from ${ev.from ?? '?'} (>${threshold} in ${windowMs}ms)`);
-    } catch (_) {}
-  },
+// Live-flood suppressor. See bus-flood.js for the algorithm. Body
+// events are held briefly; if a duplicate arrives during the hold,
+// BOTH (the held + the duplicate) are suppressed and a notice is
+// emitted instead. No event from a flood is rendered — just one
+// 'suppressing…' notice and one 'N duplicates suppressed' tally.
+// Notices ride the same handler chain as real bus events so the
+// egpt UI renders them as system messages with no UI-side changes.
+import { HeldFloodDetector } from './bus-flood.js';
+function _fanout(ev) {
+  for (const h of _eventHandlers) {
+    try { h(ev); } catch (_) {}
+  }
+}
+const _flood = new HeldFloodDetector({
+  onRelease: (ev) => _fanout(ev),
+  onFloodStart: ({ fromKey, bodySnippet }) => _fanout({
+    type: 'bus-flood-start',
+    from: '__bus_flood__',
+    ts: Date.now(),
+    body: `🔇 suppressing duplicate "${bodySnippet}" from ${fromKey ?? '?'}…`,
+    flood_from: fromKey,
+    flood_body: bodySnippet,
+    _localOnly: true,
+  }),
+  onFloodEnd: ({ fromKey, bodySnippet, totalCount }) => _fanout({
+    type: 'bus-flood-end',
+    from: '__bus_flood__',
+    ts: Date.now(),
+    body: `🔇 ${totalCount} duplicate${totalCount === 1 ? '' : 's'} of "${bodySnippet}" from ${fromKey ?? '?'} suppressed`,
+    flood_from: fromKey,
+    flood_body: bodySnippet,
+    flood_count: totalCount,
+    _localOnly: true,
+  }),
 });
-const checkFlood = (ev) => _flood.check(ev);
 
 function eventKey(ev) {
   // ts + from + type + first 60 chars of body should uniquely
@@ -158,20 +180,17 @@ function ensurePort() {
   _port.onMessage.addListener(async (msg) => {
     if (!msg) return;
     if (msg.type === 'event') {
-      if (trackSeen(msg.ev)) return;       // already delivered (replay race)
-      if (checkFlood(msg.ev)) return;      // peer flooding the bus
-      if (!(await _verify(msg.ev, 'live'))) return;
-      for (const h of _eventHandlers) {
-        try { h(msg.ev); } catch (_) {}
-      }
+      if (trackSeen(msg.ev)) return;                   // already delivered (replay race)
+      if (!(await _verify(msg.ev, 'live'))) return;    // signature bad → drop
+      const result = _flood.submit(msg.ev);
+      if (result === 'pass') _fanout(msg.ev);
+      // 'held' / 'dropped' — detector handles delivery (or suppression)
     } else if (msg.type === 'replay') {
       for (const ev of (msg.past ?? [])) {
         if (trackSeen(ev)) continue;
-        if (checkFlood(ev)) continue;
         if (!(await _verify(ev, 'replay'))) continue;
-        for (const h of _eventHandlers) {
-          try { h({ ...ev, _replayed: true }); } catch (_) {}
-        }
+        const result = _flood.submit({ ...ev, _replayed: true });
+        if (result === 'pass') _fanout({ ...ev, _replayed: true });
       }
     }
   });
