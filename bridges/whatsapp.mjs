@@ -404,7 +404,32 @@ export async function startWhatsAppBridge({
     // a brain. The body extracted from .messages is purely cache
     // state the user pulls via /channels — same posture as the chat
     // list itself.
-    sock.ev.on('messaging-history.set', ({ chats, messages }) => {
+    sock.ev.on('messaging-history.set', (params) => {
+      const { chats, messages, syncType, isLatest } = params;
+      const chatsCount = Array.isArray(chats) ? chats.length : 0;
+      const messagesCount = Array.isArray(messages) ? messages.length : 0;
+      // Visible diagnostic so the user can see how much history baileys
+      // actually shipped on connect. Goes to onLog which is the hidden
+      // /log buffer (operator can run /log to inspect). If messagesCount
+      // is consistently 0, the phone-side sync isn't delivering message
+      // bodies and we'll need a different strategy.
+      log(`whatsapp[history]: chats=${chatsCount} messages=${messagesCount} syncType=${syncType} latest=${isLatest}`);
+      // Diagnostic: sample the first 2 messages to see what fields are
+      // populated (in particular whether m.message has actual content).
+      if (debug && messagesCount > 0) {
+        for (const m of messages.slice(0, 2)) {
+          const sample = {
+            jid: m.key?.remoteJid,
+            fromMe: m.key?.fromMe,
+            ts: m.messageTimestamp,
+            pushName: m.pushName,
+            messageType: m.message ? Object.keys(m.message)[0] : null,
+            textPreview: textOf(m.message ?? {})?.slice(0, 60) ?? null,
+          };
+          log(`whatsapp[history-sample]: ${JSON.stringify(sample)}`);
+        }
+      }
+
       if (Array.isArray(chats)) {
         for (const chat of chats) {
           if (!chat?.id) continue;
