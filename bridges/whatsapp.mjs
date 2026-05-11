@@ -195,7 +195,7 @@ export async function startWhatsAppBridge({
     _chatsWriteTimer.unref?.();
   }
 
-  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null }) {
+  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null }) {
     if (!jid) return;
     const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [] };
     if (!Array.isArray(cur.recent)) cur.recent = [];
@@ -204,17 +204,24 @@ export async function startWhatsAppBridge({
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
     if (name) cur.name = name;
     // Append a recent-message entry when we have a real body. Dedupe
-    // by ts+author so the same row arriving via both messages.upsert
-    // and messaging-history.set doesn't double-count.
+    // by ts+author+key so the same row arriving via both messages.upsert
+    // and messaging-history.set doesn't double-count. Storing the WA
+    // message key lets prefetchHistoryForTopChats anchor a deeper
+    // sock.fetchMessageHistory call later.
     if (body && typeof body === 'string' && ts > 0) {
       const trimmed = body.trim();
       if (trimmed) {
         const text = trimmed.length > RECENT_BODY_CAP
           ? trimmed.slice(0, RECENT_BODY_CAP - 1) + '…'
           : trimmed;
-        const dupe = cur.recent.some(r => r.ts === ts && r.author === author && r.text === text);
+        const keyId = key?.id ?? null;
+        const dupe = cur.recent.some(r =>
+          (keyId && r.key?.id === keyId) ||
+          (r.ts === ts && r.author === author && r.text === text));
         if (!dupe) {
-          cur.recent.push({ ts, author: author ?? null, text });
+          const entry = { ts, author: author ?? null, text };
+          if (keyId) entry.key = { id: keyId, fromMe: !!key.fromMe };
+          cur.recent.push(entry);
           // Keep newest at the end. Sort + slice to cap.
           cur.recent.sort((a, b) => a.ts - b.ts);
           if (cur.recent.length > RECENT_PER_CHAT) {
@@ -376,7 +383,8 @@ export async function startWhatsAppBridge({
         const remoteName = (!fromMe && pushedName) ? pushedName : null;
         const author = fromMe ? 'You' : (pushedName ?? null);
         const body = textOf(m.message ?? {}) ?? null;
-        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity', author, body });
+        const key = m.key?.id ? { id: m.key.id, fromMe } : null;
+        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity', author, body, key });
       }
       // — LOUD track — only real-time messages reach handleMessage,
       // which is the path that renders, mirrors, and may dispatch
@@ -449,7 +457,8 @@ export async function startWhatsAppBridge({
           const pushedName = (typeof m.pushName === 'string' && m.pushName.trim()) ? m.pushName.trim() : null;
           const author = fromMe ? 'You' : (pushedName ?? null);
           const body = textOf(m.message ?? {}) ?? null;
-          if (ts > 0) _recordChat({ jid, isGroup, name: null, ts, kind: 'activity', author, body });
+          const key = m.key?.id ? { id: m.key.id, fromMe } : null;
+          if (ts > 0) _recordChat({ jid, isGroup, name: null, ts, kind: 'activity', author, body, key });
         }
       }
     });
@@ -713,8 +722,52 @@ export async function startWhatsAppBridge({
     return out;
   }
 
+  // Explicit history fetch. baileys's sock.fetchMessageHistory needs
+  // an anchor (an existing WAMessageKey + timestamp) to fetch older
+  // messages going backward — there's no 'fetch from scratch' for a
+  // chat we've never seen a message in. Walk the top-N chats by
+  // lastActivityTs, find the OLDEST anchor in each chat's recent[]
+  // (so the fetch walks further into the past), call fetchMessageHistory.
+  // Returned messages arrive asynchronously via messaging-history.set
+  // and feed the same silent _chats tracker. Caller can /channels
+  // again a moment later to see the populated previews.
+  //
+  // Returns { requested, skipped } so caller knows how many fetches
+  // went out vs how many chats lacked any anchor.
+  async function prefetchHistoryForTopChats({ chatLimit = 20, perChat = 10 } = {}) {
+    if (!sock) return { requested: 0, skipped: 0 };
+    const chats = [..._chats.values()]
+      .filter(c => c.lastActivityTs > 0 && Array.isArray(c.recent) && c.recent.length > 0 && c.recent[0].key?.id)
+      .sort((a, b) => b.lastActivityTs - a.lastActivityTs)
+      .slice(0, chatLimit);
+    const skipped = [..._chats.values()].filter(c => c.lastActivityTs > 0).length - chats.length;
+    let requested = 0;
+    for (const c of chats) {
+      // oldest anchor — fetchMessageHistory walks BACKWARD from this
+      // point, so anchoring at the oldest in our cache gets the
+      // largest new window.
+      const anchor = c.recent[0];
+      try {
+        await sock.fetchMessageHistory(perChat, {
+          remoteJid: c.jid,
+          id: anchor.key.id,
+          fromMe: !!anchor.key.fromMe,
+        }, anchor.ts / 1000 | 0);
+        requested++;
+      } catch (e) {
+        // Single-chat failures don't abort the whole prefetch. Common
+        // cause: anchor key not recognized server-side (e.g., a chat
+        // we know about but baileys never actually saw the message,
+        // which can happen if our cache outlived the sync state).
+        err(`prefetchHistory ${c.jid}: ${e.message}`);
+      }
+    }
+    return { requested, skipped };
+  }
+
   return {
     listChats,
+    prefetchHistoryForTopChats,
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return;

@@ -2891,6 +2891,26 @@ function App() {
       const limit           = tokens[0] && tokens[0] > 0 ? tokens[0] : 10;
       const messagesPerChat = tokens[1] != null ? Math.max(0, tokens[1]) : 3;
       try {
+        // Prefetch deeper history for the top-N chats that have an
+        // anchor message. Anchored chats fetch ~M older messages each
+        // via sock.fetchMessageHistory; the returned messages arrive
+        // through messaging-history.set asynchronously. Wait briefly
+        // for those events to settle, then render. Chats without any
+        // anchor (recent[] empty) can't be fetched and just render
+        // empty — they'll fill once any real message arrives.
+        if (typeof wa.prefetchHistoryForTopChats === 'function' && messagesPerChat > 0) {
+          const want = Math.max(messagesPerChat, 5);
+          try {
+            const r = await wa.prefetchHistoryForTopChats({ chatLimit: limit, perChat: want });
+            if (r?.requested > 0) {
+              // Give baileys a beat to deliver the messages over the
+              // WS before we read _chats again. 1.5s is empirically
+              // enough for a single round-trip; if the user's network
+              // is slow they can just /channels again.
+              await new Promise(r => setTimeout(r, 1500));
+            }
+          } catch (_) { /* fall through; render what we have */ }
+        }
         const chats = await wa.listChats({ limit, messagesPerChat });
         if (!chats.length) {
           sysOut('/channels: no chats found (baileys not synced yet — give it a moment after /whatsapp start, or just wait for the first message)');
