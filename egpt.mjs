@@ -1354,6 +1354,9 @@ function App() {
   const [items, setItems] = useState([]);
   const [streaming, setStreaming] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Custom spinner label per operation; defaults to 'thinking…' for
+  // brain turns. Set alongside setBusy(true), cleared in the finally.
+  const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
   const [, setThemeRev] = useState(0);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
@@ -2959,6 +2962,13 @@ function App() {
       const tokens = arg.trim().split(/\s+/).filter(t => /^\d+$/.test(t)).map(t => parseInt(t, 10));
       const limit           = tokens[0] && tokens[0] > 0 ? tokens[0] : 10;
       const messagesPerChat = tokens[1] != null ? Math.max(0, tokens[1]) : 3;
+      // Block the input while we prefetch, list, and scrape — otherwise
+      // the prompt comes back before the channel list and the user can
+      // type a follow-up against stale @waN indices. Spinner shows
+      // 'building channel list…' instead of the default 'thinking…' so
+      // the operator knows what they're waiting on.
+      setBusyLabel('building channel list…');
+      setBusy(true);
       try {
         // Prefetch deeper history for the top-N chats that have an
         // anchor message. Anchored chats fetch ~M older messages each
@@ -3042,6 +3052,9 @@ function App() {
         sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${blocks.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
       } catch (e) {
         sysOut(`!! /channels: ${e.message}`);
+      } finally {
+        setBusy(false);
+        setBusyLabel(null);
       }
       return true;
     }
@@ -5701,7 +5714,7 @@ function App() {
         const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
         const ch = SPIN[Math.floor(now / 100) % SPIN.length];
         return h(Text, { color: T.spinnerLabel },
-          `${ch} thinking… `,
+          `${ch} ${busyLabel ?? 'thinking…'} `,
           h(Text, { color: T.spinnerElapsed },
             `${elapsed}s · Ctrl+R to abort`));
       })(),
