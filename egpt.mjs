@@ -5131,14 +5131,25 @@ function App() {
     // tgChatId / waChatId route the streaming reply to the chat that
     // originated the request. When fromAnyBridge is true we only call
     // the originating bridge; for local typing we call both (each goes
-    // to its lastChat).
+    // to its target chat — see resolveWaStreamTarget below for the
+    // /join-aware WA target).
     const tg = (!fromAnyBridge || tgChatId)
       ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
       : null;
     // WhatsApp doesn't render HTML — strip tags for the WA stream.
+    // Pick the WA stream target:
+    //   1. waChatId if the turn came from a WA arrival (route back there)
+    //   2. waJoinedRef.jid if /join is active (the binding the operator
+    //      explicitly set)
+    //   3. undefined → bridge falls back to lastChat (default behaviour)
+    // Without (2) a shell-typed @cgpt1 while joined to @wa6 would
+    // stream the reply to whatever WA chat was last active in the
+    // bridge — typically self-DM — instead of @wa6, defeating /join.
+    const waStreamChatId = waChatId ?? waJoinedRef.current?.jid;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
     const wa = (!fromAnyBridge || waChatId)
-      ? waBridgeRef.current?.startStreamMessage?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId })
+      ? waBridgeRef.current?.startStreamMessage?.(`${waPrefix}\n⌛ thinking…`,
+          waStreamChatId ? { chatId: waStreamChatId } : {})
       : null;
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
