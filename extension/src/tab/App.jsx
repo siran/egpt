@@ -417,7 +417,19 @@ export default function App() {
       // Route slash commands (e.g. /telegram extension) through the command
       // handler so Telegram users can drive the room from off-LAN. Resolved
       // via ref because handleCommand is declared later in the file.
-      handleCommandRef.current?.(trimmed);
+      //
+      // Set the output sink so anything the command writes via
+      // appendMsg('egpt', …) — help text, /config readouts, errors,
+      // hints — mirrors back to the originating Telegram chat. Without
+      // this the user saw their slash command in TG with no reply, even
+      // though the extension UI rendered the response. Symmetric to the
+      // wa-cdp sink wired in handleSubmit.
+      const sinkPrev = currentOutputSinkRef.current;
+      currentOutputSinkRef.current = (out) => {
+        try { bridgeRef.current?.send(out, { chatId: meta.chatId }); } catch (_) {}
+      };
+      try { await handleCommandRef.current?.(trimmed); }
+      finally { currentOutputSinkRef.current = sinkPrev; }
       return;
     }
     if (parsed.type === 'mention') {
