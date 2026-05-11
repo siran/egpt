@@ -3243,11 +3243,25 @@ function App() {
       let localCfg = {};
       try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
       if (!key) {
-        const entries = Object.entries(localCfg);
-        const schema = Object.entries(CONFIG_SCHEMA).map(([k, d]) => `  ${k} — ${d}`).join('\n');
-        sysOut((entries.length
-          ? `local config (${dp(LOCAL_CONFIG_PATH)}):\n${entries.map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}\n`
-          : `local config empty  (${dp(LOCAL_CONFIG_PATH)})\n`) + `\nkeys:\n${schema}`);
+        // One block per key: current value (or '(unset)') + description.
+        // Sourced from the local config when present, otherwise the
+        // in-memory EGPT_CONFIG (default / inherited). Helps the
+        // operator discover what's available without grep-ing.
+        const lines = [`config  (${dp(LOCAL_CONFIG_PATH)}):`, ''];
+        for (const [k, desc] of Object.entries(CONFIG_SCHEMA)) {
+          const hasLocal = Object.prototype.hasOwnProperty.call(localCfg, k);
+          const live = EGPT_CONFIG[k];
+          const valStr = hasLocal
+            ? JSON.stringify(localCfg[k])
+            : (live !== undefined ? `${JSON.stringify(live)}  (default)` : '(unset)');
+          lines.push(`  ${k} = ${valStr}`);
+          lines.push(`    ${desc}`);
+          lines.push('');
+        }
+        lines.push('usage:');
+        lines.push('  /config <key> [val]              top-level (e.g. /config user_name An)');
+        lines.push('  /config <key>.<sub> [val]        nested (e.g. /config whatsapp.mirror_headers brain_only)');
+        sysOut(lines.join('\n'));
         return true;
       }
       // Bridge-context inference: if the user is on whatsapp/telegram
