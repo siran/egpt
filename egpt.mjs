@@ -3081,6 +3081,19 @@ function App() {
         return true;
       }
       waJoinedRef.current = { jid: chat.jid, name: chat.name, idx };
+      // Broadcast on the bus so peers with whatsapp.follow_join enabled
+      // adopt the same join. Peers with follow_join:'never' (default)
+      // ignore it. JID is canonical; the local idx is meaningless
+      // across surfaces.
+      {
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, {
+            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
+            jid: chat.jid, name: chat.name,
+          }).catch(() => {});
+        }
+      }
       sysOut(`joined @wa${idx + 1} "${chat.name}" — plain messages now route here. /unjoin to release.`);
       return true;
     }
@@ -3091,6 +3104,14 @@ function App() {
       }
       const prev = waJoinedRef.current;
       waJoinedRef.current = null;
+      {
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, {
+            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
+          }).catch(() => {});
+        }
+      }
       sysOut(`released @wa${prev.idx + 1} "${prev.name}"`);
       return true;
     }
@@ -5551,6 +5572,52 @@ function App() {
             const formatted = `${emoji} <b>${escapeHtml(author)}</b>\n${mdToTgHtml(ev.body ?? '')}`;
             bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
           }
+        }
+        return;
+      }
+      case 'wa-join': {
+        if (ev._replayed) return;
+        const peer = peerNodesRef.current.get(ev.from);
+        const peerRole = peer?.role ?? 'unknown';
+        if (ev.jid) {
+          log(`bus: ${ev.from} (${peerRole}) joined "${ev.name ?? ev.jid}"`);
+        } else {
+          log(`bus: ${ev.from} (${peerRole}) unjoined`);
+        }
+        // Configurable follow: 'never' (default), 'from_shell', 'always'.
+        // 'from_shell' only adopts when the announcing peer is the
+        // shell node — useful for chrome instances that want to track
+        // their shell's binding without auto-following each other.
+        const followCfg = EGPT_CONFIG.whatsapp?.follow_join ?? 'never';
+        const shouldFollow =
+          followCfg === 'always' ||
+          (followCfg === 'from_shell' && peerRole === 'shell');
+        if (!shouldFollow) return;
+        if (ev.jid) {
+          waJoinedRef.current = { jid: ev.jid, name: ev.name ?? ev.jid };
+          log(`wa: following ${ev.from} — bound to "${ev.name ?? ev.jid}"`);
+        } else if (waJoinedRef.current) {
+          const prevName = waJoinedRef.current.name;
+          waJoinedRef.current = null;
+          log(`wa: following ${ev.from} — released "${prevName}"`);
+        }
+        return;
+      }
+      case 'wa-send': {
+        // Ad-hoc WA send routed via bus (typically @waN from a peer's
+        // bridge inbound that doesn't have baileys locally). to_node
+        // narrows delivery; if absent, any baileys-holding peer may
+        // process. Body is sent as-is; the @waN prefix is already
+        // stripped by the originator.
+        if (ev.to_node && ev.to_node !== BUS_NODE_ID) return;
+        const wa = waBridgeRef.current;
+        if (!wa) { log(`bus: wa-send from ${ev.from} dropped — no baileys bridge here`); return; }
+        if (!ev.jid || !ev.body) { log(`bus: wa-send from ${ev.from} dropped — missing jid/body`); return; }
+        try {
+          wa.send(ev.body, { chatId: ev.jid });
+          log(`bus: wa-send → ${ev.jid} for ${ev.from} (${(ev.body || '').slice(0, 40)}${ev.body.length > 40 ? '…' : ''})`);
+        } catch (e) {
+          log(`!! wa-send failed: ${e.message}`);
         }
         return;
       }

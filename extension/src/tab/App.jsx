@@ -435,6 +435,52 @@ export default function App() {
     if (parsed.type === 'mention') {
       const name = parsed.target;
       const prompt = parsed.body || trimmed;
+      // @waN ad-hoc send: resolve N→JID against the extension's own
+      // /channels cache, then route to whichever peer has baileys
+      // (the shell) via a wa-send bus event. The originator's
+      // /channels cache wins resolution — N is meaningful in the
+      // context where the user typed it, not after a hop.
+      const waNMatch = /^wa(\d+)$/i.exec(name);
+      if (waNMatch) {
+        const idx = parseInt(waNMatch[1], 10) - 1;
+        const chat = waChannelsRef.current?.[idx];
+        if (!chat) {
+          bridgeRef.current?.send(
+            `!! @wa${idx + 1}: no channel at that index. Run /channels first.`,
+            { chatId: meta.chatId });
+          return;
+        }
+        // Find a shell peer with baileys (wa:true). Without one we
+        // can't honour the request from TG — report back so the user
+        // knows why nothing happened.
+        let target = null;
+        for (const [nodeId, peer] of peerNodesRef.current) {
+          if (peer.role === 'shell' && peer.wa) { target = nodeId; break; }
+        }
+        if (!target) {
+          bridgeRef.current?.send(
+            `!! @wa${idx + 1}: no shell with baileys on the bus — start /whatsapp on a shell first.`,
+            { chatId: meta.chatId });
+          return;
+        }
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          try {
+            await bus.postEvent(tid, {
+              type: 'wa-send', from: BUS_NODE_ID, ts: Date.now(),
+              to_node: target, jid: chat.jid, body: prompt,
+            });
+            bridgeRef.current?.send(
+              `→ @wa${idx + 1} "${chat.name}" via ${target}`,
+              { chatId: meta.chatId });
+          } catch (e) {
+            bridgeRef.current?.send(
+              `!! @wa${idx + 1}: bus post failed (${e.message})`,
+              { chatId: meta.chatId });
+          }
+        }
+        return;
+      }
       if (sessionsRef.current.has(name)) {
         runBrain(name, prompt, { tgChatId: meta.chatId });
       } else {
@@ -556,7 +602,21 @@ export default function App() {
       getChannels: () => waChannelsRef.current,
       setChannels: (c) => { waChannelsRef.current = c; },
       getJoined:   () => waJoinedRef.current,
-      setJoined:   (v) => { waJoinedRef.current = v; setWaJoined(v); },
+      setJoined:   (v) => {
+        waJoinedRef.current = v;
+        setWaJoined(v);
+        // Announce on the bus so peers with whatsapp.follow_join
+        // enabled can adopt. Peers with follow_join:'never' (default)
+        // just see the log line. v=null means /unjoin.
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, {
+            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
+            jid: v?.jid ?? null,
+            ...(v?.name ? { name: v.name } : {}),
+          }).catch(() => {});
+        }
+      },
       getLastIncoming: () => lastIncomingRef.current,
       runBrainE: async (text, sender) => {
         await ensureEThread();
@@ -1171,6 +1231,38 @@ export default function App() {
         const peer = peerNodesRef.current.get(ev.from);
         if (peer) { peer.sessions = ev.sessions ?? []; peer.lastSeen = ev.ts ?? Date.now(); }
         setPeersRev(r => r + 1);
+        return;
+      }
+      case 'wa-join': {
+        if (ev._replayed) return;
+        const peer = peerNodesRef.current.get(ev.from);
+        const peerRole = peer?.role ?? 'unknown';
+        if (ev.jid) {
+          log(`bus: ${ev.from} (${peerRole}) joined "${ev.name ?? ev.jid}"`);
+        } else {
+          log(`bus: ${ev.from} (${peerRole}) unjoined`);
+        }
+        // Adoption gated by chrome.storage.sync.whatsapp.follow_join.
+        // 'never' (default) just logs. 'from_shell' adopts only when
+        // the announcing peer is the shell. 'always' adopts any.
+        const { whatsapp } = await chrome.storage.sync.get('whatsapp');
+        const followCfg = whatsapp?.follow_join ?? 'never';
+        const shouldFollow =
+          followCfg === 'always' ||
+          (followCfg === 'from_shell' && peerRole === 'shell');
+        if (!shouldFollow) return;
+        // Update ref + state DIRECTLY (don't go through the ctx
+        // setJoined wrapper — that would re-broadcast and ping-pong).
+        if (ev.jid) {
+          waJoinedRef.current = { jid: ev.jid, name: ev.name ?? ev.jid };
+          setWaJoined(waJoinedRef.current);
+          log(`wa: following ${ev.from} — bound to "${ev.name ?? ev.jid}"`);
+        } else if (waJoinedRef.current) {
+          const prevName = waJoinedRef.current.name;
+          waJoinedRef.current = null;
+          setWaJoined(null);
+          log(`wa: following ${ev.from} — released "${prevName}"`);
+        }
         return;
       }
       case 'telegram-status': {
