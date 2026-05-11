@@ -987,6 +987,35 @@ const fmtTs = (ms) => _stamp(new Date(ms));
 
 const ROOMS_DIR = join(EGPT_HOME, 'rooms');
 
+// Normalise the on-disk session shape into the canonical nested form
+// used in-memory. /save-room writes brain-specific fields FLAT at the
+// top level (url, session_id, cwd, model, …); auto-save writes them
+// NESTED under options. Either format may show up in a yaml. We
+// always produce { brain, emoji, [bio], options: {...} } from here so
+// the rest of the shell never has to think about it.
+function normalizeSession(s) {
+  if (!s || typeof s !== 'object') return null;
+  if (s.options && typeof s.options === 'object') {
+    return { ...s, options: { ...s.options } };
+  }
+  const options = {};
+  if (s.url)         options.url         = s.url;
+  if (s.targetId)    options.targetId    = s.targetId;
+  if (s.session_id)  options.sessionId   = s.session_id;
+  if (s.sessionId)   options.sessionId   = s.sessionId;
+  if (s.cwd)         options.cwd         = s.cwd;
+  if (s.model)       options.model       = s.model;
+  if (s.effort)      options.effort      = s.effort;
+  if (s.profile)     options.profileName = s.profile;
+  if (s.profileName) options.profileName = s.profileName;
+  return {
+    brain: s.brain,
+    ...(s.emoji ? { emoji: s.emoji } : {}),
+    ...(s.bio ? { bio: s.bio } : {}),
+    options,
+  };
+}
+
 async function loadAllRooms() {
   const out = {};
   let files = [];
@@ -998,7 +1027,12 @@ async function loadAllRooms() {
       const parsed = YAML.parse(text) ?? {};
       const name = (parsed.name ?? f.replace(/\.yaml$/, '')).trim();
       if (name === 'default') continue;   // lobby is never persisted
-      out[name] = parsed.sessions ?? {};
+      const sessions = {};
+      for (const [sname, sval] of Object.entries(parsed.sessions ?? {})) {
+        const norm = normalizeSession(sval);
+        if (norm) sessions[sname] = norm;
+      }
+      out[name] = sessions;
     } catch (_) { /* skip malformed */ }
   }
   return out;
@@ -4267,20 +4301,28 @@ function App() {
         const star = name === _defaultOp ? '* ' : '  ';
         const emojiPad = (s.emoji ?? '❓') + ' ';
         const namePad = name.padEnd(14);
-        const brainPad = s.brain.padEnd(13);
+        const brainPad = (s.brain ?? '?').padEnd(13);
         const brain = brainForName(s.brain);
+        // s.options may be missing on sessions loaded from older yamls
+        // that stored brain-specific fields flat at the top level.
+        // normalizeSessions on load handles this for fresh restores,
+        // but stay defensive here so a stale shape never crashes the
+        // shell.
+        const opts = s.options ?? {};
         let detail = '';
-        if (s.options.targetId) {
-          const live = tabsByid.get(s.options.targetId);
-          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${s.options.targetId.slice(0, 8)}...)`;
-        } else if (s.options.sessionId) {
-          const idShort = s.options.sessionId.slice(0, 8) + '...';
+        if (opts.targetId) {
+          const live = tabsByid.get(opts.targetId);
+          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${opts.targetId.slice(0, 8)}...)`;
+        } else if (opts.sessionId) {
+          const idShort = opts.sessionId.slice(0, 8) + '...';
           detail = s.brain === 'codex' ? `thread: ${idShort}` : `claude --resume ${idShort}`;
+        } else if (opts.url) {
+          detail = opts.url.replace(/^https?:\/\//, '');
         } else if (brain?.stateDetail) {
-          detail = brain.stateDetail(s.options);
+          detail = brain.stateDetail(opts);
         }
-        if (s.options.profileName) {
-          detail = [`profile: ${s.options.profileName}`, detail].filter(Boolean).join(' | ');
+        if (opts.profileName) {
+          detail = [`profile: ${opts.profileName}`, detail].filter(Boolean).join(' | ');
         }
         const bio = s.bio ? `\n     bio: ${s.bio}` : '';
         return `${star}${emojiPad}${namePad}${brainPad}${detail}${bio}`;
@@ -4311,7 +4353,7 @@ function App() {
         let files = [];
         try { files = (await readdir(dir)).filter(f => f.endsWith('.yaml')); } catch {}
         if (!files.length) { sysOut(`(no saved rooms)\n  /save-room <name> to save current room`); return true; }
-        sysOut(`Saved rooms in ${dp(dir)}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/load-room <name> to restore`);
+        sysOut(`Saved rooms in ${dp(dir)}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/room join <name> to enter (and restore its sessions)`);
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
