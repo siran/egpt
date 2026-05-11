@@ -161,11 +161,19 @@
   //   - text from the row's .copyable-text descendant
   //   - author from the row's data-pre-plain-text="[time, date] Name: "
   //   - active chat label from the conversation header
-  // fromMe detection is unreliable from DOM alone (in self-DM both
-  // directions show the same author), so v1 emits all rows as fromMe
-  // and relies on background's echo tracker to suppress our own
-  // debugger-sends bouncing back. Phase 2b will add multi-chat
-  // awareness with proper sender vs self detection.
+  //   - fromMe by walking up to a .message-in / .message-out wrapper
+  //
+  // Direction discipline: WA-CDP is a one-way observer (WA → bus).
+  // .message-out rows that we observe are either (a) the bridge
+  // enacting a bus event we already saw, or (b) a phone-typed message
+  // the user intentionally addressed to the brain (@e / @egpt). For
+  // (a) the bus already carries the canonical event — re-emitting
+  // would loop; for (b) the wake-word is the user's "yes, this is a
+  // new event, route it" signal. So scan() emits:
+  //   - every .message-in row (peer-authored inbound, always new), and
+  //   - .message-out rows whose body matches WAKE_RE (phone-typed intent).
+  // Bridge-enacted outbound rows (no wake-word) are silently observed
+  // and dropped.
   function textOf(row) {
     const el = row.querySelector('.copyable-text, [class*="copyable-text"]');
     if (!el) return '';
@@ -190,8 +198,29 @@
       }
     };
     walk(el);
-    return parts.join('').trim();
+    let text = parts.join('').trim();
+    // WA Web always renders the message send-time inline at the bottom
+    // of every bubble ('21:08' or '9:08 PM'). data-pre-plain-text on
+    // incoming rows carries the same value as a copy-only attribute, so
+    // the textual tail is duplicated noise. Outgoing rows don't always
+    // expose data-pre-plain-text, so strip unconditionally on shape.
+    text = text.replace(/\s*\d{1,2}:\d{2}(?:\s*[AP]M)?\s*$/i, '').trim();
+    return text;
   }
+  // Direction detection. WA Web wraps each message row in a container
+  // carrying either `.message-in` or `.message-out` somewhere up the
+  // ancestor chain. Returns true (out), false (in), or null (unknown).
+  function isFromMe(row) {
+    let el = row;
+    for (let i = 0; el && i < 12; i++, el = el.parentElement) {
+      const cl = el.classList;
+      if (!cl) continue;
+      if (cl.contains('message-out')) return true;
+      if (cl.contains('message-in'))  return false;
+    }
+    return null;
+  }
+
   function authorOf(row) {
     const ppt = row.querySelector('[data-pre-plain-text]')?.getAttribute('data-pre-plain-text');
     if (!ppt) return null;
@@ -305,10 +334,21 @@
       // (from chat reloads, virtual-list re-renders, etc.) won't be.
       const ts = parseRowTimestamp(row);
       if (ts && ts < loadTime - HISTORY_GRACE_MS) continue;
+      // Direction gate — see comment above textOf().
+      // .message-in  → always emit (peer inbound).
+      // .message-out → emit only when the body is a wake-word — those
+      //                are phone-typed messages addressed to the brain.
+      //                Other .message-out rows are bridge-enacted echoes
+      //                of bus events already in flight; emitting them
+      //                would loop them back through the room.
+      // unknown      → drop conservatively rather than risk a loop.
+      const fromMe = isFromMe(row);
+      if (fromMe === null) continue;
+      if (fromMe && !WAKE_RE.test(text)) continue;
       safePost({
         type: 'incoming',
         chatId:  chat,
-        fromMe:  true,
+        fromMe,
         msgId:   id,
         text,
         author:  authorOf(row),
