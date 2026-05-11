@@ -158,6 +158,10 @@ export async function startWhatsAppBridge({
       if (Array.isArray(entries)) {
         for (const c of entries) {
           if (c && typeof c.jid === 'string') {
+            // Skip status@broadcast on load — pre-fix cache files may
+            // carry it as a synthetic '[1:1]' chat; drop it so a fresh
+            // _scheduleChatsWrite() rewrites the file without it.
+            if (c.jid === 'status@broadcast') continue;
             _chats.set(c.jid, {
               jid: c.jid,
               isGroup: !!c.isGroup,
@@ -197,6 +201,12 @@ export async function startWhatsAppBridge({
 
   function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null }) {
     if (!jid) return;
+    // status@broadcast is WhatsApp's global status-updates feed, not a
+    // chat — every contact's 24h stories arrive on this single JID with
+    // their respective pushNames. Recording it would pin a rotating
+    // contact name on a synthetic '[1:1]' entry that nobody can ever
+    // @waN into. Drop it at the source so the store stays clean.
+    if (jid === 'status@broadcast') return;
     const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [] };
     if (!Array.isArray(cur.recent)) cur.recent = [];
     cur.isGroup = isGroup;
