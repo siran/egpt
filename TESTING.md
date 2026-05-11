@@ -1,9 +1,10 @@
 # egpt — manual feature testing
 
 Step-by-step walkthrough for verifying egpt features end to end. The
-`vitest` suite covers parsing, routing, and registry integrity — this
-doc covers the surface behaviors a human has to eyeball: Chrome
-spawn, bridge integration, multi-surface coordination, transcripts.
+`vitest` suite covers extracted parser/routing/state helpers, command helpers,
+bus/proxy helpers, and build integrity. This doc covers the surface behaviors a
+human has to eyeball: Chrome spawn, live web-brain automation, bridge
+integration, multi-surface coordination, and transcripts.
 
 Run through the relevant section after any non-trivial change.
 
@@ -17,7 +18,8 @@ Run through the relevant section after any non-trivial change.
   cd ~/src/egpt
   npm install
   npm run build:ext
-  npm test                 # 101 tests should pass
+  npm test                 # 391 tests should pass
+  npm test -- --coverage   # optional: whole-project coverage report
   ```
 - Conventions in this doc:
   - "shell A" = a terminal running `node egpt.mjs`
@@ -274,9 +276,9 @@ In Telegram, send plain text (no `/`, no `@`): `hello from telegram`
 Extension UI shows `<your-tg-name>@telegram[<chatId>]: hello from telegram`.
 
 This works regardless of `cfg.telegram.mirror` — replication is
-unconditional. The mirror policy only controls whether plain text
-ALSO triggers a brain call (broadcast to local sessions). With
-`mirror: 'none'` (default), peers see the text but no brain runs.
+unconditional. The mirror policy only controls whether plain text is allowed
+to enter normal room routing. Plain text still needs active recipients set with
+`/use`; with `mirror: 'none'` (default), peers see the text but no brain runs.
 
 ### 4.7 — peer typing reaches Telegram
 
@@ -321,7 +323,7 @@ in the surviving node.
 ✅ Shows polling state across the room — one node `polling`, others
 `idle`. The room is consistent without manual handoff.
 
-### 4.6 — non-allowed users are gated for commands
+### 4.9 — non-allowed users are gated for commands
 
 (Optional, requires a second Telegram account.)
 

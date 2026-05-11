@@ -54,7 +54,9 @@ node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
 /tabs                                         # what's open in the brain Chrome
 @cgpt1 ¿qué piensas de esto?                  # address one tab for a single turn
 @claude1 segunda opinión?                     # address another tab for a single turn
-hello everyone                                # broadcast to all sessions in the room
+/use cgpt1,claude1                            # make later plain text route to both
+hello everyone                                # sent to active sessions from /use
+/use clear                                    # stop plain-text routing
 /open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
 /attach                                       # rescan Chrome for new tabs
 /send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
@@ -124,7 +126,7 @@ hello everyone                                # broadcast to all sessions in the
 # 5. Launch egpt — see "telegram bridge enabled" in the transcript.
 #
 # Then from the phone:
-#   "hello"                # broadcasts to all participants in the room
+#   "hello"                # logged/replicated; routes to brains only after /use
 #   "@ccode1 git status"   # routes to a specific session
 #   "@codex exec: pwd"     # run an operator command on the computer
 #   "@codex exec: cd ~/src/siran/writing"  # change codex cwd
@@ -295,11 +297,17 @@ A leading `@name` sends a turn to one session:
 @cgpt1 ¿qué piensas?
 ```
 
-The `@mention` syntax is recognized only at the **start** of a message. Messages without a leading mention broadcast to every session in the room. If the room is empty, egpt does not append the message to the conversation file.
+The `@mention` syntax is recognized only at the **start** of a message.
+Messages without a leading mention do not automatically run every brain. They
+route only to the active session list chosen with `/use`. If no active sessions
+are set, plain text is kept as room text and egpt asks you to `@mention` or
+`/use <name>` first. If the room is empty, egpt does not append the message to
+the conversation file.
 
 ```
 @codex exec: pwd                              # one session
-hello all                                     # broadcast
+/use cgpt1,claude1                            # set active recipients
+hello all                                     # broadcast only to active recipients
 ```
 
 ---
@@ -374,7 +382,10 @@ Once two or more AI sessions share a conversation, you want some etiquette. Two 
 
 ### Routing (egpt does it for you)
 
-Un-addressed messages broadcast to every session in the room. Use `@session` when you want a single recipient, especially for operator commands like `@codex exec: ...`.
+Use `@session` when you want a single recipient, especially for operator
+commands like `@codex exec: ...`. Use `/use <name>` when you want ordinary
+plain text to route to one session, and `/use a,b,c` when you intentionally want
+multi-brain broadcast. `/use clear` returns plain text to idle room text.
 
 ### Polite silence (the brain decides)
 
@@ -444,84 +455,91 @@ to send a larger excerpt intentionally.
 
 ## Slash command reference
 
-The shell's `/help` is generated from `interpreter.mjs`, which is the source
-of truth. The list below mirrors it; if they ever diverge, the registry wins.
+The shell and extension `/help` output is generated from `interpreter.mjs`,
+which is the source of truth. The list below mirrors the current registry.
+Surface tags: `[shell]` means shell-only, `[ext]` means extension-only, and
+`[both]` works on both surfaces.
 
 ```
 Room:
-  /exit                         leave egpt
-  /file                         show the conversation file path
-  /status                       room snapshot: sessions, files, config
-  /conversations                list available conversation files
-  /conversation <name|path>     switch the room to a different conversation file
-                                (creates it with a stub header if missing)
-  /last [N]                     show last N messages from the file (default 10)
-  /rules                        write room-rules system message into the file
-  /help                         this list
+  /rules [shell]                write room etiquette into the file
+  /last [N] [shell]             tail N messages (default 10)
+  /clear [ext]                  clear the extension display
+  /channels [N] [M] [both]      list active WhatsApp chats as @waN
+  /join @waN [ext]              bind extension outbound to chat N
+  /unjoin [ext]                 release the extension WhatsApp binding
+  /status [shell]               room snapshot: sessions, files, config
+  /file [shell]                 show the conversation file path
+  /conversations [shell]        list available conversation files
+  /conversation <name|path>     switch to a conversation file [shell]
+  /exit [shell]                 quit egpt
+  /version [shell]              show commit/branch/tag/dirty state
+  /upgrade [shell]              daemon pull/install/build/restart
+  /restart [shell]              daemon restart from current disk
+  /rewind <ref> [shell]         daemon checkout/install/build/restart
 
 Sessions (named participants in the room):
-  /open <brain> [name]          open a new tab/subprocess and register a session
-  /attach                       rescan Chrome and attach any new tabs
-  /attach <profile> [name]      start a YAML brain profile
-  /attach <brain> [name] [tab]  attach CDP tabs or create a local session
-  /detach <name>                remove a session from the room
-  /sessions                     list registered sessions
-  /sessions default <name>      set the default operator session (persisted)
-  /sessions default clear       clear the default
-  /handle <old> <new>           rename a session
-  /emoji [name emoji]           show or set a session avatar
-  /bio [name [text]]            show or set a session bio
+  /open <brain> [name] [both]   open a tab/subprocess and register it
+  /attach ... [both]            attach CDP tab, profile, or rescan
+  /detach <name> [both]         remove a session
+  /use [<name>|clear] [both]    set active recipients for plain text
+  /sessions ... [both]          list sessions; manage default operator
+  /handle <old> <new> [shell]   rename a session
+  /emoji [name emoji] [shell]   show or set a session avatar
+  /bio [name [text]] [shell]    show or set a session bio
 
 Profiles (~/.egpt/brains/*.yaml):
-  /profiles                     list YAML brain profiles
-  /profile <name> <urlOrId>     create a ChatGPT/Claude URL profile
-  /create-profile [name]        interactive profile wizard
+  /profiles [shell]             list YAML brain profiles
+  /create-profile [name]        interactive profile wizard [shell]
+  /profile <name> <url-or-id>   quick-create a ChatGPT/Claude URL profile [shell]
 
 Browser brains:
-  /tabs [all]                   list pages in brain Chrome (chrome:// hidden)
-  /refresh [@<session>]         re-poll a CDP tab; append latest assistant text
-                                (recovery for premature streaming termination)
-  /browse [via=<op>] [url] [@name] ["instr"]
-                                drive Chrome via CDP (auto-attaches operator if none active)
-  /continue                     resume after browser.waitForHuman() pause
-  /mirror [@<src>] [@<tgt>]     forward a message between sessions
+  /chrome [shell]               launch the brain Chrome with extension loaded
+  /tabs [all] [both]            list open Chrome pages
+  /refresh [@name] [shell]      re-poll a CDP tab; append full reply
+  /browse ... [shell]           open URL or delegate browsing to an operator
+  /continue [shell]             resume after browser.waitForHuman() pause
+  /mirror [@target] [both]      forward last observed message
 
 Files:
-  /send-file [via=<op>] [<path>] @<session> ["<instruction>"]
-                                prepare excerpt, or send prepared file
-  /paste-file <session> <path>  paste a local file/excerpt into one session
-                                supports --before/--after markers and --ask
+  /send-file ... @name "instr"  prepare and send a file excerpt [shell]
+  /paste-file <name> <path>     paste a local file/excerpt [shell]
 
 Local brains/operators:
-  /history [N]                  list recent ccode sessions on disk (newest first)
-  /session [<name>] <id>        --resume the session against an existing JSONL
-                                (cwd auto-detected unless overridden)
-  /session [<name>] none        back to stateless mode
+  /history [N] [shell]          list recent ccode sessions on disk
+  /session [name] [id|none]     manage ccode resume id [shell]
   @codex exec: <command>        run shell command in codex cwd
   @codex exec: cd <dir>         change codex cwd for later commands
 
 Reusable distillations (~/.egpt/summaries/<name>.md):
-  /save <name>                  save the latest non-system message verbatim
-  /summarize [all|last N] <name> [<brain>]
-                                fresh agent compresses the room → summary file
-  /summaries                    list saved summaries
-  /inject <name> [session]      drop a saved summary into the room or one session
-  /prompts [on|off]             show/hide the full prompt sent to operators
+  /summarize [all|last N] <name> save a compressed room summary [shell]
+  /inject <name> [session]      inject a saved summary [shell]
+  /save <name> [shell]          save the latest non-system message verbatim
+  /summaries [shell]            list saved summaries
+  /prompts [on|off] [shell]     show/hide prompts sent to operators
+
+Rooms:
+  /room ... [shell]             show, switch, create, join, leave, or delete room
+  /rooms [shell]                list legacy saved room snapshots
+  /save-room [name] [shell]     snapshot the current room lineup
 
 Appearance & config:
-  /themes                       list available color themes
-  /theme <name|next|prev>       switch theme live (no restart needed)
-  /config                       show local .egpt/config.json + valid keys
-  /config <key>                 read a config value
-  /config <key> <value>         write a config value
-                                keys: theme, show_prompts, unix_paths, tz_label
-                                (tz_label overrides the system tz suffix on
-                                 timestamps with a short city tag like NYC,
-                                 MAD, BEI — useful in distributed rooms)
+  /telegram ... [both]          manage Telegram polling/handoff/auth users
+  /whatsapp ... [shell]         start/pair/disconnect/authorize WhatsApp
+  /config [key [value]] [both]  read or write config
+  /themes [shell]               list available color themes
+  /theme <name|next|prev>       switch theme live [shell]
+  /bus-key ... [ext]            manage extension bus signing key
+  /help [both]                  show generated help
+  /log [N=30] [shell]           show recent telemetry/log entries
+  /logs [N=30] [shell]          alias for /log
+  /egpt ... [shell]             manage the node-global @egpt persona
 
 Conversation routing:
   @<name> <message>             address one session for THIS turn only
-  <message>                     broadcast to every session in the room
+  /use <name>                   route later plain text to one session
+  /use a,b                      route later plain text to multiple sessions
+  /use clear                    stop plain-text routing
 
 tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
 Brains: ccode, codex, chatgpt-cdp, claude-cdp
