@@ -1819,7 +1819,15 @@ function App() {
     if (!wa) return;
     const opt = EGPT_CONFIG.whatsapp?.mirror_chat_id;
     if (opt === 'none' || opt === false) return;
-    const target = (typeof opt === 'string' && opt) ? opt : wa.selfDmJid;
+    // /join @waN points the mirror at the joined chat so brain replies
+    // and other shell outputs land in the same conversation the user
+    // is having. Without this, the user asks '@e price?' from the
+    // joined chat, the question reaches WA via the /join direct-send,
+    // but the brain's answer falls into the self-DM mirror target and
+    // the WA participants never see it. /unjoin restores the default
+    // target.
+    const target = waJoinedRef.current?.jid
+      ?? ((typeof opt === 'string' && opt) ? opt : wa.selfDmJid);
     // Match Telegram's pattern: advance the counter even when target
     // isn't ready yet, so items already on screen don't all flush as
     // a backlog the moment the bridge connects.
