@@ -1210,7 +1210,29 @@ function formatItemForTelegram(item, sessions) {
 
 // Same shape, plain text. WhatsApp bodies don't support HTML so we
 // just emit author + content separated by a newline.
+//
+// Header policy (whatsapp.mirror_headers in config):
+//   'all'        — every item carries its 'handle@surface' header (default)
+//   'brain_only' — only brain/persona/system items carry headers; messages
+//                  authored by the user (You, peer-user tags like An@moto)
+//                  go without — the WA recipient just sees the text, no
+//                  device or bridge tell-tale. This is what most operators
+//                  want for groups: brain replies are tagged for context,
+//                  the user's own typing looks like a normal message
+//                  regardless of where they sent it from.
+//   'none'       — no headers at all
+function isBrainAuthor(item, sessions) {
+  if (item.author === 'system') return true;
+  const bare = String(item.author ?? '').split('@')[0];
+  if (bare === 'egpt' || bare === 'e') return true;
+  if (sessions?.[bare]) return true;
+  return false;
+}
 function formatItemForWhatsApp(item, sessions) {
+  const headerPolicy = EGPT_CONFIG.whatsapp?.mirror_headers ?? 'all';
+  const keepHeader = headerPolicy === 'all'
+    || (headerPolicy === 'brain_only' && isBrainAuthor(item, sessions));
+  if (!keepHeader) return item.body;
   if (item.author === 'system') return `${EGPT_EMOJI} egpt@${SURFACE_TAG}\n${item.body}`;
   if (item.author === 'You')    return `${USER_EMOJI} ${USER_NAME}@${SURFACE_TAG}\n${item.body}`;
   const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
