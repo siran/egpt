@@ -1627,6 +1627,9 @@ function App() {
   // chat by the index the user just saw. Reset every /channels so the
   // numbers always line up with the freshest view.
   const _waChannelsCacheRef = useRef([]);
+  // /join @waN binds shell-typed plain text to that chat. Holds
+  // { jid, name } or null. Survives until /unjoin or a fresh /join.
+  const waJoinedRef = useRef(null);
   const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
@@ -1824,6 +1827,7 @@ function App() {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
       if (item._observed) continue;             // see TG-mirror gate above
+      if (item._directWa) continue;             // already direct-sent (@waN / /join)
       if (item._source === 'whatsapp') continue;  // skip echo to origin
       if (item._target && item._target !== 'whatsapp') continue;
       if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
@@ -3032,6 +3036,42 @@ function App() {
       } catch (e) {
         sysOut(`!! /channels: ${e.message}`);
       }
+      return true;
+    }
+    if (cmd === '/join') {
+      // /join @waN — bind shell-typed plain text to chat N from the
+      // most recent /channels listing. After /join, every plain message
+      // typed in shell is sent straight to that chat (in addition to
+      // any local routing). Echoed locally so the operator sees the
+      // line; the wa-items-mirror skips it (_directWa) so it doesn't
+      // also land in the self-DM mirror target.
+      const m = text.trim().match(/^\/join\s+@wa(\d+)\s*$/i);
+      if (!m) {
+        sysOut('usage: /join @waN     (N from /channels)');
+        return true;
+      }
+      const idx = parseInt(m[1], 10) - 1;
+      const chat = _waChannelsCacheRef.current[idx];
+      if (!chat) {
+        sysOut(`!! /join: no @wa${idx + 1} in cache — run /channels first`);
+        return true;
+      }
+      if (!waBridgeRef.current) {
+        sysOut('!! /join: whatsapp bridge not running');
+        return true;
+      }
+      waJoinedRef.current = { jid: chat.jid, name: chat.name, idx };
+      sysOut(`joined @wa${idx + 1} "${chat.name}" — plain messages now route here. /unjoin to release.`);
+      return true;
+    }
+    if (cmd === '/unjoin') {
+      if (!waJoinedRef.current) {
+        sysOut('/unjoin: not joined');
+        return true;
+      }
+      const prev = waJoinedRef.current;
+      waJoinedRef.current = null;
+      sysOut(`released @wa${prev.idx + 1} "${prev.name}"`);
       return true;
     }
     if (cmd === '/whatsapp') {
@@ -4922,6 +4962,17 @@ function App() {
       ? `${stripAt(meta.waUser)}@${waClient}`
       : 'You';
     const isSlashCommand = text.startsWith('/');
+    // Direct-WA send detection. Two shell-typed shapes route a message
+    // straight to a specific WA chat instead of the default self-DM
+    // mirror: explicit '@waN <body>' (the handler further down does
+    // the send), and the /join-bound mode where every plain message
+    // is destined for the joined chat. In either case we tag the echo
+    // _directWa so the wa-items-mirror skips it — otherwise the same
+    // message also lands in 'Message Yourself', which was the bug.
+    const isAtWaNExplicit = !meta.fromTelegram && !meta.fromWhatsApp
+      && /^@wa\d+\s+/i.test(text);
+    const willDirectWa = !isSlashCommand && !meta.fromTelegram && !meta.fromWhatsApp
+      && (isAtWaNExplicit || !!waJoinedRef.current);
     // Slash commands are operator tooling, not part of the conversation
     // — they stay local. Bridge-arrived messages mirror to OTHER bridges
     // (e.g. WA arrival → TG mirror) but skip the bridge they came from
@@ -4942,6 +4993,7 @@ function App() {
       ...(isSlashCommand ? { _localOnly: true } : {}),
       ...(echoSource ? { _source: echoSource } : {}),
       ...(meta.observeOnly ? { _observed: true } : {}),
+      ...(willDirectWa ? { _directWa: true } : {}),
     }]);
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
@@ -5031,6 +5083,21 @@ function App() {
       return;
     }
 
+    // /join @waN binding: every plain shell message goes to the joined
+    // chat in addition to whatever local routing decides next. The
+    // echo item is tagged _directWa so the wa-items-mirror skips
+    // (otherwise this would also land in self-DM). Explicit @waN
+    // takes precedence — that handler runs immediately after and
+    // returns, so the user can address a different chat ad-hoc
+    // without /unjoining first.
+    if (waJoinedRef.current && !meta.fromTelegram && !meta.fromWhatsApp
+        && !isAtWaNExplicit) {
+      const wa = waBridgeRef.current;
+      if (wa) {
+        try { wa.send(text, { chatId: waJoinedRef.current.jid }); }
+        catch (e) { sysOut(`!! /join send failed: ${e.message}`); }
+      }
+    }
     // @waN <body> — ad-hoc send to the Nth chat from the most-recent
     // /channels listing. Mirrors the extension's behavior. Only fires
     // for shell-typed input (a bridge-sourced @waN would loop). The
