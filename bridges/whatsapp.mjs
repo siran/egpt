@@ -706,6 +706,11 @@ export async function startWhatsAppBridge({
 
     await onIncoming?.(processed, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
+      // msgKey enables proper WA-reply quoting later — e.g. when the
+      // operator types '@m42 …' in shell, we send the reply via
+      // baileys with quoted: { key, message } pointing at this msg.
+      msgKey: msg.key ? { ...msg.key } : null,
+      msgRaw: msg.message ?? null,
     });
   }
 
@@ -841,6 +846,25 @@ export async function startWhatsAppBridge({
       sock.sendMessage(target, { text })
         .then(r => rememberSent(r?.key?.id))
         .catch(e => err(`send: ${e.message}`));
+    },
+    // Reply to a specific message with a WA-native quote. `key` is the
+    // baileys WAMessageKey of the message being replied to; `raw` is
+    // the inner m.message (kept around for the quote header — baileys
+    // wants a minimal message body inside `quoted`). Falls back to
+    // `send` if either is missing.
+    async replyTo({ chatId, key, raw, text }) {
+      if (!sock) return;
+      const target = chatId ?? lastChat;
+      if (!target) return;
+      if (!key) {
+        return sock.sendMessage(target, { text })
+          .then(r => rememberSent(r?.key?.id))
+          .catch(e => err(`replyTo (fallback send): ${e.message}`));
+      }
+      const quoted = { key, message: raw ?? { conversation: '' } };
+      return sock.sendMessage(target, { text }, { quoted })
+        .then(r => rememberSent(r?.key?.id))
+        .catch(e => err(`replyTo: ${e.message}`));
     },
     startStreamMessage(initialText, { chatId } = {}) {
       // Edit-based streaming, modeled on bridges/telegram.mjs:

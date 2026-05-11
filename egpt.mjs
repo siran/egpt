@@ -1436,6 +1436,13 @@ function App() {
   // brain turns. Set alongside setBusy(true), cleared in the finally.
   const [busyLabel, setBusyLabel] = useState(null);
   const [error, setError] = useState(null);
+  // Short message ids — 'm<N>' assigned to each visible item in
+  // insertion order. Lets the operator type '@m42 <body>' to reply
+  // to a specific message and route through the originating bridge.
+  // Per-session: counter resets on shell restart.
+  const _shortIdCounter = useRef(0);
+  const shortIdByItemId = useRef(new Map());
+  const itemByShortId = useRef(new Map());
   const [, setThemeRev] = useState(0);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // The room starts empty — egpt is the host, not a participant. Use /open
@@ -1604,6 +1611,7 @@ function App() {
           fromTelegram: true,
           telegramChatId: from.chatId,
           telegramUser: who,
+          telegramMessageId: from.tgMessageId ?? null,
           skipRoute,
         });
       },
@@ -1818,6 +1826,8 @@ function App() {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
+            waMsgKey: from.msgKey ?? null,
+            waMsgRaw: from.msgRaw ?? null,
             observeOnly,
           });
         },
@@ -5446,6 +5456,73 @@ function App() {
       return;
     }
 
+    // @m<N> reply syntax — shell-typed only. Looks up the short id
+    // (assigned in render order) and routes the body as a reply via
+    // the originating bridge:
+    //   WA: sock.sendMessage with quoted (carries the original key)
+    //   TG: bot.sendMessage with reply_to_message_id
+    //   brain reply: dispatch to that brain as a follow-up
+    //   local typing / system: refuses with a hint
+    if (!meta.fromTelegram && !meta.fromWhatsApp) {
+      const replyMatch = text.match(/^@m(\d+)\s+([\s\S]+)$/i);
+      if (replyMatch) {
+        const shortId = `m${replyMatch[1]}`;
+        const body = replyMatch[2].trim();
+        const target = itemByShortId.current.get(shortId);
+        if (!target) {
+          sysOut(`!! ${shortId}: no message with that id in this session`);
+          return;
+        }
+        const rt = target._replyTarget;
+        if (rt?.kind === 'wa') {
+          const wa = waBridgeRef.current;
+          if (!wa?.replyTo) {
+            // Fall back to a plain send if the bridge doesn't expose
+            // replyTo. We could add reply support later; for now the
+            // operator sees the reply land without the WA-quote header.
+            try { wa?.send?.(body, { chatId: rt.chatId }); }
+            catch (e) { sysOut(`!! @${shortId} wa send failed: ${e.message}`); }
+          } else {
+            try { await wa.replyTo({ chatId: rt.chatId, key: rt.key, raw: rt.raw, text: body }); }
+            catch (e) { sysOut(`!! @${shortId} wa reply failed: ${e.message}`); }
+          }
+          // Echo + record locally so the transcript has the reply too.
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'You',
+            body: `↳ @${shortId}\n${body}`,
+            _directWa: true,
+          }]);
+          void append('You', `↳ @${shortId} (wa)\n${body}`);
+          return;
+        }
+        if (rt?.kind === 'tg') {
+          const tg = bridgeRef.current;
+          if (tg) {
+            try { tg.send(body, { chatId: rt.chatId, replyTo: rt.msgId }); }
+            catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
+          }
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'You',
+            body: `↳ @${shortId}\n${body}`,
+            _localOnly: true,
+          }]);
+          void append('You', `↳ @${shortId} (tg)\n${body}`);
+          return;
+        }
+        // No bridge origin (brain reply, peer message, local typing).
+        // Brain replies: route the body as a follow-up to that brain
+        // session, prepending the previous reply as context.
+        const targetSession = (target.author ?? '').split('@')[0];
+        if (sessions[targetSession]) {
+          sysOut(`@${shortId} → @${targetSession}`);
+          await submitInner(raw, `@${targetSession} ${body}`, meta);
+          return;
+        }
+        sysOut(`!! @${shortId}: no bridge origin recorded — can only reply to bridge or brain messages`);
+        return;
+      }
+    }
+
     // Echo everything the user types into the transcript. If the input came
     // from Telegram, attribute the echo to the actual Telegram user (with
     // the via tag) instead of the local 'You', and tag _localOnly so the
@@ -5511,6 +5588,16 @@ function App() {
         // so the items-mirror can skip re-sending to the same chat
         // (origin) while still bridging to OTHER joined chats.
         ...(meta.fromWhatsApp && meta.waChatId ? { _sourceChatId: meta.waChatId } : {}),
+        // _replyTarget — minimal info needed to send a proper reply
+        // back to this message via '@m<N>' from the operator. Only
+        // bridge-arrived messages can be replied to as quotes; local
+        // typing falls through with no target (the @m reply handler
+        // refuses).
+        ...(meta.fromWhatsApp && meta.waMsgKey
+          ? { _replyTarget: { kind: 'wa', chatId: meta.waChatId, key: meta.waMsgKey, raw: meta.waMsgRaw ?? null } }
+          : meta.fromTelegram && meta.telegramMessageId
+          ? { _replyTarget: { kind: 'tg', chatId: meta.telegramChatId, msgId: meta.telegramMessageId } }
+          : {}),
         ...(willDirectWa ? { _directWa: true } : {}),
       }]);
       // Full-clarity logging: persist every input — slash commands,
@@ -6218,6 +6305,19 @@ function App() {
   // Hide log items (telemetry, room hints, debug) from the conversation
   // transcript. They're still in `items` and reachable via /log.
   const visibleItems = items.filter(item => !item._log);
+
+  // Short message ids: assigned in insertion order, persisted in the
+  // refs below so they survive React's re-render cycles. Each visible
+  // item gets a 'm<N>' tag the operator can use with '@m<N> <body>'
+  // to reply to that specific message. Per-session — counter resets
+  // on shell restart.
+  for (const item of visibleItems) {
+    if (!shortIdByItemId.current.has(item.id)) {
+      const shortId = `m${++_shortIdCounter.current}`;
+      shortIdByItemId.current.set(item.id, shortId);
+      itemByShortId.current.set(shortId, item);
+    }
+  }
   return h(Fragment, null,
     h(Static, { items: withDaySeparators(visibleItems) }, item => {
       // Day-change separator — chat-style: "── Today ──", "── Yesterday ──",
@@ -6237,12 +6337,14 @@ function App() {
       // tag with our SURFACE_TAG when one isn't already present.
       const label = baseLabel.includes('@') ? baseLabel : `${baseLabel}@${SURFACE_TAG}`;
       const time = fmtTimeOnly(Math.floor(item.id));
+      const shortId = shortIdByItemId.current.get(item.id);
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
           item._thinking
             ? h(Text, { color: T.meta }, '(thinking…)')
-            : h(Text, { color: T.meta }, `(${time})`)),
+            : h(Text, { color: T.meta },
+                shortId ? `(${time}) [${shortId}]` : `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),

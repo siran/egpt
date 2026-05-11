@@ -148,7 +148,13 @@ export function startTelegramBridge({
     }
 
     try {
-      await onIncoming?.(text, { userId, username, firstName, chatId: msgChat, chatType, authorized });
+      // tgMessageId enables proper TG-reply quoting later (the
+      // shell's '@m42 …' reply syntax routes here with
+      // reply_to_message_id pointing at this msg).
+      await onIncoming?.(text, {
+        userId, username, firstName, chatId: msgChat, chatType, authorized,
+        tgMessageId: msg.message_id ?? null,
+      });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
     }
@@ -161,14 +167,18 @@ export function startTelegramBridge({
     return sendChain;
   }
 
-  async function sendText(chatId, text) {
+  async function sendText(chatId, text, { replyTo } = {}) {
     const chunks = chunkText(text, 4096);
-    for (const chunk of chunks) {
+    for (let i = 0; i < chunks.length; i++) {
+      // reply_to_message_id only goes on the FIRST chunk — Telegram
+      // doesn't have a concept of multi-message replies; subsequent
+      // chunks land as regular sends right after.
       await apiFetch('sendMessage', {
         chat_id:              chatId,
-        text:                 chunk,
+        text:                 chunks[i],
         parse_mode:           'HTML',
         link_preview_options: { is_disabled: true },
+        ...(i === 0 && replyTo ? { reply_to_message_id: replyTo } : {}),
       });
     }
   }
@@ -249,10 +259,10 @@ export function startTelegramBridge({
   poll();
 
   return {
-    send(text, { chatId } = {}) {
+    send(text, { chatId, replyTo } = {}) {
       const target = chatId ?? lastChat;
       if (!target) return;
-      enqueue(() => sendText(target, text));
+      enqueue(() => sendText(target, text, { replyTo }));
     },
     startStreamMessage,
     stop() {
