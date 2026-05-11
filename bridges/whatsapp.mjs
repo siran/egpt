@@ -394,23 +394,38 @@ export async function startWhatsAppBridge({
       }
     });
 
-    // History sync — baileys delivers chats + their last conversation
-    // timestamps in one shot after connect when shouldSyncHistoryMessage
-    // is true. We READ ONLY THE chats ARRAY here. The event also
-    // carries a `.messages` array with the actual message bodies of
-    // the historical sync — we deliberately IGNORE that field so
-    // history content never enters the shell UI, never goes through
-    // onIncoming, never reaches a brain. The chats array gives us
-    // jid + conversationTimestamp + name, which is exactly enough
-    // for /channels and nothing more.
-    sock.ev.on('messaging-history.set', ({ chats }) => {
-      if (!Array.isArray(chats)) return;
-      for (const chat of chats) {
-        if (!chat?.id) continue;
-        const isGroup = chat.id.endsWith('@g.us');
-        const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
-        const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
-        if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
+    // History sync — baileys delivers chats + their recent messages
+    // in one shot after connect when shouldSyncHistoryMessage is true.
+    //
+    // CRITICAL: this is the SILENT track. We read both the .chats
+    // array (for chat metadata) AND the .messages array (for the
+    // per-chat recent ring that /channels surfaces) — but NEITHER
+    // is piped to onIncoming, the shell UI, the bridge mirror, or
+    // a brain. The body extracted from .messages is purely cache
+    // state the user pulls via /channels — same posture as the chat
+    // list itself.
+    sock.ev.on('messaging-history.set', ({ chats, messages }) => {
+      if (Array.isArray(chats)) {
+        for (const chat of chats) {
+          if (!chat?.id) continue;
+          const isGroup = chat.id.endsWith('@g.us');
+          const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
+          const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
+          if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
+        }
+      }
+      if (Array.isArray(messages)) {
+        for (const m of messages) {
+          const jid = m.key?.remoteJid;
+          if (!jid) continue;
+          const isGroup = jid.endsWith('@g.us');
+          const ts = (Number(m.messageTimestamp) || 0) * 1000;
+          const fromMe = !!m.key?.fromMe;
+          const pushedName = (typeof m.pushName === 'string' && m.pushName.trim()) ? m.pushName.trim() : null;
+          const author = fromMe ? 'You' : (pushedName ?? null);
+          const body = textOf(m.message ?? {}) ?? null;
+          if (ts > 0) _recordChat({ jid, isGroup, name: null, ts, kind: 'activity', author, body });
+        }
       }
     });
 
