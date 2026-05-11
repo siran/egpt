@@ -1443,6 +1443,11 @@ function App() {
   const _shortIdCounter = useRef(0);
   const shortIdByItemId = useRef(new Map());
   const itemByShortId = useRef(new Map());
+  // When a view command (/last, etc.) wants its echo + sysOut output
+  // kept out of the persistent transcript, it flips this on for the
+  // duration of its run. Restored in a finally so a crashing handler
+  // doesn't leak the suppression to later commands.
+  const _suppressTranscriptRef = useRef(false);
   const [, setThemeRev] = useState(0);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // The room starts empty — egpt is the host, not a participant. Use /open
@@ -2318,8 +2323,10 @@ function App() {
     // Full-clarity logging: every system output (slash command
     // responses, status notes, errors) goes into the room transcript
     // too. Fire-and-forget — queuedAppend serialises so order is
-    // preserved without making every sysOut caller async.
-    void append('system', body);
+    // preserved without making every sysOut caller async. View
+    // commands (/last) set _suppressTranscriptRef to keep their
+    // re-rendered noise out of the permanent log.
+    if (!_suppressTranscriptRef.current) void append('system', body);
   };
 
   // logOut is for telemetry/audit lines — bridge connection events,
@@ -4563,18 +4570,29 @@ function App() {
       return true;
     }
     if (cmd === '/last') {
+      // /last is a VIEW command — re-renders the tail of the transcript
+      // in the current shell. Its output must NOT mirror to bridges
+      // (we'd flood TG/WA with N old messages) and must NOT be
+      // re-appended to the transcript file (those messages are already
+      // there; re-appending would duplicate them). Both protections
+      // happen here: the re-injected items get _localOnly to keep
+      // them out of the items-mirror, and _suppressTranscriptRef
+      // makes sysOut + echo skip the append.queue during this command.
       const n = parseInt(arg, 10) || 10;
+      _suppressTranscriptRef.current = true;
       try {
         const text = await readFile(FILE, 'utf8');
         const msgs = parseMessages(text).slice(-n);
         if (!msgs.length) { sysOut('(no messages yet)'); return true; }
-        sysOut(`--- last ${msgs.length} message(s) from ${FILE} ---`);
+        sysOut(`--- last ${msgs.length} message(s) from ${dp(FILE)} ---`);
         setItems(p => [...p, ...msgs.map((m, i) => ({
           id: Date.now() + i / 1000,
           author: m.author,
           body: m.body,
+          _localOnly: true,           // don't mirror these old lines to bridges
         }))]);
       } catch (e) { sysOut(`!! ${e.message}`); }
+      finally { _suppressTranscriptRef.current = false; }
       return true;
     }
     if (cmd === '/sessions') {
@@ -5607,7 +5625,12 @@ function App() {
       // / brain-dispatch paths used to do this only for non-slash
       // inputs; with this here they'd duplicate, so those have been
       // removed.
-      void append(echoAuthor, text);
+      //
+      // View commands like /last suppress this — they're querying
+      // history, not adding to it. Detected at parse time so the
+      // echo line itself never makes it to disk for those.
+      const isViewCommand = /^\/(last)(\s|$)/.test(text);
+      if (!isViewCommand) void append(echoAuthor, text);
     } else {
       logOut(`(observed) ${echoAuthor}: ${text}`);
     }
@@ -6371,13 +6394,25 @@ function App() {
         currentRoom !== 'default'
           ? h(Text, { color: T.statusFile }, `[${currentRoom}]  `)
           : null,
-        h(Text, { color: T.statusSessions },
-          Object.keys(sessions).length
-            ? Object.entries(sessions).map(([n, s]) => {
-                const star = activeSessions.includes(n) ? '*' : '';
-                return `${star}${s.emoji ?? ''}${n}`;
-              }).join(' ')
-            : '(empty room)')),
+        h(Text, { color: T.statusSessions }, (() => {
+          // Status line: show what's actually in the room AND what
+          // plain text routes to. Empty in-room sessions + no /use
+          // bindings = '(empty room)'; otherwise list local brains
+          // (* = active for plain text via /use) and any joined WA
+          // chats (→ @waN "name") so the operator can see at a
+          // glance where their typing goes.
+          const localBrains = Object.entries(sessions).map(([n, s]) => {
+            const star = activeSessions.includes(n) ? '*' : '';
+            return `${star}${s.emoji ?? ''}${n}`;
+          });
+          const waChats = _waJoinedAll().map(e =>
+            `→@wa${e.idx >= 0 ? e.idx + 1 : '?'} "${(e.name ?? '').slice(0, 24)}"`);
+          if (!localBrains.length && !waChats.length) return '(empty room)';
+          const parts = [];
+          if (localBrains.length) parts.push(localBrains.join(' '));
+          if (waChats.length) parts.push(waChats.join(' '));
+          return parts.join('  ');
+        })())),
       streaming && (() => {
         // Show only the trailing portion of long streamed text — keeps the
         // dynamic area small even for multi-page replies, and reduces Ink's
