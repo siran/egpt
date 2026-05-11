@@ -1695,9 +1695,35 @@ function App() {
   // chat by the index the user just saw. Reset every /channels so the
   // numbers always line up with the freshest view.
   const _waChannelsCacheRef = useRef([]);
-  // /join @waN binds shell-typed plain text to that chat. Holds
-  // { jid, name } or null. Survives until /unjoin or a fresh /join.
+  // /use @waN and /join @waN populate this set. plain shell-typed
+  // text fans out to every chat in it; WA-arriving messages from a
+  // chat in the set get mirrored to every OTHER chat in the set
+  // (bridge mode — Alice in @wa5 shows up in @wa6 too). Map keyed
+  // by jid → { jid, name, idx }. Empty / null means "no WA binding"
+  // — the historical single-chat /join was just this with one entry.
   const waJoinedRef = useRef(null);
+  // Helpers — keep callers from special-casing the empty / single /
+  // multi cases everywhere.
+  const _waJoinedAll = () =>
+    waJoinedRef.current ? [...waJoinedRef.current.values()] : [];
+  const _waJoinedFirst = () =>
+    waJoinedRef.current && waJoinedRef.current.size > 0
+      ? waJoinedRef.current.values().next().value
+      : null;
+  const _waJoinedHas = (jid) =>
+    !!(waJoinedRef.current && waJoinedRef.current.has(jid));
+  const _waJoinedAdd = (entry) => {
+    if (!waJoinedRef.current) waJoinedRef.current = new Map();
+    waJoinedRef.current.set(entry.jid, entry);
+  };
+  const _waJoinedRemove = (jid) => {
+    if (!waJoinedRef.current) return false;
+    const removed = waJoinedRef.current.delete(jid);
+    if (waJoinedRef.current.size === 0) waJoinedRef.current = null;
+    return removed;
+  };
+  const _waJoinedClear = () => { waJoinedRef.current = null; };
+  const _waJoinedSize = () => waJoinedRef.current?.size ?? 0;
   const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
@@ -1758,7 +1784,7 @@ function App() {
           // visibility: render in the transcript, broadcast on the bus,
           // mirror to peer bridges. Single-chat opt-in — every other
           // observed chat stays silent.
-          const joinedToThis = waJoinedRef.current?.jid === from.chatId;
+          const joinedToThis = _waJoinedHas(from.chatId);
           const observeOnly = classifiedObserve && !joinedToThis;
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
@@ -1887,15 +1913,16 @@ function App() {
     if (!wa) return;
     const opt = EGPT_CONFIG.whatsapp?.mirror_chat_id;
     if (opt === 'none' || opt === false) return;
-    // /join @waN points the mirror at the joined chat so brain replies
-    // and other shell outputs land in the same conversation the user
-    // is having. Without this, the user asks '@e price?' from the
-    // joined chat, the question reaches WA via the /join direct-send,
-    // but the brain's answer falls into the self-DM mirror target and
-    // the WA participants never see it. /unjoin restores the default
-    // target.
-    const target = waJoinedRef.current?.jid
-      ?? ((typeof opt === 'string' && opt) ? opt : wa.selfDmJid);
+    // Mirror targets — every chat in waJoinedRef gets the item. When
+    // none are joined, fall back to the default mirror target
+    // (whatsapp.mirror_chat_id, or self-DM). Tagging an item with
+    // _sourceChatId means it CAME from a WA chat (Alice in @wa5);
+    // we skip sending it BACK to that chat (no self-echo) but DO
+    // send it to every OTHER joined chat — that's the cross-chat
+    // bridge: @wa5 ↔ @wa6 when both are in /use.
+    const joinedTargets = _waJoinedAll().map(e => e.jid);
+    const fallbackTarget = (typeof opt === 'string' && opt) ? opt : wa.selfDmJid;
+    const targets = joinedTargets.length ? joinedTargets : (fallbackTarget ? [fallbackTarget] : []);
     // Match Telegram's pattern: advance the counter even when target
     // isn't ready yet, so items already on screen don't all flush as
     // a backlog the moment the bridge connects.
@@ -1903,9 +1930,16 @@ function App() {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
       if (item._directWa) continue;             // already direct-sent (@waN / /join)
-      if (item._source === 'whatsapp') continue;  // skip echo to origin
       if (item._target && item._target !== 'whatsapp') continue;
-      if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
+      const formatted = formatItemForWhatsApp(item, sessions);
+      for (const t of targets) {
+        if (item._sourceChatId === t) continue;  // skip echo to origin
+        // Items from WA that have no specific origin tag fall back
+        // to the old skip rule (don't fan whatsapp-source items into
+        // the default self-DM target when no joins are set).
+        if (!joinedTargets.length && item._source === 'whatsapp') continue;
+        wa.send(formatted, { chatId: t });
+      }
     }
   }, [items.length]);
 
@@ -2467,64 +2501,94 @@ function App() {
     }
     if (cmd === '/use') {
       const target = arg.trim();
+      const fmtWaTargets = () => _waJoinedAll()
+        .map(e => `@wa${e.idx + 1} "${e.name}"`).join(' + ');
       if (!target) {
-        const j = waJoinedRef.current;
-        const joined = j ? ` + @wa "${j.name}"` : '';
-        sysOut(activeSessions.length || j
-          ? `active recipients: ${activeSessions.join(', ') || '(no brains)'}${joined} (plain text routes here without @-mention)`
-          : 'no active recipients — plain text stays in the room. /use <name> for a brain, /use @waN for a WA chat, /use a,b,@waN to fan out to several.');
+        const brains = activeSessions.length ? activeSessions.join(', ') : null;
+        const wa = _waJoinedSize() > 0 ? fmtWaTargets() : null;
+        const parts = [brains, wa].filter(Boolean);
+        sysOut(parts.length
+          ? `active recipients: ${parts.join(' + ')}  (plain text fans out to all)`
+          : 'no active recipients — plain text stays in the room. /use <name> for a brain, /use @waN for a WA chat. Calls accumulate; /use clear to reset; /unuse <name|@waN> to drop one.');
         return true;
       }
       if (target === 'clear' || target === 'none') {
         setActiveSessions([]);
-        if (waJoinedRef.current) waJoinedRef.current = null;
+        _waJoinedClear();
         sysOut('active recipients cleared — plain text no longer auto-routes');
         return true;
       }
-      // Comma-separated list = multi-active. Names may be:
+      // Comma-separated list = multi-target. Each call ACCUMULATES;
+      // /use @wa5 then /use @wa6 = both, which in practice bridges
+      // the two chats (Alice in @wa5 mirrors to @wa6 and vice versa).
+      // Tokens may be:
       //   <brain-session>   — local session in this room
-      //   @waN              — WA chat from the most-recent /channels;
-      //                       sets the same waJoinedRef binding as
-      //                       /join @waN (only one WA chat supported
-      //                       at a time, to match /join's semantics)
+      //   @waN              — WA chat from the most-recent /channels
       const tokens = target.split(',').map(s => s.trim()).filter(Boolean);
       const waTokens = tokens.filter(t => /^@wa\d+$/i.test(t));
       const brainTokens = tokens.filter(t => !/^@wa\d+$/i.test(t));
-      if (waTokens.length > 1) {
-        sysOut(`!! /use accepts at most one @waN (binding is single-target, like /join). Got: ${waTokens.join(', ')}`);
-        return true;
-      }
       const unknown = brainTokens.filter(n => !sessions[n]);
       if (unknown.length) {
         sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
         return true;
       }
-      // Resolve WA token if present.
-      let joinedChange = null;
-      if (waTokens.length === 1) {
-        const waMatch = waTokens[0].match(/^@wa(\d+)$/i);
-        const idx = parseInt(waMatch[1], 10) - 1;
+      // Resolve all WA tokens before mutating state (atomic-ish).
+      const waAdds = [];
+      for (const t of waTokens) {
+        const m = t.match(/^@wa(\d+)$/i);
+        const idx = parseInt(m[1], 10) - 1;
         const chat = _waChannelsCacheRef.current[idx];
         if (!chat) {
-          sysOut(`!! /use ${waTokens[0]}: no channel at that index. Run /channels first.`);
+          sysOut(`!! /use ${t}: no channel at that index. Run /channels first.`);
           return true;
         }
         if (!waBridgeRef.current) {
-          sysOut(`!! /use ${waTokens[0]}: whatsapp bridge not running`);
+          sysOut(`!! /use ${t}: whatsapp bridge not running`);
           return true;
         }
-        joinedChange = { jid: chat.jid, name: chat.name, idx };
+        waAdds.push({ jid: chat.jid, name: chat.name, idx });
       }
-      setActiveSessions(brainTokens);
-      waJoinedRef.current = joinedChange;
-      const parts = [];
-      if (brainTokens.length) parts.push(brainTokens.join(', '));
-      if (joinedChange) parts.push(`@wa${joinedChange.idx + 1} "${joinedChange.name}"`);
-      sysOut(parts.length === 0
-        ? 'active recipients cleared'
-        : (parts.length === 1
-            ? `active recipient -> ${parts[0]}`
-            : `active recipients -> ${parts.join(' + ')}  (plain text fans out to all)`));
+      // Merge: brains accumulate (no duplicates), WA targets accumulate.
+      if (brainTokens.length) {
+        const merged = [...new Set([...activeSessions, ...brainTokens])];
+        setActiveSessions(merged);
+      }
+      for (const e of waAdds) _waJoinedAdd(e);
+      sysOut(`active recipients -> ${[
+        activeSessions.length || brainTokens.length
+          ? [...new Set([...activeSessions, ...brainTokens])].join(', ')
+          : null,
+        _waJoinedSize() > 0 ? fmtWaTargets() : null,
+      ].filter(Boolean).join(' + ')}  (plain text fans out to all)`);
+      return true;
+    }
+    if (cmd === '/unuse') {
+      // /unuse <name>     remove one brain or @waN from the set
+      // /unuse            same as /use clear
+      const target = arg.trim();
+      if (!target) {
+        setActiveSessions([]);
+        _waJoinedClear();
+        sysOut('active recipients cleared');
+        return true;
+      }
+      const waMatch = target.match(/^@wa(\d+)$/i);
+      if (waMatch) {
+        const idx = parseInt(waMatch[1], 10) - 1;
+        const chat = _waChannelsCacheRef.current[idx];
+        if (chat && _waJoinedRemove(chat.jid)) {
+          sysOut(`removed @wa${idx + 1} "${chat.name}"`);
+        } else {
+          sysOut(`!! no @wa${idx + 1} in active recipients`);
+        }
+        return true;
+      }
+      if (activeSessions.includes(target)) {
+        setActiveSessions(activeSessions.filter(n => n !== target));
+        sysOut(`removed "${target}"`);
+      } else {
+        sysOut(`!! "${target}" not an active recipient`);
+      }
       return true;
     }
     if (cmd === '/room') {
@@ -3248,11 +3312,14 @@ function App() {
         sysOut('!! /join: whatsapp bridge not running');
         return true;
       }
-      waJoinedRef.current = { jid: chat.jid, name: chat.name, idx };
+      // /join accumulates same as /use @waN. Previous single-target
+      // behaviour is preserved when called once; calling again adds
+      // a second target rather than replacing.
+      _waJoinedAdd({ jid: chat.jid, name: chat.name, idx });
       // Broadcast on the bus so peers with whatsapp.follow_join enabled
-      // adopt the same join. Peers with follow_join:'never' (default)
-      // ignore it. JID is canonical; the local idx is meaningless
-      // across surfaces.
+      // adopt. (Each /join announces just the entry being added; peers
+      // who opt to follow can choose to accumulate or replace per
+      // their own policy.)
       {
         const tid = busTargetIdRef.current;
         if (tid) {
@@ -3262,25 +3329,47 @@ function App() {
           }).catch(() => {});
         }
       }
-      sysOut(`joined @wa${idx + 1} "${chat.name}" — plain messages now route here. /unjoin to release.`);
+      sysOut(`joined @wa${idx + 1} "${chat.name}" — plain messages now route here. ` +
+        (_waJoinedSize() > 1 ? `Currently ${_waJoinedSize()} WA chats joined (bridged). ` : '') +
+        `/unjoin to release${_waJoinedSize() > 1 ? ' all, /unjoin @waN to drop one' : ''}.`);
       return true;
     }
     if (cmd === '/unjoin') {
-      if (!waJoinedRef.current) {
+      const target = arg.trim();
+      if (!_waJoinedSize()) {
         sysOut('/unjoin: not joined');
         return true;
       }
-      const prev = waJoinedRef.current;
-      waJoinedRef.current = null;
-      {
+      if (target) {
+        const m = target.match(/^@wa(\d+)$/i);
+        if (!m) { sysOut('usage: /unjoin [@waN]   (omit to release all)'); return true; }
+        const idx = parseInt(m[1], 10) - 1;
+        const chat = _waChannelsCacheRef.current[idx];
+        if (!chat || !_waJoinedRemove(chat.jid)) {
+          sysOut(`!! @wa${idx + 1} not currently joined`);
+          return true;
+        }
         const tid = busTargetIdRef.current;
         if (tid) {
           bus.postEvent(tid, {
             type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
+            removed: chat.jid,
           }).catch(() => {});
         }
+        sysOut(`released @wa${idx + 1} "${chat.name}"  (${_waJoinedSize()} remaining)`);
+        return true;
       }
-      sysOut(`released @wa${prev.idx + 1} "${prev.name}"`);
+      const all = _waJoinedAll();
+      _waJoinedClear();
+      const tid = busTargetIdRef.current;
+      if (tid) {
+        bus.postEvent(tid, {
+          type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
+        }).catch(() => {});
+      }
+      sysOut(`released ${all.length === 1
+        ? `@wa${all[0].idx + 1} "${all[0].name}"`
+        : `${all.length} WA chats`}`);
       return true;
     }
     if (cmd === '/wa-pending') {
@@ -5184,13 +5273,16 @@ function App() {
     // WhatsApp doesn't render HTML — strip tags for the WA stream.
     // Pick the WA stream target:
     //   1. waChatId if the turn came from a WA arrival (route back there)
-    //   2. waJoinedRef.jid if /join is active (the binding the operator
-    //      explicitly set)
+    //   2. first joined chat (waJoinedRef) — the binding the operator
+    //      explicitly set. When multiple are joined we stream to the
+    //      first; the others get the final reply via items-mirror
+    //      (no per-chat streaming since WA's edit-stream is one
+    //      message per chat).
     //   3. undefined → bridge falls back to lastChat (default behaviour)
     // Without (2) a shell-typed @cgpt1 while joined to @wa6 would
     // stream the reply to whatever WA chat was last active in the
     // bridge — typically self-DM — instead of @wa6, defeating /join.
-    const waStreamChatId = waChatId ?? waJoinedRef.current?.jid;
+    const waStreamChatId = waChatId ?? _waJoinedFirst()?.jid;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
     const wa = (!fromAnyBridge || waChatId)
       ? waBridgeRef.current?.startStreamMessage?.(`${waPrefix}\n⌛ thinking…`,
@@ -5351,7 +5443,7 @@ function App() {
     const isAtWaNExplicit = !meta.fromTelegram && !meta.fromWhatsApp
       && /^@wa\d+\s+/i.test(text);
     const willDirectWa = !isSlashCommand && !meta.fromTelegram && !meta.fromWhatsApp
-      && (isAtWaNExplicit || !!waJoinedRef.current);
+      && (isAtWaNExplicit || _waJoinedSize() > 0);
     // Slash commands are operator tooling, not part of the conversation
     // — they stay local. Bridge-arrived messages mirror to OTHER bridges
     // (e.g. WA arrival → TG mirror) but skip the bridge they came from
@@ -5374,6 +5466,10 @@ function App() {
         id: Date.now() + Math.random(), author: echoAuthor, body: text,
         ...(isSlashCommand ? { _localOnly: true } : {}),
         ...(echoSource ? { _source: echoSource } : {}),
+        // _sourceChatId carries the WA chat this message arrived from
+        // so the items-mirror can skip re-sending to the same chat
+        // (origin) while still bridging to OTHER joined chats.
+        ...(meta.fromWhatsApp && meta.waChatId ? { _sourceChatId: meta.waChatId } : {}),
         ...(willDirectWa ? { _directWa: true } : {}),
       }]);
       // Full-clarity logging: persist every input — slash commands,
@@ -5481,12 +5577,17 @@ function App() {
     // takes precedence — that handler runs immediately after and
     // returns, so the user can address a different chat ad-hoc
     // without /unjoining first.
-    if (waJoinedRef.current && !meta.fromTelegram && !meta.fromWhatsApp
+    if (_waJoinedSize() > 0 && !meta.fromTelegram && !meta.fromWhatsApp
         && !isAtWaNExplicit) {
       const wa = waBridgeRef.current;
       if (wa) {
-        try { wa.send(text, { chatId: waJoinedRef.current.jid }); }
-        catch (e) { sysOut(`!! /join send failed: ${e.message}`); }
+        // Fan out the user's plain text to every joined WA chat
+        // (each /use / /join entry). Errors per-target reported
+        // individually; one bad chat doesn't block the rest.
+        for (const entry of _waJoinedAll()) {
+          try { wa.send(text, { chatId: entry.jid }); }
+          catch (e) { sysOut(`!! /join send to @wa${entry.idx + 1} failed: ${e.message}`); }
+        }
       }
     }
     // @waN <body> — ad-hoc send to the Nth chat from the most-recent
@@ -5958,12 +6059,18 @@ function App() {
           (followCfg === 'from_shell' && peerRole === 'shell');
         if (!shouldFollow) return;
         if (ev.jid) {
-          waJoinedRef.current = { jid: ev.jid, name: ev.name ?? ev.jid };
-          log(`wa: following ${ev.from} — bound to "${ev.name ?? ev.jid}"`);
-        } else if (waJoinedRef.current) {
-          const prevName = waJoinedRef.current.name;
-          waJoinedRef.current = null;
-          log(`wa: following ${ev.from} — released "${prevName}"`);
+          // Adopt accumulating semantics — peer added a join, we add it.
+          _waJoinedAdd({ jid: ev.jid, name: ev.name ?? ev.jid, idx: -1 });
+          log(`wa: following ${ev.from} — added "${ev.name ?? ev.jid}"`);
+        } else if (ev.removed) {
+          // Peer dropped one specific binding.
+          if (_waJoinedRemove(ev.removed)) {
+            log(`wa: following ${ev.from} — removed "${ev.removed}"`);
+          }
+        } else if (_waJoinedSize() > 0) {
+          // Peer cleared everything.
+          _waJoinedClear();
+          log(`wa: following ${ev.from} — cleared all WA bindings`);
         }
         return;
       }
