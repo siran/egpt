@@ -2875,6 +2875,52 @@ function App() {
       return true;
     }
     if (cmd === '/channels') {
+      // Best-effort fallback: scrape the WA Web chat-list previews
+      // from the extension's own browser instance via CDP. baileys'
+      // history sync doesn't reliably deliver group message bodies
+      // (verified empirically — out of 50 chats only 2 have any
+      // recent[] entries even with shouldSyncHistoryMessage:true).
+      // The WhatsApp Web DOM is the source of truth for what the
+      // user sees on screen; same scrape the extension content
+      // script uses, lifted into one Runtime.evaluate call.
+      async function scrapeWaWebPreviews() {
+        const previews = new Map();
+        try {
+          const tabs = await cdp.listTabs(/web\.whatsapp\.com/);
+          const waTab = tabs[0];
+          if (!waTab) return previews;
+          const scrape = `({id:'wa', text: JSON.stringify((() => {
+            const panel = document.querySelector('[aria-label="Chat list" i]') ||
+                          document.querySelector('[role="grid"][aria-label*="Chat" i]');
+            if (!panel) return [];
+            const rows = panel.querySelectorAll('[role="listitem"], div[role="row"]');
+            const out = [];
+            for (const row of rows) {
+              const titleEl = row.querySelector('span[dir="auto"][title]') ||
+                              row.querySelector('span[dir="auto"]');
+              const name = (titleEl?.getAttribute('title') || titleEl?.innerText || '').trim();
+              if (!name) continue;
+              const fullText = row.innerText || '';
+              const preview = fullText
+                .split('\\n')
+                .map(s => s.trim())
+                .filter(line => line && line !== name && !/^\\d+ unread/i.test(line))
+                .join(' ')
+                .slice(0, 200);
+              out.push({ name, preview });
+              if (out.length >= 50) break;
+            }
+            return out;
+          })())})`;
+          const json = await cdp.peekTab(waTab.id, scrape);
+          const arr = JSON.parse(json || '[]');
+          for (const r of arr) {
+            if (r?.name && r.preview) previews.set(r.name, r.preview);
+          }
+        } catch (_) { /* WA Web tab not reachable; baileys-only output */ }
+        return previews;
+      }
+
       const wa = waBridgeRef.current;
       if (!wa) {
         sysOut('!! /channels: whatsapp bridge not running — /whatsapp pair to start');
@@ -2916,6 +2962,11 @@ function App() {
           sysOut('/channels: no chats found (baileys not synced yet — give it a moment after /whatsapp start, or just wait for the first message)');
           return true;
         }
+        // Fetch WA Web previews in parallel with the listChats result.
+        // Used as a fallback for chats where baileys has no recent[].
+        const webPreviews = messagesPerChat > 0
+          ? await scrapeWaWebPreviews()
+          : new Map();
         // Cache the listing so @waN refers back to the same index the
         // user just saw. Reset on each /channels so the user can
         // re-list and have indexes line up with the freshest view.
@@ -2927,24 +2978,43 @@ function App() {
           if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
           return `${Math.floor(s / 86400)}d ago`;
         };
+        // Try to match WA Web's chat-list names to baileys's chat
+        // names. baileys's name comes from group subjects / pushName;
+        // WA Web's comes from the rendered <header> title. Usually
+        // identical; in rare cases (truncation, encoding) they differ.
+        // Strip trailing "(You)" suffix we added for self-DMs since
+        // WA Web doesn't carry it in the row.
+        const lookupWebPreview = (name) => {
+          if (!name) return null;
+          const stripped = name.replace(/\s+\(You\)\s*$/, '').trim();
+          return webPreviews.get(name) ?? webPreviews.get(stripped) ?? null;
+        };
         const blocks = chats.map((c, i) => {
           const tag = c.isGroup ? '[group]' : '[1:1]';
           const age = c.lastActivityTs > 0
             ? ageLabel(c.lastActivityTs)
             : (c.creationTs > 0 ? `dormant, created ${ageLabel(c.creationTs)}` : 'dormant');
           const header = `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
-          if (!messagesPerChat || !Array.isArray(c.recent) || !c.recent.length) {
-            return header;
+          if (!messagesPerChat) return header;
+          // Prefer baileys-captured per-message lines when we have them.
+          if (Array.isArray(c.recent) && c.recent.length) {
+            const previewLines = c.recent.map(r => {
+              const speaker = r.author ?? '?';
+              const oneLine = (r.text ?? '').replace(/\s+/g, ' ').trim();
+              const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
+              return `      [${speaker}] ${trimmed}`;
+            });
+            return [header, ...previewLines].join('\n');
           }
-          // Render newest-last so the preview reads chronologically,
-          // which matches how the user would see it in WA itself.
-          const previewLines = c.recent.map(r => {
-            const speaker = r.author ?? '?';
-            const oneLine = (r.text ?? '').replace(/\s+/g, ' ').trim();
-            const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
-            return `      [${speaker}] ${trimmed}`;
-          });
-          return [header, ...previewLines].join('\n');
+          // Fallback: WA Web's single-line chat-list preview. Marked
+          // [last] so the user knows it's a one-line summary, not the
+          // per-message breakdown baileys would give.
+          const webPrev = lookupWebPreview(c.name);
+          if (webPrev) {
+            const trimmed = webPrev.length > 120 ? webPrev.slice(0, 119) + '…' : webPrev;
+            return `${header}\n      [last via WA Web] ${trimmed}`;
+          }
+          return header;
         });
         sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${blocks.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
       } catch (e) {
