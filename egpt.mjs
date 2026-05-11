@@ -5152,6 +5152,10 @@ function App() {
       } catch (e) {
         return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
       }
+      // Bring the brain's Chrome tab to the foreground so the
+      // operator can watch the streaming response. Same call as
+      // runBrainTurn uses; best-effort, fire-and-forget.
+      if (targetId) cdp.activateTarget(targetId).catch(() => {});
       try {
         const result = await brain.stream(
           { message: text },
@@ -5533,11 +5537,28 @@ function App() {
         }
         // No bridge origin (brain reply, peer message, local-typed
         // without /use). Brain replies route as a follow-up to that
-        // brain session. Anything else refuses with a hint.
+        // brain session: echo preserves '@m<N>' as the user typed
+        // it, the brain prompt embeds the quoted message + a
+        // qualified sender header so it has the conversational
+        // context to answer 'what about <body>' against the line
+        // the operator was actually replying to.
         const targetSession = (target.author ?? '').split('@')[0];
         if (sessions[targetSession]) {
-          sysOut(`@${shortId} → @${targetSession}`);
-          await submitInner(raw, `@${targetSession} ${body}`, meta);
+          // Echo with reply context preserved (don't rewrite as
+          // '@cgpt1 …' — the operator typed '@m<N>' and the
+          // transcript should reflect that intent).
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(), author: 'You',
+            body: `↳ @${shortId}\n${body}`,
+          }]);
+          void append('You', `↳ @${shortId}\n${body}`);
+          // Brain prompt: include the quoted message + qualified
+          // sender header. Brain has no concept of m-ids, so we
+          // resolve to the actual previous text.
+          const quoted = (target.body ?? '').split('\n')[0].slice(0, 280);
+          const senderTag = `${USER_NAME}@${SURFACE_TAG}`;
+          const brainPrompt = `[${senderTag} ${ts()}]: > ${quoted}\n${body}`;
+          await runBrainTurn(targetSession, brainPrompt, sessions);
           return;
         }
         sysOut(`!! @${shortId}: no bridge origin recorded — can only reply to bridge or brain messages`);
@@ -5982,14 +6003,20 @@ function App() {
     setBusy(true);
     setError(null);
 
-    // Phase A — broadcast/single. Each brain receives just `[<author>]: <message>`
-    // (no fancy framing; the brain's tab keeps its own native history).
-    // For Telegram-originated input, the brain sees the actual Telegram
-    // user instead of the local USER_NAME.
-    const brainAuthor = (meta.fromTelegram && meta.telegramUser) ? meta.telegramUser
-      : (meta.fromWhatsApp && meta.waUser) ? meta.waUser
-      : USER_NAME;
-    const messageForBrains = `[${brainAuthor}]: ${userPayload}`;
+    // Phase A — broadcast/single. Each brain receives a qualified
+    // header so it knows who sent the message, from where, and when.
+    // Format: '[handle@client.node 2026-05-11 19:14 EDT]: body'.
+    // For shell typing client is omitted (just handle@node); for
+    // bridge-arrived messages client is the bridge client_name
+    // ('tg', 'wa', or whatever the operator renamed to). The
+    // brain's tab keeps its own native history; this header is the
+    // per-turn context that varies turn-to-turn.
+    const brainAuthor = (meta.fromTelegram && meta.telegramUser)
+      ? `${stripAt(meta.telegramUser)}@${tgClient}.${SURFACE_TAG}`
+      : (meta.fromWhatsApp && meta.waUser)
+      ? `${stripAt(meta.waUser)}@${waClient}.${SURFACE_TAG}`
+      : `${USER_NAME}@${SURFACE_TAG}`;
+    const messageForBrains = `[${brainAuthor} ${ts()}]: ${userPayload}`;
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }

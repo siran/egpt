@@ -206,15 +206,29 @@ export async function closeTab(targetId) {
 
 /**
  * Activate (focus) a tab via CDP — brings both the tab and its Chrome
- * window to the foreground. Best-effort: silently returns if Chrome
- * isn't reachable or the target is gone, so callers don't need to
- * catch. Used before each brain dispatch so the operator can watch
- * the streaming response in Chrome.
+ * window to the foreground. Uses TWO CDP calls because Target.
+ * activateTarget alone reliably makes the tab the active one within
+ * Chrome but doesn't always bring the OS window forward (Windows
+ * SetForegroundWindow restrictions, X11 focus stealing prevention).
+ * Page.bringToFront is the per-page request to surface the renderer's
+ * window; together they're as aggressive as CDP gets.
+ *
+ * Best-effort: silently returns if Chrome isn't reachable or the
+ * target is gone, so callers don't need to catch.
  */
 export async function activateTarget(targetId) {
   if (!targetId) return;
   let v;
   try { v = await fetchJson('/json/version'); } catch { return; }
+  // Find the tab's per-page WS so we can issue Page.bringToFront in
+  // the same call. The /json list yields webSocketDebuggerUrl on
+  // each page entry.
+  let pageWs = null;
+  try {
+    const tabs = await fetchJson('/json');
+    pageWs = tabs.find(t => t.id === targetId)?.webSocketDebuggerUrl ?? null;
+  } catch {}
+  // (1) Target.activateTarget on the BROWSER ws — selects the tab.
   await new Promise(resolve => {
     const ws = new WebSocket(v.webSocketDebuggerUrl);
     const settle = () => { try { ws.close(); } catch {} resolve(); };
@@ -222,7 +236,20 @@ export async function activateTarget(targetId) {
       ws.send(JSON.stringify({ id: 1, method: 'Target.activateTarget', params: { targetId } })));
     ws.addEventListener('message', settle);
     ws.addEventListener('error', settle);
-    setTimeout(settle, 2000);
+    setTimeout(settle, 1500);
+  });
+  // (2) Page.bringToFront on the PAGE ws — the additional request
+  // that tells Chrome to surface this renderer's window. Skipped
+  // silently if we couldn't resolve a page ws.
+  if (!pageWs) return;
+  await new Promise(resolve => {
+    const ws = new WebSocket(pageWs);
+    const settle = () => { try { ws.close(); } catch {} resolve(); };
+    ws.addEventListener('open', () =>
+      ws.send(JSON.stringify({ id: 1, method: 'Page.bringToFront' })));
+    ws.addEventListener('message', settle);
+    ws.addEventListener('error', settle);
+    setTimeout(settle, 1500);
   });
 }
 
