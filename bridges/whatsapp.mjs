@@ -1006,14 +1006,62 @@ export async function startWhatsAppBridge({
 
 // ── helpers ──────────────────────────────────────────────────────
 
+// contextInfo lives on every message variant that can be a reply
+// (extendedTextMessage, imageMessage, videoMessage, audioMessage,
+// documentMessage, stickerMessage, …). Pull whichever is present.
+function _contextInfo(message) {
+  if (!message) return null;
+  return (
+    message.extendedTextMessage?.contextInfo ??
+    message.imageMessage?.contextInfo ??
+    message.videoMessage?.contextInfo ??
+    message.audioMessage?.contextInfo ??
+    message.documentMessage?.contextInfo ??
+    message.stickerMessage?.contextInfo ??
+    null
+  );
+}
+
+// Render a one-line preview of the quoted message if this is a reply.
+// Used as a '↳ <preview>' prefix on the reply body so the operator
+// sees what's being replied to without having to scroll back.
+function _quotedPreview(ctx) {
+  if (!ctx?.quotedMessage) return null;
+  // Recurse into textOf so a reply to an image renders '[image]
+  // <caption>', a reply to a voice note renders '[voice note: 8s]',
+  // etc. — preview text picks up the same placeholder vocabulary as
+  // a fresh inbound.
+  const inner = textOf(ctx.quotedMessage) ?? '(unsupported message)';
+  const oneLine = inner.replace(/\s+/g, ' ').trim();
+  const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
+  // participant is the JID of the original sender. We don't have a
+  // contact-name resolver here so we surface the bare number suffix
+  // (last 6 digits) as a hint; full attribution lives in the
+  // original message's own line elsewhere in the transcript.
+  const who = ctx.participant
+    ? ctx.participant.split('@')[0]?.split(':')[0]?.slice(-6) ?? null
+    : null;
+  return who ? `↳ ${trimmed}  (…${who})` : `↳ ${trimmed}`;
+}
+
 // Extract a textual body from any baileys message variant. For
 // non-text types (audio, image without caption, document, sticker,
 // poll, location, reaction, contact) we return a bracketed
 // placeholder so the host sees SOMETHING in the transcript instead
 // of dropping the message silently. Captions are inlined when
-// present. Downloads / auto-summarize / audio transcription are
+// present. For replies, the quoted message's textOf form is
+// prefixed as '↳ <preview>' so the operator sees what's being
+// replied to. Downloads / auto-summarize / audio transcription are
 // separate features; this function is the visibility step.
 function textOf(message) {
+  if (!message) return null;
+  const base = _baseTextOf(message);
+  if (base === null) return null;
+  const q = _quotedPreview(_contextInfo(message));
+  return q ? `${q}\n${base}` : base;
+}
+
+function _baseTextOf(message) {
   if (!message) return null;
   if (message.conversation) return message.conversation;
   if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
