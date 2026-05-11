@@ -1130,6 +1130,19 @@ export default function App() {
         if (!ev._replayed) {
           log(`bus: peer online ${ev.from}${ev.role ? ` (${ev.role})` : ''}${ev.polling ? ' [polling]' : ''}`);
         }
+        // Telegram yield: when a shell joins the bus, hand TG polling
+        // over. The shell is the canonical compute home for bridges;
+        // the extension only holds the slot opportunistically while no
+        // shell is around. Symmetric to shell yielding WA-CDP to the
+        // extension when shell has no baileys, and to the extension's
+        // own WA-CDP-out skipping outbound when a shell with wa:true
+        // is present. stopBridge() flips tgPolling false; the
+        // telegram-status broadcast effect then notifies the shell,
+        // which auto-claims on the next tick.
+        if (ev.role === 'shell' && bridgeRef.current && !ev._replayed) {
+          appendMsg('egpt', `telegram: yielding to shell ${ev.from}`);
+          stopBridge();
+        }
         // Skip pong on replayed events — peers already heard our live
         // announce when we joined; this would be bus noise.
         if (!ev.pong && !ev._replayed) {
