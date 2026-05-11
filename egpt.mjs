@@ -1368,12 +1368,25 @@ function MultiLineInput({ onSubmit }) {
     }
     if (key.ctrl && input === 'a') { setC(0); return; }
     if (key.ctrl && input === 'e') { setC(lines[r].length); return; }
-    // Literal Home/End keys arrive as escape sequences on most terminals
-    // (xterm, Windows Terminal, mintty). Ink doesn't expose them as a key
-    // flag, so match the raw bytes. Same for Ctrl+Home / Ctrl+End to jump
-    // to start / end of the whole multi-line input.
-    if (input === '\x1b[H' || input === '\x1b[1~' || input === '\x1b[7~') { setC(0); return; }
-    if (input === '\x1b[F' || input === '\x1b[4~' || input === '\x1b[8~') { setC(lines[r].length); return; }
+    // Home / End. Different terminals surface these differently:
+    //   - Ink may parse and expose key.home / key.end (Windows
+    //     Terminal often, modern xterm sometimes).
+    //   - Or the raw escape sequence arrives in `input`:
+    //       \x1b[H / \x1b[F    xterm CSI
+    //       \x1b[1~ / \x1b[4~  Linux console / urxvt
+    //       \x1b[7~ / \x1b[8~  rxvt / putty
+    //       \x1bOH / \x1bOF    VT100 application mode
+    // Ctrl+Home / Ctrl+End jump to start / end of the multi-line input.
+    if (key.home || input === '\x1b[H' || input === '\x1b[1~' || input === '\x1b[7~' || input === '\x1bOH') {
+      if (key.ctrl) { setR(0); setC(0); }
+      else setC(0);
+      return;
+    }
+    if (key.end || input === '\x1b[F' || input === '\x1b[4~' || input === '\x1b[8~' || input === '\x1bOF') {
+      if (key.ctrl) { setR(lines.length - 1); setC(lines[lines.length - 1].length); }
+      else setC(lines[r].length);
+      return;
+    }
     if (input === '\x1b[1;5H') { setR(0); setC(0); return; }
     if (input === '\x1b[1;5F') { setR(lines.length - 1); setC(lines[lines.length - 1].length); return; }
     if (input && !key.ctrl && !key.meta) {
