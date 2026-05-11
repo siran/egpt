@@ -1676,7 +1676,7 @@ function App() {
           // updates in-memory before any await, so the very message
           // that triggered the capture sees the correct chat_id on
           // this same tick.
-          const { observeOnly } = classifyWhatsAppChat({
+          const { observeOnly: classifiedObserve } = classifyWhatsAppChat({
             chatId: from.chatId,
             bridgeInfo: {
               myJid:        waBridgeRef.current?.myJid ?? null,
@@ -1686,6 +1686,12 @@ function App() {
             },
             waConfig: EGPT_CONFIG.whatsapp ?? {},
           });
+          // /join @waN lifts an otherwise-observed chat into full
+          // visibility: render in the transcript, broadcast on the bus,
+          // mirror to peer bridges. Single-chat opt-in — every other
+          // observed chat stays silent.
+          const joinedToThis = waJoinedRef.current?.jid === from.chatId;
+          const observeOnly = classifiedObserve && !joinedToThis;
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -1791,12 +1797,6 @@ function App() {
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
-      // _observed items (room-utterances from chats the operator hasn't
-      // designated as an egpt chat) render on every surface but never
-      // mirror outward — that's the whole point of "observed". Without
-      // this gate, every friend-DM and group line would re-publish into
-      // the user's own Telegram chat.
-      if (item._observed) continue;
       // _source tags the surface this item came from. Skip mirroring
       // back to its own surface (avoid echo loops).
       if (item._source === 'telegram') continue;
@@ -1826,7 +1826,6 @@ function App() {
     while (sentToWaItemsCountRef.current < items.length) {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
-      if (item._observed) continue;             // see TG-mirror gate above
       if (item._directWa) continue;             // already direct-sent (@waN / /join)
       if (item._source === 'whatsapp') continue;  // skip echo to origin
       if (item._target && item._target !== 'whatsapp') continue;
@@ -4982,19 +4981,24 @@ function App() {
       : meta.fromWhatsApp ? 'whatsapp'
       : null;
     // observeOnly: this submit came from a chat the operator hasn't
-    // designated as an egpt chat (e.g. a friend's WhatsApp DM). egpt
-    // surfaces the line on every connected surface so the operator
-    // stays aware of activity, but tags it _observed so the items-
-    // mirror loops below DON'T bridge it back out to TG / WA — that
-    // would re-publish a friend's chat into the operator's own bot
-    // surfaces, which is the noise the gate exists to prevent.
-    setItems(p => [...p, {
-      id: Date.now() + Math.random(), author: echoAuthor, body: text,
-      ...(isSlashCommand ? { _localOnly: true } : {}),
-      ...(echoSource ? { _source: echoSource } : {}),
-      ...(meta.observeOnly ? { _observed: true } : {}),
-      ...(willDirectWa ? { _directWa: true } : {}),
-    }]);
+    // designated as an egpt chat (e.g. a friend's WhatsApp DM) AND
+    // hasn't /join'd. egpt stays silent on every surface for those —
+    // listens for @persona wake-words and replies to the originating
+    // chat, but the line itself doesn't appear in the transcript or
+    // ride the bus. /join @waN opts a specific chat into full
+    // visibility; that override happens upstream of submitInner so by
+    // the time we get here, meta.observeOnly already reflects whether
+    // this message should be surfaced.
+    if (!meta.observeOnly) {
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(), author: echoAuthor, body: text,
+        ...(isSlashCommand ? { _localOnly: true } : {}),
+        ...(echoSource ? { _source: echoSource } : {}),
+        ...(willDirectWa ? { _directWa: true } : {}),
+      }]);
+    } else {
+      logOut(`(observed) ${echoAuthor}: ${text}`);
+    }
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
     // the same conversation regardless of which surface someone is looking
@@ -5013,12 +5017,12 @@ function App() {
     // isn't actively participating in via egpt.
     {
       const tid = busTargetIdRef.current;
-      // observed:true broadcasts ride the bus so peers (extension UI etc)
-      // render them, but outbound bridges (telegram-out, wa-cdp-out) skip
-      // them — see the observed checks in shell's items-mirror below and
-      // the App.jsx room-utterance handler. Without this, a friend's WA
-      // group message would mirror into Telegram and the user's self-DM.
-      if (tid && !isSlashCommand) {
+      // Observed chats stay off the bus — only egpt chats and chats the
+      // operator has /join'd reach peers. By the time we get here,
+      // meta.observeOnly has already been resolved against the /join
+      // state in the bridge's onIncoming, so this single gate covers
+      // both cases.
+      if (tid && !isSlashCommand && !meta.observeOnly) {
         // When the input came from Telegram or WhatsApp, attribute the
         // utterance to the upstream user and tag the surface as
         // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
@@ -5041,7 +5045,6 @@ function App() {
           role: 'shell', user: utteranceUser, body: text,
           ...(client ? { client } : {}),
           ...(via ? { via } : {}),
-          ...(meta.observeOnly ? { observed: true } : {}),
         }).catch(() => {});
       }
     }
@@ -5575,7 +5578,6 @@ function App() {
           id: Date.now() + Math.random(), author: tag, body,
           ...(isPeerSlashCommand ? { _localOnly: true } : {}),
           ...(sourceFromVia ? { _source: sourceFromVia } : {}),
-          ...(ev.observed ? { _observed: true } : {}),
         }]);
         return;
       }

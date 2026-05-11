@@ -1233,12 +1233,6 @@ export default function App() {
           ? (node && node !== BUS_NODE_ID ? `${handle}@${client}.${node}` : `${handle}@${client}`)
           : `${handle}@${node ?? 'unknown'}`;
         appendMsg(tag, ev.body ?? '');
-        // observed:true room-utterances come from a chat the originator
-        // hasn't designated as an egpt chat — render them locally so the
-        // operator can see what's happening, but don't bridge them out
-        // to TG / WA. Otherwise a friend's WA group would echo into the
-        // user's own Telegram chat.
-        if (ev.observed) return;
         // Mirror to telegram if THIS node owns the polling slot AND the
         // event didn't originate from telegram itself (no echo loop).
         // Other origins — whatsapp, shell, extension brain — should
