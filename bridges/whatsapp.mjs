@@ -158,16 +158,18 @@ export async function startWhatsAppBridge({
       if (Array.isArray(entries)) {
         for (const c of entries) {
           if (c && typeof c.jid === 'string') {
-            // Skip status@broadcast on load — pre-fix cache files may
-            // carry it as a synthetic '[1:1]' chat; drop it so a fresh
-            // _scheduleChatsWrite() rewrites the file without it.
-            if (c.jid === 'status@broadcast') continue;
+            // Repaint the rotating contact name that pre-fix builds had
+            // pinned on status@broadcast; the JID itself is preserved so
+            // the recent[] history of who posted what stays intact.
+            const loadedName = c.jid === 'status@broadcast'
+              ? '(WA status updates)'
+              : (typeof c.name === 'string' ? c.name : null);
             _chats.set(c.jid, {
               jid: c.jid,
               isGroup: !!c.isGroup,
               lastActivityTs: Number(c.lastActivityTs) || 0,
               creationTs:     Number(c.creationTs)     || 0,
-              name: typeof c.name === 'string' ? c.name : null,
+              name: loadedName,
               recent: Array.isArray(c.recent)
                 ? c.recent.filter(r => r && typeof r.text === 'string').slice(-RECENT_PER_CHAT)
                 : [],
@@ -201,12 +203,16 @@ export async function startWhatsAppBridge({
 
   function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null }) {
     if (!jid) return;
-    // status@broadcast is WhatsApp's global status-updates feed, not a
-    // chat — every contact's 24h stories arrive on this single JID with
-    // their respective pushNames. Recording it would pin a rotating
-    // contact name on a synthetic '[1:1]' entry that nobody can ever
-    // @waN into. Drop it at the source so the store stays clean.
-    if (jid === 'status@broadcast') return;
+    // status@broadcast is WhatsApp's global status-updates feed: every
+    // contact's 24h stories arrive on this single JID with their own
+    // pushName attached. We keep the data (useful later for per-contact
+    // personality analysis of what each contact posts to status) but
+    // pin the chat name to a stable label so the messages.upsert name-
+    // flip rule doesn't paint a rotating contact name over the slot.
+    // Visibility in /channels is handled in listChats.
+    if (jid === 'status@broadcast') {
+      name = '(WA status updates)';
+    }
     const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [] };
     if (!Array.isArray(cur.recent)) cur.recent = [];
     cur.isGroup = isGroup;
@@ -677,7 +683,7 @@ export async function startWhatsAppBridge({
   // they only want active chats. Default is true because the user's
   // expectation is "what WA shows me when I open it" — every group
   // I'm in, with the recent ones at the top.
-  async function listChats({ limit = 20, all = true, messagesPerChat = 0 } = {}) {
+  async function listChats({ limit = 20, all = true, messagesPerChat = 0, includeStatus = false } = {}) {
     if (!sock) return [];
     // Merge groups from server-side metadata into the in-memory map.
     // Only the CREATION timestamp goes in — never confused with
@@ -692,8 +698,11 @@ export async function startWhatsAppBridge({
     } catch (_) { /* offline / not yet connected — fall through with what we have */ }
 
     // Filter + sort. Active chats first (lastActivityTs desc); inactive
-    // ones come behind by creation ts only if all=true.
-    const everything = [..._chats.values()];
+    // ones come behind by creation ts only if all=true. status@broadcast
+    // is held in the store for later personality-analysis use but kept
+    // out of /channels by default (it's a feed, not a chat).
+    const everything = [..._chats.values()]
+      .filter(c => includeStatus || c.jid !== 'status@broadcast');
     const active   = everything.filter(c => c.lastActivityTs > 0)
                                .sort((a, b) => b.lastActivityTs - a.lastActivityTs);
     const inactive = all
