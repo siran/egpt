@@ -2468,27 +2468,63 @@ function App() {
     if (cmd === '/use') {
       const target = arg.trim();
       if (!target) {
-        sysOut(activeSessions.length
-          ? `active sessions: ${activeSessions.join(', ')} (plain text routes here without @-mention)`
-          : 'no active sessions — plain text stays in the room. /use <name> to designate one, /use a,b,c for multi-AI broadcast.');
+        const j = waJoinedRef.current;
+        const joined = j ? ` + @wa "${j.name}"` : '';
+        sysOut(activeSessions.length || j
+          ? `active recipients: ${activeSessions.join(', ') || '(no brains)'}${joined} (plain text routes here without @-mention)`
+          : 'no active recipients — plain text stays in the room. /use <name> for a brain, /use @waN for a WA chat, /use a,b,@waN to fan out to several.');
         return true;
       }
       if (target === 'clear' || target === 'none') {
         setActiveSessions([]);
-        sysOut('active sessions cleared — plain text no longer auto-routes');
+        if (waJoinedRef.current) waJoinedRef.current = null;
+        sysOut('active recipients cleared — plain text no longer auto-routes');
         return true;
       }
-      // Comma-separated list = multi-active. Single name = switch to it.
-      const names = target.split(',').map(s => s.trim()).filter(Boolean);
-      const unknown = names.filter(n => !sessions[n]);
+      // Comma-separated list = multi-active. Names may be:
+      //   <brain-session>   — local session in this room
+      //   @waN              — WA chat from the most-recent /channels;
+      //                       sets the same waJoinedRef binding as
+      //                       /join @waN (only one WA chat supported
+      //                       at a time, to match /join's semantics)
+      const tokens = target.split(',').map(s => s.trim()).filter(Boolean);
+      const waTokens = tokens.filter(t => /^@wa\d+$/i.test(t));
+      const brainTokens = tokens.filter(t => !/^@wa\d+$/i.test(t));
+      if (waTokens.length > 1) {
+        sysOut(`!! /use accepts at most one @waN (binding is single-target, like /join). Got: ${waTokens.join(', ')}`);
+        return true;
+      }
+      const unknown = brainTokens.filter(n => !sessions[n]);
       if (unknown.length) {
         sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
         return true;
       }
-      setActiveSessions(names);
-      sysOut(names.length === 1
-        ? `active session -> ${names[0]} (plain text routes here without @-mention)`
-        : `active sessions -> ${names.join(', ')} (plain text broadcasts to all without @-mention)`);
+      // Resolve WA token if present.
+      let joinedChange = null;
+      if (waTokens.length === 1) {
+        const waMatch = waTokens[0].match(/^@wa(\d+)$/i);
+        const idx = parseInt(waMatch[1], 10) - 1;
+        const chat = _waChannelsCacheRef.current[idx];
+        if (!chat) {
+          sysOut(`!! /use ${waTokens[0]}: no channel at that index. Run /channels first.`);
+          return true;
+        }
+        if (!waBridgeRef.current) {
+          sysOut(`!! /use ${waTokens[0]}: whatsapp bridge not running`);
+          return true;
+        }
+        joinedChange = { jid: chat.jid, name: chat.name, idx };
+      }
+      setActiveSessions(brainTokens);
+      waJoinedRef.current = joinedChange;
+      const parts = [];
+      if (brainTokens.length) parts.push(brainTokens.join(', '));
+      if (joinedChange) parts.push(`@wa${joinedChange.idx + 1} "${joinedChange.name}"`);
+      sysOut(parts.length === 0
+        ? 'active recipients cleared'
+        : (parts.length === 1
+            ? `active recipient -> ${parts[0]}`
+            : `active recipients -> ${parts.join(' + ')}  (plain text fans out to all)`));
       return true;
     }
     if (cmd === '/room') {
@@ -5797,49 +5833,69 @@ function App() {
       }
       case 'mention': {
         if (ev.to_node !== BUS_NODE_ID) return;
+        // Chain-depth guard: a mention that itself originated as a
+        // reply-cascade past the room.max_chain limit returns "…"
+        // (the polite no-reply convention) instead of calling the
+        // brain. This is the runaway-orchestra guard the user asked
+        // for — once the depth exceeds the cap, replies politely
+        // tail off rather than infinite-looping. Counter is carried
+        // on the mention event itself; outgoing room-reply /
+        // mention-reply events increment it so peers can see how
+        // deep the chain is.
+        const incomingChain = Math.max(0, Number(ev.chain_depth ?? 0) | 0);
+        const maxChain = Math.max(1, Number(EGPT_CONFIG.room?.max_chain ?? 3) | 0);
+        if (incomingChain >= maxChain) {
+          log(`bus: chain cap hit (depth ${incomingChain}/${maxChain}) — replying "…" to ${ev.from}`);
+          await post({ type: 'mention-reply', to_node: ev.from,
+            target: ev.target, body: '…', chain_depth: incomingChain + 1,
+            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
+          return;
+        }
+        const nextChain = incomingChain + 1;
         // 'egpt' is the node-global persona, not a /attach session —
         // route to runDefaultBrainTurn so peers (like the extension)
         // can address @egpt and the shell does the brain work on
         // their behalf, then mention-reply back over the bus.
         if (ev.target === 'egpt' || ev.target === 'e') {
-          log(`bus: running @egpt for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
+          log(`bus: running @egpt for ${ev.from}${ev.user ? ` (${ev.user})` : ''} (chain ${nextChain}/${maxChain})`);
           try {
             const reply = await runDefaultBrainTurn(`[${ev.user ?? 'remote'}]: ${ev.body}`);
             await post({ type: 'mention-reply', to_node: ev.from,
-              target: 'egpt', body: reply ?? '' });
+              target: 'egpt', body: reply ?? '', chain_depth: nextChain });
             // Broadcast to the room too — cross-surface visibility,
             // same as a /attach session reply.
             if (reply !== null && reply !== undefined) {
               await post({ type: 'room-reply', role: 'shell',
-                session: 'egpt', body: reply });
+                session: 'egpt', body: reply, chain_depth: nextChain });
             }
           } catch (e) {
             await post({ type: 'mention-reply', to_node: ev.from,
-              target: 'egpt', error: e.message });
+              target: 'egpt', error: e.message, chain_depth: nextChain });
           }
           return;
         }
         if (!sessions[ev.target]) {
           await post({ type: 'mention-reply', to_node: ev.from,
             target: ev.target, error: `no session "${ev.target}" on this node`,
+            chain_depth: nextChain,
             ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           return;
         }
-        log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''}`);
+        log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''} (chain ${nextChain}/${maxChain})`);
         try {
           const reply = await runBrainTurn(ev.target, `[${ev.user ?? 'remote'}]: ${ev.body}`, sessions);
           // Directed reply to the asker (may carry error). Echo
           // tg_chat_id back so the asker can route to the originating
           // Telegram chat instead of the asker's lastChat.
           await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, body: reply ?? '',
+            target: ev.target, body: reply ?? '', chain_depth: nextChain,
             ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
           // Broadcast reply to the whole room so every peer sees it.
           // The asker also receives this in addition to the directed
           // mention-reply — by design, rooms don't filter messages.
           if (reply !== null && reply !== undefined) {
             await post({ type: 'room-reply', role: 'shell',
-              session: ev.target, body: reply });
+              session: ev.target, body: reply, chain_depth: nextChain });
           }
         } catch (e) {
           await post({ type: 'mention-reply', to_node: ev.from,
