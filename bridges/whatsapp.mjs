@@ -73,9 +73,12 @@ export async function startWhatsAppBridge({
   // of recently-buffered messages on linked-device handshake; an
   // operator who's not a WhatsApp client typically doesn't want
   // their shell flooded with the last hour of group chatter just
-  // because they restarted the daemon. Set to 60 to discard
-  // anything older than a minute before connect.
-  maxBacklogSeconds = 0,
+  // because they restarted the daemon. Default 30s: anything older
+  // is HELD (not dispatched) and surfaced via /wa-pending so the
+  // operator can review and explicitly dispatch (or discard). Set
+  // to 0 to disable the filter entirely (old behaviour — every
+  // backlog message auto-dispatches; not recommended).
+  maxBacklogSeconds = 30,
   onIncoming,
   onLog,
   onError,
@@ -110,6 +113,11 @@ export async function startWhatsAppBridge({
 
   let stopped        = false;
   let connectedAt    = 0;     // ms; set to Date.now() when WS reaches 'open'
+  // Pre-connect backlog: messages older than connectedAt -
+  // maxBacklogSeconds get parked here instead of dispatched. The host
+  // surfaces them via /wa-pending so the operator can review and
+  // explicitly dispatch (re-running handleMessage) or clear.
+  const _heldMessages = [];
   let lastChat       = null;
   let chatIdNotified = false;
   let myJid          = null;     // our own jid (e.g. '1234567890@s.whatsapp.net')
@@ -499,17 +507,40 @@ export async function startWhatsAppBridge({
   async function handleMessage(msg, { bypassAwareness = false } = {}) {
     if (!msg.message) return;               // protocol message / ignored type
 
-    // Backlog filter: if maxBacklogSeconds is configured (>0), drop
-    // messages whose timestamp is older than (connectedAt - threshold).
-    // This is for the WA-burst-on-handshake case: baileys hands you
-    // recently-buffered messages immediately after WS open. An egpt
-    // operator restarting the shell typically doesn't want their
-    // transcript flooded with the last hour of group chatter; with
-    // maxBacklogSeconds=60 only the last minute pre-connect comes
-    // through. Default 0 = no filter (every delivered message passes).
+    // Backlog filter: messages whose timestamp is older than
+    // (connectedAt - maxBacklogSeconds) are HELD instead of dispatched.
+    // baileys hands you the recent backlog right after WS open, which
+    // for a daemon-restart scenario means an @e from 20 minutes ago
+    // would otherwise auto-run the brain — surprising and unsafe. We
+    // capture them in _heldMessages so the operator can review via
+    // /wa-pending and decide whether to dispatch each (or all, or
+    // clear them). Set maxBacklogSeconds=0 to disable the hold and
+    // restore the old auto-dispatch behaviour.
     if (maxBacklogSeconds > 0 && connectedAt > 0) {
       const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
       if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
+        // Skip clearly bot-side echoes (fromMe, our own sentIds) and
+        // protocol noise — only hold genuine inbound that WOULD have
+        // dispatched.
+        if (!msg.key?.fromMe) {
+          const text = textOf(msg.message);
+          if (text) {
+            _heldMessages.push({
+              jid: msg.key?.remoteJid,
+              author: typeof msg.pushName === 'string' && msg.pushName.trim()
+                ? msg.pushName.trim()
+                : null,
+              text,
+              ts: msgTsMs,
+              key: msg.key?.id ? { id: msg.key.id, fromMe: false } : null,
+              raw: msg,    // kept so the operator can re-dispatch through
+                           // the same handleMessage path on /wa-pending
+                           // dispatch — single source of truth for awareness
+                           // + wake-word + brain routing.
+            });
+            log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
+          }
+        }
         return;
       }
     }
@@ -918,6 +949,34 @@ export async function startWhatsAppBridge({
     // Useful as the default mirror target so shell-typed transcript
     // shows up in your phone without configuring a chat_id.
     get selfDmJid() { return myNumber ? `${myNumber}@s.whatsapp.net` : null; },
+    // ── Held pre-connect messages ────────────────────────────────
+    // Surfaced as { idx, jid, author, text, ts } to the host. The
+    // raw key+message stay inside the bridge so dispatchHeld can
+    // replay through handleMessage (which goes through the same
+    // awareness + wake-word + brain routing pipeline as a live one).
+    listHeld() {
+      return _heldMessages.map((m, i) => ({
+        idx: i, jid: m.jid, author: m.author, text: m.text, ts: m.ts,
+      }));
+    },
+    async dispatchHeld(idx) {
+      const entry = _heldMessages[idx];
+      if (!entry) return { ok: false, reason: 'no held message at that index' };
+      // Pull from the queue first so a slow handleMessage doesn't
+      // leave the entry visible to a concurrent caller.
+      _heldMessages.splice(idx, 1);
+      try {
+        await handleMessage(entry.raw, { bypassAwareness: false });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: e.message };
+      }
+    },
+    clearHeld() {
+      const n = _heldMessages.length;
+      _heldMessages.length = 0;
+      return n;
+    },
   };
 }
 

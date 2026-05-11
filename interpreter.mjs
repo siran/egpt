@@ -44,6 +44,7 @@ export const COMMANDS = [
   { cmd: '/channels',       surface: 'both',      usage: '/channels [N] [messages-per-chat]',             desc: 'list the top-N most-active WA chats numbered as @waN, with M recent message lines per chat (default 10 3). shell uses baileys; extension scrapes WA Web. /channels then @wa<N> <body> to send.' },
   { cmd: '/join',           surface: 'both',      usage: '/join @waN',                                    desc: 'bind outbound to chat N from /channels — plain shell/extension input routes to that WA chat instead of the default mirror target. /unjoin to release.' },
   { cmd: '/unjoin',         surface: 'both',      usage: '/unjoin',                                       desc: 'release the /join binding' },
+  { cmd: '/wa-pending',     surface: 'shell',     usage: '/wa-pending [dispatch <idx|all> | clear]',      desc: 'review WhatsApp messages received but not auto-dispatched because they predate the bridge connect (whatsapp.max_backlog_seconds). dispatch <idx> runs one through the brain pipeline; dispatch all runs the lot; clear discards them.' },
   { cmd: '/status',         surface: 'shell',     usage: '/status',                                        desc: 'room snapshot: sessions, files, config' },
   { cmd: '/file',           surface: 'shell',     usage: '/file',                                          desc: 'show conversation file path' },
   { cmd: '/conversations',  surface: 'shell',     usage: '/conversations',                                 desc: 'list available conversation files' },
