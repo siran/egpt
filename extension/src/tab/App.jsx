@@ -1107,6 +1107,12 @@ export default function App() {
         peerNodesRef.current.set(ev.from, {
           role: ev.role, sessions: ev.sessions ?? [],
           polling: !!ev.polling, lastSeen: ev.ts ?? Date.now(),
+          // wa: true means this peer (typically the shell) is actively
+          // handling WhatsApp via baileys. handleIncomingWaCdp uses
+          // this to decide whether to yield brain dispatch. A shell
+          // on bus with wa:false means baileys is disconnected — the
+          // extension stays in charge of WA replies.
+          wa: !!ev.wa,
         });
         setPeersRev(r => r + 1);
         if (!ev._replayed) {
@@ -1401,14 +1407,19 @@ export default function App() {
     if (!fromInfo.fromMe) return;
     if (!trimmedRaw) return;
 
-    // Yield to shell: when a shell node is on the bus, IT handles WA
-    // dispatch via baileys. The extension's WA-CDP still renders the
-    // message in the unified UI (above) for visibility, but stops
+    // Yield to shell ONLY when a shell is on the bus AND has baileys
+    // running (wa: true in its node-online). A shell that joined the
+    // bus but ran /whatsapp disconnect (or that crashed its baileys
+    // connection) cannot reply to WA, so the extension must stay in
+    // charge — otherwise the message gets silently dropped.
+    //
+    // When the gate fires, the extension's WA-CDP still renders the
+    // message in the unified UI above (for visibility), but stops
     // here — no brain dispatch, no reply mirror. Without this gate
-    // both halves would dispatch the same '@e' to a brain in
-    // parallel and the user would see duplicate replies.
-    const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-    if (hasShellPeer) return;
+    // both halves would dispatch the same '@e' to a brain in parallel
+    // and the user would see duplicate replies.
+    const hasShellHandlingWa = [...peerNodesRef.current.values()].some(p => p.role === 'shell' && p.wa);
+    if (hasShellHandlingWa) return;
 
     // Wake-word gate + allowed_users gate.
     let dispatchText = trimmedRaw;
