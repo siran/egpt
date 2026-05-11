@@ -118,6 +118,12 @@ export async function startWhatsAppBridge({
   // surfaces them via /wa-pending so the operator can review and
   // explicitly dispatch (re-running handleMessage) or clear.
   const _heldMessages = [];
+  // Host-driven awareness bypass: chats whose every message should
+  // pass through to onIncoming regardless of awareness defaults.
+  // /use @waN and /join @waN add entries here so the operator sees
+  // ALL traffic in a joined chat (not just @-mentions), which is
+  // what enables the cross-chat bridge.
+  const _bypassChats = new Set();
   let lastChat       = null;
   let chatIdNotified = false;
   let myJid          = null;     // our own jid (e.g. '1234567890@s.whatsapp.net')
@@ -607,8 +613,11 @@ export async function startWhatsAppBridge({
     //   personal:    1:1 chats with someone else.
     //   groups:      group chats — handled below since 'mentions' depends
     //                on parsing the message body.
-    // Skipped entirely in debug mode or for wake-word messages.
-    if (!bypassAwareness && !isWakeWord) {
+    // Skipped entirely in debug mode, for wake-word messages, or
+    // when the host has marked this chat for full passthrough via
+    // setBypassChats (e.g. /use or /join binds the chat).
+    const hostBypassEarly = _bypassChats.has(chatJid0);
+    if (!bypassAwareness && !isWakeWord && !hostBypassEarly) {
       if (isSelfDM) {
         if (aware.self_chat === 'off') return;
         if (aware.self_chat === 'incoming' && fromMe) return;
@@ -681,7 +690,15 @@ export async function startWhatsAppBridge({
       const mentions = ctx.mentionedJid ?? [];
       const isMentioned = myNumber && mentions.some(m => m.startsWith(`${myNumber}@`));
       const replyingToMe = myJid && ctx.participant === myJid;
-      if (!bypassAwareness && !isWakeWord && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
+      // Awareness gate. Bypassed when the host has marked this chat
+      // for full passthrough (typically because /use or /join binds
+      // the chat — the operator wants every message visible, not
+      // just mentions). bypassAwareness covers debug mode; isWakeWord
+      // covers @-summons in 'mentions' chats; _bypassChats covers
+      // host-driven per-chat opt-in.
+      const hostBypass = _bypassChats.has(chatJid);
+      if (!bypassAwareness && !hostBypass && !isWakeWord
+          && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
       if (myNumber) {
         processed = processed.replace(new RegExp(`@${myNumber}\\s*`, 'g'), '').trim();
       }
@@ -954,6 +971,13 @@ export async function startWhatsAppBridge({
     // raw key+message stay inside the bridge so dispatchHeld can
     // replay through handleMessage (which goes through the same
     // awareness + wake-word + brain routing pipeline as a live one).
+    setBypassChats(jids) {
+      // Replace the entire bypass set with the supplied list. Host
+      // calls this whenever the joined set changes so the bridge's
+      // view is always in sync.
+      _bypassChats.clear();
+      for (const j of (jids ?? [])) if (j) _bypassChats.add(j);
+    },
     listHeld() {
       return _heldMessages.map((m, i) => ({
         idx: i, jid: m.jid, author: m.author, text: m.text, ts: m.ts,

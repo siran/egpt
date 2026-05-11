@@ -1712,17 +1712,32 @@ function App() {
       : null;
   const _waJoinedHas = (jid) =>
     !!(waJoinedRef.current && waJoinedRef.current.has(jid));
+  const _syncBypassToBridge = () => {
+    // Keep the WA bridge's awareness-bypass set aligned with the
+    // current joined set. Without this, joining a group with
+    // awareness:'mentions' (default) would drop every non-@-tag
+    // message at the bridge before the items-mirror got a chance
+    // to bridge it to the other joined chats.
+    const wa = waBridgeRef.current;
+    if (!wa || typeof wa.setBypassChats !== 'function') return;
+    wa.setBypassChats(_waJoinedAll().map(e => e.jid));
+  };
   const _waJoinedAdd = (entry) => {
     if (!waJoinedRef.current) waJoinedRef.current = new Map();
     waJoinedRef.current.set(entry.jid, entry);
+    _syncBypassToBridge();
   };
   const _waJoinedRemove = (jid) => {
     if (!waJoinedRef.current) return false;
     const removed = waJoinedRef.current.delete(jid);
     if (waJoinedRef.current.size === 0) waJoinedRef.current = null;
+    _syncBypassToBridge();
     return removed;
   };
-  const _waJoinedClear = () => { waJoinedRef.current = null; };
+  const _waJoinedClear = () => {
+    waJoinedRef.current = null;
+    _syncBypassToBridge();
+  };
   const _waJoinedSize = () => waJoinedRef.current?.size ?? 0;
   const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
