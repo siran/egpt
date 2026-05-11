@@ -1716,6 +1716,41 @@ function App() {
   // Enabled when EGPT_CONFIG.whatsapp.enabled === true (or any truthy
   // whatsapp config block is present). First run shows a QR to scan with
   // your phone; auth state persists at ~/.egpt/wa-auth/.
+  // Brain Chrome PID — captured at spawn time so OS-level focus
+  // theft (chrome.focus_on_dispatch) can target the right window
+  // rather than 'some Chrome with the matching title'.
+  const _chromeBrainPidRef = useRef(null);
+  // OS-level Chrome focus — Target.activateTarget + Page.bringToFront
+  // do their best at the CDP layer, but Windows / X11 / macOS each
+  // have anti-focus-stealing rules that can leave Chrome behind the
+  // foreground app. This calls into the OS to force the window
+  // forward, targeting the brain Chrome by PID when we have one.
+  // Config gate: chrome.focus_on_dispatch ('on' default | 'off').
+  const _osFocusBrainChrome = () => {
+    if ((EGPT_CONFIG.chrome?.focus_on_dispatch ?? 'on') === 'off') return;
+    const pid = _chromeBrainPidRef.current;
+    if (!pid) return;            // didn't spawn it ourselves — skip
+    if (process.platform === 'win32') {
+      // PowerShell + WScript.Shell.AppActivate(pid). Best-effort.
+      const ps = spawn('powershell', [
+        '-NoProfile', '-Command',
+        `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.Id) | Out-Null }`,
+      ], { stdio: 'ignore', windowsHide: true });
+      ps.on('error', () => {});
+      // Don't await — fire-and-forget. setTimeout cleanup is unnecessary
+      // because the PS one-liner exits quickly.
+    } else if (process.platform === 'darwin') {
+      // osascript: by app name, since osascript can't target by PID
+      // directly. If user has multiple Chromes, this might focus the
+      // wrong one — accept that limitation on macOS for now.
+      const ps = spawn('osascript', ['-e', 'tell application "Google Chrome" to activate'], { stdio: 'ignore' });
+      ps.on('error', () => {});
+    } else {
+      // Linux: wmctrl by PID. -p flag picks the window with that PID.
+      const ps = spawn('wmctrl', ['-x', '-a', 'Google-chrome'], { stdio: 'ignore' });
+      ps.on('error', () => {});
+    }
+  };
   const waBridgeRef = useRef(null);
   // Cache the most recent /channels output so @waN can resolve N to a
   // chat by the index the user just saw. Reset every /channels so the
@@ -2080,11 +2115,12 @@ function App() {
         }
       }
       sysOut('starting Chrome with extension…');
-      await launcher.spawnChrome({
+      const _spawnResult = await launcher.spawnChrome({
         port: 9221,
         userDataDir: brainProfile,
         extensionDir: extDist,
       });
+      _chromeBrainPidRef.current = _spawnResult?.pid ?? null;
       await launcher.waitForChromeReady(9221);
       sysOut('Chrome ready');
       return true;
@@ -2520,7 +2556,7 @@ function App() {
     }
   }
 
-  const handleSlash = async (text) => {
+  const handleSlash = async (text, meta = {}) => {
     const [cmd, ...rest] = text.split(/\s+/);
     const arg = rest.join(' ').trim();
 
@@ -4730,9 +4766,29 @@ function App() {
       return true;
     }
     if (cmd === '/handle') {
-      // Rename a session: /handle <old> <new>. Preserves brain, emoji, options, bio.
+      // Two forms:
+      //   /handle <new>          — change YOUR OWN handle (user_name).
+      //                            Same as '/config user_name <new>'
+      //                            but feels like the right command
+      //                            to reach for. Operator's '/handle An'
+      //                            in the wild used to land here and
+      //                            see 'usage: /handle <old> <new>'
+      //                            with no hint about the actual fix.
+      //   /handle <old> <new>    — rename a brain session. Preserves
+      //                            brain, emoji, options, bio.
       const parts = arg.split(/\s+/).filter(Boolean);
-      if (parts.length !== 2) { sysOut('usage: /handle <old> <new>'); return true; }
+      if (parts.length === 1) {
+        const handle = parts[0];
+        if (!/^[A-Za-z0-9_-]+$/.test(handle)) {
+          sysOut('handle must be alphanumeric (- and _ ok)');
+          return true;
+        }
+        return handleSlash(`/config user_name ${handle}`, meta);
+      }
+      if (parts.length !== 2) {
+        sysOut('usage:\n  /handle <new>            change your own handle (user_name)\n  /handle <old> <new>      rename a brain session');
+        return true;
+      }
       const [oldName, newName] = parts;
       if (!sessions[oldName]) { sysOut(`no session named "${oldName}"`); return true; }
       if (sessions[newName]) { sysOut(`session "${newName}" already exists`); return true; }
@@ -5153,9 +5209,12 @@ function App() {
         return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
       }
       // Bring the brain's Chrome tab to the foreground so the
-      // operator can watch the streaming response. Same call as
-      // runBrainTurn uses; best-effort, fire-and-forget.
-      if (targetId) cdp.activateTarget(targetId).catch(() => {});
+      // operator can watch the streaming response. CDP + OS-level
+      // — see runBrainTurn comment block for the why-two-layers.
+      if (targetId) {
+        cdp.activateTarget(targetId).catch(() => {});
+        _osFocusBrainChrome();
+      }
       try {
         const result = await brain.stream(
           { message: text },
@@ -5309,11 +5368,17 @@ function App() {
 
     // Activate the brain tab so the operator can watch the streaming
     // reply in Chrome without having to alt-tab to it. Only fires for
-    // CDP brains that have a live targetId. Best-effort; CDP errors
-    // are swallowed inside activateTarget so a missing/stale target
-    // doesn't break the turn.
+    // CDP brains that have a live targetId. Two layers:
+    //   1. CDP: Target.activateTarget + Page.bringToFront. Best-effort;
+    //      CDP errors are swallowed inside activateTarget.
+    //   2. OS-level focus theft (chrome.focus_on_dispatch='on' default).
+    //      Windows AppActivate-by-PID, macOS osascript, Linux wmctrl.
+    //      Fixes the case where Chrome window itself is behind another
+    //      app — CDP alone often can't break Windows' SetForegroundWindow
+    //      restrictions, so the OS path actually clicks Chrome forward.
     if (brain.urlMatch && opts.targetId) {
       cdp.activateTarget(opts.targetId).catch(() => {});
+      _osFocusBrainChrome();
     }
 
     // If Telegram is connected, send a placeholder message that we'll edit
@@ -5743,7 +5808,7 @@ function App() {
     if (meta.observeOnly && decision.kind !== 'persona') return;
 
     if (decision.kind === 'command') {
-      const handled = await handleSlash(text);
+      const handled = await handleSlash(text, meta);
       if (!handled) sysOut(`!! unknown command: ${decision.cmd}`);
       return;
     }
