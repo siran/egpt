@@ -1006,14 +1006,84 @@ export async function startWhatsAppBridge({
 
 // ── helpers ──────────────────────────────────────────────────────
 
+// Extract a textual body from any baileys message variant. For
+// non-text types (audio, image without caption, document, sticker,
+// poll, location, reaction, contact) we return a bracketed
+// placeholder so the host sees SOMETHING in the transcript instead
+// of dropping the message silently. Captions are inlined when
+// present. Downloads / auto-summarize / audio transcription are
+// separate features; this function is the visibility step.
 function textOf(message) {
-  return (
-    message.conversation ??
-    message.extendedTextMessage?.text ??
-    message.imageMessage?.caption ??
-    message.videoMessage?.caption ??
-    null
-  );
+  if (!message) return null;
+  if (message.conversation) return message.conversation;
+  if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
+  // Reactions: an update to an existing message. Target msg-id is
+  // included so a later /show or summary feature can resolve the
+  // referenced message.
+  if (message.reactionMessage) {
+    const r = message.reactionMessage;
+    const emoji = r.text || '·';
+    const tid = r.key?.id ? ` (msg ${r.key.id.slice(0, 8)})` : '';
+    return r.text
+      ? `[reaction ${emoji}${tid}]`
+      : `[reaction removed${tid}]`;
+  }
+  // Image / video: caption inline when present, placeholder when not.
+  if (message.imageMessage) {
+    const cap = message.imageMessage.caption?.trim();
+    return cap ? `[image] ${cap}` : '[image]';
+  }
+  if (message.videoMessage) {
+    const cap = message.videoMessage.caption?.trim();
+    return cap ? `[video] ${cap}` : '[video]';
+  }
+  // Audio: voice notes (push-to-talk) and shared audio files. Length
+  // is in seconds. Transcription is a separate pending feature.
+  if (message.audioMessage) {
+    const a = message.audioMessage;
+    const secs = Number(a.seconds) || 0;
+    const kind = a.ptt ? 'voice note' : 'audio';
+    return secs > 0 ? `[${kind}: ${secs}s]` : `[${kind}]`;
+  }
+  if (message.documentMessage) {
+    const d = message.documentMessage;
+    const name = d.fileName || d.title || 'untitled';
+    const cap = d.caption?.trim();
+    return cap ? `[document: ${name}] ${cap}` : `[document: ${name}]`;
+  }
+  if (message.stickerMessage) {
+    return '[sticker]';
+  }
+  if (message.locationMessage) {
+    const l = message.locationMessage;
+    const coords = (l.degreesLatitude != null && l.degreesLongitude != null)
+      ? `${l.degreesLatitude.toFixed(4)},${l.degreesLongitude.toFixed(4)}`
+      : '?';
+    const name = l.name?.trim();
+    return name ? `[location ${coords}: ${name}]` : `[location ${coords}]`;
+  }
+  if (message.liveLocationMessage) {
+    return '[live location]';
+  }
+  if (message.contactMessage) {
+    return `[contact: ${message.contactMessage.displayName || 'unknown'}]`;
+  }
+  if (message.contactsArrayMessage) {
+    const n = message.contactsArrayMessage.contacts?.length ?? 0;
+    return `[${n} contact${n === 1 ? '' : 's'}]`;
+  }
+  // Polls: both v1 and v3 schemas observed in the wild.
+  const poll = message.pollCreationMessageV3 ?? message.pollCreationMessage;
+  if (poll) {
+    return `[poll: ${poll.name ?? '(no question)'}]`;
+  }
+  if (message.pollUpdateMessage) {
+    return '[poll vote]';
+  }
+  // Protocol messages (read receipts, deletes, edits) and other
+  // control envelopes — silent on purpose. handleMessage exits on
+  // null so they don't reach the host.
+  return null;
 }
 
 // baileys uses pino. We pass a no-op logger to keep its chatter out of
