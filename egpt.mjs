@@ -4442,9 +4442,56 @@ function App() {
       return true;
     }
     if (cmd === '/attach') {
+      // Smart pre-flight: when /attach is invoked without the
+      // prerequisites in place, set them up rather than bouncing the
+      // operator through 4–5 commands. Lobby → auto-create+join a
+      // room named after the session arg; Chrome unreachable →
+      // auto-spawn; no matching tab → auto-open one.
+      let targetRoom = currentRoom;
       if (currentRoom === 'default') {
-        sysOut('!! default room is the lobby and cannot host brains. Create a room first:\n  /room create <name>\n  /room join <name>\n  /attach …');
-        return true;
+        const lobbyParts = arg.split(/\s+/).filter(Boolean);
+        const lobbyBrain = canonicalBrainName(lobbyParts[0]);
+        const lobbySessName = lobbyParts[1] && brainForName(lobbyBrain) ? lobbyParts[1] : null;
+        const autoRoomName = lobbySessName || lobbyBrain || 'work';
+        const otherRooms = Object.keys(roomSessionsMap).filter(r => r !== 'default' && r !== autoRoomName);
+        if (otherRooms.length) {
+          const list = otherRooms.map(r => {
+            const sess = roomSessionsMap[r] ?? {};
+            const members = Object.entries(sess).map(([n, s]) => `${s.emoji ?? ''}${n}/${s.brain}`).join(', ') || '(empty)';
+            return `  · ${r}  (${members})`;
+          }).join('\n');
+          sysOut(`other rooms available — /room join <name> to resume one with its sessions:\n${list}`);
+        }
+        if (!roomSessionsMap[autoRoomName]) {
+          setRoomSessionsMap(rs => ({ ...rs, [autoRoomName]: {} }));
+          sysOut(`auto-created room "${autoRoomName}"`);
+        }
+        setCurrentRoom(autoRoomName);
+        setActiveSessions([]);
+        sysOut(`joined room "${autoRoomName}" — continuing /attach`);
+        targetRoom = autoRoomName;
+      }
+      // Shadow sessions/setSessions to write into targetRoom — the React
+      // setCurrentRoom above takes effect on the next render, but the
+      // rest of /attach runs RIGHT NOW. Without the shadow, attach
+      // writes would still go to the lobby.
+      const sessions = roomSessionsMap[targetRoom] ?? {};
+      const setSessions = (updater) => {
+        setRoomSessionsMap(rs => {
+          const cur = rs[targetRoom] ?? {};
+          const next = typeof updater === 'function' ? updater(cur) : updater;
+          return { ...rs, [targetRoom]: next };
+        });
+      };
+      // Auto-spawn Chrome if it isn't reachable. This is heavy but the
+      // operator has opted out of the confirmation prompt via
+      // whatsapp.follow_join / the discussion log; if the brain needs
+      // CDP and Chrome isn't there, spawning is the only forward path.
+      const wantsCdp = brainForName(canonicalBrainName(arg.split(/\s+/)[0]))?.urlMatch != null;
+      if (wantsCdp && !(await cdp.isRunning())) {
+        sysOut('chrome not reachable — starting it with the extension…');
+        try { await spawnChromeWithExtension(); }
+        catch (e) { sysOut(`!! chrome start failed: ${e.message}`); return true; }
       }
       // Four forms:
       //   /attach <profile>                -> start a YAML brain profile
@@ -4554,14 +4601,26 @@ function App() {
             if (!tid) { sysOut(`could not resolve "${tabSpec}" to a tab. /tabs to see open tabs.`); return true; }
             options.targetId = tid;
           } else {
-            const tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
-            if (tabs.length === 0) { sysOut(`no open ${brainName} tabs to attach. try /open ${brainName} to open one.`); return true; }
+            let tabs = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
+            if (tabs.length === 0 && brain.homeUrl) {
+              // Auto-open: cheap, expected next step. Without this, the
+              // operator gets bounced to /open then back to /attach.
+              sysOut(`no ${brainName} tab open — opening ${brain.homeUrl}…`);
+              try {
+                const tid = await cdp.openTab(brain.homeUrl);
+                options.targetId = tid;
+              } catch (e) { sysOut(`!! could not open ${brainName} tab: ${e.message}`); return true; }
+              // Skip the multiple-tabs branch since we just opened the
+              // single one we want.
+              tabs = [];
+            }
+            if (tabs.length === 0 && !options.targetId) { sysOut(`no open ${brainName} tabs to attach. try /open ${brainName} to open one.`); return true; }
             if (tabs.length > 1) {
               const lst = tabs.map(t => `  "${t.title}" — ${t.url}`).join('\n');
               sysOut(`multiple ${brainName} tabs open. specify which:\n${lst}\nuse: /attach ${brainName} ${sessionName} <urlOrUuidOrId>`);
               return true;
             }
-            options.targetId = tabs[0].id;
+            if (tabs.length === 1) options.targetId = tabs[0].id;
           }
         } catch (e) { sysOut(`!! ${e.message}`); return true; }
       }
