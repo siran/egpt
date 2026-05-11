@@ -205,6 +205,28 @@ export async function closeTab(targetId) {
 }
 
 /**
+ * Activate (focus) a tab via CDP — brings both the tab and its Chrome
+ * window to the foreground. Best-effort: silently returns if Chrome
+ * isn't reachable or the target is gone, so callers don't need to
+ * catch. Used before each brain dispatch so the operator can watch
+ * the streaming response in Chrome.
+ */
+export async function activateTarget(targetId) {
+  if (!targetId) return;
+  let v;
+  try { v = await fetchJson('/json/version'); } catch { return; }
+  await new Promise(resolve => {
+    const ws = new WebSocket(v.webSocketDebuggerUrl);
+    const settle = () => { try { ws.close(); } catch {} resolve(); };
+    ws.addEventListener('open', () =>
+      ws.send(JSON.stringify({ id: 1, method: 'Target.activateTarget', params: { targetId } })));
+    ws.addEventListener('message', settle);
+    ws.addEventListener('error', settle);
+    setTimeout(settle, 2000);
+  });
+}
+
+/**
  * Run pollScript once against a tab and return the .text it reports.
  * Used by /refresh — pulls the current assistant message text without sending anything.
  */

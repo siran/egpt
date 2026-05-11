@@ -5122,6 +5122,15 @@ function App() {
 
     setStreaming({ author: routedTo, text: '' });
 
+    // Activate the brain tab so the operator can watch the streaming
+    // reply in Chrome without having to alt-tab to it. Only fires for
+    // CDP brains that have a live targetId. Best-effort; CDP errors
+    // are swallowed inside activateTarget so a missing/stale target
+    // doesn't break the turn.
+    if (brain.urlMatch && opts.targetId) {
+      cdp.activateTarget(opts.targetId).catch(() => {});
+    }
+
     // If Telegram is connected, send a placeholder message that we'll edit
     // in place as the stream progresses. This gives Telegram users the
     // same "thinking → text" experience as the local shell. The eventual
