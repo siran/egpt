@@ -1788,6 +1788,12 @@ function App() {
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
       if (item._localOnly) continue;
+      // _observed items (room-utterances from chats the operator hasn't
+      // designated as an egpt chat) render on every surface but never
+      // mirror outward — that's the whole point of "observed". Without
+      // this gate, every friend-DM and group line would re-publish into
+      // the user's own Telegram chat.
+      if (item._observed) continue;
       // _source tags the surface this item came from. Skip mirroring
       // back to its own surface (avoid echo loops).
       if (item._source === 'telegram') continue;
@@ -1817,6 +1823,7 @@ function App() {
     while (sentToWaItemsCountRef.current < items.length) {
       const item = items[sentToWaItemsCountRef.current++];
       if (item._localOnly) continue;
+      if (item._observed) continue;             // see TG-mirror gate above
       if (item._source === 'whatsapp') continue;  // skip echo to origin
       if (item._target && item._target !== 'whatsapp') continue;
       if (target) wa.send(formatItemForWhatsApp(item, sessions), { chatId: target });
@@ -4925,22 +4932,17 @@ function App() {
       : null;
     // observeOnly: this submit came from a chat the operator hasn't
     // designated as an egpt chat (e.g. a friend's WhatsApp DM). egpt
-    // listens — to catch @egpt wake-words and reply to the originating
-    // chat — but the message itself doesn't appear in the room
-    // transcript and doesn't ride the bus. Without this gate, every
-    // friend-DM line and group line would echo into shell and mirror
-    // to telegram, which is noise the operator doesn't want.
-    if (!meta.observeOnly) {
-      setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: echoAuthor, body: text,
-        ...(isSlashCommand ? { _localOnly: true } : {}),
-        ...(echoSource ? { _source: echoSource } : {}),
-      }]);
-    } else {
-      // Audit trail for observed chats: log to /log so the operator
-      // can review who said what without flooding the transcript.
-      logOut(`(observed) ${echoAuthor}: ${text}`);
-    }
+    // surfaces the line on every connected surface so the operator
+    // stays aware of activity, but tags it _observed so the items-
+    // mirror loops below DON'T bridge it back out to TG / WA — that
+    // would re-publish a friend's chat into the operator's own bot
+    // surfaces, which is the noise the gate exists to prevent.
+    setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: echoAuthor, body: text,
+      ...(isSlashCommand ? { _localOnly: true } : {}),
+      ...(echoSource ? { _source: echoSource } : {}),
+      ...(meta.observeOnly ? { _observed: true } : {}),
+    }]);
 
     // Mirror the utterance to peer surfaces on the bus so the room shows
     // the same conversation regardless of which surface someone is looking
@@ -4959,7 +4961,12 @@ function App() {
     // isn't actively participating in via egpt.
     {
       const tid = busTargetIdRef.current;
-      if (tid && !isSlashCommand && !meta.observeOnly) {
+      // observed:true broadcasts ride the bus so peers (extension UI etc)
+      // render them, but outbound bridges (telegram-out, wa-cdp-out) skip
+      // them — see the observed checks in shell's items-mirror below and
+      // the App.jsx room-utterance handler. Without this, a friend's WA
+      // group message would mirror into Telegram and the user's self-DM.
+      if (tid && !isSlashCommand) {
         // When the input came from Telegram or WhatsApp, attribute the
         // utterance to the upstream user and tag the surface as
         // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
@@ -4982,6 +4989,7 @@ function App() {
           role: 'shell', user: utteranceUser, body: text,
           ...(client ? { client } : {}),
           ...(via ? { via } : {}),
+          ...(meta.observeOnly ? { observed: true } : {}),
         }).catch(() => {});
       }
     }
@@ -5500,6 +5508,7 @@ function App() {
           id: Date.now() + Math.random(), author: tag, body,
           ...(isPeerSlashCommand ? { _localOnly: true } : {}),
           ...(sourceFromVia ? { _source: sourceFromVia } : {}),
+          ...(ev.observed ? { _observed: true } : {}),
         }]);
         return;
       }
