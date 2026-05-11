@@ -5357,29 +5357,42 @@ function App() {
           _localOnly: true,
         }]);
       }
+      // Per-bridge "already-streamed" tags. The reply has just been
+      // streamed-and-finished into tg (if any) and into one WA chat
+      // (waStreamChatId — origin chat for WA-arrived, first joined
+      // for local). Tag the local item so the items-mirror skips the
+      // bridges/chats that already got it WITHOUT blocking fan-out
+      // to OTHER joined WA chats. _localOnly fallback only when we
+      // streamed to WA via lastChat (unknown chat) and there are no
+      // joined targets to fan out to.
+      const tagsAlreadySent = {
+        ...(tg ? { _source: 'telegram' } : {}),
+        ...(wa
+          ? (waStreamChatId
+              ? { _sourceChatId: waStreamChatId }
+              : { _localOnly: true })
+          : {}),
+      };
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
         // Quiet ack: render as the session itself with a single em-dash body,
-        // both locally and on Telegram. The local entry carries _localOnly
-        // when Telegram already saw the streaming msg, to avoid double-post.
+        // both locally and on Telegram.
         await tg?.finish(`${authorPrefix}\n—`);
         await wa?.finish(`${waPrefix}\n—`);
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: routedTo, body: '—',
           _silent: true,
-          _localOnly: !!tg || !!wa,
+          ...tagsAlreadySent,
         }]);
         return null;
       }
-      // Finalize the streaming bridge messages with the full text. Local
-      // item is _localOnly when at least one bridge already received the
-      // reply, to avoid double-posting.
+      // Finalize the streaming bridge messages with the full text.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
       await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
       await wa?.finish(`${waPrefix}\n${final}`);
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: routedTo, body: final,
-        _localOnly: !!tg || !!wa,
+        ...tagsAlreadySent,
       }]);
       await append(`${routedTo}@${SURFACE_TAG}`, final);
       return final;
@@ -5729,11 +5742,19 @@ function App() {
           const replySource = meta.fromTelegram ? 'telegram'
             : meta.fromWhatsApp ? 'whatsapp'
             : null;
+          // _sourceChatId: the WA chat the streamed reply already
+          // landed in (via waStream.finish above). Items-mirror's
+          // per-target loop uses this to skip that ONE chat while
+          // still fanning out to OTHER joined chats — without it,
+          // the brain reply double-posts in the origin chat. Set
+          // for WA-arrived @e turns; left unset for local / TG.
           setItems(p => [...p, {
             id: Date.now() + Math.random(),
             author: replyAuthor,
             body: reply,
             ...(replySource ? { _source: replySource } : {}),
+            ...(meta.fromWhatsApp && meta.waChatId
+              ? { _sourceChatId: meta.waChatId } : {}),
           }]);
           await append(replyAuthor, reply);
           // Broadcast on bus so peers (extension, future surfaces) see
