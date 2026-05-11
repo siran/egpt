@@ -978,7 +978,16 @@ const _stamp = (d) => {
 };
 // On-disk timestamp in conversation.md. Local time + tz label.
 const ts = () => _stamp(new Date());
+// Default-room transcript writer. Named rooms shadow this with a
+// component-local `append` that targets ~/.egpt/rooms/<name>.md.
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
+// FIFO queue for transcript writes so multiple fire-and-forget
+// appends (from sysOut) can't race each other and land out of order.
+let _transcriptQueue = Promise.resolve();
+function queuedAppend(fn) {
+  _transcriptQueue = _transcriptQueue.then(fn, () => fn());
+  return _transcriptQueue;
+}
 const fmtTs = (ms) => _stamp(new Date(ms));
 
 // ── Room persistence ───────────────────────────────────────────────────────
@@ -2205,6 +2214,26 @@ function App() {
   // _target, not to other bridges). The previous design used 'remote'
   // (binary), which made _localOnly=false and items-mirror ship the
   // response to EVERY bridge — so /sessions in WA leaked to TG too.
+  // Per-room transcript writer. Default room keeps writing to the
+  // CLI-passed FILE (./conversation.md) so a fresh egpt run still has
+  // a natural home. Named rooms get their own file at
+  // ~/.egpt/rooms/<name>.md — the shared ledger for everyone in that
+  // room, distinct from other rooms. On first write for a new room
+  // we drop a header so the file is well-formed.
+  const transcriptFileForRoom = (room) => room === 'default'
+    ? FILE
+    : join(ROOMS_DIR, `${room}.md`);
+  const append = async (who, body) => {
+    const file = transcriptFileForRoom(currentRoom);
+    return queuedAppend(async () => {
+      try { await stat(file); }
+      catch {
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(file, `# Conversation\n\n---\n\n`);
+      }
+      await appendFile(file, `## ${ts()} — ${who}\n${body}\n\n`);
+    });
+  };
   const sysOut = body => {
     const sink = outputSinkRef.current;
     const meta = sink === 'local'
@@ -2214,6 +2243,11 @@ function App() {
       id: Date.now() + Math.random(), author: 'system', body,
       ...meta,
     }]);
+    // Full-clarity logging: every system output (slash command
+    // responses, status notes, errors) goes into the room transcript
+    // too. Fire-and-forget — queuedAppend serialises so order is
+    // preserved without making every sysOut caller async.
+    void append('system', body);
   };
 
   // logOut is for telemetry/audit lines — bridge connection events,
@@ -2499,6 +2533,48 @@ function App() {
         setCurrentRoom(target);
         setActiveSessions([]);   // /use is per-room
         sysOut(`joined room "${target}"`);
+        // Re-attach behaviour controlled by config (room.on_join):
+        //   'lazy'  (default) — saved sessions stay as data; first
+        //                       @session use triggers attach
+        //   'eager'           — auto-/attach every CDP session by
+        //                       opening a tab at its saved url and
+        //                       wiring up targetId. Codex / claude-code
+        //                       sessions don't need anything spun up
+        //                       up-front; they pick up their saved
+        //                       session_id / cwd on first turn.
+        //   'off'             — keep the room data loaded but don't
+        //                       restore sessions at all on join.
+        const onJoin = EGPT_CONFIG.room?.on_join ?? 'lazy';
+        if (onJoin === 'eager') {
+          const targetSessions = roomSessionsMap[target] ?? {};
+          const cdpSessions = Object.entries(targetSessions)
+            .filter(([, s]) => {
+              const b = brainForName(s.brain);
+              return b?.urlMatch && s.options?.url;
+            });
+          if (cdpSessions.length) {
+            sysOut(`eager-attach: spinning up ${cdpSessions.length} CDP session(s)…`);
+            for (const [name, s] of cdpSessions) {
+              try {
+                if (!(await cdp.isRunning())) {
+                  sysOut('  chrome not reachable — starting…');
+                  await spawnChromeWithExtension();
+                }
+                const tid = await cdp.openTab(s.options.url);
+                // Patch this session's options with the live targetId.
+                setRoomSessionsMap(rs => {
+                  const cur = rs[target] ?? {};
+                  const sNow = cur[name] ?? {};
+                  const opts = { ...(sNow.options ?? {}), targetId: tid };
+                  return { ...rs, [target]: { ...cur, [name]: { ...sNow, options: opts } } };
+                });
+                sysOut(`  ${s.emoji ?? ''} ${name} → ${s.brain} (tab ${tid.slice(0, 8)}…)`);
+              } catch (e) {
+                sysOut(`  !! could not attach ${name}: ${e.message}`);
+              }
+            }
+          }
+        }
         return true;
       }
       if (sub === 'leave') {
@@ -5175,6 +5251,14 @@ function App() {
         ...(echoSource ? { _source: echoSource } : {}),
         ...(willDirectWa ? { _directWa: true } : {}),
       }]);
+      // Full-clarity logging: persist every input — slash commands,
+      // mentions, plain text — to the room transcript. Same FIFO
+      // queue that sysOut uses, so input and the system output that
+      // follows land in order. Later appends in the @e / peer-mention
+      // / brain-dispatch paths used to do this only for non-slash
+      // inputs; with this here they'd duplicate, so those have been
+      // removed.
+      void append(echoAuthor, text);
     } else {
       logOut(`(observed) ${echoAuthor}: ${text}`);
     }
@@ -5345,7 +5429,7 @@ function App() {
       // chat (friend's DM, group), the reply is sent ONLY to the
       // originating chat — never mirrored anywhere. The operator
       // gets a /log entry as audit.
-      if (!meta.observeOnly) await append(echoAuthor, text);
+      // Input was already logged at the top-of-submitInner echo block.
       setBusy(true);
       try {
         const personaPrompt = formatPersonaPrompt(meta, decision.body);
@@ -5435,7 +5519,7 @@ function App() {
     if (decision.kind === 'peer-mention') {
       const tid = busTargetIdRef.current;
       if (!tid) { sysOut(`!! bus not joined — can't forward @${decision.target}`); return; }
-      await append(echoAuthor, text);
+      // Input already logged in submitInner's echo block.
       try {
         await bus.postEvent(tid, {
           type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
@@ -5472,9 +5556,7 @@ function App() {
       userPayload = decision.payload;
     }
 
-    // The .md keeps the original text (including any @mention prefix).
-    await append(echoAuthor, text);
-
+    // Input already logged in submitInner's echo block.
     setBusy(true);
     setError(null);
 
