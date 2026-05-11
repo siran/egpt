@@ -5492,44 +5492,48 @@ function App() {
           return;
         }
         const rt = target._replyTarget;
-        if (rt?.kind === 'wa') {
+        // Normalize to an array — _replyTarget can be a single
+        // {kind, …} (most common: bridge-arrived or single-target
+        // shell send) or an array (multi-WA fan-out via /use). All
+        // are dispatched the same way.
+        const rtList = Array.isArray(rt) ? rt : (rt ? [rt] : []);
+        const waTargets = rtList.filter(t => t?.kind === 'wa');
+        const tgTargets = rtList.filter(t => t?.kind === 'tg');
+        if (waTargets.length) {
           const wa = waBridgeRef.current;
-          if (!wa?.replyTo) {
-            // Fall back to a plain send if the bridge doesn't expose
-            // replyTo. We could add reply support later; for now the
-            // operator sees the reply land without the WA-quote header.
-            try { wa?.send?.(body, { chatId: rt.chatId }); }
-            catch (e) { sysOut(`!! @${shortId} wa send failed: ${e.message}`); }
-          } else {
-            try { await wa.replyTo({ chatId: rt.chatId, key: rt.key, raw: rt.raw, text: body }); }
-            catch (e) { sysOut(`!! @${shortId} wa reply failed: ${e.message}`); }
+          for (const t of waTargets) {
+            if (!wa?.replyTo) {
+              try { wa?.send?.(body, { chatId: t.chatId }); }
+              catch (e) { sysOut(`!! @${shortId} wa send failed: ${e.message}`); }
+            } else {
+              try { await wa.replyTo({ chatId: t.chatId, key: t.key, raw: t.raw, text: body }); }
+              catch (e) { sysOut(`!! @${shortId} wa reply failed: ${e.message}`); }
+            }
           }
+        }
+        if (tgTargets.length) {
+          const tg = bridgeRef.current;
+          for (const t of tgTargets) {
+            if (tg) {
+              try { tg.send(body, { chatId: t.chatId, replyTo: t.msgId }); }
+              catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
+            }
+          }
+        }
+        if (waTargets.length || tgTargets.length) {
           // Echo + record locally so the transcript has the reply too.
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'You',
             body: `↳ @${shortId}\n${body}`,
-            _directWa: true,
+            _directWa: !!waTargets.length,
+            _localOnly: !waTargets.length && !!tgTargets.length,
           }]);
-          void append('You', `↳ @${shortId} (wa)\n${body}`);
+          void append('You', `↳ @${shortId}\n${body}`);
           return;
         }
-        if (rt?.kind === 'tg') {
-          const tg = bridgeRef.current;
-          if (tg) {
-            try { tg.send(body, { chatId: rt.chatId, replyTo: rt.msgId }); }
-            catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
-          }
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'You',
-            body: `↳ @${shortId}\n${body}`,
-            _localOnly: true,
-          }]);
-          void append('You', `↳ @${shortId} (tg)\n${body}`);
-          return;
-        }
-        // No bridge origin (brain reply, peer message, local typing).
-        // Brain replies: route the body as a follow-up to that brain
-        // session, prepending the previous reply as context.
+        // No bridge origin (brain reply, peer message, local-typed
+        // without /use). Brain replies route as a follow-up to that
+        // brain session. Anything else refuses with a hint.
         const targetSession = (target.author ?? '').split('@')[0];
         if (sessions[targetSession]) {
           sysOut(`@${shortId} → @${targetSession}`);
@@ -5597,9 +5601,10 @@ function App() {
     // visibility; that override happens upstream of submitInner so by
     // the time we get here, meta.observeOnly already reflects whether
     // this message should be surfaced.
+    const echoItemId = Date.now() + Math.random();
     if (!meta.observeOnly) {
       setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: echoAuthor, body: text,
+        id: echoItemId, author: echoAuthor, body: text,
         ...(isSlashCommand ? { _localOnly: true } : {}),
         ...(echoSource ? { _source: echoSource } : {}),
         // _sourceChatId carries the WA chat this message arrived from
@@ -5607,10 +5612,11 @@ function App() {
         // (origin) while still bridging to OTHER joined chats.
         ...(meta.fromWhatsApp && meta.waChatId ? { _sourceChatId: meta.waChatId } : {}),
         // _replyTarget — minimal info needed to send a proper reply
-        // back to this message via '@m<N>' from the operator. Only
-        // bridge-arrived messages can be replied to as quotes; local
-        // typing falls through with no target (the @m reply handler
-        // refuses).
+        // back to this message via '@m<N>' from the operator. For
+        // bridge-arrived messages we have the original key here.
+        // For shell-typed messages routed via /use @waN the keys are
+        // captured AFTER the awaited wa.send below and patched onto
+        // this same item id.
         ...(meta.fromWhatsApp && meta.waMsgKey
           ? { _replyTarget: { kind: 'wa', chatId: meta.waChatId, key: meta.waMsgKey, raw: meta.waMsgRaw ?? null } }
           : meta.fromTelegram && meta.telegramMessageId
@@ -5732,12 +5738,34 @@ function App() {
         && !isAtWaNExplicit) {
       const wa = waBridgeRef.current;
       if (wa) {
-        // Fan out the user's plain text to every joined WA chat
-        // (each /use / /join entry). Errors per-target reported
-        // individually; one bad chat doesn't block the rest.
-        for (const entry of _waJoinedAll()) {
-          try { wa.send(text, { chatId: entry.jid }); }
-          catch (e) { sysOut(`!! /join send to @wa${entry.idx + 1} failed: ${e.message}`); }
+        // Fan out the user's plain text to every joined WA chat.
+        // Capture each send's returned key so '@m<N>' on the echo
+        // item can reply-to-self via a proper WA quote. Sends are
+        // awaited in parallel — they don't block each other.
+        const settled = await Promise.allSettled(
+          _waJoinedAll().map(entry => wa.send(text, { chatId: entry.jid })
+            .then(r => ({ entry, result: r }))),
+        );
+        const replyTargets = [];
+        for (const s of settled) {
+          if (s.status === 'fulfilled' && s.value?.result?.key) {
+            replyTargets.push({
+              kind: 'wa',
+              chatId: s.value.entry.jid,
+              key: s.value.result.key,
+              raw: { conversation: text },
+            });
+          } else if (s.status === 'rejected') {
+            sysOut(`!! /use send failed: ${s.reason?.message ?? s.reason}`);
+          }
+        }
+        // Patch the echo item with its reply targets (one per chat
+        // we successfully sent to). Single entry → object; multiple
+        // → array; @m<N> reply handler accepts both shapes.
+        if (replyTargets.length) {
+          const rt = replyTargets.length === 1 ? replyTargets[0] : replyTargets;
+          setItems(p => p.map(item =>
+            item.id === echoItemId ? { ...item, _replyTarget: rt } : item));
         }
       }
     }
@@ -5759,8 +5787,17 @@ function App() {
         const wa = waBridgeRef.current;
         if (!wa) { sysOut('!! @wa send: whatsapp bridge not running'); return; }
         try {
-          wa.send(body, { chatId: chat.jid });
+          const r = await wa.send(body, { chatId: chat.jid });
           sysOut(`→ @wa${idx + 1} "${chat.name}"`);
+          // Same reply-to-self plumbing as the /use direct-send loop:
+          // capture the WA msg key and patch the echo item so '@m<N>'
+          // can quote it later.
+          if (r?.key) {
+            setItems(p => p.map(item =>
+              item.id === echoItemId
+                ? { ...item, _replyTarget: { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } } }
+                : item));
+          }
         } catch (e) {
           sysOut(`!! @wa send failed: ${e.message}`);
         }

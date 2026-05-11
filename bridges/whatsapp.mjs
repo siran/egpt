@@ -842,10 +842,16 @@ export async function startWhatsAppBridge({
     prefetchHistoryForTopChats,
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
-      if (!target || !sock) return;
-      sock.sendMessage(target, { text })
-        .then(r => rememberSent(r?.key?.id))
-        .catch(e => err(`send: ${e.message}`));
+      if (!target || !sock) return Promise.resolve(null);
+      // Return the baileys send-result promise so callers that need
+      // the msg key (e.g. to set _replyTarget on the operator's own
+      // echo item, so '@m<N>' can reply-to-self via quoted message)
+      // can await it. Echo-tracker rememberSent still fires as a
+      // side effect; the .catch swallows errors after logging so
+      // callers don't see rejections — they get null on failure.
+      return sock.sendMessage(target, { text })
+        .then(r => { rememberSent(r?.key?.id); return r; })
+        .catch(e => { err(`send: ${e.message}`); return null; });
     },
     // Reply to a specific message with a WA-native quote. `key` is the
     // baileys WAMessageKey of the message being replied to; `raw` is
