@@ -4775,61 +4775,64 @@ function App() {
       return true;
     }
     if (cmd === '/mirror') {
-      // /mirror @<target> [mN] [--tagged]
-      //   Forward an existing item's body to a destination, no
-      //   brain dispatch involved. Default target picker is the
-      //   last visible item; explicit mN picks one by short id.
-      //   --tagged prefixes the body with '[author timestamp]: '
-      //   so the destination chat knows it's a forward + who
-      //   originally said it. Without --tagged the body is sent
-      //   raw (reads like a fresh message in the destination).
-      //   Targets supported in shell: @waN (WA chat from /channels
-      //   cache). Future: @<session> / @e re-dispatch.
+      // /mirror @<target> [mN ...] [--tagged | --no-tag]
+      //   Forward existing items' bodies to a destination — no brain
+      //   dispatch on WA target; @<session> re-dispatches as if the
+      //   body were freshly typed. Default item is the last visible
+      //   non-system; explicit mNs pick specific items (in order).
+      //   Tagged prefixing (config: mirror.tagged, default 'on')
+      //   wraps each body with '[author timestamp]: '. --no-tag /
+      //   --tagged override per-call.
       const parts = arg.split(/\s+/).filter(Boolean);
-      const flagTagged = parts.includes('--tagged') || parts.includes('-t');
+      const flagOn = parts.includes('--tagged') || parts.includes('-t');
+      const flagOff = parts.includes('--no-tag') || parts.includes('--no-tagged');
       const positional = parts.filter(t => !t.startsWith('-'));
       const target = positional[0];
-      const msgRef = positional[1];
+      const msgRefs = positional.slice(1);
+      const tagDefault = (EGPT_CONFIG.mirror?.tagged ?? 'on') !== 'off';
+      // Per-call override wins. Both set → --no-tag wins (off is safer
+      // than accidentally surprising a destination with attribution).
+      const useTag = flagOff ? false : flagOn ? true : tagDefault;
       if (!target || !target.startsWith('@')) {
-        sysOut('usage: /mirror @<target> [mN] [--tagged]\n  @waN       forward to WA chat (from /channels)\n  mN         specific item id; omitted = last visible message\n  --tagged   prefix with [author timestamp]: so the destination knows it\'s a forward');
+        sysOut('usage: /mirror @<target> [mN [mN …]] [--tagged | --no-tag]\n  @waN          forward to WA chat (from /channels)\n  @<session>    re-dispatch the body to that brain as fresh input\n  mN [mN …]     specific item ids; omitted = last visible message\n  --tagged      prefix bodies with [author timestamp]: (overrides config)\n  --no-tag      send bodies raw (overrides config)');
         return true;
       }
-      // Resolve the item to forward.
-      let item = null;
-      if (msgRef) {
-        const m = msgRef.match(/^m?(\d+)$/i);
-        if (!m) { sysOut(`!! /mirror: "${msgRef}" isn't an mN id`); return true; }
-        item = itemByShortId.current.get(`m${m[1]}`);
-        if (!item) { sysOut(`!! /mirror: no message m${m[1]} in this session`); return true; }
+      // Resolve items to forward. Empty msgRefs = pick last visible.
+      const itemsToForward = [];
+      if (msgRefs.length) {
+        for (const r of msgRefs) {
+          const m = r.match(/^m?(\d+)$/i);
+          if (!m) { sysOut(`!! /mirror: "${r}" isn't an mN id`); return true; }
+          const it = itemByShortId.current.get(`m${m[1]}`);
+          if (!it) { sysOut(`!! /mirror: no message m${m[1]} in this session`); return true; }
+          itemsToForward.push(it);
+        }
       } else {
-        // Last non-system, non-localOnly visible item.
         for (let i = items.length - 1; i >= 0; i--) {
           const it = items[i];
           if (it._log) continue;
           if (it._localOnly) continue;
           if (it.author === 'system') continue;
-          item = it;
+          itemsToForward.push(it);
           break;
         }
-        if (!item) { sysOut('!! /mirror: nothing to mirror (no recent non-system message)'); return true; }
+        if (!itemsToForward.length) { sysOut('!! /mirror: nothing to mirror (no recent non-system message)'); return true; }
       }
-      const rawBody = item.body ?? '';
-      if (!rawBody.trim()) { sysOut('!! /mirror: that message has no body'); return true; }
-      // Build the body to send. --tagged prefixes with
-      // '[<author> <timestamp>]: ' so the destination chat knows it's
-      // a forward and who originally said it. Author resolution:
-      //   'You' → USER_NAME@SURFACE_TAG (the current local handle)
-      //   'system' → 'egpt' (keeps it terse, no surface noise)
-      //   anything else (e.g. 'cgpt1@kg', 'An@moto') → as-is
+      // Build the body for each item per the tag policy.
+      //   'You'    → USER_NAME@SURFACE_TAG (current local handle)
+      //   'system' → 'egpt'                (keep it terse)
+      //   already qualified (cgpt1@kg, An@moto) → as-is
       const fmtTaggedAuthor = (a) => {
         if (a === 'You') return `${USER_NAME}@${SURFACE_TAG}`;
         if (a === 'system') return 'egpt';
         return a;
       };
-      const body = flagTagged
-        ? `[${fmtTaggedAuthor(item.author)} ${fmtTs(Math.floor(item.id))}]: ${rawBody}`
-        : rawBody;
-      // Resolve the target.
+      const bodyFor = (it) => {
+        const raw = it.body ?? '';
+        if (!useTag) return raw;
+        return `[${fmtTaggedAuthor(it.author)} ${fmtTs(Math.floor(it.id))}]: ${raw}`;
+      };
+      // Dispatch by target type.
       const waMatch = target.match(/^@wa(\d+)$/i);
       if (waMatch) {
         const idx = parseInt(waMatch[1], 10) - 1;
@@ -4837,35 +4840,43 @@ function App() {
         if (!chat) { sysOut(`!! /mirror @wa${idx + 1}: no channel at that index. /channels first.`); return true; }
         const wa = waBridgeRef.current;
         if (!wa) { sysOut('!! /mirror: whatsapp bridge not running'); return true; }
-        try {
-          const r = await wa.send(body, { chatId: chat.jid });
-          const preview = body.length > 80 ? body.slice(0, 79) + '…' : body;
-          sysOut(`→ /mirror @wa${idx + 1} "${chat.name}":\n  ${preview.replace(/\n/g, '\n  ')}`);
-          // Stash a _replyTarget on the just-sent message — same as
-          // /use direct-send — so a later '@m<N>' on this mirror
-          // line can reply-to-self into the same chat.
-          if (r?.key) {
-            // The mirror send didn't go through the echo path, so
-            // there's no echo item to patch. The sysOut line above
-            // IS the local record; patch its _replyTarget by id.
-            // Find it: it's the last 'system' item with the preview.
-            // Simpler: just attach to the originating item's
-            // _replyTarget so '@m<originalId>' learns the new chat.
-            const existing = item._replyTarget;
-            const newTgt = { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } };
-            const merged = Array.isArray(existing) ? [...existing, newTgt]
-              : existing ? [existing, newTgt]
-              : newTgt;
-            // Mutate in place — items state is by ref so the live
-            // map sees the update. (Not ideal React, but the items
-            // array is already mutated elsewhere with the same
-            // pattern.)
-            item._replyTarget = merged;
-          }
-        } catch (e) { sysOut(`!! /mirror @wa${idx + 1}: ${e.message}`); }
+        for (const it of itemsToForward) {
+          const body = bodyFor(it);
+          if (!body.trim()) { sysOut(`!! /mirror: m? body is empty, skipping`); continue; }
+          try {
+            const r = await wa.send(body, { chatId: chat.jid });
+            const preview = body.length > 80 ? body.slice(0, 79) + '…' : body;
+            sysOut(`→ /mirror @wa${idx + 1} "${chat.name}":\n  ${preview.replace(/\n/g, '\n  ')}`);
+            // Attach the mirror's WA key to the ORIGINAL item's
+            // _replyTarget so a later '@m<original> reply' fans out
+            // to this destination chat too. Multi-target ready —
+            // existing single → array; existing array → push.
+            if (r?.key) {
+              const existing = it._replyTarget;
+              const newTgt = { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } };
+              const merged = Array.isArray(existing) ? [...existing, newTgt]
+                : existing ? [existing, newTgt]
+                : newTgt;
+              it._replyTarget = merged;
+            }
+          } catch (e) { sysOut(`!! /mirror @wa${idx + 1}: ${e.message}`); }
+        }
         return true;
       }
-      sysOut(`!! /mirror: target "${target}" not supported yet (try @waN)`);
+      // @<session> — re-dispatch the body to that brain. Joins
+      // multiple items into one prompt so the brain sees the full
+      // thread in order. Tag policy applies to the prompt
+      // (with-tag = '[cgpt1@kg 20:00 EDT]: …' chunks; no-tag = bare).
+      const sessionName = target.slice(1);
+      if (sessions[sessionName]) {
+        const senderTag = `${USER_NAME}@${SURFACE_TAG}`;
+        const bodies = itemsToForward.map(bodyFor).join('\n\n');
+        const prompt = `[${senderTag} ${ts()}]: ${bodies}`;
+        sysOut(`→ /mirror @${sessionName}  (${itemsToForward.length} item${itemsToForward.length === 1 ? '' : 's'})`);
+        await runBrainTurn(sessionName, prompt, sessions);
+        return true;
+      }
+      sysOut(`!! /mirror: target "${target}" not recognised. @waN or @<session>.`);
       return true;
     }
     if (cmd === '/handle') {
