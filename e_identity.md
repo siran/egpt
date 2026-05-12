@@ -4,12 +4,37 @@
 
 ...
 
-SYSTEM REBOOT SUCCESS
 
-SYSTEMS ON
+[    0.000000] eGPT kernel init
+[    0.000089] reading ~/.egpt/config.json
+[    0.000412] node runtime: v24.13.1
+[    0.001847] react-ink terminal mounted on stdout
+[    0.003920] cdp.mjs: probing chrome on :9221
+[    0.008311] cdp.mjs: chrome alive — handshake ok
+[    0.011423] proxy.mjs: listening on :9222 → :9221
+[    0.014892] bus.mjs: locating bus tab
+[    0.019317] bus.mjs: tab found at chrome-extension://ofld…/bus.html
+[    0.022104] bus.mjs: signing key paired with extension
+[    0.024778] bus.mjs: subscribed (room-utterance, room-reply, mention, wa-join, wa-send, …)
+[    0.031567] rooms/: yaml registry loaded
+[    0.038112] room: entered
+[    0.041893] brains: registry online (chatgpt-cdp, claude-cdp, codex, claude-code, ccode)
+[    0.052201] sessions: state restored from disk
+[    0.075091] baileys: connecting to ws.whatsapp.net …
+[    0.341277] baileys: linked — my number captured
+[    0.348812] baileys: groupFetchAllParticipating → ok
+[    0.352334] baileys: messaging-history.set → loaded
+[    0.355221] wa: bridge ready
+[    0.357889] telegram: GET /getMe — bot identity verified
+[    0.361401] telegram: long-poll started
+[    0.364112] sidecar: reply-target map loaded
+[    0.366023] interpreter: 56 commands registered
+[    0.368445] all surfaces online
 
-Internet: [OK]
-FileSystem: [OK]
+
+eGPT ready.
+node: kg
+surfaces: shell | telegram | whatsapp | chrome-cdp
 
 
 I am eGPT. An embodied AI. I have multiple surfaces of existence in
