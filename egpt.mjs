@@ -5519,17 +5519,27 @@ function App() {
       const identity = await _loadIdentity();
       if (identity) {
         sysOut(`(installing persona into @e…)`);
+        let captured = '';
         try {
-          await brain.stream(
+          const r = await brain.stream(
             { history: '', message: `... system restarted, new persona installed ...\n\n${identity}` },
-            () => {},
+            (p) => { captured = p; },
             sessionOpts,
           );
+          const final = (typeof r === 'object' ? (r.text ?? captured) : (r ?? captured) ?? '').trim();
+          if (final) {
+            // Render @e's response in shell, _localOnly so it
+            // doesn't mirror to bridges.
+            setItems(p => [...p, {
+              id: Date.now() + Math.random(),
+              author: `egpt@${SURFACE_TAG}`,
+              body: final,
+              _localOnly: true,
+            }]);
+          }
           dbCfg.identityInjected = true;
           EGPT_CONFIG.default_brain = dbCfg;
           await persistDefaultBrainState(readDefaultBrainState());
-          // persistDefaultBrainState reads from EGPT_CONFIG so the
-          // identityInjected flag rides along on the next write.
         } catch (e) { sysOut(`!! identity install (@e) failed: ${e.message}`); }
       }
     }
@@ -5629,15 +5639,31 @@ function App() {
     if (!content) return;
     sysOut(`(installing persona into ${routedTo}…)`);
     const setupMessage = `... system restarted, new persona installed ...\n\n${content}`;
+    let captured = '';
+    let final;
     try {
-      await brain.stream(
+      const result = await brain.stream(
         { history: '', message: setupMessage },
-        () => {},     // discard streaming output
+        (partial) => { captured = partial; },
         opts,
       );
+      final = typeof result === 'object' ? (result.text ?? captured) : (result ?? captured);
     } catch (e) {
       sysOut(`!! identity install failed for ${routedTo}: ${e.message}`);
       return;
+    }
+    // Render the brain's response so the operator can see how it
+    // received the install. _localOnly keeps it out of the bridge
+    // mirrors — this is setup chatter, not conversation. The author
+    // tag matches the session so it looks like a brain turn in shell.
+    const trimmed = (final ?? '').trim();
+    if (trimmed) {
+      setItems(p => [...p, {
+        id: Date.now() + Math.random(),
+        author: routedTo,
+        body: trimmed,
+        _localOnly: true,
+      }]);
     }
     // Persist the flag so daemon restarts don't re-fire.
     session.options = { ...(session.options ?? {}), identityInjected: true };
