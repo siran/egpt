@@ -981,6 +981,25 @@ const ts = () => _stamp(new Date());
 // Default-room transcript writer. Named rooms shadow this with a
 // component-local `append` that targets ~/.egpt/rooms/<name>.md.
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
+// Sidecar path for reply-target persistence (per transcript file).
+// Living next to the transcript keeps room↔sidecar coupling obvious
+// and lets multiple rooms coexist without collision.
+function _sidecarPath(transcriptFile) {
+  return transcriptFile.replace(/\.md$/i, '') + '.replytargets.json';
+}
+async function _loadReplyTargets(transcriptFile) {
+  try {
+    const raw = await readFile(_sidecarPath(transcriptFile), 'utf8');
+    const obj = JSON.parse(raw);
+    return new Map(Object.entries(obj));
+  } catch { return new Map(); }
+}
+async function _saveReplyTargets(transcriptFile, mapLike) {
+  const obj = Object.fromEntries(mapLike);
+  const path = _sidecarPath(transcriptFile);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(obj, null, 2));
+}
 // FIFO queue for transcript writes so multiple fire-and-forget
 // appends (from sysOut) can't race each other and land out of order.
 let _transcriptQueue = Promise.resolve();
@@ -1429,6 +1448,35 @@ function MultiLineInput({ onSubmit }) {
     }));
 }
 
+// Stable id alphabet — no 1/l/I/0/O ambiguity in case the operator
+// has to type one. Short random ids for non-bridge items.
+const _STABLE_ALPHA = 'abcdefghijkmnpqrstuvwxyz23456789';
+function _randStableSuffix() {
+  let s = '';
+  for (let i = 0; i < 6; i++) s += _STABLE_ALPHA[Math.floor(Math.random() * _STABLE_ALPHA.length)];
+  return s;
+}
+// Stable id assignment for an item: prefer bridge-given id (WA stanza
+// id, TG chat+msg pair) when available — those survive across
+// restarts because the underlying wire id doesn't change. Fall back
+// to '<kind>-<random6>' by author kind. Used by '@<stable-id> body'
+// for cross-restart replies via the persisted sidecar.
+function _stableIdForItem(item, sessions) {
+  if (item._stableId) return item._stableId;
+  // Already-known bridge keys (set on bridge-arrived echo or after a
+  // /use direct-send / /mirror succeeded).
+  if (item._replyTarget) {
+    const rt = Array.isArray(item._replyTarget) ? item._replyTarget[0] : item._replyTarget;
+    if (rt?.kind === 'wa' && rt.key?.id) return `wa-${rt.key.id}`;
+    if (rt?.kind === 'tg' && rt.msgId)   return `tg-${rt.chatId}-${rt.msgId}`;
+  }
+  if (item.author === 'system') return `s-${_randStableSuffix()}`;
+  if (item.author === 'You')    return `u-${_randStableSuffix()}`;
+  const bare = String(item.author ?? '').split('@')[0];
+  if (sessions?.[bare]) return `b-${_randStableSuffix()}`;
+  return `p-${_randStableSuffix()}`;
+}
+
 // --- main app ---
 function App() {
   const [items, setItems] = useState([]);
@@ -1445,6 +1493,19 @@ function App() {
   const _shortIdCounter = useRef(0);
   const shortIdByItemId = useRef(new Map());
   const itemByShortId = useRef(new Map());
+  // Stable ids — survive restart. Bridge-derived (wa-<key>, tg-<chat>-<msg>)
+  // when an item has bridge provenance, random short otherwise (b-<rnd>,
+  // u-<rnd>, s-<rnd>, p-<rnd> by author kind). Displayed alongside [m<N>]
+  // so the operator can read it off any message and use '@<stable-id>'
+  // later (including after a restart, where m-ids start over but the
+  // stable id was persisted in the sidecar map below).
+  const stableIdByItemId = useRef(new Map());
+  const itemByStableId = useRef(new Map());
+  // Persisted reply-target map (loaded from sidecar on mount). Keyed
+  // by stableId. '@<stable-id> body' falls back to this when the
+  // referenced item is no longer in the in-memory items array (e.g.
+  // post-restart).
+  const persistedReplyTargets = useRef(new Map());
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -2349,6 +2410,46 @@ function App() {
       await appendFile(file, `## ${ts()} — ${who}\n${body}\n\n`);
     });
   };
+  // Reply-target sidecar: stableId → _replyTarget, persisted next to
+  // the current room's transcript so '@<stable-id> body' works after
+  // a shell restart. Debounced save (1.5s) so frequent items churn
+  // doesn't beat the disk; load runs once on mount per the effect
+  // further down.
+  useEffect(() => {
+    // One-time load at mount + on room switch. Wraps in a try because
+    // a missing sidecar is expected for fresh rooms.
+    (async () => {
+      try {
+        const map = await _loadReplyTargets(transcriptFileForRoom(currentRoom));
+        persistedReplyTargets.current = map;
+      } catch {}
+    })();
+  }, [currentRoom]);
+  const _saveTimerRef = useRef(null);
+  const _scheduleReplyTargetSave = () => {
+    if (_saveTimerRef.current) clearTimeout(_saveTimerRef.current);
+    _saveTimerRef.current = setTimeout(async () => {
+      // Build the live map from current items, then merge with
+      // entries that fell out of memory (e.g. items rotated away
+      // after /last reload). Persisted entries WIN if not present
+      // in the current build, so stable ids stay resolvable across
+      // restarts even when the originating item left memory.
+      const live = new Map();
+      for (const it of items) {
+        const sid = stableIdByItemId.current.get(it.id);
+        if (sid && it._replyTarget) live.set(sid, it._replyTarget);
+      }
+      const merged = new Map(persistedReplyTargets.current);
+      for (const [k, v] of live) merged.set(k, v);
+      persistedReplyTargets.current = merged;
+      try { await _saveReplyTargets(transcriptFileForRoom(currentRoom), merged); } catch {}
+    }, 1500);
+  };
+  // Auto-save whenever items mutate. In-place _replyTarget patches
+  // (the /use direct-send loop, /mirror after-send) don't change
+  // items.length, so those paths call _scheduleReplyTargetSave()
+  // directly. The effect handles the common 'item added' path.
+  useEffect(() => { _scheduleReplyTargetSave(); }, [items.length]);
   const sysOut = body => {
     const sink = outputSinkRef.current;
     const meta = sink === 'local'
@@ -4858,6 +4959,7 @@ function App() {
                 : existing ? [existing, newTgt]
                 : newTgt;
               it._replyTarget = merged;
+              _scheduleReplyTargetSave();
             }
           } catch (e) { sysOut(`!! /mirror @wa${idx + 1}: ${e.message}`); }
         }
@@ -5690,16 +5792,61 @@ function App() {
     //   brain reply: dispatch to that brain as a follow-up
     //   local typing / system: refuses with a hint
     if (!meta.fromTelegram && !meta.fromWhatsApp) {
-      const replyMatch = text.match(/^@m(\d+)\s+([\s\S]+)$/i);
-      if (replyMatch) {
-        const shortId = `m${replyMatch[1]}`;
-        const body = replyMatch[2].trim();
-        const target = itemByShortId.current.get(shortId);
-        if (!target) {
-          sysOut(`!! ${shortId}: no message with that id in this session`);
-          return;
+      // Two reply forms:
+      //   @m<N> body         — session-local short id (resets on restart)
+      //   @<stable-id> body  — stable id (wa-<key>, tg-<chat>-<msg>, or
+      //                        the kind-prefixed random for non-bridge
+      //                        items). Survives restart because the
+      //                        sidecar persists the target.
+      const mShortMatch = text.match(/^@m(\d+)\s+([\s\S]+)$/i);
+      const mStableMatch = !mShortMatch && text.match(/^@((?:wa|tg|b|u|s|p)-[A-Za-z0-9-]+)\s+([\s\S]+)$/i);
+      if (mShortMatch || mStableMatch) {
+        let shortId, body, target, rt;
+        if (mShortMatch) {
+          shortId = `m${mShortMatch[1]}`;
+          body = mShortMatch[2].trim();
+          target = itemByShortId.current.get(shortId);
+          if (!target) {
+            sysOut(`!! ${shortId}: no message with that id in this session — try @<stable-id> for cross-session reference`);
+            return;
+          }
+          rt = target._replyTarget;
+        } else {
+          const stableId = mStableMatch[1];
+          body = mStableMatch[2].trim();
+          shortId = stableId;        // for echo / log labels
+          // Try in-memory first (faster + has all fields), fall back
+          // to persisted sidecar (item may have rotated out / be from
+          // a previous session). Prefix-match against persisted keys
+          // so the operator can type just enough of a long bridge id.
+          target = itemByStableId.current.get(stableId) ?? null;
+          if (target) {
+            rt = target._replyTarget;
+          } else {
+            // Exact match first.
+            rt = persistedReplyTargets.current.get(stableId) ?? null;
+            if (!rt) {
+              // Prefix-match (single hit only — ambiguous prefixes refuse).
+              const matches = [...persistedReplyTargets.current.keys()].filter(k => k.startsWith(stableId));
+              if (matches.length === 1) {
+                rt = persistedReplyTargets.current.get(matches[0]);
+                shortId = matches[0];
+              } else if (matches.length > 1) {
+                sysOut(`!! @${stableId}: ambiguous, matches ${matches.length} ids:\n  ${matches.slice(0, 5).join('\n  ')}${matches.length > 5 ? `\n  …` : ''}`);
+                return;
+              }
+            }
+          }
+          if (!rt) {
+            sysOut(`!! @${stableId}: no message with that id (current session or persisted sidecar)`);
+            return;
+          }
+          // Synthesise a minimal 'target' so the brain-fallback branch
+          // below doesn't crash on a null target. It can't have a body
+          // (we don't persist message bodies in the sidecar, only the
+          // reply key), but the bridge paths only need _replyTarget.
+          if (!target) target = { author: '', body: '', _replyTarget: rt };
         }
-        const rt = target._replyTarget;
         // Normalize to an array — _replyTarget can be a single
         // {kind, …} (most common: bridge-arrived or single-target
         // shell send) or an array (multi-WA fan-out via /use). All
@@ -5991,6 +6138,10 @@ function App() {
           const rt = replyTargets.length === 1 ? replyTargets[0] : replyTargets;
           setItems(p => p.map(item =>
             item.id === echoItemId ? { ...item, _replyTarget: rt } : item));
+          // setItems above changes items.length? no — same length, just
+          // a new array. The .length-effect won't refire. Trigger save
+          // manually so the new _replyTarget lands in the sidecar.
+          _scheduleReplyTargetSave();
         }
       }
     }
@@ -6022,6 +6173,7 @@ function App() {
               item.id === echoItemId
                 ? { ...item, _replyTarget: { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } } }
                 : item));
+            _scheduleReplyTargetSave();
           }
         } catch (e) {
           sysOut(`!! @wa send failed: ${e.message}`);
@@ -6597,16 +6749,22 @@ function App() {
   // transcript. They're still in `items` and reachable via /log.
   const visibleItems = items.filter(item => !item._log);
 
-  // Short message ids: assigned in insertion order, persisted in the
-  // refs below so they survive React's re-render cycles. Each visible
-  // item gets a 'm<N>' tag the operator can use with '@m<N> <body>'
-  // to reply to that specific message. Per-session — counter resets
-  // on shell restart.
+  // Short + stable message ids: assigned in insertion order on first
+  // sight, persisted in refs so they survive React's re-render cycles.
+  // Short m-id is convenience (resets on shell restart); stable id is
+  // for cross-restart reference — bridge-derived when we have a key,
+  // random short otherwise. Both shown in the author line; @<either>
+  // resolves to the same reply path.
   for (const item of visibleItems) {
     if (!shortIdByItemId.current.has(item.id)) {
       const shortId = `m${++_shortIdCounter.current}`;
       shortIdByItemId.current.set(item.id, shortId);
       itemByShortId.current.set(shortId, item);
+      if (!stableIdByItemId.current.has(item.id)) {
+        const stableId = _stableIdForItem(item, sessions);
+        stableIdByItemId.current.set(item.id, stableId);
+        itemByStableId.current.set(stableId, item);
+      }
     }
   }
   return h(Fragment, null,
@@ -6629,13 +6787,19 @@ function App() {
       const label = baseLabel.includes('@') ? baseLabel : `${baseLabel}@${SURFACE_TAG}`;
       const time = fmtTimeOnly(Math.floor(item.id));
       const shortId = shortIdByItemId.current.get(item.id);
+      const stableId = stableIdByItemId.current.get(item.id);
+      // Trim stable id to the first 14 chars for display — bridge ids
+      // (WA stanza, TG chat+msg) can be long, and the operator only
+      // needs enough to type unambiguously; '@<prefix>' resolves by
+      // prefix match in the reply handler.
+      const stableDisp = stableId ? ` ${stableId.length > 14 ? stableId.slice(0, 13) + '…' : stableId}` : '';
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
           item._thinking
             ? h(Text, { color: T.meta }, '(thinking…)')
             : h(Text, { color: T.meta },
-                shortId ? `(${time}) [${shortId}]` : `(${time})`)),
+                shortId ? `(${time}) [${shortId}${stableDisp}]` : `(${time})`)),
           item._thinking
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
