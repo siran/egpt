@@ -5015,13 +5015,35 @@ function App() {
       }
       for (const t of targets) {
         if (t.kind === 'persona') {
-          // Reset the @e flag, next @e turn re-installs. Or do it
-          // inline now for immediate effect.
-          const dbCfg = EGPT_CONFIG.default_brain ?? {};
-          dbCfg.identityInjected = false;
-          EGPT_CONFIG.default_brain = dbCfg;
-          await persistDefaultBrainState(readDefaultBrainState());
-          sysOut(`→ /identity @e  (next @e turn will install)`);
+          // Force the install into the @e persona's CURRENT thread
+          // (don't wipe url / session_id — that'd lose continuity).
+          // Build the same sessionOpts runDefaultBrainTurn would.
+          const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
+          const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
+          const brain = brainForName(brainType);
+          if (!brain) { sysOut(`!! @e: brain ${brainType} not found`); continue; }
+          let sessionOpts;
+          if (isUrlBrain(brainType)) {
+            // Resolve the existing thread URL → live targetId so the
+            // install lands in the right tab.
+            let targetId = null;
+            try {
+              const tabs = await cdp.listTabs(brain.urlMatch);
+              const m = dbCfg.url ? tabs.find(t => t.url === dbCfg.url || t.url.startsWith(dbCfg.url)) : null;
+              if (m) targetId = m.id;
+            } catch {}
+            sessionOpts = { targetId };
+          } else {
+            sessionOpts = {
+              sessionId: dbCfg.session_id ?? null,
+              cwd: dbCfg.cwd ?? process.cwd(),
+              sessionName: 'egpt',
+              userName: USER_NAME,
+              ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+              ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
+            };
+          }
+          await _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
         } else {
           const s = sessions[t.name];
           if (!s) continue;
@@ -5515,41 +5537,7 @@ function App() {
     // the persona has its own state in EGPT_CONFIG.default_brain
     // rather than sessions[]. Persisted via default_brain.identity-
     // Injected so restart skips it.
-    if (!dbCfg.identityInjected) {
-      const identity = await _loadIdentity();
-      if (identity) {
-        sysOut(`(installing persona into @e…)`);
-        // Same focus dance as runBrainTurn — needed for CDP brains
-        // (the install turn before the user turn was being typed
-        // into an unfocused tab and never landed).
-        if (sessionOpts.targetId && brain.urlMatch) {
-          cdp.activateTarget(sessionOpts.targetId).catch(() => {});
-          _osFocusBrainChrome();
-        }
-        let captured = '';
-        try {
-          const r = await brain.stream(
-            { history: '', message: `... system restarted, new persona installed ...\n\n${identity}` },
-            (p) => { captured = p; },
-            sessionOpts,
-          );
-          const final = (typeof r === 'object' ? (r.text ?? captured) : (r ?? captured) ?? '').trim();
-          if (final) {
-            // Render @e's response in shell, _localOnly so it
-            // doesn't mirror to bridges.
-            setItems(p => [...p, {
-              id: Date.now() + Math.random(),
-              author: `egpt@${SURFACE_TAG}`,
-              body: final,
-              _localOnly: true,
-            }]);
-          }
-          dbCfg.identityInjected = true;
-          EGPT_CONFIG.default_brain = dbCfg;
-          await persistDefaultBrainState(readDefaultBrainState());
-        } catch (e) { sysOut(`!! identity install (@e) failed: ${e.message}`); }
-      }
-    }
+    await _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg });
     try {
       const result = await brain.stream(
         { history: text, message: text },
@@ -5646,8 +5634,50 @@ function App() {
   // keeps it, which is what matters for subsequent turns. Forced=true
   // bypasses the per-session 'already injected' check (used by
   // /identity to re-install on demand).
+  // Install the manifest into the @e persona. Gate: only on a fresh
+  // thread (no url / no session_id) unless forced. Used from
+  // runDefaultBrainTurn (first @e dispatch) and from /identity @e
+  // (operator's explicit re-install on the existing thread).
+  async function _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced = false }) {
+    if (!forced) {
+      const hasThread = !!(dbCfg?.url || dbCfg?.session_id);
+      if (hasThread) return;
+    }
+    const identity = await _loadIdentity();
+    if (!identity) return;
+    sysOut(`(installing persona into @e…)`);
+    if (sessionOpts.targetId && brain.urlMatch) {
+      cdp.activateTarget(sessionOpts.targetId).catch(() => {});
+      _osFocusBrainChrome();
+    }
+    let captured = '';
+    try {
+      const r = await brain.stream(
+        { history: '', message: `... system restarted, new persona installed ...\n\n${identity}` },
+        (p) => { captured = p; },
+        sessionOpts,
+      );
+      const final = (typeof r === 'object' ? (r.text ?? captured) : (r ?? captured) ?? '').trim();
+      if (final) {
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(),
+          author: `egpt@${SURFACE_TAG}`,
+          body: final,
+          _localOnly: true,
+        }]);
+      }
+    } catch (e) { sysOut(`!! identity install (@e) failed: ${e.message}`); }
+  }
+
   async function _injectIdentityIfNeeded({ routedTo, session, brain, opts, forced = false }) {
-    if (!forced && session.options?.identityInjected) return;
+    // Only inject when this is genuinely a FRESH thread — no URL
+    // for CDP brains, no session_id for CLI brains, both meaning
+    // the brain has no prior conversation state to draw from.
+    // /identity (forced=true) overrides this for explicit re-installs.
+    if (!forced) {
+      const hasThread = !!(opts?.url || opts?.sessionId || session.options?.url || session.options?.sessionId);
+      if (hasThread) return;
+    }
     const content = await _loadIdentity();
     if (!content) return;
     sysOut(`(installing persona into ${routedTo}…)`);
@@ -5687,13 +5717,11 @@ function App() {
         _localOnly: true,
       }]);
     }
-    // Persist the flag so daemon restarts don't re-fire.
-    session.options = { ...(session.options ?? {}), identityInjected: true };
-    setSessions(s => ({
-      ...s,
-      [routedTo]: { ...(s[routedTo] ?? session), options: session.options },
-    }));
-    await writeBrainProfileState(routedTo, session).catch(() => {});
+    // No flag to persist — the thread's own url / session_id (which
+    // the brain assigns and we record on the next turn) is the
+    // signal that the identity is already in the conversation.
+    // Subsequent dispatches see opts.url / opts.sessionId set and
+    // skip the install gate above.
   }
 
   async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions, callOpts = {}) {
