@@ -4775,18 +4775,23 @@ function App() {
       return true;
     }
     if (cmd === '/mirror') {
-      // /mirror @<target> [mN]
+      // /mirror @<target> [mN] [--tagged]
       //   Forward an existing item's body to a destination, no
       //   brain dispatch involved. Default target picker is the
       //   last visible item; explicit mN picks one by short id.
+      //   --tagged prefixes the body with '[author timestamp]: '
+      //   so the destination chat knows it's a forward + who
+      //   originally said it. Without --tagged the body is sent
+      //   raw (reads like a fresh message in the destination).
       //   Targets supported in shell: @waN (WA chat from /channels
-      //   cache). Future: @<session> to re-dispatch the body to a
-      //   brain, @e for the persona thread.
+      //   cache). Future: @<session> / @e re-dispatch.
       const parts = arg.split(/\s+/).filter(Boolean);
-      const target = parts[0];
-      const msgRef = parts[1];
+      const flagTagged = parts.includes('--tagged') || parts.includes('-t');
+      const positional = parts.filter(t => !t.startsWith('-'));
+      const target = positional[0];
+      const msgRef = positional[1];
       if (!target || !target.startsWith('@')) {
-        sysOut('usage: /mirror @<target> [mN]\n  @waN     forward to WA chat (from /channels)\n  mN       specific item id; omitted = last visible message');
+        sysOut('usage: /mirror @<target> [mN] [--tagged]\n  @waN       forward to WA chat (from /channels)\n  mN         specific item id; omitted = last visible message\n  --tagged   prefix with [author timestamp]: so the destination knows it\'s a forward');
         return true;
       }
       // Resolve the item to forward.
@@ -4808,8 +4813,22 @@ function App() {
         }
         if (!item) { sysOut('!! /mirror: nothing to mirror (no recent non-system message)'); return true; }
       }
-      const body = item.body ?? '';
-      if (!body.trim()) { sysOut('!! /mirror: that message has no body'); return true; }
+      const rawBody = item.body ?? '';
+      if (!rawBody.trim()) { sysOut('!! /mirror: that message has no body'); return true; }
+      // Build the body to send. --tagged prefixes with
+      // '[<author> <timestamp>]: ' so the destination chat knows it's
+      // a forward and who originally said it. Author resolution:
+      //   'You' → USER_NAME@SURFACE_TAG (the current local handle)
+      //   'system' → 'egpt' (keeps it terse, no surface noise)
+      //   anything else (e.g. 'cgpt1@kg', 'An@moto') → as-is
+      const fmtTaggedAuthor = (a) => {
+        if (a === 'You') return `${USER_NAME}@${SURFACE_TAG}`;
+        if (a === 'system') return 'egpt';
+        return a;
+      };
+      const body = flagTagged
+        ? `[${fmtTaggedAuthor(item.author)} ${fmtTs(Math.floor(item.id))}]: ${rawBody}`
+        : rawBody;
       // Resolve the target.
       const waMatch = target.match(/^@wa(\d+)$/i);
       if (waMatch) {
