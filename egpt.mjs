@@ -4981,6 +4981,59 @@ function App() {
       sysOut(`!! /mirror: target "${target}" not recognised. @waN or @<session>.`);
       return true;
     }
+    if (cmd === '/identity') {
+      // /identity [@<session>]    re-install the identity manifest
+      // /identity                 inject into ALL active sessions
+      //                           + the @e default brain
+      // /identity show            print the identity file to shell
+      // Forces injection regardless of the previously-set
+      // identityInjected flag. Useful after editing e_identity.md
+      // (or whatever brains.identity points at) so the brains pick
+      // up the new content.
+      const a = arg.trim();
+      const identity = await _loadIdentity();
+      if (!identity) {
+        sysOut(`!! /identity: no identity file (brains.identity = "${EGPT_CONFIG.brains?.identity ?? './e_identity.md'}", set or check path; "off" disables)`);
+        return true;
+      }
+      if (a === 'show') {
+        sysOut(identity);
+        return true;
+      }
+      const targets = [];
+      if (a.startsWith('@')) {
+        const name = a.slice(1);
+        if (name === 'e' || name === 'egpt') targets.push({ kind: 'persona' });
+        else if (sessions[name]) targets.push({ kind: 'session', name });
+        else { sysOut(`!! /identity: no session "${name}"`); return true; }
+      } else if (!a) {
+        targets.push({ kind: 'persona' });
+        for (const n of Object.keys(sessions)) targets.push({ kind: 'session', name: n });
+      } else {
+        sysOut('usage: /identity [@<session> | @e | show]');
+        return true;
+      }
+      for (const t of targets) {
+        if (t.kind === 'persona') {
+          // Reset the @e flag, next @e turn re-installs. Or do it
+          // inline now for immediate effect.
+          const dbCfg = EGPT_CONFIG.default_brain ?? {};
+          dbCfg.identityInjected = false;
+          EGPT_CONFIG.default_brain = dbCfg;
+          await persistDefaultBrainState(readDefaultBrainState());
+          sysOut(`→ /identity @e  (next @e turn will install)`);
+        } else {
+          const s = sessions[t.name];
+          if (!s) continue;
+          const brain = brainForName(s.brain);
+          if (!brain) { sysOut(`!! /identity @${t.name}: brain ${s.brain} not found`); continue; }
+          await _injectIdentityIfNeeded({
+            routedTo: t.name, session: s, brain, opts: s.options ?? {}, forced: true,
+          });
+        }
+      }
+      return true;
+    }
     if (cmd === '/handle') {
       // Two forms:
       //   /handle <new>          — change YOUR OWN handle (user_name).
@@ -5458,6 +5511,28 @@ function App() {
       ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
       ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
     };
+    // Identity install for @e — same protocol as runBrainTurn but
+    // the persona has its own state in EGPT_CONFIG.default_brain
+    // rather than sessions[]. Persisted via default_brain.identity-
+    // Injected so restart skips it.
+    if (!dbCfg.identityInjected) {
+      const identity = await _loadIdentity();
+      if (identity) {
+        sysOut(`(installing persona into @e…)`);
+        try {
+          await brain.stream(
+            { history: '', message: `... system restarted, new persona installed ...\n\n${identity}` },
+            () => {},
+            sessionOpts,
+          );
+          dbCfg.identityInjected = true;
+          EGPT_CONFIG.default_brain = dbCfg;
+          await persistDefaultBrainState(readDefaultBrainState());
+          // persistDefaultBrainState reads from EGPT_CONFIG so the
+          // identityInjected flag rides along on the next write.
+        } catch (e) { sysOut(`!! identity install (@e) failed: ${e.message}`); }
+      }
+    }
     try {
       const result = await brain.stream(
         { history: text, message: text },
@@ -5528,6 +5603,51 @@ function App() {
   // with [author]: when broadcasting or mirroring. Returns the brain's reply
   // text (string) on a substantive answer, or null on silence/error so the
   // caller knows whether to mirror it.
+  // Load the identity file (path from config.brains.identity, default
+  // ./e_identity.md). Returns null when set to 'off' or unreadable so
+  // callers can skip silently.
+  async function _loadIdentity() {
+    const path = EGPT_CONFIG.brains?.identity ?? './e_identity.md';
+    if (path === 'off' || !path) return null;
+    try {
+      const resolved = path.startsWith('/') || /^[A-Z]:[\\/]/i.test(path)
+        ? path
+        : join(APP_DIR, path);
+      return await readFile(resolved, 'utf8');
+    } catch { return null; }
+  }
+  // Send the identity as a silent setup turn — '... system restarted,
+  // new persona installed ...\n\n<content>' framing tells the brain
+  // it's reading a system message, not a user prompt. Brain's ack is
+  // discarded (no shell render); the in-tab / in-history conversation
+  // keeps it, which is what matters for subsequent turns. Forced=true
+  // bypasses the per-session 'already injected' check (used by
+  // /identity to re-install on demand).
+  async function _injectIdentityIfNeeded({ routedTo, session, brain, opts, forced = false }) {
+    if (!forced && session.options?.identityInjected) return;
+    const content = await _loadIdentity();
+    if (!content) return;
+    sysOut(`(installing persona into ${routedTo}…)`);
+    const setupMessage = `... system restarted, new persona installed ...\n\n${content}`;
+    try {
+      await brain.stream(
+        { history: '', message: setupMessage },
+        () => {},     // discard streaming output
+        opts,
+      );
+    } catch (e) {
+      sysOut(`!! identity install failed for ${routedTo}: ${e.message}`);
+      return;
+    }
+    // Persist the flag so daemon restarts don't re-fire.
+    session.options = { ...(session.options ?? {}), identityInjected: true };
+    setSessions(s => ({
+      ...s,
+      [routedTo]: { ...(s[routedTo] ?? session), options: session.options },
+    }));
+    await writeBrainProfileState(routedTo, session).catch(() => {});
+  }
+
   async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions, callOpts = {}) {
     const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
@@ -5604,6 +5724,11 @@ function App() {
         return null;
       }
     }
+
+    // Identity injection (silent setup turn) before the first real
+    // user message of this session. Persisted via
+    // session.options.identityInjected so a restart doesn't re-fire.
+    await _injectIdentityIfNeeded({ routedTo, session, brain, opts });
 
     setStreaming({ author: routedTo, text: '' });
 
