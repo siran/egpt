@@ -76,7 +76,7 @@ export const COMMANDS = [
   { cmd: '/refresh',        surface: 'shell',     usage: '/refresh [@name]',                               desc: 're-poll CDP tab; append full reply' },
   { cmd: '/browse',         surface: 'shell',     usage: '/browse [via=op] [url] [@name] ["instr"]',       desc: 'open URL or delegate to operator' },
   { cmd: '/continue',       surface: 'shell',     usage: '/continue',                                      desc: 'resume after captcha / login pause' },
-  { cmd: '/mirror',         surface: 'both',      usage: '/mirror [@<target>]',                            desc: 'forward last observed message: shell forwards between CDP brains; extension forwards to @e, @waN, or a session with [sender]: attribution' },
+  { cmd: '/mirror',         surface: 'both',      usage: '/mirror @<target> [mN]',                         desc: 'forward a message body to a destination without re-running the brain. /mirror @waN sends to a WA chat (from /channels); add mN to pick that specific item by its short id (default = the last visible non-system message). Shell additionally tracks the forwarded send on the original item, so a subsequent @m<N> reply reaches the new chat too. Extension form (no mN) forwards the last observed inbound to @e / @waN / @session.' },
 
   { section: 'FILES' },
   { cmd: '/send-file',      surface: 'shell',     usage: '/send-file [via=op] [path] @name ["instr"]',     desc: 'prepare and send file excerpt to session' },

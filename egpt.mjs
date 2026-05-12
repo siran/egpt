@@ -4774,6 +4774,81 @@ function App() {
       }]);
       return true;
     }
+    if (cmd === '/mirror') {
+      // /mirror @<target> [mN]
+      //   Forward an existing item's body to a destination, no
+      //   brain dispatch involved. Default target picker is the
+      //   last visible item; explicit mN picks one by short id.
+      //   Targets supported in shell: @waN (WA chat from /channels
+      //   cache). Future: @<session> to re-dispatch the body to a
+      //   brain, @e for the persona thread.
+      const parts = arg.split(/\s+/).filter(Boolean);
+      const target = parts[0];
+      const msgRef = parts[1];
+      if (!target || !target.startsWith('@')) {
+        sysOut('usage: /mirror @<target> [mN]\n  @waN     forward to WA chat (from /channels)\n  mN       specific item id; omitted = last visible message');
+        return true;
+      }
+      // Resolve the item to forward.
+      let item = null;
+      if (msgRef) {
+        const m = msgRef.match(/^m?(\d+)$/i);
+        if (!m) { sysOut(`!! /mirror: "${msgRef}" isn't an mN id`); return true; }
+        item = itemByShortId.current.get(`m${m[1]}`);
+        if (!item) { sysOut(`!! /mirror: no message m${m[1]} in this session`); return true; }
+      } else {
+        // Last non-system, non-localOnly visible item.
+        for (let i = items.length - 1; i >= 0; i--) {
+          const it = items[i];
+          if (it._log) continue;
+          if (it._localOnly) continue;
+          if (it.author === 'system') continue;
+          item = it;
+          break;
+        }
+        if (!item) { sysOut('!! /mirror: nothing to mirror (no recent non-system message)'); return true; }
+      }
+      const body = item.body ?? '';
+      if (!body.trim()) { sysOut('!! /mirror: that message has no body'); return true; }
+      // Resolve the target.
+      const waMatch = target.match(/^@wa(\d+)$/i);
+      if (waMatch) {
+        const idx = parseInt(waMatch[1], 10) - 1;
+        const chat = _waChannelsCacheRef.current[idx];
+        if (!chat) { sysOut(`!! /mirror @wa${idx + 1}: no channel at that index. /channels first.`); return true; }
+        const wa = waBridgeRef.current;
+        if (!wa) { sysOut('!! /mirror: whatsapp bridge not running'); return true; }
+        try {
+          const r = await wa.send(body, { chatId: chat.jid });
+          const preview = body.length > 80 ? body.slice(0, 79) + '…' : body;
+          sysOut(`→ /mirror @wa${idx + 1} "${chat.name}":\n  ${preview.replace(/\n/g, '\n  ')}`);
+          // Stash a _replyTarget on the just-sent message — same as
+          // /use direct-send — so a later '@m<N>' on this mirror
+          // line can reply-to-self into the same chat.
+          if (r?.key) {
+            // The mirror send didn't go through the echo path, so
+            // there's no echo item to patch. The sysOut line above
+            // IS the local record; patch its _replyTarget by id.
+            // Find it: it's the last 'system' item with the preview.
+            // Simpler: just attach to the originating item's
+            // _replyTarget so '@m<originalId>' learns the new chat.
+            const existing = item._replyTarget;
+            const newTgt = { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } };
+            const merged = Array.isArray(existing) ? [...existing, newTgt]
+              : existing ? [existing, newTgt]
+              : newTgt;
+            // Mutate in place — items state is by ref so the live
+            // map sees the update. (Not ideal React, but the items
+            // array is already mutated elsewhere with the same
+            // pattern.)
+            item._replyTarget = merged;
+          }
+        } catch (e) { sysOut(`!! /mirror @wa${idx + 1}: ${e.message}`); }
+        return true;
+      }
+      sysOut(`!! /mirror: target "${target}" not supported yet (try @waN)`);
+      return true;
+    }
     if (cmd === '/handle') {
       // Two forms:
       //   /handle <new>          — change YOUR OWN handle (user_name).
