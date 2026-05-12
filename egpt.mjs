@@ -1792,24 +1792,24 @@ function App() {
   const _osFocusBrainChrome = () => {
     if ((EGPT_CONFIG.chrome?.focus_on_dispatch ?? 'on') === 'off') return;
     const pid = _chromeBrainPidRef.current;
-    if (!pid) return;            // didn't spawn it ourselves — skip
     if (process.platform === 'win32') {
-      // PowerShell + WScript.Shell.AppActivate(pid). Best-effort.
-      const ps = spawn('powershell', [
-        '-NoProfile', '-Command',
-        `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.Id) | Out-Null }`,
-      ], { stdio: 'ignore', windowsHide: true });
+      // Prefer PID-targeted AppActivate (precise — picks the exact
+      // brain Chrome window). Fall back to app-name AppActivate when
+      // we don't have a PID (Chrome was already running before shell
+      // started, so spawnChromeWithExtension returned without spawning).
+      // Best-effort either way; failures are silent.
+      const command = pid
+        ? `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { (New-Object -ComObject WScript.Shell).AppActivate($p.Id) | Out-Null }`
+        : `(New-Object -ComObject WScript.Shell).AppActivate("Google Chrome") | Out-Null`;
+      const ps = spawn('powershell', ['-NoProfile', '-Command', command], { stdio: 'ignore', windowsHide: true });
       ps.on('error', () => {});
-      // Don't await — fire-and-forget. setTimeout cleanup is unnecessary
-      // because the PS one-liner exits quickly.
     } else if (process.platform === 'darwin') {
-      // osascript: by app name, since osascript can't target by PID
-      // directly. If user has multiple Chromes, this might focus the
-      // wrong one — accept that limitation on macOS for now.
+      // osascript by app name (PID targeting needs another route).
       const ps = spawn('osascript', ['-e', 'tell application "Google Chrome" to activate'], { stdio: 'ignore' });
       ps.on('error', () => {});
     } else {
-      // Linux: wmctrl by PID. -p flag picks the window with that PID.
+      // Linux: wmctrl by class. -p flag would target a PID specifically
+      // but app-name covers the common 'one Chrome' case fine.
       const ps = spawn('wmctrl', ['-x', '-a', 'Google-chrome'], { stdio: 'ignore' });
       ps.on('error', () => {});
     }
@@ -5603,6 +5603,12 @@ function App() {
     let cfg = {};
     try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
     if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
+    // Merge in-memory default_brain fields that may not yet be on
+    // disk (e.g. identityInjected flag set during the install turn
+    // earlier this session). Disk-first, memory-overrides keeps the
+    // 'last write wins' shape for fields the user edited externally
+    // while still preserving in-session flips.
+    cfg.default_brain = { ...cfg.default_brain, ...(EGPT_CONFIG.default_brain ?? {}) };
     cfg.default_brain.type        = state.type;
     cfg.default_brain.session_id  = state.session_id;
     cfg.default_brain.url         = state.url;

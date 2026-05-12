@@ -1,1 +1,29 @@
-{}
+{
+  "wa-AC6B931768A9C33383A18BAA496770E4": {
+    "kind": "wa",
+    "chatId": "34836563681438@lid",
+    "key": {
+      "remoteJid": "34836563681438@lid",
+      "remoteJidAlt": "16468217865@s.whatsapp.net",
+      "fromMe": true,
+      "id": "AC6B931768A9C33383A18BAA496770E4",
+      "participant": "",
+      "addressingMode": "lid"
+    },
+    "raw": {
+      "extendedTextMessage": {
+        "text": "@e test",
+        "previewType": "NONE",
+        "contextInfo": {
+          "expiration": 0,
+          "ephemeralSettingTimestamp": "1718045160",
+          "disappearingMode": {
+            "initiator": "CHANGED_IN_CHAT",
+            "trigger": "UNKNOWN"
+          }
+        },
+        "inviteLinkGroupTypeV2": "DEFAULT"
+      }
+    }
+  }
+}
