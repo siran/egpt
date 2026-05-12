@@ -1126,7 +1126,9 @@ async function resolveTabId(spec, brain = null) {
 // order: EGPT_CONFIG.user_name (per-user / per-project config.json) →
 // EGPT_USER_NAME env var → 'egptbot' default. Set user_name in your
 // config to control the handle peers see.
-const USER_NAME = EGPT_CONFIG?.user_name ?? process.env.EGPT_USER_NAME ?? 'egptbot';
+// `let` so /config user_name <new> can update it at runtime without
+// a shell restart. Initial value reads from config / env / default.
+let USER_NAME = EGPT_CONFIG?.user_name ?? process.env.EGPT_USER_NAME ?? 'egptbot';
 
 // Strip a leading '@' from a handle string. WhatsApp's pushName comes
 // through as '@An' (we prepended @ in the bridge); Telegram usernames
@@ -3702,6 +3704,13 @@ function App() {
         _currentTheme = val;
         setThemeRev(n => n + 1);
       }
+      if (topKey === 'user_name' && !subKey) {
+        // Live-update USER_NAME so the next brain dispatch / status
+        // render uses the new handle without requiring a shell
+        // restart. Reflected in subsequent '[handle@node ts]:'
+        // brain headers, status line, item author labels, etc.
+        USER_NAME = String(val);
+      }
       if (topKey === 'show_prompts' && !subKey) _showPrompts = !!val;
       if (topKey === 'node_name' && !subKey) {
         // Live rename: announce node-offline under the old name first
@@ -5329,6 +5338,16 @@ function App() {
 
     let opts = session.options;
     if (brain.urlMatch) {
+      // Same pre-flight as /attach: if Chrome isn't reachable for a
+      // CDP brain, auto-spawn it. The operator opted into Chrome
+      // auto-start (chrome.focus_on_dispatch defaults align), and
+      // bouncing them with 'Cannot reach Chrome at localhost:9221'
+      // when the session already exists is the wrong shape.
+      if (!(await cdp.isRunning())) {
+        sysOut('chrome not reachable — starting it with the extension…');
+        try { await spawnChromeWithExtension(); }
+        catch (e) { sysOut(`!! chrome start failed: ${e.message}`); return null; }
+      }
       let needsRebind = !opts.targetId;
       if (opts.targetId) {
         try {
@@ -5338,7 +5357,22 @@ function App() {
       }
       if (needsRebind) {
         try {
-          const matches = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
+          let matches = (await cdp.listTabs()).filter(t => brain.urlMatch.test(t.url));
+          if (matches.length === 0 && brain.homeUrl) {
+            // No tab matches — auto-open at brain.homeUrl (or the
+            // session's saved url if we have one). Mirrors the
+            // /attach pre-flight so the operator doesn't have to
+            // run /open <brain> as a separate step.
+            const openUrl = session.options?.url || brain.homeUrl;
+            sysOut(`no ${session.brain} tab open — opening ${openUrl}…`);
+            try {
+              const tid = await cdp.openTab(openUrl);
+              opts = { ...opts, targetId: tid };
+              session.options = opts;
+              setSessions(s => ({ ...s, [routedTo]: { ...(s[routedTo] ?? session), options: opts } }));
+              matches = [{ id: tid }];        // pretend the tab was already there
+            } catch (e) { sysOut(`!! could not open ${session.brain} tab for ${routedTo}: ${e.message}`); return null; }
+          }
           if (matches.length === 1) {
             opts = { ...opts, targetId: matches[0].id };
             session.options = opts;
