@@ -5519,6 +5519,13 @@ function App() {
       const identity = await _loadIdentity();
       if (identity) {
         sysOut(`(installing persona into @e…)`);
+        // Same focus dance as runBrainTurn — needed for CDP brains
+        // (the install turn before the user turn was being typed
+        // into an unfocused tab and never landed).
+        if (sessionOpts.targetId && brain.urlMatch) {
+          cdp.activateTarget(sessionOpts.targetId).catch(() => {});
+          _osFocusBrainChrome();
+        }
         let captured = '';
         try {
           const r = await brain.stream(
@@ -5638,6 +5645,15 @@ function App() {
     const content = await _loadIdentity();
     if (!content) return;
     sysOut(`(installing persona into ${routedTo}…)`);
+    // Bring Chrome forward BEFORE the install turn — chatgpt-cdp /
+    // claude-cdp need their page focused to reliably accept typed
+    // input. Without this, the install message is typed but the
+    // page sits behind another window and the model never sees it
+    // until the operator clicks Chrome by hand.
+    if (brain.urlMatch && opts.targetId) {
+      cdp.activateTarget(opts.targetId).catch(() => {});
+      _osFocusBrainChrome();
+    }
     const setupMessage = `... system restarted, new persona installed ...\n\n${content}`;
     let captured = '';
     let final;
