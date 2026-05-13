@@ -4,7 +4,8 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream } from 'node:fs';
+import { PassThrough } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -30,6 +31,68 @@ import { CONFIG_SCHEMA } from './config-schema.mjs';
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+// Pidfile: single-writer ownership of the WA pairing (baileys can only
+// authenticate one client at a time). Headless engine writes its PID
+// here at startup; a subsequent interactive shell reads it, SIGTERMs
+// the old process, polls until it exits, then takes over. Cleared on
+// clean exit (signal handler + process.exit). See takeoverIfRunning().
+const EGPT_PID_PATH = join(EGPT_HOME, 'egpt.pid');
+// Headless mode log: Ink renders nowhere visible (no tty), so any
+// console.log / sysOut that would have hit the terminal lands here for
+// post-mortem. Bridges + room.md are still the canonical record;
+// this is auxiliary.
+const EGPT_HEADLESS_LOG = join(EGPT_HOME, 'headless.log');
+
+// Read the existing pidfile if any. Returns the PID number when the
+// process is still alive, otherwise null (and silently clears stale
+// entries). Uses `process.kill(pid, 0)` — the POSIX "are you there"
+// probe that throws ESRCH for dead PIDs. On Windows, Node maps this
+// to OpenProcess + check; same semantics.
+function _readLivePid() {
+  try {
+    const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
+    const pid = Number(raw);
+    if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return null;
+    try { process.kill(pid, 0); return pid; }
+    catch { try { unlinkSync(EGPT_PID_PATH); } catch {} return null; }
+  } catch { return null; }
+}
+
+async function takeoverIfRunning() {
+  const pid = _readLivePid();
+  if (!pid) return false;
+  try { process.kill(pid, 'SIGTERM'); } catch {}
+  // Poll up to 10s for the old process to release the pairing. 200ms
+  // ticks; on a clean exit, baileys.logout takes ~1-2s. If the old
+  // process is wedged, we proceed anyway with a warning — baileys
+  // will simply knock it off the WA server on its own connect.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try { process.kill(pid, 0); }
+    catch {
+      try { unlinkSync(EGPT_PID_PATH); } catch {}
+      return true;
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  // eslint-disable-next-line no-console
+  console.error(`egpt: previous instance (pid ${pid}) did not exit within 10s; continuing anyway`);
+  return true;
+}
+
+function writePidfile() {
+  try {
+    mkdirSync(EGPT_HOME, { recursive: true });
+    writeFileSync(EGPT_PID_PATH, String(process.pid), { mode: 0o600 });
+  } catch {}
+}
+
+function clearPidfile() {
+  try {
+    const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
+    if (Number(raw) === process.pid) unlinkSync(EGPT_PID_PATH);
+  } catch {}
+}
 
 // Load config: global (~/.egpt/config.json) then local (.egpt/config.json).
 // Local keys override global ones. Both files are optional.
@@ -835,7 +898,17 @@ async function findSessionJsonl(sessionIdOrPrefix) {
   return null;
 }
 
-const cliArgs = process.argv.slice(2);
+// --headless: run the bridges + bus + room logging without mounting the
+// Ink terminal UI. Designed for Windows Task Scheduler "Run whether user
+// is logged on or not" / launchd / systemd --user — eGPT keeps capturing
+// WhatsApp / Telegram traffic to disk while no operator is signed in.
+// When a real shell starts later, it SIGTERMs the headless process via
+// the pidfile handshake (~/.egpt/egpt.pid) and takes over the WA pairing
+// — only one process at a time can hold baileys creds, so ownership
+// transfers cleanly via signal + poll instead of a live socket attach.
+const _rawCliArgs = process.argv.slice(2);
+const HEADLESS = _rawCliArgs.includes('--headless');
+const cliArgs = _rawCliArgs.filter(a => a !== '--headless');
 if (cliArgs[0] === 'profile' || cliArgs[0] === 'profile-url') {
   try {
     const spec = parseProfileCreateArgs(cliArgs.slice(1).join(' '));
@@ -7230,12 +7303,45 @@ function App() {
 // Module-level bridge reference so SIGINT/SIGHUP handlers can abort the
 // long-poll fetch immediately, preventing orphaned egpt processes.
 let _globalBridge = null;
-const _exitClean = (code = 0) => { _globalBridge?.stop(); process.exit(code); };
+const _exitClean = (code = 0) => { _globalBridge?.stop(); clearPidfile(); process.exit(code); };
 process.on('SIGINT',  () => _exitClean(0));
 process.on('SIGHUP',  () => _exitClean(0));
 process.on('SIGTERM', () => _exitClean(0));
 
-console.log(`egpt | ${FILE}`);
-console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
-render(h(App), { exitOnCtrlC: false });
-process.on('exit', () => _globalBridge?.stop());
+// Pidfile handshake: if an older instance is running (most commonly the
+// headless engine from Task Scheduler / systemd / launchd), ask it to
+// exit, wait for it to release the WA pairing, then take ownership.
+// Same code path for interactive AND headless mode — both honor the
+// single-writer invariant. Symmetric: a headless process started while
+// an interactive shell is up will also take over (rare but valid).
+await takeoverIfRunning();
+writePidfile();
+
+if (HEADLESS) {
+  // Ink wants tty-like stdin/stdout. Stub both so the render call
+  // doesn't crash on setRawMode() / cursor positioning. ANSI escapes
+  // end up in headless.log — ugly but harmless; the canonical record
+  // is the room .md, chats-cache.json, and .media-index.json files
+  // the bridges write directly. This log is just post-mortem.
+  const stdoutLog = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  stdoutLog.isTTY = true;
+  stdoutLog.columns = 120;
+  stdoutLog.rows = 40;
+  const stdinNull = new PassThrough();
+  stdinNull.isTTY = true;
+  stdinNull.setRawMode = () => stdinNull;
+  stdinNull.ref = () => {};
+  stdinNull.unref = () => {};
+  stdoutLog.write(`\n[${new Date().toISOString()}] egpt --headless starting (pid ${process.pid}, file ${FILE})\n`);
+  render(h(App), {
+    stdin: stdinNull,
+    stdout: stdoutLog,
+    stderr: stdoutLog,
+    exitOnCtrlC: false,
+  });
+} else {
+  console.log(`egpt | ${FILE}`);
+  console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
+  render(h(App), { exitOnCtrlC: false });
+}
+process.on('exit', () => { _globalBridge?.stop(); clearPidfile(); });
