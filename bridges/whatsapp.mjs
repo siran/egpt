@@ -327,6 +327,7 @@ export async function startWhatsAppBridge({
               messageCount: Number(c.messageCount) || 0,
               broadcastsByAuthor: (c.jid === 'status@broadcast' && c.broadcastsByAuthor && typeof c.broadcastsByAuthor === 'object')
                 ? { ...c.broadcastsByAuthor } : {},
+              pinned: Number(c.pinned) || 0,
             });
           }
         }
@@ -355,7 +356,7 @@ export async function startWhatsAppBridge({
     _chatsWriteTimer.unref?.();
   }
 
-  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null }) {
+  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null, pinned = undefined }) {
     if (!jid) return;
     // status@broadcast is WhatsApp's global status-updates feed: every
     // contact's 24h stories arrive on this single JID with their own
@@ -369,15 +370,23 @@ export async function startWhatsAppBridge({
     }
     const cur = _chats.get(jid) ?? {
       jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [],
-      messageCount: 0, broadcastsByAuthor: {},
+      messageCount: 0, broadcastsByAuthor: {}, pinned: 0,
     };
     if (!Array.isArray(cur.recent)) cur.recent = [];
     if (typeof cur.messageCount !== 'number') cur.messageCount = 0;
     if (!cur.broadcastsByAuthor || typeof cur.broadcastsByAuthor !== 'object') cur.broadcastsByAuthor = {};
+    if (typeof cur.pinned !== 'number') cur.pinned = 0;
     cur.isGroup = isGroup;
     if (kind === 'activity') cur.lastActivityTs = Math.max(cur.lastActivityTs, ts);
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
     if (name) cur.name = name;
+    // Pinned state. baileys uses pin = <ms since epoch when pinned>,
+    // 0/undefined when not. We mirror that: explicit 0 to unpin,
+    // positive number to pin, undefined to leave unchanged. Matters
+    // for listChats ordering and the logon-summary "📌" indicator
+    // — WA's own UI surfaces pinned chats at the top of the list,
+    // so doing the same here matches the operator's mental model.
+    if (typeof pinned === 'number') cur.pinned = pinned > 0 ? pinned : 0;
     // Append a recent-message entry when we have a real body. Dedupe
     // by ts+author+key so the same row arriving via both messages.upsert
     // and messaging-history.set doesn't double-count. Storing the WA
@@ -676,7 +685,12 @@ export async function startWhatsAppBridge({
     // existing one's metadata changes. Mostly redundant with the
     // messages.upsert pre-record above, but catches cases where WA
     // surfaces a chat without an associated message (e.g., a name
-    // change, archive toggle).
+    // change, archive toggle, pin/unpin).
+    // baileys exposes the pin state as `chat.pin` (the timestamp the
+    // chat was pinned, ms since epoch — same as WA's own ordering
+    // primitive). 0/undefined means not pinned. We thread that
+    // through _recordChat → listChats so pinned chats float to the
+    // top of /channels and the logon summary, matching WA's UI.
     sock.ev.on('chats.upsert', (chats) => {
       if (!Array.isArray(chats)) return;
       for (const chat of chats) {
@@ -684,7 +698,24 @@ export async function startWhatsAppBridge({
         const isGroup = chat.id.endsWith('@g.us');
         const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
         const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
-        if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
+        const pinned = Number(chat.pin) || 0;
+        if (ts > 0 || pinned > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity', pinned });
+      }
+    });
+    sock.ev.on('chats.update', (updates) => {
+      if (!Array.isArray(updates)) return;
+      for (const u of updates) {
+        if (!u?.id) continue;
+        // chats.update only carries the fields that changed, so we
+        // only call _recordChat when pin (or another field we track)
+        // is actually present. Pass pinned: 0 explicitly when WA
+        // signals an unpin so the chat falls back into the regular
+        // activity-ordered section.
+        if (typeof u.pin !== 'undefined') {
+          const isGroup = u.id.endsWith('@g.us');
+          const pinned = Number(u.pin) || 0;
+          _recordChat({ jid: u.id, isGroup, kind: 'activity', pinned });
+        }
       }
     });
   }
@@ -1184,19 +1215,24 @@ export async function startWhatsAppBridge({
       }
     } catch (_) { /* offline / not yet connected — fall through with what we have */ }
 
-    // Filter + sort. Active chats first (lastActivityTs desc); inactive
-    // ones come behind by creation ts only if all=true. status@broadcast
-    // is held in the store for later personality-analysis use but kept
-    // out of /channels by default (it's a feed, not a chat).
+    // Filter + sort. Pinned chats float to the top (sorted among
+    // themselves by pin timestamp desc — most recent pin first,
+    // matching WA's own list ordering). Then active chats by
+    // lastActivityTs desc. Then, if all=true, inactive chats by
+    // creationTs. status@broadcast is held in the store for later
+    // personality-analysis use but kept out of /channels by default.
     const everything = [..._chats.values()]
       .filter(c => includeStatus || c.jid !== 'status@broadcast');
-    const active   = everything.filter(c => c.lastActivityTs > 0)
+    const isPinned = c => (c.pinned || 0) > 0;
+    const pinned   = everything.filter(isPinned)
+                               .sort((a, b) => (b.pinned || 0) - (a.pinned || 0));
+    const active   = everything.filter(c => !isPinned(c) && c.lastActivityTs > 0)
                                .sort((a, b) => b.lastActivityTs - a.lastActivityTs);
     const inactive = all
-      ? everything.filter(c => c.lastActivityTs === 0)
+      ? everything.filter(c => !isPinned(c) && c.lastActivityTs === 0)
                   .sort((a, b) => b.creationTs - a.creationTs)
       : [];
-    const top = [...active, ...inactive].slice(0, limit);
+    const top = [...pinned, ...active, ...inactive].slice(0, limit);
 
     // Resolve missing names lazily.
     const isSelfDmJid = (jid) => {
@@ -1222,6 +1258,7 @@ export async function startWhatsAppBridge({
         isGroup:        c.isGroup,
         lastActivityTs: c.lastActivityTs,
         creationTs:     c.creationTs,
+        pinned:         c.pinned || 0,
         recent,
       };
     }));
