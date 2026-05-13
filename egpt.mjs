@@ -3019,6 +3019,17 @@ function App() {
         scheduleReplyTargetSave: _scheduleReplyTargetSave,
         runBrainTurn,
         findSessionJsonl,
+        // Batch 11 additions
+        loadIdentity:                _loadIdentity,
+        injectIdentityIntoPersona:   _injectIdentityIntoPersona,
+        injectIdentityIfNeeded:      _injectIdentityIfNeeded,
+        // Batch 12 additions
+        startProfileWizard,
+        parseProfileCreateArgs,
+        writeConversationProfile,
+        loadBrainProfile,
+        attachProfile,
+        profileCreateUsage,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3659,25 +3670,7 @@ function App() {
       sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(LOCAL_CONFIG_PATH)}`);
       return true;
     }
-    if (cmd === '/create-profile') {
-      startProfileWizard(arg.trim() || undefined);
-      return true;
-    }
-    // /profiles + /brain-profiles migrated to slash/profiles.mjs.
-    if (cmd === '/profile' || cmd === '/profile-url') {
-      try {
-        const spec = parseProfileCreateArgs(arg);
-        const { path, profile } = await writeConversationProfile(spec);
-        sysOut(`profile "${profile.name}" saved -> ${dp(path)}\n  type: ${profile.type}\n  url: ${profile.url}\n  attach with: /attach ${profile.name}`);
-        if (spec.attach) {
-          const loaded = await loadBrainProfile(profile.name);
-          await attachProfile(loaded);
-        }
-      } catch (e) {
-        sysOut(e.message.includes('usage: /profile') ? e.message : `!! ${e.message}\n\n${profileCreateUsage()}`);
-      }
-      return true;
-    }
+    // /create-profile + /profile + /profile-url migrated to slash/profile.mjs.
     if (cmd === '/send-file') {
       let parsed;
       try {
@@ -4177,81 +4170,7 @@ function App() {
     // /detach migrated to slash/detach.mjs.
     // (canonical /mirror has been migrated above; see slash/mirror.mjs)
     // /storm migrated to slash/storm.mjs.
-    if (cmd === '/identity') {
-      // /identity [@<session>]    re-install the identity manifest
-      // /identity                 inject into ALL active sessions
-      //                           + the @e default brain
-      // /identity show            print the identity file to shell
-      // Forces injection regardless of the previously-set
-      // identityInjected flag. Useful after editing e_identity.md
-      // (or whatever brains.identity points at) so the brains pick
-      // up the new content.
-      const a = arg.trim();
-      const identity = await _loadIdentity();
-      if (!identity) {
-        sysOut(`!! /identity: no identity file (brains.identity = "${EGPT_CONFIG.brains?.identity ?? './e_identity.md'}", set or check path; "off" disables)`);
-        return true;
-      }
-      if (a === 'show') {
-        sysOut(identity);
-        return true;
-      }
-      const targets = [];
-      if (a.startsWith('@')) {
-        const name = a.slice(1);
-        if (name === 'e' || name === 'egpt') targets.push({ kind: 'persona' });
-        else if (sessions[name]) targets.push({ kind: 'session', name });
-        else { sysOut(`!! /identity: no session "${name}"`); return true; }
-      } else if (!a) {
-        targets.push({ kind: 'persona' });
-        for (const n of Object.keys(sessions)) targets.push({ kind: 'session', name: n });
-      } else {
-        sysOut('usage: /identity [@<session> | @e | show]');
-        return true;
-      }
-      for (const t of targets) {
-        if (t.kind === 'persona') {
-          // Force the install into the @e persona's CURRENT thread
-          // (don't wipe url / session_id — that'd lose continuity).
-          // Build the same sessionOpts runDefaultBrainTurn would.
-          const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
-          const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
-          const brain = brainForName(brainType);
-          if (!brain) { sysOut(`!! @e: brain ${brainType} not found`); continue; }
-          let sessionOpts;
-          if (isUrlBrain(brainType)) {
-            // Resolve the existing thread URL → live targetId so the
-            // install lands in the right tab.
-            let targetId = null;
-            try {
-              const tabs = await cdp.listTabs(brain.urlMatch);
-              const m = dbCfg.url ? tabs.find(t => t.url === dbCfg.url || t.url.startsWith(dbCfg.url)) : null;
-              if (m) targetId = m.id;
-            } catch {}
-            sessionOpts = { targetId };
-          } else {
-            sessionOpts = {
-              sessionId: dbCfg.session_id ?? null,
-              cwd: dbCfg.cwd ?? process.cwd(),
-              sessionName: 'egpt',
-              userName: USER_NAME,
-              ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
-              ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
-            };
-          }
-          await _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
-        } else {
-          const s = sessions[t.name];
-          if (!s) continue;
-          const brain = brainForName(s.brain);
-          if (!brain) { sysOut(`!! /identity @${t.name}: brain ${s.brain} not found`); continue; }
-          await _injectIdentityIfNeeded({
-            routedTo: t.name, session: s, brain, opts: s.options ?? {}, forced: true,
-          });
-        }
-      }
-      return true;
-    }
+    // /identity migrated to slash/identity.mjs.
     // /handle, /emoji, /bio migrated to slash/session-identity.mjs.
     if (cmd === '/attach') {
       // Smart pre-flight: when /attach is invoked without the
