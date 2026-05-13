@@ -2956,6 +2956,15 @@ function App() {
         parseMessages,                               // shared internal — pass-thru
         isMetaMessage: _isMetaMessage,               // /last filter
         suppressTranscriptRef: _suppressTranscriptRef,
+        // Batch 4 additions
+        outputSinkRef,                               // for /help to respect sink
+        brainNamesForHelp,                           // help template substitutions
+        tgBridgeRef:           bridgeRef,            // for /status
+        listConversationFiles,                       // for /conversations
+        CONVERSATION_DIRS,                           // search-dir constants
+        resolveConversationSpec,                     // name/path → absolute
+        setFile: (p) => { FILE = p; },               // /conversation mutates FILE
+        sentItemsCountRef,                           // reset on conversation swap
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3179,53 +3188,7 @@ function App() {
     }
     // /restart, /upgrade, /rewind migrated to slash/lifecycle.mjs.
     // /file migrated to slash/file.mjs.
-    if (cmd === '/conversations') {
-      try {
-        const files = await listConversationFiles();
-        if (!files.length) {
-          sysOut(`(no conversation files found)\n  search dirs:\n    ${CONVERSATION_DIRS.map(dp).join('\n    ')}\n    ${dp(resolve(process.cwd(), 'conversation.md'))}`);
-          return true;
-        }
-        const rows = await Promise.all(files.map(async (f) => {
-          let mtime = 0, size = 0;
-          try { const st = await stat(f.path); mtime = st.mtimeMs; size = st.size; } catch {}
-          const active = f.path === resolve(FILE) ? ' ← active' : '';
-          const fmtSize = size < 1024 ? `${size}B` : `${(size / 1024).toFixed(1)}K`;
-          return { ...f, mtime, size, fmtSize, active };
-        }));
-        rows.sort((a, b) => b.mtime - a.mtime);
-        const lines = rows.map(r => {
-          const name = basename(r.path).replace(/\.md$/, '');
-          return `${name.padEnd(28)} ${r.fmtSize.padEnd(7)} ${r.label.padEnd(18)} ${dp(r.path)}${r.active}`;
-        });
-        sysOut(`conversations:\n${lines.join('\n')}\n\n/conversation <name>  to switch`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
-    if (cmd === '/conversation') {
-      const spec = arg.trim();
-      if (!spec) {
-        sysOut(`current: ${dp(FILE)}\n  /conversations          list available\n  /conversation <name>    switch to <name> (creates if missing)`);
-        return true;
-      }
-      let nextPath;
-      try { nextPath = resolveConversationSpec(spec); }
-      catch (e) { sysOut(`!! ${e.message}`); return true; }
-      if (!nextPath) { sysOut('!! could not resolve conversation path'); return true; }
-      try {
-        await mkdir(dirname(nextPath), { recursive: true });
-        if (!existsSync(nextPath)) writeFileSync(nextPath, `# Conversation\n\n---\n\n`);
-        FILE = nextPath;
-        // Clear the displayed transcript so the user sees the new room fresh.
-        // Sessions are kept — the user may want to reuse attached brains.
-        setItems([{
-          id: Date.now() + Math.random(), author: 'system',
-          body: `switched conversation -> ${dp(FILE)}`,
-        }]);
-        sentItemsCountRef.current = 0;
-      } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
-      return true;
-    }
+    // /conversations + /conversation migrated to slash/conversation.mjs.
     if (cmd === '/egpt') {
       // Manage the @egpt persona's session-history state.
       // Subcommands: status (default), new, list, rewind [n|id-prefix].
@@ -3302,91 +3265,8 @@ function App() {
       return true;
     }
     // /log + /logs migrated to slash/log.mjs.
-    if (cmd === '/help') {
-      const bt = brainNamesForHelp();
-      // /help @<who> — deliver the help text to that recipient by
-      // prepending an @-mention to the body. @<who> in Telegram becomes
-      // a clickable mention (notifies the user). On WhatsApp it shows
-      // as plain text @-mention; native notification would require
-      // mentionedJid wiring (future).
-      const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
-      const prefix = recipient ? `(for @${recipient})\n\n` : '';
-      const tgPrefix = recipient ? `<i>(for @${escapeHtml(recipient)})</i>\n\n` : '';
-      // Respect outputSinkRef like sysOut does: local-issued /help stays
-      // in shell; bridge-issued /help goes back to the originating
-      // bridge only (not to other bridges).
-      const sink = outputSinkRef.current;
-      const localityMeta = sink === 'local'
-        ? { _localOnly: true }
-        : { _target: sink };
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _bright: true,
-        body: prefix + helpText(bt),
-        _tgBody: tgPrefix + helpHtml(bt),
-        ...localityMeta,
-      }]);
-      return true;
-    }
-    if (cmd === '/status') {
-      let tabsByid = new Map();
-      try {
-        const tabs = await cdp.listTabs();
-        for (const t of tabs) tabsByid.set(t.id, t);
-      } catch {}
-      const lines = [
-        '── STATUS ───────────────────────────────────────────',
-        `file:  ${dp(FILE)}`,
-        '',
-        '── INTERFACES ───────────────────────────────────────',
-        '  console     active',
-      ];
-      const tgBridge = bridgeRef.current;
-      if (tgBridge) {
-        const chatInfo = tgBridge.chatId ? `connected · chat ${tgBridge.chatId}` : 'connected (no incoming messages yet)';
-        lines.push(`  telegram    ${chatInfo}`);
-      } else {
-        lines.push(`  telegram    not configured`);
-      }
-      lines.push(`  extension   — coming soon`);
-      lines.push('', '── PARTICIPANTS ─────────────────────────────────────');
-      const tgSuffix = tgBridge ? ' · telegram' : '';
-      lines.push(`  👤 You         human    console${tgSuffix}`);
-      if (!Object.keys(sessions).length) {
-        lines.push('  (no AI sessions — use /attach or /open)');
-      } else {
-        for (const [name, s] of Object.entries(sessions)) {
-          const emoji = (s.emoji ?? '?') + ' ';
-          const brain = s.brain;
-          const opts = s.options ?? {};
-          let typeLine = '';
-          let locLine = '';
-          if (brain === 'chatgpt-cdp' || brain === 'claude-cdp') {
-            const tab = opts.targetId ? tabsByid.get(opts.targetId) : null;
-            const label = brain === 'chatgpt-cdp' ? 'ChatGPT (web)' : 'Claude (web)';
-            typeLine = label;
-            locLine = tab
-              ? `tab: "${(tab.title ?? '').slice(0, 40)}"  ${tab.url.slice(0, 60)}`
-              : opts.targetId ? `tab: ${opts.targetId.slice(0, 8)}… (not found in Chrome)` : 'no tab bound';
-          } else if (brain === 'ccode') {
-            typeLine = `Claude Code · model: ${opts.model ?? 'default'}`;
-            if (opts.sessionId) typeLine += `  resume: ${opts.sessionId.slice(0, 8)}…`;
-            locLine = `cwd: ${opts.cwd ? dp(opts.cwd) : '(egpt dir)'}`;
-          } else if (brain === 'codex') {
-            typeLine = `Codex · model: ${opts.model ?? 'gpt-4o'} · effort: ${opts.reasoningEffort ?? 'medium'}`;
-            if (opts.thread) typeLine += `  thread: ${opts.thread}`;
-            if (opts.sessionId) typeLine += `  thread: ${opts.sessionId.slice(0, 8)}…`;
-            locLine = `cwd: ${opts.cwd ? dp(opts.cwd) : '(egpt dir)'}`;
-          } else {
-            typeLine = brain;
-          }
-          lines.push(`  ${emoji}${name.padEnd(10)} ${typeLine}`);
-          if (locLine) lines.push(`               ${locLine}`);
-          if (s.bio) lines.push(`               bio: ${s.bio.slice(0, 70)}${s.bio.length > 70 ? '…' : ''}`);
-        }
-      }
-      lines.push('─────────────────────────────────────────────────────');
-      sysOut(lines.join('\n'));
-      return true;
-    }
+    // /help migrated to slash/help.mjs.
+    // /status migrated to slash/status.mjs.
     // /prompts migrated to slash/prompts.mjs.
     // /theme + /themes migrated to slash/theme.mjs.
     if (cmd === '/telegram') {
