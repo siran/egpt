@@ -52,5 +52,61 @@
         "inviteLinkGroupTypeV2": "DEFAULT"
       }
     }
+  },
+  "wa-AC2C8AAA1698651B0C509013AA1C1B28": {
+    "kind": "wa",
+    "chatId": "34836563681438@lid",
+    "key": {
+      "remoteJid": "34836563681438@lid",
+      "remoteJidAlt": "16468217865@s.whatsapp.net",
+      "fromMe": true,
+      "id": "AC2C8AAA1698651B0C509013AA1C1B28",
+      "participant": "",
+      "addressingMode": "lid"
+    },
+    "raw": {
+      "extendedTextMessage": {
+        "text": "@e prueba dese wa",
+        "previewType": "NONE",
+        "contextInfo": {
+          "expiration": 0,
+          "ephemeralSettingTimestamp": "1718045160",
+          "disappearingMode": {
+            "initiator": "CHANGED_IN_CHAT",
+            "trigger": "UNKNOWN",
+            "initiatedByMe": false
+          }
+        },
+        "inviteLinkGroupTypeV2": "DEFAULT"
+      }
+    }
+  },
+  "wa-AC9D926AF0EE57811E3C9059A6C65BBF": {
+    "kind": "wa",
+    "chatId": "34836563681438@lid",
+    "key": {
+      "remoteJid": "34836563681438@lid",
+      "remoteJidAlt": "16468217865@s.whatsapp.net",
+      "fromMe": true,
+      "id": "AC9D926AF0EE57811E3C9059A6C65BBF",
+      "participant": "",
+      "addressingMode": "lid"
+    },
+    "raw": {
+      "extendedTextMessage": {
+        "text": "/rooms",
+        "previewType": "NONE",
+        "contextInfo": {
+          "expiration": 0,
+          "ephemeralSettingTimestamp": "1718045160",
+          "disappearingMode": {
+            "initiator": "CHANGED_IN_CHAT",
+            "trigger": "UNKNOWN",
+            "initiatedByMe": false
+          }
+        },
+        "inviteLinkGroupTypeV2": "DEFAULT"
+      }
+    }
   }
 }

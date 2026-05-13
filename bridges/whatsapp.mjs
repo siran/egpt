@@ -49,6 +49,7 @@ import {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
+  downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
@@ -79,6 +80,16 @@ export async function startWhatsAppBridge({
   // to 0 to disable the filter entirely (old behaviour — every
   // backlog message auto-dispatches; not recommended).
   maxBacklogSeconds = 30,
+  // Media download/save config. From host: { download, max_size_mb }.
+  //   download:    'all' (default) — save images / videos / audio /
+  //                voice notes / documents / stickers
+  //                'images_docs' — only images + documents
+  //                'off' — disable
+  //   max_size_mb: skip downloads larger than this (default 25)
+  // Files land at ~/.egpt/media/<chat>/<msgId>.<ext>. Chat dir is
+  // the JID with @<host> turned into _<host-prefix> for filesystem
+  // safety. msgId is the baileys stanza id (globally unique).
+  media         = {},
   onIncoming,
   onLog,
   onError,
@@ -426,6 +437,14 @@ export async function startWhatsAppBridge({
       // everything baileys actually delivers); leave debug off in
       // normal production use.
       if (!debug && type !== 'notify' && type !== 'append') return;
+      // Media save — runs for every real-time delivery regardless
+      // of awareness gates (the operator asked to retain ALL media,
+      // for both observed chats and bound rooms; see whatsapp.media
+      // config). Independent of handleMessage so a media message
+      // dropped at the awareness gate still lands on disk.
+      for (const msg of messages) {
+        _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+      }
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
@@ -508,6 +527,91 @@ export async function startWhatsAppBridge({
         if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
       }
     });
+  }
+
+  // Media save — runs alongside SILENT recording for every real-
+  // time delivery. Independent of awareness gates so a media
+  // message from an observed chat still lands on disk. Config
+  // (whatsapp.media): download = 'all' | 'images_docs' | 'off';
+  // max_size_mb = N (default 25). Path is
+  // ~/.egpt/media/<chatJidSan>/<msgId>.<ext>. Existing files are
+  // not re-downloaded — idempotent across daemon restarts.
+  const MEDIA_DIR = join(homedir(), '.egpt', 'media');
+  function _sanitiseChatJid(jid) {
+    const at = jid.indexOf('@');
+    if (at < 0) return jid.replace(/[^A-Za-z0-9._-]+/g, '_');
+    const local = jid.slice(0, at).replace(/[^A-Za-z0-9._-]+/g, '_');
+    const hostPrefix = jid.slice(at + 1).split('.')[0].replace(/[^A-Za-z0-9._-]+/g, '_');
+    return hostPrefix ? `${local}_${hostPrefix}` : local;
+  }
+  function _extFor(mimetype, fileName) {
+    // documentMessage carries the original filename — use its
+    // extension as-is when present.
+    if (fileName) {
+      const m = fileName.match(/\.[A-Za-z0-9]{1,8}$/);
+      if (m) return m[0].toLowerCase();
+    }
+    const subtype = (mimetype ?? '').split('/')[1]?.split(';')[0]?.trim().toLowerCase() ?? '';
+    const map = {
+      'jpeg': '.jpg', 'jpg': '.jpg', 'png': '.png', 'webp': '.webp',
+      'gif': '.gif', 'svg+xml': '.svg', 'heic': '.heic', 'heif': '.heif',
+      'mp4': '.mp4', 'quicktime': '.mov', 'webm': '.webm',
+      'ogg': '.ogg', 'mpeg': '.mp3', 'aac': '.aac', 'm4a': '.m4a',
+      'wav': '.wav', 'x-wav': '.wav',
+      'pdf': '.pdf', 'plain': '.txt', 'zip': '.zip',
+      'msword': '.doc',
+      'vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+      'vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+      'vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+      'octet-stream': '.bin',
+    };
+    return map[subtype] ?? (subtype ? `.${subtype.replace(/[^a-z0-9]+/g, '')}` : '.bin');
+  }
+  async function _saveMediaIfAny(msg) {
+    const downloadMode = media.download ?? 'all';
+    if (downloadMode === 'off') return null;
+    const m = msg.message ?? {};
+    // Map of media-bearing variants. Order matters — checked first
+    // wins (an extendedTextMessage with a contextInfo quote of a
+    // documentMessage shouldn't trigger a save for the quoted doc).
+    const kinds = [
+      { key: 'imageMessage',    kind: 'image' },
+      { key: 'videoMessage',    kind: 'video' },
+      { key: 'audioMessage',    kind: 'audio' },
+      { key: 'documentMessage', kind: 'document' },
+      { key: 'stickerMessage',  kind: 'sticker' },
+    ];
+    const hit = kinds.find(k => m[k.key]);
+    if (!hit) return null;
+    // images_docs filter — only images + documents (videos / audio
+    // / stickers skipped).
+    if (downloadMode === 'images_docs' && !(hit.kind === 'image' || hit.kind === 'document')) return null;
+    const node = m[hit.key];
+    const chatJid = msg.key?.remoteJid;
+    const msgId = msg.key?.id;
+    if (!chatJid || !msgId) return null;
+    // Size guard
+    const fileLen = Number(node.fileLength) || 0;
+    const maxSize = (Number(media.max_size_mb) || 25) * 1024 * 1024;
+    if (fileLen > 0 && fileLen > maxSize) {
+      log(`media skipped (${(fileLen / 1024 / 1024).toFixed(1)}MB > ${media.max_size_mb ?? 25}MB): ${hit.kind} from ${chatJid}`);
+      return null;
+    }
+    const ext = _extFor(node.mimetype, node.fileName);
+    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const path = join(dir, `${msgId}${ext}`);
+    if (existsSync(path)) return path;     // already saved
+    try {
+      const buf = await downloadMediaMessage(msg, 'buffer', {});
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(path, buf);
+      const sizeKB = (buf.length / 1024).toFixed(1);
+      log(`media saved: ${hit.kind} ${sizeKB}KB → ${path}`);
+      return path;
+    } catch (e) {
+      log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
+      return null;
+    }
   }
 
   async function handleMessage(msg, { bypassAwareness = false } = {}) {

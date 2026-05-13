@@ -1883,6 +1883,11 @@ function App() {
         awareness:         cfg.awareness ?? {},
         debug:             cfg.debug === true,
         maxBacklogSeconds: Number(cfg.max_backlog_seconds) || 0,
+        // Pass through whatsapp.media to the bridge. Defaults (set
+        // inside the bridge) are { download: 'all', max_size_mb: 25 }
+        // — every image / video / voice note / document / sticker is
+        // saved automatically to ~/.egpt/media/<chat>/<msgId>.<ext>.
+        media:             cfg.media ?? {},
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           logOut(`(whatsapp message from ${who}) -> ${text}`);
