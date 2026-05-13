@@ -58,7 +58,14 @@ import { promises as fs, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
+// Reconnect backoff. Initial wait, doubled on each consecutive
+// failure, capped. baileys often reports 'connection.update' close
+// → open → close in quick succession when WA's edge is flapping;
+// the bridge must keep retrying instead of giving up after one
+// scheduled attempt. Until this commit the retry was one-shot:
+// connect() threw → setTimeout never re-armed → bridge dead.
 const RECONNECT_MS = 5_000;
+const RECONNECT_MAX_MS = 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -78,6 +85,28 @@ const CHATS_CACHE_CAP = 500;
 // the most-reacted item without scanning the room md.
 const REACTION_COUNTS_PATH = join(homedir(), '.egpt', 'reaction-counts.json');
 const REACTION_COUNTS_CAP = 500;
+// WhatsApp's text-message Protobuf supports up to ~65k chars, but
+// baileys / WA Web silently misbehave at large sizes (edit can reject,
+// chunk boundaries break formatting). 4000 matches the Telegram
+// chunk size we already use; small enough to be safe everywhere,
+// large enough that most replies are one message. chunkText splits
+// on newline boundaries when possible to avoid breaking mid-paragraph.
+const WA_CHUNK_CHARS = 4000;
+function chunkText(text, max) {
+  if (text.length <= max) return [text];
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    let end = Math.min(i + max, text.length);
+    if (end < text.length) {
+      const nl = text.lastIndexOf('\n', end);
+      if (nl > i + max / 2) end = nl;
+    }
+    out.push(text.slice(i, end));
+    i = end;
+  }
+  return out;
+}
 
 export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
@@ -181,6 +210,23 @@ export async function startWhatsAppBridge({
   let myLidNumber    = null;     // bare number portion of myLid (for self-DM detection)
   let sock           = null;
   let reconnectTimer = null;
+  // Exponential backoff state. Reset to 0 when 'connection: open'
+  // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
+  // is the single retry path — both the close handler and the
+  // catch around connect() funnel through it.
+  let reconnectAttempts = 0;
+  function _scheduleReconnect(reason) {
+    if (stopped) return;
+    if (reconnectTimer) return;            // already armed
+    const delay = Math.min(RECONNECT_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
+    reconnectAttempts++;
+    err(`whatsapp: ${reason}; reconnect attempt ${reconnectAttempts} in ${Math.round(delay / 1000)}s`);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      try { connect(); }
+      catch (e) { _scheduleReconnect(`connect() threw: ${e.message}`); }
+    }, delay);
+  }
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
   // () => false so we never get a bulk chat list on each startup —
@@ -559,6 +605,9 @@ export async function startWhatsAppBridge({
         myLid = sock.user?.lid ?? null;
         myLidNumber = myLid?.split(':')[0]?.split('@')[0] ?? null;
         connectedAt = Date.now();
+        // Healthy connect — clear backoff so the NEXT close starts
+        // at the base 5s delay again, not wherever it left off.
+        reconnectAttempts = 0;
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         // Heal stale group names. Pre-fix bridge builds wrote the
@@ -578,10 +627,10 @@ export async function startWhatsAppBridge({
           stopped = true;
           return;
         }
-        if (!stopped) {
-          log(`whatsapp: connection closed (reason ${reason ?? '?'}); reconnecting in ${RECONNECT_MS / 1000}s`);
-          reconnectTimer = setTimeout(connect, RECONNECT_MS);
-        }
+        // Funnel through _scheduleReconnect — handles backoff,
+        // operator-visible errOut, and the case where connect() itself
+        // throws (used to leave the bridge silently dead).
+        _scheduleReconnect(`connection closed (reason ${reason ?? '?'})`);
       }
     });
 
@@ -1194,7 +1243,11 @@ export async function startWhatsAppBridge({
   // ── Start ─────────────────────────────────────────────────────
 
   log('whatsapp: starting (baileys)');
-  connect();
+  // Same retry-on-throw protection as the close handler — an initial
+  // connect() that fails (network unreachable at boot) used to leave
+  // the bridge dead. Now it backs off and retries the same way.
+  try { connect(); }
+  catch (e) { _scheduleReconnect(`initial connect() threw: ${e.message}`); }
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
   // server-side. Falls back to the bare JID when we can't reach it.
@@ -1437,16 +1490,33 @@ export async function startWhatsAppBridge({
     getChatSlug,
     setEgptPin,
     listEgptPinned,
-    send(text, { chatId } = {}) {
+    async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
-      if (!target || !sock) return Promise.resolve(null);
-      // Bounded by SEND_TIMEOUT_MS so a flapping/queued baileys
-      // call can't hang the caller indefinitely. .catch swallows
-      // errors after logging so callers see null on failure — host
-      // can then fall back / report to operator.
-      return _timeBound(sock.sendMessage(target, { text }), 'send')
-        .then(r => { rememberSent(r?.key?.id); return r; })
-        .catch(e => { err(`send: ${e.message}`); return null; });
+      if (!target || !sock) return null;
+      // Chunk long bodies so WA's per-message limit (or any
+      // intermediate baileys quirk at large sizes) doesn't silently
+      // truncate the reply. First chunk's send result is what the
+      // caller gets back — that's the one whose key matters for
+      // @m<N> reply-target threading. Subsequent chunks fire
+      // sequentially as fresh sends so order is preserved.
+      const chunks = chunkText(text, WA_CHUNK_CHARS);
+      let firstResult = null;
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          const r = await _timeBound(sock.sendMessage(target, { text: chunks[i] }), 'send');
+          rememberSent(r?.key?.id);
+          if (i === 0) firstResult = r;
+        } catch (e) {
+          err(`send${chunks.length > 1 ? ` (chunk ${i + 1}/${chunks.length})` : ''}: ${e.message}`);
+          // On failure mid-chunk we bail and return what we have so
+          // far — caller's null-check still triggers the operator
+          // breadcrumb if the FIRST chunk failed; partial delivery
+          // is at least visible to the recipient.
+          if (i === 0) return null;
+          return firstResult;
+        }
+      }
+      return firstResult;
     },
     // Reply to a specific message with a WA-native quote. `key` is the
     // baileys WAMessageKey of the message being replied to; `raw` is
@@ -1570,27 +1640,50 @@ export async function startWhatsAppBridge({
           // initial send is still in-flight, fall back to a plain
           // send (the recipient hasn't seen anything yet).
           try {
+            // Long replies get chunked: edit covers the first chunk;
+            // remaining chunks land as fresh sends. WA's edit can
+            // misbehave at large sizes, and the recipient sees a
+            // tidier "head edited + continuation messages" instead
+            // of either a silent truncation or a giant scroll-wall.
+            const chunks = chunkText(pending, WA_CHUNK_CHARS);
             if (initialDone && msgKey) {
-              if (pending !== null && pending !== lastSent) {
+              if (chunks[0] !== lastSent) {
                 const r = await _timeBound(
-                  sock.sendMessage(target, { edit: msgKey, text: pending }),
+                  sock.sendMessage(target, { edit: msgKey, text: chunks[0] }),
                   'stream finish edit',
                 );
                 rememberSent(r?.key?.id);
-                lastSent = pending;
+                lastSent = chunks[0];
                 if (r?.key) delivered = true;
-              } else if (pending === lastSent) {
+              } else {
                 // Already up to date from prior edits — that's a delivery.
                 delivered = true;
               }
             } else {
               // Initial send failed or still in flight: plain send.
               const r = await _timeBound(
-                sock.sendMessage(target, { text: pending }),
+                sock.sendMessage(target, { text: chunks[0] }),
                 'stream finish send',
               );
               rememberSent(r?.key?.id);
               if (r?.key) { msgKey = r.key; delivered = true; }
+            }
+            // Continuation chunks (only relevant for long replies).
+            for (let i = 1; i < chunks.length; i++) {
+              try {
+                const r = await _timeBound(
+                  sock.sendMessage(target, { text: chunks[i] }),
+                  `stream finish chunk ${i + 1}/${chunks.length}`,
+                );
+                rememberSent(r?.key?.id);
+              } catch (e) {
+                lastError = e.message;
+                err(`stream finish chunk ${i + 1}/${chunks.length}: ${e.message}`);
+                // Stop chunking — host's fallback will see delivered
+                // (chunk 0 reached WA) but lastError records the
+                // truncation so the operator knows the tail was lost.
+                break;
+              }
             }
           } catch (e) {
             lastError = e.message;
