@@ -3010,6 +3010,15 @@ function App() {
           all:    _waJoinedAll,
           first:  _waJoinedFirst,
         },
+        // Batch 10 additions
+        EGPT_CONFIG,
+        SURFACE_TAG,
+        fmtTs,
+        setBusy,
+        itemByShortId,
+        scheduleReplyTargetSave: _scheduleReplyTargetSave,
+        runBrainTurn,
+        findSessionJsonl,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -4013,215 +4022,13 @@ function App() {
       return true;
     }
     // /continue migrated to slash/continue.mjs.
-    if (cmd === '/session') {
-      // /session <session-name>                       → show resume state
-      // /session <session-name> <id> [cwd]            → set resume id (cwd auto-detected)
-      // /session <session-name> none|clear            → clear (back to stateless)
-      // /session <id> [cwd]                           → shorthand: applies to the
-      //                                                 only ccode session if
-      //                                                 there's exactly one
-      const parts = arg.split(/\s+/).filter(Boolean);
-      if (parts.length === 0) {
-        sysOut('usage: /session <session-name> [<id>|none] [cwd]\n  shorthand /session <id> works if there is exactly one ccode session');
-        return true;
-      }
-      // Resolve the target session
-      let target;
-      let restParts;
-      if (sessions[parts[0]]) {
-        target = parts[0];
-        restParts = parts.slice(1);
-      } else {
-        const codeSessions = Object.entries(sessions).filter(([_, s]) => canonicalBrainName(s.brain) === 'ccode');
-        if (codeSessions.length === 1) {
-          target = codeSessions[0][0];
-          restParts = parts;
-        } else if (codeSessions.length > 1) {
-          sysOut(`multiple ccode sessions: ${codeSessions.map(([n]) => n).join(', ')}\n  /session <session-name> <id>`);
-          return true;
-        } else {
-          sysOut(`no session named "${parts[0]}" and no ccode session to default to`);
-          return true;
-        }
-      }
-      if (restParts.length === 0) {
-        const opts = sessions[target].options;
-        sysOut(`${target}.sessionId: ${opts.sessionId ?? '(none)'}\n${target}.cwd: ${opts.cwd ?? '(none)'}`);
-        return true;
-      }
-      let sid = restParts[0];
-      let cwd = restParts.slice(1).join(' ').trim() || undefined;
-      if (sid === 'none' || sid === 'clear') {
-        const nextSession = {
-          ...sessions[target],
-          options: Object.fromEntries(
-            Object.entries(sessions[target].options).filter(([k]) => k !== 'sessionId' && k !== 'cwd')
-          ),
-        };
-        setSessions(s => ({
-          ...s,
-          [target]: nextSession,
-        }));
-        await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
-        sysOut(`${target}: resume cleared (back to stateless mode)`);
-        return true;
-      }
-      // Resolve a prefix to the full session UUID and auto-detect cwd.
-      let expandedFromPrefix = false;
-      let detectedCwd = false;
-      try {
-        const found = await findSessionJsonl(sid);
-        if (!found) {
-          sysOut(`!! no session matches "${sid}". /history to list, /session ${target} none to clear.`);
-          return true;
-        }
-        if (found.sessionId !== sid) { sid = found.sessionId; expandedFromPrefix = true; }
-        if (!cwd) {
-          const meta = await readJsonlMetadata(found.path);
-          if (meta.cwd) { cwd = meta.cwd; detectedCwd = true; }
-        }
-      } catch (e) {
-        sysOut(`!! ${e.message}`);
-        return true;
-      }
-      const nextSession = {
-        ...sessions[target],
-        options: { ...sessions[target].options, sessionId: sid, ...(cwd ? { cwd } : {}) },
-      };
-      setSessions(s => ({
-        ...s,
-        [target]: nextSession,
-      }));
-      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
-      sysOut(`${target}.sessionId -> ${sid}` +
-             (expandedFromPrefix ? '  (expanded from prefix)' : '') +
-             (cwd ? `\n${target}.cwd -> ${cwd}` + (detectedCwd ? '  (auto-detected from JSONL)' : '') : '\n(no cwd; pass one if claude --resume fails)') +
-             `\n(claude --resume mode active for ${target})`);
-      return true;
-    }
+    // /session migrated to slash/session.mjs.
     // /rules migrated to slash/rules.mjs.
-    if (cmd === '/mirror') {
-      // Push a message into one or more CDP tabs.
-      // Forms:
-      //   /mirror                       → latest non-You non-silence-ack message
-      //                                   to all OTHER CDP brains
-      //   /mirror <target>              → same source, only that target
-      //   /mirror <source> <target>     → <source>'s last message → <target>
-      // System messages (e.g. /rules output) are eligible sources; silence
-      // Silence acks (body === '—', never written to disk) are naturally absent
-      // from parseMessages; this filter is a belt-and-suspenders guard.
-      const isSilenceAck = (m) => m.body === '—';
-      const isMirrorable = (m) => m.author !== 'You' && !isSilenceAck(m);
-
-      // Resolve a name that may carry an @ prefix, and treat "egpt" as "system".
-      const resolveName = (n) => { const s = n.replace(/^@/, ''); return s === 'egpt' ? 'system' : s; };
-      const parts = arg.split(/\s+/).filter(Boolean).map(resolveName);
-      const text = await readFile(FILE, 'utf8');
-      let source, targets;
-
-      if (parts.length >= 2) {
-        source = parts[0];
-        targets = [parts[1]];
-      } else {
-        const candidates = parseMessages(text).filter(isMirrorable);
-        if (!candidates.length) { sysOut('(nothing to mirror — room has no content yet)'); return true; }
-        source = candidates[candidates.length - 1].author;
-        if (parts.length === 1) targets = [parts[0]];
-        else {
-          targets = Object.entries(sessions)
-            .filter(([n, s]) => n !== source && brainForName(s.brain)?.urlMatch)
-            .map(([n]) => n);
-          if (targets.length === 0) {
-            sysOut(`no other CDP sessions to mirror to (source: ${source})`);
-            return true;
-          }
-        }
-      }
-
-      // Find the source's most recent message of any kind (besides silence acks).
-      const sourceTurns = parseMessages(text)
-        .filter(t => t.author === source && !isSilenceAck(t));
-      if (!sourceTurns.length) { sysOut(`no messages from "${source}" in this room`); return true; }
-      const lastBody = sourceTurns[sourceTurns.length - 1].body;
-
-      // Validate targets (must be real sessions — system is only valid as source)
-      for (const t of targets) {
-        if (!sessions[t]) { sysOut(`no session named "${t}" — targets must be active sessions`); return true; }
-      }
-
-      const mirrorMsg = `[${source}]: ${lastBody}`;
-      const mkMirrorPreview = (text) => {
-        const lines = text.split('\n').filter(l => l.trim());
-        if (text.length <= 300 || lines.length <= 6)
-          return text.length > 300 ? text.slice(0, 300) + '…' : text;
-        return lines.slice(0, 3).join('\n') + '\n  …\n' + lines.slice(-2).join('\n');
-      };
-      sysOut(`mirroring [${source}] -> ${targets.join(', ')}\n${mkMirrorPreview(lastBody)}`);
-      setBusy(true);
-      try {
-        for (const t of targets) {
-          await runBrainTurn(t, mirrorMsg);
-        }
-      } finally { setBusy(false); }
-      return true;
-    }
-    if (cmd === '/refresh') {
-      // /refresh [@<name>]
-      //   CDP brain:  re-poll the tab and append whatever the AI currently shows.
-      //               Recovery for premature stream-end detection.
-      //   Operator:   replay the last user message that was addressed to (or
-      //               broadcast to — i.e., NOT addressed to a different session)
-      //               this session. Triggers a fresh response from the operator.
-      const target = arg.trim().replace(/^@/, '');
-      let session, sessionName;
-      if (target) {
-        if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
-        sessionName = target; session = sessions[target];
-      } else {
-        if (Object.keys(sessions).length === 1) {
-          sessionName = Object.keys(sessions)[0]; session = sessions[sessionName];
-        } else {
-          const cdps = Object.entries(sessions).filter(([_, s]) => brainForName(s.brain)?.urlMatch);
-          if (cdps.length !== 1) {
-            const all = Object.keys(sessions);
-            sysOut(`usage: /refresh [@<session>]\n  ${all.length === 0 ? 'no sessions in the room' : `pick one: ${all.join(', ')}`}`);
-            return true;
-          }
-          sessionName = cdps[0][0]; session = cdps[0][1];
-        }
-      }
-      const brain = brainForName(session.brain);
-      if (brain?.peek) {
-        // CDP path: re-poll the tab and append the latest assistant text.
-        try {
-          const text = await brain.peek(session.options);
-          if (!text || !text.trim()) { sysOut('(tab has no assistant message right now)'); return true; }
-          setItems(p => [...p, { id: Date.now() + Math.random(), author: sessionName, body: text }]);
-          await append(sessionName, text);
-          sysOut(`(refreshed ${sessionName} from tab — appended to file)`);
-        } catch (e) { sysOut(`!! ${e.message}`); }
-      } else {
-        // Operator path: replay the last user message that this session
-        // would have seen (broadcast OR explicitly addressed to it). A
-        // message addressed to a DIFFERENT session is not replayed.
-        const fileText = await readFile(FILE, 'utf8');
-        const msgs = parseMessages(fileText);
-        const wasForSession = (body) => {
-          if (!body.startsWith('@')) return true; // broadcast
-          // body looks like "@name ..." — match on @<sessionName> followed by ws/EOL
-          return body.startsWith(`@${sessionName} `) || body.startsWith(`@${sessionName}\n`) || body === `@${sessionName}`;
-        };
-        const lastUserMsg = [...msgs].reverse().find(m => m.author === 'You' && wasForSession(m.body));
-        if (!lastUserMsg) { sysOut(`no user message to replay for ${sessionName}`); return true; }
-        const payload = lastUserMsg.body.startsWith(`@${sessionName}`)
-          ? lastUserMsg.body.slice(sessionName.length + 1).trim()
-          : lastUserMsg.body;
-        sysOut(`replaying last message to ${sessionName}…`);
-        setBusy(true);
-        try { await runBrainTurn(sessionName, payload); } finally { setBusy(false); }
-      }
-      return true;
-    }
+    // /mirror migrated to slash/mirror.mjs.  (Dead earlier CDP-only
+    // duplicate was deleted as part of this migration — the second
+    // inline /mirror block was unreachable; tested via grep that
+    // only one cmd === '/mirror' branch existed before migration.)
+    // /refresh migrated to slash/refresh.mjs.
     // /summaries (and aliases) + /save migrated to slash/summaries.mjs + slash/save.mjs.
     if (cmd === '/summarize' || cmd === '/cdp-summarize' || cmd === '/operator-summarize') {
       // Syntax:
@@ -4368,112 +4175,7 @@ function App() {
     // /sessions migrated to slash/sessions.mjs.
     // /rooms + /save-room migrated to slash/rooms.mjs.
     // /detach migrated to slash/detach.mjs.
-    if (cmd === '/mirror') {
-      // /mirror @<target> [mN ...] [--tagged | --no-tag]
-      //   Forward existing items' bodies to a destination — no brain
-      //   dispatch on WA target; @<session> re-dispatches as if the
-      //   body were freshly typed. Default item is the last visible
-      //   non-system; explicit mNs pick specific items (in order).
-      //   Tagged prefixing (config: mirror.tagged, default 'on')
-      //   wraps each body with '[author timestamp]: '. --no-tag /
-      //   --tagged override per-call.
-      const parts = arg.split(/\s+/).filter(Boolean);
-      const flagOn = parts.includes('--tagged') || parts.includes('-t');
-      const flagOff = parts.includes('--no-tag') || parts.includes('--no-tagged');
-      const positional = parts.filter(t => !t.startsWith('-'));
-      const target = positional[0];
-      const msgRefs = positional.slice(1);
-      const tagDefault = (EGPT_CONFIG.mirror?.tagged ?? 'on') !== 'off';
-      // Per-call override wins. Both set → --no-tag wins (off is safer
-      // than accidentally surprising a destination with attribution).
-      const useTag = flagOff ? false : flagOn ? true : tagDefault;
-      if (!target || !target.startsWith('@')) {
-        sysOut('usage: /mirror @<target> [mN [mN …]] [--tagged | --no-tag]\n  @waN          forward to WA chat (from /channels)\n  @<session>    re-dispatch the body to that brain as fresh input\n  mN [mN …]     specific item ids; omitted = last visible message\n  --tagged      prefix bodies with [author timestamp]: (overrides config)\n  --no-tag      send bodies raw (overrides config)');
-        return true;
-      }
-      // Resolve items to forward. Empty msgRefs = pick last visible.
-      const itemsToForward = [];
-      if (msgRefs.length) {
-        for (const r of msgRefs) {
-          const m = r.match(/^m?(\d+)$/i);
-          if (!m) { sysOut(`!! /mirror: "${r}" isn't an mN id`); return true; }
-          const it = itemByShortId.current.get(`m${m[1]}`);
-          if (!it) { sysOut(`!! /mirror: no message m${m[1]} in this session`); return true; }
-          itemsToForward.push(it);
-        }
-      } else {
-        for (let i = items.length - 1; i >= 0; i--) {
-          const it = items[i];
-          if (it._log) continue;
-          if (it._localOnly) continue;
-          if (it.author === 'system') continue;
-          itemsToForward.push(it);
-          break;
-        }
-        if (!itemsToForward.length) { sysOut('!! /mirror: nothing to mirror (no recent non-system message)'); return true; }
-      }
-      // Build the body for each item per the tag policy.
-      //   'You'    → USER_NAME@SURFACE_TAG (current local handle)
-      //   'system' → 'egpt'                (keep it terse)
-      //   already qualified (cgpt1@kg, An@moto) → as-is
-      const fmtTaggedAuthor = (a) => {
-        if (a === 'You') return `${USER_NAME}@${SURFACE_TAG}`;
-        if (a === 'system') return 'egpt';
-        return a;
-      };
-      const bodyFor = (it) => {
-        const raw = it.body ?? '';
-        if (!useTag) return raw;
-        return `[${fmtTaggedAuthor(it.author)} ${fmtTs(Math.floor(it.id))}]: ${raw}`;
-      };
-      // Dispatch by target type.
-      const waMatch = target.match(/^@wa(\d+)$/i);
-      if (waMatch) {
-        const idx = parseInt(waMatch[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (!chat) { sysOut(`!! /mirror @wa${idx + 1}: no channel at that index. /channels first.`); return true; }
-        const wa = waBridgeRef.current;
-        if (!wa) { sysOut('!! /mirror: whatsapp bridge not running'); return true; }
-        for (const it of itemsToForward) {
-          const body = bodyFor(it);
-          if (!body.trim()) { sysOut(`!! /mirror: m? body is empty, skipping`); continue; }
-          try {
-            const r = await wa.send(body, { chatId: chat.jid });
-            const preview = body.length > 80 ? body.slice(0, 79) + '…' : body;
-            sysOut(`→ /mirror @wa${idx + 1} "${chat.name}":\n  ${preview.replace(/\n/g, '\n  ')}`);
-            // Attach the mirror's WA key to the ORIGINAL item's
-            // _replyTarget so a later '@m<original> reply' fans out
-            // to this destination chat too. Multi-target ready —
-            // existing single → array; existing array → push.
-            if (r?.key) {
-              const existing = it._replyTarget;
-              const newTgt = { kind: 'wa', chatId: chat.jid, key: r.key, raw: { conversation: body } };
-              const merged = Array.isArray(existing) ? [...existing, newTgt]
-                : existing ? [existing, newTgt]
-                : newTgt;
-              it._replyTarget = merged;
-              _scheduleReplyTargetSave();
-            }
-          } catch (e) { sysOut(`!! /mirror @wa${idx + 1}: ${e.message}`); }
-        }
-        return true;
-      }
-      // @<session> — re-dispatch the body to that brain. Joins
-      // multiple items into one prompt so the brain sees the full
-      // thread in order. Tag policy applies to the prompt
-      // (with-tag = '[cgpt1@kg 20:00 EDT]: …' chunks; no-tag = bare).
-      const sessionName = target.slice(1);
-      if (sessions[sessionName]) {
-        const senderTag = `${USER_NAME}@${SURFACE_TAG}`;
-        const bodies = itemsToForward.map(bodyFor).join('\n\n');
-        const prompt = `[${senderTag} ${ts()}]: ${bodies}`;
-        sysOut(`→ /mirror @${sessionName}  (${itemsToForward.length} item${itemsToForward.length === 1 ? '' : 's'})`);
-        await runBrainTurn(sessionName, prompt, sessions);
-        return true;
-      }
-      sysOut(`!! /mirror: target "${target}" not recognised. @waN or @<session>.`);
-      return true;
-    }
+    // (canonical /mirror has been migrated above; see slash/mirror.mjs)
     // /storm migrated to slash/storm.mjs.
     if (cmd === '/identity') {
       // /identity [@<session>]    re-install the identity manifest
