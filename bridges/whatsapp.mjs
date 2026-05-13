@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -63,6 +63,12 @@ const CHATS_CACHE_PATH = join(homedir(), '.egpt', 'wa-chats.json');
 // Cap the persisted cache to avoid runaway growth — keep the most-
 // recently-active. 500 is generous for a normal WA usage pattern.
 const CHATS_CACHE_CAP = 500;
+// Phase 2 logon-summary: reactions are tracked across chats and
+// persisted to a separate file so they survive bridge restarts and
+// so the interactive shell's "while you were away" report can find
+// the most-reacted item without scanning the room md.
+const REACTION_COUNTS_PATH = join(homedir(), '.egpt', 'reaction-counts.json');
+const REACTION_COUNTS_CAP = 500;
 
 export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
@@ -215,6 +221,67 @@ export async function startWhatsAppBridge({
       : `[reaction removed from "${target}"]`;
   }
 
+  // Phase 2: reaction counts. Persisted across bridge restarts and
+  // reset by the interactive shell on logon (after rendering the
+  // "most-reacted" line in its summary). Keyed by target msgId.
+  // Entry: { count, emojis: { '👍': 3, '❤️': 1 }, preview, chatJid, lastTs }.
+  // count = total non-removal reactions (including changes); emojis
+  // tracks each distinct emoji's total. Caps at REACTION_COUNTS_CAP
+  // by dropping oldest insertion when full.
+  const _reactionCounts = new Map();
+  try {
+    if (existsSync(REACTION_COUNTS_PATH)) {
+      const raw = await fs.readFile(REACTION_COUNTS_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [msgId, entry] of Object.entries(parsed)) {
+          if (msgId && entry && typeof entry === 'object') _reactionCounts.set(msgId, entry);
+        }
+      }
+    }
+  } catch (_) { /* corrupt — start empty */ }
+
+  let _reactionsWriteTimer = null;
+  function _scheduleReactionsWrite() {
+    if (_reactionsWriteTimer) return;
+    _reactionsWriteTimer = setTimeout(async () => {
+      _reactionsWriteTimer = null;
+      try {
+        // Cap by recency (lastTs). Oldest entries fall off when over cap.
+        const all = [..._reactionCounts.entries()]
+          .sort((a, b) => (b[1].lastTs || 0) - (a[1].lastTs || 0))
+          .slice(0, REACTION_COUNTS_CAP);
+        const obj = Object.fromEntries(all);
+        await fs.mkdir(dirname(REACTION_COUNTS_PATH), { recursive: true });
+        await fs.writeFile(REACTION_COUNTS_PATH, JSON.stringify(obj, null, 2), { mode: 0o600 });
+      } catch (_) { /* best-effort */ }
+    }, 2_000);
+    _reactionsWriteTimer.unref?.();
+  }
+
+  // Record a single reaction observation. Called from handleMessage
+  // when message.reactionMessage is present. Removals (empty r.text)
+  // don't bump count — they signal a takeback, not a fresh reaction.
+  function _recordReaction(msg) {
+    const r = msg?.message?.reactionMessage;
+    if (!r?.key?.id) return;
+    const emoji = r.text;
+    if (!emoji) return;        // removal — ignore
+    const targetId = r.key.id;
+    const chatJid = msg.key?.remoteJid ?? null;
+    const ts = (Number(msg.messageTimestamp) || 0) * 1000 || Date.now();
+    const prev = _reactionCounts.get(targetId)
+      ?? { count: 0, emojis: {}, preview: null, chatJid, lastTs: 0 };
+    prev.count = (prev.count || 0) + 1;
+    prev.emojis = { ...(prev.emojis ?? {}) };
+    prev.emojis[emoji] = (prev.emojis[emoji] ?? 0) + 1;
+    if (!prev.preview) prev.preview = _msgBodyById.get(targetId) ?? null;
+    if (!prev.chatJid) prev.chatJid = chatJid;
+    prev.lastTs = Math.max(prev.lastTs || 0, ts);
+    _reactionCounts.set(targetId, prev);
+    _scheduleReactionsWrite();
+  }
+
   // Load persisted chats on bridge start. Silently best-effort —
   // missing file / corrupt JSON just yields an empty map and we
   // accumulate fresh. The pre-existing wa-auth directory next to
@@ -242,6 +309,15 @@ export async function startWhatsAppBridge({
               recent: Array.isArray(c.recent)
                 ? c.recent.filter(r => r && typeof r.text === 'string').slice(-RECENT_PER_CHAT)
                 : [],
+              // Phase 2 logon-summary counters. messageCount: every
+              // activity tick (caps at the chat level, not recent[]'s
+              // 10-deep ring). broadcastsByAuthor: per-author count
+              // for status@broadcast only (the "who posted stories"
+              // breakdown). Both reset by the interactive shell on
+              // takeover so the summary covers "since last logon".
+              messageCount: Number(c.messageCount) || 0,
+              broadcastsByAuthor: (c.jid === 'status@broadcast' && c.broadcastsByAuthor && typeof c.broadcastsByAuthor === 'object')
+                ? { ...c.broadcastsByAuthor } : {},
             });
           }
         }
@@ -282,8 +358,13 @@ export async function startWhatsAppBridge({
     if (jid === 'status@broadcast') {
       name = '(WA status updates)';
     }
-    const cur = _chats.get(jid) ?? { jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [] };
+    const cur = _chats.get(jid) ?? {
+      jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [],
+      messageCount: 0, broadcastsByAuthor: {},
+    };
     if (!Array.isArray(cur.recent)) cur.recent = [];
+    if (typeof cur.messageCount !== 'number') cur.messageCount = 0;
+    if (!cur.broadcastsByAuthor || typeof cur.broadcastsByAuthor !== 'object') cur.broadcastsByAuthor = {};
     cur.isGroup = isGroup;
     if (kind === 'activity') cur.lastActivityTs = Math.max(cur.lastActivityTs, ts);
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
@@ -316,6 +397,16 @@ export async function startWhatsAppBridge({
           cur.recent.sort((a, b) => a.ts - b.ts);
           if (cur.recent.length > RECENT_PER_CHAT) {
             cur.recent.splice(0, cur.recent.length - RECENT_PER_CHAT);
+          }
+          // Phase 2: bump only for genuine non-dupe activity. Skipping
+          // history-backfill duplicates and creation-only ticks (the
+          // outer `kind === 'activity'` arm of _recordChat is the only
+          // one that reaches this block with body && ts > 0).
+          if (kind === 'activity') {
+            cur.messageCount += 1;
+            if (jid === 'status@broadcast' && author) {
+              cur.broadcastsByAuthor[author] = (cur.broadcastsByAuthor[author] ?? 0) + 1;
+            }
           }
         }
       }
@@ -880,6 +971,10 @@ export async function startWhatsAppBridge({
     // "[reaction 👍 (msg <id8>)]" placeholder for "[reaction 👍 to
     // "<short preview of reacted-to msg>"]" when the target body is
     // in our msg-body cache (any message we've observed this session).
+    // _recordReaction independently bumps the persistent reaction
+    // counter for the logon-summary "most-reacted item" line —
+    // happens regardless of whether the reaction reaches onIncoming.
+    if (msg.message?.reactionMessage) _recordReaction(msg);
     const text = _enrichReactionText(textOf(msg.message), msg);
 
     // Wake-word: any message containing '@egpt' (as a token) bypasses
@@ -1287,6 +1382,34 @@ export async function startWhatsAppBridge({
     stop() {
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      // Phase 2: synchronously flush any pending debounced writes so
+      // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
+      // the last burst of counters that the 2s timer hadn't fired yet.
+      // writeFileSync is the only fs-call shape that completes inside
+      // a SIGTERM handler before process.exit.
+      if (_chatsWriteTimer) {
+        clearTimeout(_chatsWriteTimer);
+        _chatsWriteTimer = null;
+        try {
+          const all = [..._chats.values()].sort((a, b) =>
+            (b.lastActivityTs || b.creationTs) - (a.lastActivityTs || a.creationTs));
+          const trimmed = all.slice(0, CHATS_CACHE_CAP);
+          mkdirSync(dirname(CHATS_CACHE_PATH), { recursive: true });
+          writeFileSync(CHATS_CACHE_PATH, JSON.stringify(trimmed, null, 2), { mode: 0o600 });
+        } catch (_) {}
+      }
+      if (_reactionsWriteTimer) {
+        clearTimeout(_reactionsWriteTimer);
+        _reactionsWriteTimer = null;
+        try {
+          const all = [..._reactionCounts.entries()]
+            .sort((a, b) => (b[1].lastTs || 0) - (a[1].lastTs || 0))
+            .slice(0, REACTION_COUNTS_CAP);
+          const obj = Object.fromEntries(all);
+          mkdirSync(dirname(REACTION_COUNTS_PATH), { recursive: true });
+          writeFileSync(REACTION_COUNTS_PATH, JSON.stringify(obj, null, 2), { mode: 0o600 });
+        } catch (_) {}
+      }
       try { sock?.end?.(undefined); } catch (_) {}
       // Restore the four console methods we patched at start. If
       // something else patched between then and now, the ordering
