@@ -2980,6 +2980,12 @@ function App() {
         setDefaultOp: (v) => { _defaultOp = v; },
         persistDefaultOp,
         peerNodesRef,
+        // Batch 7 additions
+        spawnChromeWithExtension,
+        BRAINS,
+        readJsonlMetadata,
+        listBrainProfiles,
+        profileDirsText,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3900,23 +3906,7 @@ function App() {
       startProfileWizard(arg.trim() || undefined);
       return true;
     }
-    if (cmd === '/profiles' || cmd === '/brain-profiles') {
-      try {
-        const profiles = await listBrainProfiles();
-        if (!profiles.length) {
-          sysOut(`(no brain profiles found)\nprofile dirs:\n${profileDirsText()}`);
-          return true;
-        }
-        const rows = profiles.map(p => {
-          const base = `${p.name.padEnd(16)} ${p.brain.padEnd(13)} ${p.source}  ${p.path}`;
-          return p.error ? `${base}\n  !! ${p.error}` : base;
-        });
-        sysOut(`Brain profiles:\n\n${rows.join('\n')}\n\n/attach <profile> starts one.\nprofile dirs:\n${profileDirsText()}`);
-      } catch (e) {
-        sysOut(`!! ${e.message}`);
-      }
-      return true;
-    }
+    // /profiles + /brain-profiles migrated to slash/profiles.mjs.
     if (cmd === '/profile' || cmd === '/profile-url') {
       try {
         const spec = parseProfileCreateArgs(arg);
@@ -4675,66 +4665,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/history') {
-      // List recent Claude Code sessions on disk, newest first.
-      // Each entry shows: short id, "Nm/Nh ago", size, original cwd, first user line.
-      try {
-        const projectsDir = join(homedir(), '.claude', 'projects');
-        let projects = [];
-        try { projects = await readdir(projectsDir); }
-        catch { sysOut(`(${projectsDir} not found — no ccode sessions yet)`); return true; }
-
-        const items = [];
-        for (const slug of projects) {
-          const projectPath = join(projectsDir, slug);
-          let files = [];
-          try { files = await readdir(projectPath); } catch { continue; }
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue;
-            const sessionId = file.replace(/\.jsonl$/, '');
-            const fullPath = join(projectPath, file);
-            try {
-              const st = await stat(fullPath);
-              if (st.size === 0) continue;
-              items.push({ sessionId, slug, fullPath, mtime: st.mtime, size: st.size });
-            } catch { /* skip */ }
-          }
-        }
-        if (!items.length) { sysOut('(no ccode sessions on disk)'); return true; }
-
-        items.sort((a, b) => b.mtime - a.mtime);
-        const N = parseInt(arg, 10) || 10;
-        const top = items.slice(0, N);
-        const enriched = await Promise.all(top.map(async (it) => {
-          const meta = await readJsonlMetadata(it.fullPath);
-          return { ...it, ...meta };
-        }));
-
-        const fmtTime = (d) => {
-          const sec = Math.max(0, (Date.now() - d.getTime()) / 1000);
-          if (sec < 60) return `${Math.floor(sec)}s ago`;
-          if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-          if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-          return `${Math.floor(sec / 86400)}d ago`;
-        };
-        const fmtSize = (b) =>
-          b < 1024 ? `${b}B` :
-          b < 1024 * 1024 ? `${(b / 1024).toFixed(0)}K` :
-          `${(b / (1024 * 1024)).toFixed(1)}M`;
-
-        const lines = enriched.map(it => {
-          const id = it.sessionId.slice(0, 8);
-          const cwd = it.cwd ?? `(slug: ${it.slug})`;
-          const preview = it.preview ? `"${it.preview}"` : '(no preview)';
-          return `${id}…  ${fmtTime(it.mtime).padEnd(8)} ${fmtSize(it.size).padEnd(6)} ${preview}\n` +
-                 `             cwd: ${cwd}`;
-        });
-        sysOut(`Last ${enriched.length} of ${items.length} ccode session(s) on disk:\n\n` +
-               lines.join('\n\n') +
-               `\n\nto resume: /session <sessionId>   (cwd auto-detected from the JSONL)`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
+    // /history migrated to slash/history.mjs.
     // /last migrated to slash/last.mjs.
     // /sessions migrated to slash/sessions.mjs.
     // /rooms + /save-room migrated to slash/rooms.mjs.
@@ -5145,44 +5076,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/chrome') {
-      // Explicit spawn. Brain Chrome is no longer auto-spawned at startup;
-      // shell only attaches if it finds Chrome already running. /chrome
-      // launches a fresh Chrome with the extension loaded under the
-      // ~/.egpt/chrome/profiles/brain profile (auto-migrating from the
-      // legacy ~/.egpt/egpt-brain on first clean launch).
-      await spawnChromeWithExtension();
-      return true;
-    }
-    if (cmd === '/tabs') {
-      try {
-        const all = await cdp.listTabs();
-        const showAll = arg === 'all';
-        const isInternal = (u) =>
-          u.startsWith('chrome://') || u.startsWith('chrome-extension://') || u.startsWith('devtools://') || u.startsWith('about:');
-        const tabs = showAll ? all : all.filter(t => !isInternal(t.url));
-        if (!tabs.length) {
-          sysOut(showAll ? 'no pages found in brain Chrome' : 'no real pages (try /tabs all to see chrome:// internals)');
-          return true;
-        }
-        const matchBrain = (url) => {
-          for (const b of Object.values(BRAINS)) {
-            if (b.urlMatch && b.urlMatch.test(url)) return b.name;
-          }
-          return '(unmapped)';
-        };
-        const hidden = all.length - tabs.length;
-        const header = hidden ? `(${hidden} chrome:// page${hidden > 1 ? 's' : ''} hidden — /tabs all to see)\n` : '';
-        // Title-first format: humans recognize titles, not target IDs. URL and
-        // shortened ID below for /attach lookup. To attach: /attach chatgpt-cdp <name> <urlOrId>
-        sysOut(header + tabs.map(t =>
-          `"${t.title || '(untitled)'}"   ·   ${matchBrain(t.url)}\n` +
-          `   ${t.url}\n` +
-          `   id: ${t.id.slice(0, 8)}`
-        ).join('\n\n'));
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
+    // /chrome + /tabs migrated to slash/chrome.mjs + slash/tabs.mjs.
     return false;
   };
 
