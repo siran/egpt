@@ -1465,6 +1465,14 @@ export async function startWhatsAppBridge({
       let typingTimer = null;
       let initialDone = false;
       let finished    = false;
+      // Track whether ANY message has actually reached WA. Set to true
+      // when the initial send returns a key OR when finish() falls back
+      // to a fresh send and that succeeds. Callers (persona dispatch in
+      // egpt.mjs) check this after finish() and fall back to a plain
+      // bridge.send when false — otherwise a rate-limited / WS-blipped
+      // stream fails silently and the user sees no reply.
+      let delivered   = false;
+      let lastError   = null;
 
       const refreshTyping = () => {
         if (finished) return;
@@ -1479,12 +1487,18 @@ export async function startWhatsAppBridge({
 
       // Initial send (async — updates that arrive before this resolves
       // queue into `pending` and flush once initialDone is true).
+      // `delivered` is NOT set here: the placeholder reaching WA isn't
+      // useful — we only care that the FINAL text did. finish() flips
+      // delivered after a successful edit/send of the final body.
       (async () => {
         try {
           const r = await sock.sendMessage(target, { text: initialText });
           msgKey = r?.key ?? null;
           rememberSent(r?.key?.id);
-        } catch (e) { err(`stream start: ${e.message}`); }
+        } catch (e) {
+          lastError = e.message;
+          err(`stream start: ${e.message}`);
+        }
         initialDone = true;
         if (pending !== null) maybeEdit();
       })();
@@ -1502,7 +1516,7 @@ export async function startWhatsAppBridge({
             lastSent = text;
             lastEditAt = Date.now();
           })
-          .catch((e) => err(`stream edit: ${e.message}`));
+          .catch((e) => { lastError = e.message; err(`stream edit: ${e.message}`); });
       }
 
       function maybeEdit() {
@@ -1535,14 +1549,29 @@ export async function startWhatsAppBridge({
                 const r = await sock.sendMessage(target, { edit: msgKey, text: pending });
                 rememberSent(r?.key?.id);
                 lastSent = pending;
+                if (r?.key) delivered = true;
+              } else if (pending === lastSent) {
+                // Already up to date from prior edits — that's a delivery.
+                delivered = true;
               }
             } else {
+              // Initial send failed or still in flight: plain send.
               const r = await sock.sendMessage(target, { text: pending });
               rememberSent(r?.key?.id);
+              if (r?.key) { msgKey = r.key; delivered = true; }
             }
-          } catch (e) { err(`stream finish: ${e.message}`); }
+          } catch (e) {
+            lastError = e.message;
+            err(`stream finish: ${e.message}`);
+          }
           stopTyping();
         },
+        // Did any message actually reach WA? Callers use this after
+        // finish() to decide whether to fall back to a plain send.
+        // false here = silent failure path: initial send threw, finish
+        // also threw, no message visible on the recipient's phone.
+        get delivered() { return delivered; },
+        get lastError() { return lastError; },
       };
     },
     stop() {
