@@ -1828,13 +1828,28 @@ function App() {
   // text fans out to every chat in it; WA-arriving messages from a
   // chat in the set get mirrored to every OTHER chat in the set
   // (bridge mode — Alice in @wa5 shows up in @wa6 too). Map keyed
-  // by jid → { jid, name, idx }. Empty / null means "no WA binding"
-  // — the historical single-chat /join was just this with one entry.
+  // by jid → { jid, name, idx, dir }. dir is one of:
+  //   'both' (default)  — bidirectional: shell↔chat, chat↔chat
+  //   'in'              — incoming only: chat→shell (and to other
+  //                       joined chats), shell text does NOT fan out
+  //                       to this chat
+  //   'out'             — outgoing only: shell→chat, chat's own
+  //                       arrivals do NOT render in shell
+  // Empty / null means "no WA binding".
   const waJoinedRef = useRef(null);
   // Helpers — keep callers from special-casing the empty / single /
   // multi cases everywhere.
   const _waJoinedAll = () =>
     waJoinedRef.current ? [...waJoinedRef.current.values()] : [];
+  // Direction filters. Outgoing-targets = chats that should receive
+  // shell-typed text. Incoming-allowed = chats whose arrivals
+  // should render in shell (and bridge to other joined chats).
+  const _waJoinedOutgoing = () => _waJoinedAll().filter(e => (e.dir ?? 'both') !== 'in');
+  const _waJoinedIncomingAllowed = (jid) => {
+    const e = waJoinedRef.current?.get(jid);
+    if (!e) return false;
+    return (e.dir ?? 'both') !== 'out';
+  };
   const _waJoinedFirst = () =>
     waJoinedRef.current && waJoinedRef.current.size > 0
       ? waJoinedRef.current.values().next().value
@@ -1958,7 +1973,11 @@ function App() {
           // mirror to peer bridges. Single-chat opt-in — every other
           // observed chat stays silent. /storm overrides everything
           // (storm = render every WA arrival regardless).
-          const joinedToThis = _waJoinedHas(from.chatId);
+          // Incoming gate: only let the chat into shell if its
+          // direction allows inbound (default 'both' or 'in').
+          // 'out'-only bindings are write-only — we don't render
+          // arrivals from those.
+          const joinedToThis = _waJoinedHas(from.chatId) && _waJoinedIncomingAllowed(from.chatId);
           const observeOnly = !_stormRef.current && classifiedObserve && !joinedToThis;
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
@@ -2096,7 +2115,9 @@ function App() {
     // we skip sending it BACK to that chat (no self-echo) but DO
     // send it to every OTHER joined chat — that's the cross-chat
     // bridge: @wa5 ↔ @wa6 when both are in /use.
-    const joinedTargets = _waJoinedAll().map(e => e.jid);
+    // Outgoing direction filter: 'in'-only joined chats receive
+    // nothing from shell — they're listen-only bindings.
+    const joinedTargets = _waJoinedOutgoing().map(e => e.jid);
     const fallbackTarget = (typeof opt === 'string' && opt) ? opt : wa.selfDmJid;
     const targets = joinedTargets.length ? joinedTargets : (fallbackTarget ? [fallbackTarget] : []);
     // Match Telegram's pattern: advance the counter even when target
@@ -2720,15 +2741,16 @@ function App() {
     }
     if (cmd === '/use') {
       const target = arg.trim();
+      const dirArrow = (d) => d === 'in' ? '←' : d === 'out' ? '→' : '↔';
       const fmtWaTargets = () => _waJoinedAll()
-        .map(e => `@wa${e.idx + 1} "${e.name}"`).join(' + ');
+        .map(e => `${dirArrow(e.dir ?? 'both')}@wa${e.idx + 1} "${e.name}"`).join(' + ');
       if (!target) {
         const brains = activeSessions.length ? activeSessions.join(', ') : null;
         const wa = _waJoinedSize() > 0 ? fmtWaTargets() : null;
         const parts = [brains, wa].filter(Boolean);
         sysOut(parts.length
-          ? `active recipients: ${parts.join(' + ')}  (plain text fans out to all)`
-          : 'no active recipients — plain text stays in the room. /use <name> for a brain, /use @waN for a WA chat. Calls accumulate; /use clear to reset; /unuse <name|@waN> to drop one.');
+          ? `active recipients: ${parts.join(' + ')}\n  (↔ both | → outgoing only | ← incoming only)`
+          : 'no active recipients — plain text stays in the room.\n  /use <name>                 brain\n  /use @waN                   WA chat, bidirectional\n  /use @waN,@waM incoming     listen-only on those chats\n  /use @waN outgoing          write-only (no arrivals render)\n  /use clear                  reset; /unuse <name|@waN> drops one');
         return true;
       }
       if (target === 'clear' || target === 'none') {
@@ -2737,15 +2759,24 @@ function App() {
         sysOut('active recipients cleared — plain text no longer auto-routes');
         return true;
       }
-      // Comma-separated list = multi-target. Each call ACCUMULATES;
-      // /use @wa5 then /use @wa6 = both, which in practice bridges
-      // the two chats (Alice in @wa5 mirrors to @wa6 and vice versa).
-      // Tokens may be:
-      //   <brain-session>   — local session in this room
-      //   @waN              — WA chat from the most-recent /channels
-      const tokens = target.split(',').map(s => s.trim()).filter(Boolean);
-      const waTokens = tokens.filter(t => /^@wa\d+$/i.test(t));
-      const brainTokens = tokens.filter(t => !/^@wa\d+$/i.test(t));
+      // Comma-separated list = multi-target. Each call ACCUMULATES.
+      // Trailing direction word (incoming | in | <- ; outgoing | out
+      // | -> ; both | bi | <->) applies to all @waN tokens in this
+      // call. Default: 'both'. Per-call direction; subsequent /use
+      // calls can mix directions on different chats.
+      const allTokens = target.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+      const DIR_WORDS = { incoming: 'in', in: 'in', '<-': 'in', '←': 'in',
+                          outgoing: 'out', out: 'out', '->': 'out', '→': 'out',
+                          both: 'both', bi: 'both', '<->': 'both', '↔': 'both' };
+      let dir = 'both';
+      const positional = [];
+      for (const t of allTokens) {
+        const dn = DIR_WORDS[t.toLowerCase()];
+        if (dn) dir = dn;
+        else positional.push(t);
+      }
+      const waTokens = positional.filter(t => /^@wa\d+$/i.test(t));
+      const brainTokens = positional.filter(t => !/^@wa\d+$/i.test(t));
       const unknown = brainTokens.filter(n => !sessions[n]);
       if (unknown.length) {
         sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
@@ -2765,9 +2796,12 @@ function App() {
           sysOut(`!! /use ${t}: whatsapp bridge not running`);
           return true;
         }
-        waAdds.push({ jid: chat.jid, name: chat.name, idx });
+        waAdds.push({ jid: chat.jid, name: chat.name, idx, dir });
       }
-      // Merge: brains accumulate (no duplicates), WA targets accumulate.
+      // Merge: brains accumulate (no duplicates), WA targets accumulate
+      // with their per-call direction. Re-adding an existing chat with
+      // a new direction OVERWRITES the previous direction for that
+      // chat — that's the natural way to flip a binding.
       if (brainTokens.length) {
         const merged = [...new Set([...activeSessions, ...brainTokens])];
         setActiveSessions(merged);
@@ -2778,7 +2812,7 @@ function App() {
           ? [...new Set([...activeSessions, ...brainTokens])].join(', ')
           : null,
         _waJoinedSize() > 0 ? fmtWaTargets() : null,
-      ].filter(Boolean).join(' + ')}  (plain text fans out to all)`);
+      ].filter(Boolean).join(' + ')}  (↔ bidirectional, → outgoing, ← incoming)`);
       return true;
     }
     if (cmd === '/unuse') {
@@ -3510,46 +3544,69 @@ function App() {
       return true;
     }
     if (cmd === '/join') {
-      // /join @waN — bind shell-typed plain text to chat N from the
-      // most recent /channels listing. After /join, every plain message
-      // typed in shell is sent straight to that chat (in addition to
-      // any local routing). Echoed locally so the operator sees the
-      // line; the wa-items-mirror skips it (_directWa) so it doesn't
-      // also land in the self-DM mirror target.
-      const m = text.trim().match(/^\/join\s+@wa(\d+)\s*$/i);
-      if (!m) {
-        sysOut('usage: /join @waN     (N from /channels)');
-        return true;
+      // /join @waN[,@waM,…] [incoming|outgoing|both]
+      //   Accumulates joined chats with an optional direction word.
+      //   Default direction is 'both' (bidirectional). 'incoming'
+      //   (alias 'in', '<-', '←') = listen only; 'outgoing' (alias
+      //   'out', '->', '→') = write only.
+      const argTrim = arg.trim();
+      const toks = argTrim.split(/[\s,]+/).filter(Boolean);
+      const DIR = { incoming: 'in', in: 'in', '<-': 'in', '←': 'in',
+                    outgoing: 'out', out: 'out', '->': 'out', '→': 'out',
+                    both: 'both', bi: 'both', '<->': 'both', '↔': 'both' };
+      let dir = 'both';
+      const waTokens = [];
+      for (const t of toks) {
+        const d = DIR[t.toLowerCase()];
+        if (d) dir = d;
+        else if (/^@wa\d+$/i.test(t)) waTokens.push(t);
+        else { sysOut(`!! /join: "${t}" isn't @waN or a direction word (incoming | outgoing | both)`); return true; }
       }
-      const idx = parseInt(m[1], 10) - 1;
-      const chat = _waChannelsCacheRef.current[idx];
-      if (!chat) {
-        sysOut(`!! /join: no @wa${idx + 1} in cache — run /channels first`);
+      if (!waTokens.length) {
+        sysOut('usage: /join @waN[,@waM,…] [incoming|outgoing|both]   (N from /channels)');
         return true;
       }
       if (!waBridgeRef.current) {
         sysOut('!! /join: whatsapp bridge not running');
         return true;
       }
+      // Resolve all @waN tokens before mutating state.
+      const adds = [];
+      for (const t of waTokens) {
+        const idx = parseInt(t.match(/^@wa(\d+)$/i)[1], 10) - 1;
+        const chat = _waChannelsCacheRef.current[idx];
+        if (!chat) {
+          sysOut(`!! /join: no @wa${idx + 1} in cache — run /channels first`);
+          return true;
+        }
+        adds.push({ jid: chat.jid, name: chat.name, idx, dir });
+      }
       // /join accumulates same as /use @waN. Previous single-target
-      // behaviour is preserved when called once; calling again adds
-      // a second target rather than replacing.
-      _waJoinedAdd({ jid: chat.jid, name: chat.name, idx });
-      // Broadcast on the bus so peers with whatsapp.follow_join enabled
-      // adopt. (Each /join announces just the entry being added; peers
-      // who opt to follow can choose to accumulate or replace per
-      // their own policy.)
+      // behaviour is preserved when called once with one chat;
+      // calling again adds further targets rather than replacing.
+      for (const e of adds) _waJoinedAdd(e);
+      // For the legacy single-arg log/broadcast path, name the first
+      // added chat in the message.
+      const chat = adds[0];
+      const idx = chat.idx;
+      // Broadcast each added chat on the bus so peers with
+      // whatsapp.follow_join enabled adopt.
       {
         const tid = busTargetIdRef.current;
         if (tid) {
-          bus.postEvent(tid, {
-            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
-            jid: chat.jid, name: chat.name,
-          }).catch(() => {});
+          for (const a of adds) {
+            bus.postEvent(tid, {
+              type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
+              jid: a.jid, name: a.name,
+            }).catch(() => {});
+          }
         }
       }
-      sysOut(`joined @wa${idx + 1} "${chat.name}" — plain messages now route here. ` +
-        (_waJoinedSize() > 1 ? `Currently ${_waJoinedSize()} WA chats joined (bridged). ` : '') +
+      const dirNote = dir === 'in' ? ' (incoming only — they reach shell, shell-typed text does not)' :
+                       dir === 'out' ? ' (outgoing only — shell-typed text reaches them, their arrivals do not render)' :
+                       '';
+      sysOut(`joined ${adds.map(a => `@wa${a.idx + 1} "${a.name}"`).join(', ')}${dirNote}. ` +
+        (_waJoinedSize() > adds.length ? `Currently ${_waJoinedSize()} WA chats joined. ` : '') +
         `/unjoin to release${_waJoinedSize() > 1 ? ' all, /unjoin @waN to drop one' : ''}.`);
       return true;
     }
@@ -6372,11 +6429,13 @@ function App() {
       const wa = waBridgeRef.current;
       if (wa) {
         // Fan out the user's plain text to every joined WA chat.
+        // 'in'-only joined chats are listen-only — they don't
+        // receive shell-typed text; the outgoing filter drops them.
         // Capture each send's returned key so '@m<N>' on the echo
         // item can reply-to-self via a proper WA quote. Sends are
         // awaited in parallel — they don't block each other.
         const settled = await Promise.allSettled(
-          _waJoinedAll().map(entry => wa.send(text, { chatId: entry.jid })
+          _waJoinedOutgoing().map(entry => wa.send(text, { chatId: entry.jid })
             .then(r => ({ entry, result: r }))),
         );
         const replyTargets = [];

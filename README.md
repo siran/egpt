@@ -1,45 +1,68 @@
 # eGPT
 
-eGPT is a tool that joins in chat-like room multiple AI(s) and human(s), via WhatsApp, Telegram, shell script, and browser extension (Chrome, Firefox).
+eGPT is a tool that joins multiple AI(s) and human(s) in a chat-like room, via WhatsApp, Telegram, shell script, and browser extension (Chrome, Firefox).
 
 For example
 
-...
-...
-...
+```text
+🦅 An@kg (10:30 EDT)
+@cgpt1 @claude1 one sentence each on retrocomputing
+🦊 cgpt1@kg (10:30 EDT)
+Keeping old systems alive for what they reveal about computing's roots.
+🧠 claude1@kg (10:30 EDT)
+A scholarly + hobbyist thread that holds onto hardware the mainstream moved past.
+```
 
-eGPT is an "AI helper". It allows seemless interaction of
+eGPT is an "AI helper". It allows seamless interaction of
 
   [ChatGPT Web, Claude Web] <> [Codex, Claude Code] <> Shell <> WhatsApp
 
 For example:
 
-...
-...
-...
+```text
+[An via WhatsApp]  @e qué hora es en Tokyo ahora?
+🐶 egpt@kg          Son las 22:14 en Tokyo — 13h por delante de EDT.
+[shell, same room] @e qué hora es en Tokyo ahora?     ← same turn, mirrored
+                    Son las 22:14 en Tokyo — 13h por delante de EDT.
+```
 
-eGPT let's you you WhatsApp, or your shell, to access the files in your computer through codex, prompts it to a "brain", receive response, mirror it to chats, save it to files, etc...
-
-For example:
-
-...
-...
-...
-
-eGPT let's you prompt Chat GPT Web and Claude AI web from a custom, local chat interface.
+eGPT lets you use WhatsApp, or your shell, to access the files in your computer through codex, prompt a "brain", receive the response, mirror it to chats, save it to files, etc...
 
 For example:
 
-...
-...
-...
+```text
+🦅 An@kg (11:02 EDT)
+@cx exec: ls -lh ~/Downloads/*.pdf
+🐻 cx@kg (11:02 EDT)
+-rw-r--r-- 1 an 2.3M May 10  paper-michelson-morley.pdf
+-rw-r--r-- 1 an 540K May 12  invoice-april.pdf
+🦅 An@kg (11:03 EDT)
+/mirror @wa6 m2 --tagged
+egpt@kg
+→ /mirror @wa6 "compren bitcoin!": [cx@kg 2026-05-13 11:02 EDT] -rw-r--r-- 1 an 2.3M …
+```
+
+eGPT lets you prompt ChatGPT Web and Claude AI web from a custom, local chat interface.
+
+For example:
+
+```text
+🦅 An@kg (14:20 EDT)
+@cgpt1 explain quaternions in 3 lines
+🦊 cgpt1@kg (14:20 EDT)
+Quaternions are 4-component numbers (1 real + 3 imaginary) used to represent rotations in 3D…
+🦅 An@kg (14:21 EDT)
+@claude1 same question, but compare to rotation matrices
+🧠 claude1@kg (14:21 EDT)
+Quaternions encode the same rotations with 4 numbers instead of 9, compose by multiplication…
+```
 
 
 The web sessions use your existing browser login. The core flow does not need
 OpenAI or Anthropic API keys.
 
 # Other uses
-  - you could bridge Telegram, Whatsapp and an AI
+  - you could bridge Telegram, WhatsApp and an AI
   - could be your agent reminding you of things, doing things. The other day eGPT almost bought a pair of bongos for me.
   - possibilities are endless :)
 
@@ -56,16 +79,16 @@ For full usage, see [MANUAL.md](./MANUAL.md). For manual checks, see
 ## Quick Start
 
 ```bash
-cd ~/src/eGPT
+cd ~/src/egpt
 npm install
 npm run build:ext
-node eGPT.mjs
+node egpt.mjs
 ```
 
 Use an explicit room file:
 
 ```bash
-node eGPT.mjs ~/notes/room.md
+node egpt.mjs ~/notes/room.md
 ```
 
 On Windows PowerShell, use `npm.cmd` if script execution blocks `npm`:
@@ -139,8 +162,8 @@ registry used by the shell and extension.
 ## Project Layout
 
 ```text
-eGPT/
-  eGPT.mjs              shell app and side effects
+egpt/
+  egpt.mjs              shell app and side effects
   interpreter.mjs       parser and command registry
   room.mjs              routing decisions
   persona-state.mjs     persona state helpers
@@ -154,7 +177,7 @@ eGPT/
   TESTING.md            manual test checklist
 ```
 
-Runtime state lives under `~/.eGPT/`: config, Chrome profiles, CDP token,
+Runtime state lives under `~/.egpt/`: config, Chrome profiles, CDP token,
 prepared files, summaries, and session state.
 
 ## Tests
