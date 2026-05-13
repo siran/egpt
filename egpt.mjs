@@ -3687,7 +3687,12 @@ function App() {
           const age = c.lastActivityTs > 0
             ? ageLabel(c.lastActivityTs)
             : (c.creationTs > 0 ? `dormant, created ${ageLabel(c.creationTs)}` : 'dormant');
-          const header = `  @wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
+          // 📌 marker for pinned chats. listChats already floats
+          // pinned to the top of the list — the indicator just makes
+          // the priority visible (so the user knows WA itself pinned
+          // these, not just that activity bubbled them up).
+          const pin = c.pinned ? '📌 ' : '   ';
+          const header = `  ${pin}@wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
           if (!messagesPerChat) return header;
           // Prefer baileys-captured per-message lines when we have them.
           if (Array.isArray(c.recent) && c.recent.length) {

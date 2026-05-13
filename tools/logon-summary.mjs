@@ -41,9 +41,18 @@ export async function buildLogonSummary() {
   const totalMessages = chats
     .filter(c => c.jid !== 'status@broadcast')
     .reduce((sum, c) => sum + (c.messageCount || 0), 0);
+  // Order: pinned chats first (WA-pin status mirrors the user's own
+  // priority signal), then by messageCount desc among the rest.
+  // Pinned chats with 0 activity since last logon still take a slot
+  // when they have at least 1 msg — without that the line goes blank.
   const topChats = chats
     .filter(c => (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast')
-    .sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0))
+    .sort((a, b) => {
+      const ap = (a.pinned || 0) > 0 ? 1 : 0;
+      const bp = (b.pinned || 0) > 0 ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return (b.messageCount || 0) - (a.messageCount || 0);
+    })
     .slice(0, 5);
 
   // status@broadcast lives in its own chat entry; pull out its
@@ -94,7 +103,8 @@ export async function buildLogonSummary() {
       // never quote a stale message from a previous window.
       const fresh = _latestRecent(c.recent, since);
       const count = c.messageCount;
-      const head  = `      ${label}  ·  ${count} msg${count === 1 ? '' : 's'}`;
+      const pin   = (c.pinned || 0) > 0 ? '📌 ' : '';
+      const head  = `      ${pin}${label}  ·  ${count} msg${count === 1 ? '' : 's'}`;
       if (fresh) {
         const author = fresh.author ? `${fresh.author}: ` : '';
         lines.push(`${head}`);
