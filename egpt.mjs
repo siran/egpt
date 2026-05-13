@@ -1866,12 +1866,15 @@ function App() {
   // Bus-aware Telegram startup, once per shell lifetime.
   //
   // Boot phase (first 2s of bus-stable peers): consult peerNodesRef
-  // for any peer announcing `polling: true`. If found, defer.
-  // If clear, start. After this single attempt, the boot effect is
-  // done — all further claim/yield decisions ride the existing
-  // bus-event handlers (`node-offline` / `telegram-status` with
-  // polling=false → auto-claim with jitter; 409 from Bot API →
-  // onYield clears bridgeRef and stays yielded).
+  // and apply shell-priority policy. Shells are the natural Telegram
+  // owner — they also run WA, brains, file logging, and the bus.
+  // The chrome extension is a viewer surface that holds the slot
+  // opportunistically when no shell is around. So:
+  //   - polling SHELL peer present → defer (auto-resume on their yield)
+  //   - polling CHROME peer present → preempt via self-handoff
+  //   - nobody polling → start
+  // The chrome extension's telegram-handoff handler does the
+  // symmetric thing on its side: ev.to !== its own id → stop polling.
   //
   // The peersRev dependency is here ONLY to extend the 2s timer when
   // peers churn before the timer fires; once the timer has fired, the
@@ -1888,8 +1891,23 @@ function App() {
       if (tgBootAttempted.current) return;
       tgBootAttempted.current = true;
       if (bridgeRef.current) return;
-      for (const [, peer] of peerNodesRef.current) {
-        if (peer.polling) return; // they own it; wait for yield event
+      const peers = [...peerNodesRef.current.values()];
+      const otherShellPolling = peers.some(p => p.polling && p.role !== 'chrome');
+      if (otherShellPolling) return;       // another shell owns it
+      const chromePolling = peers.some(p => p.polling && p.role === 'chrome');
+      if (chromePolling) {
+        // Preempt the extension. Post a self-handoff; the extension's
+        // telegram-handoff handler will stopBridge() since ev.to is
+        // not its own id. 1.5s settle lets the yield reach Telegram
+        // before our getUpdates opens (Bot API still 409s for several
+        // seconds after a polling stop).
+        const tid = busTargetIdRef.current;
+        if (tid) {
+          bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
+            ts: Date.now(), to: BUS_NODE_ID }).catch(() => {});
+          setTimeout(() => startTgBridge(), 1500);
+          return;
+        }
       }
       startTgBridge();
     }, 2000);
