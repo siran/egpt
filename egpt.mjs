@@ -2920,6 +2920,9 @@ function App() {
     // file's run() header so the surface area stays grep-able.
     const entry = SLASH_REGISTRY.get(cmd);
     if (entry) {
+      // meta carries the dispatch origin (fromWhatsApp/fromTelegram +
+      // chatId/userId). /config uses it for bridge-context key inference.
+      // Other files can read it via { meta } in their run signature.
       const ctx = {
         sysOut,
         waBridgeRef,
@@ -3039,123 +3042,44 @@ function App() {
         clearGlobalWaBridge: () => { _globalWaBridge = null; },
         startWaBridge,
         setBusyLabel,
+        // Batch 15 additions
+        roomSessionsMap,
+        setRoomSessionsMap,
+        getCurrentRoom: () => currentRoom,
+        setCurrentRoom,
+        LOCAL_CONFIG_PATH,
+        setUserName:    (v) => { USER_NAME = String(v); },
+        nodeRename:     async (newName) => {
+          // Live rename: announce node-offline under the old name first
+          // so peers drop the old entry, swap BUS_NODE_ID + SURFACE_TAG,
+          // then re-announce as node-online. Local UI + Telegram tags
+          // pick up the new SURFACE_TAG on next render; past rows keep
+          // their original tag (locked by Ink's <Static>).
+          const oldName = BUS_NODE_ID;
+          const tid = busTargetIdRef.current;
+          if (tid && oldName !== newName) {
+            try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (_) {}
+          }
+          BUS_NODE_ID = newName;
+          SURFACE_TAG = newName;
+          if (tid && oldName !== newName) {
+            try {
+              await bus.postEvent(tid, {
+                type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
+                sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
+                polling: tgPolling,
+                wa: !!waBridgeRef.current,
+              });
+            } catch (_) {}
+          }
+        },
       };
-      return await entry.run({ cmd, arg, ctx });
+      return await entry.run({ cmd, arg, meta, ctx });
     }
 
     // /exit and /version migrated to slash/exit.mjs and slash/version.mjs.
     // /use + /unuse migrated to slash/recipients.mjs.
-    if (cmd === '/room') {
-      const argParts = arg.split(/\s+/).filter(Boolean);
-      const sub = argParts[0];
-      const target = argParts[1];
-
-      const fmtRoom = (name) => {
-        const sess = roomSessionsMap[name];
-        if (sess === undefined) {
-          return `room "${name}" doesn't exist — /room create ${name} to make it`;
-        }
-        const here = name === currentRoom ? '  (current)' : '';
-        const memberCount = Object.keys(sess).length;
-        const list = memberCount === 0
-          ? '(no members)'
-          : Object.entries(sess).map(([n, s]) => `${s.emoji ?? ''}${n} (${s.brain})`).join(', ');
-        return `room "${name}"${here}\n  members: ${list}`;
-      };
-
-      // No arg: show current room.
-      if (!sub) {
-        const all = Object.keys(roomSessionsMap).filter(r => r !== currentRoom);
-        const others = all.length ? `\n  other rooms: ${all.join(', ')}` : '';
-        sysOut(fmtRoom(currentRoom) + others);
-        return true;
-      }
-      if (sub === 'create') {
-        if (!target) { sysOut('usage: /room create <name>'); return true; }
-        if (roomSessionsMap[target]) { sysOut(`!! room "${target}" already exists`); return true; }
-        setRoomSessionsMap(rs => ({ ...rs, [target]: {} }));
-        sysOut(`room "${target}" created — /room join ${target} to enter`);
-        return true;
-      }
-      if (sub === 'join') {
-        if (!target) { sysOut('usage: /room join <name>'); return true; }
-        if (!roomSessionsMap[target]) {
-          sysOut(`!! room "${target}" doesn't exist — /room create ${target}`);
-          return true;
-        }
-        if (target === currentRoom) { sysOut(`already in "${target}"`); return true; }
-        setCurrentRoom(target);
-        setActiveSessions([]);   // /use is per-room
-        sysOut(`joined room "${target}"`);
-        // Re-attach behaviour controlled by config (room.on_join):
-        //   'lazy'  (default) — saved sessions stay as data; first
-        //                       @session use triggers attach
-        //   'eager'           — auto-/attach every CDP session by
-        //                       opening a tab at its saved url and
-        //                       wiring up targetId. Codex / claude-code
-        //                       sessions don't need anything spun up
-        //                       up-front; they pick up their saved
-        //                       session_id / cwd on first turn.
-        //   'off'             — keep the room data loaded but don't
-        //                       restore sessions at all on join.
-        const onJoin = EGPT_CONFIG.room?.on_join ?? 'lazy';
-        if (onJoin === 'eager') {
-          const targetSessions = roomSessionsMap[target] ?? {};
-          const cdpSessions = Object.entries(targetSessions)
-            .filter(([, s]) => {
-              const b = brainForName(s.brain);
-              return b?.urlMatch && s.options?.url;
-            });
-          if (cdpSessions.length) {
-            sysOut(`eager-attach: spinning up ${cdpSessions.length} CDP session(s)…`);
-            for (const [name, s] of cdpSessions) {
-              try {
-                if (!(await cdp.isRunning())) {
-                  sysOut('  chrome not reachable — starting…');
-                  await spawnChromeWithExtension();
-                }
-                const tid = await cdp.openTab(s.options.url);
-                // Patch this session's options with the live targetId.
-                setRoomSessionsMap(rs => {
-                  const cur = rs[target] ?? {};
-                  const sNow = cur[name] ?? {};
-                  const opts = { ...(sNow.options ?? {}), targetId: tid };
-                  return { ...rs, [target]: { ...cur, [name]: { ...sNow, options: opts } } };
-                });
-                sysOut(`  ${s.emoji ?? ''} ${name} → ${s.brain} (tab ${tid.slice(0, 8)}…)`);
-              } catch (e) {
-                sysOut(`  !! could not attach ${name}: ${e.message}`);
-              }
-            }
-          }
-        }
-        return true;
-      }
-      if (sub === 'leave') {
-        if (currentRoom === 'default') { sysOut('already in default room'); return true; }
-        const left = currentRoom;
-        setCurrentRoom('default');
-        setActiveSessions([]);
-        sysOut(`left "${left}" — back in default room`);
-        return true;
-      }
-      if (sub === 'delete') {
-        if (!target) { sysOut('usage: /room delete <name>'); return true; }
-        if (target === 'default') { sysOut('!! cannot delete default room'); return true; }
-        if (!roomSessionsMap[target]) { sysOut(`!! room "${target}" doesn't exist`); return true; }
-        if (currentRoom === target) { setCurrentRoom('default'); setActiveSession(null); }
-        setRoomSessionsMap(rs => {
-          const next = { ...rs };
-          delete next[target];
-          return next;
-        });
-        sysOut(`room "${target}" deleted`);
-        return true;
-      }
-      // /room <name>: show info on that room.
-      sysOut(fmtRoom(sub));
-      return true;
-    }
+    // /room migrated to slash/room.mjs.
     // /restart, /upgrade, /rewind migrated to slash/lifecycle.mjs.
     // /file migrated to slash/file.mjs.
     // /conversations + /conversation migrated to slash/conversation.mjs.
@@ -3174,138 +3098,7 @@ function App() {
 
     // /wa-pending migrated to slash/wa-pending.mjs.
     // /whatsapp migrated to slash/whatsapp.mjs.
-    if (cmd === '/config') {
-      // Allowed config keys are registered in config-schema.mjs and
-      // covered by an integrity test that cross-checks against
-      // EGPT_CONFIG references in this file.
-      //
-      // Three input forms now supported:
-      //   /config <key> <val>             — top-level key (e.g. node_name)
-      //   /config <key>.<sub> <val>       — nested key inside a top-level
-      //                                     block (e.g. whatsapp.client_name moto)
-      //   /config <subkey> <val>  (from a bridge) — when typed via
-      //                                     telegram or whatsapp, an
-      //                                     unknown bare key is interpreted
-      //                                     as the bridge's nested key —
-      //                                     '/config client_name moto'
-      //                                     from WA = whatsapp.client_name.
-      const parts = arg.trim().split(/\s+/);
-      let key = parts[0];
-      const rawVal = parts.slice(1).join(' ');
-      let localCfg = {};
-      try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
-      if (!key) {
-        // One block per key: current value (or '(unset)') + description.
-        // Sourced from the local config when present, otherwise the
-        // in-memory EGPT_CONFIG (default / inherited). Helps the
-        // operator discover what's available without grep-ing.
-        const lines = [`config  (${dp(LOCAL_CONFIG_PATH)}):`, ''];
-        for (const [k, desc] of Object.entries(CONFIG_SCHEMA)) {
-          const hasLocal = Object.prototype.hasOwnProperty.call(localCfg, k);
-          const live = EGPT_CONFIG[k];
-          const valStr = hasLocal
-            ? JSON.stringify(localCfg[k])
-            : (live !== undefined ? `${JSON.stringify(live)}  (default)` : '(unset)');
-          lines.push(`  ${k} = ${valStr}`);
-          lines.push(`    ${desc}`);
-          lines.push('');
-        }
-        lines.push('usage:');
-        lines.push('  /config <key> [val]              top-level (e.g. /config user_name An)');
-        lines.push('  /config <key>.<sub> [val]        nested (e.g. /config whatsapp.mirror_headers brain_only)');
-        sysOut(lines.join('\n'));
-        return true;
-      }
-      // Bridge-context inference: if the user is on whatsapp/telegram
-      // and typed a bare key that doesn't match a top-level slot,
-      // assume they meant <bridge>.<key>. This matches the user's
-      // intuition of 'I'm typing from WA, so I'm configuring WA'.
-      if (!key.includes('.') && !(key in CONFIG_SCHEMA)) {
-        if (meta.fromWhatsApp) key = `whatsapp.${key}`;
-        else if (meta.fromTelegram) key = `telegram.${key}`;
-      }
-      // Split into top-level + nested sub-key if dotted.
-      const dotIdx = key.indexOf('.');
-      const topKey = dotIdx > 0 ? key.slice(0, dotIdx) : key;
-      const subKey = dotIdx > 0 ? key.slice(dotIdx + 1) : null;
-      if (!(topKey in CONFIG_SCHEMA)) {
-        const valid = Object.keys(CONFIG_SCHEMA).join(', ');
-        sysOut(`!! unknown config key: ${key}\nvalid keys: ${valid}`);
-        return true;
-      }
-      if (!rawVal) {
-        const top = localCfg[topKey] ?? EGPT_CONFIG[topKey];
-        const v = subKey ? top?.[subKey] : top;
-        sysOut(v !== undefined ? `${key}: ${JSON.stringify(v)}` : `${key}: (not set)`);
-        return true;
-      }
-      let val;
-      try { val = JSON.parse(rawVal); } catch { val = rawVal; }
-      // Apply: nested writes preserve the rest of the block.
-      if (subKey) {
-        const block = (typeof localCfg[topKey] === 'object' && localCfg[topKey] !== null)
-          ? localCfg[topKey] : {};
-        block[subKey] = val;
-        localCfg[topKey] = block;
-      } else {
-        localCfg[topKey] = val;
-      }
-      try {
-        await mkdir(dirname(LOCAL_CONFIG_PATH), { recursive: true });
-        await writeFile(LOCAL_CONFIG_PATH, JSON.stringify(localCfg, null, 2) + '\n');
-        // Mirror into the in-memory EGPT_CONFIG so handlers downstream
-        // see the change without a restart.
-        if (subKey) {
-          if (typeof EGPT_CONFIG[topKey] !== 'object' || EGPT_CONFIG[topKey] === null) {
-            EGPT_CONFIG[topKey] = {};
-          }
-          EGPT_CONFIG[topKey][subKey] = val;
-        } else {
-          EGPT_CONFIG[topKey] = val;
-        }
-      } catch (e) { sysOut(`!! config write: ${e.message}`); return true; }
-      if (topKey === 'theme' && !subKey) {
-        Object.assign(T, loadTheme(val));
-        _currentTheme = val;
-        setThemeRev(n => n + 1);
-      }
-      if (topKey === 'user_name' && !subKey) {
-        // Live-update USER_NAME so the next brain dispatch / status
-        // render uses the new handle without requiring a shell
-        // restart. Reflected in subsequent '[handle@node ts]:'
-        // brain headers, status line, item author labels, etc.
-        USER_NAME = String(val);
-      }
-      if (topKey === 'show_prompts' && !subKey) _showPrompts = !!val;
-      if (topKey === 'node_name' && !subKey) {
-        // Live rename: announce node-offline under the old name first
-        // so peers drop the old entry, swap BUS_NODE_ID + SURFACE_TAG,
-        // then re-announce as node-online with the new name. Local UI
-        // and Telegram tags pick up the new SURFACE_TAG on the next
-        // render — past rows keep their original tag (they're locked
-        // in by Ink's <Static>, which is correct: history is history).
-        const oldName = BUS_NODE_ID;
-        const newName = String(val);
-        const tid = busTargetIdRef.current;
-        if (tid && oldName !== newName) {
-          try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (_) {}
-        }
-        BUS_NODE_ID = newName;
-        SURFACE_TAG = newName;
-        if (tid && oldName !== newName) {
-          try {
-            await bus.postEvent(tid, {
-              type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
-              sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
-              polling: tgPolling,
-              wa: !!waBridgeRef.current,
-            });
-          } catch (_) {}
-        }
-      }
-      sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(LOCAL_CONFIG_PATH)}`);
-      return true;
-    }
+    // /config migrated to slash/config.mjs.
     // /create-profile + /profile + /profile-url migrated to slash/profile.mjs.
     if (cmd === '/send-file') {
       let parsed;
