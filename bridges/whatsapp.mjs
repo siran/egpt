@@ -176,6 +176,44 @@ export async function startWhatsAppBridge({
   const RECENT_PER_CHAT = 10;        // ring cap
   const RECENT_BODY_CAP  = 200;      // chars stored per message body
   const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name, recent: [{ts,author,text}] }
+  // Parallel msgId → short preview cache so reaction placeholders can
+  // resolve the target message body ("[reaction 👍 to "buy bitcoin!"]"
+  // instead of "[reaction 👍 (msg 3A9838E5)]"). Lookup is by full
+  // WA stanza id (msg.key.id) which is what reactionMessage carries.
+  // Cap is generous but bounded — reactions can arrive minutes after
+  // the original message, so we keep more than _chats.recent's ring.
+  const _msgBodyById = new Map();
+  const _MSG_BODY_CACHE_CAP = 4_000;
+  function _rememberMsgBody(keyId, body) {
+    if (!keyId || !body || typeof body !== 'string') return;
+    // Don't memoize placeholder-only bodies — a reaction-of-a-reaction
+    // preview "[reaction 👍 to "…"]" is not interesting context.
+    if (body.startsWith('[reaction ')) return;
+    const oneLine = body.replace(/\s+/g, ' ').trim();
+    if (!oneLine) return;
+    const preview = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
+    _msgBodyById.set(keyId, preview);
+    if (_msgBodyById.size > _MSG_BODY_CACHE_CAP) {
+      // Drop the oldest insertion. Map preserves insertion order.
+      const firstKey = _msgBodyById.keys().next().value;
+      _msgBodyById.delete(firstKey);
+    }
+  }
+  // Enrich a reaction placeholder with the target body when we know it.
+  // textOf produces '[reaction <emoji> (msg <id8>)]'; this swaps the
+  // truncated id for a short quoted preview of the referenced message.
+  // Falls through unchanged when the target isn't in our cache (history
+  // older than session start, or a chat we haven't observed before).
+  function _enrichReactionText(rawText, msg) {
+    const r = msg?.message?.reactionMessage;
+    if (!r?.key?.id) return rawText;
+    const target = _msgBodyById.get(r.key.id);
+    if (!target) return rawText;
+    const emoji = r.text || '·';
+    return r.text
+      ? `[reaction ${emoji} to "${target}"]`
+      : `[reaction removed from "${target}"]`;
+  }
 
   // Load persisted chats on bridge start. Silently best-effort —
   // missing file / corrupt JSON just yields an empty map and we
@@ -262,6 +300,11 @@ export async function startWhatsAppBridge({
           ? trimmed.slice(0, RECENT_BODY_CAP - 1) + '…'
           : trimmed;
         const keyId = key?.id ?? null;
+        // Feed the reaction-target preview cache. Independent of the
+        // recent[] ring — that one is for /channels (per-chat,
+        // newest 10); _msgBodyById is for reaction lookups (cross-
+        // chat, ~4k cap, longer time horizon).
+        if (keyId) _rememberMsgBody(keyId, trimmed);
         const dupe = cur.recent.some(r =>
           (keyId && r.key?.id === keyId) ||
           (r.ts === ts && r.author === author && r.text === text));
@@ -691,8 +734,13 @@ export async function startWhatsAppBridge({
       };
       await _writeMediaIndex(dir, idx);
       const sizeKB = (buf.length / 1024).toFixed(1);
-      log(`media saved: ${hit.kind} ${sizeKB}KB → ${path}`);
-      try { onMediaSaved?.({ kind: hit.kind, chatJid, msgId, path, sizeBytes: buf.length }); } catch (_) {}
+      // Distinguish voice notes (PTT audio) from regular audio in the
+      // surfaced 'kind' — the on-screen placeholder reads '[voice note: 31s]'
+      // and the save notice should match. The filename slug already uses
+      // 'voice_note' for PTT, so this only affects what onMediaSaved sees.
+      const notifyKind = (hit.kind === 'audio' && node.ptt) ? 'voice note' : hit.kind;
+      log(`media saved: ${notifyKind} ${sizeKB}KB → ${path}`);
+      try { onMediaSaved?.({ kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length }); } catch (_) {}
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
@@ -828,7 +876,11 @@ export async function startWhatsAppBridge({
     // pass through regardless of self/personal/group rules — that's
     // how the user can summon egpt from any chat the bridge is linked
     // to without setting personal:'both' or groups:'all'.
-    const text = textOf(msg.message);
+    // For reactionMessage variants, _enrichReactionText swaps the
+    // "[reaction 👍 (msg <id8>)]" placeholder for "[reaction 👍 to
+    // "<short preview of reacted-to msg>"]" when the target body is
+    // in our msg-body cache (any message we've observed this session).
+    const text = _enrichReactionText(textOf(msg.message), msg);
 
     // Wake-word: any message containing '@egpt' (as a token) bypasses
     // awareness. Lets the user summon egpt from a friend DM (where
@@ -1070,9 +1122,34 @@ export async function startWhatsAppBridge({
     return { requested, skipped };
   }
 
+  // Friendly chat name lookup from the in-memory _chats cache. Returns
+  // the WA chat title (group subject or DM pushName) when known, else
+  // null. Synchronous — callers that need a guaranteed name (e.g. for
+  // group subjects we haven't observed yet) should call listChats first
+  // or fall back themselves.
+  function getChatName(jid) {
+    if (!jid) return null;
+    const c = _chats.get(jid);
+    if (c?.name) return c.name;
+    return null;
+  }
+  // Slugified chat label suitable for a handle's @<client> segment,
+  // e.g. 'auge_family' for the group "Auge — Family Chat". Falls back
+  // to the bare phone-number prefix of the JID (so DMs without a cached
+  // pushName still render as something stable).
+  function getChatSlug(jid) {
+    if (!jid) return null;
+    const name = getChatName(jid);
+    if (name) return _slugify(name, 24) || null;
+    const local = jid.split('@')[0]?.split(':')[0] ?? null;
+    return local ? _slugify(local, 24) : null;
+  }
+
   return {
     listChats,
     prefetchHistoryForTopChats,
+    getChatName,
+    getChatSlug,
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return Promise.resolve(null);

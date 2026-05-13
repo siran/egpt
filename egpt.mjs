@@ -1979,10 +1979,25 @@ function App() {
           // arrivals from those.
           const joinedToThis = _waJoinedHas(from.chatId) && _waJoinedIncomingAllowed(from.chatId);
           const observeOnly = !_stormRef.current && classifiedObserve && !joinedToThis;
+          // For group chats, swap the @<client> segment of the
+          // cross-surface handle from the bridge client_name (e.g.
+          // 'moto') to '<group-slug>.wa'. So 'An@moto' in a 1:1 stays
+          // as-is, but a message in the "Auge family" group renders as
+          // 'An@auge_family.wa' — both in the on-screen echo and in the
+          // qualified [handle@client.node ts]: header sent to brains.
+          // This gives shell readers AND the brain immediate context
+          // about *which* group the message came from, without leaking
+          // raw JIDs into the conversation.
+          let waClientLabel = null;
+          if (from.chatType === 'group') {
+            const slug = waBridgeRef.current?.getChatSlug?.(from.chatId);
+            if (slug) waClientLabel = `${slug}.wa`;
+          }
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
+            waClientLabel,
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
@@ -6257,10 +6272,14 @@ function App() {
     // transcript don't need the JID.
     const waClient = EGPT_CONFIG.whatsapp?.client_name ?? 'wa';
     const tgClient = EGPT_CONFIG.telegram?.client_name ?? 'tg';
+    // waClientLabel: when the WA arrival is from a group, the bridge
+    // overrides the bare client_name with '<group-slug>.wa' so the
+    // handle conveys the group. Falls back to waClient for 1:1 chats.
+    const waClientForTag = meta.waClientLabel ?? waClient;
     const echoAuthor = (meta.fromTelegram && meta.telegramUser)
       ? `${stripAt(meta.telegramUser)}@${tgClient}`
       : (meta.fromWhatsApp && meta.waUser)
-      ? `${stripAt(meta.waUser)}@${waClient}`
+      ? `${stripAt(meta.waUser)}@${waClientForTag}`
       : 'You';
     const isSlashCommand = text.startsWith('/');
     // Direct-WA send detection. Two shell-typed shapes route a message
@@ -6370,7 +6389,9 @@ function App() {
         // user-renamed (e.g. 'moto'). Peers use this to render
         // 'handle@client[.node]'. null when shell-typed: shell has no
         // client_name by default and the tag stays 'handle@node'.
-        const client = fromTg ? tgClient : fromWa ? waClient : null;
+        const client = fromTg ? tgClient
+          : fromWa ? (meta.waClientLabel ?? waClient)
+          : null;
         bus.postEvent(tid, {
           type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
           role: 'shell', user: utteranceUser, body: text,
@@ -6690,7 +6711,7 @@ function App() {
     const brainAuthor = (meta.fromTelegram && meta.telegramUser)
       ? `${stripAt(meta.telegramUser)}@${tgClient}.${SURFACE_TAG}`
       : (meta.fromWhatsApp && meta.waUser)
-      ? `${stripAt(meta.waUser)}@${waClient}.${SURFACE_TAG}`
+      ? `${stripAt(meta.waUser)}@${meta.waClientLabel ?? waClient}.${SURFACE_TAG}`
       : `${USER_NAME}@${SURFACE_TAG}`;
     const messageForBrains = `[${brainAuthor} ${ts()}]: ${userPayload}`;
     if (decision.broadcast) {
