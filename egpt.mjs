@@ -6828,9 +6828,31 @@ function App() {
         }
         if (waStream) {
           await waStream.finish(`${waPrefix}${reply}`);
+          // Defensive: if the streaming path silently failed (initial
+          // send rate-limited, WS blipped, edit rejected, etc) the user
+          // sees nothing on WA. Fall back to a plain send; if THAT also
+          // returns null (bridge.send swallows errors and returns null
+          // on failure), surface to the operator's shell so the human
+          // knows their reply didn't reach the chat. Without this both
+          // failure paths log to /log only — invisible by default.
+          if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
+            const r = await waBridgeRef.current.send(
+              `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+              { chatId: meta.waChatId },
+            );
+            if (!r) {
+              const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
+              sysOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            }
+          }
         } else if (meta.fromWhatsApp && waBridgeRef.current) {
-          waBridgeRef.current.send(`${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
-            { chatId: meta.waChatId });
+          const r = await waBridgeRef.current.send(
+            `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+            { chatId: meta.waChatId },
+          );
+          if (!r) {
+            sysOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+          }
         }
 
         if (meta.observeOnly) {
