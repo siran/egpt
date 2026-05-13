@@ -15,7 +15,30 @@ A scholarly + hobbyist thread that holds onto hardware the mainstream moved past
 
 eGPT is an "AI helper". It allows seamless interaction of
 
-  [ChatGPT Web, Claude Web] <> [Codex, Claude Code] <> Shell <> WhatsApp
+```text
+        ┌──────────────────────────┐
+        │  ChatGPT Web │ Claude    │   ← web "brains" (your existing login)
+        │     Web      │           │
+        └────┬──────────────┬──────┘
+             │              │
+             ▼              ▼
+    ┌──────────────────────────────────┐
+    │             eGPT                 │   ← orchestrator + shared room
+    └────┬────────────┬────────────┬───┘
+         │            │            │
+         ▼            ▼            ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────┐
+   │  Codex   │  │  Claude  │  │  Shell / │   ← local CLIs + you
+   │   CLI    │  │   Code   │  │   you    │
+   └──────────┘  └──────────┘  └──────────┘
+         │            │            │
+         └────────────┼────────────┘
+                      ▼
+              ┌──────────────┐
+              │  WhatsApp /  │   ← cross-surface mirroring,
+              │  Telegram    │     same room everywhere
+              └──────────────┘
+```
 
 For example:
 
@@ -31,15 +54,15 @@ eGPT lets you use WhatsApp, or your shell, to access the files in your computer 
 For example:
 
 ```text
-🦅 An@kg (11:02 EDT)
+🦅 An@kg (11:02 EDT) [m1]
 @cx exec: ls -lh ~/Downloads/*.pdf
-🐻 cx@kg (11:02 EDT)
+🐻 cx@kg (11:02 EDT) [m2]
 -rw-r--r-- 1 an 2.3M May 10  paper-michelson-morley.pdf
 -rw-r--r-- 1 an 540K May 12  invoice-april.pdf
-🦅 An@kg (11:03 EDT)
+🦅 An@kg (11:03 EDT) [m3]
 /mirror @wa6 m2 --tagged
 egpt@kg
-→ /mirror @wa6 "compren bitcoin!": [cx@kg 2026-05-13 11:02 EDT] -rw-r--r-- 1 an 2.3M …
+→ /mirror @wa6: [cx@kg 2026-05-13 11:02 EDT] -rw-r--r-- 1 an 2.3M  paper-michelson-morley.pdf …
 ```
 
 eGPT lets you prompt ChatGPT Web and Claude AI web from a custom, local chat interface.
@@ -98,6 +121,63 @@ npm.cmd install
 npm.cmd run build:ext
 npm.cmd test
 ```
+
+## Resilient daemon
+
+`egpt-daemon.mjs` is a tiny supervisor that keeps `egpt.mjs` running. It
+restarts the shell on crash (with exponential backoff) and handles four
+distinguished exit codes the shell uses to ask for self-update:
+
+```text
+0   user typed /exit          → daemon stops too
+42  /upgrade                  → git pull + npm install + npm run build:ext, restart
+43  /restart                  → restart immediately
+44  /rewind <ref>              → git checkout <ref> + reinstall + rebuild, restart
+```
+
+Run it directly:
+
+```bash
+node egpt-daemon.mjs
+```
+
+### Always-on, even across reboots
+
+#### Windows (Task Scheduler, ONLOGON)
+
+```powershell
+schtasks /Create /TN "egpt-daemon" `
+  /TR "node `"$env:USERPROFILE\src\egpt\egpt-daemon.mjs`"" `
+  /SC ONLOGON /RL HIGHEST /F
+```
+
+This runs the daemon on every Windows logon. To survive reboots without the
+user logging in, use the Task Scheduler's `Run whether user is logged on or
+not` checkbox (you'll be prompted for the account password — Windows uses it
+to launch the task under your user). The daemon and the bridges (WhatsApp,
+Telegram) then keep running on the locked desktop, even after a restart.
+
+Caveat: in that mode there is **no visible local shell** until you log in.
+Windows isolates the interactive desktop from the locked session, so the eGPT
+terminal window only exists once you sign in again. While the machine is
+locked, you reach eGPT only through WhatsApp / Telegram (and any web brain it
+drives via Chrome — Chrome itself runs headless-enough inside the locked
+session to keep doing CDP work).
+
+If you want a visible shell on the locked machine too, the workaround is to
+log in, lock the screen (Win+L) instead of signing out, and let Task Scheduler
+spawn the daemon at logon. The shell window then stays alive behind the lock
+and reattaches when you unlock.
+
+#### macOS
+
+A `launchd` user-agent plist at `~/Library/LaunchAgents/com.egpt.daemon.plist`
+pointing at `node /path/to/egpt-daemon.mjs`, then `launchctl load …`.
+
+#### Linux
+
+A `systemd --user` unit running `node /path/to/egpt-daemon.mjs`, enabled with
+`systemctl --user enable --now egpt-daemon`.
 
 ## Basic Use
 
@@ -203,4 +283,15 @@ CLI subprocess execution, Telegram, or WhatsApp.
 
 ## License
 
-Personal project. Not packaged for redistribution.
+eGPT is released under the **MIT License**.
+
+- Use it, fork it, modify it, ship it inside another product, or sell what you
+  build with it.
+- Keep the copyright + license notice when you redistribute the source or a
+  substantial portion of it.
+- **No warranty. No liability.** This is a personal, evolving project that
+  drives a browser, a phone, and external accounts. Run it at your own risk —
+  the author is not responsible for lost data, leaked messages, banned WhatsApp
+  numbers, runaway brain bills, or anything else that goes sideways.
+
+See [LICENSE](./LICENSE) for the full text.
