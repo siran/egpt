@@ -2991,116 +2991,31 @@ function App() {
         ensureSummariesDir,
         summaryPath,
         isSafeName,
+        // Batch 9 additions
+        activeSessions,
+        setActiveSessions,
+        bus,
+        busTargetIdRef,
+        BUS_NODE_ID,
+        // Bundle the six _waJoined* helpers into one struct so the
+        // recipients.mjs file imports a single ctx key. Keeps the
+        // top-level ctx surface from ballooning while preserving
+        // each operation's existing semantics.
+        waJoined: {
+          add:    _waJoinedAdd,
+          remove: _waJoinedRemove,
+          clear:  _waJoinedClear,
+          has:    _waJoinedHas,
+          size:   _waJoinedSize,
+          all:    _waJoinedAll,
+          first:  _waJoinedFirst,
+        },
       };
       return await entry.run({ cmd, arg, ctx });
     }
 
     // /exit and /version migrated to slash/exit.mjs and slash/version.mjs.
-    if (cmd === '/use') {
-      const target = arg.trim();
-      const dirArrow = (d) => d === 'in' ? '←' : d === 'out' ? '→' : '↔';
-      const fmtWaTargets = () => _waJoinedAll()
-        .map(e => `${dirArrow(e.dir ?? 'both')}@wa${e.idx + 1} "${e.name}"`).join(' + ');
-      if (!target) {
-        const brains = activeSessions.length ? activeSessions.join(', ') : null;
-        const wa = _waJoinedSize() > 0 ? fmtWaTargets() : null;
-        const parts = [brains, wa].filter(Boolean);
-        sysOut(parts.length
-          ? `active recipients: ${parts.join(' + ')}\n  (↔ both | → outgoing only | ← incoming only)`
-          : 'no active recipients — plain text stays in the room.\n  /use <name>                 brain\n  /use @waN                   WA chat, bidirectional\n  /use @waN,@waM incoming     listen-only on those chats\n  /use @waN outgoing          write-only (no arrivals render)\n  /use clear                  reset; /unuse <name|@waN> drops one');
-        return true;
-      }
-      if (target === 'clear' || target === 'none') {
-        setActiveSessions([]);
-        _waJoinedClear();
-        sysOut('active recipients cleared — plain text no longer auto-routes');
-        return true;
-      }
-      // Comma-separated list = multi-target. Each call ACCUMULATES.
-      // Trailing direction word (incoming | in | <- ; outgoing | out
-      // | -> ; both | bi | <->) applies to all @waN tokens in this
-      // call. Default: 'both'. Per-call direction; subsequent /use
-      // calls can mix directions on different chats.
-      const allTokens = target.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-      const DIR_WORDS = { incoming: 'in', in: 'in', '<-': 'in', '←': 'in',
-                          outgoing: 'out', out: 'out', '->': 'out', '→': 'out',
-                          both: 'both', bi: 'both', '<->': 'both', '↔': 'both' };
-      let dir = 'both';
-      const positional = [];
-      for (const t of allTokens) {
-        const dn = DIR_WORDS[t.toLowerCase()];
-        if (dn) dir = dn;
-        else positional.push(t);
-      }
-      const waTokens = positional.filter(t => /^@wa\d+$/i.test(t));
-      const brainTokens = positional.filter(t => !/^@wa\d+$/i.test(t));
-      const unknown = brainTokens.filter(n => !sessions[n]);
-      if (unknown.length) {
-        sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
-        return true;
-      }
-      // Resolve all WA tokens before mutating state (atomic-ish).
-      const waAdds = [];
-      for (const t of waTokens) {
-        const m = t.match(/^@wa(\d+)$/i);
-        const idx = parseInt(m[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (!chat) {
-          sysOut(`!! /use ${t}: no channel at that index. Run /channels first.`);
-          return true;
-        }
-        if (!waBridgeRef.current) {
-          sysOut(`!! /use ${t}: whatsapp bridge not running`);
-          return true;
-        }
-        waAdds.push({ jid: chat.jid, name: chat.name, idx, dir });
-      }
-      // Merge: brains accumulate (no duplicates), WA targets accumulate
-      // with their per-call direction. Re-adding an existing chat with
-      // a new direction OVERWRITES the previous direction for that
-      // chat — that's the natural way to flip a binding.
-      if (brainTokens.length) {
-        const merged = [...new Set([...activeSessions, ...brainTokens])];
-        setActiveSessions(merged);
-      }
-      for (const e of waAdds) _waJoinedAdd(e);
-      sysOut(`active recipients -> ${[
-        activeSessions.length || brainTokens.length
-          ? [...new Set([...activeSessions, ...brainTokens])].join(', ')
-          : null,
-        _waJoinedSize() > 0 ? fmtWaTargets() : null,
-      ].filter(Boolean).join(' + ')}  (↔ bidirectional, → outgoing, ← incoming)`);
-      return true;
-    }
-    if (cmd === '/unuse') {
-      // /unuse <name>     remove one brain or @waN from the set
-      // /unuse            same as /use clear
-      const target = arg.trim();
-      if (!target) {
-        setActiveSessions([]);
-        _waJoinedClear();
-        sysOut('active recipients cleared');
-        return true;
-      }
-      const waMatch = target.match(/^@wa(\d+)$/i);
-      if (waMatch) {
-        const idx = parseInt(waMatch[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (chat && _waJoinedRemove(chat.jid)) {
-          sysOut(`removed @wa${idx + 1} "${chat.name}"`);
-        } else {
-          sysOut(`!! no @wa${idx + 1} in active recipients`);
-        }
-        return true;
-      }
-      if (activeSessions.includes(target)) {
-        setActiveSessions(activeSessions.filter(n => n !== target));
-        sysOut(`removed "${target}"`);
-      } else {
-        sysOut(`!! "${target}" not an active recipient`);
-      }
-      return true;
-    }
+    // /use + /unuse migrated to slash/recipients.mjs.
     if (cmd === '/room') {
       const argParts = arg.split(/\s+/).filter(Boolean);
       const sub = argParts[0];
@@ -3510,111 +3425,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/join') {
-      // /join @waN[,@waM,…] [incoming|outgoing|both]
-      //   Accumulates joined chats with an optional direction word.
-      //   Default direction is 'both' (bidirectional). 'incoming'
-      //   (alias 'in', '<-', '←') = listen only; 'outgoing' (alias
-      //   'out', '->', '→') = write only.
-      const argTrim = arg.trim();
-      const toks = argTrim.split(/[\s,]+/).filter(Boolean);
-      const DIR = { incoming: 'in', in: 'in', '<-': 'in', '←': 'in',
-                    outgoing: 'out', out: 'out', '->': 'out', '→': 'out',
-                    both: 'both', bi: 'both', '<->': 'both', '↔': 'both' };
-      let dir = 'both';
-      const waTokens = [];
-      for (const t of toks) {
-        const d = DIR[t.toLowerCase()];
-        if (d) dir = d;
-        else if (/^@wa\d+$/i.test(t)) waTokens.push(t);
-        else { sysOut(`!! /join: "${t}" isn't @waN or a direction word (incoming | outgoing | both)`); return true; }
-      }
-      if (!waTokens.length) {
-        sysOut('usage: /join @waN[,@waM,…] [incoming|outgoing|both]   (N from /channels)');
-        return true;
-      }
-      if (!waBridgeRef.current) {
-        sysOut('!! /join: whatsapp bridge not running');
-        return true;
-      }
-      // Resolve all @waN tokens before mutating state.
-      const adds = [];
-      for (const t of waTokens) {
-        const idx = parseInt(t.match(/^@wa(\d+)$/i)[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (!chat) {
-          sysOut(`!! /join: no @wa${idx + 1} in cache — run /channels first`);
-          return true;
-        }
-        adds.push({ jid: chat.jid, name: chat.name, idx, dir });
-      }
-      // /join accumulates same as /use @waN. Previous single-target
-      // behaviour is preserved when called once with one chat;
-      // calling again adds further targets rather than replacing.
-      for (const e of adds) _waJoinedAdd(e);
-      // For the legacy single-arg log/broadcast path, name the first
-      // added chat in the message.
-      const chat = adds[0];
-      const idx = chat.idx;
-      // Broadcast each added chat on the bus so peers with
-      // whatsapp.follow_join enabled adopt.
-      {
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          for (const a of adds) {
-            bus.postEvent(tid, {
-              type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
-              jid: a.jid, name: a.name,
-            }).catch(() => {});
-          }
-        }
-      }
-      const dirNote = dir === 'in' ? ' (incoming only — they reach shell, shell-typed text does not)' :
-                       dir === 'out' ? ' (outgoing only — shell-typed text reaches them, their arrivals do not render)' :
-                       '';
-      sysOut(`joined ${adds.map(a => `@wa${a.idx + 1} "${a.name}"`).join(', ')}${dirNote}. ` +
-        (_waJoinedSize() > adds.length ? `Currently ${_waJoinedSize()} WA chats joined. ` : '') +
-        `/unjoin to release${_waJoinedSize() > 1 ? ' all, /unjoin @waN to drop one' : ''}.`);
-      return true;
-    }
-    if (cmd === '/unjoin') {
-      const target = arg.trim();
-      if (!_waJoinedSize()) {
-        sysOut('/unjoin: not joined');
-        return true;
-      }
-      if (target) {
-        const m = target.match(/^@wa(\d+)$/i);
-        if (!m) { sysOut('usage: /unjoin [@waN]   (omit to release all)'); return true; }
-        const idx = parseInt(m[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (!chat || !_waJoinedRemove(chat.jid)) {
-          sysOut(`!! @wa${idx + 1} not currently joined`);
-          return true;
-        }
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          bus.postEvent(tid, {
-            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
-            removed: chat.jid,
-          }).catch(() => {});
-        }
-        sysOut(`released @wa${idx + 1} "${chat.name}"  (${_waJoinedSize()} remaining)`);
-        return true;
-      }
-      const all = _waJoinedAll();
-      _waJoinedClear();
-      const tid = busTargetIdRef.current;
-      if (tid) {
-        bus.postEvent(tid, {
-          type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
-        }).catch(() => {});
-      }
-      sysOut(`released ${all.length === 1
-        ? `@wa${all[0].idx + 1} "${all[0].name}"`
-        : `${all.length} WA chats`}`);
-      return true;
-    }
+    // /join + /unjoin migrated to slash/recipients.mjs.
     // /pin and /unpin migrated to slash/pin.mjs — see SLASH_REGISTRY
     // dispatch lane above. Add new commands as slash/*.mjs files and
     // delete their inline branches here.
