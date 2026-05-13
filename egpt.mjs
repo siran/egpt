@@ -1810,7 +1810,7 @@ function App() {
         });
       },
       onLog:   (msg) => logOut(`telegram: ${msg}`),
-      onError: (msg) => logOut(`!! telegram: ${msg}`),
+      onError: (msg) => errOut(`!! telegram: ${msg}`),
       onYield: () => {
         // 409 from Telegram means another node holds the polling slot.
         // Drop our bridge state so we stop showing as 'polling' on the
@@ -1839,10 +1839,7 @@ function App() {
           if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
           logOut(`telegram: outbound chat ${id} captured and saved`);
         } catch (e) {
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true,
-            body: `!! telegram: could not persist chat_id (${e.message})`,
-          }]);
+          errOut(`!! telegram: could not persist chat_id (${e.message})`);
         }
       },
     });
@@ -2151,7 +2148,7 @@ function App() {
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
-        onError: (msg) => logOut(`!! whatsapp: ${msg}`),
+        onError: (msg) => errOut(`!! whatsapp: ${msg}`),
         onQR: (_qrText, msgWithHeader) => {
           // QR code goes to sysOut (visible main transcript), not the
           // hidden /log buffer. Otherwise `/whatsapp pair` would wipe
@@ -2698,6 +2695,19 @@ function App() {
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _log: true,
+    }]);
+
+  // errOut is for error/failure lines that the operator needs to see
+  // RIGHT NOW — bridge sends that failed, brain dispatch errors, any
+  // '!!' status that previously got buried in /log. Visible in the
+  // shell like sysOut, but local-only (doesn't mirror to bridges and
+  // doesn't append to the room md — errors are operational noise, not
+  // conversation). _bright marks them for the renderer so they stand
+  // out from regular system messages.
+  const errOut = body =>
+    setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', body,
+      _localOnly: true, _bright: true,
     }]);
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
@@ -6842,7 +6852,10 @@ function App() {
             );
             if (!r) {
               const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
-              sysOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+              // errOut, not sysOut: WA is what's failing — routing the
+              // error back through the same broken bridge would just
+              // generate a second silent failure. Keep it shell-local.
+              errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
             }
           }
         } else if (meta.fromWhatsApp && waBridgeRef.current) {
@@ -6851,7 +6864,7 @@ function App() {
             { chatId: meta.waChatId },
           );
           if (!r) {
-            sysOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
           }
         }
 
