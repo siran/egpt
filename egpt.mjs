@@ -1820,7 +1820,7 @@ function App() {
         setTgPolling(false);
         setItems(p => [...p, {
           id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-          body: 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.',
+          body: `telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram ${BUS_NODE_ID} to force-reclaim.`,
         }]);
       },
       onChatId: async (id) => {
@@ -3501,6 +3501,17 @@ function App() {
       // Strip leading @ if present.
       const to = sub.replace(/^@/, '');
       if (to === BUS_NODE_ID || to === 'shell') {
+        // Self-reclaim: just calling startTgBridge() races the holder
+        // and 409s. Broadcast the handoff first — peers seeing
+        // ev.to !== their own id call stopTgBridge() (see the
+        // telegram-handoff handler), which releases the slot before
+        // our long-poll opens.
+        await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
+          ts: Date.now(), to: BUS_NODE_ID });
+        // Brief settle window so a peer's stop reaches Telegram before
+        // our first getUpdates call (Bot API rejects overlapping polls
+        // with 409 for several seconds after a yield).
+        await new Promise(r => setTimeout(r, 1500));
         await startTgBridge();
         return true;
       }
