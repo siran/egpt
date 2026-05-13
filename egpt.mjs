@@ -2924,30 +2924,17 @@ function App() {
         sysOut,
         waBridgeRef,
         waChannelsCacheRef: _waChannelsCacheRef,
+        stormRef:           _stormRef,
+        exit,
+        exitClean:          _exitClean,
+        APP_DIR,
+        EGPT_HOME,
+        getFile:            () => FILE,
       };
       return await entry.run({ cmd, arg, ctx });
     }
 
-    if (cmd === '/exit') { exit(); return true; }
-    if (cmd === '/version') {
-      // Snapshot current git state so the user can see what's running
-      // before /upgrade or /rewind.
-      const sha    = spawnSync('git', ['rev-parse', '--short', 'HEAD'],     { cwd: APP_DIR, stdio: 'pipe' });
-      const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: APP_DIR, stdio: 'pipe' });
-      const tag    = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd: APP_DIR, stdio: 'pipe' });
-      const dirty  = spawnSync('git', ['status', '--porcelain'],            { cwd: APP_DIR, stdio: 'pipe' });
-      const recent = spawnSync('git', ['tag', '--sort=-creatordate'],       { cwd: APP_DIR, stdio: 'pipe' });
-      const get = (r) => (r.stdout?.toString() ?? '').trim();
-      const dirtyText = get(dirty) ? '  (working tree dirty)' : '';
-      const tagList = get(recent).split('\n').slice(0, 5).filter(Boolean).join(', ');
-      sysOut(
-        `commit: ${get(sha) || '???'}${dirtyText}\n` +
-        `branch: ${get(branch) || '???'}\n` +
-        `last tag: ${get(tag) || '(none)'}\n` +
-        `recent tags: ${tagList || '(none)'}`,
-      );
-      return true;
-    }
+    // /exit and /version migrated to slash/exit.mjs and slash/version.mjs.
     if (cmd === '/use') {
       const target = arg.trim();
       const dirArrow = (d) => d === 'in' ? '←' : d === 'out' ? '→' : '↔';
@@ -3164,53 +3151,8 @@ function App() {
       sysOut(fmtRoom(sub));
       return true;
     }
-    if (cmd === '/restart') {
-      // Exit with code 43 so egpt-daemon respawns the shell without
-      // running git pull / npm install / build. NOTE: this still picks
-      // up any code changes already on disk — implicit upgrade if you
-      // git-pulled externally. /upgrade is the explicit pull-then-restart;
-      // /restart is "respawn from current disk state".
-      sysOut('exiting with code 43 — egpt-daemon (if running) will respawn the shell');
-      setTimeout(() => _exitClean(43), 100);
-      return true;
-    }
-    if (cmd === '/rewind') {
-      // /rewind <ref> — checkout a previous git ref (commit, tag, branch),
-      // then npm install + build:ext, then restart. For dropping back to
-      // a known-good version when an upgrade brought in a regression.
-      const ref = arg.trim();
-      if (!ref) {
-        const tags = spawnSync('git', ['tag', '--sort=-creatordate'], { cwd: APP_DIR });
-        const tagList = (tags.stdout?.toString() ?? '').trim().split('\n').slice(0, 10).join(', ');
-        sysOut(`usage: /rewind <ref>     (commit SHA, tag, branch, or HEAD~N)\nrecent tags: ${tagList || '(none)'}`);
-        return true;
-      }
-      const verify = spawnSync('git', ['rev-parse', '--verify', ref], { cwd: APP_DIR });
-      if (verify.status !== 0) {
-        sysOut(`!! unknown git ref "${ref}" — /rewind with no arg lists tags`);
-        return true;
-      }
-      try {
-        await mkdir(EGPT_HOME, { recursive: true });
-        await writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref);
-      } catch (e) {
-        sysOut(`!! could not write rewind sidecar: ${e.message}`);
-        return true;
-      }
-      sysOut(`exiting with code 44 — egpt-daemon (if running) will checkout ${ref}, install, build, restart`);
-      setTimeout(() => _exitClean(44), 100);
-      return true;
-    }
-    if (cmd === '/upgrade') {
-      // Exit with 42 so a wrapping egpt-daemon (egpt-daemon.mjs) runs
-      // git pull + npm install + npm run build:ext and restarts. If
-      // the daemon isn't running, this just exits with 42 and the
-      // user restarts manually.
-      sysOut('exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart');
-      setTimeout(() => _exitClean(42), 100);
-      return true;
-    }
-    if (cmd === '/file') { sysOut(FILE); return true; }
+    // /restart, /upgrade, /rewind migrated to slash/lifecycle.mjs.
+    // /file migrated to slash/file.mjs.
     if (cmd === '/conversations') {
       try {
         const files = await listConversationFiles();
@@ -5313,31 +5255,7 @@ function App() {
       sysOut(`!! /mirror: target "${target}" not recognised. @waN or @<session>.`);
       return true;
     }
-    if (cmd === '/storm') {
-      // /storm        toggle storm mode on (or report status if already on)
-      // /storm off    turn off
-      // While on, every WA arrival — group chatter, status updates,
-      // broadcasts, observed chats — renders in shell, and media
-      // notifications include status@broadcast saves. Useful as an
-      // explicit firehose mode; off restores the normal awareness
-      // gates + status-saves-quietly behaviour.
-      const a = arg.trim().toLowerCase();
-      const wa = waBridgeRef.current;
-      if (a === 'off' || a === 'stop' || a === 'no') {
-        _stormRef.current = false;
-        wa?.setStorm?.(false);
-        sysOut('storm: off — awareness gates restored, status saves quiet.');
-        return true;
-      }
-      if (a === 'status' || a === '?') {
-        sysOut(_stormRef.current ? '⛈ storm: ON' : 'storm: off');
-        return true;
-      }
-      _stormRef.current = true;
-      wa?.setStorm?.(true);
-      sysOut('⛈ storm: ON — every WA arrival renders here (chats, groups, status, broadcasts, media). /storm off to stop.');
-      return true;
-    }
+    // /storm migrated to slash/storm.mjs.
     if (cmd === '/identity') {
       // /identity [@<session>]    re-install the identity manifest
       // /identity                 inject into ALL active sessions
