@@ -1,16 +1,47 @@
-# egpt
+# eGPT
 
-egpt is a local chat room for multiple AI sessions.
+eGPT is a tool that joins in chat-like room multiple AI(s) and human(s), via WhatsApp, Telegram, shell script, and browser extension (Chrome, Firefox).
 
-It stores the room in a plain Markdown file and routes messages to named
-participants:
+For example
 
-- ChatGPT and Claude web tabs through Chrome DevTools Protocol
-- Codex and Claude Code CLIs as local subprocesses
-- shell, browser extension, Telegram, and WhatsApp bridges
+...
+...
+...
+
+eGPT is an "AI helper". It allows seemless interaction of
+
+  [ChatGPT Web, Claude Web] <> [Codex, Claude Code] <> Shell <> WhatsApp
+
+For example:
+
+...
+...
+...
+
+eGPT let's you you WhatsApp, or your shell, to access the files in your computer through codex, prompts it to a "brain", receive response, mirror it to chats, save it to files, etc...
+
+For example:
+
+...
+...
+...
+
+eGPT let's you prompt Chat GPT Web and Claude AI web from a custom, local chat interface.
+
+For example:
+
+...
+...
+...
+
 
 The web sessions use your existing browser login. The core flow does not need
 OpenAI or Anthropic API keys.
+
+# Other uses
+  - you could bridge Telegram, Whatsapp and an AI
+  - could be your agent reminding you of things, doing things. The other day eGPT almost bought a pair of bongos for me.
+  - possibilities are endless :)
 
 For full usage, see [MANUAL.md](./MANUAL.md). For manual checks, see
 [TESTING.md](./TESTING.md).
@@ -25,16 +56,16 @@ For full usage, see [MANUAL.md](./MANUAL.md). For manual checks, see
 ## Quick Start
 
 ```bash
-cd ~/src/egpt
+cd ~/src/eGPT
 npm install
 npm run build:ext
-node egpt.mjs
+node eGPT.mjs
 ```
 
 Use an explicit room file:
 
 ```bash
-node egpt.mjs ~/notes/room.md
+node eGPT.mjs ~/notes/room.md
 ```
 
 On Windows PowerShell, use `npm.cmd` if script execution blocks `npm`:
@@ -108,8 +139,8 @@ registry used by the shell and extension.
 ## Project Layout
 
 ```text
-egpt/
-  egpt.mjs              shell app and side effects
+eGPT/
+  eGPT.mjs              shell app and side effects
   interpreter.mjs       parser and command registry
   room.mjs              routing decisions
   persona-state.mjs     persona state helpers
@@ -123,7 +154,7 @@ egpt/
   TESTING.md            manual test checklist
 ```
 
-Runtime state lives under `~/.egpt/`: config, Chrome profiles, CDP token,
+Runtime state lives under `~/.eGPT/`: config, Chrome profiles, CDP token,
 prepared files, summaries, and session state.
 
 ## Tests

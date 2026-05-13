@@ -108,5 +108,32 @@
         "inviteLinkGroupTypeV2": "DEFAULT"
       }
     }
+  },
+  "wa-AC850970E791F099BCD810601148A2BB": {
+    "kind": "wa",
+    "chatId": "34836563681438@lid",
+    "key": {
+      "remoteJid": "34836563681438@lid",
+      "remoteJidAlt": "16468217865@s.whatsapp.net",
+      "fromMe": true,
+      "id": "AC850970E791F099BCD810601148A2BB",
+      "participant": "",
+      "addressingMode": "lid"
+    },
+    "raw": {
+      "extendedTextMessage": {
+        "text": "@cgpt1 qué opinas?\n\n[5/13, 08:22] Auge: La cosa es que\n[5/13, 08:22] Auge: Ellos desenterraron parte de los griegos\n[5/13, 08:23] Auge: Entonces si ves la ilustración alemana\n[5/13, 08:24] Auge: Homero empieza y Homero no es un autor es para ellos una suma de autores que evoka el Vollgeist\n[5/13, 08:24] Auge: El espíritu del pueblo\n[5/13, 08:24] Auge: Después todas las lecturas de los griegos filtradas por idealismo kantiano\n[5/13, 08:25] Auge: Nada de latino en los griegos\n[5/13, 08:25] Auge: Y después fuap Heidegger romancisimos y todos los nombres de los inicios de todas las carreras en humanidades por lo menos\n[5/13, 08:25] Auge: La misma escalera\n[5/13, 08:25] Auge: De alemanes\n[5/13, 08:26] Auge: Y después tal vez\n[5/13, 08:26] Auge: Alguien de tu país",
+        "previewType": "NONE",
+        "contextInfo": {
+          "expiration": 0,
+          "ephemeralSettingTimestamp": "1718045160",
+          "disappearingMode": {
+            "initiator": "CHANGED_IN_CHAT",
+            "trigger": "UNKNOWN"
+          }
+        },
+        "inviteLinkGroupTypeV2": "DEFAULT"
+      }
+    }
   }
 }

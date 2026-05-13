@@ -136,6 +136,11 @@ export async function startWhatsAppBridge({
   // ALL traffic in a joined chat (not just @-mentions), which is
   // what enables the cross-chat bridge.
   const _bypassChats = new Set();
+  // Storm mode — global all-visible. When on, every WA arrival
+  // bypasses awareness and reaches the host regardless of group
+  // mention rules / personal awareness / etc. Toggled via the
+  // setStorm() API from /storm in shell.
+  let _storm = false;
   let lastChat       = null;
   let chatIdNotified = false;
   let myJid          = null;     // our own jid (e.g. '1234567890@s.whatsapp.net')
@@ -442,9 +447,15 @@ export async function startWhatsAppBridge({
       // of awareness gates (the operator asked to retain ALL media,
       // for both observed chats and bound rooms; see whatsapp.media
       // config). Independent of handleMessage so a media message
-      // dropped at the awareness gate still lands on disk.
+      // dropped at the awareness gate still lands on disk. Revoke
+      // notifications (a sender deleting a message) are handled in
+      // the same loop — the file moves to a 'deleted/' subfolder.
       for (const msg of messages) {
-        _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+        if (msg.message?.protocolMessage) {
+          _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
+        } else {
+          _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+        }
       }
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
@@ -568,6 +579,36 @@ export async function startWhatsAppBridge({
     };
     return map[subtype] ?? (subtype ? `.${subtype.replace(/[^a-z0-9]+/g, '')}` : '.bin');
   }
+  // Slug helper for filenames — lowercase, alphanum + underscores
+  // only, max length so paths stay sane across filesystems.
+  function _slugify(s, maxLen = 40) {
+    if (!s) return '';
+    return String(s)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, maxLen) || '';
+  }
+  function _stampMS(ts) {
+    // YYYYMMDD-HHMM (UTC enough for filesystem sort; the operator
+    // doesn't read TZ off filenames). Stable across timezones.
+    const d = new Date(ts || Date.now());
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+           `-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+  // Index sidecar: msgId → { filename, kind, author, caption, ts }
+  // Maintained per chat dir. Lets the delete handler find a saved
+  // file by its original WA msg key id.
+  async function _readMediaIndex(dir) {
+    try {
+      const raw = await fs.readFile(join(dir, '.media-index.json'), 'utf8');
+      return JSON.parse(raw);
+    } catch { return {}; }
+  }
+  async function _writeMediaIndex(dir, idx) {
+    try { await fs.writeFile(join(dir, '.media-index.json'), JSON.stringify(idx, null, 2)); } catch (_) {}
+  }
   async function _saveMediaIfAny(msg) {
     const downloadMode = media.download ?? 'all';
     if (downloadMode === 'off') return null;
@@ -600,21 +641,104 @@ export async function startWhatsAppBridge({
     }
     const ext = _extFor(node.mimetype, node.fileName);
     const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
-    const path = join(dir, `${msgId}${ext}`);
-    if (existsSync(path)) return path;     // already saved
+    // Filename: <YYYYMMDD-HHMM>_<author>_<slug>_<shortId>.<ext>
+    //   - timestamp gives chronological sort
+    //   - author slug (pushName or 'you')
+    //   - body slug (caption / filename / kind placeholder)
+    //   - shortId (last 6 chars of WA stanza id) disambiguates the
+    //     occasional same-author same-minute collision and ties
+    //     the file back to the msgId in the index sidecar
+    //   - ext from mimetype / docFileName
+    const ts = (Number(msg.messageTimestamp) || 0) * 1000;
+    const stamp = _stampMS(ts);
+    const fromMe = !!msg.key?.fromMe;
+    const pushedName = (typeof msg.pushName === 'string' && msg.pushName.trim()) ? msg.pushName.trim() : null;
+    const authorSlug = _slugify(fromMe ? 'you' : (pushedName ?? chatJid.split('@')[0] ?? 'anon'), 24) || 'anon';
+    const caption = node.caption?.trim()
+      ?? node.fileName?.trim()
+      ?? (hit.kind === 'audio' && node.ptt ? 'voice_note' : null)
+      ?? hit.kind;
+    const slug = _slugify(caption, 40) || hit.kind;
+    const shortId = msgId.slice(-6);
+    const base = `${stamp}_${authorSlug}_${slug}_${shortId}`;
+    const path = join(dir, `${base}${ext}`);
+    // Idempotent: if the index already has this msgId, the file is
+    // on disk (or under deleted/) — skip re-download.
+    const indexBefore = await _readMediaIndex(dir);
+    if (indexBefore[msgId]) return indexBefore[msgId].path ?? path;
     try {
       const buf = await downloadMediaMessage(msg, 'buffer', {});
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path, buf);
+      // Sidecar .txt with the full caption / filename when the
+      // truncated slug doesn't carry it all (the slug is capped at
+      // 40 chars; a 200-char caption deserves the full record).
+      if (caption && caption.length > 40) {
+        try { await fs.writeFile(join(dir, `${base}.txt`), caption); } catch (_) {}
+      }
+      // Update the index. Stores enough to identify and locate the
+      // file later (delete handler glues msgId → filename).
+      const idx = await _readMediaIndex(dir);
+      idx[msgId] = {
+        filename: `${base}${ext}`,
+        path,
+        kind: hit.kind,
+        author: pushedName ?? (fromMe ? 'you' : null),
+        ts,
+        caption: caption ?? null,
+        ext,
+        base,
+      };
+      await _writeMediaIndex(dir, idx);
       const sizeKB = (buf.length / 1024).toFixed(1);
       log(`media saved: ${hit.kind} ${sizeKB}KB → ${path}`);
-      // Surface to host for visible (sysOut) shell notice. Host can
-      // decide whether to render every save or filter (e.g. silence
-      // status@broadcast which is high-volume).
       try { onMediaSaved?.({ kind: hit.kind, chatJid, msgId, path, sizeBytes: buf.length }); } catch (_) {}
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
+      return null;
+    }
+  }
+
+  // Delete handler — WhatsApp sends a protocolMessage with type=0
+  // (REVOKE) when a sender deletes a message. We've already saved
+  // the media; move it to a 'deleted/' subdir of its chat so it's
+  // preserved + visibly separated from the live media.
+  async function _handleRevoke(msg) {
+    const proto = msg.message?.protocolMessage;
+    if (!proto) return null;
+    // type 0 is REVOKE in baileys' enum; some versions string it.
+    if (proto.type !== 0 && proto.type !== 'REVOKE') return null;
+    const targetId = proto.key?.id;
+    const chatJid = proto.key?.remoteJid ?? msg.key?.remoteJid;
+    if (!targetId || !chatJid) return null;
+    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const idx = await _readMediaIndex(dir);
+    const entry = idx[targetId];
+    if (!entry) return null;       // no saved media for that msg
+    try {
+      const deletedDir = join(dir, 'deleted');
+      await fs.mkdir(deletedDir, { recursive: true });
+      const newPath = join(deletedDir, entry.filename);
+      await fs.rename(entry.path, newPath);
+      // Move sidecar .txt if present.
+      const sidecar = join(dir, `${entry.base}.txt`);
+      if (existsSync(sidecar)) {
+        try { await fs.rename(sidecar, join(deletedDir, `${entry.base}.txt`)); } catch (_) {}
+      }
+      // Update index: mark deleted, point at new path.
+      idx[targetId] = { ...entry, path: newPath, deleted: true, deletedAt: Date.now() };
+      await _writeMediaIndex(dir, idx);
+      log(`media moved to deleted/: ${entry.kind} from ${chatJid} → ${newPath}`);
+      try {
+        onMediaSaved?.({
+          kind: entry.kind, chatJid, msgId: targetId, path: newPath,
+          sizeBytes: 0, deleted: true,
+        });
+      } catch (_) {}
+      return newPath;
+    } catch (e) {
+      log(`media-revoke move failed (${targetId} in ${chatJid}): ${e.message}`);
       return null;
     }
   }
@@ -726,7 +850,7 @@ export async function startWhatsAppBridge({
     // when the host has marked this chat for full passthrough via
     // setBypassChats (e.g. /use or /join binds the chat).
     const hostBypassEarly = _bypassChats.has(chatJid0);
-    if (!bypassAwareness && !isWakeWord && !hostBypassEarly) {
+    if (!bypassAwareness && !isWakeWord && !hostBypassEarly && !_storm) {
       if (isSelfDM) {
         if (aware.self_chat === 'off') return;
         if (aware.self_chat === 'incoming' && fromMe) return;
@@ -806,7 +930,7 @@ export async function startWhatsAppBridge({
       // covers @-summons in 'mentions' chats; _bypassChats covers
       // host-driven per-chat opt-in.
       const hostBypass = _bypassChats.has(chatJid);
-      if (!bypassAwareness && !hostBypass && !isWakeWord
+      if (!bypassAwareness && !hostBypass && !isWakeWord && !_storm
           && aware.groups === 'mentions' && !isMentioned && !replyingToMe) return;
       if (myNumber) {
         processed = processed.replace(new RegExp(`@${myNumber}\\s*`, 'g'), '').trim();
@@ -1110,6 +1234,8 @@ export async function startWhatsAppBridge({
     // raw key+message stay inside the bridge so dispatchHeld can
     // replay through handleMessage (which goes through the same
     // awareness + wake-word + brain routing pipeline as a live one).
+    setStorm(on) { _storm = !!on; },
+    get storm() { return _storm; },
     setBypassChats(jids) {
       // Replace the entire bypass set with the supplied list. Host
       // calls this whenever the joined set changes so the bridge's

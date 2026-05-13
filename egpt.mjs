@@ -1511,6 +1511,11 @@ function App() {
   // duration of its run. Restored in a finally so a crashing handler
   // doesn't leak the suppression to later commands.
   const _suppressTranscriptRef = useRef(false);
+  // /storm toggle — every WA arrival renders, awareness gates
+  // bypassed. The bridge owns its own _storm flag (set via
+  // setStorm). This ref mirrors it for host-side reads (media
+  // notify filtering, observeOnly override).
+  const _stormRef = useRef(false);
   const [, setThemeRev] = useState(0);
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // The room starts empty — egpt is the host, not a participant. Use /open
@@ -1894,20 +1899,23 @@ function App() {
         // explicitly opts in. notify: 'on' (default — chats only),
         // 'all' (include status), 'off' (silent — files still save,
         // shell just doesn't say so).
-        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes }) => {
+        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes, deleted }) => {
           const notify = cfg.media?.notify ?? 'on';
-          if (notify === 'off') return;
-          if (notify === 'on' && chatJid === 'status@broadcast') return;
+          if (notify === 'off' && !_stormRef.current) return;
+          // Normal mode silences status@broadcast (the high-volume
+          // 24h-stories feed); storm and 'all' surface it too.
+          if (notify === 'on' && !_stormRef.current && chatJid === 'status@broadcast') return;
           const sizeKB = (sizeBytes / 1024).toFixed(1);
-          // Try to resolve a friendly chat name from the bridge's
-          // _chats cache (populated by listChats / messages.upsert).
-          // Falls back to the JID prefix when no name is known.
           let chatLabel = chatJid.split('@')[0] ?? chatJid;
           try {
             const name = bridge?.getChatName?.(chatJid);
             if (name) chatLabel = name;
           } catch (_) {}
-          sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${dp(path)}`);
+          if (deleted) {
+            sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${dp(path)}`);
+          } else {
+            sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${dp(path)}`);
+          }
         },
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
@@ -1948,9 +1956,10 @@ function App() {
           // /join @waN lifts an otherwise-observed chat into full
           // visibility: render in the transcript, broadcast on the bus,
           // mirror to peer bridges. Single-chat opt-in — every other
-          // observed chat stays silent.
+          // observed chat stays silent. /storm overrides everything
+          // (storm = render every WA arrival regardless).
           const joinedToThis = _waJoinedHas(from.chatId);
-          const observeOnly = classifiedObserve && !joinedToThis;
+          const observeOnly = !_stormRef.current && classifiedObserve && !joinedToThis;
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -5005,6 +5014,31 @@ function App() {
         return true;
       }
       sysOut(`!! /mirror: target "${target}" not recognised. @waN or @<session>.`);
+      return true;
+    }
+    if (cmd === '/storm') {
+      // /storm        toggle storm mode on (or report status if already on)
+      // /storm off    turn off
+      // While on, every WA arrival — group chatter, status updates,
+      // broadcasts, observed chats — renders in shell, and media
+      // notifications include status@broadcast saves. Useful as an
+      // explicit firehose mode; off restores the normal awareness
+      // gates + status-saves-quietly behaviour.
+      const a = arg.trim().toLowerCase();
+      const wa = waBridgeRef.current;
+      if (a === 'off' || a === 'stop' || a === 'no') {
+        _stormRef.current = false;
+        wa?.setStorm?.(false);
+        sysOut('storm: off — awareness gates restored, status saves quiet.');
+        return true;
+      }
+      if (a === 'status' || a === '?') {
+        sysOut(_stormRef.current ? '⛈ storm: ON' : 'storm: off');
+        return true;
+      }
+      _stormRef.current = true;
+      wa?.setStorm?.(true);
+      sysOut('⛈ storm: ON — every WA arrival renders here (chats, groups, status, broadcasts, media). /storm off to stop.');
       return true;
     }
     if (cmd === '/identity') {
