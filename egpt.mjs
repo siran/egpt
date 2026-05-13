@@ -7502,7 +7502,7 @@ let _globalWaBridge = null;     // whatsapp bridge — owns the logon-summary co
 // NEXT interactive shell's summary covers the window between then and
 // its takeover. Headless processes don't stamp — they're the
 // accumulator, not the consumer.
-const _exitClean = (code = 0) => {
+const _exitClean = async (code = 0) => {
   _globalBridge?.stop();
   // WA bridge.stop() synchronously flushes wa-chats.json and
   // reaction-counts.json — critical so the next interactive shell's
@@ -7510,13 +7510,23 @@ const _exitClean = (code = 0) => {
   // before clearing the pidfile (otherwise a racing successor could
   // re-enter takeover before we're done writing).
   _globalWaBridge?.stop();
+  // Let baileys' WebSocket close handshake reach WA's server before
+  // process.exit. Without this, the close packet may not have left
+  // the kernel buffer when the process dies — WA's server still
+  // thinks we're connected, and the NEXT shell's authenticate trips
+  // 'connectionReplaced' (reason 440), looping until the stale entry
+  // times out server-side (~minutes). 800ms is empirically enough on
+  // a reachable network; if the WS was already dead it's just dead
+  // wait. process.on('exit') below catches synchronous-exit paths
+  // (uncaught throws, etc.) where we can't await.
+  try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
   if (!HEADLESS) writeLastLogonNow();
   clearPidfile();
   process.exit(code);
 };
-process.on('SIGINT',  () => _exitClean(0));
-process.on('SIGHUP',  () => _exitClean(0));
-process.on('SIGTERM', () => _exitClean(0));
+process.on('SIGINT',  () => { _exitClean(0); });
+process.on('SIGHUP',  () => { _exitClean(0); });
+process.on('SIGTERM', () => { _exitClean(0); });
 
 // Pidfile handshake: if an older instance is running (most commonly the
 // headless engine from Task Scheduler / systemd / launchd), ask it to
