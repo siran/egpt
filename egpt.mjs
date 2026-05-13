@@ -2969,6 +2969,17 @@ function App() {
         setSessions,                                 // mutate sessions React state
         writeBrainProfileState,                      // persist a session to disk
         handleSlashRecurse: (t) => handleSlash(t, meta),  // re-enter dispatcher
+        // Batch 6 additions
+        readDefaultBrainState,
+        persistDefaultBrainState,
+        canonicalBrainName,
+        brainForName,
+        humanAge,
+        ts,
+        getDefaultOp: () => _defaultOp,
+        setDefaultOp: (v) => { _defaultOp = v; },
+        persistDefaultOp,
+        peerNodesRef,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3193,81 +3204,7 @@ function App() {
     // /restart, /upgrade, /rewind migrated to slash/lifecycle.mjs.
     // /file migrated to slash/file.mjs.
     // /conversations + /conversation migrated to slash/conversation.mjs.
-    if (cmd === '/egpt') {
-      // Manage the @egpt persona's session-history state.
-      // Subcommands: status (default), new, list, rewind [n|id-prefix].
-      // Pure logic lives in persona-state.mjs (tested in
-      // tests/persona-state.test.mjs); this handler is just I/O.
-      const parts = arg.trim().split(/\s+/);
-      const sub = (parts[0] || 'status').toLowerCase();
-      const subArg = parts.slice(1).join(' ').trim();
-      const state = readDefaultBrainState();
-
-      if (sub === 'help') {
-        sysOut('usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]');
-        return true;
-      }
-      if (sub === 'status') {
-        const sum = summarize(state);
-        const kind = sum.activeKind ? ` (${sum.activeKind})` : '';
-        sysOut(`egpt: ${sum.type}${kind}  active=${sum.activeShort}  history=${sum.historyCount}`);
-        return true;
-      }
-      if (sub === 'brain') {
-        // /egpt brain                  — show current
-        // /egpt brain <type>           — switch type, no ref (next @e fresh)
-        // /egpt brain <type> <ref>     — switch + bind to ref (URL or session_id)
-        const newType = (parts[1] || '').trim();
-        const ref     = parts.slice(2).join(' ').trim();
-        if (!newType) {
-          const sum = summarize(state);
-          sysOut(`egpt brain: ${sum.type}  active=${sum.activeShort}  (use /egpt brain <type> [<ref>] to switch)`);
-          return true;
-        }
-        const canonical = canonicalBrainName(newType);
-        const brain = brainForName(canonical);
-        if (!brain) { sysOut(`!! /egpt brain: unknown brain "${newType}"`); return true; }
-        const next = setBrain(state, canonical, ref || null);
-        await persistDefaultBrainState(next);
-        const sum = summarize(next);
-        sysOut(`egpt: brain → ${sum.type}${sum.activeShort && sum.activeFull ? `  active=${sum.activeShort}` : ' (no ref — next @e starts fresh)'}`);
-        return true;
-      }
-      if (sub === 'list') {
-        const list = listHistory(state);
-        if (!list.length) { sysOut('egpt: no sessions yet'); return true; }
-        const lines = list.map(h => {
-          const age = humanAge(h.at);
-          const marker = h.isActive ? '*' : ' ';
-          return `${marker} ${String(h.index).padStart(2)}  ${h.short}  ${h.type.padEnd(11)}  ${age}`;
-        });
-        sysOut(['egpt: sessions (newest first, * = active):', ...lines].join('\n'));
-        return true;
-      }
-      if (sub === 'new') {
-        const next = startNew(state);
-        if (next === state) { sysOut('egpt: already on a fresh state — next @egpt starts a new thread'); return true; }
-        await persistDefaultBrainState(next);
-        sysOut('egpt: cleared active session — next @egpt starts a new thread');
-        return true;
-      }
-      if (sub === 'rewind') {
-        let target = subArg;
-        if (target === '') target = 0;
-        else if (/^\d+$/.test(target)) target = parseInt(target, 10);
-        try {
-          const next = rewind(state, target);
-          await persistDefaultBrainState(next);
-          const sum = summarize(next);
-          sysOut(`egpt: rewound to ${sum.activeShort} (${next.type})`);
-        } catch (e) {
-          sysOut(`!! /egpt rewind: ${e.message}`);
-        }
-        return true;
-      }
-      sysOut(`!! /egpt: unknown subcommand "${sub}". usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]`);
-      return true;
-    }
+    // /egpt migrated to slash/egpt.mjs.
     // /log + /logs migrated to slash/log.mjs.
     // /help migrated to slash/help.mjs.
     // /status migrated to slash/status.mjs.
@@ -4799,128 +4736,8 @@ function App() {
       return true;
     }
     // /last migrated to slash/last.mjs.
-    if (cmd === '/sessions') {
-      // /sessions default <name>  — set the default operator session
-      // /sessions default clear   — clear the default
-      const parts = arg.split(/\s+/).filter(Boolean);
-      if (parts[0] === 'default') {
-        const target = parts[1];
-        if (!target || target === 'clear' || target === 'none') {
-          _defaultOp = null;
-          persistDefaultOp(null);
-          sysOut('default operator cleared');
-        } else if (!sessions[target]) {
-          sysOut(`!! no session named "${target}"`);
-        } else {
-          _defaultOp = target;
-          persistDefaultOp(target);
-          sysOut(`default operator -> ${target} (persisted)`);
-        }
-        return true;
-      }
-
-      // Best-effort: if a session has a targetId, look up the live tab title
-      // and show that. Falls back to just the targetId if Chrome isn't reachable.
-      let tabsByid = new Map();
-      try {
-        const tabs = await cdp.listTabs();
-        for (const t of tabs) tabsByid.set(t.id, t);
-      } catch { /* Chrome not running — that's fine for non-CDP sessions */ }
-
-      const rows = Object.entries(sessions).map(([name, s]) => {
-        const star = name === _defaultOp ? '* ' : '  ';
-        const emojiPad = (s.emoji ?? '❓') + ' ';
-        const namePad = name.padEnd(14);
-        const brainPad = (s.brain ?? '?').padEnd(13);
-        const brain = brainForName(s.brain);
-        // s.options may be missing on sessions loaded from older yamls
-        // that stored brain-specific fields flat at the top level.
-        // normalizeSessions on load handles this for fresh restores,
-        // but stay defensive here so a stale shape never crashes the
-        // shell.
-        const opts = s.options ?? {};
-        let detail = '';
-        if (opts.targetId) {
-          const live = tabsByid.get(opts.targetId);
-          detail = live ? `"${live.title || '(untitled)'}"` : `(tab gone — ${opts.targetId.slice(0, 8)}...)`;
-        } else if (opts.sessionId) {
-          const idShort = opts.sessionId.slice(0, 8) + '...';
-          detail = s.brain === 'codex' ? `thread: ${idShort}` : `claude --resume ${idShort}`;
-        } else if (opts.url) {
-          detail = opts.url.replace(/^https?:\/\//, '');
-        } else if (brain?.stateDetail) {
-          detail = brain.stateDetail(opts);
-        }
-        if (opts.profileName) {
-          detail = [`profile: ${opts.profileName}`, detail].filter(Boolean).join(' | ');
-        }
-        const bio = s.bio ? `\n     bio: ${s.bio}` : '';
-        return `${star}${emojiPad}${namePad}${brainPad}${detail}${bio}`;
-      });
-      const footer = _defaultOp ? `\n* = default operator (${_defaultOp})  /sessions default clear to unset` : '';
-
-      // Append peer (zombie) sessions: registered participants owned by other
-      // nodes. Visible here so the user sees the whole room and can address
-      // any of them with @<name>; the bus routes the mention to the owner.
-      const peerLines = [];
-      for (const [nodeId, peer] of peerNodesRef.current) {
-        const head = `~ ${nodeId}  (${peer.role ?? 'node'})${peer.polling ? '  [polling]' : ''}`;
-        peerLines.push(head);
-        for (const sess of peer.sessions ?? []) {
-          peerLines.push(`    ${(sess.name ?? '?').padEnd(14)}${sess.brain ?? '?'}`);
-        }
-      }
-      const peerBlock = peerLines.length
-        ? `\n\n── peers (zombie sessions) ───────────────────\n${peerLines.join('\n')}`
-        : '';
-
-      sysOut((rows.join('\n') || '(none)') + footer + peerBlock);
-      return true;
-    }
-    if (cmd === '/rooms') {
-      try {
-        const dir = join(homedir(), '.egpt', 'rooms');
-        let files = [];
-        try { files = (await readdir(dir)).filter(f => f.endsWith('.yaml')); } catch {}
-        if (!files.length) { sysOut(`(no saved rooms)\n  /save-room <name> to save current room`); return true; }
-        sysOut(`Saved rooms in ${dp(dir)}:\n${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n/room join <name> to enter (and restore its sessions)`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
-    if (cmd === '/save-room') {
-      const roomName = arg.trim() || 'default';
-      try {
-        let tabsByid = new Map();
-        try { const tabs = await cdp.listTabs(); for (const t of tabs) tabsByid.set(t.id, t); } catch {}
-        const lines = [`# egpt room: ${roomName}`, `# saved: ${ts()}`, ``, `sessions:`];
-        for (const [name, s] of Object.entries(sessions)) {
-          lines.push(`  ${name}:`);
-          lines.push(`    brain: ${s.brain}`);
-          if (s.emoji) lines.push(`    emoji: ${s.emoji}`);
-          if (s.bio) lines.push(`    bio: "${s.bio.replace(/"/g, '\\"')}"`);
-          const opts = s.options ?? {};
-          if (opts.targetId) {
-            const tab = tabsByid.get(opts.targetId);
-            if (tab?.url && !tab.url.startsWith('chrome')) lines.push(`    url: ${tab.url}`);
-          }
-          if (opts.sessionId) lines.push(`    session_id: ${opts.sessionId}`);
-          if (opts.cwd) lines.push(`    cwd: ${opts.cwd}`);
-          if (opts.model) lines.push(`    model: ${opts.model}`);
-          if (opts.effort) lines.push(`    effort: ${opts.effort}`);
-          if (opts.profileName) lines.push(`    profile: ${opts.profileName}`);
-        }
-        const tgChatId = bridgeRef.current?.chatId;
-        if (tgChatId) {
-          lines.push(``, `telegram:`, `  chat_id: ${tgChatId}`);
-        }
-        const dir = join(homedir(), '.egpt', 'rooms');
-        await mkdir(dir, { recursive: true });
-        const roomFile = join(dir, `${roomName}.yaml`);
-        await writeFile(roomFile, lines.join('\n') + '\n');
-        sysOut(`room "${roomName}" saved -> ${dp(roomFile)}`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
+    // /sessions migrated to slash/sessions.mjs.
+    // /rooms + /save-room migrated to slash/rooms.mjs.
     // /detach migrated to slash/detach.mjs.
     if (cmd === '/mirror') {
       // /mirror @<target> [mN ...] [--tagged | --no-tag]
