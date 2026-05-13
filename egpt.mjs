@@ -2986,6 +2986,11 @@ function App() {
         readJsonlMetadata,
         listBrainProfiles,
         profileDirsText,
+        // Batch 8 additions
+        setBrowserWaiting,
+        ensureSummariesDir,
+        summaryPath,
+        isSafeName,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3614,75 +3619,7 @@ function App() {
     // dispatch lane above. Add new commands as slash/*.mjs files and
     // delete their inline branches here.
 
-    if (cmd === '/wa-pending') {
-      // Held pre-connect messages — messages baileys delivered after a
-      // reconnect but whose timestamp predated connectedAt by more
-      // than whatsapp.max_backlog_seconds. These would otherwise have
-      // auto-dispatched (potentially running the brain on a stale @e
-      // request from before the daemon was even up). The hold-and-
-      // review flow makes that decision the operator's instead.
-      //   /wa-pending                   — list
-      //   /wa-pending dispatch <idx>    — dispatch one (replays
-      //                                   through handleMessage)
-      //   /wa-pending dispatch all      — dispatch every held message
-      //   /wa-pending clear             — discard all without dispatch
-      const wa = waBridgeRef.current;
-      if (!wa || typeof wa.listHeld !== 'function') {
-        sysOut('!! /wa-pending: whatsapp bridge not running');
-        return true;
-      }
-      const parts = arg.trim().split(/\s+/).filter(Boolean);
-      const sub = parts[0];
-      if (!sub) {
-        const held = wa.listHeld();
-        if (!held.length) { sysOut('(no held messages)'); return true; }
-        const ageLabel = (ts) => {
-          const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-          if (s < 60)    return `${s}s ago`;
-          if (s < 3600)  return `${Math.floor(s / 60)}m ago`;
-          if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-          return `${Math.floor(s / 86400)}d ago`;
-        };
-        const lines = held.map(h => {
-          const who = h.author ?? (h.jid?.split('@')[0] ?? '?');
-          const preview = h.text.length > 100 ? h.text.slice(0, 99) + '…' : h.text;
-          return `  [${h.idx}] ${who} (${ageLabel(h.ts)}): ${preview}`;
-        });
-        sysOut(`held ${held.length} pre-connect message(s):\n${lines.join('\n')}\n\n` +
-               `/wa-pending dispatch <idx>   dispatch one through the brain pipeline\n` +
-               `/wa-pending dispatch all     dispatch every held message\n` +
-               `/wa-pending clear            discard without dispatch`);
-        return true;
-      }
-      if (sub === 'clear') {
-        const n = wa.clearHeld();
-        sysOut(`discarded ${n} held message(s)`);
-        return true;
-      }
-      if (sub === 'dispatch') {
-        const which = parts[1];
-        if (!which) { sysOut('usage: /wa-pending dispatch <idx|all>'); return true; }
-        if (which === 'all') {
-          const held = wa.listHeld();
-          let ok = 0, fail = 0;
-          // Walk indices high-to-low so splice in dispatchHeld doesn't
-          // renumber entries we haven't gotten to yet.
-          for (let i = held.length - 1; i >= 0; i--) {
-            const r = await wa.dispatchHeld(i);
-            if (r.ok) ok++; else fail++;
-          }
-          sysOut(`dispatched ${ok}/${held.length}${fail ? `  (${fail} failed)` : ''}`);
-          return true;
-        }
-        const idx = parseInt(which, 10);
-        if (!Number.isInteger(idx)) { sysOut(`!! /wa-pending dispatch: "${which}" is not a number`); return true; }
-        const r = await wa.dispatchHeld(idx);
-        sysOut(r.ok ? `dispatched [${idx}]` : `!! dispatch [${idx}] failed: ${r.reason}`);
-        return true;
-      }
-      sysOut('usage: /wa-pending [dispatch <idx|all> | clear]');
-      return true;
-    }
+    // /wa-pending migrated to slash/wa-pending.mjs.
     if (cmd === '/whatsapp') {
       const argParts = arg.trim().split(/\s+/).filter(Boolean);
       const sub = argParts[0];
@@ -4264,17 +4201,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/continue') {
-      // Resume an operator that called browser.waitForHuman().
-      // Creates ~/.egpt/browser-continue.txt which browser-tools.mjs polls for.
-      const continueFile = join(EGPT_HOME, 'browser-continue.txt');
-      try { writeFileSync(continueFile, '1', 'utf8'); } catch (e) {
-        sysOut(`!! /continue: ${e.message}`); return true;
-      }
-      setBrowserWaiting(null);
-      sysOut('browser resumed');
-      return true;
-    }
+    // /continue migrated to slash/continue.mjs.
     if (cmd === '/session') {
       // /session <session-name>                       → show resume state
       // /session <session-name> <id> [cwd]            → set resume id (cwd auto-detected)
@@ -4484,47 +4411,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/summaries' || cmd === '/list-saved' || cmd === '/saved') {
-      try {
-        await ensureSummariesDir();
-        const files = (await readdir(SUMMARIES_DIR)).filter(f => f.endsWith('.md'));
-        if (!files.length) { sysOut(`(no summaries yet — try /save <name> or /summarize <name>)\n  dir: ${SUMMARIES_DIR}`); return true; }
-        const rows = await Promise.all(files.map(async (f) => {
-          const p = join(SUMMARIES_DIR, f);
-          const st = await stat(p);
-          const head = (await readFile(p, 'utf8')).slice(0, 80).replace(/\s+/g, ' ');
-          return { name: f.replace(/\.md$/, ''), size: st.size, mtime: st.mtime, head };
-        }));
-        rows.sort((a, b) => b.mtime - a.mtime);
-        const fmtSize = (b) => b < 1024 ? `${b}B` : `${(b / 1024).toFixed(1)}K`;
-        sysOut(rows.map(r =>
-          `${r.name.padEnd(20)} ${fmtSize(r.size).padEnd(7)} "${r.head}${r.head.length >= 80 ? '…' : ''}"`
-        ).join('\n') + `\n\ndir: ${SUMMARIES_DIR}`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
-    if (cmd === '/save') {
-      // /save <name> — write the most recent NON-system message in the current
-      // room to ~/.egpt/summaries/<name>.md. Cheap, no LLM call. Useful for
-      // saving a clean answer (your own paragraph, or claude's last reply) for
-      // injection elsewhere later.
-      const name = arg.trim();
-      if (!isSafeName(name)) {
-        sysOut('usage: /save <name>\n  name: letters/digits/dot/dash/underscore only');
-        return true;
-      }
-      try {
-        const text = await readFile(FILE, 'utf8');
-        const turns = parseMessages(text).filter(m => m.author !== 'system');
-        if (!turns.length) { sysOut('(nothing to save — the room is empty)'); return true; }
-        const last = turns[turns.length - 1];
-        await ensureSummariesDir();
-        const body = `# ${name}\n\n_Saved ${new Date().toISOString().slice(0, 16).replace('T', ' ')} from ${FILE}_\n_Author: ${last.author}_\n\n---\n\n${last.body}\n`;
-        await writeFile(summaryPath(name), body);
-        sysOut(`saved -> ${dp(summaryPath(name))}\n  (${last.body.length} chars from ${last.author})`);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      return true;
-    }
+    // /summaries (and aliases) + /save migrated to slash/summaries.mjs + slash/save.mjs.
     if (cmd === '/summarize' || cmd === '/cdp-summarize' || cmd === '/operator-summarize') {
       // Syntax:
       //   /summarize [all|last <N>] <name> [<brain>]
