@@ -2947,6 +2947,15 @@ function App() {
         USER_NAME,
         append,
         setItems,
+        // Batch 3 additions
+        items,                                       // snapshot for /log
+        fmtTimeOnly,                                 // shared time formatter
+        getShowPrompts: () => _showPrompts,
+        setShowPrompts: (v) => { _showPrompts = !!v; },
+        dp,                                          // path display
+        parseMessages,                               // shared internal — pass-thru
+        isMetaMessage: _isMetaMessage,               // /last filter
+        suppressTranscriptRef: _suppressTranscriptRef,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3292,22 +3301,7 @@ function App() {
       sysOut(`!! /egpt: unknown subcommand "${sub}". usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]`);
       return true;
     }
-    if (cmd === '/log' || cmd === '/logs') {
-      // Show the last N log items (telemetry, room-state hints, debug
-      // dumps, peer announces). Default N=30. They're in items[] but
-      // hidden from the main render via _log; this slash command
-      // surfaces them on demand. Output goes only to the issuer's
-      // surface (sysOut respects outputSinkRef _target).
-      const n = parseInt(arg.trim(), 10) || 30;
-      const logs = items.filter(i => i._log).slice(-n);
-      if (!logs.length) { sysOut('(log is empty)'); return true; }
-      const lines = logs.map(i => {
-        const t = fmtTimeOnly(Math.floor(i.id));
-        return `${t}  ${i.body}`;
-      });
-      sysOut(`── log (last ${logs.length}) ──\n${lines.join('\n')}`);
-      return true;
-    }
+    // /log + /logs migrated to slash/log.mjs.
     if (cmd === '/help') {
       const bt = brainNamesForHelp();
       // /help @<who> — deliver the help text to that recipient by
@@ -3393,26 +3387,7 @@ function App() {
       sysOut(lines.join('\n'));
       return true;
     }
-    if (cmd === '/prompts') {
-      if (arg === 'on')  { _showPrompts = true;  sysOut('prompt display on — full task text shown before each operator turn'); return true; }
-      if (arg === 'off') { _showPrompts = false; sysOut('prompt display off'); return true; }
-      // No arg: show templates
-      const knownCmds = ['browse', 'send-file', 'summarize', 'inject', 'codex-task'];
-      const parts = [`prompt display is ${_showPrompts ? 'ON' : 'OFF'}  (/prompts on|off to toggle)\n`];
-      for (const c of knownCmds) {
-        const tpl = await loadTemplate(c);
-        if (tpl) {
-          parts.push(`── /${c} ── (${dp(tpl.path)})`);
-          parts.push(tpl.body.length > 1200 ? tpl.body.slice(0, 1200) + '\n...[truncated]' : tpl.body);
-          parts.push('');
-        } else {
-          parts.push(`── /${c} ── (no template file found)`);
-          parts.push('');
-        }
-      }
-      sysOut(parts.join('\n'));
-      return true;
-    }
+    // /prompts migrated to slash/prompts.mjs.
     // /theme + /themes migrated to slash/theme.mjs.
     if (cmd === '/telegram') {
       const argParts = arg.trim().split(/\s+/).filter(Boolean);
@@ -4939,40 +4914,7 @@ function App() {
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
-    if (cmd === '/last') {
-      // /last is a VIEW command — re-renders the tail of the transcript
-      // in the current shell. Its output must NOT mirror to bridges
-      // (we'd flood TG/WA with N old messages) and must NOT be
-      // re-appended to the transcript file (those messages are already
-      // there; re-appending would duplicate them). Both protections
-      // happen here: the re-injected items get _localOnly to keep
-      // them out of the items-mirror, and _suppressTranscriptRef
-      // makes sysOut + echo skip the append.queue during this command.
-      // Operator-tool noise (slash commands, lifecycle messages,
-      // bus/telegram/whatsapp state events, previous /last headers)
-      // gets filtered out — the room.md still records everything for
-      // forensics, but /last shows the actual conversation.
-      const n = parseInt(arg, 10) || 10;
-      _suppressTranscriptRef.current = true;
-      try {
-        const text = await readFile(FILE, 'utf8');
-        const all = parseMessages(text);
-        const meaningful = all.filter(m => !_isMetaMessage(m.body));
-        const msgs = meaningful.slice(-n);
-        if (!msgs.length) { sysOut('(no messages yet)'); return true; }
-        const hiddenCount = all.length - meaningful.length;
-        const hiddenNote = hiddenCount > 0 ? ` (${hiddenCount} system / operator-tool line${hiddenCount === 1 ? '' : 's'} hidden)` : '';
-        sysOut(`--- last ${msgs.length} message(s) from ${dp(FILE)}${hiddenNote} ---`);
-        setItems(p => [...p, ...msgs.map((m, i) => ({
-          id: Date.now() + i / 1000,
-          author: m.author,
-          body: m.body,
-          _localOnly: true,           // don't mirror these old lines to bridges
-        }))]);
-      } catch (e) { sysOut(`!! ${e.message}`); }
-      finally { _suppressTranscriptRef.current = false; }
-      return true;
-    }
+    // /last migrated to slash/last.mjs.
     if (cmd === '/sessions') {
       // /sessions default <name>  — set the default operator session
       // /sessions default clear   — clear the default
