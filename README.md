@@ -1,6 +1,6 @@
 # eGPT
 
-eGPT is a tool that joins multiple AI(s) and human(s) in a chat-like room, via WhatsApp, Telegram, shell script, and browser extension (Chrome, Firefox).
+eGPT is a tool that joins multiple AI(s) and human(s) in a chat-like room, shell-script, WhatsApp, Telegram, and browser extension (Chrome, Firefox).
 
 For example
 
