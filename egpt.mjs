@@ -2930,6 +2930,23 @@ function App() {
         APP_DIR,
         EGPT_HOME,
         getFile:            () => FILE,
+        // Theme setter wraps the three side-effects (T mutation,
+        // _currentTheme reassignment, themeRev bump for re-render)
+        // so file commands don't have to know about them.
+        getTheme:           () => _currentTheme,
+        setTheme:           (name) => {
+          Object.assign(T, loadTheme(name));
+          _currentTheme = name;
+          setThemeRev(n => n + 1);
+        },
+        // Snapshots of mutable bindings — sessions is React state,
+        // USER_NAME is a module-level let. handleSlash is invoked
+        // once per command, so capturing them as values at call
+        // time is sufficient for read-only consumers.
+        sessions,
+        USER_NAME,
+        append,
+        setItems,
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -3396,32 +3413,7 @@ function App() {
       sysOut(parts.join('\n'));
       return true;
     }
-    if (cmd === '/themes') {
-      const names = await listThemes();
-      const lines = names.map(n => n === _currentTheme ? `/theme ${n} ← active` : `/theme ${n}`);
-      sysOut(`themes:\n${lines.join('\n')}`);
-      return true;
-    }
-    if (cmd === '/theme') {
-      const name = arg.trim();
-      if (!name) {
-        sysOut(`active theme: ${_currentTheme}  (use /themes to list, next/prev to rotate)`);
-        return true;
-      }
-      const names = await listThemes();
-      let target = name;
-      if (name === 'next' || name === 'prev') {
-        const idx = names.indexOf(_currentTheme);
-        target = name === 'next'
-          ? names[(idx + 1) % names.length]
-          : names[(idx - 1 + names.length) % names.length];
-      }
-      Object.assign(T, loadTheme(target));
-      _currentTheme = target;
-      setThemeRev(n => n + 1);
-      sysOut(`theme: ${target}`);
-      return true;
-    }
+    // /theme + /themes migrated to slash/theme.mjs.
     if (cmd === '/telegram') {
       const argParts = arg.trim().split(/\s+/).filter(Boolean);
       const sub = argParts[0] ?? '';
@@ -4583,41 +4575,7 @@ function App() {
              `\n(claude --resume mode active for ${target})`);
       return true;
     }
-    if (cmd === '/rules') {
-      // /rules @<who> — prepend an @-mention so the recipient is named
-      // in the rules message. Same delivery path as plain /rules; the
-      // mention is just decorative until per-bridge mention encoding
-      // (notifications) is wired.
-      const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
-      // Just emit the rules as a system message: written to the .md, shown in
-      // the local transcript, mirrored to Telegram via the items.length effect.
-      // CDP brains don't read the .md, so they won't see this until the admin
-      // explicitly /mirror's the latest message to them.
-      const all = Object.entries(sessions)
-        .map(([n, s]) => `${s.emoji ? s.emoji + ' ' : ''}${n} (${s.brain})${s.bio ? ` — ${s.bio}` : ''}`)
-        .join(', ');
-      const rules =
-        `[Room rules — read once and remember]\n` +
-        `Participants right now: ${all || '(no brains yet)'}, plus the human admin (${USER_NAME}).\n` +
-        `Every participant is equal. No principal. Admins are the human overlords.\n\n` +
-        `You don't have to reply to every message. Only speak when:\n` +
-        `- you're directly addressed (your name or @mention),\n` +
-        `- you have something specifically useful that hasn't been said,\n` +
-        `- the admin asks for your input.\n\n` +
-        `Otherwise, reply with literally just \`...\` (three dots) and nothing else.\n` +
-        `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
-        `You may @mention another participant to ask them something. The admin\n` +
-        `arbitrates when AI-AI exchanges get loud.\n\n` +
-        `Identity slash commands (any participant may use):\n` +
-        `  /emoji <name> <emoji>   set your avatar emoji (auto-assigned at join)\n` +
-        `  /handle <old> <new>     rename yourself\n` +
-        `  /bio <name> <text>      set a short bio visible to others in /sessions and /rules\n` +
-        `Admins may also /emoji, /handle, /bio any participant.`;
-      const finalRules = recipient ? `(for @${recipient})\n\n${rules}` : rules;
-      await append('system', finalRules);
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: finalRules }]);
-      return true;
-    }
+    // /rules migrated to slash/rules.mjs.
     if (cmd === '/mirror') {
       // Push a message into one or more CDP tabs.
       // Forms:
