@@ -151,23 +151,29 @@ schtasks /Create /TN "egpt-daemon" `
   /SC ONLOGON /RL HIGHEST /F
 ```
 
-This runs the daemon on every Windows logon. To survive reboots without the
-user logging in, use the Task Scheduler's `Run whether user is logged on or
-not` checkbox (you'll be prompted for the account password — Windows uses it
-to launch the task under your user). The daemon and the bridges (WhatsApp,
-Telegram) then keep running on the locked desktop, even after a restart.
+This runs the daemon on every Windows logon — i.e. as soon as you sign in,
+the bridges come up and stay up across `/restart` / `/upgrade` cycles.
 
-Caveat: in that mode there is **no visible local shell** until you log in.
-Windows isolates the interactive desktop from the locked session, so the eGPT
-terminal window only exists once you sign in again. While the machine is
-locked, you reach eGPT only through WhatsApp / Telegram (and any web brain it
-drives via Chrome — Chrome itself runs headless-enough inside the locked
-session to keep doing CDP work).
+To keep eGPT running **across reboots even when nobody is logged in**, use
+the Task Scheduler's `Run whether user is logged on or not` checkbox
+(Windows will prompt for the account password and launch the task in a
+non-interactive session). In that mode:
 
-If you want a visible shell on the locked machine too, the workaround is to
-log in, lock the screen (Win+L) instead of signing out, and let Task Scheduler
-spawn the daemon at logon. The shell window then stays alive behind the lock
-and reattaches when you unlock.
+- WhatsApp / Telegram bridges, the bus, file logging, and media downloads
+  all keep working — they're plain node processes, no terminal needed.
+  Every incoming message lands in the conversation `.md`, media saves to
+  `~/.egpt/media/...`, and stable IDs / reply targets persist as usual.
+- The Ink terminal UI does not run — there is no logged-in desktop to
+  render to. When you eventually sign in, you'd typically want to stop
+  the background instance and start a fresh shell that picks up the room
+  state from disk.
+
+Pre-logon background mode is not yet wired as a first-class feature —
+there is no dedicated `--headless` flag, no pidfile handshake, and no
+"attach this shell to the running daemon" command. Either the background
+process keeps the bridges *or* an interactive shell does, but not both
+at the same time (only one WhatsApp pairing can authenticate at a time).
+This is a known gap — see the issue tracker / TODO if you need it.
 
 #### macOS
 
