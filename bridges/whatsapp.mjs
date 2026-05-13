@@ -627,9 +627,23 @@ export async function startWhatsAppBridge({
           stopped = true;
           return;
         }
-        // Funnel through _scheduleReconnect — handles backoff,
-        // operator-visible errOut, and the case where connect() itself
-        // throws (used to leave the bridge silently dead).
+        // 440 = connectionReplaced. Means WA's server has another
+        // session authenticated with these credentials. Almost always
+        // a stale session from a prior shell that didn't release the
+        // WS cleanly on /upgrade or crash. Auto-reconnecting just
+        // trips the replacement again — we'd loop forever fighting
+        // ourselves. Stop and ask the operator to /whatsapp start
+        // after a brief wait so WA's side can drain the stale entry.
+        if (reason === DisconnectReason.connectionReplaced || reason === 440) {
+          err('whatsapp: connection replaced by another session (reason 440). ' +
+              'A stale WS from a prior process is still on WA\'s server. ' +
+              'Wait ~30s then run /whatsapp start. Auto-reconnect disabled to avoid a fight loop.');
+          stopped = true;
+          return;
+        }
+        // Other close reasons: funnel through _scheduleReconnect —
+        // backoff retry, operator-visible errOut, and recovery from
+        // a connect() that throws synchronously.
         _scheduleReconnect(`connection closed (reason ${reason ?? '?'})`);
       }
     });
