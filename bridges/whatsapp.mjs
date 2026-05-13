@@ -328,6 +328,11 @@ export async function startWhatsAppBridge({
               broadcastsByAuthor: (c.jid === 'status@broadcast' && c.broadcastsByAuthor && typeof c.broadcastsByAuthor === 'object')
                 ? { ...c.broadcastsByAuthor } : {},
               pinned: Number(c.pinned) || 0,
+              // egptPinned: eGPT-side pin layer, additive with WA's
+              // 3-chat phone-side limit. /pin @waN sets a timestamp;
+              // /unpin clears it. Independent of WA's `pinned`, both
+              // contribute to the "is this chat pinned" decision.
+              egptPinned: Number(c.egptPinned) || 0,
             });
           }
         }
@@ -370,12 +375,13 @@ export async function startWhatsAppBridge({
     }
     const cur = _chats.get(jid) ?? {
       jid, isGroup, lastActivityTs: 0, creationTs: 0, name: null, recent: [],
-      messageCount: 0, broadcastsByAuthor: {}, pinned: 0,
+      messageCount: 0, broadcastsByAuthor: {}, pinned: 0, egptPinned: 0,
     };
     if (!Array.isArray(cur.recent)) cur.recent = [];
     if (typeof cur.messageCount !== 'number') cur.messageCount = 0;
     if (!cur.broadcastsByAuthor || typeof cur.broadcastsByAuthor !== 'object') cur.broadcastsByAuthor = {};
     if (typeof cur.pinned !== 'number') cur.pinned = 0;
+    if (typeof cur.egptPinned !== 'number') cur.egptPinned = 0;
     cur.isGroup = isGroup;
     if (kind === 'activity') cur.lastActivityTs = Math.max(cur.lastActivityTs, ts);
     else if (kind === 'creation') cur.creationTs = Math.max(cur.creationTs, ts);
@@ -529,6 +535,15 @@ export async function startWhatsAppBridge({
         connectedAt = Date.now();
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
+        // Heal stale group names. Pre-fix bridge builds wrote the
+        // first-speaker's pushName into the chat name for groups, so
+        // a group's cached label could end up as a person's name
+        // (e.g. "Andres" or "Mauricio"). That polluted the @<slug>.wa
+        // segment of every speaker's handle in that group. Fire a
+        // one-shot proactive refresh against the server to overwrite
+        // every group's cached name with its real subject. Runs in
+        // the background — doesn't block connect.
+        _refreshAllGroupNames();
       }
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode;
@@ -1162,6 +1177,35 @@ export async function startWhatsAppBridge({
     catch (_) { return null; }
   }
 
+  // One-shot proactive refresh of every cached group's name against
+  // the server, run on each connection-open. Heals pre-fix corruption
+  // (groups whose name was a person's pushName) without waiting for
+  // the user to /channels or for a new message to arrive in that
+  // chat. Best-effort: failures are logged once, never thrown.
+  async function _refreshAllGroupNames() {
+    try {
+      const groups = await sock?.groupFetchAllParticipating?.();
+      if (!groups || typeof groups !== 'object') return;
+      let healed = 0;
+      for (const [jid, meta] of Object.entries(groups)) {
+        const subject = meta?.subject;
+        if (!subject || typeof subject !== 'string') continue;
+        const cur = _chats.get(jid);
+        if (!cur) continue;
+        if (cur.name === subject) continue;
+        cur.name = subject;
+        _chats.set(jid, cur);
+        healed++;
+      }
+      if (healed > 0) {
+        _scheduleChatsWrite();
+        log(`whatsapp: refreshed ${healed} group name${healed === 1 ? '' : 's'} from server`);
+      }
+    } catch (e) {
+      log(`whatsapp: group-name refresh failed (${e?.message ?? e}); will heal lazily per-message`);
+    }
+  }
+
   // Fire-and-forget: when we observe a group with no proper name yet
   // (or a stale pushName-shaped name carried over from the pre-fix
   // chats-cache), reach out to the WA server once for the subject and
@@ -1223,9 +1267,14 @@ export async function startWhatsAppBridge({
     // personality-analysis use but kept out of /channels by default.
     const everything = [..._chats.values()]
       .filter(c => includeStatus || c.jid !== 'status@broadcast');
-    const isPinned = c => (c.pinned || 0) > 0;
+    // Either source of "pinned" floats a chat to the top. WA's pin
+    // caps at 3 phone-side; eGPT's pin layer is unlimited and lives
+    // here. Sort the pinned set by max(WA-pin-ts, eGPT-pin-ts) so
+    // the most recently pinned (from either source) tops the list.
+    const pinScore = c => Math.max(c.pinned || 0, c.egptPinned || 0);
+    const isPinned = c => pinScore(c) > 0;
     const pinned   = everything.filter(isPinned)
-                               .sort((a, b) => (b.pinned || 0) - (a.pinned || 0));
+                               .sort((a, b) => pinScore(b) - pinScore(a));
     const active   = everything.filter(c => !isPinned(c) && c.lastActivityTs > 0)
                                .sort((a, b) => b.lastActivityTs - a.lastActivityTs);
     const inactive = all
@@ -1259,6 +1308,7 @@ export async function startWhatsAppBridge({
         lastActivityTs: c.lastActivityTs,
         creationTs:     c.creationTs,
         pinned:         c.pinned || 0,
+        egptPinned:     c.egptPinned || 0,
         recent,
       };
     }));
@@ -1331,11 +1381,36 @@ export async function startWhatsAppBridge({
     return local ? _slugify(local, 24) : null;
   }
 
+  // eGPT-side pin layer. Independent of WA's 3-pin phone limit:
+  // /pin @waN sets a positive timestamp; /unpin clears it. Returns
+  // the new state ('pinned' | 'unpinned' | 'unknown') so the host
+  // can confirm. Persists immediately via _scheduleChatsWrite.
+  function setEgptPin(jid, on) {
+    if (!jid) return 'unknown';
+    const cur = _chats.get(jid);
+    if (!cur) return 'unknown';
+    cur.egptPinned = on ? Date.now() : 0;
+    _chats.set(jid, cur);
+    _scheduleChatsWrite();
+    return on ? 'pinned' : 'unpinned';
+  }
+  // Snapshot of every eGPT-pinned chat — used by /pin (no arg) to
+  // list current pins regardless of WA pin state. Sorted by pin ts
+  // desc so the most recent /pin shows first.
+  function listEgptPinned() {
+    return [..._chats.values()]
+      .filter(c => (c.egptPinned || 0) > 0)
+      .sort((a, b) => (b.egptPinned || 0) - (a.egptPinned || 0))
+      .map(c => ({ jid: c.jid, name: c.name, isGroup: !!c.isGroup, egptPinned: c.egptPinned }));
+  }
+
   return {
     listChats,
     prefetchHistoryForTopChats,
     getChatName,
     getChatSlug,
+    setEgptPin,
+    listEgptPinned,
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return Promise.resolve(null);
