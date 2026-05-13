@@ -27,6 +27,7 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
+import { buildLogonSummary, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2115,6 +2116,7 @@ function App() {
         },
       });
       waBridgeRef.current = bridge;
+      _globalWaBridge = bridge;
       logOut('whatsapp bridge enabled');
       return true;
     } catch (e) {
@@ -2127,6 +2129,7 @@ function App() {
     if (!waBridgeRef.current) return false;
     waBridgeRef.current.stop();
     waBridgeRef.current = null;
+    _globalWaBridge = null;
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge stopped', _localOnly: true }]);
     return true;
   }, []);
@@ -3840,6 +3843,7 @@ function App() {
         if (waBridgeRef.current) {
           try { waBridgeRef.current.stop(); } catch (_) {}
           waBridgeRef.current = null;
+          _globalWaBridge = null;
         }
         try { await rm(authDir, { recursive: true, force: true }); }
         catch (e) { sysOut(`!! couldn't wipe ${authDir}: ${e.message}`); return true; }
@@ -3851,6 +3855,7 @@ function App() {
         if (!waBridgeRef.current) { sysOut('whatsapp: not running'); return true; }
         try { waBridgeRef.current.stop(); } catch (_) {}
         waBridgeRef.current = null;
+        _globalWaBridge = null;
         sysOut('whatsapp: disconnected (auth preserved). /whatsapp pair to start over');
         return true;
       }
@@ -7300,10 +7305,30 @@ function App() {
         h(MultiLineInput, { onSubmit: submit }))));
 }
 
-// Module-level bridge reference so SIGINT/SIGHUP handlers can abort the
-// long-poll fetch immediately, preventing orphaned egpt processes.
-let _globalBridge = null;
-const _exitClean = (code = 0) => { _globalBridge?.stop(); clearPidfile(); process.exit(code); };
+// Module-level bridge references so SIGINT/SIGHUP/SIGTERM handlers can
+// abort long-poll fetches and flush per-bridge state (chats-cache,
+// reaction-counts) synchronously before the process exits. Two slots
+// because the bridges are independent — TG and WA each register the
+// instance they own. React refs aren't reachable from a top-level
+// signal handler, so this is the seam.
+let _globalBridge = null;       // telegram bridge
+let _globalWaBridge = null;     // whatsapp bridge — owns the logon-summary counters
+// On clean exit from the interactive shell, stamp last-logon so the
+// NEXT interactive shell's summary covers the window between then and
+// its takeover. Headless processes don't stamp — they're the
+// accumulator, not the consumer.
+const _exitClean = (code = 0) => {
+  _globalBridge?.stop();
+  // WA bridge.stop() synchronously flushes wa-chats.json and
+  // reaction-counts.json — critical so the next interactive shell's
+  // summary sees the latest counts. Order matters: stop both bridges
+  // before clearing the pidfile (otherwise a racing successor could
+  // re-enter takeover before we're done writing).
+  _globalWaBridge?.stop();
+  if (!HEADLESS) writeLastLogonNow();
+  clearPidfile();
+  process.exit(code);
+};
 process.on('SIGINT',  () => _exitClean(0));
 process.on('SIGHUP',  () => _exitClean(0));
 process.on('SIGTERM', () => _exitClean(0));
@@ -7316,6 +7341,27 @@ process.on('SIGTERM', () => _exitClean(0));
 // an interactive shell is up will also take over (rare but valid).
 await takeoverIfRunning();
 writePidfile();
+
+// Phase 2 "while you were away" summary. Only renders for an
+// interactive shell — the headless engine is the accumulator. By the
+// time we get here the previous process's SIGTERM handler has flushed
+// wa-chats.json and reaction-counts.json synchronously (see
+// bridge.stop()), so disk is current. After printing, reset counters
+// so the next cycle starts at zero, then write last-logon = now.
+if (!HEADLESS) {
+  try {
+    const summary = await buildLogonSummary();
+    if (summary) {
+      console.log(summary);
+      console.log('');
+    }
+  } catch (e) {
+    // Don't let a malformed cache file block startup.
+    console.error(`egpt: logon summary failed: ${e.message}`);
+  }
+  resetCountersOnDisk();
+  writeLastLogonNow();
+}
 
 if (HEADLESS) {
   // Ink wants tty-like stdin/stdout. Stub both so the render call
@@ -7344,4 +7390,4 @@ if (HEADLESS) {
   console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
   render(h(App), { exitOnCtrlC: false });
 }
-process.on('exit', () => { _globalBridge?.stop(); clearPidfile(); });
+process.on('exit', () => { _globalBridge?.stop(); _globalWaBridge?.stop(); clearPidfile(); });
