@@ -32,6 +32,36 @@ import { buildLogonSummary, resetCountersOnDisk, writeLastLogonNow } from './too
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+
+// slash/*.mjs file-command registry. Each file in slash/ exports a
+// `meta` (object or array of objects, one per cmd it registers) and
+// an async `run({ cmd, arg, ctx })`. The scanner loads them once at
+// shell startup; the dispatcher in handleSlash routes by cmd before
+// falling through to the legacy inline if-chain. Migration is
+// incremental: a command living in a slash/ file overrides any
+// inline branch with the same cmd, and inline branches stay
+// untouched until their file lands.
+import { readdirSync } from 'node:fs';
+const SLASH_REGISTRY = new Map();
+{
+  const slashDir = join(APP_DIR, 'slash');
+  let entries = [];
+  try { entries = readdirSync(slashDir); } catch (_) { /* dir missing — empty registry */ }
+  for (const f of entries) {
+    if (!f.endsWith('.mjs')) continue;
+    try {
+      const mod = await import(`./slash/${f}`);
+      const metaList = Array.isArray(mod.meta) ? mod.meta : (mod.meta ? [mod.meta] : []);
+      for (const m of metaList) {
+        if (m?.cmd && typeof mod.run === 'function') {
+          SLASH_REGISTRY.set(m.cmd, { meta: m, run: mod.run, source: f });
+        }
+      }
+    } catch (e) {
+      console.error(`!! slash/${f} failed to load: ${e.message}`);
+    }
+  }
+}
 // Pidfile: single-writer ownership of the WA pairing (baileys can only
 // authenticate one client at a time). Headless engine writes its PID
 // here at startup; a subsequent interactive shell reads it, SIGTERMs
@@ -2883,6 +2913,21 @@ function App() {
     const [cmd, ...rest] = text.split(/\s+/);
     const arg = rest.join(' ').trim();
 
+    // File-command dispatch lane. Any cmd registered by a slash/*.mjs
+    // file takes precedence over the inline if-chain below. ctx is
+    // the syscall table — closures + refs the file commands need.
+    // Grows as more commands migrate; document new keys in each
+    // file's run() header so the surface area stays grep-able.
+    const entry = SLASH_REGISTRY.get(cmd);
+    if (entry) {
+      const ctx = {
+        sysOut,
+        waBridgeRef,
+        waChannelsCacheRef: _waChannelsCacheRef,
+      };
+      return await entry.run({ cmd, arg, ctx });
+    }
+
     if (cmd === '/exit') { exit(); return true; }
     if (cmd === '/version') {
       // Snapshot current git state so the user can see what's running
@@ -3829,58 +3874,10 @@ function App() {
         : `${all.length} WA chats`}`);
       return true;
     }
-    if (cmd === '/pin' || cmd === '/unpin') {
-      // eGPT-side pin layer. WhatsApp caps phone-side pins at 3;
-      // this list is unlimited. Pinned chats (from either source —
-      // WA's pin or this) float to the top of /channels and the
-      // logon summary.
-      //   /pin                       — list current eGPT pins
-      //   /pin @waN [@waM ...]       — pin those (resolved against the
-      //                                last /channels output)
-      //   /pin clear                 — remove every eGPT pin
-      //   /unpin @waN [@waM ...]     — remove specific pins
-      if (!waBridgeRef.current) {
-        sysOut('!! whatsapp bridge not running'); return true;
-      }
-      const args = arg.trim().split(/\s+/).filter(Boolean);
-      // No-arg /pin lists; /unpin without args is a no-op (use /pin clear).
-      if (cmd === '/pin' && args.length === 0) {
-        const pins = waBridgeRef.current.listEgptPinned();
-        if (!pins.length) {
-          sysOut('eGPT pins: (none)\nuse /pin @waN to pin a chat from the last /channels listing');
-        } else {
-          const lines = pins.map((p, i) => {
-            const kind = p.isGroup ? '[group]' : '[1:1]';
-            const ago = ageLabel(p.egptPinned);
-            return `  ${i + 1}. ${kind.padEnd(7)} ${p.name || p.jid.split('@')[0]}  (pinned ${ago})`;
-          });
-          sysOut(`eGPT pins (${pins.length}):\n${lines.join('\n')}\n\n/unpin @waN to remove`);
-        }
-        return true;
-      }
-      if (cmd === '/pin' && args[0] === 'clear') {
-        const pins = waBridgeRef.current.listEgptPinned();
-        for (const p of pins) waBridgeRef.current.setEgptPin(p.jid, false);
-        sysOut(`cleared ${pins.length} eGPT pin${pins.length === 1 ? '' : 's'}`);
-        return true;
-      }
-      const setOn = cmd === '/pin';
-      const waTokens = args.filter(t => /^@wa\d+$/i.test(t));
-      if (!waTokens.length) {
-        sysOut(`!! usage: ${cmd} @waN [@waM ...] — /channels first to populate indices`);
-        return true;
-      }
-      const results = [];
-      for (const t of waTokens) {
-        const idx = parseInt(t.match(/^@wa(\d+)$/i)[1], 10) - 1;
-        const chat = _waChannelsCacheRef.current[idx];
-        if (!chat) { sysOut(`!! ${t}: no channel at that index. Run /channels first.`); continue; }
-        const state = waBridgeRef.current.setEgptPin(chat.jid, setOn);
-        results.push(`${t} "${chat.name}" → ${state}`);
-      }
-      if (results.length) sysOut(results.join('\n'));
-      return true;
-    }
+    // /pin and /unpin migrated to slash/pin.mjs — see SLASH_REGISTRY
+    // dispatch lane above. Add new commands as slash/*.mjs files and
+    // delete their inline branches here.
+
     if (cmd === '/wa-pending') {
       // Held pre-connect messages — messages baileys delivered after a
       // reconnect but whose timestamp predated connectedAt by more
