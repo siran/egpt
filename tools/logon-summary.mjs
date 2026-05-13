@@ -36,7 +36,11 @@ export async function buildLogonSummary() {
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  const totalMessages = chats.reduce((sum, c) => sum + (c.messageCount || 0), 0);
+  // Exclude status@broadcast from the inbox count — it has its own
+  // "📡 status posts" line and merging them inflates the headline.
+  const totalMessages = chats
+    .filter(c => c.jid !== 'status@broadcast')
+    .reduce((sum, c) => sum + (c.messageCount || 0), 0);
   const topChats = chats
     .filter(c => (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast')
     .sort((a, b) => (b.messageCount || 0) - (a.messageCount || 0))
@@ -78,28 +82,45 @@ export async function buildLogonSummary() {
     : `welcome back — first logon since the engine started:`);
 
   if (totalMessages > 0) {
-    const chatBits = topChats.map(c => {
-      const label = c.name || c.jid.split('@')[0];
-      return `${label} ${c.messageCount}`;
-    });
-    const dropped = chats.filter(c => c.jid !== 'status@broadcast').length - topChats.length;
-    const tail = (dropped > 0 && totalMessages > topChats.reduce((s, c) => s + c.messageCount, 0))
-      ? ` · +${dropped} more chats` : '';
-    lines.push(`  📥 ${totalMessages} messages   (${chatBits.join(' · ')}${tail})`);
+    const totalChatsActive = chats.filter(c => (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast').length;
+    lines.push('');
+    lines.push(`  📥 ${totalMessages} message${totalMessages === 1 ? '' : 's'} in ${totalChatsActive} chat${totalChatsActive === 1 ? '' : 's'}:`);
+    for (const c of topChats) {
+      const label = _chatDisplayLabel(c);
+      // Latest entry in the chat's recent[] ring — that's the freshest
+      // snippet we have. The ring is capped at 10 per chat by the WA
+      // bridge; messageCount can exceed it (we still report the real
+      // count, just don't have every line). Filter by since-ts so we
+      // never quote a stale message from a previous window.
+      const fresh = _latestRecent(c.recent, since);
+      const count = c.messageCount;
+      const head  = `      ${label}  ·  ${count} msg${count === 1 ? '' : 's'}`;
+      if (fresh) {
+        const author = fresh.author ? `${fresh.author}: ` : '';
+        lines.push(`${head}`);
+        lines.push(`          ↳ ${author}"${_snippet(fresh.text)}"`);
+      } else {
+        lines.push(head);
+      }
+    }
+    const dropped = totalChatsActive - topChats.length;
+    if (dropped > 0) lines.push(`      … +${dropped} more chat${dropped === 1 ? '' : 's'}`);
   }
 
   if (statusTotal > 0) {
     const bits = topStatusAuthors.map(([name, n]) => `${name} ${n}`);
     const rest = Object.keys(statusByAuthor).length - topStatusAuthors.length;
     const tail = rest > 0 ? ` · ${rest} more` : '';
-    lines.push(`  📡 ${statusTotal} status posts  (${bits.join(' · ')}${tail})`);
+    lines.push('');
+    lines.push(`  📡 ${statusTotal} status post${statusTotal === 1 ? '' : 's'}  (${bits.join(' · ')}${tail})`);
   }
 
   if (files.length > 0) {
     const kindBits = Object.entries(filesByKind)
       .sort((a, b) => b[1] - a[1])
       .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`);
-    lines.push(`  📎 ${files.length} files saved   (${kindBits.join(' · ')})  →  ${_formatSize(filesTotalBytes)}`);
+    lines.push('');
+    lines.push(`  📎 ${files.length} file${files.length === 1 ? '' : 's'} saved   (${kindBits.join(' · ')})  →  ${_formatSize(filesTotalBytes)}`);
   }
 
   if (topReaction) {
@@ -110,10 +131,62 @@ export async function buildLogonSummary() {
     const preview = topReaction.preview
       ? `"${topReaction.preview}"`
       : '(unknown message)';
-    lines.push(`  💥 most-reacted: ${preview}  [${emojiList}]`);
+    // Pair the reaction with the chat it landed in, when we can resolve
+    // the chatJid → display label via the same chats array.
+    const inChat = topReaction.chatJid
+      ? chats.find(c => c.jid === topReaction.chatJid)
+      : null;
+    const where = inChat ? ` in ${_chatDisplayLabel(inChat)}` : '';
+    lines.push('');
+    lines.push(`  💥 most-reacted: ${preview}${where}  [${emojiList}]`);
   }
 
+  // Pointer to commands that surface the underlying data. /last is the
+  // scrollback (room md tail). /channels shows every active chat with
+  // recent previews. /wa-pending surfaces any held pre-connect messages.
+  lines.push('');
+  lines.push('  /last 50  to scroll the transcript  ·  /channels  for the full chat list');
+
   return lines.join('\n');
+}
+
+// One-line chat label with type indicator. Used both for the "top chats"
+// section and for tagging the most-reacted-item line.
+function _chatDisplayLabel(c) {
+  if (c.jid === 'status@broadcast') return 'WA status feed';
+  const isGroup = !!c.isGroup;
+  // Strip the JID host suffix as a last resort. Group JIDs are
+  // <id>@g.us; DM JIDs are <number>@s.whatsapp.net or @lid.
+  const fallback = c.jid?.split('@')[0]?.split(':')[0] ?? '?';
+  const name = (c.name && c.name.trim()) ? c.name.trim() : fallback;
+  return isGroup ? `${name} (group)` : `DM with ${name}`;
+}
+
+// Latest body from a chat's recent[] ring, optionally filtered to
+// entries newer than `since`. Returns { author, text, ts } or null.
+function _latestRecent(recent, since) {
+  if (!Array.isArray(recent) || recent.length === 0) return null;
+  // recent[] is stored oldest-first; walk from the end.
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const r = recent[i];
+    if (!r || typeof r.text !== 'string') continue;
+    if (since && r.ts && r.ts < since) continue;
+    return r;
+  }
+  // Nothing in the since-window? Fall back to the absolute latest so
+  // the user at least sees what the chat is about.
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const r = recent[i];
+    if (r && typeof r.text === 'string') return r;
+  }
+  return null;
+}
+
+function _snippet(text, max = 70) {
+  if (!text) return '';
+  const oneLine = String(text).replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  return oneLine.slice(0, max - 1) + '…';
 }
 
 // Reset the counters that the summary just consumed so the next
