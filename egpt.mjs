@@ -1888,6 +1888,27 @@ function App() {
         // — every image / video / voice note / document / sticker is
         // saved automatically to ~/.egpt/media/<chat>/<msgId>.<ext>.
         media:             cfg.media ?? {},
+        // Visible shell notice when a file is saved. Filters out
+        // status@broadcast (the WA Status feed — every contact's
+        // 24h stories, would flood the room) unless the config
+        // explicitly opts in. notify: 'on' (default — chats only),
+        // 'all' (include status), 'off' (silent — files still save,
+        // shell just doesn't say so).
+        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes }) => {
+          const notify = cfg.media?.notify ?? 'on';
+          if (notify === 'off') return;
+          if (notify === 'on' && chatJid === 'status@broadcast') return;
+          const sizeKB = (sizeBytes / 1024).toFixed(1);
+          // Try to resolve a friendly chat name from the bridge's
+          // _chats cache (populated by listChats / messages.upsert).
+          // Falls back to the JID prefix when no name is known.
+          let chatLabel = chatJid.split('@')[0] ?? chatJid;
+          try {
+            const name = bridge?.getChatName?.(chatJid);
+            if (name) chatLabel = name;
+          } catch (_) {}
+          sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${dp(path)}`);
+        },
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           logOut(`(whatsapp message from ${who}) -> ${text}`);

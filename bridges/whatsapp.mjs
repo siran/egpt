@@ -95,6 +95,7 @@ export async function startWhatsAppBridge({
   onError,
   onChatId,    // called once when first chat is captured (host can persist)
   onQR,        // called with the rendered QR ASCII when WA wants a fresh pair; host can route to a visible surface
+  onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -607,6 +608,10 @@ export async function startWhatsAppBridge({
       await fs.writeFile(path, buf);
       const sizeKB = (buf.length / 1024).toFixed(1);
       log(`media saved: ${hit.kind} ${sizeKB}KB → ${path}`);
+      // Surface to host for visible (sysOut) shell notice. Host can
+      // decide whether to render every save or filter (e.g. silence
+      // status@broadcast which is high-volume).
+      try { onMediaSaved?.({ kind: hit.kind, chatJid, msgId, path, sizeBytes: buf.length }); } catch (_) {}
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
