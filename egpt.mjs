@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as ccode from './brains/claude-code.mjs';
 import * as codex from './brains/codex.mjs';
@@ -106,6 +106,24 @@ let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
+
+// clickable(displayText, absPath) — wrap a label in an OSC 8 hyperlink
+// pointing at file://<absPath>. Modern terminals (Windows Terminal,
+// iTerm2, GNOME Terminal, VS Code's integrated terminal) render the
+// text underlined and open it in the OS default viewer on Ctrl/Cmd+click.
+// Terminals that don't recognize OSC 8 silently strip the escape and
+// display the plain text — no fallback handling needed. We always
+// build the file URL from the native absolute path (forward slashes,
+// drive letter preserved) regardless of how dp() formats the display.
+const _OSC8 = ']8;;';
+const _ST   = '';
+const clickablePath = (displayText, absPath) => {
+  if (!absPath) return displayText;
+  let url;
+  try { url = pathToFileURL(absPath).href; }
+  catch { return displayText; }
+  return `${_OSC8}${url}${_ST}${displayText}${_OSC8}${_ST}`;
+};
 
 // show_prompts: when true, the full task/prompt text is printed to the shell
 // before each operator turn. Toggle with /prompts on|off, or set in config.
@@ -2000,10 +2018,15 @@ function App() {
             const name = bridge?.getChatName?.(chatJid);
             if (name) chatLabel = name;
           } catch (_) {}
+          // Wrap the displayed path in OSC 8 so terminals that support
+          // hyperlinks (Windows Terminal, iTerm2, VS Code, GNOME
+          // Terminal, etc.) let the operator Ctrl/Cmd-click to open
+          // the file in the OS default viewer. Others see plain text.
+          const pathDisplay = clickablePath(dp(path), path);
           if (deleted) {
-            sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${dp(path)}`);
+            sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${pathDisplay}`);
           } else {
-            sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${dp(path)}`);
+            sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${pathDisplay}`);
           }
         },
         onIncoming: async (text, from) => {
@@ -2053,19 +2076,22 @@ function App() {
           // arrivals from those.
           const joinedToThis = _waJoinedHas(from.chatId) && _waJoinedIncomingAllowed(from.chatId);
           const observeOnly = !_stormRef.current && classifiedObserve && !joinedToThis;
-          // For group chats, swap the @<client> segment of the
-          // cross-surface handle from the bridge client_name (e.g.
-          // 'moto') to '<group-slug>.wa'. So 'An@moto' in a 1:1 stays
-          // as-is, but a message in the "Auge family" group renders as
-          // 'An@auge_family.wa' — both in the on-screen echo and in the
-          // qualified [handle@client.node ts]: header sent to brains.
-          // This gives shell readers AND the brain immediate context
-          // about *which* group the message came from, without leaking
-          // raw JIDs into the conversation.
+          // Swap the @<client> segment of the cross-surface handle
+          // based on chat type, so the operator (and the brain) sees
+          // WHERE the message came from at a glance:
+          //   - group     -> '<group-slug>.wa'  (e.g. 'An@auge_family.wa')
+          //   - status    -> 'status.wa'        (WhatsApp status broadcast feed)
+          //   - private   -> bridge client_name  (DM kept as 'An@moto')
+          // The 1:1 case keeps the device tag because a DM really IS a
+          // chat with one person via that device; the group/status
+          // cases override because the channel identity matters more
+          // than which phone happens to be running the bridge.
           let waClientLabel = null;
           if (from.chatType === 'group') {
             const slug = waBridgeRef.current?.getChatSlug?.(from.chatId);
             if (slug) waClientLabel = `${slug}.wa`;
+          } else if (from.chatType === 'status') {
+            waClientLabel = 'status.wa';
           }
           if (submitRef.current) await submitRef.current(text, {
             fromWhatsApp: true,

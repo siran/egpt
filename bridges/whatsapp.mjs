@@ -1017,8 +1017,16 @@ export async function startWhatsAppBridge({
     const chatJid = msg.key.remoteJid;
     if (!chatJid) return;
     const isGroup = chatJid.endsWith('@g.us');
-    const senderJid = isGroup ? msg.key.participant : chatJid;
-    const chatType = isGroup ? 'group' : 'private';
+    const isStatus = chatJid === 'status@broadcast';
+    const senderJid = isGroup || isStatus ? msg.key.participant : chatJid;
+    // chatType: 'group' for @g.us, 'status' for WhatsApp's status@broadcast
+    // (every contact's 24h-stories feed — neither private nor a real group),
+    // 'private' for 1:1 chats including the self-DM. Surfaced to the host
+    // so the cross-surface handle can convey context: groups become
+    // <slug>.wa, status posts become status.wa, 1:1 chats keep the bridge
+    // client_name (since a DM IS effectively a chat with one person via
+    // that device).
+    const chatType = isGroup ? 'group' : isStatus ? 'status' : 'private';
 
     lastChat = chatJid;
     // Auto-capture the WA chat_id ONLY from self-DM messages. The
