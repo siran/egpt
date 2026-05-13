@@ -154,35 +154,50 @@ schtasks /Create /TN "egpt-daemon" `
 This runs the daemon on every Windows logon — i.e. as soon as you sign in,
 the bridges come up and stay up across `/restart` / `/upgrade` cycles.
 
-To keep eGPT running **across reboots even when nobody is logged in**, use
-the Task Scheduler's `Run whether user is logged on or not` checkbox
-(Windows will prompt for the account password and launch the task in a
-non-interactive session). In that mode:
+### Headless background mode
+
+To keep eGPT running **across reboots even when nobody is logged in**, add
+`--headless` and use Task Scheduler's `Run whether user is logged on or
+not` checkbox:
+
+```powershell
+schtasks /Create /TN "egpt-daemon-headless" `
+  /TR "node `"$env:USERPROFILE\src\egpt\egpt-daemon.mjs`" --headless" `
+  /SC ONSTART /RL HIGHEST /F
+```
+
+In headless mode:
 
 - WhatsApp / Telegram bridges, the bus, file logging, and media downloads
-  all keep working — they're plain node processes, no terminal needed.
-  Every incoming message lands in the conversation `.md`, media saves to
-  `~/.egpt/media/...`, and stable IDs / reply targets persist as usual.
-- The Ink terminal UI does not run — there is no logged-in desktop to
-  render to. When you eventually sign in, you'd typically want to stop
-  the background instance and start a fresh shell that picks up the room
-  state from disk.
+  all keep running — no terminal needed. Every incoming message lands in
+  the conversation `.md`, media saves to `~/.egpt/media/...`, stable IDs
+  and reply targets persist as usual.
+- Ink output goes to `~/.egpt/headless.log` instead of a terminal.
 
-Pre-logon background mode is not yet wired as a first-class feature —
-there is no dedicated `--headless` flag, no pidfile handshake, and no
-"attach this shell to the running daemon" command. Either the background
-process keeps the bridges *or* an interactive shell does, but not both
-at the same time (only one WhatsApp pairing can authenticate at a time).
-This is a known gap — see the issue tracker / TODO if you need it.
+### Ownership handshake (pidfile swap)
 
-#### macOS
+Only one process at a time can hold the WhatsApp pairing (baileys
+single-client constraint). eGPT coordinates ownership through
+`~/.egpt/egpt.pid`:
 
-A `launchd` user-agent plist at `~/Library/LaunchAgents/com.egpt.daemon.plist`
-pointing at `node /path/to/egpt-daemon.mjs`, then `launchctl load …`.
+1. Headless engine starts on boot, writes its PID.
+2. You log in and run `node egpt.mjs` (interactive). On startup it sees
+   the pidfile, sends `SIGTERM` to the old PID, polls up to 10 seconds
+   for it to release the WA pairing, then takes over.
+3. Your shell now owns the bridges. The browser extension and any other
+   bus observers see the swap as a brief peer reconnect.
+4. When you `/exit`, the daemon supervisor can respawn either mode —
+   typically headless again until your next login.
 
-#### Linux
+No live attach, no socket, no IPC negotiation — just one PID file and a
+signal. Symmetric: a headless process started while an interactive shell
+is up will also take over.
 
-A `systemd --user` unit running `node /path/to/egpt-daemon.mjs`, enabled with
+### macOS / Linux
+
+Same `--headless` flag; wrap `egpt-daemon.mjs --headless` in a launchd
+user-agent plist (`~/Library/LaunchAgents/com.egpt.daemon.plist`) or a
+`systemd --user` unit. Enable with `launchctl load …` or
 `systemctl --user enable --now egpt-daemon`.
 
 ## Basic Use

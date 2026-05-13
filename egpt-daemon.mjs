@@ -45,6 +45,15 @@ const CLEAN_EXIT_CODE   = 0;
 // we couldn't pin down; importing the build script in-process side-
 // steps the whole spawn / shell / PATH / .cmd resolution mess.
 
+// --headless: pass through to the supervised egpt.mjs child. Used by
+// Task Scheduler "Run whether user is logged on or not" / launchd /
+// systemd unit files — the engine runs without an Ink UI, captures
+// WhatsApp/Telegram traffic to disk, and yields the WA pairing to a
+// later interactive shell via the ~/.egpt/egpt.pid handshake.
+const DAEMON_ARGS = process.argv.slice(2);
+const HEADLESS = DAEMON_ARGS.includes('--headless');
+const SHELL_ARGS = DAEMON_ARGS.filter(a => a !== '--headless');
+
 let stopping = false;
 let backoff = RESTART_MIN_MS;
 let child = null;
@@ -142,8 +151,15 @@ async function runRewind() {
 
 function spawnShell() {
   if (stopping) return;
-  log('starting node egpt.mjs');
-  child = spawn('node', ['egpt.mjs'], { cwd: ROOT, stdio: 'inherit' });
+  const args = ['egpt.mjs', ...SHELL_ARGS, ...(HEADLESS ? ['--headless'] : [])];
+  log(`starting node ${args.join(' ')}`);
+  // In headless mode we don't inherit stdio — there's no tty to inherit
+  // to under Task Scheduler's "Run whether user is logged on or not".
+  // Pipe to /dev/null equivalents; egpt.mjs writes its own headless.log.
+  child = spawn('node', args, {
+    cwd: ROOT,
+    stdio: HEADLESS ? 'ignore' : 'inherit',
+  });
 
   child.on('exit', async (code, signal) => {
     child = null;
