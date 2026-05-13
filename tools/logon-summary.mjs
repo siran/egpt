@@ -141,11 +141,15 @@ export async function buildLogonSummary() {
     lines.push(`  💥 most-reacted: ${preview}${where}  [${emojiList}]`);
   }
 
-  // Pointer to commands that surface the underlying data. /last is the
-  // scrollback (room md tail). /channels shows every active chat with
-  // recent previews. /wa-pending surfaces any held pre-connect messages.
+  // Pointer to commands that surface the underlying data. Important
+  // distinction: /last reads the room md and only shows chats that
+  // entered the transcript (egpt_chats + /join'd). /channels reads the
+  // bridge's per-chat ring which captures EVERY observed chat
+  // including observe-only ones — so messages summarized above that
+  // don't appear in /last are findable via /channels.
   lines.push('');
-  lines.push('  /last 50  to scroll the transcript  ·  /channels  for the full chat list');
+  lines.push('  /last 50            scroll the transcript  (joined / egpt chats only)');
+  lines.push('  /channels 20 5      every observed chat + 5 recent lines each');
 
   return lines.join('\n');
 }

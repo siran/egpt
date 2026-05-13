@@ -125,6 +125,35 @@ const clickablePath = (displayText, absPath) => {
   return `${_OSC8}${url}${_ST}${displayText}${_OSC8}${_ST}`;
 };
 
+// _isMetaMessage(body) — heuristic for "this transcript line is operator
+// tooling, not conversation." /last filters these out so the scrollback
+// reads like a chat history, not a noisy systems log. The conversation
+// .md still records everything for forensics; this is purely a view
+// filter. Keep persona/brain replies and file-save notes (those carry
+// real content); drop slash command echoes, prior /last headers, bus /
+// telegram / whatsapp lifecycle one-liners.
+const _META_PATTERNS = [
+  /^bus: peer (online|offline)/,
+  /^telegram: (yielded|re-claimed|outbound|not running|disconnected|bridge stopped)/,
+  /^whatsapp: (outbound|not running|disconnected|bridge stopped|configured but)/,
+  /^exiting with code/,
+  /^⛈ storm:/,
+  /^\(no held messages\)/,
+  /^\(no messages yet\)/,
+  /^\(empty room\)/,
+  /^--- last \d+/,
+  /^default operator/,
+  /^!! /,
+];
+function _isMetaMessage(body) {
+  if (!body || typeof body !== 'string') return false;
+  const text = body.trim();
+  if (!text) return true;
+  if (text.startsWith('/')) return true;          // slash command echo
+  const firstLine = text.split('\n', 1)[0];
+  return _META_PATTERNS.some(re => re.test(firstLine));
+}
+
 // show_prompts: when true, the full task/prompt text is printed to the shell
 // before each operator turn. Toggle with /prompts on|off, or set in config.
 let _showPrompts = EGPT_CONFIG.show_prompts ?? false;
@@ -4935,13 +4964,21 @@ function App() {
       // happen here: the re-injected items get _localOnly to keep
       // them out of the items-mirror, and _suppressTranscriptRef
       // makes sysOut + echo skip the append.queue during this command.
+      // Operator-tool noise (slash commands, lifecycle messages,
+      // bus/telegram/whatsapp state events, previous /last headers)
+      // gets filtered out — the room.md still records everything for
+      // forensics, but /last shows the actual conversation.
       const n = parseInt(arg, 10) || 10;
       _suppressTranscriptRef.current = true;
       try {
         const text = await readFile(FILE, 'utf8');
-        const msgs = parseMessages(text).slice(-n);
+        const all = parseMessages(text);
+        const meaningful = all.filter(m => !_isMetaMessage(m.body));
+        const msgs = meaningful.slice(-n);
         if (!msgs.length) { sysOut('(no messages yet)'); return true; }
-        sysOut(`--- last ${msgs.length} message(s) from ${dp(FILE)} ---`);
+        const hiddenCount = all.length - meaningful.length;
+        const hiddenNote = hiddenCount > 0 ? ` (${hiddenCount} system / operator-tool line${hiddenCount === 1 ? '' : 's'} hidden)` : '';
+        sysOut(`--- last ${msgs.length} message(s) from ${dp(FILE)}${hiddenNote} ---`);
         setItems(p => [...p, ...msgs.map((m, i) => ({
           id: Date.now() + i / 1000,
           author: m.author,

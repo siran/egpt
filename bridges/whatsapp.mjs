@@ -297,9 +297,18 @@ export async function startWhatsAppBridge({
             // Repaint the rotating contact name that pre-fix builds had
             // pinned on status@broadcast; the JID itself is preserved so
             // the recent[] history of who posted what stays intact.
-            const loadedName = c.jid === 'status@broadcast'
+            // Same defensive scrub for groups: pre-fix builds stored
+            // the first-speaker's pushName as the chat name (so a
+            // group could surface as "Mauricio" or even "m"). Drop
+            // any name that doesn't look like a real subject when
+            // loaded from disk — _ensureGroupName re-fetches the
+            // proper subject on the next message in that chat.
+            let loadedName = c.jid === 'status@broadcast'
               ? '(WA status updates)'
               : (typeof c.name === 'string' ? c.name : null);
+            if (c.jid?.endsWith?.('@g.us') && loadedName && loadedName.length <= 2) {
+              loadedName = null;
+            }
             _chats.set(c.jid, {
               jid: c.jid,
               isGroup: !!c.isGroup,
@@ -558,10 +567,15 @@ export async function startWhatsAppBridge({
         const ts = (Number(m.messageTimestamp) || 0) * 1000;
         const fromMe = !!m.key?.fromMe;
         const pushedName = (typeof m.pushName === 'string' && m.pushName.trim()) ? m.pushName.trim() : null;
-        // Naming: the chat name only updates from pushName for 1:1
-        // chats received from the other side (preserves group
-        // subjects already on file). Author is whoever spoke.
-        const remoteName = (!fromMe && pushedName) ? pushedName : null;
+        // Naming: pushName is a SENDER's display name, never a chat
+        // name for groups. Using it for groups was a latent bug —
+        // a brand-new group's name would be whoever first happened
+        // to speak (e.g. an Auge family group would render as
+        // "Mauricio" until /channels triggered a subject fetch).
+        // Group subject is filled in lazily by listChats from
+        // sock.groupMetadata, or via _ensureGroupName below.
+        // Author is still whoever spoke.
+        const remoteName = (!isGroup && !fromMe && pushedName) ? pushedName : null;
         const author = fromMe ? 'You' : (pushedName ?? null);
         const body = textOf(m.message ?? {}) ?? null;
         const key = m.key?.id ? { id: m.key.id, fromMe } : null;
@@ -941,13 +955,16 @@ export async function startWhatsAppBridge({
     const isGroup0 = chatJid0.endsWith('@g.us');
     // Track every chat we see traffic in. For 1:1 chats the
     // remote party's pushName (msg.pushName when fromMe=false) is
-    // the best available display name. For groups we'll fill the
-    // subject lazily via sock.groupMetadata at listChats() time.
+    // the best available display name. For groups we fill the
+    // subject lazily via sock.groupMetadata — see _ensureGroupName
+    // below; never use pushName as a group's chat name.
     const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000 || Date.now();
-    const remoteName = (!msg.key?.fromMe && typeof msg.pushName === 'string' && msg.pushName.trim())
+    const remoteName = (!isGroup0 && !msg.key?.fromMe
+      && typeof msg.pushName === 'string' && msg.pushName.trim())
       ? msg.pushName.trim()
       : null;
     _recordChat({ jid: chatJid0, isGroup: isGroup0, name: remoteName, ts: msgTsMs, kind: 'activity' });
+    if (isGroup0) _ensureGroupName(chatJid0);
     // self-DM detection: compare BARE numbers, not full JIDs. myJid
     // includes a device-id segment (e.g. '16468217865:42@s.whatsapp.net'),
     // but remoteJid for incoming messages doesn't ('16468217865@s.whatsapp.net').
@@ -1112,6 +1129,35 @@ export async function startWhatsAppBridge({
   async function _groupSubject(jid) {
     try { return (await sock?.groupMetadata?.(jid))?.subject ?? null; }
     catch (_) { return null; }
+  }
+
+  // Fire-and-forget: when we observe a group with no proper name yet
+  // (or a stale pushName-shaped name carried over from the pre-fix
+  // chats-cache), reach out to the WA server once for the subject and
+  // patch the in-memory entry. Idempotent — _pendingGroupNameLookups
+  // suppresses duplicate fetches while one is in flight.
+  const _pendingGroupNameLookups = new Set();
+  function _ensureGroupName(jid) {
+    if (!jid || !jid.endsWith('@g.us')) return;
+    if (_pendingGroupNameLookups.has(jid)) return;
+    const cur = _chats.get(jid);
+    if (cur?.name && cur.name.length > 1) return;
+    _pendingGroupNameLookups.add(jid);
+    (async () => {
+      try {
+        const subject = await _groupSubject(jid);
+        if (subject) {
+          const entry = _chats.get(jid);
+          if (entry) {
+            entry.name = subject;
+            _chats.set(jid, entry);
+            _scheduleChatsWrite();
+          }
+        }
+      } finally {
+        _pendingGroupNameLookups.delete(jid);
+      }
+    })();
   }
 
   // List chats. Returns the user's full chat universe, ordered:
