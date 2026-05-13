@@ -59,6 +59,15 @@ import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 const RECONNECT_MS = 5_000;
+// Bound every sock.sendMessage with this timeout so a flapping/down
+// WS doesn't queue the call inside baileys forever. Symptom this
+// catches: persona @e reply shows '⌛ thinking…' in WA and never
+// edits — finish()'s edit call was queued behind a stale WS and
+// never resolved. With the timeout, finish() rejects → err() fires
+// → onError surfaces 'stream finish: timed out' in the shell →
+// the persona fallback's bridge.send runs (also timed out) → if
+// that also fails, errOut tells the operator clearly.
+const SEND_TIMEOUT_MS = 12_000;
 const CHATS_CACHE_PATH = join(homedir(), '.egpt', 'wa-chats.json');
 // Cap the persisted cache to avoid runaway growth — keep the most-
 // recently-active. 500 is generous for a normal WA usage pattern.
@@ -118,6 +127,23 @@ export async function startWhatsAppBridge({
   };
   const log = (m) => onLog?.(m);
   const err = (m) => onError?.(m);
+
+  // Bound a promise with a timeout. Rejects with a clear "<label> timed
+  // out after N ms" when the underlying baileys send hangs (typically:
+  // WS dropped mid-call, queue stalled waiting for reconnect). Used to
+  // wrap every sock.sendMessage on the outbound path so the host gets
+  // a visible failure instead of a deadlocked await.
+  const _timeBound = (promise, label, ms = SEND_TIMEOUT_MS) => {
+    let t;
+    const timeout = new Promise((_, reject) => {
+      t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    });
+    return Promise.race([
+      promise.then(v => { clearTimeout(t); return v; },
+                    e => { clearTimeout(t); throw e; }),
+      timeout,
+    ]);
+  };
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   let version;
@@ -1414,13 +1440,11 @@ export async function startWhatsAppBridge({
     send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return Promise.resolve(null);
-      // Return the baileys send-result promise so callers that need
-      // the msg key (e.g. to set _replyTarget on the operator's own
-      // echo item, so '@m<N>' can reply-to-self via quoted message)
-      // can await it. Echo-tracker rememberSent still fires as a
-      // side effect; the .catch swallows errors after logging so
-      // callers don't see rejections — they get null on failure.
-      return sock.sendMessage(target, { text })
+      // Bounded by SEND_TIMEOUT_MS so a flapping/queued baileys
+      // call can't hang the caller indefinitely. .catch swallows
+      // errors after logging so callers see null on failure — host
+      // can then fall back / report to operator.
+      return _timeBound(sock.sendMessage(target, { text }), 'send')
         .then(r => { rememberSent(r?.key?.id); return r; })
         .catch(e => { err(`send: ${e.message}`); return null; });
     },
@@ -1434,12 +1458,12 @@ export async function startWhatsAppBridge({
       const target = chatId ?? lastChat;
       if (!target) return;
       if (!key) {
-        return sock.sendMessage(target, { text })
+        return _timeBound(sock.sendMessage(target, { text }), 'replyTo (fallback send)')
           .then(r => rememberSent(r?.key?.id))
           .catch(e => err(`replyTo (fallback send): ${e.message}`));
       }
       const quoted = { key, message: raw ?? { conversation: '' } };
-      return sock.sendMessage(target, { text }, { quoted })
+      return _timeBound(sock.sendMessage(target, { text }, { quoted }), 'replyTo')
         .then(r => rememberSent(r?.key?.id))
         .catch(e => err(`replyTo: ${e.message}`));
     },
@@ -1490,9 +1514,11 @@ export async function startWhatsAppBridge({
       // `delivered` is NOT set here: the placeholder reaching WA isn't
       // useful — we only care that the FINAL text did. finish() flips
       // delivered after a successful edit/send of the final body.
+      // _timeBound prevents a baileys-internal stall from blocking
+      // initialDone forever (would otherwise hang every update + finish).
       (async () => {
         try {
-          const r = await sock.sendMessage(target, { text: initialText });
+          const r = await _timeBound(sock.sendMessage(target, { text: initialText }), 'stream start');
           msgKey = r?.key ?? null;
           rememberSent(r?.key?.id);
         } catch (e) {
@@ -1510,7 +1536,7 @@ export async function startWhatsAppBridge({
         if (pending === null || pending === lastSent) return;
         const text = pending;
         pending = null;
-        sock.sendMessage(target, { edit: msgKey, text })
+        _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'stream edit')
           .then((r) => {
             rememberSent(r?.key?.id);
             lastSent = text;
@@ -1546,7 +1572,10 @@ export async function startWhatsAppBridge({
           try {
             if (initialDone && msgKey) {
               if (pending !== null && pending !== lastSent) {
-                const r = await sock.sendMessage(target, { edit: msgKey, text: pending });
+                const r = await _timeBound(
+                  sock.sendMessage(target, { edit: msgKey, text: pending }),
+                  'stream finish edit',
+                );
                 rememberSent(r?.key?.id);
                 lastSent = pending;
                 if (r?.key) delivered = true;
@@ -1556,7 +1585,10 @@ export async function startWhatsAppBridge({
               }
             } else {
               // Initial send failed or still in flight: plain send.
-              const r = await sock.sendMessage(target, { text: pending });
+              const r = await _timeBound(
+                sock.sendMessage(target, { text: pending }),
+                'stream finish send',
+              );
               rememberSent(r?.key?.id);
               if (r?.key) { msgKey = r.key; delivered = true; }
             }
