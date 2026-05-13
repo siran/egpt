@@ -2965,6 +2965,10 @@ function App() {
         resolveConversationSpec,                     // name/path → absolute
         setFile: (p) => { FILE = p; },               // /conversation mutates FILE
         sentItemsCountRef,                           // reset on conversation swap
+        // Batch 5 additions
+        setSessions,                                 // mutate sessions React state
+        writeBrainProfileState,                      // persist a session to disk
+        handleSlashRecurse: (t) => handleSlash(t, meta),  // re-enter dispatcher
       };
       return await entry.run({ cmd, arg, ctx });
     }
@@ -4917,18 +4921,7 @@ function App() {
       } catch (e) { sysOut(`!! ${e.message}`); }
       return true;
     }
-    if (cmd === '/detach') {
-      const name = arg.trim();
-      if (!name) { sysOut('usage: /detach <session>  — remove from room (brain keeps running)'); return true; }
-      if (!sessions[name]) { sysOut(`no session named "${name}"`); return true; }
-      const { emoji = '', brain: brainName } = sessions[name];
-      setSessions(s => { const n = { ...s }; delete n[name]; return n; });
-      setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: 'system',
-        body: `${emoji} ${name} (${brainName}) detached from room`,
-      }]);
-      return true;
-    }
+    // /detach migrated to slash/detach.mjs.
     if (cmd === '/mirror') {
       // /mirror @<target> [mN ...] [--tagged | --no-tag]
       //   Forward existing items' bodies to a destination — no brain
@@ -5111,106 +5104,7 @@ function App() {
       }
       return true;
     }
-    if (cmd === '/handle') {
-      // Two forms:
-      //   /handle <new>          — change YOUR OWN handle (user_name).
-      //                            Same as '/config user_name <new>'
-      //                            but feels like the right command
-      //                            to reach for. Operator's '/handle An'
-      //                            in the wild used to land here and
-      //                            see 'usage: /handle <old> <new>'
-      //                            with no hint about the actual fix.
-      //   /handle <old> <new>    — rename a brain session. Preserves
-      //                            brain, emoji, options, bio.
-      const parts = arg.split(/\s+/).filter(Boolean);
-      if (parts.length === 1) {
-        const handle = parts[0];
-        if (!/^[A-Za-z0-9_-]+$/.test(handle)) {
-          sysOut('handle must be alphanumeric (- and _ ok)');
-          return true;
-        }
-        return handleSlash(`/config user_name ${handle}`, meta);
-      }
-      if (parts.length !== 2) {
-        sysOut('usage:\n  /handle <new>            change your own handle (user_name)\n  /handle <old> <new>      rename a brain session');
-        return true;
-      }
-      const [oldName, newName] = parts;
-      if (!sessions[oldName]) { sysOut(`no session named "${oldName}"`); return true; }
-      if (sessions[newName]) { sysOut(`session "${newName}" already exists`); return true; }
-      if (!/^[A-Za-z0-9_-]+$/.test(newName)) { sysOut('handle must be alphanumeric (- and _ ok)'); return true; }
-      setSessions(s => {
-        const next = { ...s };
-        next[newName] = next[oldName];
-        delete next[oldName];
-        return next;
-      });
-      const emoji = sessions[oldName].emoji ?? '';
-      setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: 'system',
-        body: `${emoji} ${oldName} is now ${newName}`,
-      }]);
-      await writeBrainProfileState(newName, sessions[oldName]).catch(e => sysOut(`!! profile state: ${e.message}`));
-      return true;
-    }
-    if (cmd === '/emoji') {
-      // /emoji                  → list current emoji per session
-      // /emoji <name> <emoji>   → set
-      // /emoji <emoji>          → set the lone session's emoji (only if 1 session)
-      const parts = arg.split(/\s+/).filter(Boolean);
-      if (parts.length === 0) {
-        const rows = Object.entries(sessions).map(([n, s]) => `${s.emoji ?? '❓'} ${n}`);
-        sysOut(rows.join('\n') || '(no sessions)');
-        return true;
-      }
-      let target, emoji;
-      if (parts.length === 1) {
-        const all = Object.keys(sessions);
-        if (all.length !== 1) { sysOut('usage: /emoji <name> <emoji>'); return true; }
-        target = all[0]; emoji = parts[0];
-      } else {
-        target = parts[0]; emoji = parts[1];
-      }
-      if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
-      const nextSession = { ...sessions[target], emoji };
-      setSessions(s => ({ ...s, [target]: { ...s[target], emoji } }));
-      setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: 'system',
-        body: `${target} avatar -> ${emoji}`,
-      }]);
-      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
-      return true;
-    }
-    if (cmd === '/bio') {
-      // /bio                       → list bios
-      // /bio <name>                → show that session's bio
-      // /bio <name> <text...>      → set bio; echoes a system message into the room
-      const parts = arg.split(/\s+/);
-      const first = parts[0] ?? '';
-      if (!first) {
-        const rows = Object.entries(sessions)
-          .filter(([_, s]) => s.bio)
-          .map(([n, s]) => `${s.emoji ?? '❓'} ${n}: ${s.bio}`);
-        sysOut(rows.length ? rows.join('\n') : '(no bios set)');
-        return true;
-      }
-      const target = first;
-      if (!sessions[target]) { sysOut(`no session named "${target}"`); return true; }
-      const text = parts.slice(1).join(' ').trim();
-      if (!text) {
-        const bio = sessions[target].bio;
-        sysOut(bio ? `${sessions[target].emoji ?? '❓'} ${target}: ${bio}` : `(no bio set for ${target})`);
-        return true;
-      }
-      const nextSession = { ...sessions[target], bio: text };
-      setSessions(s => ({ ...s, [target]: { ...s[target], bio: text } }));
-      setItems(p => [...p, {
-        id: Date.now() + Math.random(), author: 'system',
-        body: `${sessions[target].emoji ?? '❓'} ${target} bio: ${text}`,
-      }]);
-      await writeBrainProfileState(target, nextSession).catch(e => sysOut(`!! profile state: ${e.message}`));
-      return true;
-    }
+    // /handle, /emoji, /bio migrated to slash/session-identity.mjs.
     if (cmd === '/attach') {
       // Smart pre-flight: when /attach is invoked without the
       // prerequisites in place, set them up rather than bouncing the
