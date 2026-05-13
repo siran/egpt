@@ -978,7 +978,7 @@ export default function App() {
         bridgeRef.current = null;
         setTgPolling(false);
         setTgStatus('yielded — another node is polling');
-        appendMsg('egpt', 'telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram <self> to force-reclaim.');
+        appendMsg('egpt', `telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram ${BUS_NODE_ID} to force-reclaim.`);
       },
       onChatId: async (id) => {
         // First captured chat — persist to chrome.storage.sync so
@@ -1055,6 +1055,18 @@ export default function App() {
   }, [startBridge]);
 
   useEffect(() => {
+    // Shell-priority policy: if a shell peer is already on the bus
+    // when the extension boots, don't start polling — the shell is
+    // the natural Telegram owner (it also runs WA, brains, file
+    // logging). When the shell later goes offline, the bus-event
+    // auto-claim logic will pick this up. When no shell is around,
+    // the extension polls opportunistically and yields the moment
+    // a shell announces (see node-online handler above).
+    const shellOnBus = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
+    if (shellOnBus) {
+      setTgStatus('idle — shell peer holds telegram');
+      return () => bridgeRef.current?.stop();
+    }
     startBridge();
     return () => bridgeRef.current?.stop();
   }, [startBridge]);
