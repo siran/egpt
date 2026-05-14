@@ -3205,18 +3205,44 @@ function App() {
   // @egpt question from a friend's DM looks indistinguishable from a
   // self-DM or shell input, and replies lose their conversational
   // anchoring across the play.
+  //
+  // Header enrichments (in response to direct persona feedback that
+  // raw JIDs and missing timestamps were ambiguous):
+  //   - Timestamp: ts() up front so the persona has a fixed anchor
+  //     instead of having to read it out of message bodies.
+  //   - WA chat name: getChatName(jid) when known, alongside the JID.
+  //     Lets the persona say "in Auge family" instead of just
+  //     "in 120363100@g.us".
+  //   - 1:1 vs group vs status: explicit label from JID-suffix
+  //     classification, so the persona doesn't have to infer.
+  //   - Shell: includes USER_NAME@SURFACE_TAG, matching the [handle]
+  //     convention used in the items renderer + room md.
   function formatPersonaPrompt(meta, body) {
+    const stamp = ts();
     if (meta.fromTelegram) {
       const user = meta.telegramUser ?? 'someone';
       const chat = meta.telegramChatId ?? 'unknown';
-      return `[in Telegram chat ${chat}, ${user} said:]\n${body}`;
+      // TG chat-name lookup isn't wired yet (the TG bridge doesn't
+      // track titles by chat_id — defer to a follow-up). The chatId
+      // alone still distinguishes which TG conversation it is.
+      return `[${stamp}, in Telegram chat ${chat}, ${user} said:]\n${body}`;
     }
     if (meta.fromWhatsApp) {
       const user = meta.waUser ?? 'someone';
       const chat = meta.waChatId ?? 'unknown';
-      return `[in WhatsApp chat ${chat}, ${user} said:]\n${body}`;
+      const isGroup = typeof chat === 'string' && chat.endsWith('@g.us');
+      const isStatus = chat === 'status@broadcast';
+      const kind = isStatus ? 'WhatsApp status broadcast'
+        : isGroup ? 'WhatsApp group'
+        : 'WhatsApp DM';
+      let where = chat;
+      try {
+        const name = waBridgeRef.current?.getChatName?.(chat);
+        if (name) where = `"${name}" (${chat})`;
+      } catch (_) {}
+      return `[${stamp}, in ${kind} ${where}, ${user} said:]\n${body}`;
     }
-    return `[from shell:]\n${body}`;
+    return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
 
   // Run the node-global "@egpt" persona — same brain machinery as a
