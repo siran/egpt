@@ -172,12 +172,22 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, incl
     : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} — ${scope}:`;
   const lines = [header];
   const entries = [];
+  // Insert a section header line when the section changes. recap is
+  // already sorted section → chat → ts so a single pass suffices.
+  let currentSection = null;
   for (const m of recap) {
-    lines.push('  ' + _formatRecapLine(m));
+    if (m.section !== currentSection) {
+      currentSection = m.section;
+      const label = SECTION_LABEL[m.section] ?? m.section;
+      lines.push('');
+      lines.push(`  ${label}`);
+    }
+    lines.push('    ' + _formatRecapLine(m));
     if (m.stableId && m.replyTarget) {
       entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
     }
   }
+  lines.push('');
   if (!includeDms) lines.push('  (DMs hidden — /recap --all to include them)');
   lines.push('  reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough');
   return { text: lines.join('\n'), entries };
@@ -189,18 +199,38 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, incl
 // preference; the chat label "WA status feed" tags them clearly
 // without needing a separator section). Filters by `since` when set;
 // takes the most recent `max` entries.
+// Section ordering for the rendered recap. Pinned chats float above
+// everything regardless of group/DM/status kind — the operator
+// pinned them precisely because they want them in front. The
+// remaining sections follow in the order most readers scan: groups
+// (multi-speaker rooms), status feed (broadcast-style updates),
+// then DMs (1:1s, usually noisier and read elsewhere).
+const SECTION_ORDER = ['pinned', 'group', 'status', 'dm'];
+const SECTION_LABEL = {
+  pinned: '📌 Pinned',
+  group:  'Groups',
+  status: 'Status feed',
+  dm:     'DMs',
+};
+
+function _sectionForChat(c) {
+  // Pin promotes — both layers count: `pinned` is WA's own pin (3-cap)
+  // and `egptPinned` is the eGPT-side overlay (unlimited).
+  if ((c.pinned || 0) > 0 || (c.egptPinned || 0) > 0) return 'pinned';
+  if (c.jid === 'status@broadcast') return 'status';
+  if (c.isGroup) return 'group';
+  return 'dm';
+}
+
 function _collectRecent(chats, since, max, { includeDms = true } = {}) {
   const all = [];
   for (const c of chats) {
     if (!Array.isArray(c.recent)) continue;
-    // DM = not a group and not the status broadcast feed. Skipped by
-    // default in /recap so the operator's group / channel activity
-    // isn't drowned out by per-person 1:1s (which they typically read
-    // directly in WA anyway). buildWelcomeBack matches /recap's default
-    // (DMs off) so the startup report doesn't drown groups + status
-    // under per-person 1:1s the operator reads in WA anyway.
-    const isDm = !c.isGroup && c.jid !== 'status@broadcast';
-    if (!includeDms && isDm) continue;
+    const section = _sectionForChat(c);
+    // DMs are gated by includeDms unless pinned — pinned promotes
+    // regardless of kind so the operator can opt a single 1:1 into
+    // the default view without flipping --all on the whole recap.
+    if (!includeDms && section === 'dm') continue;
     const label = _chatDisplayLabel(c);
     for (const r of c.recent) {
       if (!r || typeof r.text !== 'string' || !r.text.trim()) continue;
@@ -226,22 +256,36 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
         author: r.author ?? '?',
         text: r.text,
         chatLabel: label,
+        section,
         stableId,
         replyTarget,
       });
     }
   }
-  // Two-pass sort: take the latest `max` globally by timestamp so the
-  // operator only sees recent activity, then re-sort the trimmed set
-  // by chat (ASC) and ts (DESC) within each chat. Grouping by chat
-  // keeps a conversation's messages adjacent — easier to follow than
-  // a strict chronological mix — and newest-first within each group
-  // surfaces the actionable bit at the top of each block.
-  all.sort((a, b) => a.ts - b.ts);
-  const trimmed = all.slice(-max);
+  // Trim to `max` with pinned-priority: pinned entries take slots
+  // first (newest first), then non-pinned fill the remainder by ts
+  // DESC. So pinning a chat guarantees its recent activity is in
+  // the report even when a noisy non-pinned chat would otherwise
+  // crowd the budget. The re-sort below restores section grouping.
+  all.sort((a, b) => {
+    const ap = a.section === 'pinned' ? 0 : 1;
+    const bp = b.section === 'pinned' ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+    return b.ts - a.ts;
+  });
+  const trimmed = all.slice(0, max);
+  // Display order: by section (per SECTION_ORDER), then by chatLabel
+  // ASC (stable per-chat block placement), then ts DESC inside each
+  // chat block (latest message at the top of its block).
+  const sectionRank = (s) => {
+    const i = SECTION_ORDER.indexOf(s);
+    return i < 0 ? SECTION_ORDER.length : i;
+  };
   trimmed.sort((a, b) => {
-    const c = a.chatLabel.localeCompare(b.chatLabel);
-    if (c !== 0) return c;
+    const ds = sectionRank(a.section) - sectionRank(b.section);
+    if (ds !== 0) return ds;
+    const dc = a.chatLabel.localeCompare(b.chatLabel);
+    if (dc !== 0) return dc;
     return b.ts - a.ts;
   });
   return trimmed;
