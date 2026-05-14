@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // egpt.mjs — file IS the conversation; Ink shell; sessions = named participants
 import React from 'react';
-import { render, Box, Text, Static, useInput, useApp, useStdin } from 'ink';
+import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream } from 'node:fs';
@@ -1556,80 +1556,42 @@ function MultiLineInput({ onSubmit, currentRoom }) {
     setC(lns[lns.length - 1].length);
   };
 
+  // Draft snapshot: when the operator starts typing then up-arrows into
+  // history, the in-progress text used to vanish — down-arrowing back
+  // to hIdx=0 reset to an empty input. We now save the draft on the
+  // first up-arrow leaving hIdx=0, and restore it when returning. The
+  // ref is cleared on submit (Ctrl+D) since the draft is no longer
+  // "in progress" at that point.
+  const draftRef = useRef(null);
   const recall = (delta) => {
     const newIdx = hIdx + delta;
     if (newIdx < 0 || newIdx > history.length) return;
+    // Snapshot the draft on the first step out of hIdx=0 so the round
+    // trip back returns the operator to exactly what they were typing.
+    if (hIdx === 0 && newIdx > 0) {
+      draftRef.current = lines.join('\n');
+    }
     setHIdx(newIdx);
-    if (newIdx === 0) { setLines(['']); setR(0); setC(0); }
-    else loadEntry(history[history.length - newIdx]);
+    if (newIdx === 0) {
+      if (draftRef.current != null) {
+        loadEntry(draftRef.current);
+        draftRef.current = null;
+      } else {
+        setLines(['']); setR(0); setC(0);
+      }
+    } else {
+      loadEntry(history[history.length - newIdx]);
+    }
   };
 
-  // Ink 7 surfaces key.home / key.end / key.pageUp / key.pageDown
-  // as first-class flags, so plain Home / End and Ctrl+Home /
-  // Ctrl+End are handled inside the useInput callback below (search
-  // for `key.home`). What Ink still does NOT surface is Ctrl+Left /
-  // Ctrl+Right (word-wise motion), so we keep a parallel listener
-  // on stdin's internal_eventEmitter for those two raw escape
-  // sequences only.
-  //
-  // The emitter fires once per stdin chunk with the raw Buffer
-  // before parseKeypress strips anything. Ink also fires useInput
-  // on the same chunk — for word-motion sequences input ends up
-  // empty there (nonAlphanumericKeys), so no double-handling.
-  //
-  // Refs mirror state so the closure-captured listener can compute
-  // word boundaries against the *current* row / cursor / lines,
-  // not the install-time values.
-  const rRef = useRef(r);
-  const cRef = useRef(c);
-  const linesRef = useRef(lines);
-  useEffect(() => { rRef.current = r; }, [r]);
-  useEffect(() => { cRef.current = c; }, [c]);
-  useEffect(() => { linesRef.current = lines; }, [lines]);
-  const stdinCtx = useStdin();
-  useEffect(() => {
-    const emitter = stdinCtx?.internal_eventEmitter;
-    if (!emitter) return;
-    const onChunk = (data) => {
-      const s = typeof data === 'string' ? data : data.toString('utf8');
-      // Ctrl+Home / Ctrl+End — kept as fallback in case the terminal
-      // sends a non-standard sequence Ink's parseKeypress doesn't
-      // recognize. Ink 7's key.home/end+key.ctrl path is the primary
-      // route inside useInput below.
-      if (s === '\x1b[1;5H') {
-        setR(0); setC(0);
-        return;
-      }
-      if (s === '\x1b[1;5F') {
-        const ls = linesRef.current;
-        setR(ls.length - 1); setC(ls[ls.length - 1].length);
-        return;
-      }
-      // Ctrl+Left / Ctrl+Right: word-wise cursor motion within the
-      // current row. Doesn't cross row boundaries — keeps the model
-      // simple and matches the user's typical "fix one line" intent
-      // (vs bash readline which does cross). Standard "skip whitespace
-      // then skip word" semantics.
-      if (s === '\x1b[1;5D' || s === '\x1bOd' || s === '\x1b[1;2D') {
-        const cur = linesRef.current[rRef.current] ?? '';
-        let i = cRef.current;
-        while (i > 0 && /\s/.test(cur[i - 1])) i--;
-        while (i > 0 && !/\s/.test(cur[i - 1])) i--;
-        setC(i);
-        return;
-      }
-      if (s === '\x1b[1;5C' || s === '\x1bOc' || s === '\x1b[1;2C') {
-        const cur = linesRef.current[rRef.current] ?? '';
-        let i = cRef.current;
-        while (i < cur.length && !/\s/.test(cur[i])) i++;
-        while (i < cur.length && /\s/.test(cur[i])) i++;
-        setC(i);
-        return;
-      }
-    };
-    emitter.on('input', onChunk);
-    return () => emitter.removeListener('input', onChunk);
-  }, [stdinCtx]);
+  // Ink 7 surfaces key.home / key.end / key.pageUp / key.pageDown as
+  // first-class flags AND fires key.ctrl + key.leftArrow/rightArrow
+  // for Ctrl+Arrow, so every special-key dispatch we used to do
+  // through a parallel stdin listener now lives inside useInput
+  // below. The old internal_eventEmitter listener was carrying our
+  // Ink 5 workaround for non-alphanumeric keys (input='' there,
+  // raw chunk needed to recover the sequence); it's gone in this
+  // branch.
 
   useInput((input, key) => {
     if (key.ctrl && input === 'd') {
@@ -1644,6 +1606,10 @@ function MultiLineInput({ onSubmit, currentRoom }) {
         setHistory(capped);
         _saveInputHistory(currentRoom, capped);
       }
+      // Submitting clears the draft snapshot — the in-progress text
+      // just became "submitted" and recall(-1) back to hIdx=0 should
+      // land on a fresh empty line, not the just-sent message.
+      draftRef.current = null;
       setHIdx(0); setLines(['']); setR(0); setC(0);
       onSubmit(text); return;
     }
@@ -1670,6 +1636,30 @@ function MultiLineInput({ onSubmit, currentRoom }) {
     if (key.downArrow) {
       if (r < lines.length - 1) { const nr = r + 1; setR(nr); setC(Math.min(c, lines[nr].length)); }
       else recall(-1); // newer (or back to now)
+      return;
+    }
+    // Ctrl+Left / Ctrl+Right — word-wise motion within the current row.
+    // Branches above plain leftArrow / rightArrow so ctrl+arrow doesn't
+    // first slip into the single-char move. Doesn't cross row
+    // boundaries — "fix this line" intent, not bash-readline behavior.
+    // Standard "skip whitespace then skip word" semantics. Ink 7 sets
+    // both key.leftArrow + key.ctrl on Ctrl+Left, so the native flags
+    // drive the dispatch — the raw-chunk fallback we used to keep is
+    // gone.
+    if (key.ctrl && key.leftArrow) {
+      const cur = lines[r] ?? '';
+      let i = c;
+      while (i > 0 && /\s/.test(cur[i - 1])) i--;
+      while (i > 0 && !/\s/.test(cur[i - 1])) i--;
+      setC(i);
+      return;
+    }
+    if (key.ctrl && key.rightArrow) {
+      const cur = lines[r] ?? '';
+      let i = c;
+      while (i < cur.length && !/\s/.test(cur[i])) i++;
+      while (i < cur.length && /\s/.test(cur[i])) i++;
+      setC(i);
       return;
     }
     if (key.leftArrow) {
