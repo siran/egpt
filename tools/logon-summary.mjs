@@ -380,17 +380,17 @@ function _formatRecapLine(m) {
   const d = new Date(m.ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  // 8-char id prefix (after wa-/tg-) — enough to disambiguate within a
-  // 30-row recap, and the shell's stable-id lookup prefix-matches
-  // against the sidecar so typing @wa-AC8AD42D body resolves to the
-  // full wa-<32-char> key. No trailing ellipsis: it'd suggest the
-  // operator has to type more chars, but the visible prefix is what's
-  // meant to be typed verbatim.
+  // Column order, left → right: chat (the grouping cue) - author:
+  // body, then metadata tail (id, time). Putting chat + author + body
+  // up front matches how the operator reads the row ("what's <name>
+  // saying in <chat>?"); id + time go to the right as referenceable
+  // metadata. Widths are fixed so id and time still align vertically
+  // across rows even when bodies vary in length.
   const id = m.stableId ? _pad(m.stableId.slice(0, 11), 11) : _pad('', 11);
-  const author = _pad(_short(m.author, 16), 16);
-  const chat = _pad(_short(m.chatLabel, 30), 30);
-  const body = _snippet(m.text, 72);
-  return `${hh}:${mm}  ${id}  ${author}  ${chat}  ${body}`;
+  const author = _pad(_short(m.author, 14), 14);
+  const chat = _pad(_short(m.chatLabel, 28), 28);
+  const body = _pad(_snippet(m.text, 60), 60);
+  return `${chat} - ${author}: ${body}  ${id}  ${hh}:${mm}`;
 }
 
 // Truncate s to maxLen with a trailing ellipsis when clipped.

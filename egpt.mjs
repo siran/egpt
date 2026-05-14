@@ -5055,11 +5055,12 @@ function App() {
                 if (row.type === 'hint')
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
                 if (row.type === 'row') {
-                  // Column padding mirrors _formatRecapLine: id(11),
-                  // author(16), chat(30). Body is the trailing
-                  // remainder (snippeted to 72). Section color tints
-                  // the chat column so visually adjacent rows in the
-                  // same section share an accent.
+                  // Column order, left → right: chat - author: body
+                  // id  time. Chat leads as the grouping cue (and
+                  // takes the section accent color); id + time go to
+                  // the right as referenceable metadata so reading
+                  // flow is conversation-first, addressing-second.
+                  // Fixed widths keep id / time aligned vertically.
                   const d = new Date(row.ts);
                   const hh = String(d.getHours()).padStart(2, '0');
                   const mm = String(d.getMinutes()).padStart(2, '0');
@@ -5070,17 +5071,14 @@ function App() {
                     return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
                   };
                   const idDisp = pad((row.stableId || '').slice(0, 11), 11);
-                  const auDisp = pad(trim(row.author || '?', 16), 16);
-                  const chDisp = pad(trim(row.chatLabel || '?', 30), 30);
+                  const auDisp = pad(trim(row.author || '?', 14), 14);
+                  const chDisp = pad(trim(row.chatLabel || '?', 28), 28);
                   // Media body wraps in an OSC 8 hyperlink to the saved
-                  // file (Ctrl/Cmd+click opens the file in the OS
-                  // viewer); a trailing 📁 wraps the containing folder
-                  // so the operator can jump to Explorer / Finder
-                  // instead. Snippet first, wrap second — the OSC 8
-                  // escapes are zero-width, so column alignment stays
-                  // intact and only the visible body / 📁 carry the
-                  // link click target.
-                  const bodyText = snippet(row.body, 72);
+                  // file; a trailing 📁 wraps the containing folder so
+                  // the operator can jump to Explorer / Finder instead.
+                  // Snippet first, then pad, then wrap — OSC 8 escapes
+                  // are zero-width so the padded width holds.
+                  const bodyText = pad(snippet(row.body, 60), 60);
                   const bdDisp = row.mediaPath
                     ? clickablePath(bodyText, row.mediaPath)
                     : bodyText;
@@ -5089,15 +5087,15 @@ function App() {
                     : '';
                   return h(Text, { key: i },
                     '    ',
-                    h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`),
+                    h(Text, { color: sectionColor(row.section) }, chDisp),
+                    h(Text, { color: T.recapHint }, ' - '),
+                    h(Text, { color: T.recapAuthor }, auDisp),
+                    h(Text, { color: T.recapHint }, ': '),
+                    h(Text, { color: T.recapBody }, bdDisp + folderDisp),
                     '  ',
                     h(Text, { color: T.recapId }, idDisp),
                     '  ',
-                    h(Text, { color: T.recapAuthor }, auDisp),
-                    '  ',
-                    h(Text, { color: sectionColor(row.section) }, chDisp),
-                    '  ',
-                    h(Text, { color: T.recapBody }, bdDisp + folderDisp));
+                    h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`));
                 }
                 return h(Text, { key: i }, row.text ?? '');
               }))
