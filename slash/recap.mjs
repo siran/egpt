@@ -37,12 +37,16 @@ export const meta = {
 
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
-  //   sysOut(text)
+  //   sysOut(text, extras)
   //   registerReplyTarget(stableId, rt)  — wires each shown row into
   //     the shell's reply-target sidecar so '@wa-<id> body' resolves
   //     even for messages the operator never directly interacted with
   //     (recent[] in wa-chats.json doesn't auto-populate the sidecar).
-  const { sysOut, registerReplyTarget } = ctx;
+  //   theme  — active theme palette; we read the recap section emojis
+  //     so each theme can carry its own personality (🐈 for catppuccin,
+  //     🦇 for dracula, 🌊 for ocean…). Renderer reads recap*Color
+  //     keys directly from the same palette.
+  const { sysOut, registerReplyTarget, theme } = ctx;
 
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
@@ -50,7 +54,14 @@ export async function run({ arg, ctx }) {
   const n = numTok ? parseInt(numTok, 10) : NaN;
   const max = Number.isFinite(n) && n > 0 ? Math.min(n, 500) : 30;
 
-  const out = await buildRecap({ max, includeDms });
+  const emojis = theme ? {
+    pinned: theme.recapEmojiPinned,
+    group:  theme.recapEmojiGroup,
+    status: theme.recapEmojiStatus,
+    dm:     theme.recapEmojiDm,
+  } : null;
+
+  const out = await buildRecap({ max, includeDms, emojis });
   if (!out) {
     sysOut('(no recent activity to recap — bridges may not have synced yet)');
     return true;
@@ -58,6 +69,10 @@ export async function run({ arg, ctx }) {
   if (typeof registerReplyTarget === 'function') {
     for (const e of out.entries) registerReplyTarget(e.stableId, e.replyTarget);
   }
-  sysOut(out.text);
+  // _recap + _recapRows: the renderer's _recap branch uses _recapRows
+  // for per-column colored rendering; body stays as the flat text so
+  // any non-Ink fallback (mirror, transcript) still gets readable
+  // output without color.
+  sysOut(out.text, { _recap: true, _recapRows: out.rows });
   return true;
 }

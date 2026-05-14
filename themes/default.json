@@ -16,5 +16,20 @@
   "spinnerLabel":    "yellowBright",
   "spinnerElapsed":  "cyanBright",
   "hint":            "blueBright",
-  "error":           "red"
+  "error":           "red",
+
+  "recapHeader":        "cyanBright",
+  "recapHint":          "blueBright",
+  "recapTimestamp":     "gray",
+  "recapId":            "blue",
+  "recapAuthor":        "cyan",
+  "recapBody":          "white",
+  "recapColorPinned":   "yellowBright",
+  "recapColorGroup":    "greenBright",
+  "recapColorStatus":   "magentaBright",
+  "recapColorDm":       "cyan",
+  "recapEmojiPinned":   "📌",
+  "recapEmojiGroup":    "👥",
+  "recapEmojiStatus":   "📡",
+  "recapEmojiDm":       "💬"
 }
