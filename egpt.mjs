@@ -1840,7 +1840,7 @@ function App() {
         });
       },
       onLog:   (msg) => logOut(`telegram: ${msg}`),
-      onError: (msg) => logOut(`!! telegram: ${msg}`),
+      onError: (msg) => errOut(`!! telegram: ${msg}`),
       onYield: () => {
         // 409 from Telegram means another node holds the polling slot.
         // Drop our bridge state so we stop showing as 'polling' on the
@@ -1869,10 +1869,7 @@ function App() {
           if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
           logOut(`telegram: outbound chat ${id} captured and saved`);
         } catch (e) {
-          setItems(p => [...p, {
-            id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true,
-            body: `!! telegram: could not persist chat_id (${e.message})`,
-          }]);
+          errOut(`!! telegram: could not persist chat_id (${e.message})`);
         }
       },
     });
@@ -2181,7 +2178,7 @@ function App() {
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
-        onError: (msg) => logOut(`!! whatsapp: ${msg}`),
+        onError: (msg) => errOut(`!! whatsapp: ${msg}`),
         onQR: (_qrText, msgWithHeader) => {
           // QR code goes to sysOut (visible main transcript), not the
           // hidden /log buffer. Otherwise `/whatsapp pair` would wipe
@@ -2728,6 +2725,19 @@ function App() {
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _log: true,
+    }]);
+
+  // errOut is for error/failure lines that the operator needs to see
+  // RIGHT NOW — bridge sends that failed, brain dispatch errors, any
+  // '!!' status that previously got buried in /log. Visible in the
+  // shell like sysOut, but local-only (doesn't mirror to bridges and
+  // doesn't append to the room md — errors are operational noise, not
+  // conversation). _bright marks them for the renderer so they stand
+  // out from regular system messages.
+  const errOut = body =>
+    setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', body,
+      _localOnly: true, _bright: true,
     }]);
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
@@ -4204,9 +4214,34 @@ function App() {
         }
         if (waStream) {
           await waStream.finish(`${waPrefix}${reply}`);
+          // Defensive: if the streaming path silently failed (initial
+          // send rate-limited, WS blipped, edit rejected, etc) the user
+          // sees nothing on WA. Fall back to a plain send; if THAT also
+          // returns null (bridge.send swallows errors and returns null
+          // on failure), surface to the operator's shell so the human
+          // knows their reply didn't reach the chat. Without this both
+          // failure paths log to /log only — invisible by default.
+          if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
+            const r = await waBridgeRef.current.send(
+              `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+              { chatId: meta.waChatId },
+            );
+            if (!r) {
+              const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
+              // errOut, not sysOut: WA is what's failing — routing the
+              // error back through the same broken bridge would just
+              // generate a second silent failure. Keep it shell-local.
+              errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            }
+          }
         } else if (meta.fromWhatsApp && waBridgeRef.current) {
-          waBridgeRef.current.send(`${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
-            { chatId: meta.waChatId });
+          const r = await waBridgeRef.current.send(
+            `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+            { chatId: meta.waChatId },
+          );
+          if (!r) {
+            errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+          }
         }
 
         if (meta.observeOnly) {
@@ -4843,7 +4878,7 @@ let _globalWaBridge = null;     // whatsapp bridge — owns the logon-summary co
 // NEXT interactive shell's summary covers the window between then and
 // its takeover. Headless processes don't stamp — they're the
 // accumulator, not the consumer.
-const _exitClean = (code = 0) => {
+const _exitClean = async (code = 0) => {
   _globalBridge?.stop();
   // WA bridge.stop() synchronously flushes wa-chats.json and
   // reaction-counts.json — critical so the next interactive shell's
@@ -4851,13 +4886,23 @@ const _exitClean = (code = 0) => {
   // before clearing the pidfile (otherwise a racing successor could
   // re-enter takeover before we're done writing).
   _globalWaBridge?.stop();
+  // Let baileys' WebSocket close handshake reach WA's server before
+  // process.exit. Without this, the close packet may not have left
+  // the kernel buffer when the process dies — WA's server still
+  // thinks we're connected, and the NEXT shell's authenticate trips
+  // 'connectionReplaced' (reason 440), looping until the stale entry
+  // times out server-side (~minutes). 800ms is empirically enough on
+  // a reachable network; if the WS was already dead it's just dead
+  // wait. process.on('exit') below catches synchronous-exit paths
+  // (uncaught throws, etc.) where we can't await.
+  try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
   if (!HEADLESS) writeLastLogonNow();
   clearPidfile();
   process.exit(code);
 };
-process.on('SIGINT',  () => _exitClean(0));
-process.on('SIGHUP',  () => _exitClean(0));
-process.on('SIGTERM', () => _exitClean(0));
+process.on('SIGINT',  () => { _exitClean(0); });
+process.on('SIGHUP',  () => { _exitClean(0); });
+process.on('SIGTERM', () => { _exitClean(0); });
 
 // Pidfile handshake: if an older instance is running (most commonly the
 // headless engine from Task Scheduler / systemd / launchd), ask it to
