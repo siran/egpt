@@ -997,7 +997,16 @@ export async function startWhatsAppBridge({
       // 'voice_note' for PTT, so this only affects what onMediaSaved sees.
       const notifyKind = (hit.kind === 'audio' && node.ptt) ? 'voice note' : hit.kind;
       log(`media saved: ${notifyKind} ${sizeKB}KB → ${path}`);
-      try { onMediaSaved?.({ kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length }); } catch (_) {}
+      // Thread the original WA message's key + body so the host can
+      // attach a _replyTarget to the 'media saved' system line. With
+      // that, the stable-id logic auto-renders the system message as
+      // wa-<msgId> and '@wa-<msgId> body' replies (or any prefix) hit
+      // the actual WA message that brought the file — operator can
+      // reply to the photo from shell.
+      try { onMediaSaved?.({
+        kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length,
+        msgKey: msg.key, msgRaw: msg.message,
+      }); } catch (_) {}
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
@@ -1036,9 +1045,14 @@ export async function startWhatsAppBridge({
       await _writeMediaIndex(dir, idx);
       log(`media moved to deleted/: ${entry.kind} from ${chatJid} → ${newPath}`);
       try {
+        // proto.key is the ORIGINAL message's key (the deleted one),
+        // not the REVOKE envelope. Pass it so the host can still
+        // attach a _replyTarget pointing at the original — sometimes
+        // useful for "reply to the message that was deleted" UX.
         onMediaSaved?.({
           kind: entry.kind, chatJid, msgId: targetId, path: newPath,
           sizeBytes: 0, deleted: true,
+          msgKey: proto.key, msgRaw: null,
         });
       } catch (_) {}
       return newPath;
