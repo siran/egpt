@@ -205,6 +205,11 @@ export async function buildRecap({
   const lines = [titleText];
   const entries = [];
   let currentSection = null;
+  // Track the previous row's chat + author within each section so
+  // consecutive rows with the same speaker get their chat/author
+  // slots dimmed (visual de-noising — "no need to repeat You, You,
+  // You"). Reset both at every section boundary.
+  let prevChat = null, prevAuthor = null;
   for (const m of recap) {
     if (m.section !== currentSection) {
       currentSection = m.section;
@@ -214,7 +219,11 @@ export async function buildRecap({
       rows.push({ type: 'section', section: m.section, emoji, label });
       lines.push('');
       lines.push(`  ${emoji} ${label}`);
+      prevChat = null; prevAuthor = null;
     }
+    const sameChat   = prevChat   !== null && m.chatLabel === prevChat;
+    const sameAuthor = prevAuthor !== null && m.author    === prevAuthor;
+    const repeat = (sameChat && sameAuthor) ? 'all' : (sameChat ? 'chat' : 'none');
     rows.push({
       type: 'row',
       section: m.section,
@@ -224,11 +233,14 @@ export async function buildRecap({
       chatLabel: m.chatLabel,
       body: m.text,
       mediaPath: m.mediaPath ?? null,
+      repeat,
     });
-    lines.push('    ' + _formatRecapLine(m));
+    lines.push('    ' + _formatRecapLine(m, repeat));
     if (m.stableId && m.replyTarget) {
       entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
     }
+    prevChat = m.chatLabel;
+    prevAuthor = m.author;
   }
   rows.push({ type: 'blank' });
   lines.push('');
@@ -376,26 +388,28 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
 // One-liner format: HH:MM  <author>  <chat>  <body…>
 // Columns padded for legibility on a typical terminal; the body
 // gets the rest of the line and is snippeted to ~80 chars.
-function _formatRecapLine(m) {
+// `repeat` collapses chat / author when they match the previous row
+// in the same section:
+//   'none' — first row in a chat block, show both
+//   'chat' — same chat as prev, different author; dim chat, show author
+//   'all'  — same chat AND author; dim both (just body + id + time visible)
+// Separators (' - ' and ': ') swap to plain spaces when their flanking
+// slot is dimmed so the eye doesn't catch orphan punctuation.
+function _formatRecapLine(m, repeat = 'none') {
   const d = new Date(m.ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  // Column order, left → right: chat - author: body  id  time.
-  // No fixed-width padding — chat / author / body trim to a cap but
-  // the row uses only the horizontal space its actual content needs.
-  // Chat is a short reminder (the section header already labels the
-  // group); the operator scans the body and grabs the id when they
-  // want to reply, alignment isn't load-bearing.
   const id = m.stableId ? m.stableId.slice(0, 11) : '';
-  // Author column stays fixed-width so names line up vertically
-  // across rows (the eye lands on the same column for every speaker
-  // — much easier to scan than ragged-right names). Chat and body
-  // stay variable-width since their lengths vary by orders of
-  // magnitude and padding either of those wastes real estate.
-  const author = _pad(_short(m.author, 14), 14);
-  const chat = _short(m.chatLabel, 20);
+  const chat = repeat !== 'none'
+    ? ' '.repeat(20)
+    : _pad(_short(m.chatLabel, 20), 20);
+  const author = repeat === 'all'
+    ? ' '.repeat(14)
+    : _pad(_short(m.author, 14), 14);
+  const chatSep   = repeat === 'none' ? ' - ' : '   ';
+  const authorSep = repeat === 'all'  ? '  '  : ': ';
   const body = _snippet(m.text, 60);
-  return `${chat} - ${author}: ${body}  ${id}  ${hh}:${mm}`;
+  return `${chat}${chatSep}${author}${authorSep}${body}  ${id}  ${hh}:${mm}`;
 }
 
 // Truncate s to maxLen with a trailing ellipsis when clipped.
