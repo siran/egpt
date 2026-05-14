@@ -6,7 +6,7 @@
 // Cheap, no boot-up, runs in vitest with the rest.
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { COMMANDS } from '../interpreter.mjs';
@@ -15,6 +15,23 @@ import { CONFIG_SCHEMA } from '../config-schema.mjs';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHELL_SRC = readFileSync(join(ROOT, 'egpt.mjs'), 'utf8');
 const EXT_SRC   = readFileSync(join(ROOT, 'extension/src/tab/App.jsx'), 'utf8');
+
+// slash/*.mjs file-command registry — collected at test time so the
+// dispatch-coverage check accepts commands that migrated out of the
+// inline if-chain into their own files. Scans the source statically
+// (matches `cmd: '/foo'` lines in each slash/*.mjs file) so the test
+// stays a cheap text check, no import-side-effects.
+const SLASH_DIR = join(ROOT, 'slash');
+const SLASH_CMDS = new Set();
+try {
+  for (const f of readdirSync(SLASH_DIR)) {
+    if (!f.endsWith('.mjs')) continue;
+    const src = readFileSync(join(SLASH_DIR, f), 'utf8');
+    for (const m of src.matchAll(/\bcmd\s*:\s*['"](\/[a-zA-Z0-9-]+)['"]/g)) {
+      SLASH_CMDS.add(m[1]);
+    }
+  }
+} catch (_) { /* slash dir missing — empty set, every cmd must dispatch via inline */ }
 
 // ── /config schema integrity ───────────────────────────────────────────────
 
@@ -45,8 +62,12 @@ describe('every command in COMMANDS has a dispatch site on its surface', () => {
   // Static check: for each registered command, look for a corresponding
   // case in the source file of each surface that's supposed to handle it.
   // The shell uses `if (cmd === '/foo')`; the extension uses `case '/foo':`
-  // inside a switch. Either form satisfies the check.
-  const hasDispatch = (src, cmd) => {
+  // inside a switch; or, on the shell side, a slash/<file>.mjs that
+  // registers the cmd through its meta export (the new file-command
+  // route — pilot landed with /pin and /unpin, others will migrate
+  // incrementally). Any of these satisfies the check.
+  const hasDispatch = (src, cmd, surface) => {
+    if (surface === 'shell' && SLASH_CMDS.has(cmd)) return true;
     const escaped = cmd.replace('/', '\\/');
     const ifStyle  = new RegExp(`\\bcmd\\s*===\\s*['"]${escaped}['"]`);
     const caseStyle = new RegExp(`\\bcase\\s+['"]${escaped}['"]`);
@@ -64,8 +85,8 @@ describe('every command in COMMANDS has a dispatch site on its surface', () => {
       const file = surface === 'shell' ? 'egpt.mjs' : 'extension/src/tab/App.jsx';
       it(`${entry.cmd} is dispatched on ${surface} (${file})`, () => {
         expect(
-          hasDispatch(src, entry.cmd),
-          `${entry.cmd} has no "case '${entry.cmd}'" or "cmd === '${entry.cmd}'" in ${file}`,
+          hasDispatch(src, entry.cmd, surface),
+          `${entry.cmd} has no "case '${entry.cmd}'" / "cmd === '${entry.cmd}'" in ${file} and no slash/*.mjs registering it`,
         ).toBe(true);
       });
     }
