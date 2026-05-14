@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // egpt.mjs — file IS the conversation; Ink shell; sessions = named participants
 import React from 'react';
-import { render, Box, Text, Static, useInput, useApp } from 'ink';
+import { render, Box, Text, Static, useInput, useApp, useStdin } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream } from 'node:fs';
@@ -1495,6 +1495,85 @@ function MultiLineInput({ onSubmit }) {
     if (newIdx === 0) { setLines(['']); setR(0); setC(0); }
     else loadEntry(history[history.length - newIdx]);
   };
+
+  // Ink 5's useInput intentionally drops the input string for keys it
+  // classifies as "non-alphanumeric" (home, end, pageup, pagedown,
+  // f-keys…) — it sets `input = ''` and does NOT add corresponding
+  // key.* flags for home / end. So our original raw-escape matches
+  // in the useInput callback below (\x1b[H, \x1b[F, …) never fire on
+  // Ink 5: by the time we get the callback the buffer is gone.
+  //
+  // Fix: subscribe to Ink's internal_eventEmitter, which fires once
+  // per stdin chunk with the raw Buffer BEFORE parseKeypress strips
+  // anything. We pattern-match home / end / ctrl+home / ctrl+end /
+  // ctrl+left / ctrl+right ourselves, and let Ink's useInput keep
+  // handling everything else (regular text, plain arrows, return,
+  // ctrl-a/e, backspace…). The useInput's catch-all guards on `input`
+  // being truthy, so the empty-string callback Ink fires alongside
+  // our raw match is a no-op — no double-handling.
+  //
+  // Refs mirror state so the closure-captured 'input' listener can
+  // compute end-of-line / word boundaries against the *current* lines
+  // and cursor row, not the values from when the effect installed.
+  const rRef = useRef(r);
+  const cRef = useRef(c);
+  const linesRef = useRef(lines);
+  useEffect(() => { rRef.current = r; }, [r]);
+  useEffect(() => { cRef.current = c; }, [c]);
+  useEffect(() => { linesRef.current = lines; }, [lines]);
+  const stdinCtx = useStdin();
+  useEffect(() => {
+    const emitter = stdinCtx?.internal_eventEmitter;
+    if (!emitter) return;
+    const onChunk = (data) => {
+      const s = typeof data === 'string' ? data : data.toString('utf8');
+      // Home: xterm CSI, VT linux/urxvt/rxvt, VT100 app mode.
+      if (s === '\x1b[H' || s === '\x1b[1~' || s === '\x1b[7~' || s === '\x1bOH') {
+        setC(0);
+        return;
+      }
+      // End: same family of variants.
+      if (s === '\x1b[F' || s === '\x1b[4~' || s === '\x1b[8~' || s === '\x1bOF') {
+        const cur = linesRef.current[rRef.current] ?? '';
+        setC(cur.length);
+        return;
+      }
+      // Ctrl+Home / Ctrl+End: jump to first/last char of the whole
+      // multi-line input (across rows).
+      if (s === '\x1b[1;5H') {
+        setR(0); setC(0);
+        return;
+      }
+      if (s === '\x1b[1;5F') {
+        const ls = linesRef.current;
+        setR(ls.length - 1); setC(ls[ls.length - 1].length);
+        return;
+      }
+      // Ctrl+Left / Ctrl+Right: word-wise cursor motion within the
+      // current row. Doesn't cross row boundaries — keeps the model
+      // simple and matches the user's typical "fix one line" intent
+      // (vs bash readline which does cross). Standard "skip whitespace
+      // then skip word" semantics.
+      if (s === '\x1b[1;5D' || s === '\x1bOd' || s === '\x1b[1;2D') {
+        const cur = linesRef.current[rRef.current] ?? '';
+        let i = cRef.current;
+        while (i > 0 && /\s/.test(cur[i - 1])) i--;
+        while (i > 0 && !/\s/.test(cur[i - 1])) i--;
+        setC(i);
+        return;
+      }
+      if (s === '\x1b[1;5C' || s === '\x1bOc' || s === '\x1b[1;2C') {
+        const cur = linesRef.current[rRef.current] ?? '';
+        let i = cRef.current;
+        while (i < cur.length && !/\s/.test(cur[i])) i++;
+        while (i < cur.length && /\s/.test(cur[i])) i++;
+        setC(i);
+        return;
+      }
+    };
+    emitter.on('input', onChunk);
+    return () => emitter.removeListener('input', onChunk);
+  }, [stdinCtx]);
 
   useInput((input, key) => {
     if (key.ctrl && input === 'd') {
