@@ -188,7 +188,8 @@ export async function buildRecap({
   emojis = null,
 } = {}) {
   const chats = await _readChats();
-  const recap = _collectRecent(chats, since, max, { includeDms });
+  const mediaIndex = await _loadMediaIndex();
+  const recap = _collectRecent(chats, since, max, { includeDms, mediaIndex });
   if (!recap.length) return null;
   const emo = { ...DEFAULT_EMOJI, ...(emojis || {}) };
   const scope = includeDms ? 'all chats' : 'groups + status (no DMs)';
@@ -222,6 +223,7 @@ export async function buildRecap({
       author: m.author ?? '?',
       chatLabel: m.chatLabel,
       body: m.text,
+      mediaPath: m.mediaPath ?? null,
     });
     lines.push('    ' + _formatRecapLine(m));
     if (m.stableId && m.replyTarget) {
@@ -279,7 +281,7 @@ function _sectionForChat(c) {
   return 'dm';
 }
 
-function _collectRecent(chats, since, max, { includeDms = true } = {}) {
+function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = null } = {}) {
   const all = [];
   for (const c of chats) {
     if (!Array.isArray(c.recent)) continue;
@@ -308,6 +310,17 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
           key: { id: r.key.id, fromMe: !!r.key.fromMe, remoteJid: c.jid },
         };
       }
+      // Media path lookup — when this message had an image/video/
+      // audio/etc saved to disk by the WA bridge, attach the abs path
+      // so the renderer can wrap the body cell in an OSC 8 hyperlink
+      // (Ctrl/Cmd+click to open). Index key is the WA msg id from
+      // r.key.id; the bridge's onMediaSaved hook is the source of
+      // truth for these entries.
+      let mediaPath = null;
+      if (mediaIndex && r.key?.id) {
+        const m = mediaIndex.get(r.key.id);
+        if (m?.path) mediaPath = m.path;
+      }
       all.push({
         ts: r.ts,
         author: r.author ?? '?',
@@ -316,6 +329,7 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
         section,
         stableId,
         replyTarget,
+        mediaPath,
       });
     }
   }
@@ -404,6 +418,30 @@ async function _readReactions() {
     const obj = JSON.parse(raw);
     return obj && typeof obj === 'object' ? obj : {};
   } catch { return {}; }
+}
+
+// Build a msgId → { kind, path } map from every ~/.egpt/media/<chat>/
+// .media-index.json. Used by /recap to attach a clickable filesystem
+// path to media rows ([image] / [video] / [voice note] …) so the
+// operator can Ctrl/Cmd+click the body cell to open the file in
+// their OS viewer. Returns an empty Map if the media dir doesn't
+// exist yet — first-run shells without any saved media still work.
+async function _loadMediaIndex() {
+  const out = new Map();
+  let chatDirs = [];
+  try { chatDirs = await fs.readdir(MEDIA_DIR); } catch { return out; }
+  for (const chatDir of chatDirs) {
+    const idxPath = join(MEDIA_DIR, chatDir, '.media-index.json');
+    if (!existsSync(idxPath)) continue;
+    let idx = {};
+    try { idx = JSON.parse(await fs.readFile(idxPath, 'utf8')); } catch { continue; }
+    for (const [msgId, entry] of Object.entries(idx ?? {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (entry.deleted) continue;
+      if (entry.path) out.set(msgId, { kind: entry.kind || 'file', path: entry.path });
+    }
+  }
+  return out;
 }
 
 async function _walkMediaFiles(since) {
