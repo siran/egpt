@@ -2792,7 +2792,7 @@ function App() {
       if (_welcomeBackRanRef.current) return;
       _welcomeBackRanRef.current = true;
       try {
-        const out = await buildWelcomeBack({ maxRecapLines: 30, includeDms: true });
+        const out = await buildWelcomeBack({ maxRecapLines: 30, includeDms: false });
         if (out) {
           for (const e of out.entries) {
             if (e.stableId && e.replyTarget) {

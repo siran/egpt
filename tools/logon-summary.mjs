@@ -52,7 +52,7 @@ const DEFAULT_RECAP_LINES = 30;
 // blocks represent the "what arrived while you were away" window);
 // the recap rows do not, so the welcome-back is never empty when
 // activity exists.
-export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, includeDms = true } = {}) {
+export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, includeDms = false } = {}) {
   const since = _readLastLogonTs();
   const ago   = since ? _formatAgo(Date.now() - since) : null;
 
@@ -196,8 +196,9 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
     // DM = not a group and not the status broadcast feed. Skipped by
     // default in /recap so the operator's group / channel activity
     // isn't drowned out by per-person 1:1s (which they typically read
-    // directly in WA anyway). buildWelcomeBack passes includeDms=true
-    // because the "welcome back" report wants the full inbox picture.
+    // directly in WA anyway). buildWelcomeBack matches /recap's default
+    // (DMs off) so the startup report doesn't drown groups + status
+    // under per-person 1:1s the operator reads in WA anyway.
     const isDm = !c.isGroup && c.jid !== 'status@broadcast';
     if (!includeDms && isDm) continue;
     const label = _chatDisplayLabel(c);
