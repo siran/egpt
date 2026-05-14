@@ -61,7 +61,13 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     '--remote-allow-origins=*',
     `--user-data-dir=${userDataDir}`,
     '--no-first-run',
-    '--disable-features=ChromeWhatsNewUI',
+    // Chrome ~137+ disables the --load-extension CLI switch by default
+    // (DisableLoadExtensionCommandLineSwitch feature flag). Without
+    // turning that feature OFF, the extension never loads even with
+    // --load-extension on the command line — Chrome silently ignores
+    // it. We always pass --load-extension when extensionDir is set,
+    // so always opt out of the disable here.
+    '--disable-features=ChromeWhatsNewUI,DisableLoadExtensionCommandLineSwitch',
     '--silent-debugger-extension-api',
     '--new-window',
   ];
