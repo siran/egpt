@@ -433,7 +433,15 @@ export async function startWhatsAppBridge({
     _chatsWriteTimer.unref?.();
   }
 
-  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null, pinned = undefined }) {
+  function _recordChat({ jid, isGroup, name = null, ts = 0, kind = 'activity', author = null, body = null, key = null, pinned = undefined, live = false }) {
+    // `live` discriminates real-time arrivals (messages.upsert type=='notify')
+    // from bulk history backfill (messages.upsert type=='append'/'prepend',
+    // messaging-history.set). The logon-summary counters (messageCount,
+    // broadcastsByAuthor) ONLY bump for live=true — otherwise a re-pair
+    // or restart that triggers a big history sync inflates the count to
+    // tens of thousands. Default false so callers that genuinely just
+    // need to record a chat (chats.upsert metadata, group-creation) don't
+    // need to think about it.
     if (!jid) return;
     // status@broadcast is WhatsApp's global status-updates feed: every
     // contact's 24h stories arrive on this single JID with their own
@@ -494,11 +502,16 @@ export async function startWhatsAppBridge({
           if (cur.recent.length > RECENT_PER_CHAT) {
             cur.recent.splice(0, cur.recent.length - RECENT_PER_CHAT);
           }
-          // Phase 2: bump only for genuine non-dupe activity. Skipping
-          // history-backfill duplicates and creation-only ticks (the
-          // outer `kind === 'activity'` arm of _recordChat is the only
-          // one that reaches this block with body && ts > 0).
-          if (kind === 'activity') {
+          // Logon-summary counters: bump ONLY for live arrivals. The
+          // dedupe above already drops most history replays, but baileys's
+          // history sync after re-pair / restart can still deliver tens
+          // of thousands of unique-keyed messages that pre-fix would
+          // inflate messageCount to "76k since last logon" garbage.
+          // `live` is true only when called from messages.upsert with
+          // type==='notify' or from handleMessage (the LOUD path); every
+          // other call site (history.set, prepend, chats.upsert) leaves
+          // it false and the counter stays untouched.
+          if (kind === 'activity' && live) {
             cur.messageCount += 1;
             if (jid === 'status@broadcast' && author) {
               cur.broadcastsByAuthor[author] = (cur.broadcastsByAuthor[author] ?? 0) + 1;
@@ -692,7 +705,11 @@ export async function startWhatsAppBridge({
         const author = fromMe ? 'You' : (pushedName ?? null);
         const body = textOf(m.message ?? {}) ?? null;
         const key = m.key?.id ? { id: m.key.id, fromMe } : null;
-        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity', author, body, key });
+        // type==='notify' is real-time push delivery from baileys.
+        // 'append' / 'prepend' / undefined are history backfill — don't
+        // count toward logon-summary deltas.
+        const live = (type === 'notify');
+        if (ts > 0) _recordChat({ jid, isGroup, name: remoteName, ts, kind: 'activity', author, body, key, live });
       }
       // — LOUD track — only real-time messages reach handleMessage,
       // which is the path that renders, mirrors, and may dispatch
