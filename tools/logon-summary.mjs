@@ -3,20 +3,29 @@
 // earlier shell). Reads from disk only — no live bridge needed,
 // the headless engine flushed everything synchronously on SIGTERM.
 //
+// Output shape (revised 2026-05-14):
+//   welcome back — since 8h ago.
+//
+//   inbox (6 msgs · 3 chats):
+//     07:27 Daniel    DM with Daniel              [voice note: 22s]
+//     07:33 Daniel    DM with Daniel              [voice note: 21s]
+//     03:48 Andrés    SPOILER ALERT… (group)      [sticker]
+//     ... up to ~30 one-liner rows
+//
+//   📡 13 status posts: Joshua Dilawar 12 · Shopdeninasccs 1
+//   📎 13 files saved (12 videos · 1 image) → 16.6MB
+//   💥 most-reacted: "…" in <chat>  [3 👍, 1 ❤️]
+//
+//   /last 50  ·  /channels 20 5  ·  /recap N  for a fresh chronological recap
+//
 // Sources:
-//   ~/.egpt/wa-chats.json           per-chat messageCount + broadcastsByAuthor
-//   ~/.egpt/reaction-counts.json    msgId -> { count, emojis, preview, chatJid, lastTs }
-//   ~/.egpt/media/<chatJid>/.media-index.json   files saved per chat
+//   ~/.egpt/wa-chats.json           per-chat messageCount + broadcastsByAuthor + recent[]
+//   ~/.egpt/reaction-counts.json    msgId → reaction tally
+//   ~/.egpt/media/<chat>/.media-index.json   files saved per chat
 //   ~/.egpt/last-logon.json         { ts } — anchor for "since when"
 //
-// After rendering, the caller is expected to:
-//   1. Reset the persistent counters (resetCountersOnDisk) so the next
-//      summary starts from zero / fresh.
-//   2. Write last-logon = now for the next cycle.
-//
-// Returns null when nothing is worth reporting (zero new messages,
-// zero files, zero reactions); the caller skips the banner in that
-// case. Otherwise returns a multi-line string ready to console.log.
+// After rendering, the caller resets the counters and stamps a fresh
+// last-logon timestamp; the next cycle starts at zero.
 
 import { promises as fs, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -28,7 +37,9 @@ const REACTIONS_PATH   = join(HOME, 'reaction-counts.json');
 const LAST_LOGON_PATH  = join(HOME, 'last-logon.json');
 const MEDIA_DIR        = join(HOME, 'media');
 
-export async function buildLogonSummary() {
+const DEFAULT_RECAP_LINES = 30;
+
+export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } = {}) {
   const since = _readLastLogonTs();
   const ago   = since ? _formatAgo(Date.now() - since) : null;
 
@@ -36,26 +47,20 @@ export async function buildLogonSummary() {
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  // Exclude status@broadcast from the inbox count — it has its own
-  // "📡 status posts" line and merging them inflates the headline.
+  // Inbox is everything that's not status@broadcast.
   const totalMessages = chats
     .filter(c => c.jid !== 'status@broadcast')
     .reduce((sum, c) => sum + (c.messageCount || 0), 0);
-  // Order: pinned chats first (WA pin OR eGPT pin), then by
-  // messageCount desc among the rest. WA pin caps at 3 phone-side;
-  // eGPT pin is unlimited. Either source elevates a chat. Pinned
-  // chats with 0 activity since last logon still take a slot when
-  // they have at least 1 msg — without that the line goes blank.
-  const pinScore = c => Math.max(c.pinned || 0, c.egptPinned || 0);
-  const topChats = chats
-    .filter(c => (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast')
-    .sort((a, b) => {
-      const ap = pinScore(a) > 0 ? 1 : 0;
-      const bp = pinScore(b) > 0 ? 1 : 0;
-      if (ap !== bp) return bp - ap;
-      return (b.messageCount || 0) - (a.messageCount || 0);
-    })
-    .slice(0, 5);
+  const totalChatsActive = chats.filter(c =>
+    (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast'
+  ).length;
+
+  // The chronological one-liner stream — the operator's actual feed.
+  // Pulls from each chat's recent[] ring (capped at ~10 per chat) and
+  // merges into one sorted-by-ts list. Pre-fix this section was a
+  // per-chat aggregate; revised to give the operator the rhythm of
+  // recent activity rather than a tally.
+  const recap = _collectRecent(chats, since, maxRecapLines);
 
   // status@broadcast lives in its own chat entry; pull out its
   // broadcastsByAuthor for the "who posted stories" breakdown.
@@ -89,34 +94,17 @@ export async function buildLogonSummary() {
 
   const lines = [];
   lines.push(ago
-    ? `welcome back — since ${ago}:`
-    : `welcome back — first logon since the engine started:`);
+    ? `welcome back — since ${ago}.`
+    : `welcome back — first logon since the engine started.`);
 
   if (totalMessages > 0) {
-    const totalChatsActive = chats.filter(c => (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast').length;
     lines.push('');
-    lines.push(`  📥 ${totalMessages} message${totalMessages === 1 ? '' : 's'} in ${totalChatsActive} chat${totalChatsActive === 1 ? '' : 's'}:`);
-    for (const c of topChats) {
-      const label = _chatDisplayLabel(c);
-      // Latest entry in the chat's recent[] ring — that's the freshest
-      // snippet we have. The ring is capped at 10 per chat by the WA
-      // bridge; messageCount can exceed it (we still report the real
-      // count, just don't have every line). Filter by since-ts so we
-      // never quote a stale message from a previous window.
-      const fresh = _latestRecent(c.recent, since);
-      const count = c.messageCount;
-      const pin   = pinScore(c) > 0 ? '📌 ' : '';
-      const head  = `      ${pin}${label}  ·  ${count} msg${count === 1 ? '' : 's'}`;
-      if (fresh) {
-        const author = fresh.author ? `${fresh.author}: ` : '';
-        lines.push(`${head}`);
-        lines.push(`          ↳ ${author}"${_snippet(fresh.text)}"`);
-      } else {
-        lines.push(head);
-      }
+    lines.push(`  inbox (${totalMessages} msg${totalMessages === 1 ? '' : 's'} · ${totalChatsActive} chat${totalChatsActive === 1 ? '' : 's'}):`);
+    for (const m of recap) lines.push('    ' + _formatRecapLine(m));
+    const shown = recap.length;
+    if (totalMessages > shown) {
+      lines.push(`    … +${totalMessages - shown} earlier (recent[] ring caps at ~10/chat — /channels for the full per-chat view)`);
     }
-    const dropped = totalChatsActive - topChats.length;
-    if (dropped > 0) lines.push(`      … +${dropped} more chat${dropped === 1 ? '' : 's'}`);
   }
 
   if (statusTotal > 0) {
@@ -124,15 +112,14 @@ export async function buildLogonSummary() {
     const rest = Object.keys(statusByAuthor).length - topStatusAuthors.length;
     const tail = rest > 0 ? ` · ${rest} more` : '';
     lines.push('');
-    lines.push(`  📡 ${statusTotal} status post${statusTotal === 1 ? '' : 's'}  (${bits.join(' · ')}${tail})`);
+    lines.push(`  📡 ${statusTotal} status post${statusTotal === 1 ? '' : 's'}: ${bits.join(' · ')}${tail}`);
   }
 
   if (files.length > 0) {
     const kindBits = Object.entries(filesByKind)
       .sort((a, b) => b[1] - a[1])
       .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`);
-    lines.push('');
-    lines.push(`  📎 ${files.length} file${files.length === 1 ? '' : 's'} saved   (${kindBits.join(' · ')})  →  ${_formatSize(filesTotalBytes)}`);
+    lines.push(`  📎 ${files.length} file${files.length === 1 ? '' : 's'} saved (${kindBits.join(' · ')}) → ${_formatSize(filesTotalBytes)}`);
   }
 
   if (topReaction) {
@@ -143,73 +130,24 @@ export async function buildLogonSummary() {
     const preview = topReaction.preview
       ? `"${topReaction.preview}"`
       : '(unknown message)';
-    // Pair the reaction with the chat it landed in, when we can resolve
-    // the chatJid → display label via the same chats array.
     const inChat = topReaction.chatJid
       ? chats.find(c => c.jid === topReaction.chatJid)
       : null;
     const where = inChat ? ` in ${_chatDisplayLabel(inChat)}` : '';
-    lines.push('');
     lines.push(`  💥 most-reacted: ${preview}${where}  [${emojiList}]`);
   }
 
-  // Pointer to commands that surface the underlying data. Important
-  // distinction: /last reads the room md and only shows chats that
-  // entered the transcript (egpt_chats + /join'd). /channels reads the
-  // bridge's per-chat ring which captures EVERY observed chat
-  // including observe-only ones — so messages summarized above that
-  // don't appear in /last are findable via /channels.
   lines.push('');
-  lines.push('  /last 50            scroll the transcript  (joined / egpt chats only)');
-  lines.push('  /channels 20 5      every observed chat + 5 recent lines each');
+  lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N]  for a chronological recap');
+  lines.push('  /wa-pending  ·  /tg-pending  for held messages awaiting review');
 
   return lines.join('\n');
-}
-
-// One-line chat label with type indicator. Used both for the "top chats"
-// section and for tagging the most-reacted-item line.
-function _chatDisplayLabel(c) {
-  if (c.jid === 'status@broadcast') return 'WA status feed';
-  const isGroup = !!c.isGroup;
-  // Strip the JID host suffix as a last resort. Group JIDs are
-  // <id>@g.us; DM JIDs are <number>@s.whatsapp.net or @lid.
-  const fallback = c.jid?.split('@')[0]?.split(':')[0] ?? '?';
-  const name = (c.name && c.name.trim()) ? c.name.trim() : fallback;
-  return isGroup ? `${name} (group)` : `DM with ${name}`;
-}
-
-// Latest body from a chat's recent[] ring, optionally filtered to
-// entries newer than `since`. Returns { author, text, ts } or null.
-function _latestRecent(recent, since) {
-  if (!Array.isArray(recent) || recent.length === 0) return null;
-  // recent[] is stored oldest-first; walk from the end.
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const r = recent[i];
-    if (!r || typeof r.text !== 'string') continue;
-    if (since && r.ts && r.ts < since) continue;
-    return r;
-  }
-  // Nothing in the since-window? Fall back to the absolute latest so
-  // the user at least sees what the chat is about.
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const r = recent[i];
-    if (r && typeof r.text === 'string') return r;
-  }
-  return null;
-}
-
-function _snippet(text, max = 70) {
-  if (!text) return '';
-  const oneLine = String(text).replace(/\s+/g, ' ').trim();
-  if (oneLine.length <= max) return oneLine;
-  return oneLine.slice(0, max - 1) + '…';
 }
 
 // Reset the counters that the summary just consumed so the next
 // "while you were away" window starts at zero. Idempotent — running
 // this twice on the same disk state just no-ops the second pass.
 export function resetCountersOnDisk() {
-  // Chats: zero out messageCount and broadcastsByAuthor in-place.
   try {
     if (existsSync(CHATS_PATH)) {
       const raw = readFileSync(CHATS_PATH, 'utf8');
@@ -224,9 +162,6 @@ export function resetCountersOnDisk() {
       }
     }
   } catch (_) {}
-  // Reactions: clear the whole file. Reactions are intrinsically
-  // about "what got attention recently" — cumulative would lose the
-  // signal.
   try {
     if (existsSync(REACTIONS_PATH)) writeFileSync(REACTIONS_PATH, '{}', { mode: 0o600 });
   } catch (_) {}
@@ -236,6 +171,68 @@ export function writeLastLogonNow() {
   try {
     writeFileSync(LAST_LOGON_PATH, JSON.stringify({ ts: Date.now() }), { mode: 0o600 });
   } catch (_) {}
+}
+
+// Public helper for the /recap slash command. Reads the same data
+// sources as the summary but lets the caller pick how many lines and
+// optionally how far back. Without `since`, walks every recent[]
+// entry and returns the most recent `max`.
+export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null } = {}) {
+  const chats = await _readChats();
+  const recap = _collectRecent(chats, since, max);
+  if (!recap.length) return null;
+  const header = since
+    ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago:`
+    : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} across observed chats:`;
+  const lines = [header];
+  for (const m of recap) lines.push('  ' + _formatRecapLine(m));
+  return lines.join('\n');
+}
+
+// Collect recent[] entries across all chats (skipping status@broadcast)
+// into one chronological list. Filters by `since` when set; takes the
+// most recent `max` entries.
+function _collectRecent(chats, since, max) {
+  const all = [];
+  for (const c of chats) {
+    if (c.jid === 'status@broadcast') continue;
+    if (!Array.isArray(c.recent)) continue;
+    const label = _chatDisplayLabel(c);
+    for (const r of c.recent) {
+      if (!r || typeof r.text !== 'string' || !r.text.trim()) continue;
+      if (!r.ts) continue;
+      if (since && r.ts < since) continue;
+      all.push({ ts: r.ts, author: r.author ?? '?', text: r.text, chatLabel: label });
+    }
+  }
+  all.sort((a, b) => a.ts - b.ts);
+  // Keep the most recent `max`. We sort asc and slice from the end so
+  // the displayed order is chronological (oldest first, newest last).
+  return all.slice(-max);
+}
+
+// One-liner format: HH:MM  <author>  <chat>  <body…>
+// Columns padded for legibility on a typical terminal; the body
+// gets the rest of the line and is snippeted to ~80 chars.
+function _formatRecapLine(m) {
+  const d = new Date(m.ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const author = _pad(_short(m.author, 16), 16);
+  const chat = _pad(_short(m.chatLabel, 30), 30);
+  const body = _snippet(m.text, 80);
+  return `${hh}:${mm}  ${author}  ${chat}  ${body}`;
+}
+
+// Truncate s to maxLen with a trailing ellipsis when clipped.
+function _short(s, maxLen) {
+  if (!s) return '';
+  return s.length <= maxLen ? s : s.slice(0, maxLen - 1) + '…';
+}
+
+// Left-pad s with spaces to width.
+function _pad(s, width) {
+  return s.length >= width ? s : s + ' '.repeat(width - s.length);
 }
 
 function _readLastLogonTs() {
@@ -265,9 +262,6 @@ async function _readReactions() {
   } catch { return {}; }
 }
 
-// Walk ~/.egpt/media/<chat>/.media-index.json and collect saves whose
-// timestamp is newer than `since`. Skips entries under deleted/
-// (those moved out of the live media area on REVOKE).
 async function _walkMediaFiles(since) {
   const out = [];
   let chatDirs = [];
@@ -282,13 +276,27 @@ async function _walkMediaFiles(since) {
       if (entry.deleted) continue;
       const ts = Number(entry.ts) || 0;
       if (since && ts < since) continue;
-      // Best-effort size: read fs.stat. Cheap (< 50 saves typical).
       let size = 0;
       try { const st = await fs.stat(entry.path); size = st.size; } catch {}
       out.push({ msgId, kind: entry.kind || 'file', ts, size, path: entry.path });
     }
   }
   return out;
+}
+
+function _chatDisplayLabel(c) {
+  if (c.jid === 'status@broadcast') return 'WA status feed';
+  const isGroup = !!c.isGroup;
+  const fallback = c.jid?.split('@')[0]?.split(':')[0] ?? '?';
+  const name = (c.name && c.name.trim()) ? c.name.trim() : fallback;
+  return isGroup ? `${name} (group)` : `DM with ${name}`;
+}
+
+function _snippet(text, max = 70) {
+  if (!text) return '';
+  const oneLine = String(text).replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= max) return oneLine;
+  return oneLine.slice(0, max - 1) + '…';
 }
 
 function _formatAgo(ms) {

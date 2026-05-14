@@ -40,6 +40,7 @@ export const COMMANDS = [
   { section: 'ROOM' },
   { cmd: '/rules',          surface: 'shell',     usage: '/rules',                                         desc: 'write room etiquette' },
   { cmd: '/last',           surface: 'shell',     usage: '/last [N]',                                      desc: 'tail N messages (default 10)' },
+  { cmd: '/recap',          surface: 'shell',     usage: '/recap [N]',                                     desc: 'chronological one-liner recap across observed chats (default 30); merges every chat\'s recent[] ring by timestamp. Distinct from /last (transcript only) and /channels (per-chat).' },
   { cmd: '/clear',          surface: 'extension', usage: '/clear',                                         desc: 'clear display' },
   { cmd: '/channels',       surface: 'both',      usage: '/channels [N] [messages-per-chat]',             desc: 'list the top-N most-active WA chats numbered as @waN, with M recent message lines per chat (default 10 3). shell uses baileys; extension scrapes WA Web. /channels then @wa<N> <body> to send. Pinned chats (📌) float to the top.' },
   { cmd: '/pin',            surface: 'shell',     usage: '/pin [@waN ...|clear]',                          desc: 'eGPT-side pin for WA chats — surfaces in /channels + logon summary alongside WhatsApp\'s own pin (unlimited; WA caps phone-side at 3). No-arg lists current eGPT pins. /pin clear removes all.' },
