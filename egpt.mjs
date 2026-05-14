@@ -5069,8 +5069,12 @@ function App() {
                     const oneLine = String(s ?? '').replace(/\s+/g, ' ').trim();
                     return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
                   };
+                  const pad = (s, w) => (s.length >= w ? s : s + ' '.repeat(w - s.length));
                   const idDisp = (row.stableId || '').slice(0, 11);
-                  const auDisp = trim(row.author || '?', 14);
+                  // Author fixed-width so names line up vertically;
+                  // chat stays variable since its content's a short
+                  // reminder, not a primary scan column.
+                  const auDisp = pad(trim(row.author || '?', 14), 14);
                   const chDisp = trim(row.chatLabel || '?', 20);
                   // Media body wraps in an OSC 8 hyperlink to the
                   // saved file; a trailing 📁 wraps the containing
