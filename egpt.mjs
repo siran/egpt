@@ -3922,6 +3922,12 @@ function App() {
           await runBrainTurn(targetSession, brainPrompt, sessions);
           return;
         }
+        // Same sacred-input rule as the lookup-failure branches above:
+        // echo what the operator typed BEFORE reporting that the
+        // target's neither a bridge message (no _replyTarget) nor a
+        // brain session. Without the echo, the operator's text just
+        // disappears, leaving only the error.
+        _echoFailedReply();
         sysOut(`!! @${shortId}: no bridge origin recorded — can only reply to bridge or brain messages`);
         return;
       }
