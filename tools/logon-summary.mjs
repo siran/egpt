@@ -387,7 +387,12 @@ function _formatRecapLine(m) {
   // group); the operator scans the body and grabs the id when they
   // want to reply, alignment isn't load-bearing.
   const id = m.stableId ? m.stableId.slice(0, 11) : '';
-  const author = _short(m.author, 14);
+  // Author column stays fixed-width so names line up vertically
+  // across rows (the eye lands on the same column for every speaker
+  // — much easier to scan than ragged-right names). Chat and body
+  // stay variable-width since their lengths vary by orders of
+  // magnitude and padding either of those wastes real estate.
+  const author = _pad(_short(m.author, 14), 14);
   const chat = _short(m.chatLabel, 20);
   const body = _snippet(m.text, 60);
   return `${chat} - ${author}: ${body}  ${id}  ${hh}:${mm}`;
