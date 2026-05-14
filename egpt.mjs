@@ -5070,7 +5070,15 @@ function App() {
                   const idDisp = pad((row.stableId || '').slice(0, 11), 11);
                   const auDisp = pad(trim(row.author || '?', 16), 16);
                   const chDisp = pad(trim(row.chatLabel || '?', 30), 30);
-                  const bdDisp = snippet(row.body, 72);
+                  // Media body wraps in an OSC 8 hyperlink to the saved
+                  // file so Ctrl/Cmd+click opens the image / video /
+                  // audio in the OS viewer. Snippet first, wrap second —
+                  // the OSC 8 escapes are zero-width, so the wrapped
+                  // string takes the same column budget as the bare
+                  // text but the underlined cell carries the link.
+                  const bdDisp = row.mediaPath
+                    ? clickablePath(snippet(row.body, 72), row.mediaPath)
+                    : snippet(row.body, 72);
                   return h(Text, { key: i },
                     '    ',
                     h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`),
