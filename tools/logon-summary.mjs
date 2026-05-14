@@ -380,16 +380,16 @@ function _formatRecapLine(m) {
   const d = new Date(m.ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  // Column order, left → right: chat (the grouping cue) - author:
-  // body, then metadata tail (id, time). Putting chat + author + body
-  // up front matches how the operator reads the row ("what's <name>
-  // saying in <chat>?"); id + time go to the right as referenceable
-  // metadata. Widths are fixed so id and time still align vertically
-  // across rows even when bodies vary in length.
-  const id = m.stableId ? _pad(m.stableId.slice(0, 11), 11) : _pad('', 11);
-  const author = _pad(_short(m.author, 14), 14);
-  const chat = _pad(_short(m.chatLabel, 28), 28);
-  const body = _pad(_snippet(m.text, 60), 60);
+  // Column order, left → right: chat - author: body  id  time.
+  // No fixed-width padding — chat / author / body trim to a cap but
+  // the row uses only the horizontal space its actual content needs.
+  // Chat is a short reminder (the section header already labels the
+  // group); the operator scans the body and grabs the id when they
+  // want to reply, alignment isn't load-bearing.
+  const id = m.stableId ? m.stableId.slice(0, 11) : '';
+  const author = _short(m.author, 14);
+  const chat = _short(m.chatLabel, 20);
+  const body = _snippet(m.text, 60);
   return `${chat} - ${author}: ${body}  ${id}  ${hh}:${mm}`;
 }
 

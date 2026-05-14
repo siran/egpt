@@ -5056,29 +5056,27 @@ function App() {
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
                 if (row.type === 'row') {
                   // Column order, left → right: chat - author: body
-                  // id  time. Chat leads as the grouping cue (and
-                  // takes the section accent color); id + time go to
-                  // the right as referenceable metadata so reading
-                  // flow is conversation-first, addressing-second.
-                  // Fixed widths keep id / time aligned vertically.
+                  // id  time. No fixed-width padding — each row uses
+                  // only the horizontal space its content needs. The
+                  // section header already labels the conversation
+                  // group, so the chat column is just a short
+                  // reminder (capped at 20 chars).
                   const d = new Date(row.ts);
                   const hh = String(d.getHours()).padStart(2, '0');
                   const mm = String(d.getMinutes()).padStart(2, '0');
-                  const pad = (s, w) => (s.length >= w ? s : s + ' '.repeat(w - s.length));
                   const trim = (s, w) => (s.length <= w ? s : s.slice(0, w - 1) + '…');
                   const snippet = (s, w) => {
                     const oneLine = String(s ?? '').replace(/\s+/g, ' ').trim();
                     return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
                   };
-                  const idDisp = pad((row.stableId || '').slice(0, 11), 11);
-                  const auDisp = pad(trim(row.author || '?', 14), 14);
-                  const chDisp = pad(trim(row.chatLabel || '?', 28), 28);
-                  // Media body wraps in an OSC 8 hyperlink to the saved
-                  // file; a trailing 📁 wraps the containing folder so
-                  // the operator can jump to Explorer / Finder instead.
-                  // Snippet first, then pad, then wrap — OSC 8 escapes
-                  // are zero-width so the padded width holds.
-                  const bodyText = pad(snippet(row.body, 60), 60);
+                  const idDisp = (row.stableId || '').slice(0, 11);
+                  const auDisp = trim(row.author || '?', 14);
+                  const chDisp = trim(row.chatLabel || '?', 20);
+                  // Media body wraps in an OSC 8 hyperlink to the
+                  // saved file; a trailing 📁 wraps the containing
+                  // folder so the operator can jump to Explorer /
+                  // Finder instead.
+                  const bodyText = snippet(row.body, 60);
                   const bdDisp = row.mediaPath
                     ? clickablePath(bodyText, row.mediaPath)
                     : bodyText;
