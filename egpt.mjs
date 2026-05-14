@@ -4059,21 +4059,23 @@ function App() {
           }
         }
         if (waTargets.length || tgTargets.length) {
-          // Echo + record locally so the transcript has the reply too.
-          // _replyTarget carries the result key(s) — one entry per
-          // successful WA send. Single → object, multiple → array;
-          // the @m<N>/@<stable> handler accepts both.
+          // Echo + record locally — typed prompt is sacred, so the
+          // body is the operator's raw input verbatim (text), not a
+          // reconstructed '↳ @<full-id>\n<body>'. If the operator
+          // typed '@wa-3AE05786 hola' we echo exactly that; the
+          // resolved full key still drives the actual WA send via rt,
+          // it just doesn't pollute the visible/logged form.
           const rt = echoReplyTargets.length === 1
             ? echoReplyTargets[0]
             : (echoReplyTargets.length > 1 ? echoReplyTargets : undefined);
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'You',
-            body: `↳ @${shortId}\n${body}`,
+            body: text,
             _directWa: !!waTargets.length,
             _localOnly: !waTargets.length && !!tgTargets.length,
             ...(rt ? { _replyTarget: rt } : {}),
           }]);
-          void append('You', `↳ @${shortId}\n${body}`);
+          void append('You', text);
           if (rt) _scheduleReplyTargetSave();
           return;
         }
@@ -4086,14 +4088,14 @@ function App() {
         // the operator was actually replying to.
         const targetSession = (target.author ?? '').split('@')[0];
         if (sessions[targetSession]) {
-          // Echo with reply context preserved (don't rewrite as
-          // '@cgpt1 …' — the operator typed '@m<N>' and the
-          // transcript should reflect that intent).
+          // Typed prompt is sacred — echo the raw input. The brain
+          // prompt below still gets the resolved quote + sender
+          // header; only the visible/transcript form stays verbatim.
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'You',
-            body: `↳ @${shortId}\n${body}`,
+            body: text,
           }]);
-          void append('You', `↳ @${shortId}\n${body}`);
+          void append('You', text);
           // Brain prompt: include the quoted message + qualified
           // sender header. Brain has no concept of m-ids, so we
           // resolve to the actual previous text.
@@ -5071,14 +5073,20 @@ function App() {
                   const auDisp = pad(trim(row.author || '?', 16), 16);
                   const chDisp = pad(trim(row.chatLabel || '?', 30), 30);
                   // Media body wraps in an OSC 8 hyperlink to the saved
-                  // file so Ctrl/Cmd+click opens the image / video /
-                  // audio in the OS viewer. Snippet first, wrap second —
-                  // the OSC 8 escapes are zero-width, so the wrapped
-                  // string takes the same column budget as the bare
-                  // text but the underlined cell carries the link.
+                  // file (Ctrl/Cmd+click opens the file in the OS
+                  // viewer); a trailing 📁 wraps the containing folder
+                  // so the operator can jump to Explorer / Finder
+                  // instead. Snippet first, wrap second — the OSC 8
+                  // escapes are zero-width, so column alignment stays
+                  // intact and only the visible body / 📁 carry the
+                  // link click target.
+                  const bodyText = snippet(row.body, 72);
                   const bdDisp = row.mediaPath
-                    ? clickablePath(snippet(row.body, 72), row.mediaPath)
-                    : snippet(row.body, 72);
+                    ? clickablePath(bodyText, row.mediaPath)
+                    : bodyText;
+                  const folderDisp = row.mediaPath
+                    ? '  ' + clickablePath('📁', dirname(row.mediaPath))
+                    : '';
                   return h(Text, { key: i },
                     '    ',
                     h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`),
@@ -5089,7 +5097,7 @@ function App() {
                     '  ',
                     h(Text, { color: sectionColor(row.section) }, chDisp),
                     '  ',
-                    h(Text, { color: T.recapBody }, bdDisp));
+                    h(Text, { color: T.recapBody }, bdDisp + folderDisp));
                 }
                 return h(Text, { key: i }, row.text ?? '');
               }))

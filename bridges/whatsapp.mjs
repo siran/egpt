@@ -1914,6 +1914,21 @@ function textOf(message) {
 
 function _baseTextOf(message) {
   if (!message) return null;
+  // Envelope unwrappers — WA wraps real content one level deep in
+  // a handful of containers for ephemeral / view-once / edited /
+  // captioned-document messages. Without unwrapping, _baseTextOf
+  // falls through to null and the caller renders the parent as
+  // '(unsupported message)' — common when the operator replies to
+  // a disappearing-mode message in any group with retention set.
+  // Recursion is bounded by the depth of these envelopes (at most
+  // a couple in practice).
+  if (message.ephemeralMessage?.message)              return _baseTextOf(message.ephemeralMessage.message);
+  if (message.viewOnceMessage?.message)               return _baseTextOf(message.viewOnceMessage.message);
+  if (message.viewOnceMessageV2?.message)             return _baseTextOf(message.viewOnceMessageV2.message);
+  if (message.viewOnceMessageV2Extension?.message)    return _baseTextOf(message.viewOnceMessageV2Extension.message);
+  if (message.editedMessage?.message)                 return _baseTextOf(message.editedMessage.message);
+  if (message.protocolMessage?.editedMessage)         return _baseTextOf(message.protocolMessage.editedMessage);
+  if (message.documentWithCaptionMessage?.message)    return _baseTextOf(message.documentWithCaptionMessage.message);
   if (message.conversation) return message.conversation;
   if (message.extendedTextMessage?.text) return message.extendedTextMessage.text;
   // Reactions: an update to an existing message. Target msg-id is
