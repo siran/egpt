@@ -5162,10 +5162,10 @@ function App() {
                   const hh = String(d.getHours()).padStart(2, '0');
                   const mm = String(d.getMinutes()).padStart(2, '0');
                   const trim = (s, w) => (s.length <= w ? s : s.slice(0, w - 1) + '…');
-                  const snippet = (s, w) => {
-                    const oneLine = String(s ?? '').replace(/\s+/g, ' ').trim();
-                    return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
-                  };
+                  // Flatten newlines but don't truncate — operator
+                  // wants full message text "like a play". The
+                  // terminal soft-wraps long lines on its own.
+                  const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
                   // Display id swaps the leading kind dash for
                   // underscore — double-click selects the whole id
                   // in modern terminals ('wa_AC8AD42D' is one token,
@@ -5176,7 +5176,7 @@ function App() {
                   // saved file; trailing 📁 wraps the containing
                   // folder so the operator can jump to Explorer /
                   // Finder instead.
-                  const bodyText = snippet(row.body, 76);
+                  const bodyText = oneLine(row.body);
                   const bdDisp = row.mediaPath
                     ? clickablePath(bodyText, row.mediaPath)
                     : bodyText;
