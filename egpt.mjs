@@ -5071,11 +5071,21 @@ function App() {
                   };
                   const pad = (s, w) => (s.length >= w ? s : s + ' '.repeat(w - s.length));
                   const idDisp = (row.stableId || '').slice(0, 11);
-                  // Author fixed-width so names line up vertically;
-                  // chat stays variable since its content's a short
-                  // reminder, not a primary scan column.
-                  const auDisp = pad(trim(row.author || '?', 14), 14);
-                  const chDisp = trim(row.chatLabel || '?', 20);
+                  // row.repeat collapses chat / author when they match
+                  // the previous row in the same section. Both slots
+                  // stay fixed-width (chat 20, author 14) so body
+                  // alignment holds; their visible content blanks out
+                  // and the flanking separator (' - ' / ': ') becomes
+                  // plain whitespace when the slot is dimmed.
+                  const rep = row.repeat ?? 'none';
+                  const chDisp = rep !== 'none'
+                    ? ' '.repeat(20)
+                    : pad(trim(row.chatLabel || '?', 20), 20);
+                  const auDisp = rep === 'all'
+                    ? ' '.repeat(14)
+                    : pad(trim(row.author || '?', 14), 14);
+                  const chatSep   = rep === 'none' ? ' - ' : '   ';
+                  const authorSep = rep === 'all'  ? '  '  : ': ';
                   // Media body wraps in an OSC 8 hyperlink to the
                   // saved file; a trailing 📁 wraps the containing
                   // folder so the operator can jump to Explorer /
@@ -5090,9 +5100,9 @@ function App() {
                   return h(Text, { key: i },
                     '    ',
                     h(Text, { color: sectionColor(row.section) }, chDisp),
-                    h(Text, { color: T.recapHint }, ' - '),
+                    h(Text, { color: T.recapHint }, chatSep),
                     h(Text, { color: T.recapAuthor }, auDisp),
-                    h(Text, { color: T.recapHint }, ': '),
+                    h(Text, { color: T.recapHint }, authorSep),
                     h(Text, { color: T.recapBody }, bdDisp + folderDisp),
                     '  ',
                     h(Text, { color: T.recapId }, idDisp),
