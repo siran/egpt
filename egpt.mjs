@@ -3073,6 +3073,15 @@ function App() {
         setBusy,
         itemByShortId,
         scheduleReplyTargetSave: _scheduleReplyTargetSave,
+        // Direct sidecar write — used by /recap to register the WA
+        // reply-target of every shown row so '@wa-<id> body' resolves
+        // even for messages the operator hasn't directly rendered.
+        // Debounced disk save piggybacks on the existing scheduler.
+        registerReplyTarget: (stableId, rt) => {
+          if (!stableId || !rt) return;
+          persistedReplyTargets.current.set(stableId, rt);
+          _scheduleReplyTargetSave();
+        },
         runBrainTurn,
         findSessionJsonl,
         // Batch 11 additions

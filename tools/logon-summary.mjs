@@ -158,6 +158,14 @@ export function writeLastLogonNow() {
 // sources as the summary but lets the caller pick how many lines and
 // optionally how far back. Without `since`, walks every recent[]
 // entry and returns the most recent `max`.
+// Returns { text, entries } so the slash-command caller can register
+// each shown row's reply-target in the shell's persisted sidecar —
+// that makes '@wa-<id> body' resolvable for messages the operator
+// never directly interacted with (recent[] in wa-chats.json doesn't
+// pre-populate the sidecar; only items that landed in the App's
+// `items` array do). Without registration the displayed ids would
+// be cosmetic; with it, /recap becomes an actual jump-into-the-
+// conversation surface.
 export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, includeDms = false } = {}) {
   const chats = await _readChats();
   const recap = _collectRecent(chats, since, max, { includeDms });
@@ -167,9 +175,16 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, incl
     ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago — ${scope}:`
     : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} — ${scope}:`;
   const lines = [header];
-  for (const m of recap) lines.push('  ' + _formatRecapLine(m));
+  const entries = [];
+  for (const m of recap) {
+    lines.push('  ' + _formatRecapLine(m));
+    if (m.stableId && m.replyTarget) {
+      entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
+    }
+  }
   if (!includeDms) lines.push('  (DMs hidden — /recap --all to include them)');
-  return lines.join('\n');
+  lines.push('  reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough');
+  return { text: lines.join('\n'), entries };
 }
 
 // Collect recent[] entries across all observed chats into one
@@ -194,7 +209,29 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
       if (!r || typeof r.text !== 'string' || !r.text.trim()) continue;
       if (!r.ts) continue;
       if (since && r.ts < since) continue;
-      all.push({ ts: r.ts, author: r.author ?? '?', text: r.text, chatLabel: label });
+      // Build the WA reply-target from the persisted key. recent[]
+      // only carries the WA bridge today (TG doesn't write recent[]
+      // entries through this path), so the stable id is always
+      // wa-<full key.id> when key.id is present. Full id is stored;
+      // display truncates to 8 chars (prefix-match resolves either
+      // form at @-reply time).
+      let stableId = null, replyTarget = null;
+      if (r.key && typeof r.key.id === 'string' && r.key.id) {
+        stableId = `wa-${r.key.id}`;
+        replyTarget = {
+          kind: 'wa',
+          chatId: c.jid,
+          key: { id: r.key.id, fromMe: !!r.key.fromMe, remoteJid: c.jid },
+        };
+      }
+      all.push({
+        ts: r.ts,
+        author: r.author ?? '?',
+        text: r.text,
+        chatLabel: label,
+        stableId,
+        replyTarget,
+      });
     }
   }
   all.sort((a, b) => a.ts - b.ts);
@@ -210,10 +247,17 @@ function _formatRecapLine(m) {
   const d = new Date(m.ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
+  // 8-char id prefix (after wa-/tg-) — enough to disambiguate within a
+  // 30-row recap, and the shell's stable-id lookup prefix-matches
+  // against the sidecar so typing @wa-AC8AD42D body resolves to the
+  // full wa-<32-char> key. No trailing ellipsis: it'd suggest the
+  // operator has to type more chars, but the visible prefix is what's
+  // meant to be typed verbatim.
+  const id = m.stableId ? _pad(m.stableId.slice(0, 11), 11) : _pad('', 11);
   const author = _pad(_short(m.author, 16), 16);
   const chat = _pad(_short(m.chatLabel, 30), 30);
-  const body = _snippet(m.text, 80);
-  return `${hh}:${mm}  ${author}  ${chat}  ${body}`;
+  const body = _snippet(m.text, 72);
+  return `${hh}:${mm}  ${id}  ${author}  ${chat}  ${body}`;
 }
 
 // Truncate s to maxLen with a trailing ellipsis when clipped.

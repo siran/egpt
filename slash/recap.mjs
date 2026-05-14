@@ -38,7 +38,11 @@ export const meta = {
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
   //   sysOut(text)
-  const { sysOut } = ctx;
+  //   registerReplyTarget(stableId, rt)  — wires each shown row into
+  //     the shell's reply-target sidecar so '@wa-<id> body' resolves
+  //     even for messages the operator never directly interacted with
+  //     (recent[] in wa-chats.json doesn't auto-populate the sidecar).
+  const { sysOut, registerReplyTarget } = ctx;
 
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
@@ -51,6 +55,9 @@ export async function run({ arg, ctx }) {
     sysOut('(no recent activity to recap — bridges may not have synced yet)');
     return true;
   }
-  sysOut(out);
+  if (typeof registerReplyTarget === 'function') {
+    for (const e of out.entries) registerReplyTarget(e.stableId, e.replyTarget);
+  }
+  sysOut(out.text);
   return true;
 }
