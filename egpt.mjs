@@ -3767,12 +3767,28 @@ function App() {
       const mShortMatch = text.match(/^@m(\d+)\s+([\s\S]+)$/i);
       const mStableMatch = !mShortMatch && text.match(/^@((?:wa|tg|b|u|s|p)-[A-Za-z0-9-]+)\s+([\s\S]+)$/i);
       if (mShortMatch || mStableMatch) {
+        // What the operator typed is the sacred record — echo it
+        // BEFORE the lookup runs, so that even when the lookup fails
+        // (missing target, ambiguous prefix) the input still lands in
+        // the transcript verbatim. Errors surface as separate system
+        // lines AFTER. _localOnly because failed lookups must NOT
+        // mirror to bridges — we don't know where the reply was meant
+        // to go, and broadcasting "@u-uucdp3 …" to TG/WA as plain
+        // text would be confusing.
+        const _echoFailedReply = () => {
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(),
+            author: 'You', body: text, _localOnly: true,
+          }]);
+          if (!_suppressTranscriptRef.current) void append('You', text);
+        };
         let shortId, body, target, rt;
         if (mShortMatch) {
           shortId = `m${mShortMatch[1]}`;
           body = mShortMatch[2].trim();
           target = itemByShortId.current.get(shortId);
           if (!target) {
+            _echoFailedReply();
             sysOut(`!! ${shortId}: no message with that id in this session — try @<stable-id> for cross-session reference`);
             return;
           }
@@ -3798,12 +3814,14 @@ function App() {
                 rt = persistedReplyTargets.current.get(matches[0]);
                 shortId = matches[0];
               } else if (matches.length > 1) {
+                _echoFailedReply();
                 sysOut(`!! @${stableId}: ambiguous, matches ${matches.length} ids:\n  ${matches.slice(0, 5).join('\n  ')}${matches.length > 5 ? `\n  …` : ''}`);
                 return;
               }
             }
           }
           if (!rt) {
+            _echoFailedReply();
             sysOut(`!! @${stableId}: no message with that id (current session or persisted sidecar)`);
             return;
           }
@@ -3820,15 +3838,28 @@ function App() {
         const rtList = Array.isArray(rt) ? rt : (rt ? [rt] : []);
         const waTargets = rtList.filter(t => t?.kind === 'wa');
         const tgTargets = rtList.filter(t => t?.kind === 'tg');
+        // Collect the WA send-result keys so the echo can carry the
+        // resulting messages as _replyTarget — that makes the echo's
+        // stable id wa-<key.id> (instead of a random u-<rnd>) and
+        // future '@wa-<key> body' references can quote it.
+        const echoReplyTargets = [];
         if (waTargets.length) {
           const wa = waBridgeRef.current;
           for (const t of waTargets) {
             if (!wa?.replyTo) {
-              try { wa?.send?.(body, { chatId: t.chatId }); }
-              catch (e) { sysOut(`!! @${shortId} wa send failed: ${e.message}`); }
+              try {
+                const r = await wa?.send?.(body, { chatId: t.chatId });
+                if (r?.key) echoReplyTargets.push({
+                  kind: 'wa', chatId: t.chatId, key: r.key, raw: { conversation: body },
+                });
+              } catch (e) { sysOut(`!! @${shortId} wa send failed: ${e.message}`); }
             } else {
-              try { await wa.replyTo({ chatId: t.chatId, key: t.key, raw: t.raw, text: body }); }
-              catch (e) { sysOut(`!! @${shortId} wa reply failed: ${e.message}`); }
+              try {
+                const r = await wa.replyTo({ chatId: t.chatId, key: t.key, raw: t.raw, text: body });
+                if (r?.key) echoReplyTargets.push({
+                  kind: 'wa', chatId: t.chatId, key: r.key, raw: { conversation: body },
+                });
+              } catch (e) { sysOut(`!! @${shortId} wa reply failed: ${e.message}`); }
             }
           }
         }
@@ -3836,20 +3867,33 @@ function App() {
           const tg = bridgeRef.current;
           for (const t of tgTargets) {
             if (tg) {
-              try { tg.send(body, { chatId: t.chatId, replyTo: t.msgId }); }
-              catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
+              try {
+                const r = tg.send(body, { chatId: t.chatId, replyTo: t.msgId });
+                // TG bridge.send isn't awaitable in the same way; if a
+                // future change makes it return the message id we can
+                // collect it the same way as wa above.
+                void r;
+              } catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
             }
           }
         }
         if (waTargets.length || tgTargets.length) {
           // Echo + record locally so the transcript has the reply too.
+          // _replyTarget carries the result key(s) — one entry per
+          // successful WA send. Single → object, multiple → array;
+          // the @m<N>/@<stable> handler accepts both.
+          const rt = echoReplyTargets.length === 1
+            ? echoReplyTargets[0]
+            : (echoReplyTargets.length > 1 ? echoReplyTargets : undefined);
           setItems(p => [...p, {
             id: Date.now() + Math.random(), author: 'You',
             body: `↳ @${shortId}\n${body}`,
             _directWa: !!waTargets.length,
             _localOnly: !waTargets.length && !!tgTargets.length,
+            ...(rt ? { _replyTarget: rt } : {}),
           }]);
           void append('You', `↳ @${shortId}\n${body}`);
+          if (rt) _scheduleReplyTargetSave();
           return;
         }
         // No bridge origin (brain reply, peer message, local-typed

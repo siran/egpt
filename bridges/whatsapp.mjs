@@ -1569,18 +1569,23 @@ export async function startWhatsAppBridge({
     // wants a minimal message body inside `quoted`). Falls back to
     // `send` if either is missing.
     async replyTo({ chatId, key, raw, text }) {
-      if (!sock) return;
+      if (!sock) return null;
       const target = chatId ?? lastChat;
-      if (!target) return;
+      if (!target) return null;
+      // Return the baileys send-result so callers can capture the new
+      // message's key and attach it to the echo's _replyTarget — that
+      // way the operator's reply gets a stable id derived from the WA
+      // key (wa-<id>) instead of a random u-<rnd>, and subsequent
+      // '@wa-<id> …' references reach this message correctly.
       if (!key) {
         return _timeBound(sock.sendMessage(target, { text }), 'replyTo (fallback send)')
-          .then(r => rememberSent(r?.key?.id))
-          .catch(e => err(`replyTo (fallback send): ${e.message}`));
+          .then(r => { rememberSent(r?.key?.id); return r; })
+          .catch(e => { err(`replyTo (fallback send): ${e.message}`); return null; });
       }
       const quoted = { key, message: raw ?? { conversation: '' } };
       return _timeBound(sock.sendMessage(target, { text }, { quoted }), 'replyTo')
-        .then(r => rememberSent(r?.key?.id))
-        .catch(e => err(`replyTo: ${e.message}`));
+        .then(r => { rememberSent(r?.key?.id); return r; })
+        .catch(e => { err(`replyTo: ${e.message}`); return null; });
     },
     startStreamMessage(initialText, { chatId } = {}) {
       // Edit-based streaming, modeled on bridges/telegram.mjs:
