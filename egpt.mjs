@@ -5125,6 +5125,41 @@ function App() {
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
               h(Text, { color: T.meta }, '  ╌╌╌'))
+          : item._themed
+          ? h(Box, { flexDirection: 'column' },
+              // Generic list theming for commands that opt in via
+              // sysOut(body, { _themed: true }). A per-line classifier
+              // picks a theme color from a small palette; commands keep
+              // emitting plain strings without restructuring into typed
+              // rows the way /recap does. Patterns are conservative —
+              // when nothing matches, the line renders in listItem
+              // (default white) so opt-in is always a visual upgrade.
+              ...item.body.split('\n').map((line, i) => {
+                if (line === '') return h(Text, { key: i }, ' ');
+                if (/^!! /.test(line))
+                  return h(Text, { key: i, color: T.error, bold: true }, line);
+                if (/^[─━=]{3,}/.test(line) || /^\s*──\s+.+\s+──+\s*$/.test(line))
+                  return h(Text, { key: i, color: T.listSection, bold: true }, line);
+                if (/\(no\s.+\)$|\(none\)$/.test(line))
+                  return h(Text, { key: i, color: T.listMuted, italic: true }, line);
+                if (/^\s*\/[a-z]/.test(line) || /^use\s+@/.test(line))
+                  return h(Text, { key: i, color: T.listHint }, line);
+                // Lines containing the pin marker get a yellowBright
+                // tint on the whole row so pinned chats / items pop.
+                if (/📌/.test(line))
+                  return h(Text, { key: i, color: T.listAccent }, line);
+                // First non-blank line is usually a header ("chats
+                // (top 10…):" / "Saved rooms in <path>:"). Detect by
+                // trailing colon and no leading whitespace.
+                if (/^\S.*:$/.test(line))
+                  return h(Text, { key: i, color: T.listHeader, bold: true }, line);
+                // Indented sub-rows (>=6 spaces of leading whitespace,
+                // typical of previews or bios under a main row). Less
+                // emphasized than the main item color.
+                if (/^ {6,}\S/.test(line))
+                  return h(Text, { key: i, color: T.listSub }, line);
+                return h(Text, { key: i, color: T.listItem }, line);
+              }))
           : item._recap && Array.isArray(item._recapRows)
           ? h(Box, { flexDirection: 'column' },
               ...item._recapRows.map((row, i) => {

@@ -173,7 +173,10 @@ export async function run({ arg, ctx }) {
       }
       return header;
     });
-    sysOut(`chats (top ${chats.length}, baileys, most-active first):\n${blocks.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`);
+    sysOut(
+      `chats (top ${chats.length}, baileys, most-active first):\n${blocks.join('\n')}\n\nuse @wa<N> <message> to send to one of these.`,
+      { _themed: true },
+    );
   } catch (e) {
     sysOut(`!! /channels: ${e.message}`);
   } finally {

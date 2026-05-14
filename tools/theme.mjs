@@ -60,6 +60,21 @@ export const DEFAULTS = {
   recapEmojiGroup:    '👥',
   recapEmojiStatus:   '📡',
   recapEmojiDm:       '💬',
+
+  // Generic list-rendering palette. Used by commands that opt into
+  // _themed: true on sysOut — the renderer classifies each line by
+  // pattern (header, section, item, sub, hint, etc.) and colors it
+  // from these keys. Reusing the recap keys would be tempting but
+  // breaks the semantic split: /recap has its own typed-row pipeline,
+  // while /channels, /sessions, /rooms, etc. emit plain text and rely
+  // on the classifier.
+  listHeader:   'cyanBright',    // top header line ("chats (top 10…):")
+  listSection:  'magentaBright', // ── divider headings ──
+  listItem:     'white',         // primary list rows
+  listAccent:   'yellowBright',  // pin markers, default-op asterisks, highlights
+  listSub:      'cyan',          // sub-rows (preview/bio/detail under an item)
+  listMuted:    'gray',          // "(no rooms)" / "(none)" placeholders
+  listHint:     'blueBright',    // footer hints ("/room join <name> to enter…")
 };
 
 // Load a theme by name. Returns merged theme object (always complete).

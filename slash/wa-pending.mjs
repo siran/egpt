@@ -35,7 +35,7 @@ export async function run({ arg, ctx }) {
 
   if (!sub) {
     const held = wa.listHeld();
-    if (!held.length) { sysOut('(no held messages)'); return true; }
+    if (!held.length) { sysOut('(no held messages)', { _themed: true }); return true; }
     const ageLabel = (ts) => {
       const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
       if (s < 60)    return `${s}s ago`;
@@ -52,7 +52,8 @@ export async function run({ arg, ctx }) {
       `held ${held.length} pre-connect message(s):\n${lines.join('\n')}\n\n` +
       `/wa-pending dispatch <idx>   dispatch one through the brain pipeline\n` +
       `/wa-pending dispatch all     dispatch every held message\n` +
-      `/wa-pending clear            discard without dispatch`
+      `/wa-pending clear            discard without dispatch`,
+      { _themed: true },
     );
     return true;
   }

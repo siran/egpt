@@ -83,6 +83,6 @@ export async function run({ ctx }) {
     }
   }
   lines.push('─────────────────────────────────────────────────────');
-  sysOut(lines.join('\n'));
+  sysOut(lines.join('\n'), { _themed: true });
   return true;
 }

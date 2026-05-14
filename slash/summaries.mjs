@@ -22,7 +22,7 @@ export async function run({ ctx }) {
     await ensureSummariesDir();
     const files = (await readdir(SUMMARIES_DIR)).filter(f => f.endsWith('.md'));
     if (!files.length) {
-      sysOut(`(no summaries yet — try /save <name> or /summarize <name>)\n  dir: ${SUMMARIES_DIR}`);
+      sysOut(`(no summaries yet — try /save <name> or /summarize <name>)\n  dir: ${SUMMARIES_DIR}`, { _themed: true });
       return true;
     }
     const rows = await Promise.all(files.map(async (f) => {
@@ -34,11 +34,13 @@ export async function run({ ctx }) {
     rows.sort((a, b) => b.mtime - a.mtime);
     const fmtSize = (b) => b < 1024 ? `${b}B` : `${(b / 1024).toFixed(1)}K`;
     sysOut(
+      'saved summaries:\n' +
       rows.map(r =>
-        `${r.name.padEnd(20)} ${fmtSize(r.size).padEnd(7)} ` +
+        `  ${r.name.padEnd(20)} ${fmtSize(r.size).padEnd(7)} ` +
         `"${r.head}${r.head.length >= 80 ? '…' : ''}"`
       ).join('\n') +
-      `\n\ndir: ${SUMMARIES_DIR}`
+      `\n\ndir: ${SUMMARIES_DIR}`,
+      { _themed: true },
     );
   } catch (e) { sysOut(`!! ${e.message}`); }
   return true;

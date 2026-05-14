@@ -50,14 +50,14 @@ export async function run({ cmd, arg, ctx }) {
   if (cmd === '/pin' && args.length === 0) {
     const pins = waBridgeRef.current.listEgptPinned();
     if (!pins.length) {
-      sysOut('eGPT pins: (none)\nuse /pin @waN to pin a chat from the last /channels listing');
+      sysOut('eGPT pins: (none)\nuse /pin @waN to pin a chat from the last /channels listing', { _themed: true });
     } else {
       const lines = pins.map((p, i) => {
         const kind = p.isGroup ? '[group]' : '[1:1]';
         const ago = _ageLabel(p.egptPinned);
-        return `  ${i + 1}. ${kind.padEnd(7)} ${p.name || p.jid.split('@')[0]}  (pinned ${ago})`;
+        return `  📌 ${i + 1}. ${kind.padEnd(7)} ${p.name || p.jid.split('@')[0]}  (pinned ${ago})`;
       });
-      sysOut(`eGPT pins (${pins.length}):\n${lines.join('\n')}\n\n/unpin @waN to remove`);
+      sysOut(`eGPT pins (${pins.length}):\n${lines.join('\n')}\n\n/unpin @waN to remove`, { _themed: true });
     }
     return true;
   }
