@@ -388,8 +388,9 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
   });
   const trimmed = all.slice(0, max);
   // Display order: by section (per SECTION_ORDER), then by chatLabel
-  // ASC (stable per-chat block placement), then ts DESC inside each
-  // chat block (latest message at the top of its block).
+  // ASC (stable per-chat block placement), then ts ASC inside each
+  // chat block — reads like a play, oldest line first, latest at the
+  // bottom. (Trim sort above stays DESC to pick the latest `max`.)
   const sectionRank = (s) => {
     const i = SECTION_ORDER.indexOf(s);
     return i < 0 ? SECTION_ORDER.length : i;
@@ -399,7 +400,7 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
     if (ds !== 0) return ds;
     const dc = a.chatLabel.localeCompare(b.chatLabel);
     if (dc !== 0) return dc;
-    return b.ts - a.ts;
+    return a.ts - b.ts;
   });
   return trimmed;
 }
