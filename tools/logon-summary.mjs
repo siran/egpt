@@ -52,7 +52,11 @@ const DEFAULT_RECAP_LINES = 30;
 // blocks represent the "what arrived while you were away" window);
 // the recap rows do not, so the welcome-back is never empty when
 // activity exists.
-export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, includeDms = false } = {}) {
+export async function buildWelcomeBack({
+  maxRecapLines = DEFAULT_RECAP_LINES,
+  includeDms = false,
+  emojis = null,
+} = {}) {
   const since = _readLastLogonTs();
   const ago   = since ? _formatAgo(Date.now() - since) : null;
 
@@ -60,7 +64,7 @@ export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, in
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  const recap = await buildRecap({ max: maxRecapLines, includeDms });
+  const recap = await buildRecap({ max: maxRecapLines, includeDms, emojis });
 
   const filesByKind = files.reduce((acc, f) => {
     acc[f.kind] = (acc[f.kind] || 0) + 1;
@@ -82,13 +86,21 @@ export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, in
   const empty = !recap && files.length === 0 && !topReaction;
   if (empty) return null;
 
-  const lines = [];
-  lines.push(ago
+  const titleText = ago
     ? `welcome back — since ${ago}.`
-    : `welcome back — first logon since the engine started.`);
+    : `welcome back — first logon since the engine started.`;
+
+  // rows: structured for the Ink _recap renderer
+  // lines: flat for the log/transcript fallback
+  const rows = [{ type: 'title', text: titleText }];
+  const lines = [titleText];
 
   if (recap) {
+    rows.push({ type: 'blank' });
     lines.push('');
+    // Recap rows already include their own title + section headers +
+    // hint footer — splice them in as-is.
+    for (const row of recap.rows) rows.push(row);
     for (const l of recap.text.split('\n')) lines.push('  ' + l);
   }
 
@@ -96,7 +108,9 @@ export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, in
     const kindBits = Object.entries(filesByKind)
       .sort((a, b) => b[1] - a[1])
       .map(([k, n]) => `${n} ${k}${n === 1 ? '' : 's'}`);
-    lines.push(`  📎 ${files.length} file${files.length === 1 ? '' : 's'} saved (${kindBits.join(' · ')}) → ${_formatSize(filesTotalBytes)}`);
+    const t = `📎 ${files.length} file${files.length === 1 ? '' : 's'} saved (${kindBits.join(' · ')}) → ${_formatSize(filesTotalBytes)}`;
+    rows.push({ type: 'hint', text: t });
+    lines.push('  ' + t);
   }
 
   if (topReaction) {
@@ -111,14 +125,19 @@ export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, in
       ? chats.find(c => c.jid === topReaction.chatJid)
       : null;
     const where = inChat ? ` in ${_chatDisplayLabel(inChat)}` : '';
-    lines.push(`  💥 most-reacted: ${preview}${where}  [${emojiList}]`);
+    const t = `💥 most-reacted: ${preview}${where}  [${emojiList}]`;
+    rows.push({ type: 'hint', text: t });
+    lines.push('  ' + t);
   }
 
+  rows.push({ type: 'blank' });
+  rows.push({ type: 'hint', text: '/last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap' });
+  rows.push({ type: 'hint', text: '/wa-pending  ·  /tg-pending  for held messages awaiting review' });
   lines.push('');
   lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap');
   lines.push('  /wa-pending  ·  /tg-pending  for held messages awaiting review');
 
-  return { text: lines.join('\n'), entries: recap?.entries ?? [] };
+  return { text: lines.join('\n'), entries: recap?.entries ?? [], rows };
 }
 
 // Reset the counters that the summary just consumed so the next
@@ -162,35 +181,62 @@ export function writeLastLogonNow() {
 // `items` array do). Without registration the displayed ids would
 // be cosmetic; with it, /recap becomes an actual jump-into-the-
 // conversation surface.
-export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, includeDms = false } = {}) {
+export async function buildRecap({
+  max = DEFAULT_RECAP_LINES,
+  since = null,
+  includeDms = false,
+  emojis = null,
+} = {}) {
   const chats = await _readChats();
   const recap = _collectRecent(chats, since, max, { includeDms });
   if (!recap.length) return null;
+  const emo = { ...DEFAULT_EMOJI, ...(emojis || {}) };
   const scope = includeDms ? 'all chats' : 'groups + status (no DMs)';
-  const header = since
+  const titleText = since
     ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago — ${scope}:`
     : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} — ${scope}:`;
-  const lines = [header];
+
+  // Build two parallel outputs: the structured `rows` for the Ink
+  // renderer's _recap branch (per-segment colors per row) and the
+  // flat `text` for the transcript / log fallback. Both walk the
+  // same recap list in lockstep.
+  const rows = [{ type: 'title', text: titleText }];
+  const lines = [titleText];
   const entries = [];
-  // Insert a section header line when the section changes. recap is
-  // already sorted section → chat → ts so a single pass suffices.
   let currentSection = null;
   for (const m of recap) {
     if (m.section !== currentSection) {
       currentSection = m.section;
-      const label = SECTION_LABEL[m.section] ?? m.section;
+      const emoji = emo[m.section] ?? '';
+      const label = SECTION_LABEL_TEXT[m.section] ?? m.section;
+      rows.push({ type: 'blank' });
+      rows.push({ type: 'section', section: m.section, emoji, label });
       lines.push('');
-      lines.push(`  ${label}`);
+      lines.push(`  ${emoji} ${label}`);
     }
+    rows.push({
+      type: 'row',
+      section: m.section,
+      ts: m.ts,
+      stableId: m.stableId ?? '',
+      author: m.author ?? '?',
+      chatLabel: m.chatLabel,
+      body: m.text,
+    });
     lines.push('    ' + _formatRecapLine(m));
     if (m.stableId && m.replyTarget) {
       entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
     }
   }
+  rows.push({ type: 'blank' });
   lines.push('');
-  if (!includeDms) lines.push('  (DMs hidden — /recap --all to include them)');
+  if (!includeDms) {
+    rows.push({ type: 'hint', text: '(DMs hidden — /recap --all to include them)' });
+    lines.push('  (DMs hidden — /recap --all to include them)');
+  }
+  rows.push({ type: 'hint', text: 'reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough' });
   lines.push('  reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough');
-  return { text: lines.join('\n'), entries };
+  return { text: lines.join('\n'), entries, rows };
 }
 
 // Collect recent[] entries across all observed chats into one
@@ -206,11 +252,22 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, incl
 // (multi-speaker rooms), status feed (broadcast-style updates),
 // then DMs (1:1s, usually noisier and read elsewhere).
 const SECTION_ORDER = ['pinned', 'group', 'status', 'dm'];
-const SECTION_LABEL = {
-  pinned: '📌 Pinned',
+const SECTION_LABEL_TEXT = {
+  pinned: 'Pinned',
   group:  'Groups',
   status: 'Status feed',
   dm:     'DMs',
+};
+// Default emojis — overridable per-theme via the `emojis` param to
+// buildRecap / buildWelcomeBack. The slash command and App-mount
+// effect look them up from the active theme (T.recapEmoji*) and pass
+// them through; callers that don't care (tools, tests, direct CLI
+// dumps) get these defaults.
+const DEFAULT_EMOJI = {
+  pinned: '📌',
+  group:  '👥',
+  status: '📡',
+  dm:     '💬',
 };
 
 function _sectionForChat(c) {

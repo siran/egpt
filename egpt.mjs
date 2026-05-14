@@ -2792,7 +2792,16 @@ function App() {
       if (_welcomeBackRanRef.current) return;
       _welcomeBackRanRef.current = true;
       try {
-        const out = await buildWelcomeBack({ maxRecapLines: 30, includeDms: false });
+        const out = await buildWelcomeBack({
+          maxRecapLines: 30,
+          includeDms: false,
+          emojis: {
+            pinned: T.recapEmojiPinned,
+            group:  T.recapEmojiGroup,
+            status: T.recapEmojiStatus,
+            dm:     T.recapEmojiDm,
+          },
+        });
         if (out) {
           for (const e of out.entries) {
             if (e.stableId && e.replyTarget) {
@@ -2805,7 +2814,7 @@ function App() {
           // every shell start would bloat the room md with reprints
           // of the same recap. Operator can re-render via /recap.
           _suppressTranscriptRef.current = true;
-          try { sysOut(out.text); }
+          try { sysOut(out.text, { _recap: true, _recapRows: out.rows }); }
           finally { _suppressTranscriptRef.current = false; }
         }
       } catch (e) {
@@ -3097,6 +3106,12 @@ function App() {
         // _currentTheme reassignment, themeRev bump for re-render)
         // so file commands don't have to know about them.
         getTheme:           () => _currentTheme,
+        // Live theme palette — read-through to the module-level T
+        // (mutated in place by setTheme via Object.assign, so this
+        // reference stays valid across switches). Slash commands
+        // that want theme-aware output (/recap section emojis,
+        // future colored renderers) read keys off this.
+        theme:              T,
         setTheme:           (name) => {
           Object.assign(T, loadTheme(name));
           _currentTheme = name;
@@ -5019,6 +5034,57 @@ function App() {
           ? h(Box, { flexDirection: 'column' },
               h(Text, { italic: true }, item.body),
               h(Text, { color: T.meta }, '  ╌╌╌'))
+          : item._recap && Array.isArray(item._recapRows)
+          ? h(Box, { flexDirection: 'column' },
+              ...item._recapRows.map((row, i) => {
+                const sectionColor = (sec) => {
+                  if (sec === 'pinned') return T.recapColorPinned;
+                  if (sec === 'group')  return T.recapColorGroup;
+                  if (sec === 'status') return T.recapColorStatus;
+                  if (sec === 'dm')     return T.recapColorDm;
+                  return undefined;
+                };
+                if (row.type === 'blank') return h(Text, { key: i }, ' ');
+                if (row.type === 'title')
+                  return h(Text, { key: i, color: T.recapHeader, bold: true }, row.text);
+                if (row.type === 'section')
+                  return h(Text, { key: i, color: sectionColor(row.section), bold: true },
+                    `  ${row.emoji} ${row.label}`);
+                if (row.type === 'hint')
+                  return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
+                if (row.type === 'row') {
+                  // Column padding mirrors _formatRecapLine: id(11),
+                  // author(16), chat(30). Body is the trailing
+                  // remainder (snippeted to 72). Section color tints
+                  // the chat column so visually adjacent rows in the
+                  // same section share an accent.
+                  const d = new Date(row.ts);
+                  const hh = String(d.getHours()).padStart(2, '0');
+                  const mm = String(d.getMinutes()).padStart(2, '0');
+                  const pad = (s, w) => (s.length >= w ? s : s + ' '.repeat(w - s.length));
+                  const trim = (s, w) => (s.length <= w ? s : s.slice(0, w - 1) + '…');
+                  const snippet = (s, w) => {
+                    const oneLine = String(s ?? '').replace(/\s+/g, ' ').trim();
+                    return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
+                  };
+                  const idDisp = pad((row.stableId || '').slice(0, 11), 11);
+                  const auDisp = pad(trim(row.author || '?', 16), 16);
+                  const chDisp = pad(trim(row.chatLabel || '?', 30), 30);
+                  const bdDisp = snippet(row.body, 72);
+                  return h(Text, { key: i },
+                    '    ',
+                    h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`),
+                    '  ',
+                    h(Text, { color: T.recapId }, idDisp),
+                    '  ',
+                    h(Text, { color: T.recapAuthor }, auDisp),
+                    '  ',
+                    h(Text, { color: sectionColor(row.section) }, chDisp),
+                    '  ',
+                    h(Text, { color: T.recapBody }, bdDisp));
+                }
+                return h(Text, { key: i }, row.text ?? '');
+              }))
           : item._bright
           ? h(Box, { flexDirection: 'column' },
               ...item.body.split('\n').map((line, i) => {

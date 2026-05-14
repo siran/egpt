@@ -35,6 +35,31 @@ export const DEFAULTS = {
   spinnerElapsed:  'cyanBright',      // elapsed time next to spinner
   hint:            'blueBright',      // subtle hints (input bar, /continue)
   error:           'red',
+
+  // /recap + welcome-back palette. Per-section color is applied to
+  // both the section header (📌 Pinned, 👥 Groups…) and to that
+  // section's chat-label column in each row — visual continuity that
+  // makes "which conversation am I looking at" pre-attentive. The
+  // four column colors apply per row regardless of section, so the
+  // timestamp/id/author columns stay calm while the chat + body
+  // carry the section accent.
+  recapHeader:        'cyanBright',     // "welcome back —" + "recap — last N msgs…" titles
+  recapHint:          'blueBright',     // (DMs hidden) · reply with @<id> · 📎 files · 💥 reactions
+  recapTimestamp:     'gray',           // HH:MM column
+  recapId:            'blue',           // wa-XXXXXXXX column (subtle so the id doesn't shout)
+  recapAuthor:        'cyan',           // author column
+  recapBody:          'white',          // body column (the actual message text)
+  recapColorPinned:   'yellowBright',   // chat column + section header for Pinned section
+  recapColorGroup:    'greenBright',    // chat column + section header for Groups section
+  recapColorStatus:   'magentaBright',  // chat column + section header for Status feed section
+  recapColorDm:       'cyan',           // chat column + section header for DMs section
+  // Section emojis — tailored per theme so each palette has a small
+  // personality marker beyond the colors alone. 📌 stays for Pinned
+  // across themes (the affordance is semantic).
+  recapEmojiPinned:   '📌',
+  recapEmojiGroup:    '👥',
+  recapEmojiStatus:   '📡',
+  recapEmojiDm:       '💬',
 };
 
 // Load a theme by name. Returns merged theme object (always complete).
