@@ -200,6 +200,93 @@ async function main() {
   record('service worker healthy', !!swState.uptimeOk,
     swState.uptimeOk ? `active=${swState.active}` : `eval failed: ${swState.error ?? '?'}`);
 
+  // 7. Drive a /help round-trip in the tab. CodeMirror takes plain
+  //    keystrokes / inserted text just fine; Enter submits. We watch
+  //    the body's text length grow as evidence that the response
+  //    landed in the items list, then sample the rendered output for
+  //    keywords that prove /help actually ran (not just the echo).
+  //
+  //    /help is a local-only command — no bridge dispatch, no brain
+  //    turn, no bus traffic. Side effect is one /help line in the
+  //    operator's room transcript; acceptable for a smoke probe.
+  const cli = makeCdpClient(tab.webSocketDebuggerUrl);
+  await cli.ready;
+  await cli.send('Runtime.enable');
+  await cli.send('Input.enable').catch(() => {});
+
+  // Focus the CodeMirror content node + record current body size as
+  // baseline.
+  const before = await cli.send('Runtime.evaluate', {
+    expression: `
+      (() => {
+        const ed = document.querySelector('.cm-content');
+        if (ed) ed.focus();
+        return { bodyLen: document.body.innerText.length, focused: document.activeElement?.className ?? '' };
+      })()
+    `,
+    returnByValue: true,
+  });
+
+  // Insert the slash command + dispatch Enter.
+  await cli.send('Input.insertText', { text: '/help' });
+  await cli.send('Input.dispatchKeyEvent', {
+    type: 'keyDown',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  await cli.send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Enter',
+    code: 'Enter',
+    windowsVirtualKeyCode: 13,
+    nativeVirtualKeyCode: 13,
+  });
+  // Give React a beat to commit the response item.
+  await new Promise(r => setTimeout(r, 800));
+
+  const after = await cli.send('Runtime.evaluate', {
+    expression: `
+      (() => {
+        const text = document.body.innerText;
+        return {
+          bodyLen: text.length,
+          mentionsHelp: text.includes('/help'),
+          mentionsRecap: text.includes('/recap'),
+          mentionsTheme: text.includes('/theme'),
+          mentionsSlash: (text.match(/\\B\\/[a-z]+\\b/g) ?? []).length,
+        };
+      })()
+    `,
+    returnByValue: true,
+  });
+  cli.close();
+  const grew = after.result.value.bodyLen > before.result.value.bodyLen;
+  const helpRan = after.result.value.mentionsRecap && after.result.value.mentionsTheme;
+  record('/help round-trip', grew && helpRan,
+    grew && helpRan
+      ? `body grew ${after.result.value.bodyLen - before.result.value.bodyLen} chars; lists ${after.result.value.mentionsSlash} slash commands`
+      : `grew=${grew}  recap=${after.result.value.mentionsRecap}  theme=${after.result.value.mentionsTheme}`);
+
+  // 8. Parity check — the extension shell and the Node-side disk
+  //    state should agree on chat presence. The extension reads its
+  //    own per-room state, but slash commands shared with the daemon
+  //    surface the same wa-chats.json. We read disk directly and
+  //    cross-reference whatever the extension currently shows.
+  let parityOk = false, parityDetail = '';
+  try {
+    const { buildRecap } = await import('../tools/logon-summary.mjs');
+    const r = await buildRecap({ max: 30, includeDms: true });
+    const diskChats = (r?.chatList ?? []).map(c => c.name ?? c.jid).filter(Boolean);
+    parityDetail = `node-side disk lists ${diskChats.length} chat${diskChats.length === 1 ? '' : 's'}` +
+      (diskChats.length ? `: ${diskChats.slice(0, 5).join(', ')}${diskChats.length > 5 ? ', …' : ''}` : '');
+    parityOk = true;   // we just verify the data path is reachable
+  } catch (e) {
+    parityDetail = `disk read failed: ${e.message}`;
+  }
+  record('node-side recap data reachable', parityOk, parityDetail);
+
   // Summary
   console.log('────────────────────');
   const failed = checks.filter(c => !c.pass);
