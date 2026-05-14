@@ -6,17 +6,21 @@
 // Output shape (revised 2026-05-14):
 //   welcome back — since 8h ago.
 //
-//   inbox (6 msgs · 3 chats):
-//     07:27 Daniel    DM with Daniel              [voice note: 22s]
-//     07:33 Daniel    DM with Daniel              [voice note: 21s]
-//     03:48 Andrés    SPOILER ALERT… (group)      [sticker]
-//     ... up to ~30 one-liner rows
+//     recap — last 30 msgs — all chats:
+//       07:27  wa-AC8AD42D  Daniel        DM with Daniel              [voice note: 22s]
+//       07:33  wa-3EB1AB72  Daniel        DM with Daniel              [voice note: 21s]
+//       03:48  wa-AC2475B7  Andrés        SPOILER ALERT (group)       [sticker]
+//       ... up to ~30 one-liner rows, each with a reply-able stable id
+//     reply with @<id> <body> — ids prefix-match, visible 8 chars enough
 //
-//   📡 13 status posts: Joshua Dilawar 12 · Shopdeninasccs 1
 //   📎 13 files saved (12 videos · 1 image) → 16.6MB
 //   💥 most-reacted: "…" in <chat>  [3 👍, 1 ❤️]
 //
-//   /last 50  ·  /channels 20 5  ·  /recap N  for a fresh chronological recap
+//   /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap
+//
+// Rendered by the App-mount effect (not pre-mount) so each shown WA
+// row's reply-target gets registered in the persisted sidecar — the
+// operator can @wa-<id> straight from the welcome-back report.
 //
 // Sources:
 //   ~/.egpt/wa-chats.json           per-chat messageCount + broadcastsByAuthor + recent[]
@@ -39,7 +43,16 @@ const MEDIA_DIR        = join(HOME, 'media');
 
 const DEFAULT_RECAP_LINES = 30;
 
-export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } = {}) {
+// Returns { text, entries } so the App-mount effect can register each
+// shown WA row in the shell's persisted reply-target sidecar (so
+// '@wa-<id> body' jumps the operator into the conversation right
+// away). Internally delegates to buildRecap for the chronological
+// stream and stitches the welcome-back header + files + most-reacted
+// blocks around it. Files / reactions still filter by `since` (those
+// blocks represent the "what arrived while you were away" window);
+// the recap rows do not, so the welcome-back is never empty when
+// activity exists.
+export async function buildWelcomeBack({ maxRecapLines = DEFAULT_RECAP_LINES, includeDms = true } = {}) {
   const since = _readLastLogonTs();
   const ago   = since ? _formatAgo(Date.now() - since) : null;
 
@@ -47,19 +60,7 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  // Inbox count includes status@broadcast now — they're just another
-  // row in the stream. Previous split had its own '📡 status posts'
-  // aggregate which the operator found redundant once stream-mixing
-  // gave each post its own one-liner with author + chat tag.
-  const totalMessages = chats.reduce((sum, c) => sum + (c.messageCount || 0), 0);
-  const totalChatsActive = chats.filter(c => (c.messageCount || 0) > 0).length;
-
-  // The chronological one-liner stream — the operator's actual feed.
-  // Pulls from each chat's recent[] ring (capped at ~10 per chat) and
-  // merges into one sorted-by-ts list. Status posts ride along the
-  // same path as DMs / groups — the chat label "WA status feed"
-  // makes their origin clear without needing a separator.
-  const recap = _collectRecent(chats, since, maxRecapLines, { includeDms: true });
+  const recap = await buildRecap({ max: maxRecapLines, includeDms });
 
   const filesByKind = files.reduce((acc, f) => {
     acc[f.kind] = (acc[f.kind] || 0) + 1;
@@ -78,7 +79,7 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   const topReaction = reactionEntries[0]?.[1] ?? null;
 
   // Nothing to say?
-  const empty = totalMessages === 0 && files.length === 0 && !topReaction;
+  const empty = !recap && files.length === 0 && !topReaction;
   if (empty) return null;
 
   const lines = [];
@@ -86,14 +87,9 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
     ? `welcome back — since ${ago}.`
     : `welcome back — first logon since the engine started.`);
 
-  if (totalMessages > 0) {
+  if (recap) {
     lines.push('');
-    lines.push(`  inbox (${totalMessages} msg${totalMessages === 1 ? '' : 's'} · ${totalChatsActive} chat${totalChatsActive === 1 ? '' : 's'}):`);
-    for (const m of recap) lines.push('    ' + _formatRecapLine(m));
-    const shown = recap.length;
-    if (totalMessages > shown) {
-      lines.push(`    … +${totalMessages - shown} earlier (recent[] ring caps at ~10/chat — /channels for the full per-chat view)`);
-    }
+    for (const l of recap.text.split('\n')) lines.push('  ' + l);
   }
 
   if (files.length > 0) {
@@ -119,10 +115,10 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   }
 
   lines.push('');
-  lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap (groups+status; --all for DMs)');
+  lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap');
   lines.push('  /wa-pending  ·  /tg-pending  for held messages awaiting review');
 
-  return lines.join('\n');
+  return { text: lines.join('\n'), entries: recap?.entries ?? [] };
 }
 
 // Reset the counters that the summary just consumed so the next
@@ -200,7 +196,7 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
     // DM = not a group and not the status broadcast feed. Skipped by
     // default in /recap so the operator's group / channel activity
     // isn't drowned out by per-person 1:1s (which they typically read
-    // directly in WA anyway). buildLogonSummary keeps includeDms=true
+    // directly in WA anyway). buildWelcomeBack passes includeDms=true
     // because the "welcome back" report wants the full inbox picture.
     const isDm = !c.isGroup && c.jid !== 'status@broadcast';
     if (!includeDms && isDm) continue;

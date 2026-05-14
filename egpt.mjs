@@ -27,7 +27,7 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
-import { buildLogonSummary, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
+import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2698,6 +2698,7 @@ function App() {
   // a shell restart. Debounced save (1.5s) so frequent items churn
   // doesn't beat the disk; load runs once on mount per the effect
   // further down.
+  const _welcomeBackRanRef = useRef(false);
   useEffect(() => {
     // One-time load at mount + on room switch. Wraps in a try because
     // a missing sidecar is expected for fresh rooms.
@@ -2706,6 +2707,33 @@ function App() {
         const map = await _loadReplyTargets(transcriptFileForRoom(currentRoom));
         persistedReplyTargets.current = map;
       } catch {}
+      // Welcome-back runs after the sidecar load lands so registered
+      // entries merge into the live map instead of being clobbered.
+      // Gated by a ref so room switches don't re-print the report.
+      if (_welcomeBackRanRef.current) return;
+      _welcomeBackRanRef.current = true;
+      try {
+        const out = await buildWelcomeBack({ maxRecapLines: 30, includeDms: true });
+        if (out) {
+          for (const e of out.entries) {
+            if (e.stableId && e.replyTarget) {
+              persistedReplyTargets.current.set(e.stableId, e.replyTarget);
+            }
+          }
+          if (out.entries.length) _scheduleReplyTargetSave();
+          // Suppress transcript append — the welcome-back is a per-
+          // session UI affordance, not a chat message; logging it on
+          // every shell start would bloat the room md with reprints
+          // of the same recap. Operator can re-render via /recap.
+          _suppressTranscriptRef.current = true;
+          try { sysOut(out.text); }
+          finally { _suppressTranscriptRef.current = false; }
+        }
+      } catch (e) {
+        errOut(`welcome-back failed: ${e.message}`);
+      }
+      try { resetCountersOnDisk(); } catch {}
+      try { writeLastLogonNow(); } catch {}
     })();
   }, [currentRoom]);
   const _saveTimerRef = useRef(null);
@@ -5041,26 +5069,13 @@ process.on('SIGTERM', () => { _exitClean(0); });
 await takeoverIfRunning();
 writePidfile();
 
-// Phase 2 "while you were away" summary. Only renders for an
-// interactive shell — the headless engine is the accumulator. By the
-// time we get here the previous process's SIGTERM handler has flushed
-// wa-chats.json and reaction-counts.json synchronously (see
-// bridge.stop()), so disk is current. After printing, reset counters
-// so the next cycle starts at zero, then write last-logon = now.
-if (!HEADLESS) {
-  try {
-    const summary = await buildLogonSummary();
-    if (summary) {
-      console.log(summary);
-      console.log('');
-    }
-  } catch (e) {
-    // Don't let a malformed cache file block startup.
-    console.error(`egpt: logon summary failed: ${e.message}`);
-  }
-  resetCountersOnDisk();
-  writeLastLogonNow();
-}
+// "while you were away" summary moved into the App mount effect (see
+// _welcomeBackEffect below). The previous pre-mount console.log path
+// couldn't register reply-target ids in the sidecar (the sidecar
+// lives inside App state), so /recap-style reply-by-id only worked
+// after the operator ran /recap manually. By dispatching the welcome-
+// back from inside the App we get reply-able rows on the very first
+// frame, and Ink owns the screen end-to-end.
 
 if (HEADLESS) {
   // Ink wants tty-like stdin/stdout. Stub both so the render call
