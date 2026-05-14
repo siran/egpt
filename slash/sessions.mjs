@@ -93,6 +93,6 @@ export async function run({ arg, ctx }) {
     ? `\n\n── peers (zombie sessions) ───────────────────\n${peerLines.join('\n')}`
     : '';
 
-  sysOut((rows.join('\n') || '(none)') + footer + peerBlock);
+  sysOut((rows.join('\n') || '(none)') + footer + peerBlock, { _themed: true });
   return true;
 }

@@ -39,13 +39,14 @@ export async function run({ cmd, arg, ctx }) {
       let files = [];
       try { files = (await readdir(ROOMS_DIR)).filter(f => f.endsWith('.yaml')); } catch {}
       if (!files.length) {
-        sysOut(`(no saved rooms)\n  /save-room <name> to save current room`);
+        sysOut(`(no saved rooms)\n  /save-room <name> to save current room`, { _themed: true });
         return true;
       }
       sysOut(
         `Saved rooms in ${dp(ROOMS_DIR)}:\n` +
         `${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n` +
-        `/room join <name> to enter (and restore its sessions)`
+        `/room join <name> to enter (and restore its sessions)`,
+        { _themed: true },
       );
     } catch (e) { sysOut(`!! ${e.message}`); }
     return true;

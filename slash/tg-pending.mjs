@@ -36,7 +36,7 @@ export async function run({ arg, ctx }) {
 
   if (!sub) {
     const held = tg.listHeld();
-    if (!held.length) { sysOut('(no held messages)'); return true; }
+    if (!held.length) { sysOut('(no held messages)', { _themed: true }); return true; }
     const ageLabel = (ts) => {
       const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
       if (s < 60)    return `${s}s ago`;
@@ -53,7 +53,8 @@ export async function run({ arg, ctx }) {
       `held ${held.length} pre-connect Telegram message(s):\n${lines.join('\n')}\n\n` +
       `/tg-pending dispatch <idx>   dispatch one through the brain pipeline\n` +
       `/tg-pending dispatch all     dispatch every held message\n` +
-      `/tg-pending clear            discard without dispatch`
+      `/tg-pending clear            discard without dispatch`,
+      { _themed: true },
     );
     return true;
   }
