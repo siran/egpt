@@ -1472,13 +1472,38 @@ function parseMessages(text) {
   return out;
 }
 
+// Persistent input history — the up-arrow recall ring. State used to
+// live only in React (lost on /upgrade since that replaces the
+// process), so the operator's recently-typed prompts vanished every
+// time. JSON-cap at 500 entries; writes are ~tiny so we don't bother
+// with debouncing. Single-shell semantics: concurrent shells will
+// last-write-wins each other's submissions, acceptable for now.
+const HISTORY_PATH = join(EGPT_HOME, 'input-history.json');
+const HISTORY_CAP = 500;
+function _loadInputHistory() {
+  try {
+    if (!existsSync(HISTORY_PATH)) return [];
+    const raw = readFileSync(HISTORY_PATH, 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') : [];
+  } catch { return []; }
+}
+function _saveInputHistory(arr) {
+  try {
+    const trimmed = arr.length > HISTORY_CAP ? arr.slice(-HISTORY_CAP) : arr;
+    writeFileSync(HISTORY_PATH, JSON.stringify(trimmed), { mode: 0o600 });
+  } catch {}
+}
+
 // --- multi-line input ---
 function MultiLineInput({ onSubmit }) {
   const [lines, setLines] = useState(['']);
   const [r, setR] = useState(0);
   const [c, setC] = useState(0);
-  // input history: list of submitted entries; hIdx counts from 0=now, +N=N steps back
-  const [history, setHistory] = useState([]);
+  // input history: list of submitted entries; hIdx counts from 0=now, +N=N steps back.
+  // Lazy initializer reads the persisted file once on mount so up-arrow
+  // recall survives /upgrade and shell restarts.
+  const [history, setHistory] = useState(() => _loadInputHistory());
   const [hIdx, setHIdx] = useState(0);
 
   const loadEntry = (text) => {
@@ -1578,7 +1603,16 @@ function MultiLineInput({ onSubmit }) {
   useInput((input, key) => {
     if (key.ctrl && input === 'd') {
       const text = lines.join('\n');
-      if (text.trim()) setHistory(h => [...h, text]);
+      if (text.trim()) {
+        // Append + persist. closure-captured `history` is the current
+        // render's value; useInput re-binds each render so it's not
+        // stale at submit time. Cap inline so the in-memory state and
+        // the saved file stay in lockstep.
+        const next = [...history, text];
+        const capped = next.length > HISTORY_CAP ? next.slice(-HISTORY_CAP) : next;
+        setHistory(capped);
+        _saveInputHistory(capped);
+      }
       setHIdx(0); setLines(['']); setR(0); setC(0);
       onSubmit(text); return;
     }
