@@ -5227,7 +5227,7 @@ function App() {
                       '  ',
                       h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`));
                   }
-                  const auDisp = trim(row.author || '?', 14);
+                  const auDisp = trim(row.author || '?', 28);
                   return h(Text, { key: i },
                     '    ',
                     h(Text, { color: T.recapAuthor }, auDisp),
