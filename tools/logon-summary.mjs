@@ -59,7 +59,7 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   // merges into one sorted-by-ts list. Status posts ride along the
   // same path as DMs / groups — the chat label "WA status feed"
   // makes their origin clear without needing a separator.
-  const recap = _collectRecent(chats, since, maxRecapLines);
+  const recap = _collectRecent(chats, since, maxRecapLines, { includeDms: true });
 
   const filesByKind = files.reduce((acc, f) => {
     acc[f.kind] = (acc[f.kind] || 0) + 1;
@@ -119,7 +119,7 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   }
 
   lines.push('');
-  lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N]  for a chronological recap');
+  lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap (groups+status; --all for DMs)');
   lines.push('  /wa-pending  ·  /tg-pending  for held messages awaiting review');
 
   return lines.join('\n');
@@ -158,15 +158,17 @@ export function writeLastLogonNow() {
 // sources as the summary but lets the caller pick how many lines and
 // optionally how far back. Without `since`, walks every recent[]
 // entry and returns the most recent `max`.
-export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null } = {}) {
+export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null, includeDms = false } = {}) {
   const chats = await _readChats();
-  const recap = _collectRecent(chats, since, max);
+  const recap = _collectRecent(chats, since, max, { includeDms });
   if (!recap.length) return null;
+  const scope = includeDms ? 'all chats' : 'groups + status (no DMs)';
   const header = since
-    ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago:`
-    : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} across observed chats:`;
+    ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago — ${scope}:`
+    : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} — ${scope}:`;
   const lines = [header];
   for (const m of recap) lines.push('  ' + _formatRecapLine(m));
+  if (!includeDms) lines.push('  (DMs hidden — /recap --all to include them)');
   return lines.join('\n');
 }
 
@@ -176,10 +178,17 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null } = {
 // preference; the chat label "WA status feed" tags them clearly
 // without needing a separator section). Filters by `since` when set;
 // takes the most recent `max` entries.
-function _collectRecent(chats, since, max) {
+function _collectRecent(chats, since, max, { includeDms = true } = {}) {
   const all = [];
   for (const c of chats) {
     if (!Array.isArray(c.recent)) continue;
+    // DM = not a group and not the status broadcast feed. Skipped by
+    // default in /recap so the operator's group / channel activity
+    // isn't drowned out by per-person 1:1s (which they typically read
+    // directly in WA anyway). buildLogonSummary keeps includeDms=true
+    // because the "welcome back" report wants the full inbox picture.
+    const isDm = !c.isGroup && c.jid !== 'status@broadcast';
+    if (!includeDms && isDm) continue;
     const label = _chatDisplayLabel(c);
     for (const r of c.recent) {
       if (!r || typeof r.text !== 'string' || !r.text.trim()) continue;
