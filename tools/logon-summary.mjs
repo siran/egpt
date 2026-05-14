@@ -431,7 +431,11 @@ function _formatRecapLine(m, cont = false) {
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const id = _displayId(m.stableId).slice(0, 11);
-  const body = _snippet(m.text, 76);
+  // Body: flatten newlines so the row stays one logical line (id +
+  // time still need to land at the end), but no length truncation —
+  // operator wants the full message text "like a play". The terminal
+  // soft-wraps long bodies naturally.
+  const body = String(m.text ?? '').replace(/\s+/g, ' ').trim();
   if (cont) {
     return `  ${body}  ${id}  ${hh}:${mm}`;
   }
