@@ -205,10 +205,11 @@ export async function buildRecap({
   const lines = [titleText];
   const entries = [];
   let currentSection = null;
-  // Track the previous row's chat + author within each section so
-  // consecutive rows with the same speaker get their chat/author
-  // slots dimmed (visual de-noising — "no need to repeat You, You,
-  // You"). Reset both at every section boundary.
+  // Per-section state. Chat header gets emitted once per chat block;
+  // within a chat block, consecutive rows from the same author drop
+  // the author label and indent two more so the speaker's thread is
+  // a vertical run of bodies under a single name. Section / chat
+  // boundaries reset author tracking.
   let prevChat = null, prevAuthor = null;
   for (const m of recap) {
     if (m.section !== currentSection) {
@@ -221,9 +222,28 @@ export async function buildRecap({
       lines.push(`  ${emoji} ${label}`);
       prevChat = null; prevAuthor = null;
     }
-    const sameChat   = prevChat   !== null && m.chatLabel === prevChat;
-    const sameAuthor = prevAuthor !== null && m.author    === prevAuthor;
-    const repeat = (sameChat && sameAuthor) ? 'all' : (sameChat ? 'chat' : 'none');
+    if (m.chatLabel !== prevChat) {
+      // New chat block within this section. Strip the section-redundant
+      // suffix / prefix from the display title — section header above
+      // already says 'Groups' / 'DMs' / 'Status feed', so 'Auge family
+      // (group)' becomes 'Auge family' and 'DM with Daniel' becomes
+      // 'Daniel'. The internal chatLabel (used for grouping + repeat
+      // tracking) keeps the original form.
+      const displayChat = m.chatLabel
+        .replace(/\s+\(group\)$/, '')
+        .replace(/^DM with\s+/, '');
+      rows.push({ type: 'blank' });
+      rows.push({
+        type: 'chat',
+        section: m.section,
+        chatLabel: displayChat,
+      });
+      lines.push('');
+      lines.push(`    ${displayChat}`);
+      prevChat = m.chatLabel;
+      prevAuthor = null;
+    }
+    const cont = (m.author === prevAuthor);
     rows.push({
       type: 'row',
       section: m.section,
@@ -233,13 +253,12 @@ export async function buildRecap({
       chatLabel: m.chatLabel,
       body: m.text,
       mediaPath: m.mediaPath ?? null,
-      repeat,
+      cont,
     });
-    lines.push('    ' + _formatRecapLine(m, repeat));
+    lines.push('    ' + _formatRecapLine(m, cont));
     if (m.stableId && m.replyTarget) {
       entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
     }
-    prevChat = m.chatLabel;
     prevAuthor = m.author;
   }
   rows.push({ type: 'blank' });
@@ -388,28 +407,35 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
 // One-liner format: HH:MM  <author>  <chat>  <body…>
 // Columns padded for legibility on a typical terminal; the body
 // gets the rest of the line and is snippeted to ~80 chars.
-// `repeat` collapses chat / author when they match the previous row
-// in the same section:
-//   'none' — first row in a chat block, show both
-//   'chat' — same chat as prev, different author; dim chat, show author
-//   'all'  — same chat AND author; dim both (just body + id + time visible)
-// Separators (' - ' and ': ') swap to plain spaces when their flanking
-// slot is dimmed so the eye doesn't catch orphan punctuation.
-function _formatRecapLine(m, repeat = 'none') {
+// Swap the leading kind prefix's dash for an underscore so terminal
+// double-click selects the whole id ('wa_AC8AD42D' grabs as one
+// token, 'wa-AC8AD42D' splits at the hyphen). Internal hyphens
+// elsewhere in the id (e.g. tg-<chatId>-<msgId>) stay as hyphens —
+// only the leading kind separator changes. The @-reply handler
+// accepts either form (normalizes underscore → hyphen before sidecar
+// lookup), so the canonical hyphenated form stays in storage.
+function _displayId(stableId) {
+  if (!stableId) return '';
+  return stableId.replace(/^([a-z]+)-/, '$1_');
+}
+
+// `cont` collapses the author label when the speaker is unchanged
+// from the previous row in the same chat block; the row indents
+// further to signal continuation. The chat label itself moves into
+// its own header line (emitted once per chat block in buildRecap),
+// so individual row format is just `<author>: <body>  <id>  <time>`
+// for speaker rows and `  <body>  <id>  <time>` for continuations.
+function _formatRecapLine(m, cont = false) {
   const d = new Date(m.ts);
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
-  const id = m.stableId ? m.stableId.slice(0, 11) : '';
-  const chat = repeat !== 'none'
-    ? ' '.repeat(20)
-    : _pad(_short(m.chatLabel, 20), 20);
-  const author = repeat === 'all'
-    ? ' '.repeat(14)
-    : _pad(_short(m.author, 14), 14);
-  const chatSep   = repeat === 'none' ? ' - ' : '   ';
-  const authorSep = repeat === 'all'  ? '  '  : ': ';
-  const body = _snippet(m.text, 60);
-  return `${chat}${chatSep}${author}${authorSep}${body}  ${id}  ${hh}:${mm}`;
+  const id = _displayId(m.stableId).slice(0, 11);
+  const body = _snippet(m.text, 76);
+  if (cont) {
+    return `  ${body}  ${id}  ${hh}:${mm}`;
+  }
+  const author = _short(m.author, 14);
+  return `${author}: ${body}  ${id}  ${hh}:${mm}`;
 }
 
 // Truncate s to maxLen with a trailing ellipsis when clipped.

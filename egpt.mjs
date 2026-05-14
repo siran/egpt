@@ -3946,7 +3946,12 @@ function App() {
       //                        items). Survives restart because the
       //                        sidecar persists the target.
       const mShortMatch = text.match(/^@m(\d+)\s+([\s\S]+)$/i);
-      const mStableMatch = !mShortMatch && text.match(/^@((?:wa|tg|b|u|s|p)-[A-Za-z0-9-]+)\s+([\s\S]+)$/i);
+      // Accept either '@wa-XXX' or '@wa_XXX' as the leading separator.
+      // /recap displays ids with underscore so terminal double-click
+      // selects the whole token; the canonical sidecar form keeps
+      // the hyphen, so we normalize underscore → hyphen below before
+      // any lookup. Internal hyphens (tg-<chatId>-<msgId>) stay.
+      const mStableMatch = !mShortMatch && text.match(/^@((?:wa|tg|b|u|s|p)[-_][A-Za-z0-9-]+)\s+([\s\S]+)$/i);
       if (mShortMatch || mStableMatch) {
         // What the operator typed is the sacred record — echo it
         // BEFORE the lookup runs, so that even when the lookup fails
@@ -3975,7 +3980,10 @@ function App() {
           }
           rt = target._replyTarget;
         } else {
-          const stableId = mStableMatch[1];
+          // Normalize underscore form to the canonical hyphen form
+          // before any sidecar lookup. Operator can type either; the
+          // shell internally tracks 'wa-X' / 'tg-X' / etc.
+          const stableId = mStableMatch[1].replace(/^([a-z]+)_/, '$1-');
           body = mStableMatch[2].trim();
           shortId = stableId;        // for echo / log labels
           // Try in-memory first (faster + has all fields), fall back
@@ -5024,7 +5032,11 @@ function App() {
       // (WA stanza, TG chat+msg) can be long, and the operator only
       // needs enough to type unambiguously; '@<prefix>' resolves by
       // prefix match in the reply handler.
-      const stableDisp = stableId ? ` ${stableId.length > 14 ? stableId.slice(0, 13) + '…' : stableId}` : '';
+      // Display id swaps the leading kind dash for underscore so
+      // double-click selects the whole token. The @-handler accepts
+      // either form for input.
+      const stableDispRaw = stableId ? stableId.replace(/^([a-z]+)-/, '$1_') : '';
+      const stableDisp = stableDispRaw ? ` ${stableDispRaw.length > 14 ? stableDispRaw.slice(0, 13) + '…' : stableDispRaw}` : '';
       return h(Box, { key: item.id, flexDirection: 'column', marginBottom: 1 },
         h(Text, { color: color(item.author), bold: !item._thinking },
           `${emoji}${label} `,
@@ -5052,15 +5064,23 @@ function App() {
                 if (row.type === 'section')
                   return h(Text, { key: i, color: sectionColor(row.section), bold: true },
                     `  ${row.emoji} ${row.label}`);
+                if (row.type === 'chat')
+                  // Full chat name (no truncation) — operator now sees
+                  // the conversation title prominently once per block
+                  // instead of a squeezed 20-char reminder per row.
+                  // Bold + section accent ties the header back to its
+                  // section color.
+                  return h(Text, { key: i, color: sectionColor(row.section), bold: true },
+                    `    ${row.chatLabel}`);
                 if (row.type === 'hint')
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
                 if (row.type === 'row') {
-                  // Column order, left → right: chat - author: body
-                  // id  time. No fixed-width padding — each row uses
-                  // only the horizontal space its content needs. The
-                  // section header already labels the conversation
-                  // group, so the chat column is just a short
-                  // reminder (capped at 20 chars).
+                  // Chat header sits above on its own line; rows just
+                  // carry `<author>: <body>  <id>  <time>`. When the
+                  // speaker is the same as the previous row (`cont`),
+                  // we drop the author label entirely and indent two
+                  // more spaces — the speaker's thread reads as a
+                  // vertical run of bodies under a single name above.
                   const d = new Date(row.ts);
                   const hh = String(d.getHours()).padStart(2, '0');
                   const mm = String(d.getMinutes()).padStart(2, '0');
@@ -5069,40 +5089,37 @@ function App() {
                     const oneLine = String(s ?? '').replace(/\s+/g, ' ').trim();
                     return oneLine.length <= w ? oneLine : oneLine.slice(0, w - 1) + '…';
                   };
-                  const pad = (s, w) => (s.length >= w ? s : s + ' '.repeat(w - s.length));
-                  const idDisp = (row.stableId || '').slice(0, 11);
-                  // row.repeat collapses chat / author when they match
-                  // the previous row in the same section. Both slots
-                  // stay fixed-width (chat 20, author 14) so body
-                  // alignment holds; their visible content blanks out
-                  // and the flanking separator (' - ' / ': ') becomes
-                  // plain whitespace when the slot is dimmed.
-                  const rep = row.repeat ?? 'none';
-                  const chDisp = rep !== 'none'
-                    ? ' '.repeat(20)
-                    : pad(trim(row.chatLabel || '?', 20), 20);
-                  const auDisp = rep === 'all'
-                    ? ' '.repeat(14)
-                    : pad(trim(row.author || '?', 14), 14);
-                  const chatSep   = rep === 'none' ? ' - ' : '   ';
-                  const authorSep = rep === 'all'  ? '  '  : ': ';
+                  // Display id swaps the leading kind dash for
+                  // underscore — double-click selects the whole id
+                  // in modern terminals ('wa_AC8AD42D' is one token,
+                  // 'wa-AC8AD42D' splits at the hyphen). Internal
+                  // hyphens stay; the @-handler accepts either form.
+                  const idDisp = ((row.stableId || '').replace(/^([a-z]+)-/, '$1_')).slice(0, 11);
                   // Media body wraps in an OSC 8 hyperlink to the
-                  // saved file; a trailing 📁 wraps the containing
+                  // saved file; trailing 📁 wraps the containing
                   // folder so the operator can jump to Explorer /
                   // Finder instead.
-                  const bodyText = snippet(row.body, 60);
+                  const bodyText = snippet(row.body, 76);
                   const bdDisp = row.mediaPath
                     ? clickablePath(bodyText, row.mediaPath)
                     : bodyText;
                   const folderDisp = row.mediaPath
                     ? '  ' + clickablePath('📁', dirname(row.mediaPath))
                     : '';
+                  if (row.cont) {
+                    return h(Text, { key: i },
+                      '      ',
+                      h(Text, { color: T.recapBody }, bdDisp + folderDisp),
+                      '  ',
+                      h(Text, { color: T.recapId }, idDisp),
+                      '  ',
+                      h(Text, { color: T.recapTimestamp }, `${hh}:${mm}`));
+                  }
+                  const auDisp = trim(row.author || '?', 14);
                   return h(Text, { key: i },
                     '    ',
-                    h(Text, { color: sectionColor(row.section) }, chDisp),
-                    h(Text, { color: T.recapHint }, chatSep),
                     h(Text, { color: T.recapAuthor }, auDisp),
-                    h(Text, { color: T.recapHint }, authorSep),
+                    h(Text, { color: T.recapHint }, ': '),
                     h(Text, { color: T.recapBody }, bdDisp + folderDisp),
                     '  ',
                     h(Text, { color: T.recapId }, idDisp),
