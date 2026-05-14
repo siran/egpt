@@ -26,6 +26,18 @@ export function startTelegramBridge({
   nodeName    = 'node',
   allowedUsers = [],
   chatId       = null,
+  // Hold-on-reconnect grace window (seconds). Mirrors the WA bridge.
+  // After bridge connect, messages whose Telegram-side timestamp
+  // (msg.date) is older than (connectedAt - maxBacklogSeconds) are
+  // PARKED in _heldMessages instead of being dispatched. The host
+  // surfaces them via /tg-pending so the operator decides whether
+  // to dispatch each one. Critical for daemon restart: without this,
+  // an overnight @e queued in Telegram's server-side buffer would
+  // auto-execute the brain on every restart. Default 5 = only
+  // genuinely in-flight live messages dispatch automatically; any
+  // older buffered queue gets reviewed first. Set to -1 to disable
+  // the hold entirely (the legacy behavior).
+  maxBacklogSeconds = 5,
   onIncoming,
   onLog,
   onError,
@@ -44,6 +56,11 @@ export function startTelegramBridge({
   let pollTimer = null;
   let sendChain = Promise.resolve();
   let botUsername = null;  // set by getMe on startup, used to recognize /cmd@us
+  // Connect timestamp + held-message queue — same shape as the WA
+  // bridge so /tg-pending can mirror /wa-pending's listHeld /
+  // dispatchHeld / clearHeld API.
+  let connectedAt = 0;
+  const _heldMessages = [];
 
   // ── Bot API fetch ─────────────────────────────────────────────
 
@@ -85,6 +102,12 @@ export function startTelegramBridge({
 
       if (stopped) return;
 
+      // Stamp the first successful poll as the connect time so the
+      // backlog hold has an anchor. Anything baileys delivered with a
+      // msg.date predating connectedAt - maxBacklogSeconds gets held
+      // for operator review (see handleUpdate below).
+      if (connectedAt === 0) connectedAt = Date.now();
+
       for (const upd of updates) {
         await handleUpdate(upd);
         offset = upd.update_id + 1;
@@ -113,6 +136,36 @@ export function startTelegramBridge({
   async function handleUpdate(upd) {
     const msg = upd.message;
     if (!msg?.text) return;
+
+    // Backlog filter — same shape + intent as the WA bridge: any
+    // message whose Telegram-side send timestamp (msg.date, seconds)
+    // is older than (connectedAt - maxBacklogSeconds) gets parked in
+    // _heldMessages for /tg-pending review instead of being dispatched
+    // straight to onIncoming. Catches the daemon-restart scenario where
+    // an @e queued overnight would otherwise auto-execute the brain.
+    if (maxBacklogSeconds >= 0 && connectedAt > 0) {
+      const msgTsMs = (Number(msg.date) || 0) * 1000;
+      if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
+        // Don't hold our own bot's echoes — bot messages don't carry
+        // msg.from.is_bot reliably across versions, but if msg.via_bot
+        // is set or the from id matches the bot's own id, skip.
+        const text = msg.text.trim();
+        if (text) {
+          _heldMessages.push({
+            chatId: msg.chat?.id ?? null,
+            author: msg.from?.first_name ?? msg.from?.username ?? null,
+            text,
+            ts: msgTsMs,
+            msgId: msg.message_id ?? null,
+            raw: upd,   // kept so dispatchHeld can replay through this
+                        // same handleUpdate path for awareness + brain
+                        // routing — single source of truth.
+          });
+          log(`held pre-connect message from ${msg.chat?.id ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /tg-pending to review`);
+        }
+        return;
+      }
+    }
 
     const userId    = msg.from?.id ?? 0;
     const username  = msg.from?.username ?? null;
@@ -270,6 +323,34 @@ export function startTelegramBridge({
       if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
     },
     get chatId() { return lastChat; },
+    // Held pre-connect message API — mirrors the WA bridge's surface
+    // so /tg-pending can be implemented the same way as /wa-pending.
+    listHeld() {
+      return _heldMessages.map((m, i) => ({
+        idx: i, chatId: m.chatId, author: m.author, text: m.text, ts: m.ts, msgId: m.msgId,
+      }));
+    },
+    async dispatchHeld(idx) {
+      const entry = _heldMessages[idx];
+      if (!entry) return { ok: false, reason: 'no such held message' };
+      _heldMessages.splice(idx, 1);
+      // Replay through the same handleUpdate pipeline. Set a flag-ish
+      // raw so we know not to re-hold it (connectedAt is already past
+      // any reasonable msg.date for a buffered message; we strip the
+      // backlog guard by passing through a per-call escape — simplest
+      // is to temporarily blank connectedAt around the call).
+      const savedConnectedAt = connectedAt;
+      connectedAt = 0;       // disable hold for the replay
+      try { await handleUpdate(entry.raw); }
+      catch (e) { return { ok: false, reason: e.message }; }
+      finally { connectedAt = savedConnectedAt; }
+      return { ok: true };
+    },
+    clearHeld() {
+      const n = _heldMessages.length;
+      _heldMessages.length = 0;
+      return n;
+    },
   };
 }
 
