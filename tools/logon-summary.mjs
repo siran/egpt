@@ -439,7 +439,7 @@ function _formatRecapLine(m, cont = false) {
   if (cont) {
     return `  ${body}  ${id}  ${hh}:${mm}`;
   }
-  const author = _short(m.author, 14);
+  const author = _short(m.author, 28);
   return `${author}: ${body}  ${id}  ${hh}:${mm}`;
 }
 
