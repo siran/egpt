@@ -304,10 +304,21 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
       let stableId = null, replyTarget = null;
       if (r.key && typeof r.key.id === 'string' && r.key.id) {
         stableId = `wa-${r.key.id}`;
+        // Synthesize `raw` from the persisted recent[] body so when
+        // the operator @-replies to this row, wa.replyTo can feed
+        // baileys a quoted-message with actual content. Without raw,
+        // bridges/whatsapp.mjs falls back to { conversation: '' },
+        // WA propagates the empty quote, and when the echo bounces
+        // back through textOf it renders as '(unsupported message)'.
+        // For media-typed rows the body is a bracketed placeholder
+        // ('[image] caption') — not pristine, but still readable as
+        // a text-quote and far better than the confusing fallback.
+        const quotedBody = (typeof r.text === 'string' && r.text.trim()) ? r.text : '';
         replyTarget = {
           kind: 'wa',
           chatId: c.jid,
           key: { id: r.key.id, fromMe: !!r.key.fromMe, remoteJid: c.jid },
+          raw: { conversation: quotedBody },
         };
       }
       // Media path lookup — when this message had an image/video/

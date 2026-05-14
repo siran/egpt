@@ -1881,9 +1881,14 @@ function _quotedPreview(ctx) {
   // Recurse into textOf so a reply to an image renders '[image]
   // <caption>', a reply to a voice note renders '[voice note: 8s]',
   // etc. — preview text picks up the same placeholder vocabulary as
-  // a fresh inbound.
-  const inner = textOf(ctx.quotedMessage) ?? '(unsupported message)';
+  // a fresh inbound. When textOf returns null (empty stub quote
+  // from our own outbound when no raw was attached, or a truly
+  // unknown envelope), skip the ↳ entirely — a labelled
+  // '(unsupported message)' was more confusing than informative.
+  const inner = textOf(ctx.quotedMessage);
+  if (!inner) return null;
   const oneLine = inner.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return null;
   const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
   // participant is the JID of the original sender. We don't have a
   // contact-name resolver here so we surface the bare number suffix
