@@ -47,29 +47,19 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  // Inbox is everything that's not status@broadcast.
-  const totalMessages = chats
-    .filter(c => c.jid !== 'status@broadcast')
-    .reduce((sum, c) => sum + (c.messageCount || 0), 0);
-  const totalChatsActive = chats.filter(c =>
-    (c.messageCount || 0) > 0 && c.jid !== 'status@broadcast'
-  ).length;
+  // Inbox count includes status@broadcast now — they're just another
+  // row in the stream. Previous split had its own '📡 status posts'
+  // aggregate which the operator found redundant once stream-mixing
+  // gave each post its own one-liner with author + chat tag.
+  const totalMessages = chats.reduce((sum, c) => sum + (c.messageCount || 0), 0);
+  const totalChatsActive = chats.filter(c => (c.messageCount || 0) > 0).length;
 
   // The chronological one-liner stream — the operator's actual feed.
   // Pulls from each chat's recent[] ring (capped at ~10 per chat) and
-  // merges into one sorted-by-ts list. Pre-fix this section was a
-  // per-chat aggregate; revised to give the operator the rhythm of
-  // recent activity rather than a tally.
+  // merges into one sorted-by-ts list. Status posts ride along the
+  // same path as DMs / groups — the chat label "WA status feed"
+  // makes their origin clear without needing a separator.
   const recap = _collectRecent(chats, since, maxRecapLines);
-
-  // status@broadcast lives in its own chat entry; pull out its
-  // broadcastsByAuthor for the "who posted stories" breakdown.
-  const status = chats.find(c => c.jid === 'status@broadcast');
-  const statusTotal = status?.messageCount || 0;
-  const statusByAuthor = status?.broadcastsByAuthor ?? {};
-  const topStatusAuthors = Object.entries(statusByAuthor)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
 
   const filesByKind = files.reduce((acc, f) => {
     acc[f.kind] = (acc[f.kind] || 0) + 1;
@@ -88,8 +78,7 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
   const topReaction = reactionEntries[0]?.[1] ?? null;
 
   // Nothing to say?
-  const empty = totalMessages === 0 && statusTotal === 0
-    && files.length === 0 && !topReaction;
+  const empty = totalMessages === 0 && files.length === 0 && !topReaction;
   if (empty) return null;
 
   const lines = [];
@@ -105,14 +94,6 @@ export async function buildLogonSummary({ maxRecapLines = DEFAULT_RECAP_LINES } 
     if (totalMessages > shown) {
       lines.push(`    … +${totalMessages - shown} earlier (recent[] ring caps at ~10/chat — /channels for the full per-chat view)`);
     }
-  }
-
-  if (statusTotal > 0) {
-    const bits = topStatusAuthors.map(([name, n]) => `${name} ${n}`);
-    const rest = Object.keys(statusByAuthor).length - topStatusAuthors.length;
-    const tail = rest > 0 ? ` · ${rest} more` : '';
-    lines.push('');
-    lines.push(`  📡 ${statusTotal} status post${statusTotal === 1 ? '' : 's'}: ${bits.join(' · ')}${tail}`);
   }
 
   if (files.length > 0) {
@@ -189,13 +170,15 @@ export async function buildRecap({ max = DEFAULT_RECAP_LINES, since = null } = {
   return lines.join('\n');
 }
 
-// Collect recent[] entries across all chats (skipping status@broadcast)
-// into one chronological list. Filters by `since` when set; takes the
-// most recent `max` entries.
+// Collect recent[] entries across all observed chats into one
+// chronological list — status@broadcast included (status posts ride
+// the same recap path as DMs / groups since 2026-05-14 per operator
+// preference; the chat label "WA status feed" tags them clearly
+// without needing a separator section). Filters by `since` when set;
+// takes the most recent `max` entries.
 function _collectRecent(chats, since, max) {
   const all = [];
   for (const c of chats) {
-    if (c.jid === 'status@broadcast') continue;
     if (!Array.isArray(c.recent)) continue;
     const label = _chatDisplayLabel(c);
     for (const r of c.recent) {
