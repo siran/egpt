@@ -8,8 +8,14 @@
 // time-rhythm of what's been going on without scrolling through
 // per-chat lists.
 //
-// /recap            last 30 messages (default)
-// /recap N          last N messages
+// /recap            last 30 messages, groups + status only (no DMs)
+// /recap N          last N messages, same scope
+// /recap --all      include 1:1 DMs in the stream
+// /recap N --all    both
+//
+// DMs are hidden by default because the operator typically reads them
+// directly in WA / TG and doesn't need them re-surfaced at logon
+// alongside groups and status. --all opts in to the full picture.
 //
 // Pre-restart messages held by /wa-pending / /tg-pending also appear
 // here (their bodies are in the chat's recent[] ring regardless of
@@ -21,11 +27,12 @@ export const meta = {
   cmd: '/recap',
   section: 'ROOM',
   surface: 'shell',
-  usage: '/recap [N]',
+  usage: '/recap [N] [--all]',
   desc:
-    'chronological one-liner recap of recent activity across all observed ' +
-    'chats (default last 30). Unlike /last (room transcript only) or ' +
-    '/channels (per-chat), /recap merges everything by timestamp.',
+    'chronological one-liner recap of recent activity (default last 30, ' +
+    'groups + status only). --all includes 1:1 DMs. Unlike /last (room ' +
+    'transcript only) or /channels (per-chat), /recap merges everything ' +
+    'by timestamp.',
 };
 
 export async function run({ arg, ctx }) {
@@ -33,10 +40,13 @@ export async function run({ arg, ctx }) {
   //   sysOut(text)
   const { sysOut } = ctx;
 
-  const n = parseInt(arg.trim(), 10);
+  const tokens = arg.trim().split(/\s+/).filter(Boolean);
+  const includeDms = tokens.some(t => t === '--all' || t === '-a');
+  const numTok = tokens.find(t => /^\d+$/.test(t));
+  const n = numTok ? parseInt(numTok, 10) : NaN;
   const max = Number.isFinite(n) && n > 0 ? Math.min(n, 500) : 30;
 
-  const out = await buildRecap({ max });
+  const out = await buildRecap({ max, includeDms });
   if (!out) {
     sysOut('(no recent activity to recap — bridges may not have synced yet)');
     return true;
