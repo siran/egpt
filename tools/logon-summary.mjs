@@ -137,7 +137,7 @@ export async function buildWelcomeBack({
   lines.push('  /last 50  ·  /channels 20 5  ·  /recap [N] [--all]  chronological recap');
   lines.push('  /wa-pending  ·  /tg-pending  for held messages awaiting review');
 
-  return { text: lines.join('\n'), entries: recap?.entries ?? [], rows };
+  return { text: lines.join('\n'), entries: recap?.entries ?? [], rows, chatList: recap?.chatList ?? [] };
 }
 
 // Reset the counters that the summary just consumed so the next
@@ -204,12 +204,15 @@ export async function buildRecap({
   const rows = [{ type: 'title', text: titleText }];
   const lines = [titleText];
   const entries = [];
+  // chatList collects the chats in display order so the caller can
+  // overwrite waChannelsCacheRef.current — that way the operator can
+  // type '@wa3 hello' (or /join @wa3, /pin @wa3 …) right off the
+  // recap output without bouncing through /channels first. The waIdx
+  // shown on each chat header is 1-based and increments in the same
+  // order chats appear here.
+  const chatList = [];
+  const chatIdxByJid = new Map();
   let currentSection = null;
-  // Per-section state. Chat header gets emitted once per chat block;
-  // within a chat block, consecutive rows from the same author drop
-  // the author label and indent two more so the speaker's thread is
-  // a vertical run of bodies under a single name. Section / chat
-  // boundaries reset author tracking.
   let prevChat = null, prevAuthor = null;
   for (const m of recap) {
     if (m.section !== currentSection) {
@@ -232,14 +235,23 @@ export async function buildRecap({
       const displayChat = m.chatLabel
         .replace(/\s+\(group\)$/, '')
         .replace(/^DM with\s+/, '');
+      // Assign @waN by display order; dedupe on jid in case a chat
+      // appears in multiple sections (shouldn't, but safe).
+      let waIdx = chatIdxByJid.get(m.chat?.jid);
+      if (waIdx == null && m.chat) {
+        chatList.push(m.chat);
+        waIdx = chatList.length;
+        chatIdxByJid.set(m.chat.jid, waIdx);
+      }
       rows.push({ type: 'blank' });
       rows.push({
         type: 'chat',
         section: m.section,
         chatLabel: displayChat,
+        waIdx,
       });
       lines.push('');
-      lines.push(`    ${displayChat}`);
+      lines.push(`    @wa${waIdx}  ${displayChat}`);
       prevChat = m.chatLabel;
       prevAuthor = null;
     }
@@ -267,9 +279,9 @@ export async function buildRecap({
     rows.push({ type: 'hint', text: '(DMs hidden — /recap --all to include them)' });
     lines.push('  (DMs hidden — /recap --all to include them)');
   }
-  rows.push({ type: 'hint', text: 'reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough' });
-  lines.push('  reply with @<id> <body> — ids prefix-match, so the visible 8 chars are enough');
-  return { text: lines.join('\n'), entries, rows };
+  rows.push({ type: 'hint', text: 'reply with @<id> <body>, or address a chat with @waN — ids prefix-match' });
+  lines.push('  reply with @<id> <body>, or address a chat with @waN — ids prefix-match');
+  return { text: lines.join('\n'), entries, rows, chatList };
 }
 
 // Collect recent[] entries across all observed chats into one
@@ -372,6 +384,7 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
         stableId,
         replyTarget,
         mediaPath,
+        chat: c,
       });
     }
   }

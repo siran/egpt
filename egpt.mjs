@@ -2864,6 +2864,12 @@ function App() {
             }
           }
           if (out.entries.length) _scheduleReplyTargetSave();
+          // Seed the @waN cache from the welcome-back's chat order so
+          // the operator can /join @wa3 or /pin @wa3 right off the
+          // first frame — no need to bounce through /channels.
+          if (Array.isArray(out.chatList) && out.chatList.length) {
+            _waChannelsCacheRef.current = out.chatList;
+          }
           // Suppress transcript append — the welcome-back is a per-
           // session UI affordance, not a chat message; logging it on
           // every shell start would bloat the room md with reprints
@@ -5155,13 +5161,16 @@ function App() {
                   return h(Text, { key: i, color: sectionColor(row.section), bold: true },
                     `  ${row.emoji} ${row.label}`);
                 if (row.type === 'chat')
-                  // Full chat name (no truncation) — operator now sees
-                  // the conversation title prominently once per block
-                  // instead of a squeezed 20-char reminder per row.
-                  // Bold + section accent ties the header back to its
-                  // section color.
+                  // Full chat name (no truncation) + @waN handle so the
+                  // operator can address the chat (e.g. /join @wa3,
+                  // /pin @wa3, @wa3 hello) without bouncing through
+                  // /channels first. The waChannelsCacheRef is
+                  // refreshed alongside the recap so @waN tokens
+                  // resolve to the same chat the operator just read.
                   return h(Text, { key: i, color: sectionColor(row.section), bold: true },
-                    `    ${row.chatLabel}`);
+                    `    `,
+                    h(Text, { color: T.recapId }, row.waIdx ? `@wa${row.waIdx}  ` : ''),
+                    row.chatLabel);
                 if (row.type === 'hint')
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
                 if (row.type === 'row') {

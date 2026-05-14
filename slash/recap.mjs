@@ -46,7 +46,11 @@ export async function run({ arg, ctx }) {
   //     so each theme can carry its own personality (🐈 for catppuccin,
   //     🦇 for dracula, 🌊 for ocean…). Renderer reads recap*Color
   //     keys directly from the same palette.
-  const { sysOut, registerReplyTarget, theme } = ctx;
+  //   waChannelsCacheRef — React ref; refreshed in display order so
+  //     '@waN <body>' / '/join @waN' / '/pin @waN' etc. resolve to the
+  //     same chat the operator just read in the recap output. Same
+  //     contract /channels uses.
+  const { sysOut, registerReplyTarget, theme, waChannelsCacheRef } = ctx;
 
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
@@ -68,6 +72,9 @@ export async function run({ arg, ctx }) {
   }
   if (typeof registerReplyTarget === 'function') {
     for (const e of out.entries) registerReplyTarget(e.stableId, e.replyTarget);
+  }
+  if (waChannelsCacheRef && Array.isArray(out.chatList)) {
+    waChannelsCacheRef.current = out.chatList;
   }
   // _recap + _recapRows: the renderer's _recap branch uses _recapRows
   // for per-column colored rendering; body stays as the flat text so
