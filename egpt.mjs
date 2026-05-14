@@ -2095,12 +2095,21 @@ function App() {
         // explicitly opts in. notify: 'on' (default — chats only),
         // 'all' (include status), 'off' (silent — files still save,
         // shell just doesn't say so).
-        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes, deleted, msgKey, msgRaw }) => {
+        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes, deleted, msgKey, msgRaw, preConnect }) => {
           const notify = cfg.media?.notify ?? 'on';
           if (notify === 'off' && !_stormRef.current) return;
           // Normal mode silences status@broadcast (the high-volume
           // 24h-stories feed); storm and 'all' surface it too.
           if (notify === 'on' && !_stormRef.current && chatJid === 'status@broadcast') return;
+          // Pre-connect (backlog) files: save to disk (already done by
+          // the bridge), record to .media-index.json (already done),
+          // but skip the visible 📎 sysOut. Files still surface in
+          // the next logon summary's '📎 N files saved' tally; the
+          // related WA message lives in /wa-pending and the operator
+          // will see the 📎 line at dispatch time. Matches the
+          // operator-trust principle: nothing pre-connect is
+          // mirrored to shell / bridges / room md until reviewed.
+          if (preConnect && !_stormRef.current) return;
           const sizeKB = (sizeBytes / 1024).toFixed(1);
           let chatLabel = chatJid.split('@')[0] ?? chatJid;
           try {

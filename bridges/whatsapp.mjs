@@ -1006,15 +1006,22 @@ export async function startWhatsAppBridge({
       // 'voice_note' for PTT, so this only affects what onMediaSaved sees.
       const notifyKind = (hit.kind === 'audio' && node.ptt) ? 'voice note' : hit.kind;
       log(`media saved: ${notifyKind} ${sizeKB}KB → ${path}`);
-      // Thread the original WA message's key + body so the host can
-      // attach a _replyTarget to the 'media saved' system line. With
-      // that, the stable-id logic auto-renders the system message as
-      // wa-<msgId> and '@wa-<msgId> body' replies (or any prefix) hit
-      // the actual WA message that brought the file — operator can
-      // reply to the photo from shell.
+      // preConnect flag: messages whose timestamp is older than the
+      // bridge's hold window. Same gate as handleMessage's _heldMessages
+      // check. The host uses this to suppress the visible 📎 sysOut for
+      // backlog files — the file IS saved to disk (always; that's
+      // independently useful) and the .media-index.json records it,
+      // but we don't render a shell line or append to room md until
+      // the operator explicitly dispatches the corresponding held
+      // message via /wa-pending. Matches the operator-trust principle:
+      // nothing about a pre-connect message is mirrored anywhere.
+      const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
+      const preConnect = maxBacklogSeconds >= 0 && connectedAt > 0
+        && msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000;
       try { onMediaSaved?.({
         kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length,
         msgKey: msg.key, msgRaw: msg.message,
+        preConnect,
       }); } catch (_) {}
       return path;
     } catch (e) {
