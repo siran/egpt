@@ -2080,7 +2080,7 @@ function App() {
         // explicitly opts in. notify: 'on' (default — chats only),
         // 'all' (include status), 'off' (silent — files still save,
         // shell just doesn't say so).
-        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes, deleted }) => {
+        onMediaSaved: ({ kind, chatJid, msgId, path, sizeBytes, deleted, msgKey, msgRaw }) => {
           const notify = cfg.media?.notify ?? 'on';
           if (notify === 'off' && !_stormRef.current) return;
           // Normal mode silences status@broadcast (the high-volume
@@ -2097,10 +2097,22 @@ function App() {
           // Terminal, etc.) let the operator Ctrl/Cmd-click to open
           // the file in the OS default viewer. Others see plain text.
           const pathDisplay = clickablePath(dp(path), path);
+          // Attach a WA _replyTarget so '@wa-<msgId> body' (or any
+          // unique prefix) replies to the original message that carried
+          // the media. _stableIdForItem reads this and renders the
+          // system line's stable id as wa-<msgId> instead of a random
+          // s-<rnd>, making the reference both meaningful and
+          // restart-stable. msgRaw enables proper WA-native quote
+          // context; null is acceptable (replyTo falls back to an
+          // empty quoted body).
+          const replyTarget = msgKey && chatJid
+            ? { kind: 'wa', chatId: chatJid, key: msgKey, raw: msgRaw ?? null }
+            : null;
+          const extras = replyTarget ? { _replyTarget: replyTarget } : {};
           if (deleted) {
-            sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${pathDisplay}`);
+            sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${pathDisplay}`, extras);
           } else {
-            sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${pathDisplay}`);
+            sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${pathDisplay}`, extras);
           }
         },
         onIncoming: async (text, from) => {
@@ -2697,7 +2709,7 @@ function App() {
   // items.length, so those paths call _scheduleReplyTargetSave()
   // directly. The effect handles the common 'item added' path.
   useEffect(() => { _scheduleReplyTargetSave(); }, [items.length]);
-  const sysOut = body => {
+  const sysOut = (body, extras = {}) => {
     const sink = outputSinkRef.current;
     const meta = sink === 'local'
       ? { _localOnly: true }
@@ -2705,6 +2717,13 @@ function App() {
     setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', body,
       ...meta,
+      // extras lets callers attach _replyTarget (or other item flags)
+      // to a system line. Used by the WA media-saved handler so the
+      // 'image saved' notice carries the WA reply-target of the
+      // originating message — '@wa-<msgId> body' then replies to the
+      // photo. Without this, _stableIdForItem falls back to 's-<rnd>'
+      // and the system line is unaddressable.
+      ...extras,
     }]);
     // Full-clarity logging: every system output (slash command
     // responses, status notes, errors) goes into the room transcript
