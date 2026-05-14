@@ -230,10 +230,20 @@ function _collectRecent(chats, since, max, { includeDms = true } = {}) {
       });
     }
   }
+  // Two-pass sort: take the latest `max` globally by timestamp so the
+  // operator only sees recent activity, then re-sort the trimmed set
+  // by chat (ASC) and ts (DESC) within each chat. Grouping by chat
+  // keeps a conversation's messages adjacent — easier to follow than
+  // a strict chronological mix — and newest-first within each group
+  // surfaces the actionable bit at the top of each block.
   all.sort((a, b) => a.ts - b.ts);
-  // Keep the most recent `max`. We sort asc and slice from the end so
-  // the displayed order is chronological (oldest first, newest last).
-  return all.slice(-max);
+  const trimmed = all.slice(-max);
+  trimmed.sort((a, b) => {
+    const c = a.chatLabel.localeCompare(b.chatLabel);
+    if (c !== 0) return c;
+    return b.ts - a.ts;
+  });
+  return trimmed;
 }
 
 // One-liner format: HH:MM  <author>  <chat>  <body…>
