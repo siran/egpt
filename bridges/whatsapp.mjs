@@ -120,10 +120,19 @@ export async function startWhatsAppBridge({
   // their shell flooded with the last hour of group chatter just
   // because they restarted the daemon. Default 30s: anything older
   // is HELD (not dispatched) and surfaced via /wa-pending so the
-  // operator can review and explicitly dispatch (or discard). Set
-  // to 0 to disable the filter entirely (old behaviour — every
-  // backlog message auto-dispatches; not recommended).
-  maxBacklogSeconds = 30,
+  // operator can review and explicitly dispatch (or discard).
+  //
+  // Semantic (changed 2026-05-14 after operator reported overnight
+  // restart auto-executed a stale @e):
+  //   N > 0    grace window of N seconds — messages older than that
+  //            before connect are held
+  //   N == 0   STRICT — any message older than connectedAt is held
+  //   N == -1  disable the hold entirely (legacy behavior; not
+  //            recommended — daemon restart will auto-execute brain
+  //            on every queued bridge message)
+  // Default 5 catches only network-latency stragglers as live; any
+  // genuinely-queued backlog gets reviewed first.
+  maxBacklogSeconds = 5,
   // Media download/save config. From host: { download, max_size_mb }.
   //   download:    'all' (default) — save images / videos / audio /
   //                voice notes / documents / stickers
@@ -1074,7 +1083,7 @@ export async function startWhatsAppBridge({
     // /wa-pending and decide whether to dispatch each (or all, or
     // clear them). Set maxBacklogSeconds=0 to disable the hold and
     // restore the old auto-dispatch behaviour.
-    if (maxBacklogSeconds > 0 && connectedAt > 0) {
+    if (maxBacklogSeconds >= 0 && connectedAt > 0) {
       const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
       if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
         // Skip clearly bot-side echoes (fromMe, our own sentIds) and

@@ -1795,6 +1795,15 @@ function App() {
       botToken:     cfg.telegram.bot_token,
       nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
       allowedUsers: cfg.telegram.allowed_users ?? [],
+      // Hold-on-reconnect grace window. Same semantic as WA:
+      //   N > 0  grace seconds
+      //   N == 0 strict (hold anything older than connectedAt)
+      //   N == -1 disable hold
+      // Default 5 = only in-flight live messages dispatch; daemon
+      // restart sends overnight @e's to /tg-pending for review.
+      maxBacklogSeconds: cfg.telegram.max_backlog_seconds != null
+        ? Number(cfg.telegram.max_backlog_seconds)
+        : 5,
       chatId:       cfg.telegram.chat_id ?? null,
       onIncoming: async (text, from) => {
         const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
@@ -2068,7 +2077,13 @@ function App() {
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
         debug:             cfg.debug === true,
-        maxBacklogSeconds: Number(cfg.max_backlog_seconds) || 0,
+        // Default to the bridge's own default (5) instead of falling
+        // through to 0 — '|| 0' was a latent bug that disabled the
+        // hold whenever max_backlog_seconds wasn't explicitly
+        // configured. cfg-side value still wins when present.
+        maxBacklogSeconds: cfg.max_backlog_seconds != null
+          ? Number(cfg.max_backlog_seconds)
+          : 5,
         // Pass through whatsapp.media to the bridge. Defaults (set
         // inside the bridge) are { download: 'all', max_size_mb: 25 }
         // — every image / video / voice note / document / sticker is
