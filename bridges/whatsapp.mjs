@@ -698,6 +698,36 @@ export async function startWhatsAppBridge({
       for (const m of messages) {
         const jid = m.key?.remoteJid;
         if (!jid) continue;
+        // Edit envelope: WhatsApp wraps message edits in protocolMessage
+        // with a new outer key.id but the ORIGINAL message's key in
+        // protocolMessage.key. Without folding edits onto the original
+        // recent[] entry, a brain stream that fires N edits during its
+        // typing cycle piles up as N nearly-identical rows in /recap
+        // (one per debounced edit — typically 4-10 per response).
+        // Update the existing entry in place + skip the normal append.
+        const proto = m.message?.protocolMessage;
+        if (proto?.editedMessage && proto?.key?.id) {
+          const targetId = proto.key.id;
+          const newBody = textOf(proto.editedMessage) ?? null;
+          if (newBody) {
+            const chat = _chats.get(jid);
+            if (chat?.recent?.length) {
+              const entry = chat.recent.find(r => r.key?.id === targetId);
+              if (entry) {
+                const trimmed = newBody.trim();
+                entry.text = trimmed.length > RECENT_BODY_CAP
+                  ? trimmed.slice(0, RECENT_BODY_CAP - 1) + '…'
+                  : trimmed;
+                // Refresh the reaction-target preview cache too —
+                // _quotedPreview reads from _msgBodyById to render '↳'
+                // previews, and a stale half-stream body there would
+                // produce confusing quotes when someone replies later.
+                _rememberMsgBody(targetId, trimmed);
+              }
+            }
+          }
+          continue;
+        }
         const isGroup = jid.endsWith('@g.us');
         const ts = (Number(m.messageTimestamp) || 0) * 1000;
         const fromMe = !!m.key?.fromMe;
