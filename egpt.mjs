@@ -1564,25 +1564,22 @@ function MultiLineInput({ onSubmit, currentRoom }) {
     else loadEntry(history[history.length - newIdx]);
   };
 
-  // Ink 5's useInput intentionally drops the input string for keys it
-  // classifies as "non-alphanumeric" (home, end, pageup, pagedown,
-  // f-keys…) — it sets `input = ''` and does NOT add corresponding
-  // key.* flags for home / end. So our original raw-escape matches
-  // in the useInput callback below (\x1b[H, \x1b[F, …) never fire on
-  // Ink 5: by the time we get the callback the buffer is gone.
+  // Ink 7 surfaces key.home / key.end / key.pageUp / key.pageDown
+  // as first-class flags, so plain Home / End and Ctrl+Home /
+  // Ctrl+End are handled inside the useInput callback below (search
+  // for `key.home`). What Ink still does NOT surface is Ctrl+Left /
+  // Ctrl+Right (word-wise motion), so we keep a parallel listener
+  // on stdin's internal_eventEmitter for those two raw escape
+  // sequences only.
   //
-  // Fix: subscribe to Ink's internal_eventEmitter, which fires once
-  // per stdin chunk with the raw Buffer BEFORE parseKeypress strips
-  // anything. We pattern-match home / end / ctrl+home / ctrl+end /
-  // ctrl+left / ctrl+right ourselves, and let Ink's useInput keep
-  // handling everything else (regular text, plain arrows, return,
-  // ctrl-a/e, backspace…). The useInput's catch-all guards on `input`
-  // being truthy, so the empty-string callback Ink fires alongside
-  // our raw match is a no-op — no double-handling.
+  // The emitter fires once per stdin chunk with the raw Buffer
+  // before parseKeypress strips anything. Ink also fires useInput
+  // on the same chunk — for word-motion sequences input ends up
+  // empty there (nonAlphanumericKeys), so no double-handling.
   //
-  // Refs mirror state so the closure-captured 'input' listener can
-  // compute end-of-line / word boundaries against the *current* lines
-  // and cursor row, not the values from when the effect installed.
+  // Refs mirror state so the closure-captured listener can compute
+  // word boundaries against the *current* row / cursor / lines,
+  // not the install-time values.
   const rRef = useRef(r);
   const cRef = useRef(c);
   const linesRef = useRef(lines);
@@ -1595,19 +1592,10 @@ function MultiLineInput({ onSubmit, currentRoom }) {
     if (!emitter) return;
     const onChunk = (data) => {
       const s = typeof data === 'string' ? data : data.toString('utf8');
-      // Home: xterm CSI, VT linux/urxvt/rxvt, VT100 app mode.
-      if (s === '\x1b[H' || s === '\x1b[1~' || s === '\x1b[7~' || s === '\x1bOH') {
-        setC(0);
-        return;
-      }
-      // End: same family of variants.
-      if (s === '\x1b[F' || s === '\x1b[4~' || s === '\x1b[8~' || s === '\x1bOF') {
-        const cur = linesRef.current[rRef.current] ?? '';
-        setC(cur.length);
-        return;
-      }
-      // Ctrl+Home / Ctrl+End: jump to first/last char of the whole
-      // multi-line input (across rows).
+      // Ctrl+Home / Ctrl+End — kept as fallback in case the terminal
+      // sends a non-standard sequence Ink's parseKeypress doesn't
+      // recognize. Ink 7's key.home/end+key.ctrl path is the primary
+      // route inside useInput below.
       if (s === '\x1b[1;5H') {
         setR(0); setC(0);
         return;
