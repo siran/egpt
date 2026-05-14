@@ -1472,39 +1472,82 @@ function parseMessages(text) {
   return out;
 }
 
-// Persistent input history — the up-arrow recall ring. State used to
-// live only in React (lost on /upgrade since that replaces the
-// process), so the operator's recently-typed prompts vanished every
-// time. JSON-cap at 500 entries; writes are ~tiny so we don't bother
-// with debouncing. Single-shell semantics: concurrent shells will
-// last-write-wins each other's submissions, acceptable for now.
-const HISTORY_PATH = join(EGPT_HOME, 'input-history.json');
+// Persistent input history — the up-arrow recall ring. Per-room file
+// at ~/.egpt/history/<room>.json. Rooms scope sessions, brain context
+// and transcripts already, so the up-arrow recall stays inside the
+// room the operator is currently in (a quick "@e qué tal" up-arrow
+// in room A doesn't surface a /upgrade typed in room B).
+//
+// 500-entry cap per room is mostly belt-and-suspenders — keeps the
+// disk footprint bounded (~100KB worst case per room) without ever
+// biting in practice since recall almost never reaches past 50.
+// Writes are tiny so we don't bother debouncing. Concurrent shells
+// in the same room last-write-wins each other's submissions; that's
+// acceptable for the typical one-shell-per-room setup.
+const HISTORY_DIR = join(EGPT_HOME, 'history');
 const HISTORY_CAP = 500;
-function _loadInputHistory() {
+function _historyPath(roomName) {
+  const safe = (roomName || 'default').replace(/[^A-Za-z0-9._-]/g, '_');
+  return join(HISTORY_DIR, `${safe}.json`);
+}
+// One-shot migration: the brief global-history window (commit 4901b74)
+// wrote ~/.egpt/input-history.json before the per-room layout shipped.
+// If that file is still on disk when the default room loads, fold it
+// into history/default.json so the operator doesn't lose the hour's
+// worth of recalls. Idempotent (deletes the source after the merge).
+function _migrateLegacyHistory() {
   try {
-    if (!existsSync(HISTORY_PATH)) return [];
-    const raw = readFileSync(HISTORY_PATH, 'utf8');
+    const legacy = join(EGPT_HOME, 'input-history.json');
+    if (!existsSync(legacy)) return;
+    const raw = readFileSync(legacy, 'utf8');
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length) {
+      const dest = _historyPath('default');
+      if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
+      const existing = existsSync(dest)
+        ? JSON.parse(readFileSync(dest, 'utf8'))
+        : [];
+      const merged = [...existing, ...arr].filter(s => typeof s === 'string');
+      const trimmed = merged.length > HISTORY_CAP ? merged.slice(-HISTORY_CAP) : merged;
+      writeFileSync(dest, JSON.stringify(trimmed), { mode: 0o600 });
+    }
+    unlinkSync(legacy);
+  } catch {}
+}
+_migrateLegacyHistory();
+
+function _loadInputHistory(roomName) {
+  try {
+    const p = _historyPath(roomName);
+    if (!existsSync(p)) return [];
+    const raw = readFileSync(p, 'utf8');
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') : [];
   } catch { return []; }
 }
-function _saveInputHistory(arr) {
+function _saveInputHistory(roomName, arr) {
   try {
+    if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
     const trimmed = arr.length > HISTORY_CAP ? arr.slice(-HISTORY_CAP) : arr;
-    writeFileSync(HISTORY_PATH, JSON.stringify(trimmed), { mode: 0o600 });
+    writeFileSync(_historyPath(roomName), JSON.stringify(trimmed), { mode: 0o600 });
   } catch {}
 }
 
 // --- multi-line input ---
-function MultiLineInput({ onSubmit }) {
+function MultiLineInput({ onSubmit, currentRoom }) {
   const [lines, setLines] = useState(['']);
   const [r, setR] = useState(0);
   const [c, setC] = useState(0);
   // input history: list of submitted entries; hIdx counts from 0=now, +N=N steps back.
-  // Lazy initializer reads the persisted file once on mount so up-arrow
-  // recall survives /upgrade and shell restarts.
-  const [history, setHistory] = useState(() => _loadInputHistory());
+  // Lazy initializer reads the current room's persisted file once on
+  // mount; useEffect below swaps history when the operator switches
+  // rooms so up-arrow recall scopes to the room they're in.
+  const [history, setHistory] = useState(() => _loadInputHistory(currentRoom));
   const [hIdx, setHIdx] = useState(0);
+  useEffect(() => {
+    setHistory(_loadInputHistory(currentRoom));
+    setHIdx(0);
+  }, [currentRoom]);
 
   const loadEntry = (text) => {
     const lns = text.split('\n');
@@ -1611,7 +1654,7 @@ function MultiLineInput({ onSubmit }) {
         const next = [...history, text];
         const capped = next.length > HISTORY_CAP ? next.slice(-HISTORY_CAP) : next;
         setHistory(capped);
-        _saveInputHistory(capped);
+        _saveInputHistory(currentRoom, capped);
       }
       setHIdx(0); setLines(['']); setR(0); setC(0);
       onSubmit(text); return;
@@ -5241,7 +5284,7 @@ function App() {
       !busy && h(Box, { flexDirection: 'column' },
         h(Text, { color: T.hint },
           'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
-        h(MultiLineInput, { onSubmit: submit }))));
+        h(MultiLineInput, { onSubmit: submit, currentRoom }))));
 }
 
 // Module-level bridge references so SIGINT/SIGHUP/SIGTERM handlers can
