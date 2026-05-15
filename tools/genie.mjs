@@ -9,16 +9,35 @@
 // echo; everything else (frame phases, wish counting, retire
 // orchestration) is encapsulated.
 
-// Compact summon — bottle → puff → smoke face → genie. Operator
-// asked for shorter; 4 visible states at ~1500ms each ≈ 4.5s total
-// from invocation to "ready to answer", down from ~12s. The "face"
-// frame is a multi-line emoji panel that suggests a daemon
-// peeking out before fully emerging.
+// Genie face — three eyes (the operator: "the eye of wisdom").
+// Two on the bottom row, the third in the center top — classic
+// trinetra placement. The idle phase animates by swapping eye
+// states (all-open / blink / wink-left / wink-right / wisdom)
+// so the face feels alive rather than frozen between questions.
+// Same geometry across all idle frames so column widths hold
+// edit-to-edit.
+//
+// State legend (top, left, right):
+//   open    : 👁️
+//   closed  : 〰️
+const _face = (top, left, right) =>
+  `  ${top}\n ${left} ${right}\n   ·\n  ╰─╯`;
+const FACE_OPEN     = _face('👁️', '👁️', '👁️');           // alert, all three open
+const FACE_BLINK    = _face('〰️', '〰️', '〰️');           // momentary blink
+const FACE_WINK_L   = _face('👁️', '〰️', '👁️');           // left eye winks
+const FACE_WINK_R   = _face('👁️', '👁️', '〰️');           // right eye winks
+const FACE_WISDOM   = _face('👁️', '〰️', '〰️');           // bottom two closed, third sees deeper
+const FACE_WISDOM_OFF = _face('〰️', '👁️', '👁️');         // mortal eyes open, wisdom rests
+
+// Compact summon — bottle → puff → wisdom eye peers out → full
+// three-eyed face. ~4.5s total. The peek frame opens the third
+// eye first (it's the one of wisdom — it sees you coming); the
+// other two follow when the genie fully emerges.
 const SUMMON_FRAMES = [
   '🍾',
   '🍾  💨',
-  '👁️ 👁️\n  ◯  \n 🍾',
-  '🧞',
+  '  👁️\n  ·\n 🍾',
+  FACE_OPEN,
 ];
 
 const THINKING_FRAMES = [
@@ -29,21 +48,38 @@ const THINKING_FRAMES = [
   '🍾  *almost there…*  💡',
 ];
 
+// Retire — wisdom eye closes first (it saw the end coming), then
+// the mortal pair, then the face fades back into the bottle.
 const RETIRE_FRAMES = [
-  '🧞  _your wishes are spent._',
-  '🧞  _farewell._  👋',
-  '💨',
+  FACE_WISDOM_OFF + '\n\n_your wishes are spent._',
+  FACE_BLINK      + '\n\n_farewell._  👋',
+  '〰️ 〰️\n  ·\n  ◯  \n 🍾',
+  '💨\n🍾',
   '🍾',
   '_(the bottle is empty)_',
 ];
 
+// Idle cycle — face mostly alert, occasional blinks/winks, rare
+// "wisdom" beat where the mortal pair closes and only the third
+// eye stays open (the genie is sensing something). Identical
+// consecutive frames are skipped by the bridge's no-change
+// optimization, so this is ~6 actual edits per 12-frame cycle.
 function idleFrames(N) {
   const wishes = N === 1 ? '1 wish' : `${N} wishes`;
+  const footer = `\n\n*${wishes} remaining*\n_reply with your question_`;
   return [
-    `🧞  *${wishes} remaining*\n\n_reply with your question_`,
-    ` 🧞   *${wishes} remaining*\n\n_reply with your question_`,
-    `🧞   *${wishes} remaining*\n\n_reply with your question_`,
-    ` 🧞  *${wishes} remaining*\n\n_reply with your question_`,
+    FACE_OPEN       + footer,
+    FACE_OPEN       + footer,
+    FACE_BLINK      + footer,
+    FACE_OPEN       + footer,
+    FACE_OPEN       + footer,
+    FACE_WINK_L     + footer,
+    FACE_OPEN       + footer,
+    FACE_OPEN       + footer,
+    FACE_WISDOM     + footer,
+    FACE_OPEN       + footer,
+    FACE_WINK_R     + footer,
+    FACE_OPEN       + footer,
   ];
 }
 
