@@ -6,6 +6,8 @@
 // Movies auto-delete by default (revoked after a hold). --keep
 // disables. --secret "<text>" supplies the punchline.
 
+import { standing as _figStanding, couple as _figCouple } from '../tools/stickfig.mjs';
+
 // ── Alien movie ───────────────────────────────────────────────
 //
 // 9-line frame, constant height:
@@ -147,11 +149,14 @@ function _buildAlienFrames(secret) {
 // ── Pirate movie ──────────────────────────────────────────────
 //
 // 3D tilted-plane scene: sky → horizon → trapezoid sea →
-// shore → 4-row stick-figure space → beach. The sea narrows
+// shore → 5-row stick-figure space → beach. The sea narrows
 // toward the back so the row a sprite sits on reads as
 // distance from the viewer — top = far (horizon), bottom =
-// near (foreground). The pirate is a 4-row stick figure 🧔
-// with a 🦜 on his shoulder, walking and digging on the beach.
+// near (foreground). The pirate is a narrow 5-row ASCII stick
+// figure (head O, chest /-\, spine |, hip -, legs | |),
+// chosen for clean alignment under the head column — emoji
+// heads + parrot shoulders silently drifted the body off-
+// center across overlays. Operator preference (2026-05).
 //
 // 12-row × 28-col canvas. Base rows are ASCII-only so column
 // offsets count visual cells 1:1; sprites overlay at known
@@ -174,12 +179,14 @@ const _SKY_P = [
   _padR('  *  .  ✦  .  *  .  ✦  . '),
   _padR('     ✦  .  *  .  ✦       '),
 ];
+// Sea trapezoid — one row trimmed (was 5) to make room for the
+// 5-row figure space below the shore line while keeping the canvas
+// at 12 rows.
 const _SEA = [
   _padR('       ╱─────────────╲    '),   // 0 horizon (back edge)
   _padR('      ╱ ~ ~ ~ ~ ~ ~ ~ ╲   '),   // 1 far sea
   _padR('     ╱ ~ ~ ~ ~ ~ ~ ~ ~ ╲  '),   // 2
-  _padR('    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ '),   // 3
-  _padR('   ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲'),   // 4 near sea
+  _padR('    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ '),   // 3 near sea
 ];
 const _SHORE_P = '═'.repeat(_CANVAS_W);
 const _BEACH_P = '.:'.repeat(_CANVAS_W / 2);
@@ -222,24 +229,29 @@ function _drawText(row, col, text) {
 }
 
 // Compose a pirate scene frame.
-//   ship:    { seaRow: 0..4, col }        — null = no ship
-//   figure:  { col, prop?, legs?, parrot? } — 4-row stick figure
-//              standing with feet at (beach row, col..col+1)
-//              parrot defaults to true (on right shoulder)
+//   ship:    { seaRow: 0..3, col }        — null = no ship
+//   figure:  { col, prop?, legs? }        — 5-row ASCII stick figure
+//              standing on the beach. `legs` is 'together' (default),
+//              'apart', or 'cross' — picks the foot row variant.
+//              `prop` is an optional 2-cell sprite at the head's
+//              right (⛏️ shovel, 🗺 map, 📜 scroll, 💰 gold).
 //   beachOverlays: array of { col, sprite } — beach-row decorations
-//   pile:    array of { row: 0|1|2, col, sprite } — vertical overlay
-//              into the figure-rows space (row 0 = bottom = beach
-//              level, row 1 = middle, row 2 = top). Used by the
-//              dig sequence so the dirt mound rises into the
-//              previously-empty rows above the beach.
+//   pile:    array of { row: 0..3, col, sprite } — vertical overlay
+//              into the figure-rows space (row 0 = legs/beach, row 1
+//              = hip, row 2 = spine, row 3 = chest, row 4 = head).
+//              Lets the dig sequence stack a dirt mound that rises
+//              into the empty rows above the beach.
 //   shoreOverlay: { col, sprite }
 //   dialog:  string — shown beneath the scene (omit when no secret)
 function _pirateScene({ ship, figure, beachOverlays = [], pile = [], shoreOverlay, dialog }) {
   const sea = [..._SEA];
   let shore = _SHORE_P;
+  // Five figure-space rows above the beach. Pile/figure parts
+  // overlay onto these; the bottom row (legs) IS the beach.
   let head  = _EMPTY_FIG_ROW;
   let chest = _EMPTY_FIG_ROW;
   let spine = _EMPTY_FIG_ROW;
+  let hip   = _EMPTY_FIG_ROW;
   let beach = _BEACH_P;
 
   if (ship && ship.seaRow >= 0 && ship.seaRow < sea.length) {
@@ -254,33 +266,37 @@ function _pirateScene({ ship, figure, beachOverlays = [], pile = [], shoreOverla
   // sprite. The pile typically sits to one side of the figure anyway.
   for (const p of pile) {
     if (p.row === 0)      beach = _overlay(beach, p.col, p.sprite);
-    else if (p.row === 1) spine = _overlay(spine, p.col, p.sprite);
-    else if (p.row === 2) chest = _overlay(chest, p.col, p.sprite);
-    else if (p.row === 3) head  = _overlay(head,  p.col, p.sprite);
+    else if (p.row === 1) hip   = _overlay(hip,   p.col, p.sprite);
+    else if (p.row === 2) spine = _overlay(spine, p.col, p.sprite);
+    else if (p.row === 3) chest = _overlay(chest, p.col, p.sprite);
+    else if (p.row === 4) head  = _overlay(head,  p.col, p.sprite);
   }
 
-  // Stick figure: 🧔 head, optional prop next to head (held item),
-  // /---\ chest with 🦜 on the right shoulder, | spine, /\ or ||
-  // feet on the beach. Each row is 28 cells wide so the figure
-  // composes cleanly with any pile/beach overlays.
+  // Stick figure: every part written at its own column so we don't
+  // erase the beach pattern (`.:.:.`) to the left of the figure
+  // with leading spaces, and so earlier pile/decoration overlays
+  // on the same row but at different cols survive. Layout
+  // matches tools/stickfig.mjs's standing() shape: O head, /-\
+  // chest (3 cells), | spine, - hip, 3-cell legs.
   if (figure) {
     const c = figure.col;
-    head = _overlay(head, c, _SH_HEAD);
-    if (figure.prop) head = _overlay(head, c + 2, figure.prop);
-    chest = _drawText(chest, c - 1, '/---\\');
-    if (figure.parrot !== false) {
-      chest = _overlay(chest, c + 4, _SH_PARROT);
-    }
+    const propText = figure.prop || '';
+    const legSprite = figure.legs === 'apart' ? '/ \\'
+                    : figure.legs === 'cross' ? '\\ /'
+                    : '| |';
+    head = _drawText(head, c, 'O');
+    if (propText) head = _overlay(head, c + 1, propText);
+    chest = _drawText(chest, c - 1, '/-\\');
     spine = _drawText(spine, c, '|');
-    const feetText = figure.legs === 'together' ? '||' : '/\\';
-    beach = _drawText(beach, c, feetText);
+    hip   = _drawText(hip,   c, '-');
+    beach = _drawText(beach, c - 1, legSprite);
   }
 
   for (const o of beachOverlays) {
     beach = _overlay(beach, o.col, o.sprite);
   }
 
-  const lines = [..._SKY_P, ...sea, shore, head, chest, spine, beach];
+  const lines = [..._SKY_P, ...sea, shore, head, chest, spine, hip, beach];
   if (dialog) lines.push('       "' + dialog + '"');
   return lines.join('\n');
 }
@@ -297,8 +313,8 @@ function _buildPirateFrames(secret) {
   // by waves while the pirate is ashore. Index this with frame
   // parity to alternate.
   const ANCHOR = [
-    { seaRow: 4, col: 14 },
-    { seaRow: 4, col: 15 },
+    { seaRow: 3, col: 14 },
+    { seaRow: 3, col: 15 },
   ];
   const bob = (i) => ANCHOR[i % 2];
   let beat = 0;
@@ -313,8 +329,8 @@ function _buildPirateFrames(secret) {
 
   // 5-7. Ship descends through the trapezoid (closer = lower row).
   F.push(_pirateScene({ ship: { seaRow: 2, col: 13 } }));
+  F.push(_pirateScene({ ship: { seaRow: 2, col: 14 } }));
   F.push(_pirateScene({ ship: { seaRow: 3, col: 14 } }));
-  F.push(_pirateScene({ ship: { seaRow: 4, col: 14 } }));
 
   // 8. Anchor splash on the shore line in front of the ship.
   F.push(_pirateScene({
@@ -449,6 +465,113 @@ function _buildPirateFrames(secret) {
   return F;
 }
 
+// ── Couple movie ──────────────────────────────────────────────
+//
+// Two narrow ASCII stick figures meet under a moon, engage
+// (#====D between chests), oscillate through an in/out motion
+// loop, then a climax frame with the --secret as pillow talk,
+// then a 💤 lying-down aftermath. Adult cartoon comedy — pure
+// ASCII, no anatomy depicted, all the heavy lifting done by
+// the #====D meme. Operator-greenlit (2026-05). Access still
+// gated by the standard allowed_users awareness layer.
+//
+// 8-row canvas, 28 cols wide. Sky row + spacer + 5 figure rows
+// + floor. Same _overlay/_drawText conventions as pirate; uses
+// stickfig.couple() for the two-figure compositions.
+
+const _COUPLE_W   = 28;
+const _COUPLE_SKY = '   . * ☾ * . ✦ .            ';
+const _COUPLE_EMPTY_ROW = ' '.repeat(_COUPLE_W);
+const _COUPLE_FLOOR = '═'.repeat(_COUPLE_W);
+
+function _padRow(s, w = _COUPLE_W) {
+  return s.length >= w ? s : s + ' '.repeat(w - s.length);
+}
+
+function _coupleFrame(figRows, dialog) {
+  const padded = figRows.map(r => _padRow(r));
+  let s = [
+    _COUPLE_SKY,
+    _COUPLE_EMPTY_ROW,
+    ...padded,
+    _COUPLE_FLOOR,
+  ].join('\n');
+  if (dialog) s += '\n       "' + dialog + '"';
+  return s;
+}
+
+function _buildCoupleFrames(secret) {
+  const motto = secret ? secret.trim().slice(0, 60) : '';
+  const F = [];
+
+  // 1. Apart, idle — wide gap, both standing still.
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 4, fig2Col: 22, gap: '                ',
+  })));
+
+  // 2. Walking toward each other (legs apart, mid-stride).
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 8, fig2Col: 18, gap: '      ',
+    fig1Legs: 'apart', fig2Legs: 'apart',
+  })));
+
+  // 3. Almost meeting (legs crossed, stepping in).
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 11, fig2Col: 15, gap: '  ',
+    fig1Legs: 'cross', fig2Legs: 'cross',
+  })));
+
+  // 4. First contact — short implement, legs together.
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 4, fig2Col: 10, gap: '#=D',
+  })));
+
+  // 5-9. In/out loop: long extended (#====D, fig2 far) alternating
+  // with short retracted (#=D, fig2 close). Legs swap apart/cross
+  // each beat so the motion reads as rhythm rather than two
+  // stills cycling.
+  for (let i = 0; i < 5; i++) {
+    const isOut = (i % 2 === 0);
+    F.push(_coupleFrame(_figCouple({
+      fig1Col: 4,
+      fig2Col: isOut ? 13 : 10,
+      gap:    isOut ? '#====D' : '#=D',
+      fig1Legs: isOut ? 'apart' : 'cross',
+      fig2Legs: isOut ? 'cross' : 'apart',
+    })));
+  }
+
+  // 10. Climax — extended implement, legs apart, secret as pillow
+  // talk. Held longer via the preset's holdMs so the dialog is
+  // legible.
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 4, fig2Col: 16, gap: '#========D',
+    fig1Legs: 'apart', fig2Legs: 'apart',
+  }), motto));
+
+  // 11. Aftermath — figures lying down sharing one body line,
+  // both already asleep (💤). No legs visible (they're under
+  // the covers; we're being decorous about it).
+  F.push(_coupleFrame([
+    '',
+    '',
+    '     0=========0',
+    '    💤         💤',
+    '',
+  ]));
+
+  // 12. Fade to night.
+  F.push(_coupleFrame([
+    '',
+    '',
+    '       💤  ☾  💤',
+    '',
+    '',
+  ]));
+
+  return F;
+}
+
 export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
@@ -467,13 +590,24 @@ export const PRESETS = {
     params: '[--secret "<treasure note>"]',
     desc: '3D tilted-plane bay: sky / horizon / trapezoid sea / shore / ' +
           'beach. 🚢 sails in from the horizon (bobbing while anchored) ' +
-          '→ 🧔 stick-figure pirate with 🦜 on shoulder disembarks, ' +
-          'unrolls 🗺, walks to ❌, digs ⛏️ — dirt 🟫 piles upward into ' +
-          'the rows above the beach — uncovers 💰, reads 📜 with the ' +
-          'secret as the treasure note, walks back with the gold, ship ' +
-          'sails back over the horizon. Dialog only shows when --secret ' +
-          'is passed.',
+          '→ narrow ASCII stick-figure pirate disembarks, unrolls 🗺, ' +
+          'walks to ❌, digs ⛏️ — dirt 🟫 piles upward into the rows ' +
+          'above the beach — uncovers 💰, reads 📜 with the secret as ' +
+          'the treasure note, walks back with the gold, ship sails back ' +
+          'over the horizon. Dialog only shows when --secret is passed.',
     build: (arg) => _buildPirateFrames(arg),
+  },
+  couple: {
+    ms: 600, monospace: true, autoDelete: true, holdMs: 4000,
+    consumesSecret: true,
+    params: '[--secret "<pillow talk>"]',
+    desc: 'two narrow ASCII stick figures meet under a 🌙, approach, ' +
+          'engage (#====D between chests), pump through an in/out ' +
+          'motion loop, climax with the --secret as pillow talk, then ' +
+          '💤 lying-down aftermath, fade to night. Adult cartoon ' +
+          'comedy — ASCII only, no anatomy depicted. Trigger from a ' +
+          'WA chat with @movie couple --secret "...".',
+    build: (arg) => _buildCoupleFrames(arg),
   },
 
   // ── Utility presets ──────────────────────────────────────────
