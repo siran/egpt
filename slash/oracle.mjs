@@ -1,54 +1,12 @@
 // slash/oracle.mjs — summon a mystical Genie/Oracle in a WA chat.
 //
-// The genie emerges from a bottle, hovers, accepts N questions
-// (default 1; --keep makes it 3, --keep N for custom). Between
-// questions the genie goes inside the bottle to consult the books
-// while the brain processes; pops back out to deliver the answer
-// and the wish counter ticks down. When the last wish is spent
-// (or /oracle stop fires), the genie waves goodbye and vanishes.
-//
-// Reply detection lives in the bridge (handleMessage). The slash
-// command provides the storyboard + the brain-dispatch closure.
+// The animation storyboard + onReply/onBusy logic lives in
+// tools/genie.mjs so the same summon path is reachable from
+// '@?' inside a WA chat (bridge-side trigger) and from this
+// slash command (operator-side trigger). This file is just the
+// argument parser + access gate.
 
-const SUMMON_FRAMES = [
-  '🍾',
-  '🍾  _the bottle shudders…_',
-  '🍾  💨',
-  '🍾💨💨',
-  '💨💨💨',
-  '✨💨💨💨✨',
-  '🧞  _emerging…_',
-];
-
-const THINKING_FRAMES = [
-  '🍾  *consulting the books*  📖',
-  '🍾  *consulting the books*  📚',
-  '🍾  *taking notes*  📝',
-  '🍾  *cross-referencing*  📜',
-  '🍾  *almost there…*  💡',
-];
-
-const RETIRE_FRAMES = [
-  '🧞  _your wishes are spent._',
-  '🧞  _farewell._  👋',
-  '💨',
-  '🍾',
-  '_(the bottle is empty)_',
-];
-
-// Idle frames are parameterized on the wish count so the message
-// updates immediately when an answer ticks N down. Three subtle
-// positional variants make the genie feel like it's hovering
-// rather than frozen.
-function idleFrames(N) {
-  const wishes = N === 1 ? '1 wish' : `${N} wishes`;
-  return [
-    `🧞  *${wishes} remaining*\n\n_reply with your question_`,
-    ` 🧞   *${wishes} remaining*\n\n_reply with your question_`,
-    `🧞   *${wishes} remaining*\n\n_reply with your question_`,
-    ` 🧞  *${wishes} remaining*\n\n_reply with your question_`,
-  ];
-}
+import { summonGenie } from '../tools/genie.mjs';
 
 export const meta = {
   cmd: '/oracle',
@@ -143,55 +101,16 @@ export async function run({ arg, ctx }) {
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
   const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 3000;
 
-  const handle = await wa.startOracle({
+  const handle = await summonGenie({
+    wa,
     chatId: chat.jid,
-    frameMs,
+    chatName: chat.name,
     questionsLeft,
-    phases: {
-      summon:   SUMMON_FRAMES,
-      thinking: THINKING_FRAMES,
-      retire:   RETIRE_FRAMES,
-      idleFn:   idleFrames,
-    },
-    onReply: async (replyMsg, oracle) => {
-      const question = _extractQuestion(replyMsg);
-      if (!question) return;
-      const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
-      sysOut(`🧞 [${chat.name}] ${asker} → ${question}`);
-      const thinking = await wa.replyTo({
-        chatId: chat.jid,
-        key: replyMsg.key,
-        raw: replyMsg.message,
-        text: '🧞 thinking…',
-      });
-      const answer = await computeBrainTurn(brainName, question);
-      // After-decrement wish count for the "X wishes left" footer
-      // on the answer. The bridge will tick its own counter inside
-      // onReply's finally, so we use (questionsLeft - 1) here.
-      const wishesAfter = Math.max(0, (oracle?.questionsLeft ?? questionsLeft) - 1);
-      const footer = wishesAfter > 0
-        ? `\n\n_${wishesAfter} wish${wishesAfter === 1 ? '' : 'es'} remaining_`
-        : '\n\n_(your final wish has been granted)_';
-      const finalText = `🧞 ${answer || '(silence)'}${footer}`;
-      if (thinking?.key) {
-        await wa.editMessage?.({ chatId: chat.jid, key: thinking.key, text: finalText });
-      } else {
-        await wa.replyTo({ chatId: chat.jid, key: replyMsg.key, raw: replyMsg.message, text: finalText });
-      }
-      sysOut(`🧞 [${chat.name}] @${brainName}: ${answer || '(silence)'}`);
-    },
-    onBusy: async (replyMsg /*, oracle */) => {
-      if (busyBehavior === 'ignore' || busyBehavior === 'queued') return;
-      const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
-      const question = _extractQuestion(replyMsg) || '(media)';
-      sysOut(`🧞 [${chat.name}] ${asker} → ${question}  (busy — replied politely)`);
-      await wa.replyTo({
-        chatId: chat.jid,
-        key: replyMsg.key,
-        raw: replyMsg.message,
-        text: '🧞 patience — one wish at a time',
-      });
-    },
+    brainName,
+    computeBrainTurn,
+    sysOut,
+    busyBehavior,
+    frameMs,
   });
   if (!handle) {
     sysOut(`!! /oracle: bridge returned no handle — initial send may have failed`);
@@ -200,13 +119,4 @@ export async function run({ arg, ctx }) {
   const wishWord = questionsLeft === 1 ? 'wish' : 'wishes';
   sysOut(`🧞 genie summoned in @wa${m[1]} "${chat.name}"  (brain: @${brainName}, ${questionsLeft} ${wishWord}, busy: ${busyBehavior})`);
   return true;
-}
-
-function _extractQuestion(msg) {
-  const m = msg?.message ?? {};
-  if (m.conversation) return m.conversation;
-  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
-  if (m.ephemeralMessage?.message?.conversation) return m.ephemeralMessage.message.conversation;
-  if (m.ephemeralMessage?.message?.extendedTextMessage?.text) return m.ephemeralMessage.message.extendedTextMessage.text;
-  return null;
 }

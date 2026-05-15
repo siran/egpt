@@ -28,6 +28,7 @@ import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
+import { summonGenie as _summonGenieFromBridge } from './tools/genie.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2271,6 +2272,63 @@ function App() {
             sysOut(`🗑 ${kind} deleted by sender (kept) from ${chatLabel}  ${pathDisplay}`, extras);
           } else {
             sysOut(`📎 ${kind} saved (${sizeKB}KB) from ${chatLabel}  ${pathDisplay}`, extras);
+          }
+        },
+        // '@?' in-chat genie summon. The bridge fires this when the
+        // operator (fromMe) types '@?' in any chat and no genie is
+        // already running there. Default 3 wishes (genie default),
+        // brain = oracle.brain config (default @e). Same code path
+        // as the /oracle slash command, via tools/genie.mjs.
+        onSummonGenie: async ({ chatId }) => {
+          const wa = waBridgeRef.current;
+          if (!wa) return;
+          const chatName = wa.getChatName?.(chatId) || chatId;
+          const brainName = EGPT_CONFIG?.oracle?.brain ?? 'e';
+          const isPersona = (brainName === 'e' || brainName === 'egpt');
+          if (!isPersona && !sessions[brainName]) {
+            errOut(`@? summon: brain "${brainName}" not in room; set oracle.brain to "e" or /attach`);
+            return;
+          }
+          // Inline compute-only brain dispatcher — same shape as
+          // ctx.computeBrainTurn, can't borrow it from ctx since
+          // this callback runs at bridge-setup time before any
+          // slash invocation has populated a ctx for us.
+          const computeBrainTurn = async (routedTo, question) => {
+            if (routedTo === 'e' || routedTo === 'egpt') {
+              try { return await runDefaultBrainTurn(question, () => {}); }
+              catch (e) { return `!! @e failed: ${e.message}`; }
+            }
+            const session = sessions[routedTo];
+            if (!session) return null;
+            const brain = brainForName(session.brain);
+            if (!brain?.stream) return null;
+            const history = await readFile(FILE, 'utf8').catch(() => '');
+            try {
+              const result = await brain.stream(
+                { history, message: question, ask: null },
+                () => {},
+                { ...session.options, sessionName: routedTo, userName: USER_NAME },
+              );
+              return typeof result === 'string'
+                ? result
+                : (result?.text ?? result?.content ?? '');
+            } catch (e) {
+              return `!! brain "${routedTo}" failed: ${e.message}`;
+            }
+          };
+          try {
+            const handle = await _summonGenieFromBridge({
+              wa, chatId, chatName,
+              questionsLeft: 3,
+              brainName,
+              computeBrainTurn,
+              sysOut,
+              busyBehavior: EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite',
+              frameMs: Number(EGPT_CONFIG?.oracle?.frame_ms) || 3000,
+            });
+            if (handle) sysOut(`🧞 @? summoned in "${chatName}"  (brain: @${brainName}, 3 wishes)`);
+          } catch (e) {
+            errOut(`@? summon failed: ${e.message}`);
           }
         },
         onIncoming: async (text, from) => {
