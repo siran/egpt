@@ -1810,6 +1810,20 @@ export async function startWhatsAppBridge({
       onReply,
       onBusy,
       questionsLeft = 1,
+      // idleAnimationBudget — max idle-phase edits emitted per idle
+      // cycle. Once reached, the loop stops emitting until the
+      // oracle transitions out of idle (e.g. into thinking on a
+      // reply). Resets on each fresh entry into idle. The reason
+      // for the cap: WA edits are supposed to be silent on the
+      // recipient side, but some clients re-surface the chat in
+      // the chat list (or show 'edited' indicators) on each one,
+      // and a perpetual idle animation generates a steady drip of
+      // those across every member of the chat. Capping at ~20
+      // emits gives the genie ~2 cycles of liveness then settles
+      // into a static face — enough to feel alive without
+      // flooding anyone's phone. Set to 0 to animate forever
+      // (matches pre-cap behavior).
+      idleAnimationBudget = 20,
     }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
@@ -1912,18 +1926,30 @@ export async function startWhatsAppBridge({
         // frames may be either plain strings (dwell = frameMs) or
         // { text, ms } objects (dwell = ms) — lets a storyboard
         // flash a quick blink/wink (~300ms) between long open
-        // beats (~3s) so the face feels alive without burning
+        // beats (~6s) so the face feels alive without burning
         // WA's edit-rate ceiling on average.
+        //
+        // idleEmits counts emitted idle frames in the current idle
+        // cycle and resets on each fresh entry into idle (from
+        // summoning/thinking). Once the budget is exhausted, the
+        // loop sleeps in place — the face freezes on whatever
+        // frame was last emitted, no more edits go out, and the
+        // chat list stops re-surfacing.
         let idleIdx = 0, thinkingIdx = 0;
         let dwell = frameMs;
+        let idleEmits = 0;
+        let prevState = handle.state;
         while (handle.state !== 'retired' && handle.state !== 'retiring') {
           await sleep(dwell);
           if (handle.state === 'retired' || handle.state === 'retiring') break;
+          if (handle.state === 'idle' && prevState !== 'idle') idleEmits = 0;
+          prevState = handle.state;
           dwell = frameMs;
           if (handle.state === 'thinking' && thinkingFrames.length) {
             thinkingIdx = (thinkingIdx + 1) % thinkingFrames.length;
             await emit(thinkingFrames[thinkingIdx]);
           } else if (handle.state === 'idle') {
+            if (idleAnimationBudget > 0 && idleEmits >= idleAnimationBudget) continue;
             const frames = idleFn ? idleFn(handle.questionsLeft) : idleFrames;
             if (frames.length) {
               idleIdx = (idleIdx + 1) % frames.length;
@@ -1933,6 +1959,7 @@ export async function startWhatsAppBridge({
                 dwell = Math.max(150, Number(f.ms));
               }
               await emit(text);
+              idleEmits++;
             }
           }
         }
