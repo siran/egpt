@@ -1681,13 +1681,20 @@ export async function startWhatsAppBridge({
     // Skip-identical-frame optimization so a sloppy frame array
     // (e.g. duplicate keyframes) doesn't waste edit budget.
     //
-    // Separate code path from startStreamMessage's edit pump — that
-    // one is debounced to 2.5s for brain typing, this needs the
-    // tighter frame rate of an animation (~400-800ms). The
+    // autoDelete + holdMs: after the last frame, wait holdMs then
+    // revoke the message (delete-for-everyone). Default behavior
+    // for /movie since the operator wanted ephemeral movies — the
+    // animation plays, the recipient sees it, then the message
+    // disappears. holdMs is per-call so a movie with a punchline
+    // (e.g. --secret) can linger longer than a sparkler.
+    //
+    // Separate code path from startStreamMessage's edit pump —
+    // that one is debounced to 2.5s for brain typing, this needs
+    // the tighter frame rate of an animation (~200-800ms). The
     // protocolMessage.editedMessage echo handler folds the edits
     // onto the original recent[] entry, so /recap won't see N
     // mid-frame rows.
-    async playFrames({ chatId, frames, frameMs = 700 }) {
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000 }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
@@ -1708,7 +1715,14 @@ export async function startWhatsAppBridge({
         ).catch(e => err(`movie frame ${i + 1}: ${e.message}`));
         lastSent = frames[i];
       }
-      return { key: msgKey };
+      if (autoDelete) {
+        await new Promise(resolve => setTimeout(resolve, holdMs));
+        await _timeBound(
+          sock.sendMessage(target, { delete: msgKey }),
+          'movie delete',
+        ).catch(e => err(`movie delete: ${e.message}`));
+      }
+      return { key: msgKey, deleted: autoDelete };
     },
     async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
