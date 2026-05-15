@@ -3288,7 +3288,17 @@ function App() {
         // answer however it wants (as a WA reply edit into a
         // "thinking…" placeholder) without the normal dispatch
         // path firing alongside.
+        //
+        // @e / @egpt is special: the persona lives in
+        // EGPT_CONFIG.default_brain, NOT sessions[]. It's a node-
+        // global butler with its own persistent thread, available
+        // in every room without /attach. Route those calls through
+        // runDefaultBrainTurn which manages that thread.
         computeBrainTurn: async (routedTo, question) => {
+          if (routedTo === 'e' || routedTo === 'egpt') {
+            try { return await runDefaultBrainTurn(question, () => {}); }
+            catch (e) { return `!! @e failed: ${e.message}`; }
+          }
           const session = sessions[routedTo];
           if (!session) return null;
           const brain = brainForName(session.brain);

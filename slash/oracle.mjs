@@ -75,7 +75,9 @@ export async function run({ arg, ctx }) {
   //   waChannelsCacheRef   — @waN → chat object
   //   computeBrainTurn(routedTo, question) → answer text (compute-only,
   //                          no UI mirroring)
-  //   sessions             — to validate the configured brain exists
+  //   sessions             — validate the configured brain exists
+  //                          (for non-'e' brains; 'e' is the node-
+  //                          global persona, always available)
   //   EGPT_CONFIG          — oracle.brain + oracle.busy_behavior
   const { sysOut, waBridgeRef, waChannelsCacheRef, computeBrainTurn, sessions, EGPT_CONFIG } = ctx;
 
@@ -129,9 +131,13 @@ export async function run({ arg, ctx }) {
   }
 
   // Brain selection — config-driven, with 'e' as the universal default.
+  // 'e' / 'egpt' is the node-global persona (default_brain config) and
+  // doesn't need to be in sessions[]; any other brain name must be
+  // /attach-ed in the current room.
   const brainName = EGPT_CONFIG?.oracle?.brain ?? 'e';
-  if (!sessions[brainName]) {
-    sysOut(`!! /oracle: brain "${brainName}" not in current room. /attach it first, or set oracle.brain in config.`);
+  const isPersona = (brainName === 'e' || brainName === 'egpt');
+  if (!isPersona && !sessions[brainName]) {
+    sysOut(`!! /oracle: brain "${brainName}" not in current room. /attach it first, or set oracle.brain to "e" for the default persona.`);
     return true;
   }
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
