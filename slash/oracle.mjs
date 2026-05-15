@@ -1,66 +1,78 @@
-// slash/oracle.mjs — summon a long-running "Oracle" in a WA chat.
+// slash/oracle.mjs — summon a mystical Genie/Oracle in a WA chat.
 //
-// The Oracle is a self-editing message that spins indefinitely
-// (mystical starfield, hypnotic). Anyone in the chat can reply
-// to it with a question; the bridge intercepts the reply, routes
-// the question through a brain (default @e), and edits a
-// "🔮 thinking…" reply-to-the-question into the brain's answer.
-// The spinner retires after answering. Two messages remain: the
-// question, and the answer (as a reply to the question).
+// The genie emerges from a bottle, hovers, accepts N questions
+// (default 1; --keep makes it 3, --keep N for custom). Between
+// questions the genie goes inside the bottle to consult the books
+// while the brain processes; pops back out to deliver the answer
+// and the wish counter ticks down. When the last wish is spent
+// (or /oracle stop fires), the genie waves goodbye and vanishes.
 //
-// Multiple Oracles can run in parallel across chats. While the
-// brain is processing a question, subsequent replies trigger the
-// busy_behavior path:
-//   polite   reply "🔮 one query at a time, please" to the new
-//            question (default)
-//   ignore   silently drop the new reply
-//   queued   (pending — answer them in order)
+// Reply detection lives in the bridge (handleMessage). The slash
+// command provides the storyboard + the brain-dispatch closure.
 
-// Oracle frames: rotating clock emoji at the center. WA's edit
-// rate ceiling is ~1 edit per 2 seconds sustained per message;
-// anything faster trips 'rate-overlimit' from the server. Twelve
-// clock faces × 2s/frame ≈ 24s per full revolution — slow enough
-// to never hit the cap, mystical enough to read as a real ritual.
-// Each frame changes only the central clock glyph; the title,
-// instruction, and surrounding text stay constant so the message
-// reads as "alive" rather than re-flowing.
-const CLOCK_GLYPHS = [
-  '🕐', '🕑', '🕒', '🕓', '🕔', '🕕',
-  '🕖', '🕗', '🕘', '🕙', '🕚', '🕛',
+const SUMMON_FRAMES = [
+  '🍾',
+  '🍾  _the bottle shudders…_',
+  '🍾  💨',
+  '🍾💨💨',
+  '💨💨💨',
+  '✨💨💨💨✨',
+  '🧞  _emerging…_',
 ];
-const ORACLE_FRAMES = CLOCK_GLYPHS.map(clock =>
-  '🔮 *The Oracle* 🧞\n' +
-  '\n' +
-  '        ' + clock + '\n' +
-  '\n' +
-  '_reply with your question_',
-);
+
+const THINKING_FRAMES = [
+  '🍾  *consulting the books*  📖',
+  '🍾  *consulting the books*  📚',
+  '🍾  *taking notes*  📝',
+  '🍾  *cross-referencing*  📜',
+  '🍾  *almost there…*  💡',
+];
+
+const RETIRE_FRAMES = [
+  '🧞  _your wishes are spent._',
+  '🧞  _farewell._  👋',
+  '💨',
+  '🍾',
+  '_(the bottle is empty)_',
+];
+
+// Idle frames are parameterized on the wish count so the message
+// updates immediately when an answer ticks N down. Three subtle
+// positional variants make the genie feel like it's hovering
+// rather than frozen.
+function idleFrames(N) {
+  const wishes = N === 1 ? '1 wish' : `${N} wishes`;
+  return [
+    `🧞  *${wishes} remaining*\n\n_reply with your question_`,
+    ` 🧞   *${wishes} remaining*\n\n_reply with your question_`,
+    `🧞   *${wishes} remaining*\n\n_reply with your question_`,
+    ` 🧞  *${wishes} remaining*\n\n_reply with your question_`,
+  ];
+}
 
 export const meta = {
   cmd: '/oracle',
   section: 'ROOM',
   surface: 'shell',
-  usage: '/oracle @waN [--keep] | /oracle stop [@waN] | /oracle list',
+  usage: '/oracle @waN [--keep [N]] | /oracle stop [@waN] | /oracle list',
   desc:
-    'summon a mystical Oracle in a WA chat. Anyone in the chat can ' +
-    'reply to it with a question; the brain answers as a reply. ' +
-    'Default: single-shot — oracle retires after one answer. --keep ' +
-    'keeps it alive for multiple replies (only /oracle stop retires). ' +
-    'Multiple Oracles run in parallel across chats. Q+A flows into ' +
-    'the shell so the operator can follow along.',
+    'summon a mystical Genie in a WA chat. The genie emerges from a ' +
+    'bottle and accepts replies as questions, routed through a brain ' +
+    '(default @e). Default 1 wish. --keep makes it 3 wishes (genie ' +
+    'default); --keep N for custom. Each answered question ticks N ' +
+    'down; on 0 the genie waves goodbye and vanishes. /oracle stop ' +
+    'retires early. Multiple genies run in parallel across chats. ' +
+    'Q+A flows into the shell so the operator can follow along.',
 };
 
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
   //   sysOut(text)
-  //   waBridgeRef          — WA bridge (exposes startOracle, stopOracle, listOracles, replyTo)
+  //   waBridgeRef          — WA bridge (exposes startOracle, stopOracle, listOracles, replyTo, editMessage)
   //   waChannelsCacheRef   — @waN → chat object
-  //   computeBrainTurn(routedTo, question) → answer text (compute-only,
-  //                          no UI mirroring)
-  //   sessions             — validate the configured brain exists
-  //                          (for non-'e' brains; 'e' is the node-
-  //                          global persona, always available)
-  //   EGPT_CONFIG          — oracle.brain + oracle.busy_behavior
+  //   computeBrainTurn(routedTo, question) → answer text (compute-only)
+  //   sessions             — validate non-persona brain exists
+  //   EGPT_CONFIG          — oracle.brain + oracle.busy_behavior + oracle.frame_ms
   const { sysOut, waBridgeRef, waChannelsCacheRef, computeBrainTurn, sessions, EGPT_CONFIG } = ctx;
 
   const wa = waBridgeRef?.current;
@@ -76,7 +88,7 @@ export async function run({ arg, ctx }) {
     const targetTok = tokens[1];
     if (!targetTok) {
       const n = await wa.stopAllOracles();
-      sysOut(n ? `🔮 retired ${n} oracle${n === 1 ? '' : 's'}` : '🔮 no oracles running');
+      sysOut(n ? `🧞 retired ${n} genie${n === 1 ? '' : 's'}` : '🧞 no genies in flight');
       return true;
     }
     const m = targetTok.match(/^@wa(\d+)$/i);
@@ -84,22 +96,22 @@ export async function run({ arg, ctx }) {
     const chat = waChannelsCacheRef?.current?.[parseInt(m[1], 10) - 1];
     if (!chat) { sysOut(`!! /oracle stop: no chat at ${targetTok}`); return true; }
     const stopped = await wa.stopOracle(chat.jid);
-    sysOut(stopped ? `🔮 retired oracle in "${chat.name}"` : `🔮 no oracle in "${chat.name}"`);
+    sysOut(stopped ? `🧞 retired genie in "${chat.name}"` : `🧞 no genie in "${chat.name}"`);
     return true;
   }
 
   if (sub === 'list' || !sub) {
     const list = wa.listOracles?.() ?? [];
     if (!list.length) {
-      sysOut('🔮 no oracles running. summon one with /oracle @waN');
+      sysOut('🧞 no genies in flight. summon one with /oracle @waN');
       return true;
     }
     const lines = list.map((o, i) => `  ${i + 1}. "${o.name ?? o.chatId}"  (${o.state})`);
-    sysOut(`🔮 ${list.length} oracle${list.length === 1 ? '' : 's'} running:\n${lines.join('\n')}`);
+    sysOut(`🧞 ${list.length} genie${list.length === 1 ? '' : 's'} in flight:\n${lines.join('\n')}`);
     return true;
   }
 
-  // Summon: /oracle @waN [--keep]
+  // Summon: /oracle @waN [--keep [N]]
   const m = sub.match(/^@wa(\d+)$/i);
   if (!m) {
     sysOut(`!! /oracle: usage: ${meta.usage}`);
@@ -111,15 +123,17 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /oracle: no chat at ${sub} — /recap or /channels first to populate indices`);
     return true;
   }
-  // --keep flag (or alias --multi): oracle stays alive after each
-  // answer, accepts the next question, and only retires on
-  // /oracle stop. Default: single-shot (answer once, retire).
-  const keep = tokens.some(t => t === '--keep' || t === '--multi');
+  // --keep [N]: --keep alone → 3 wishes (genie default), --keep 5
+  // → 5 wishes. Plain /oracle → 1 wish (one-shot). Cap at 12 to
+  // keep things sane.
+  const keepIdx = tokens.findIndex(t => t === '--keep' || t === '--multi');
+  let questionsLeft = 1;
+  if (keepIdx >= 0) {
+    const argN = tokens[keepIdx + 1];
+    const parsed = argN && /^\d+$/.test(argN) ? parseInt(argN, 10) : null;
+    questionsLeft = Math.max(1, Math.min(12, parsed ?? 3));
+  }
 
-  // Brain selection — config-driven, with 'e' as the universal default.
-  // 'e' / 'egpt' is the node-global persona (default_brain config) and
-  // doesn't need to be in sessions[]; any other brain name must be
-  // /attach-ed in the current room.
   const brainName = EGPT_CONFIG?.oracle?.brain ?? 'e';
   const isPersona = (brainName === 'e' || brainName === 'egpt');
   if (!isPersona && !sessions[brainName]) {
@@ -127,54 +141,55 @@ export async function run({ arg, ctx }) {
     return true;
   }
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
-  // Frame cadence. WA caps message edits around 1/2s sustained, so
-  // 2000ms is the floor. 3000ms feels mystical-not-frantic — a clock
-  // tick every 3s is roughly the rhythm of slow breathing, fits the
-  // "mystical ritual" mood without burning bandwidth.
   const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 3000;
 
   const handle = await wa.startOracle({
     chatId: chat.jid,
-    frames: ORACLE_FRAMES,
     frameMs,
-    multi: keep,
-    onReply: async (replyMsg /*, oracle */) => {
+    questionsLeft,
+    phases: {
+      summon:   SUMMON_FRAMES,
+      thinking: THINKING_FRAMES,
+      retire:   RETIRE_FRAMES,
+      idleFn:   idleFrames,
+    },
+    onReply: async (replyMsg, oracle) => {
       const question = _extractQuestion(replyMsg);
       if (!question) return;
-      // Surface the question into the operator's room so the
-      // oracle conversation shows up alongside everything else
-      // in the shell. Without this echo the operator only sees
-      // "oracle summoned" and never knows the Q+A happened on
-      // the WA side.
       const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
-      sysOut(`🔮 [${chat.name}] ${asker} → ${question}`);
-      // Send "🔮 thinking…" as a reply to the question; capture key.
+      sysOut(`🧞 [${chat.name}] ${asker} → ${question}`);
       const thinking = await wa.replyTo({
         chatId: chat.jid,
         key: replyMsg.key,
         raw: replyMsg.message,
-        text: '🔮 thinking…',
+        text: '🧞 thinking…',
       });
       const answer = await computeBrainTurn(brainName, question);
-      const finalText = `🔮 ${answer || '(silence)'}`;
+      // After-decrement wish count for the "X wishes left" footer
+      // on the answer. The bridge will tick its own counter inside
+      // onReply's finally, so we use (questionsLeft - 1) here.
+      const wishesAfter = Math.max(0, (oracle?.questionsLeft ?? questionsLeft) - 1);
+      const footer = wishesAfter > 0
+        ? `\n\n_${wishesAfter} wish${wishesAfter === 1 ? '' : 'es'} remaining_`
+        : '\n\n_(your final wish has been granted)_';
+      const finalText = `🧞 ${answer || '(silence)'}${footer}`;
       if (thinking?.key) {
         await wa.editMessage?.({ chatId: chat.jid, key: thinking.key, text: finalText });
       } else {
         await wa.replyTo({ chatId: chat.jid, key: replyMsg.key, raw: replyMsg.message, text: finalText });
       }
-      sysOut(`🔮 [${chat.name}] @${brainName}: ${answer || '(silence)'}`);
+      sysOut(`🧞 [${chat.name}] @${brainName}: ${answer || '(silence)'}`);
     },
     onBusy: async (replyMsg /*, oracle */) => {
       if (busyBehavior === 'ignore' || busyBehavior === 'queued') return;
-      // polite (default) — reply to the new question.
       const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
       const question = _extractQuestion(replyMsg) || '(media)';
-      sysOut(`🔮 [${chat.name}] ${asker} → ${question}  (busy — replied politely)`);
+      sysOut(`🧞 [${chat.name}] ${asker} → ${question}  (busy — replied politely)`);
       await wa.replyTo({
         chatId: chat.jid,
         key: replyMsg.key,
         raw: replyMsg.message,
-        text: '🔮 one query at a time, please',
+        text: '🧞 patience — one wish at a time',
       });
     },
   });
@@ -182,17 +197,11 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /oracle: bridge returned no handle — initial send may have failed`);
     return true;
   }
-  const mode = keep ? 'keep' : 'single-shot';
-  sysOut(`🔮 oracle summoned in @wa${m[1]} "${chat.name}"  (brain: @${brainName}, busy: ${busyBehavior}, ${mode})`);
+  const wishWord = questionsLeft === 1 ? 'wish' : 'wishes';
+  sysOut(`🧞 genie summoned in @wa${m[1]} "${chat.name}"  (brain: @${brainName}, ${questionsLeft} ${wishWord}, busy: ${busyBehavior})`);
   return true;
 }
 
-// Pull a user-visible question string out of a baileys message. We
-// can't import bridges/whatsapp.mjs's internal textOf from here, so
-// re-implement the small subset we need: conversation, extended
-// text, and the few captioned variants. Reaction / sticker /
-// status replies aren't actual questions, so we return null and
-// the oracle just ignores them.
 function _extractQuestion(msg) {
   const m = msg?.message ?? {};
   if (m.conversation) return m.conversation;

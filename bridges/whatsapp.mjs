@@ -1730,23 +1730,43 @@ export async function startWhatsAppBridge({
       ).then(r => { rememberSent(r?.key?.id); return r; })
        .catch(e => { err(`editMessage: ${e.message}`); return null; });
     },
-    // Summon a long-running oracle in `chatId`. Sends frames[0] as a
-    // fresh message, then cycles through `frames` indefinitely
-    // (frameMs per beat). When a reply lands, onReply(replyMsg) is
-    // invoked and the handle's `state` flips to 'thinking' — further
-    // replies during that window go through onBusy.
+    // Summon a phased oracle/genie in `chatId`. The animation runs
+    // through four phases — summon (linear intro) → idle (cyclic,
+    // waiting for question) → thinking (cyclic, brain working) →
+    // retire (linear outro) — with the bridge handling transitions
+    // based on handle.state.
     //
-    // multi: false (default)  oracle retires after the first answer.
-    //        true              oracle resumes spinning after each
-    //                          answer; only /oracle stop retires it.
+    // questionsLeft counts down once per answered reply. When it
+    // hits zero (or stop() is called) the oracle plays the retire
+    // animation and deletes itself.
     //
-    // Returns the handle ({ msgKey, stop, state, multi, ... }).
-    async startOracle({ chatId, frames, frameMs = 1000, onReply, onBusy, multi = false }) {
+    // phases.idleFn(N) lets the slash command parameterize idle
+    // frames on the current wish count ("3 wishes left" → "2 wishes
+    // left" → …). Re-evaluated each idle iteration. phases.idle (a
+    // static array) is the fallback if no idleFn provided.
+    //
+    // Returns the handle ({ msgKey, stop, state, questionsLeft, … }).
+    async startOracle({
+      chatId,
+      phases = {},
+      frameMs = 3000,
+      onReply,
+      onBusy,
+      questionsLeft = 1,
+    }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
-      if (!target || !Array.isArray(frames) || !frames.length) return null;
+      if (!target) return null;
+      const summonFrames   = Array.isArray(phases.summon)   ? phases.summon   : [];
+      const idleFrames     = Array.isArray(phases.idle)     ? phases.idle     : [];
+      const thinkingFrames = Array.isArray(phases.thinking) ? phases.thinking : [];
+      const retireFrames   = Array.isArray(phases.retire)   ? phases.retire   : [];
+      const idleFn         = typeof phases.idleFn === 'function' ? phases.idleFn : null;
+      const initialFrame = summonFrames[0]
+        ?? (idleFn ? idleFn(questionsLeft)[0] : idleFrames[0])
+        ?? '🧞';
       const r0 = await _timeBound(
-        sock.sendMessage(target, { text: frames[0] }),
+        sock.sendMessage(target, { text: initialFrame }),
         'oracle initial',
       ).catch(e => { err(`oracle initial: ${e.message}`); return null; });
       const msgKey = r0?.key;
@@ -1756,12 +1776,10 @@ export async function startWhatsAppBridge({
       const handle = {
         msgKey,
         chatId: target,
-        state: 'spinning',
-        multi,
+        state: 'summoning',           // → 'idle' → 'thinking' → 'idle' / 'retiring' → 'retired'
+        questionsLeft,
         onReply: async (replyMsg) => {
-          // Busy gate — operator-configured behavior for subsequent
-          // replies while the brain is processing the first one.
-          if (handle.state !== 'spinning') {
+          if (handle.state !== 'idle') {
             if (typeof onBusy === 'function') {
               try { await onBusy(replyMsg, handle); } catch (e) { err(`oracle onBusy: ${e.message}`); }
             }
@@ -1770,50 +1788,82 @@ export async function startWhatsAppBridge({
           handle.state = 'thinking';
           try { await onReply?.(replyMsg, handle); }
           finally {
-            // In multi mode the oracle resumes spinning for the next
-            // question. The spin loop watches handle.state and flips
-            // back into edit-emitting mode automatically. In single
-            // mode (default) the oracle retires after the answer.
             if (handle.state === 'retired') return;
-            if (handle.multi) handle.state = 'spinning';
-            else await handle.stop();
+            handle.questionsLeft = Math.max(0, handle.questionsLeft - 1);
+            if (handle.questionsLeft > 0) {
+              handle.state = 'idle';
+            } else {
+              handle.state = 'retiring';
+              // retire frames play linearly; then stop() deletes the
+              // message. Wrapped in the loop below.
+            }
           }
         },
         stop: async () => {
           if (handle.state === 'retired') return;
           handle.state = 'retired';
           _liveOracles.delete(target);
-          try {
-            await _timeBound(sock.sendMessage(target, { delete: msgKey }), 'oracle delete');
-          } catch (_) {}
+          try { await _timeBound(sock.sendMessage(target, { delete: msgKey }), 'oracle delete'); }
+          catch (_) {}
         },
       };
       _liveOracles.set(target, handle);
 
-      // Spin loop. Runs until state === 'retired'. While state
-      // === 'thinking' (the brain is working on a question), edit
-      // emissions pause but the loop keeps looping so multi-mode
-      // can resume smoothly. Skip-identical-frame optimization +
-      // adaptive backoff on rate-overlimit.
-      let frameIdx = 0;
-      let lastSent = frames[0];
+      // Edit helper — single place for rate-overlimit handling.
+      let lastSent = initialFrame;
+      async function emit(text) {
+        if (!text || text === lastSent) return;
+        try {
+          await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
+          lastSent = text;
+        } catch (e) {
+          const rateLimited = /rate-overlimit/i.test(e.message ?? '');
+          if (!rateLimited) err(`oracle frame: ${e.message}`);
+          else log(`oracle frame rate-limited; backing off`);
+          await new Promise(r => setTimeout(r, rateLimited ? 8000 : 3000));
+        }
+      }
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+      // Phased animation driver. Walks summon → idle/thinking
+      // cycle → retire, then deletes the message.
       (async () => {
-        while (handle.state !== 'retired') {
-          await new Promise(r => setTimeout(r, frameMs));
-          if (handle.state === 'retired') break;
-          if (handle.state === 'thinking') continue;
-          frameIdx = (frameIdx + 1) % frames.length;
-          const text = frames[frameIdx];
-          if (text === lastSent) continue;
-          try {
-            await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
-            lastSent = text;
-          } catch (e) {
-            const rateLimited = /rate-overlimit/i.test(e.message ?? '');
-            if (!rateLimited) err(`oracle frame: ${e.message}`);
-            else log(`oracle frame rate-limited; backing off`);
-            await new Promise(r => setTimeout(r, rateLimited ? 8000 : 3000));
+        // Phase 1: summon — linear after the initial send.
+        for (let i = 1; i < summonFrames.length; i++) {
+          if (handle.state !== 'summoning') break;
+          await sleep(frameMs);
+          if (handle.state !== 'summoning') break;
+          await emit(summonFrames[i]);
+        }
+        if (handle.state === 'summoning') handle.state = 'idle';
+
+        // Phase 2: idle/thinking cycles. Loop until 'retiring' or
+        // 'retired'. idleFn(N) re-rendered each iteration so a
+        // changed wish count surfaces immediately.
+        let idleIdx = 0, thinkingIdx = 0;
+        while (handle.state !== 'retired' && handle.state !== 'retiring') {
+          await sleep(frameMs);
+          if (handle.state === 'retired' || handle.state === 'retiring') break;
+          if (handle.state === 'thinking' && thinkingFrames.length) {
+            thinkingIdx = (thinkingIdx + 1) % thinkingFrames.length;
+            await emit(thinkingFrames[thinkingIdx]);
+          } else if (handle.state === 'idle') {
+            const frames = idleFn ? idleFn(handle.questionsLeft) : idleFrames;
+            if (frames.length) {
+              idleIdx = (idleIdx + 1) % frames.length;
+              await emit(frames[idleIdx]);
+            }
           }
+        }
+
+        // Phase 3: retire — linear outro before deletion.
+        if (handle.state === 'retiring') {
+          for (let i = 0; i < retireFrames.length; i++) {
+            await emit(retireFrames[i]);
+            await sleep(frameMs);
+            if (handle.state === 'retired') break;
+          }
+          await handle.stop();
         }
       })().catch(e => err(`oracle loop: ${e.message}`));
       return handle;
