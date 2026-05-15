@@ -1675,6 +1675,41 @@ export async function startWhatsAppBridge({
         'react',
       ).catch(e => { err(`react: ${e.message}`); return null; });
     },
+    // Play a frame sequence as a single message that edits itself.
+    // frames is an array of strings; the first is sent fresh, each
+    // subsequent edit replaces the message body after frameMs delay.
+    // Skip-identical-frame optimization so a sloppy frame array
+    // (e.g. duplicate keyframes) doesn't waste edit budget.
+    //
+    // Separate code path from startStreamMessage's edit pump — that
+    // one is debounced to 2.5s for brain typing, this needs the
+    // tighter frame rate of an animation (~400-800ms). The
+    // protocolMessage.editedMessage echo handler folds the edits
+    // onto the original recent[] entry, so /recap won't see N
+    // mid-frame rows.
+    async playFrames({ chatId, frames, frameMs = 700 }) {
+      if (!sock) return null;
+      const target = chatId ?? lastChat;
+      if (!target || !Array.isArray(frames) || !frames.length) return null;
+      const r0 = await _timeBound(
+        sock.sendMessage(target, { text: frames[0] }),
+        'movie initial',
+      ).catch(e => { err(`movie initial: ${e.message}`); return null; });
+      const msgKey = r0?.key;
+      if (!msgKey) return null;
+      rememberSent(msgKey.id);
+      let lastSent = frames[0];
+      for (let i = 1; i < frames.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, frameMs));
+        if (frames[i] === lastSent) continue;
+        await _timeBound(
+          sock.sendMessage(target, { edit: msgKey, text: frames[i] }),
+          `movie frame ${i + 1}/${frames.length}`,
+        ).catch(e => err(`movie frame ${i + 1}: ${e.message}`));
+        lastSent = frames[i];
+      }
+      return { key: msgKey };
+    },
     async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return null;
