@@ -661,13 +661,22 @@ function _buildDeliverFrames(secret) {
   F.push(frame(23, '()'));
   F.push(frame(25, '()'));  // adjacent, primed
 
-  // Entry — parens engulf the D. Two beats: just-in, then settled.
+  // Entry — parens engulf the D briefly, then the D disappears
+  // (it's inside), so only the base + short shaft + hole are
+  // still visible: '#=()'. The # reads as the anchor still
+  // outside, the = is what little shaft hasn't entered yet, the
+  // () is the hole opening around the shaft.
   F.push(' '.repeat(20) + '(====D)' + ' '.repeat(3));
-  F.push(' '.repeat(19) + '((====D))' + ' '.repeat(2));
+  F.push(' '.repeat(20) + '#=()'    + ' '.repeat(6));
 
-  // Delivery — the secret arrives as a 💌. autoDelete revokes
-  // the message after holdMs, so this final frame is the entire
-  // "wink wink" payoff: brief, ephemeral, exactly once.
+  // Explosion in the hole — climax. Centered roughly where the
+  // hole was so the visual continuity reads as "the hole bursts".
+  F.push(' '.repeat(19) + '✨💥💥💥✨' + ' '.repeat(1));
+
+  // Delivery — the secret arrives as a 💌, pops out of the
+  // explosion. autoDelete revokes the message after holdMs so
+  // this final frame is the entire "wink wink" payoff: brief,
+  // ephemeral, exactly once.
   if (motto) {
     F.push('       💌  "' + motto + '"');
   } else {
