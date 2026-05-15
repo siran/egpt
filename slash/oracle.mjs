@@ -16,51 +16,25 @@
 //   ignore   silently drop the new reply
 //   queued   (pending — answer them in order)
 
-// Oracle frames: a 5×9 panel with the 🔮 at center and TWO stars
-// (✦ + ✧) at opposite cardinal positions, rotating clockwise around
-// the crystal. 8 frames = one full orbit. Stable column widths so
-// the eye reads it as motion, not as the whole panel re-flowing.
-//
-// Positions on the panel (row, col), running clockwise:
-//      N : (0, 4)
-//   NE  : (1, 6)
-//      E : (2, 8)
-//   SE  : (3, 6)
-//      S : (4, 4)
-//   SW  : (3, 2)
-//      W : (2, 0)
-//   NW  : (1, 2)
-//
-// The crystal sits at (2, 4); a second star tracks the position
-// opposite (so 4 ahead in the 8-step cycle).
-const ORACLE_FRAMES = (() => {
-  const POS = [
-    [0, 4], [1, 6], [2, 8], [3, 6],
-    [4, 4], [3, 2], [2, 0], [1, 2],
-  ];
-  function panelAt(starIdx) {
-    const rows = [
-      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-      [' ', ' ', ' ', ' ', '🔮', ' ', ' ', ' ', ' '],
-      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
-    ];
-    const [r1, c1] = POS[starIdx % POS.length];
-    const [r2, c2] = POS[(starIdx + 4) % POS.length];
-    rows[r1][c1] = '✦';
-    rows[r2][c2] = '✧';
-    return rows.map(r => r.join('')).join('\n');
-  }
-  // 8-step orbit. At 450ms/frame that's ~3.6s per full revolution
-  // — fast enough to read as continuous motion, slow enough for WA
-  // edits to keep up without rate-limiting.
-  return Array.from({ length: 8 }, (_, i) =>
-    '🔮 *The Oracle* 🧞\n\n' +
-    '```\n' + panelAt(i) + '\n```\n\n' +
-    '_reply with your question_',
-  );
-})();
+// Oracle frames: rotating clock emoji at the center. WA's edit
+// rate ceiling is ~1 edit per 2 seconds sustained per message;
+// anything faster trips 'rate-overlimit' from the server. Twelve
+// clock faces × 2s/frame ≈ 24s per full revolution — slow enough
+// to never hit the cap, mystical enough to read as a real ritual.
+// Each frame changes only the central clock glyph; the title,
+// instruction, and surrounding text stay constant so the message
+// reads as "alive" rather than re-flowing.
+const CLOCK_GLYPHS = [
+  '🕐', '🕑', '🕒', '🕓', '🕔', '🕕',
+  '🕖', '🕗', '🕘', '🕙', '🕚', '🕛',
+];
+const ORACLE_FRAMES = CLOCK_GLYPHS.map(clock =>
+  '🔮 *The Oracle* 🧞\n' +
+  '\n' +
+  '        ' + clock + '\n' +
+  '\n' +
+  '_reply with your question_',
+);
 
 export const meta = {
   cmd: '/oracle',
@@ -147,7 +121,11 @@ export async function run({ arg, ctx }) {
     return true;
   }
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
-  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 450;
+  // WA caps message edits at ~1/2s sustained — go below that and
+  // the server returns 'rate-overlimit' for ~10s. 2000ms keeps the
+  // animation comfortably under the cap with headroom for the brain
+  // dispatch path's own edits.
+  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 2000;
 
   const handle = await wa.startOracle({
     chatId: chat.jid,
