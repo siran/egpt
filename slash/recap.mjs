@@ -60,11 +60,12 @@ export async function run({ arg, ctx }) {
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
   const numTok = tokens.find(t => /^\d+$/.test(t));
   const n = numTok ? parseInt(numTok, 10) : NaN;
-  // No cap by default — operator was explicit: "NO CAP! why are
-  // you capping?". /recap shows every recent[] entry across every
-  // observed chat. /recap N still scopes to N if the operator
-  // wants a tighter view; no upper ceiling on N either.
-  const max = Number.isFinite(n) && n > 0 ? n : Infinity;
+  // /recap N now means "N previews per selected chat" (default 3),
+  // matching /channels' compact shape. Selection itself is curated:
+  // pinned chats always in full, top 5 unpinned per section by
+  // lastActivityTs. Disk retention stays infinite — only the
+  // displayed slice is bounded.
+  const max = Number.isFinite(n) && n > 0 ? n : undefined;
 
   const emojis = theme ? {
     pinned: theme.recapEmojiPinned,

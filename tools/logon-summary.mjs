@@ -41,12 +41,14 @@ const REACTIONS_PATH   = join(HOME, 'reaction-counts.json');
 const LAST_LOGON_PATH  = join(HOME, 'last-logon.json');
 const MEDIA_DIR        = join(HOME, 'media');
 
-// Default recap budget. Effectively uncapped — operator's policy
-// is "show everything in recent[]". recent[] per-chat caps at
-// 1000 so the total across observed chats is naturally bounded
-// (chat count × 1000 worst-case), but the recap itself imposes
-// no further cut by default. /recap N is the explicit scope-down.
-const DEFAULT_RECAP_LINES = Infinity;
+// Previews per chat, default — /recap N now means "N previews per
+// selected chat", not "N total messages". 3 reads like /channels
+// (compact, scannable). Operator can /recap 1 for an even tighter
+// view or /recap 10 to dive deeper without paging through /last.
+const DEFAULT_PREVIEWS_PER_CHAT = 3;
+// How many non-pinned chats to surface per section. Pinned chats
+// always show in full (operator pinned them for a reason).
+const DEFAULT_CHATS_PER_SECTION = 5;
 
 // Returns { text, entries } so the App-mount effect can register each
 // shown WA row in the shell's persisted reply-target sidecar (so
@@ -58,7 +60,7 @@ const DEFAULT_RECAP_LINES = Infinity;
 // the recap rows do not, so the welcome-back is never empty when
 // activity exists.
 export async function buildWelcomeBack({
-  maxRecapLines = DEFAULT_RECAP_LINES,
+  maxRecapLines = DEFAULT_PREVIEWS_PER_CHAT,
   includeDms = false,
   emojis = null,
 } = {}) {
@@ -69,7 +71,7 @@ export async function buildWelcomeBack({
   const reactions = await _readReactions();
   const files     = await _walkMediaFiles(since);
 
-  const recap = await buildRecap({ max: maxRecapLines, includeDms, emojis });
+  const recap = await buildRecap({ max: maxRecapLines, includeDms, emojis, since });
 
   const filesByKind = files.reduce((acc, f) => {
     acc[f.kind] = (acc[f.kind] || 0) + 1;
@@ -186,106 +188,139 @@ export function writeLastLogonNow() {
 // `items` array do). Without registration the displayed ids would
 // be cosmetic; with it, /recap becomes an actual jump-into-the-
 // conversation surface.
+// Curated /recap: a chat-list (like /channels) with N previews per
+// chat. Sections in fixed order — pinned chats float regardless of
+// kind, then top-K unpinned groups, then status feed, then top-K
+// unpinned DMs (only with includeDms). Operator's policy:
+//   • pinned chats always show in full (they pinned them for a reason)
+//   • top 5 unpinned per kind by lastActivityTs (most-recent first)
+//   • each chat shows its last `max` recent[] previews
+//   • output mirrors /channels visually: header line + indented
+//     `author: body` previews, no per-row id or timestamp
+//
+// Returns { text, entries, rows, chatList } — entries register reply
+// targets, chatList overwrites waChannelsCacheRef so '@waN' resolves
+// to the same chat the operator just read.
 export async function buildRecap({
-  max = DEFAULT_RECAP_LINES,
+  max = DEFAULT_PREVIEWS_PER_CHAT,
+  chatsPerSection = DEFAULT_CHATS_PER_SECTION,
   since = null,
   includeDms = false,
   emojis = null,
 } = {}) {
   const chats = await _readChats();
   const mediaIndex = await _loadMediaIndex();
-  const recap = _collectRecent(chats, since, max, { includeDms, mediaIndex });
-  if (!recap.length) return null;
   const emo = { ...DEFAULT_EMOJI, ...(emojis || {}) };
-  const scope = includeDms ? 'all chats' : 'groups + status (no DMs)';
-  const titleText = since
-    ? `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} since ${_formatAgo(Date.now() - since)} ago — ${scope}:`
-    : `recap — last ${recap.length} msg${recap.length === 1 ? '' : 's'} — ${scope}:`;
 
-  // Build two parallel outputs: the structured `rows` for the Ink
-  // renderer's _recap branch (per-segment colors per row) and the
-  // flat `text` for the transcript / log fallback. Both walk the
-  // same recap list in lockstep.
+  const isPinned = (c) => (c.pinned || 0) > 0 || (c.egptPinned || 0) > 0;
+  const isStatus = (c) => c.jid === 'status@broadcast';
+  const isGroup  = (c) => !!c.isGroup && !isStatus(c);
+  const isDm     = (c) => !c.isGroup && !isStatus(c);
+  const recencyDesc = (a, b) => (b.lastActivityTs || 0) - (a.lastActivityTs || 0);
+
+  // Selection by section. Pinned promotes regardless of kind, so a
+  // pinned DM lands in Pinned and doesn't appear in DMs again.
+  const pinnedChats = chats.filter(isPinned).sort(recencyDesc);
+  const groupsTop  = chats.filter(c => isGroup(c)  && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
+  const statusTop  = chats.filter(c => isStatus(c) && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
+  const dmsTop     = includeDms
+    ? chats.filter(c => isDm(c) && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection)
+    : [];
+
+  const sections = [
+    { kind: 'pinned', chats: pinnedChats, capped: false },
+    { kind: 'group',  chats: groupsTop,   capped: groupsTop.length === chatsPerSection },
+    { kind: 'status', chats: statusTop,   capped: false },
+    { kind: 'dm',     chats: dmsTop,      capped: dmsTop.length === chatsPerSection },
+  ];
+
+  if (!sections.some(s => s.chats.length)) return null;
+
+  // Build chatList in display order so @waN resolves correctly.
+  const chatList = [];
+  for (const s of sections) for (const c of s.chats) chatList.push(c);
+
+  const titleText = since
+    ? `recap — since ${_formatAgo(Date.now() - since)} ago` + (includeDms ? '' : ' (DMs hidden — --all)')
+    : 'recap' + (includeDms ? '' : ' (DMs hidden — --all)');
+
   const rows = [{ type: 'title', text: titleText }];
   const lines = [titleText];
   const entries = [];
-  // chatList collects the chats in display order so the caller can
-  // overwrite waChannelsCacheRef.current — that way the operator can
-  // type '@wa3 hello' (or /join @wa3, /pin @wa3 …) right off the
-  // recap output without bouncing through /channels first. The waIdx
-  // shown on each chat header is 1-based and increments in the same
-  // order chats appear here.
-  const chatList = [];
-  const chatIdxByJid = new Map();
-  let currentSection = null;
-  let prevChat = null, prevAuthor = null;
-  for (const m of recap) {
-    if (m.section !== currentSection) {
-      currentSection = m.section;
-      const emoji = emo[m.section] ?? '';
-      const label = SECTION_LABEL_TEXT[m.section] ?? m.section;
-      rows.push({ type: 'blank' });
-      rows.push({ type: 'section', section: m.section, emoji, label });
-      lines.push('');
-      lines.push(`  ${emoji} ${label}`);
-      prevChat = null; prevAuthor = null;
-    }
-    if (m.chatLabel !== prevChat) {
-      // New chat block within this section. Strip the section-redundant
-      // suffix / prefix from the display title — section header above
-      // already says 'Groups' / 'DMs' / 'Status feed', so 'Auge family
-      // (group)' becomes 'Auge family' and 'DM with Daniel' becomes
-      // 'Daniel'. The internal chatLabel (used for grouping + repeat
-      // tracking) keeps the original form.
-      const displayChat = m.chatLabel
+  let waIdx = 0;
+
+  for (const section of sections) {
+    if (!section.chats.length) continue;
+    const emoji = emo[section.kind] ?? '';
+    const label = SECTION_LABEL_TEXT[section.kind] ?? section.kind;
+    const more = section.capped ? ` (top ${chatsPerSection})` : '';
+    rows.push({ type: 'blank' });
+    rows.push({ type: 'section', section: section.kind, emoji, label: label + more });
+    lines.push('');
+    lines.push(`  ${emoji} ${label}${more}`);
+
+    for (const c of section.chats) {
+      waIdx++;
+      const kindTag = isStatus(c) ? 'status' : (isGroup(c) ? 'group' : '1:1');
+      const displayName = (c.name && c.name.trim() ? c.name.trim() : (c.jid?.split('@')[0] ?? '?'))
         .replace(/\s+\(group\)$/, '')
         .replace(/^DM with\s+/, '');
-      // Assign @waN by display order; dedupe on jid in case a chat
-      // appears in multiple sections (shouldn't, but safe).
-      let waIdx = chatIdxByJid.get(m.chat?.jid);
-      if (waIdx == null && m.chat) {
-        chatList.push(m.chat);
-        waIdx = chatList.length;
-        chatIdxByJid.set(m.chat.jid, waIdx);
-      }
-      rows.push({ type: 'blank' });
+      // _formatAgo already appends "ago" (e.g. "5m ago"); don't double it.
+      const ageText = c.lastActivityTs > 0
+        ? _formatAgo(Date.now() - c.lastActivityTs)
+        : (c.creationTs > 0 ? 'dormant' : 'never');
       rows.push({
-        type: 'chat',
-        section: m.section,
-        chatLabel: displayChat,
+        type: 'chat-header',
+        section: section.kind,
         waIdx,
+        pinned: isPinned(c),
+        kindTag,
+        chatLabel: displayName,
+        age: ageText,
       });
-      lines.push('');
-      lines.push(`    @wa${waIdx}  ${displayChat}`);
-      prevChat = m.chatLabel;
-      prevAuthor = null;
+      const pin = isPinned(c) ? '📌 ' : '';
+      lines.push(`    ${pin}@wa${waIdx}  [${kindTag}]  ${displayName}  (${ageText})`);
+
+      // Last `max` previews from this chat's recent[]. Skip empty
+      // bodies; register each preview's reply-target.
+      const recent = Array.isArray(c.recent) ? c.recent : [];
+      const slice = recent.filter(r => r && typeof r.text === 'string' && r.text.trim() && r.ts).slice(-max);
+      for (const r of slice) {
+        let stableId = null, replyTarget = null;
+        if (r.key?.id) {
+          stableId = `wa-${r.key.id}`;
+          replyTarget = {
+            kind: 'wa',
+            chatId: c.jid,
+            key: { id: r.key.id, fromMe: !!r.key.fromMe, remoteJid: c.jid },
+            raw: { conversation: r.text },
+          };
+          entries.push({ stableId, replyTarget });
+        }
+        const enriched = _enrichStoredReaction(r.text, chats);
+        let mediaPath = null;
+        if (mediaIndex && r.key?.id) {
+          const m = mediaIndex.get(r.key.id);
+          if (m?.path) mediaPath = m.path;
+        }
+        rows.push({
+          type: 'preview',
+          section: section.kind,
+          author: r.author ?? '?',
+          body: enriched,
+          stableId,
+          mediaPath,
+        });
+        lines.push(`       ${r.author ?? '?'}: ${enriched.replace(/\s+/g, ' ').trim()}`);
+      }
     }
-    const cont = (m.author === prevAuthor);
-    rows.push({
-      type: 'row',
-      section: m.section,
-      ts: m.ts,
-      stableId: m.stableId ?? '',
-      author: m.author ?? '?',
-      chatLabel: m.chatLabel,
-      body: m.text,
-      mediaPath: m.mediaPath ?? null,
-      cont,
-    });
-    lines.push('    ' + _formatRecapLine(m, cont));
-    if (m.stableId && m.replyTarget) {
-      entries.push({ stableId: m.stableId, replyTarget: m.replyTarget });
-    }
-    prevAuthor = m.author;
   }
+
   rows.push({ type: 'blank' });
+  rows.push({ type: 'hint', text: '@waN to address a chat · @<id> <body> to reply · /recap N for more previews · /recap --all for DMs' });
   lines.push('');
-  if (!includeDms) {
-    rows.push({ type: 'hint', text: '(DMs hidden — /recap --all to include them)' });
-    lines.push('  (DMs hidden — /recap --all to include them)');
-  }
-  rows.push({ type: 'hint', text: 'reply with @<id> <body>, or address a chat with @waN — ids prefix-match' });
-  lines.push('  reply with @<id> <body>, or address a chat with @waN — ids prefix-match');
+  lines.push('  @waN to address a chat · @<id> <body> to reply · /recap N for more previews · /recap --all for DMs');
+
   return { text: lines.join('\n'), entries, rows, chatList };
 }
 

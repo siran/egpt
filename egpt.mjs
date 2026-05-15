@@ -5176,16 +5176,44 @@ function App() {
                   return h(Text, { key: i, color: sectionColor(row.section), bold: true },
                     `  ${row.emoji} ${row.label}`);
                 if (row.type === 'chat')
-                  // Full chat name (no truncation) + @waN handle so the
-                  // operator can address the chat (e.g. /join @wa3,
-                  // /pin @wa3, @wa3 hello) without bouncing through
-                  // /channels first. The waChannelsCacheRef is
-                  // refreshed alongside the recap so @waN tokens
-                  // resolve to the same chat the operator just read.
+                  // Legacy 'chat' row (compatibility). New chat headers
+                  // emit type 'chat-header' below with the richer
+                  // /channels-shape (📌 + @waN + [kind] + name + age).
                   return h(Text, { key: i, color: sectionColor(row.section), bold: true },
                     `    `,
                     h(Text, { color: T.recapId }, row.waIdx ? `@wa${row.waIdx}  ` : ''),
                     row.chatLabel);
+                if (row.type === 'chat-header') {
+                  // 📌 (if pinned) @waN [kind] name (age)
+                  // Each segment colors independently so the eye can
+                  // grab the addressable @waN without parsing.
+                  return h(Text, { key: i },
+                    '    ',
+                    row.pinned ? h(Text, { color: T.recapColorPinned }, '📌 ') : '',
+                    h(Text, { color: T.recapId, bold: true }, `@wa${row.waIdx}`),
+                    h(Text, { color: T.recapHint }, `  [${row.kindTag}]  `),
+                    h(Text, { color: sectionColor(row.section), bold: true }, row.chatLabel),
+                    h(Text, { color: T.recapHint }, `  (${row.age})`));
+                }
+                if (row.type === 'preview') {
+                  // Compact preview line: '       author: body'
+                  // No id, no timestamp — those clutter the at-a-
+                  // glance scan. Operator scrolls / runs /recap N
+                  // for more detail.
+                  const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
+                  const body = oneLine(row.body);
+                  const bdDisp = row.mediaPath
+                    ? clickablePath(body, row.mediaPath)
+                    : body;
+                  const folderDisp = row.mediaPath
+                    ? '  ' + clickablePath('📁', dirname(row.mediaPath))
+                    : '';
+                  return h(Text, { key: i },
+                    '       ',
+                    h(Text, { color: T.recapAuthor }, row.author),
+                    h(Text, { color: T.recapHint }, ': '),
+                    h(Text, { color: T.recapBody }, bdDisp + folderDisp));
+                }
                 if (row.type === 'hint')
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
                 if (row.type === 'row') {
