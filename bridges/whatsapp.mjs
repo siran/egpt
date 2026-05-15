@@ -1655,6 +1655,8 @@ export async function startWhatsAppBridge({
     prefetchHistoryForTopChats,
     getChatName,
     getChatSlug,
+    setEgptPin,
+    listEgptPinned,
     // Fire-and-forget group-name lookup. Idempotent (returns
     // immediately if the chat already has a name OR if a fetch is
     // already in flight). Used by /recap to backfill names for any
