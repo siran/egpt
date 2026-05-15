@@ -228,6 +228,16 @@ export async function startWhatsAppBridge({
   // final frame. State persists until daemon exit; nothing here is
   // written to disk.
   const _personalizedMovies = new Map();
+  // pushName cache — baileys' sock.contacts[jid].notify is sparse:
+  // it isn't reliably populated for the operator's own JID (the
+  // operator's name lives on sock.user.name), and for friends'
+  // JIDs it sometimes empty until baileys has fully synced the
+  // contact list. We capture pushNames from every inbound message
+  // we see (msg.pushName) so subsequent read-receipt lookups can
+  // resolve a name even when sock.contacts is bare. pushName-only
+  // by construction — never seeded from sock.contacts[jid].name
+  // (the address-book label), per the wa-pushname-only memory.
+  const _pushNameByJid = new Map();
   // Host-driven awareness bypass: chats whose every message should
   // pass through to onIncoming regardless of awareness defaults.
   // /use @waN and /join @waN add entries here so the operator sees
@@ -830,6 +840,23 @@ export async function startWhatsAppBridge({
           log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
         }
       }
+      // — pushName harvest — every message carries the sender's
+      // self-set display name on `msg.pushName`. We cache it keyed by
+      // the bare-jid form (device suffix stripped) so the read-
+      // receipt resolver can find a name even when sock.contacts is
+      // sparse. Skip fromMe rows — for the operator we read
+      // sock.user.name in the resolver instead, which is the
+      // authoritative self-pushName source.
+      for (const m of messages) {
+        if (m?.pushName && typeof m.pushName === 'string' && m.pushName.trim() && !m.key?.fromMe) {
+          const sender = m.key?.participant ?? m.key?.remoteJid;
+          if (sender) {
+            const bare = sender.split(':')[0];
+            _pushNameByJid.set(bare, m.pushName.trim());
+          }
+        }
+      }
+
       // — SILENT track — every row, regardless of type, feeds the
       // chat-list tracker. No UI, no onIncoming, no brain dispatch.
       // We extract the body here to keep a small recent-messages ring
@@ -1809,12 +1836,43 @@ export async function startWhatsAppBridge({
 
   // ── Personalized-movie helpers ────────────────────────────────
   // Resolve a JID to a display name using pushName only — never the
-  // operator's address book. Order: msg.pushName (per-message),
-  // sock.contacts[jid].notify, fall back to the JID's bare digits.
-  // See the wa-pushname-only feedback memory for the rationale.
+  // operator's address book.
+  //
+  // Lookup order (pushName-only by construction; see the
+  // wa-pushname-only feedback memory):
+  //   1. msg.pushName       — per-message hint, most authoritative
+  //   2. sock.user.name     — when the jid matches the operator's
+  //                           own (myJid/myLid); baileys keeps the
+  //                           operator's self-pushName here, not on
+  //                           sock.contacts[myJid].notify (which is
+  //                           often empty).
+  //   3. _pushNameByJid     — cache populated from inbound message
+  //                           events (msg.pushName captured at
+  //                           upsert time)
+  //   4. sock.contacts[jid].notify   — baileys' own contact cache
+  //   5. bare digits         — last resort
   function _resolvePushName(jid, msgPushName) {
     if (msgPushName && typeof msgPushName === 'string' && msgPushName.trim()) {
       return msgPushName.trim();
+    }
+    const bare = jid?.split(':')[0] ?? null;
+    if (bare) {
+      const myBareJid = myJid?.split(':')[0];
+      const myBareLid = myLid?.split(':')[0];
+      if (bare === myBareJid || bare === myBareLid) {
+        const selfName = sock?.user?.name;
+        if (selfName && typeof selfName === 'string' && selfName.trim()) {
+          return selfName.trim();
+        }
+        const selfNotify = sock?.user?.notify;
+        if (selfNotify && typeof selfNotify === 'string' && selfNotify.trim()) {
+          return selfNotify.trim();
+        }
+      }
+      const cached = _pushNameByJid.get(bare);
+      if (cached && typeof cached === 'string' && cached.trim()) {
+        return cached.trim();
+      }
     }
     const contact = sock?.contacts?.[jid];
     if (contact?.notify && typeof contact.notify === 'string' && contact.notify.trim()) {
@@ -1823,7 +1881,7 @@ export async function startWhatsAppBridge({
     if (contact?.pushName && typeof contact.pushName === 'string' && contact.pushName.trim()) {
       return contact.pushName.trim();
     }
-    return jid?.split(':')[0]?.split('@')[0] ?? '?';
+    return bare?.split('@')[0] ?? '?';
   }
 
   // Render <username> against a viewers list. mode 'append' uses an
