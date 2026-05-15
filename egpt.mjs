@@ -2848,7 +2848,9 @@ function App() {
       _welcomeBackRanRef.current = true;
       try {
         const out = await buildWelcomeBack({
-          maxRecapLines: 30,
+          // Inherit the bumped default (200) so the welcome-back
+          // reflects the operator's full overnight, not a 30-row
+          // preview that hid most of what arrived.
           includeDms: false,
           emojis: {
             pinned: T.recapEmojiPinned,

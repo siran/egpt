@@ -60,7 +60,11 @@ export async function run({ arg, ctx }) {
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
   const numTok = tokens.find(t => /^\d+$/.test(t));
   const n = numTok ? parseInt(numTok, 10) : NaN;
-  const max = Number.isFinite(n) && n > 0 ? Math.min(n, 500) : 30;
+  // No cap by default — operator was explicit: "NO CAP! why are
+  // you capping?". /recap shows every recent[] entry across every
+  // observed chat. /recap N still scopes to N if the operator
+  // wants a tighter view; no upper ceiling on N either.
+  const max = Number.isFinite(n) && n > 0 ? n : Infinity;
 
   const emojis = theme ? {
     pinned: theme.recapEmojiPinned,
