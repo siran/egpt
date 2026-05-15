@@ -656,6 +656,26 @@ export async function startWhatsAppBridge({
     for (const [k, t] of _sentIds) if (t < cutoff) _sentIds.delete(k);
   }
 
+  // Override baileys' default auto-extraction of @<digits> patterns
+  // from outgoing message text into contextInfo.mentionedJid. Without
+  // this, a reply that quotes or echoes any text containing a
+  // phone-shaped token (e.g. "@4290722676802 dijo…") silently sets
+  // mentionedJid for those numbers — which WhatsApp renders as @-
+  // mention notifications to every matching member of the chat,
+  // regardless of their in-app mute settings. Operators in a 17-
+  // person group reported: "every reply notifies everyone".
+  //
+  // mentions:[] explicitly tells baileys NO mentions on this
+  // message, period. The wrapper only adds it when the payload
+  // carries user-visible text (text / edit); react / delete have
+  // no body and skip the override.
+  function _safeSend(target, payload, opts) {
+    if (payload?.text !== undefined || payload?.edit !== undefined) {
+      payload = { ...payload, mentions: [] };
+    }
+    return opts ? sock.sendMessage(target, payload, opts) : sock.sendMessage(target, payload);
+  }
+
   function connect() {
     if (stopped) return;
     sock = makeWASocket({
@@ -1725,7 +1745,7 @@ export async function startWhatsAppBridge({
       const target = chatId ?? lastChat;
       if (!target || !key?.id) return null;
       return _timeBound(
-        sock.sendMessage(target, { edit: key, text }),
+        _safeSend(target, { edit: key, text }),
         'editMessage',
       ).then(r => { rememberSent(r?.key?.id); return r; })
        .catch(e => { err(`editMessage: ${e.message}`); return null; });
@@ -1766,7 +1786,7 @@ export async function startWhatsAppBridge({
         ?? (idleFn ? idleFn(questionsLeft)[0] : idleFrames[0])
         ?? '🧞';
       const r0 = await _timeBound(
-        sock.sendMessage(target, { text: initialFrame }),
+        _safeSend(target, { text: initialFrame }),
         'oracle initial',
       ).catch(e => { err(`oracle initial: ${e.message}`); return null; });
       const msgKey = r0?.key;
@@ -1814,7 +1834,7 @@ export async function startWhatsAppBridge({
       async function emit(text) {
         if (!text || text === lastSent) return;
         try {
-          await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
+          await _timeBound(_safeSend(target, { edit: msgKey, text }), 'oracle frame');
           lastSent = text;
         } catch (e) {
           const rateLimited = /rate-overlimit/i.test(e.message ?? '');
@@ -1919,7 +1939,7 @@ export async function startWhatsAppBridge({
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
       const r0 = await _timeBound(
-        sock.sendMessage(target, { text: frames[0] }),
+        _safeSend(target, { text: frames[0] }),
         'movie initial',
       ).catch(e => { err(`movie initial: ${e.message}`); return null; });
       const msgKey = r0?.key;
@@ -1930,7 +1950,7 @@ export async function startWhatsAppBridge({
         await new Promise(resolve => setTimeout(resolve, frameMs));
         if (frames[i] === lastSent) continue;
         await _timeBound(
-          sock.sendMessage(target, { edit: msgKey, text: frames[i] }),
+          _safeSend(target, { edit: msgKey, text: frames[i] }),
           `movie frame ${i + 1}/${frames.length}`,
         ).catch(e => err(`movie frame ${i + 1}: ${e.message}`));
         lastSent = frames[i];
@@ -1957,7 +1977,7 @@ export async function startWhatsAppBridge({
       let firstResult = null;
       for (let i = 0; i < chunks.length; i++) {
         try {
-          const r = await _timeBound(sock.sendMessage(target, { text: chunks[i] }), 'send');
+          const r = await _timeBound(_safeSend(target, { text: chunks[i] }), 'send');
           rememberSent(r?.key?.id);
           if (i === 0) firstResult = r;
         } catch (e) {
@@ -1987,12 +2007,12 @@ export async function startWhatsAppBridge({
       // key (wa-<id>) instead of a random u-<rnd>, and subsequent
       // '@wa-<id> …' references reach this message correctly.
       if (!key) {
-        return _timeBound(sock.sendMessage(target, { text }), 'replyTo (fallback send)')
+        return _timeBound(_safeSend(target, { text }), 'replyTo (fallback send)')
           .then(r => { rememberSent(r?.key?.id); return r; })
           .catch(e => { err(`replyTo (fallback send): ${e.message}`); return null; });
       }
       const quoted = { key, message: raw ?? { conversation: '' } };
-      return _timeBound(sock.sendMessage(target, { text }, { quoted }), 'replyTo')
+      return _timeBound(_safeSend(target, { text }, { quoted }), 'replyTo')
         .then(r => { rememberSent(r?.key?.id); return r; })
         .catch(e => { err(`replyTo: ${e.message}`); return null; });
     },
@@ -2047,7 +2067,7 @@ export async function startWhatsAppBridge({
       // initialDone forever (would otherwise hang every update + finish).
       (async () => {
         try {
-          const r = await _timeBound(sock.sendMessage(target, { text: initialText }), 'stream start');
+          const r = await _timeBound(_safeSend(target, { text: initialText }), 'stream start');
           msgKey = r?.key ?? null;
           rememberSent(r?.key?.id);
         } catch (e) {
@@ -2065,7 +2085,7 @@ export async function startWhatsAppBridge({
         if (pending === null || pending === lastSent) return;
         const text = pending;
         pending = null;
-        _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'stream edit')
+        _timeBound(_safeSend(target, { edit: msgKey, text }), 'stream edit')
           .then((r) => {
             rememberSent(r?.key?.id);
             lastSent = text;
@@ -2108,7 +2128,7 @@ export async function startWhatsAppBridge({
             if (initialDone && msgKey) {
               if (chunks[0] !== lastSent) {
                 const r = await _timeBound(
-                  sock.sendMessage(target, { edit: msgKey, text: chunks[0] }),
+                  _safeSend(target, { edit: msgKey, text: chunks[0] }),
                   'stream finish edit',
                 );
                 rememberSent(r?.key?.id);
@@ -2121,7 +2141,7 @@ export async function startWhatsAppBridge({
             } else {
               // Initial send failed or still in flight: plain send.
               const r = await _timeBound(
-                sock.sendMessage(target, { text: chunks[0] }),
+                _safeSend(target, { text: chunks[0] }),
                 'stream finish send',
               );
               rememberSent(r?.key?.id);
@@ -2131,7 +2151,7 @@ export async function startWhatsAppBridge({
             for (let i = 1; i < chunks.length; i++) {
               try {
                 const r = await _timeBound(
-                  sock.sendMessage(target, { text: chunks[i] }),
+                  _safeSend(target, { text: chunks[i] }),
                   `stream finish chunk ${i + 1}/${chunks.length}`,
                 );
                 rememberSent(r?.key?.id);
