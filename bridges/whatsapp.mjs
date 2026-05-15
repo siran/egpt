@@ -1732,18 +1732,16 @@ export async function startWhatsAppBridge({
     },
     // Summon a long-running oracle in `chatId`. Sends frames[0] as a
     // fresh message, then cycles through `frames` indefinitely
-    // (frameMs per beat) until a reply arrives or stop() is called.
-    // When a reply lands, onReply(replyMsg) is invoked and the
-    // handle's `state` flips to 'thinking' — further replies during
-    // that window go through onBusy (if provided) instead of onReply.
-    // Returns the handle ({ msgKey, stop, state, ... }) so the
-    // caller can retire the oracle from outside.
+    // (frameMs per beat). When a reply lands, onReply(replyMsg) is
+    // invoked and the handle's `state` flips to 'thinking' — further
+    // replies during that window go through onBusy.
     //
-    // Frame strings: wrap them yourself in ``` if you want WA's
-    // monospace block — playFrames-style wrapping isn't applied
-    // here, so the caller has full control over title / footer /
-    // panel composition.
-    async startOracle({ chatId, frames, frameMs = 1000, onReply, onBusy }) {
+    // multi: false (default)  oracle retires after the first answer.
+    //        true              oracle resumes spinning after each
+    //                          answer; only /oracle stop retires it.
+    //
+    // Returns the handle ({ msgKey, stop, state, multi, ... }).
+    async startOracle({ chatId, frames, frameMs = 1000, onReply, onBusy, multi = false }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
@@ -1759,6 +1757,7 @@ export async function startWhatsAppBridge({
         msgKey,
         chatId: target,
         state: 'spinning',
+        multi,
         onReply: async (replyMsg) => {
           // Busy gate — operator-configured behavior for subsequent
           // replies while the brain is processing the first one.
@@ -1771,9 +1770,13 @@ export async function startWhatsAppBridge({
           handle.state = 'thinking';
           try { await onReply?.(replyMsg, handle); }
           finally {
-            // Whether onReply succeeded or threw, retire the oracle
-            // — operator can /oracle again to spawn a fresh one.
-            await handle.stop();
+            // In multi mode the oracle resumes spinning for the next
+            // question. The spin loop watches handle.state and flips
+            // back into edit-emitting mode automatically. In single
+            // mode (default) the oracle retires after the answer.
+            if (handle.state === 'retired') return;
+            if (handle.multi) handle.state = 'spinning';
+            else await handle.stop();
           }
         },
         stop: async () => {
@@ -1787,16 +1790,18 @@ export async function startWhatsAppBridge({
       };
       _liveOracles.set(target, handle);
 
-      // Spin loop — edits the message through frame cycles until
-      // state flips out of 'spinning'. Skip-identical-frame
-      // optimization plus a longer pause on edit failure so rate
-      // limits don't compound.
+      // Spin loop. Runs until state === 'retired'. While state
+      // === 'thinking' (the brain is working on a question), edit
+      // emissions pause but the loop keeps looping so multi-mode
+      // can resume smoothly. Skip-identical-frame optimization +
+      // adaptive backoff on rate-overlimit.
       let frameIdx = 0;
       let lastSent = frames[0];
       (async () => {
-        while (handle.state === 'spinning') {
+        while (handle.state !== 'retired') {
           await new Promise(r => setTimeout(r, frameMs));
-          if (handle.state !== 'spinning') break;
+          if (handle.state === 'retired') break;
+          if (handle.state === 'thinking') continue;
           frameIdx = (frameIdx + 1) % frames.length;
           const text = frames[frameIdx];
           if (text === lastSent) continue;
@@ -1804,12 +1809,6 @@ export async function startWhatsAppBridge({
             await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
             lastSent = text;
           } catch (e) {
-            // Rate-overlimit is expected when frame_ms drops below
-            // WA's per-message-edit ceiling (~1/2s sustained). It's
-            // recoverable: sleep longer, retry next loop iteration.
-            // Goes to the silent log (/log) rather than the shell
-            // sysOut so a slow loop doesn't spam !! lines on every
-            // failed frame.
             const rateLimited = /rate-overlimit/i.test(e.message ?? '');
             if (!rateLimited) err(`oracle frame: ${e.message}`);
             else log(`oracle frame rate-limited; backing off`);
