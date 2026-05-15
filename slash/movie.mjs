@@ -677,27 +677,57 @@ function _buildDeliverFrames(secret) {
   // little 💨 puff of relief.
   F.push(pad(' '.repeat(26) + '()  💨'));
 
-  // Fist enters — the secret is in the hole; it has to be pulled
-  // out. 👊 approaches, touches, slips inside.
-  F.push(pad(' '.repeat(16) + '👊            ()'));
-  F.push(pad(' '.repeat(22) + '👊()'));
-  F.push(pad(' '.repeat(22) + '(👊)'));
+  // Hand arrives from the left and waves hello. 🖐️ palm, 👋 wave,
+  // back to 🖐️ — readable as a wave in two beats.
+  F.push(pad('  🖐️                      ()'));
+  F.push(pad('  👋                      ()'));
+  F.push(pad('  🖐️                      ()'));
 
-  // Fist exits holding the secret. The 💌 IS the message —
-  // autoDelete revokes the whole movie after holdMs, so this
-  // is the "wink wink" payoff: brief, ephemeral, exactly once.
+  // Arm extends — the hand reaches toward the hole, arm grows
+  // as a string of '=' between hand-base and palm. Same visual
+  // grammar as the ====D approach earlier.
+  F.push(pad('  ==🖐️                    ()'));
+  F.push(pad('  ========🖐️              ()'));
+  F.push(pad('  ==============🖐️        ()'));
+  F.push(pad('  ====================🖐️()'));   // palm touching
+
+  // Palm closes into a fist, fist enters the hole (knuckles go
+  // BEHIND the (, same model as the dick — () is the entrance,
+  // not a wrapper).
+  F.push(pad('  ====================✊()'));
+  F.push(pad('  ====================(✊)'));     // fist halfway through
+  F.push(pad('  ====================()'));      // knuckles inside, arm only
+
+  // Fist withdraws — but it's holding something. The arm shrinks
+  // back as the fist comes out, dragging the secret behind it on
+  // a banner. ━ (heavy horizontal) for the banner cloth.
+  F.push(pad('  ================✊'));            // fist out, banner not yet
+  F.push(pad('  ============✊━━'));              // banner cloth starting
+  F.push(pad('  ========✊━━━━━━━━'));            // banner unfurling
   if (motto) {
-    F.push(pad('       ✊💌  "' + motto + '"'));
+    F.push(pad('  ✊━━━━━━━━  "' + motto + '"')); // banner + secret
   } else {
-    F.push(pad('       ✊💌  delivered'));
+    F.push(pad('  ✊━━━━━━━━  delivered'));
   }
 
-  // Aftermath — the hole closes back: () → O → o → . The
-  // reverse of the bounce-open sequence at the start.
+  // Ass closes — () → O → o → . The reverse of the bounce-open
+  // at the start. The banner stays visible above (held by ✊).
   F.push(pad(' '.repeat(26) + '()'));
   F.push(pad(' '.repeat(26) + 'O'));
   F.push(pad(' '.repeat(26) + 'o'));
   F.push(pad(' '.repeat(26) + '.'));
+
+  // Message fades — UTF-8 block-density fade for the phrase
+  // itself. █ solid → ▓ dark → ▒ medium → ░ light → space. The
+  // banner stays visible on the left for one frame, then it
+  // dims with the text.
+  if (motto) {
+    const L = motto.length;
+    F.push(pad('  ✊━━━━━━━━  "' + '█'.repeat(L) + '"'));
+    F.push(pad('  ✊━━━━  ' + '▓'.repeat(L + 2)));
+    F.push(pad('  ✊  ' + '▒'.repeat(L)));
+    F.push(pad('  ' + '░'.repeat(L)));
+  }
 
   return F;
 }
