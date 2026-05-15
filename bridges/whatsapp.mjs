@@ -161,6 +161,7 @@ export async function startWhatsAppBridge({
   onChatId,    // called once when first chat is captured (host can persist)
   onQR,        // called with the rendered QR ASCII when WA wants a fresh pair; host can route to a visible surface
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
+  onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -1234,6 +1235,35 @@ export async function startWhatsAppBridge({
             catch (e) { err(`oracle onReply: ${e.message}`); }
             return;                          // bypass normal flow
           }
+        }
+      }
+    }
+
+    // '@?' wake-word: in-chat genie summon. When the operator
+    // types '@?' (alone or with surrounding text) in a chat, the
+    // bridge fires onSummonGenie so the host can spin up a genie
+    // there. Default access policy: fromMe (operator) only, since
+    // a public summon-anywhere is loud and the operator hadn't
+    // yet wired allowed_summoners config. Per-chat dedup: if an
+    // oracle already runs in this chat, the @? ping is ignored
+    // (operator /oracle stop @waN, then /oracle @waN, or simply
+    // wait — the existing genie is theirs to use).
+    if (typeof onSummonGenie === 'function'
+        && msg.key?.fromMe
+        && !_sentIds.has(msg.key?.id)) {
+      const body = textOf(msg.message);
+      if (body && /(?:^|\s)@\?(?=\s|$|[.,!?;])/i.test(body)) {
+        const chatJid = msg.key?.remoteJid;
+        if (chatJid && !_liveOracles.has(chatJid)) {
+          try {
+            await onSummonGenie({ chatId: chatJid, fromMessage: msg });
+          } catch (e) {
+            err(`onSummonGenie: ${e.message}`);
+          }
+          // Don't return: the original message still records into
+          // recent[] and the rest of the awareness flow runs. The
+          // genie summon is a side effect of the operator typing
+          // '@?', not a replacement for normal message handling.
         }
       }
     }
