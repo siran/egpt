@@ -1642,8 +1642,26 @@ export async function startWhatsAppBridge({
     prefetchHistoryForTopChats,
     getChatName,
     getChatSlug,
-    setEgptPin,
-    listEgptPinned,
+    // Fire-and-forget group-name lookup. Idempotent (returns
+    // immediately if the chat already has a name OR if a fetch is
+    // already in flight). Used by /recap to backfill names for any
+    // group whose chat record is on disk but lacks a subject —
+    // typically groups that haven't appeared in /channels yet.
+    ensureGroupName: _ensureGroupName,
+    // React to an existing WA message. `key` is the WAMessageKey of
+    // the target; `emoji` is the literal reaction text (or '' /
+    // null to remove an existing reaction from the same target).
+    // Returns the baileys send result so the caller can capture the
+    // reaction's own key for echo bookkeeping.
+    async react({ chatId, key, emoji }) {
+      if (!sock) return null;
+      const target = chatId ?? lastChat;
+      if (!target || !key?.id) return null;
+      return _timeBound(
+        sock.sendMessage(target, { react: { text: emoji ?? '', key } }),
+        'react',
+      ).catch(e => { err(`react: ${e.message}`); return null; });
+    },
     async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return null;
@@ -1994,14 +2012,18 @@ function _quotedPreview(ctx) {
   const oneLine = inner.replace(/\s+/g, ' ').trim();
   if (!oneLine) return null;
   const trimmed = oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
-  // participant is the JID of the original sender. We don't have a
-  // contact-name resolver here so we surface the bare number suffix
-  // (last 6 digits) as a hint; full attribution lives in the
-  // original message's own line elsewhere in the transcript.
+  // Attribution: last 6 digits of the original sender's phone
+  // number. The leading 'from' label was added when the operator
+  // reported confusing the bare '(…123456)' suffix for a truncated
+  // msg-id — 'from' makes it clear this is the sender, not a
+  // message reference. Resolving to a contact display name when
+  // known would be nicer, but _quotedPreview lives at module scope
+  // and can't reach the bridge factory's _chats Map without a
+  // wider refactor; phone-suffix attribution stays the fallback.
   const who = ctx.participant
     ? ctx.participant.split('@')[0]?.split(':')[0]?.slice(-6) ?? null
     : null;
-  return who ? `↳ ${trimmed}  (…${who})` : `↳ ${trimmed}`;
+  return who ? `↳ ${trimmed}  (from …${who})` : `↳ ${trimmed}`;
 }
 
 // Extract a textual body from any baileys message variant. For
