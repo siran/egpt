@@ -9,14 +9,16 @@
 // echo; everything else (frame phases, wish counting, retire
 // orchestration) is encapsulated.
 
+// Compact summon — bottle → puff → smoke face → genie. Operator
+// asked for shorter; 4 visible states at ~1500ms each ≈ 4.5s total
+// from invocation to "ready to answer", down from ~12s. The "face"
+// frame is a multi-line emoji panel that suggests a daemon
+// peeking out before fully emerging.
 const SUMMON_FRAMES = [
   '🍾',
-  '🍾  _the bottle shudders…_',
   '🍾  💨',
-  '🍾💨💨',
-  '💨💨💨',
-  '✨💨💨💨✨',
-  '🧞  _emerging…_',
+  '👁️ 👁️\n  ◯  \n 🍾',
+  '🧞',
 ];
 
 const THINKING_FRAMES = [
@@ -102,6 +104,14 @@ export async function summonGenie({
         raw: replyMsg.message,
         text: '🧞 thinking…',
       });
+      // Register the answer-message key with the oracle so a reply
+      // to this answer (the natural UX for "continue the thread")
+      // triggers the next round. Without this, only replies to the
+      // original spinner matched the intercept, and the 2nd
+      // question silently fell through to normal awareness gates.
+      if (thinking?.key?.id && oracle?.associatedKeys) {
+        oracle.associatedKeys.add(thinking.key.id);
+      }
       const answer = await computeBrainTurn(brainName, question);
       const wishesAfter = Math.max(0, (oracle?.questionsLeft ?? questionsLeft) - 1);
       const footer = wishesAfter > 0
@@ -111,7 +121,10 @@ export async function summonGenie({
       if (thinking?.key) {
         await wa.editMessage?.({ chatId, key: thinking.key, text: finalText });
       } else {
-        await wa.replyTo({ chatId, key: replyMsg.key, raw: replyMsg.message, text: finalText });
+        const fresh = await wa.replyTo({ chatId, key: replyMsg.key, raw: replyMsg.message, text: finalText });
+        if (fresh?.key?.id && oracle?.associatedKeys) {
+          oracle.associatedKeys.add(fresh.key.id);
+        }
       }
       sysOut?.(`🧞 [${chatName}] @${brainName}: ${answer || '(silence)'}`);
     },
