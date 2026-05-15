@@ -1796,8 +1796,16 @@ export async function startWhatsAppBridge({
             await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
             lastSent = text;
           } catch (e) {
-            err(`oracle frame: ${e.message}`);
-            await new Promise(r => setTimeout(r, 3000));
+            // Rate-overlimit is expected when frame_ms drops below
+            // WA's per-message-edit ceiling (~1/2s sustained). It's
+            // recoverable: sleep longer, retry next loop iteration.
+            // Goes to the silent log (/log) rather than the shell
+            // sysOut so a slow loop doesn't spam !! lines on every
+            // failed frame.
+            const rateLimited = /rate-overlimit/i.test(e.message ?? '');
+            if (!rateLimited) err(`oracle frame: ${e.message}`);
+            else log(`oracle frame rate-limited; backing off`);
+            await new Promise(r => setTimeout(r, rateLimited ? 8000 : 3000));
           }
         }
       })().catch(e => err(`oracle loop: ${e.message}`));
