@@ -76,15 +76,19 @@ const RECONNECT_MAX_MS = 60_000;
 // that also fails, errOut tells the operator clearly.
 const SEND_TIMEOUT_MS = 12_000;
 const CHATS_CACHE_PATH = join(homedir(), '.egpt', 'wa-chats.json');
-// Cap the persisted cache to avoid runaway growth — keep the most-
-// recently-active. 500 is generous for a normal WA usage pattern.
-const CHATS_CACHE_CAP = 500;
+// No cap on the persisted chat cache. Operator: "why are you even
+// deleting chats? there's space enough. whatsapp or beeper don't
+// delete my message. history is sacred." Every chat we've ever
+// observed stays in wa-chats.json. Disk grows with chat count;
+// that's the operator-accepted tradeoff.
+const CHATS_CACHE_CAP = Infinity;
 // Phase 2 logon-summary: reactions are tracked across chats and
 // persisted to a separate file so they survive bridge restarts and
 // so the interactive shell's "while you were away" report can find
 // the most-reacted item without scanning the room md.
 const REACTION_COUNTS_PATH = join(homedir(), '.egpt', 'reaction-counts.json');
-const REACTION_COUNTS_CAP = 500;
+// Same policy: don't evict reaction history.
+const REACTION_COUNTS_CAP = Infinity;
 // Per-msg body preview cache (text snippeted to ≤60 chars, keyed by
 // WA stanza id). In-memory was 4000 entries scoped to one bridge
 // session — fine for "reply during the call", broken for "look up
@@ -283,10 +287,11 @@ export async function startWhatsAppBridge({
   // resolve the target message body ("[reaction 👍 to "buy bitcoin!"]"
   // instead of "[reaction 👍 (msg 3A9838E5)]"). Lookup is by full
   // WA stanza id (msg.key.id) which is what reactionMessage carries.
-  // Cap is generous but bounded — reactions can arrive minutes after
-  // the original message, so we keep more than _chats.recent's ring.
+  // No cap — history is sacred. The cache grows linearly with every
+  // observed message we record a body for; persists across restarts
+  // via the 5s debounced disk save below.
   const _msgBodyById = new Map();
-  const _MSG_BODY_CACHE_CAP = 4_000;
+  const _MSG_BODY_CACHE_CAP = Infinity;
   // Load persisted cache on boot — survives bridge restarts so
   // reaction enrichment can resolve parents from any session in the
   // last ~4000 messages, not just this one.
