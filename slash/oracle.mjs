@@ -16,42 +16,48 @@
 //   ignore   silently drop the new reply
 //   queued   (pending — answer them in order)
 
-// Five-frame mystical starfield. WA monospace block (```) preserves
-// whitespace so the column positions hold across edits.
+// Oracle frames: a 5×9 panel with the 🔮 at center and TWO stars
+// (✦ + ✧) at opposite cardinal positions, rotating clockwise around
+// the crystal. 8 frames = one full orbit. Stable column widths so
+// the eye reads it as motion, not as the whole panel re-flowing.
+//
+// Positions on the panel (row, col), running clockwise:
+//      N : (0, 4)
+//   NE  : (1, 6)
+//      E : (2, 8)
+//   SE  : (3, 6)
+//      S : (4, 4)
+//   SW  : (3, 2)
+//      W : (2, 0)
+//   NW  : (1, 2)
+//
+// The crystal sits at (2, 4); a second star tracks the position
+// opposite (so 4 ahead in the 8-step cycle).
 const ORACLE_FRAMES = (() => {
-  const panels = [
-    [
-      '·  ⋆  .  ✦  .  ⋆  ·',
-      ' .  ✦  .  ⋆  .  ✦ ',
-      '⋆  .  ✦  🔮 ✦  .  ⋆',
-      ' .  ✦  .  ⋆  .  ✦ ',
-      '·  ⋆  .  ✦  .  ⋆  ·',
-    ],
-    [
-      '⋆  .  ✦  .  ⋆  .  ✦',
-      ' .  ⋆  ✦  .  ✦  ⋆ ',
-      '.  ✦  ⋆  🔮 ⋆  ✦  .',
-      ' .  ⋆  ✦  .  ✦  ⋆ ',
-      '⋆  .  ✦  .  ⋆  .  ✦',
-    ],
-    [
-      '✦  .  ⋆  ·  ⋆  .  ✦',
-      ' ⋆  ✦  ·  .  ·  ✦ ',
-      '.  ·  ⋆  🔮 ⋆  ·  .',
-      ' ⋆  ✦  ·  .  ·  ✦ ',
-      '✦  .  ⋆  ·  ⋆  .  ✦',
-    ],
-    [
-      '.  ⋆  ✦  ⋆  ✦  ⋆  .',
-      ' ✦  .  ⋆  .  ⋆  . ',
-      '·  ⋆  .  🔮 .  ⋆  ·',
-      ' ✦  .  ⋆  .  ⋆  . ',
-      '.  ⋆  ✦  ⋆  ✦  ⋆  .',
-    ],
+  const POS = [
+    [0, 4], [1, 6], [2, 8], [3, 6],
+    [4, 4], [3, 2], [2, 0], [1, 2],
   ];
-  return panels.map(p =>
+  function panelAt(starIdx) {
+    const rows = [
+      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+      [' ', ' ', ' ', ' ', '🔮', ' ', ' ', ' ', ' '],
+      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+      [' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '],
+    ];
+    const [r1, c1] = POS[starIdx % POS.length];
+    const [r2, c2] = POS[(starIdx + 4) % POS.length];
+    rows[r1][c1] = '✦';
+    rows[r2][c2] = '✧';
+    return rows.map(r => r.join('')).join('\n');
+  }
+  // 8-step orbit. At 450ms/frame that's ~3.6s per full revolution
+  // — fast enough to read as continuous motion, slow enough for WA
+  // edits to keep up without rate-limiting.
+  return Array.from({ length: 8 }, (_, i) =>
     '🔮 *The Oracle* 🧞\n\n' +
-    '```\n' + p.join('\n') + '\n```\n\n' +
+    '```\n' + panelAt(i) + '\n```\n\n' +
     '_reply with your question_',
   );
 })();
@@ -141,7 +147,7 @@ export async function run({ arg, ctx }) {
     return true;
   }
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
-  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 1000;
+  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 450;
 
   const handle = await wa.startOracle({
     chatId: chat.jid,
