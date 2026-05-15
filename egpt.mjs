@@ -2351,13 +2351,15 @@ function App() {
             return;
           }
           const chatName = wa.getChatName?.(chatId) || chatId;
-          const { frames, frameMs: ms, autoDelete, holdMs, presetName } = payload;
+          const { frames, frameMs: ms, autoDelete, holdMs, presetName, template, mode, joiner } = payload;
           const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
-          sysOut(`🎬 @movie ${presetName} in "${chatName}"  (${frames.length} fr · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s${autoDelete ? ' · auto-delete' : ''})`);
+          const personalizedNote = template ? ' · personalized (waiting for first read)' : '';
+          sysOut(`🎬 @movie ${presetName} in "${chatName}"  (${frames.length} fr · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s${autoDelete ? ' · auto-delete' : ''}${personalizedNote})`);
           try {
             await wa.playFrames({
               chatId, frames, frameMs: ms, autoDelete, holdMs,
               existingKey: triggerKey,
+              template, mode, joiner,
             });
           } catch (e) {
             errOut(`@movie failed: ${e.message}`);

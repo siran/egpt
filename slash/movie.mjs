@@ -614,6 +614,133 @@ function _buildCoupleFrames(secret) {
 // wrap (per the preset's monospace:true flag) preserves the
 // leading spaces that encode how far the D has approached.
 
+// ── Bomb movie ────────────────────────────────────────────────
+//
+// Multi-row bomb: bomb sits, fuse grows up from it, spark lights
+// at the top of the fuse and travels down, BOOM fills the canvas,
+// smoke clears, secret/template reveal appears in the cleared
+// space. 5-row × 28-col canvas; same _padR conventions as the
+// other multi-row presets.
+//
+// With --template "...<username>...", the reveal frame's dialog
+// is the template (substituted by the WA bridge at emit time
+// using the running viewers list).
+
+function _buildBombFrames(dialog) {
+  const motto = (dialog || '').trim().slice(0, 60);
+  const W = 28;
+  const padR = (s) => s.length >= W ? s : s + ' '.repeat(W - s.length);
+  const empty = ' '.repeat(W);
+
+  // Compose a 5-row frame.
+  const frame = (rows) => {
+    const r = [...rows];
+    while (r.length < 5) r.push(empty);
+    return r.map(padR).join('\n');
+  };
+
+  const F = [];
+
+  // F1. Bomb sits, fuse-free.
+  F.push(frame([
+    empty, empty, empty,
+    '            💣',
+    empty,
+  ]));
+
+  // F2-3. Fuse grows up from the bomb.
+  F.push(frame([
+    empty, empty,
+    '            |',
+    '            💣',
+    empty,
+  ]));
+  F.push(frame([
+    empty,
+    '            |',
+    '            |',
+    '            💣',
+    empty,
+  ]));
+
+  // F4. Spark appears at top of fuse — lit.
+  F.push(frame([
+    '            *',
+    '            |',
+    '            |',
+    '            💣',
+    empty,
+  ]));
+
+  // F5-7. Spark travels down the fuse toward the bomb.
+  F.push(frame([
+    empty,
+    '            *',
+    '            |',
+    '            💣',
+    empty,
+  ]));
+  F.push(frame([
+    empty, empty,
+    '            *',
+    '            💣',
+    empty,
+  ]));
+  F.push(frame([
+    empty, empty, empty,
+    '            💣*',
+    empty,
+  ]));
+
+  // F8. Pre-flash — small burst at the bomb.
+  F.push(frame([
+    empty, empty, empty,
+    '          💥💥💥',
+    empty,
+  ]));
+
+  // F9. BOOM — fills the canvas radially.
+  F.push(frame([
+    '          💥  💥',
+    '         💥💥💥💥',
+    '        💥💥💥💥💥💥',
+    '         💥💥💥💥',
+    '          💥  💥',
+  ]));
+
+  // F10. Bigger BOOM with sparkles at the corners.
+  F.push(frame([
+    '       ✨💥  💥✨',
+    '       💥💥💥💥💥💥',
+    '      💥💥💥💥💥💥💥',
+    '       💥💥💥💥💥💥',
+    '       ✨💥  💥✨',
+  ]));
+
+  // F11-12. Smoke disperses.
+  F.push(frame([
+    empty,
+    '         💨   💨',
+    '          💨💨',
+    '         💨   💨',
+    empty,
+  ]));
+  F.push(frame([
+    empty, empty,
+    '          💨',
+    empty, empty,
+  ]));
+
+  // F13. Reveal — secret/template appears in the cleared space.
+  F.push(frame([
+    empty, empty,
+    '   💌 "' + motto + '"',
+    empty, empty,
+  ]));
+
+  return F;
+}
+
 function _buildDeliverFrames(secret) {
   const motto = secret ? secret.trim().slice(0, 60) : '';
   const W = 40;       // wider canvas — entry frames carry moan text past the hole
@@ -737,12 +864,14 @@ export const PRESETS = {
   alien: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 2500,
     consumesSecret: true,
-    params: '[--secret "<dialog>"]',
+    params: '[--secret "<dialog>"] [--template "...<username>..."]',
     desc: 'UFO lands → 👽 stick figure emerges, walks, drinks 🍾, ' +
           'smokes 🚬, burps 💨 revealing the secret, walks back, ' +
           'UFO flies away. Whole message auto-deletes; alien takes ' +
-          'its props with it (no litter).',
-    build: (arg) => _buildAlienFrames(arg),
+          'its props with it (no litter). With --template containing ' +
+          '<username>, the burp dialog personalizes to whoever read ' +
+          'the message.',
+    build: (arg, opts = {}) => _buildAlienFrames(opts.template || arg),
   },
   pirate: {
     ms: 700, monospace: true, autoDelete: true, holdMs: 3000,
@@ -755,7 +884,7 @@ export const PRESETS = {
           'above the beach — uncovers 💰, reads 📜 with the secret as ' +
           'the treasure note, walks back with the gold, ship sails back ' +
           'over the horizon. Dialog only shows when --secret is passed.',
-    build: (arg) => _buildPirateFrames(arg),
+    build: (arg, opts = {}) => _buildPirateFrames(opts.template || arg),
   },
   couple: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 4000,
@@ -767,12 +896,23 @@ export const PRESETS = {
           '💤 lying-down aftermath, fade to night. Adult cartoon ' +
           'comedy — ASCII only, no anatomy depicted. Trigger from a ' +
           'WA chat with @movie couple --secret "...".',
-    build: (arg) => _buildCoupleFrames(arg),
+    build: (arg, opts = {}) => _buildCoupleFrames(opts.template || arg),
+  },
+  bomb: {
+    ms: 600, monospace: true, autoDelete: true, holdMs: 3500,
+    consumesSecret: true,
+    params: '[--secret "<message>"] [--template "...<username>..."]',
+    desc: '5-row bomb cartoon: bomb sits, fuse grows up, spark lights ' +
+          'and travels down, BOOM fills the canvas, smoke clears, ' +
+          'secret/template reveals in the cleared space. With ' +
+          '--template containing <username>, the reveal personalizes ' +
+          "to whoever read the message.",
+    build: (arg, opts = {}) => _buildBombFrames(opts.template || arg),
   },
   deliver: {
     ms: 500, monospace: true, autoDelete: true, holdMs: 3500,
     consumesSecret: true,
-    params: '[--secret "<message>"]',
+    params: '[--secret "<message>"] [--template "...<username>..."]',
     desc: 'one-line cartoon: ====D approaches a . on the right. The ' +
           'hole is too small, D bounces off; each bounce opens the ' +
           'hole a notch wider (. → o → O → ()). When () is wide ' +
@@ -782,16 +922,19 @@ export const PRESETS = {
           'once and then gone. Triple-backtick monospace preserves ' +
           "the leading-space approach distance. Operator-greenlit; " +
           'lighter touch than the full couple preset.',
-    build: (arg) => _buildDeliverFrames(arg),
+    build: (arg, opts = {}) => _buildDeliverFrames(opts.template || arg),
   },
 
   // ── Utility presets ──────────────────────────────────────────
   typewriter: {
     ms: 100, autoDelete: true, holdMs: 2500,
-    params: '<text>',
-    desc: 'reveals text character by character with a ▌ cursor',
-    build: (arg) => {
-      const text = (arg || 'hello, world').trim().slice(0, 200);
+    consumesSecret: true,
+    params: '<text> | [--template "...<username>..."]',
+    desc: 'reveals text character by character with a ▌ cursor. With ' +
+          '--template containing <username>, the typed text personalizes ' +
+          'to whoever read the message.',
+    build: (arg, opts = {}) => {
+      const text = (opts.template || arg || 'hello, world').trim().slice(0, 200);
       const out = [];
       for (let i = 0; i <= text.length; i++) out.push(text.slice(0, i) + (i < text.length ? '▌' : ''));
       out.push(text);
@@ -831,6 +974,29 @@ export function buildMoviePayload(argsStr) {
   let positional = '';
   let secret = null;
   let keep = false;
+  // Personalization (read-receipt driven):
+  //   template: dialog string with `<username>` placeholder; the WA
+  //             bridge substitutes at each frame's emit time using
+  //             the running list of readers' pushNames.
+  //   mode:     'append' (default) — list grows; 'first' — one-shot.
+  //   joiner:   how names separate in the rendered list (default ', ').
+  // When template is set, the bridge holds animation start until the
+  // first read receipt arrives.
+  let template = null;
+  let mode = 'append';
+  let joiner = ', ';
+  // Multi-word flag collector: grabs tokens until the next --flag,
+  // then strips one surrounding pair of quotes. Shared by --secret,
+  // --template, --frames so they all handle "spaces in quotes" the
+  // same way.
+  const collectMultiWord = (i) => {
+    const rest = [];
+    while (i < tokens.length && !tokens[i].startsWith('--')) {
+      rest.push(tokens[i]);
+      i++;
+    }
+    return { value: rest.join(' ').replace(/^["']|["']$/g, ''), nextI: i - 1 };
+  };
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t === '--ms' && tokens[i + 1]) {
@@ -840,23 +1006,21 @@ export function buildMoviePayload(argsStr) {
     } else if (t === '--keep') {
       keep = true;
     } else if (t === '--secret' && tokens[i + 1]) {
-      const rest = [];
-      i++;
-      while (i < tokens.length && !tokens[i].startsWith('--')) {
-        rest.push(tokens[i]);
-        i++;
-      }
-      i--;
-      secret = rest.join(' ').replace(/^["']|["']$/g, '');
+      const r = collectMultiWord(i + 1);
+      secret = r.value;
+      i = r.nextI;
+    } else if (t === '--template' && tokens[i + 1]) {
+      const r = collectMultiWord(i + 1);
+      template = r.value;
+      i = r.nextI;
+    } else if (t === '--mode' && tokens[i + 1]) {
+      mode = tokens[++i].replace(/^["']|["']$/g, '');
+    } else if (t === '--joiner' && tokens[i + 1]) {
+      joiner = tokens[++i].replace(/^["']|["']$/g, '');
     } else if (t === '--frames' && tokens[i + 1]) {
-      const rest = [];
-      i++;
-      while (i < tokens.length && !tokens[i].startsWith('--')) {
-        rest.push(tokens[i]);
-        i++;
-      }
-      i--;
-      customFrames = rest.join(' ').replace(/^["']|["']$/g, '').split('|').map(s => s.trim()).filter(Boolean);
+      const r = collectMultiWord(i + 1);
+      customFrames = r.value.split('|').map(s => s.trim()).filter(Boolean);
+      i = r.nextI;
     } else if (!presetName) {
       presetName = t;
     } else {
@@ -880,12 +1044,16 @@ export function buildMoviePayload(argsStr) {
     // appended as a trailing 💬 frame so it surfaces somewhere.
     let buildArg = positional;
     if (p.consumesSecret && secret && !positional) buildArg = secret;
-    frames = p.frames ?? p.build(buildArg);
+    // build(arg, opts) — opts.template wins over arg for the
+    // dialog/headline slot when present. The frame text includes
+    // <username> as a literal placeholder; the WA bridge resolves
+    // it at emit time from the running viewers list.
+    frames = p.frames ?? p.build(buildArg, { template, mode, joiner, secret });
     if (!p.consumesSecret && secret) frames = [...frames, `💬 "${secret}"`];
     if (p.monospace) frames = frames.map(f => '```\n' + f + '\n```');
     ms = frameMs ?? p.ms;
     autoDelete = keep ? false : (p.autoDelete ?? true);
-    holdMs = secret ? Math.max(p.holdMs ?? 2000, 3500) : (p.holdMs ?? 2000);
+    holdMs = (secret || template) ? Math.max(p.holdMs ?? 2000, 3500) : (p.holdMs ?? 2000);
   } else {
     return { error: `unknown preset "${presetName ?? '(none)'}"` };
   }
@@ -893,7 +1061,7 @@ export function buildMoviePayload(argsStr) {
   if (frames.length > 60) {
     return { error: `${frames.length} frames exceeds the 60-frame ceiling — split into shorter movies` };
   }
-  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional };
+  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner };
 }
 
 export const meta = {
@@ -971,15 +1139,16 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /movie: ${payload.error}. /movie list to see options.`);
     return true;
   }
-  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional } = payload;
+  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner } = payload;
 
   const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
   const tag = positional || secret
     ? `${presetName ?? 'custom'} ${secret ? `--secret "${secret}"` : `"${positional}"`}`
     : (presetName ?? 'custom');
   const fate = autoDelete ? `auto-delete after ${holdMs}ms` : 'keep';
-  sysOut(`🎬 /movie ${tag} → ${targetTok} "${chat.name}" (${frames.length} frames · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s · ${fate})`);
-  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs });
+  const personalizedNote = template ? `  · personalized (waiting for first read)` : '';
+  sysOut(`🎬 /movie ${tag} → ${targetTok} "${chat.name}" (${frames.length} frames · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s · ${fate}${personalizedNote})`);
+  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs, template, mode, joiner });
   if (!r?.key) sysOut(`!! /movie: bridge returned no key — initial send may have failed`);
   return true;
 }
