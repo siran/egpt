@@ -9,42 +9,38 @@
 // echo; everything else (frame phases, wish counting, retire
 // orchestration) is encapsulated.
 
-// Genie face — three eyes + nose + mouth. The two mortal eyes
-// (👁️) sit on row 2; the third eye of wisdom pulses above them
-// on a different rhythm (pure-ASCII ◯ → ○ → o → -, which reads
-// as breathing/scanning regardless of WA's emoji rendering
-// quirks). 👃 nose stays constant; 👄 mouth occasionally morphs
-// into 🫦 (biting lips) for a flicker of expression.
+// Genie face — three rows. Eye-nose-eye on the middle row so
+// the nose reads as part of the face instead of floating below
+// the eyes; mouth below; third eye of wisdom on top. The third
+// eye is a moon phase (🌑→🌒→🌓→🌔→🌕) — full-width so it
+// aligns with the nose/mouth centerline, and the lunar cycle
+// reads as mystical breathing rather than mechanical pulse.
 //
-// Layout uses a triple-backtick monospace block so WA preserves
-// the leading spaces exactly — without the block, leading
-// whitespace gets stripped on some clients and the face slides
-// out of column. Inside the block, columns are: 4 spaces between
-// mortal eyes, 3 leading spaces for the center column (third
-// eye, nose, mouth) so they all sit visually centered between
-// the eyes.
+// All rows live inside a triple-backtick monospace block so WA
+// preserves leading whitespace exactly. Layout columns:
+//   row 1:  "   <top> "         third eye centered at cols 3-4
+//   row 2:  "👁️ 👃 👁️"          eyes flanking the nose, 8 cols wide
+//   row 3:  "   <mouth>"        mouth centered at cols 3-4
 //
-// Third-eye states: '◯' (wide alert), '○' (watching), 'o' (dim),
-// '-' (resting).
-// Mortal states:    '👁️' (open), '〰️' (closed).
-// Mouth states:     '👄' (default), '🫦' (biting lips).
-const _face = (top, left, right, mouth = '👄') =>
-  '```\n' +
-  `   ${top}\n` +
-  `${left}    ${right}\n` +
-  '   👃\n' +
-  `   ${mouth}\n` +
-  '```';
+// Mortal states: '👁️' (open), '〰️' (closed).
+// Mouth states:  '👄' (default), '🫦' (biting lips).
+const _face = (top, left, right, mouth = '👄') => [
+  '```',
+  `   ${top}`,
+  `${left} 👃 ${right}`,
+  `   ${mouth}`,
+  '```',
+].join('\n');
 
-// Compact summon — bottle → puff → wisdom eye peers out → full
+// Compact summon — bottle → puff → wisdom moon peers out → full
 // face emerges. ~4.5s total. The peek frame opens the third eye
 // first (it's the one of wisdom — it sees you coming); the
 // other parts follow when the genie fully emerges.
 const SUMMON_FRAMES = [
   '🍾',
   '🍾  💨',
-  '```\n   ◯\n  🍾\n```',
-  _face('◯', '👁️', '👁️'),
+  '```\n   🌒\n  🍾\n```',
+  _face('🌕', '👁️', '👁️'),
 ];
 
 const THINKING_FRAMES = [
@@ -55,47 +51,48 @@ const THINKING_FRAMES = [
   '🍾  *almost there…*  💡',
 ];
 
-// Retire — third eye dims first (it saw the end coming), then
+// Retire — third eye wanes first (it saw the end coming), then
 // mortal pair closes, then the face recedes into the bottle.
 const RETIRE_FRAMES = [
-  _face('-', '👁️', '👁️') + '\n\n_your wishes are spent._',
-  _face('-', '〰️', '〰️') + '\n\n_farewell._  👋',
-  '```\n〰️    〰️\n  🍾\n```',
+  _face('🌒', '👁️', '👁️') + '\n\n_your wishes are spent._',
+  _face('🌑', '〰️', '〰️') + '\n\n_farewell._  👋',
+  '```\n   🌑\n  🍾\n```',
   '💨\n🍾',
   '🍾',
   '_(the bottle is empty)_',
 ];
 
-// Idle cycle. Each frame is { text, ms } — the bridge honors
-// the per-frame dwell, so blinks and winks flash quickly (~300ms)
-// between long open beats (~3s). That keeps the average edit
-// rate well under WA's ceiling while letting the blinks feel
-// like actual blinks rather than 3-second eye closures.
+// Idle cycle. Each frame is { text, ms } — the bridge honors the
+// per-frame dwell, so blinks and winks flash quickly (~300ms)
+// between long open beats (~6s). Holds are deliberately slow:
+// WA delivers every edit to every recipient, and although edits
+// are supposed to be silent, some clients re-surface the chat in
+// the chat list (or render an "edited" indicator) on each one.
+// Slowing the cycle to ~10 edits/minute keeps the genie feeling
+// alive without flooding anyone's phone — and the bridge caps
+// total idle edits per cycle on top of that (see startOracle's
+// idleAnimationBudget).
 //
-// Third-eye column shows the pulse pattern; mortal pair holds
-// 👁️/👁️ except on the blink/wink beats. Mouth occasionally
-// morphs into 🫦 on hold frames. The rhythms aren't aligned, so
-// the eyes/mouth feel like independent organs rather than one
-// coordinated face.
+// Third eye runs the lunar cycle independently of the mortal
+// pair's blinks, so the face feels like a face rather than a
+// single coordinated organ.
 function idleFrames(N) {
   const wishes = N === 1 ? '1 wish' : `${N} wishes`;
   const footer = `\n\n*${wishes} remaining*\n_reply with your question_`;
   const f = (top, l, r, mouth) => _face(top, l, r, mouth) + footer;
-  const HOLD = 3000;
+  const HOLD  = 6000;
   const BLINK = 300;
   return [
-    { text: f('◯', '👁️', '👁️'),       ms: HOLD  },   //  0  wide alert
-    { text: f('○', '👁️', '👁️'),       ms: HOLD  },   //  1  watching
-    { text: f('o', '👁️', '👁️'),       ms: HOLD  },   //  2  dim
-    { text: f('-', '👁️', '👁️'),       ms: HOLD  },   //  3  resting
-    { text: f('○', '〰️', '〰️'),       ms: BLINK },   //  4  *blink*
-    { text: f('○', '👁️', '👁️', '🫦'), ms: HOLD  },   //  5  watching (bites lip)
-    { text: f('◯', '👁️', '👁️'),       ms: HOLD  },   //  6  wide alert
-    { text: f('○', '〰️', '👁️'),       ms: BLINK },   //  7  wink-L
-    { text: f('o', '👁️', '👁️'),       ms: HOLD  },   //  8  dim
-    { text: f('-', '👁️', '👁️', '🫦'), ms: HOLD  },   //  9  resting (bites lip)
-    { text: f('○', '👁️', '〰️'),       ms: BLINK },   // 10  wink-R
-    { text: f('○', '👁️', '👁️'),       ms: HOLD  },   // 11  watching
+    { text: f('🌕', '👁️', '👁️'),       ms: HOLD  },   // 0  full alert
+    { text: f('🌔', '👁️', '👁️'),       ms: HOLD  },   // 1  gibbous watching
+    { text: f('🌓', '👁️', '👁️', '🫦'), ms: HOLD  },   // 2  quarter, bites lip
+    { text: f('🌒', '👁️', '👁️'),       ms: HOLD  },   // 3  crescent
+    { text: f('🌑', '〰️', '〰️'),       ms: BLINK },   // 4  new moon + blink
+    { text: f('🌒', '👁️', '👁️'),       ms: HOLD  },   // 5  crescent waking
+    { text: f('🌓', '〰️', '👁️'),       ms: BLINK },   // 6  wink-L
+    { text: f('🌔', '👁️', '👁️'),       ms: HOLD  },   // 7  gibbous
+    { text: f('🌕', '👁️', '〰️'),       ms: BLINK },   // 8  wink-R
+    { text: f('🌕', '👁️', '👁️', '🫦'), ms: HOLD  },   // 9  full alert, bites lip
   ];
 }
 
