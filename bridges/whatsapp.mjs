@@ -219,6 +219,15 @@ export async function startWhatsAppBridge({
   // value is the handle returned by startOracle: { msgKey, chatId,
   // onReply, stop, state }.
   const _liveOracles = new Map();
+  // Live personalized movies — keyed by sent msgKey.id. When a movie
+  // is dispatched with a `template` containing <username>, the bridge
+  // holds animation start until the first read receipt arrives, then
+  // plays the frames substituting <username> with the running list of
+  // viewers' pushNames. Subsequent reads append to the list and (if
+  // the animation already finished) emit one in-place edit of the
+  // final frame. State persists until daemon exit; nothing here is
+  // written to disk.
+  const _personalizedMovies = new Map();
   // Host-driven awareness bypass: chats whose every message should
   // pass through to onIncoming regardless of awareness defaults.
   // /use @waN and /join @waN add entries here so the operator sees
@@ -698,6 +707,42 @@ export async function startWhatsAppBridge({
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Read-receipt routing for personalized movies. WA delivers
+    // status transitions on 'messages.update' (status enum 4 = READ
+    // for 1:1) and per-participant read events on
+    // 'message-receipt.update' (for groups). We listen on both,
+    // filter to keys we know are personalized-movie sends, and
+    // forward to the per-movie handler with the reader's pushName
+    // resolved via _resolvePushName (pushName-only, never the
+    // operator's address book — see the wa-pushname-only feedback).
+    sock.ev.on('messages.update', (updates) => {
+      if (!Array.isArray(updates)) return;
+      for (const u of updates) {
+        if (!u?.key?.id || !u.update) continue;
+        const state = _personalizedMovies.get(u.key.id);
+        if (!state) continue;
+        if (u.update.status !== 4 /* READ */) continue;
+        const readerJid = u.key.participant ?? u.key.remoteJid ?? null;
+        _handlePersonalizedRead(state, readerJid);
+      }
+    });
+    sock.ev.on('message-receipt.update', (updates) => {
+      if (!Array.isArray(updates)) return;
+      for (const u of updates) {
+        if (!u?.key?.id) continue;
+        const state = _personalizedMovies.get(u.key.id);
+        if (!state) continue;
+        // baileys shapes vary by version — accept both
+        // .receipt.readTimestamp (older) and .receipt.type === 'read'
+        // (newer). userJid may be on .receipt or top-level.
+        const r = u.receipt ?? {};
+        const isRead = r.readTimestamp != null || r.type === 'read';
+        if (!isRead) continue;
+        const readerJid = r.userJid ?? u.participant ?? u.key.participant ?? null;
+        _handlePersonalizedRead(state, readerJid);
+      }
+    });
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
@@ -1762,6 +1807,115 @@ export async function startWhatsAppBridge({
     return local ? _slugify(local, 24) : null;
   }
 
+  // ── Personalized-movie helpers ────────────────────────────────
+  // Resolve a JID to a display name using pushName only — never the
+  // operator's address book. Order: msg.pushName (per-message),
+  // sock.contacts[jid].notify, fall back to the JID's bare digits.
+  // See the wa-pushname-only feedback memory for the rationale.
+  function _resolvePushName(jid, msgPushName) {
+    if (msgPushName && typeof msgPushName === 'string' && msgPushName.trim()) {
+      return msgPushName.trim();
+    }
+    const contact = sock?.contacts?.[jid];
+    if (contact?.notify && typeof contact.notify === 'string' && contact.notify.trim()) {
+      return contact.notify.trim();
+    }
+    if (contact?.pushName && typeof contact.pushName === 'string' && contact.pushName.trim()) {
+      return contact.pushName.trim();
+    }
+    return jid?.split(':')[0]?.split('@')[0] ?? '?';
+  }
+
+  // Render <username> against a viewers list. mode 'append' uses an
+  // Oxford-comma "and" for the last name (`A, B, and C`); other
+  // modes (including 'first') just join with the joiner.
+  function _renderUsername(text, viewers, mode, joiner) {
+    if (!text || typeof text !== 'string' || !text.includes('<username>')) return text;
+    let resolved;
+    if (!Array.isArray(viewers) || viewers.length === 0) {
+      resolved = '...';
+    } else if (viewers.length === 1) {
+      resolved = viewers[0];
+    } else if (mode === 'append') {
+      const allButLast = viewers.slice(0, -1).join(joiner);
+      resolved = allButLast + ' and ' + viewers[viewers.length - 1];
+    } else {
+      resolved = viewers.join(joiner);
+    }
+    return text.split('<username>').join(resolved);
+  }
+
+  // Called from the read-receipt event handlers. Appends a new viewer
+  // (dedup by pushName) and either starts the animation (first read)
+  // or — if the animation already finished — emits one in-place edit
+  // of the final frame with the updated viewer list.
+  function _handlePersonalizedRead(state, readerJid) {
+    if (!state || !readerJid) return;
+    const readerName = _resolvePushName(readerJid, null);
+    if (!readerName) return;
+    // Dedup — once a pushName is in the list, repeated reads from the
+    // same user (e.g. opening the chat multiple times) don't grow it.
+    if (state.viewers.includes(readerName)) return;
+    state.viewers.push(readerName);
+
+    if (!state.started) {
+      state.started = true;
+      _runPersonalizedAnimation(state).catch(e => err(`personalized run: ${e.message}`));
+    } else if (state.finished) {
+      _emitPersonalizedFinalFrame(state).catch(e => err(`personalized final update: ${e.message}`));
+    }
+    // else: animation in flight — next emit picks up the updated
+    // viewers list automatically.
+  }
+
+  // Drive the frame loop for a personalized movie. Each emit
+  // re-renders the frame against the current state.viewers, so
+  // names added mid-animation appear in subsequent frames without
+  // a restart.
+  async function _runPersonalizedAnimation(state) {
+    const { msgKey, chatId, frames, frameMs, autoDelete, holdMs, template, mode, joiner } = state;
+    let lastSent = null;
+    for (let i = 0; i < frames.length; i++) {
+      if (!_personalizedMovies.has(msgKey.id)) return; // stopped externally
+      state.lastFrameIdx = i;
+      const rendered = _renderUsername(frames[i], state.viewers, mode, joiner);
+      if (rendered !== lastSent) {
+        await _timeBound(
+          _safeSend(chatId, { edit: msgKey, text: rendered }),
+          `personalized frame ${i + 1}/${frames.length}`,
+        ).catch(e => err(`personalized frame ${i + 1}: ${e.message}`));
+        lastSent = rendered;
+      }
+      if (i < frames.length - 1) {
+        await new Promise(r => setTimeout(r, frameMs));
+      }
+    }
+    state.finished = true;
+    if (autoDelete) {
+      await new Promise(r => setTimeout(r, holdMs));
+      if (!_personalizedMovies.has(msgKey.id)) return;
+      await _timeBound(
+        sock.sendMessage(chatId, { delete: msgKey }),
+        'personalized delete',
+      ).catch(e => err(`personalized delete: ${e.message}`));
+      _personalizedMovies.delete(msgKey.id);
+    }
+  }
+
+  // Re-render the last frame with the current viewers list — used
+  // when a new read arrives AFTER the animation has finished. One
+  // edit; no animation restart.
+  async function _emitPersonalizedFinalFrame(state) {
+    const { msgKey, chatId, frames, mode, joiner } = state;
+    if (!frames?.length) return;
+    const last = frames[frames.length - 1];
+    const rendered = _renderUsername(last, state.viewers, mode, joiner);
+    await _timeBound(
+      _safeSend(chatId, { edit: msgKey, text: rendered }),
+      'personalized final re-edit',
+    ).catch(e => err(`personalized final re-edit: ${e.message}`));
+  }
+
   // eGPT-side pin layer. Independent of WA's 3-pin phone limit:
   // /pin @waN sets a positive timestamp; /unpin clears it. Returns
   // the new state ('pinned' | 'unpinned' | 'unknown') so the host
@@ -2066,10 +2220,49 @@ export async function startWhatsAppBridge({
     // an edit (not a fresh send) so a chat-side trigger like an
     // operator typing '@movie alien' becomes the movie in place,
     // and autoDelete cleanly revokes the trigger at the end.
-    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null }) {
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ' }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
+
+      // Personalized path: when `template` is set, the first frame
+      // animation start is deferred until the first read receipt
+      // arrives. We send a placeholder (the first frame rendered
+      // with an empty viewers list — `<username>` becomes '...'),
+      // stash state in _personalizedMovies, and return. The read-
+      // receipt handlers drive the rest.
+      if (template) {
+        const placeholder = _renderUsername(frames[0], [], mode, joiner);
+        let msgKey;
+        if (existingKey?.id) {
+          msgKey = existingKey;
+          await _timeBound(
+            _safeSend(target, { edit: msgKey, text: placeholder }),
+            'personalized initial (edit)',
+          ).catch(e => err(`personalized initial edit: ${e.message}`));
+        } else {
+          const r0 = await _timeBound(
+            _safeSend(target, { text: placeholder }),
+            'personalized initial',
+          ).catch(e => { err(`personalized initial: ${e.message}`); return null; });
+          msgKey = r0?.key;
+          if (!msgKey) return null;
+        }
+        rememberSent(msgKey.id);
+        _personalizedMovies.set(msgKey.id, {
+          msgKey, chatId: target,
+          frames, frameMs, autoDelete, holdMs,
+          template, mode, joiner,
+          viewers: [],
+          started: false,
+          finished: false,
+          lastFrameIdx: 0,
+        });
+        return { key: msgKey, personalized: true };
+      }
+
+      // Non-personalized path: behave as before — send/edit frame 0,
+      // walk the rest, optionally auto-delete after a hold.
       let msgKey;
       if (existingKey?.id) {
         msgKey = existingKey;
