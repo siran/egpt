@@ -121,11 +121,11 @@ export async function run({ arg, ctx }) {
     return true;
   }
   const busyBehavior = EGPT_CONFIG?.oracle?.busy_behavior ?? 'polite';
-  // WA caps message edits at ~1/2s sustained — go below that and
-  // the server returns 'rate-overlimit' for ~10s. 2000ms keeps the
-  // animation comfortably under the cap with headroom for the brain
-  // dispatch path's own edits.
-  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 2000;
+  // Frame cadence. WA caps message edits around 1/2s sustained, so
+  // 2000ms is the floor. 3000ms feels mystical-not-frantic — a clock
+  // tick every 3s is roughly the rhythm of slow breathing, fits the
+  // "mystical ritual" mood without burning bandwidth.
+  const frameMs = Number(EGPT_CONFIG?.oracle?.frame_ms) || 3000;
 
   const handle = await wa.startOracle({
     chatId: chat.jid,
