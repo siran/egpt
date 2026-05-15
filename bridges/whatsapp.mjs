@@ -1313,7 +1313,16 @@ export async function startWhatsAppBridge({
     // restricts who actually triggers anything; non-allowed senders
     // are silently ignored (no in-chat tattle).
     // '@egpt' or its short alias '@e' (/ee/, like 'eel') wakes the persona.
-    const isWakeWord = !!text && /@(?:egpt|e)\b/i.test(text);
+    //
+    // Plus: if the message is a WA reply (long-press → Reply, or the
+    // operator's '@'-syntax-equivalent in WA UI) whose target is one
+    // of our recently-sent messages, treat it as a wake-word. The
+    // operator shouldn't need to retype '@e' just because they're
+    // continuing a thread the bot started. Catches '@e' threading,
+    // oracle replies, and follow-ups on any bot reply across chats.
+    const ctxInfo = _contextInfo(msg.message);
+    const isReplyToUs = !!ctxInfo?.stanzaId && _sentIds.has(ctxInfo.stanzaId);
+    const isWakeWord = (!!text && /@(?:egpt|e)\b/i.test(text)) || isReplyToUs;
 
     // Awareness rules — decide whether this message reaches onIncoming.
     //   self_chat:   chat-with-yourself (your phone-typed self-DMs and
@@ -2192,6 +2201,19 @@ export async function startWhatsAppBridge({
 // documentMessage, stickerMessage, …). Pull whichever is present.
 function _contextInfo(message) {
   if (!message) return null;
+  // Envelope unwrap — WA wraps content one level deep in ephemeral
+  // (disappearing-mode), viewOnce[V2|V2Extension], edited, or
+  // documentWithCaption containers. Without recursing, a reply
+  // typed inside a disappearing-mode chat would have its
+  // contextInfo (and so its stanzaId) hidden from us — the oracle
+  // can't see the reply, @e doesn't wake on replies, etc.
+  if (message.ephemeralMessage?.message)              return _contextInfo(message.ephemeralMessage.message);
+  if (message.viewOnceMessage?.message)               return _contextInfo(message.viewOnceMessage.message);
+  if (message.viewOnceMessageV2?.message)             return _contextInfo(message.viewOnceMessageV2.message);
+  if (message.viewOnceMessageV2Extension?.message)    return _contextInfo(message.viewOnceMessageV2Extension.message);
+  if (message.editedMessage?.message)                 return _contextInfo(message.editedMessage.message);
+  if (message.protocolMessage?.editedMessage)         return _contextInfo(message.protocolMessage.editedMessage);
+  if (message.documentWithCaptionMessage?.message)    return _contextInfo(message.documentWithCaptionMessage.message);
   return (
     message.extendedTextMessage?.contextInfo ??
     message.imageMessage?.contextInfo ??
@@ -2199,6 +2221,7 @@ function _contextInfo(message) {
     message.audioMessage?.contextInfo ??
     message.documentMessage?.contextInfo ??
     message.stickerMessage?.contextInfo ??
+    message.reactionMessage?.contextInfo ??
     null
   );
 }
