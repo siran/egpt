@@ -616,7 +616,7 @@ function _buildCoupleFrames(secret) {
 
 function _buildDeliverFrames(secret) {
   const motto = secret ? secret.trim().slice(0, 60) : '';
-  const W = 30;
+  const W = 40;       // wider canvas — entry frames carry moan text past the hole
   const HOLE_COL = 26;
 
   // Compose one frame. `dCol` = column of the rightmost 'D' char of
@@ -661,27 +661,43 @@ function _buildDeliverFrames(secret) {
   F.push(frame(23, '()'));
   F.push(frame(25, '()'));  // adjacent, primed
 
-  // Entry — parens engulf the D briefly, then the D disappears
-  // (it's inside), so only the base + short shaft + hole are
-  // still visible: '#=()'. The # reads as the anchor still
-  // outside, the = is what little shaft hasn't entered yet, the
-  // () is the hole opening around the shaft.
-  F.push(' '.repeat(20) + '(====D)' + ' '.repeat(3));
-  F.push(' '.repeat(20) + '#=()'    + ' '.repeat(6));
+  // Insertion — D vanishes behind the (), only the base # and a
+  // progressively-shorter shaft stay visible. # slides right as
+  // the dick goes deeper into the tunnel; the head is hidden
+  // behind ( (it's inside the hole, not wrapped by parens).
+  // Moan text grows with the depth.
+  const pad = (s) => s.length >= W ? s : s + ' '.repeat(W - s.length);
+  F.push(pad(' '.repeat(21) + '#====()'));
+  F.push(pad(' '.repeat(22) + '#===()  oh'));
+  F.push(pad(' '.repeat(23) + '#==()  ohhh'));
+  F.push(pad(' '.repeat(24) + '#=()  ooohhh'));
+  F.push(pad(' '.repeat(25) + '#()  oooohhhh!'));
 
-  // Explosion in the hole — climax. Centered roughly where the
-  // hole was so the visual continuity reads as "the hole bursts".
-  F.push(' '.repeat(19) + '✨💥💥💥✨' + ' '.repeat(1));
+  // Withdrawal — the dick pulls out, hole stays open with a
+  // little 💨 puff of relief.
+  F.push(pad(' '.repeat(26) + '()  💨'));
 
-  // Delivery — the secret arrives as a 💌, pops out of the
-  // explosion. autoDelete revokes the message after holdMs so
-  // this final frame is the entire "wink wink" payoff: brief,
-  // ephemeral, exactly once.
+  // Fist enters — the secret is in the hole; it has to be pulled
+  // out. 👊 approaches, touches, slips inside.
+  F.push(pad(' '.repeat(16) + '👊            ()'));
+  F.push(pad(' '.repeat(22) + '👊()'));
+  F.push(pad(' '.repeat(22) + '(👊)'));
+
+  // Fist exits holding the secret. The 💌 IS the message —
+  // autoDelete revokes the whole movie after holdMs, so this
+  // is the "wink wink" payoff: brief, ephemeral, exactly once.
   if (motto) {
-    F.push('       💌  "' + motto + '"');
+    F.push(pad('       ✊💌  "' + motto + '"'));
   } else {
-    F.push('             💌  delivered');
+    F.push(pad('       ✊💌  delivered'));
   }
+
+  // Aftermath — the hole closes back: () → O → o → . The
+  // reverse of the bounce-open sequence at the start.
+  F.push(pad(' '.repeat(26) + '()'));
+  F.push(pad(' '.repeat(26) + 'O'));
+  F.push(pad(' '.repeat(26) + 'o'));
+  F.push(pad(' '.repeat(26) + '.'));
 
   return F;
 }
