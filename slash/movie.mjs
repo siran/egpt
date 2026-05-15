@@ -599,6 +599,84 @@ function _buildCoupleFrames(secret) {
   return F;
 }
 
+// ── Deliver movie ─────────────────────────────────────────────
+//
+// One-line cartoon: ====D approaches a . on the right. The hole
+// is too small, D bounces off; on each bounce the hole opens a
+// notch wider (. → o → O → ()). Once it's () the D slides
+// inside, the parens engulf, and the --secret "delivers" as
+// the final 💌 frame. autoDelete revokes the whole message
+// after holdMs, so the secret is genuinely ephemeral — the
+// wink-wink "how the message is delivered" the operator asked
+// about.
+//
+// The frame string is a single line; triple-backtick monospace
+// wrap (per the preset's monospace:true flag) preserves the
+// leading spaces that encode how far the D has approached.
+
+function _buildDeliverFrames(secret) {
+  const motto = secret ? secret.trim().slice(0, 60) : '';
+  const W = 30;
+  const HOLE_COL = 26;
+
+  // Compose one frame. `dCol` = column of the rightmost 'D' char of
+  // ====D (5 chars wide, so the ==== starts at dCol-4). `hole` is
+  // 1 or 2 ASCII chars at HOLE_COL. Pads to W on the right so the
+  // frame width is stable across emits.
+  const frame = (dCol, hole) => {
+    const lead = Math.max(0, dCol - 4);
+    const gap  = Math.max(0, HOLE_COL - dCol - 1);
+    let line = ' '.repeat(lead) + '====D' + ' '.repeat(gap) + hole;
+    if (line.length < W) line += ' '.repeat(W - line.length);
+    return line;
+  };
+
+  const F = [];
+
+  // Approach the . from far left — uniform stride, slowing as it
+  // nears the dot so the contact feels deliberate, not a fly-by.
+  F.push(frame(4,  '.'));
+  F.push(frame(8,  '.'));
+  F.push(frame(12, '.'));
+  F.push(frame(16, '.'));
+  F.push(frame(20, '.'));
+  F.push(frame(23, '.'));
+  F.push(frame(25, '.'));   // touching .
+
+  // Bounce 1 — D recoils, hole opens . → o.
+  F.push(frame(22, 'o'));
+  F.push(frame(20, 'o'));
+  F.push(frame(23, 'o'));
+  F.push(frame(25, 'o'));   // touching o
+
+  // Bounce 2 — recoil + o → O.
+  F.push(frame(22, 'O'));
+  F.push(frame(20, 'O'));
+  F.push(frame(23, 'O'));
+  F.push(frame(25, 'O'));   // touching O
+
+  // Bounce 3 — recoil + O → (), now wide enough.
+  F.push(frame(22, '()'));
+  F.push(frame(20, '()'));
+  F.push(frame(23, '()'));
+  F.push(frame(25, '()'));  // adjacent, primed
+
+  // Entry — parens engulf the D. Two beats: just-in, then settled.
+  F.push(' '.repeat(20) + '(====D)' + ' '.repeat(3));
+  F.push(' '.repeat(19) + '((====D))' + ' '.repeat(2));
+
+  // Delivery — the secret arrives as a 💌. autoDelete revokes
+  // the message after holdMs, so this final frame is the entire
+  // "wink wink" payoff: brief, ephemeral, exactly once.
+  if (motto) {
+    F.push('       💌  "' + motto + '"');
+  } else {
+    F.push('             💌  delivered');
+  }
+
+  return F;
+}
+
 export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
@@ -635,6 +713,21 @@ export const PRESETS = {
           'comedy — ASCII only, no anatomy depicted. Trigger from a ' +
           'WA chat with @movie couple --secret "...".',
     build: (arg) => _buildCoupleFrames(arg),
+  },
+  deliver: {
+    ms: 500, monospace: true, autoDelete: true, holdMs: 3500,
+    consumesSecret: true,
+    params: '[--secret "<message>"]',
+    desc: 'one-line cartoon: ====D approaches a . on the right. The ' +
+          'hole is too small, D bounces off; each bounce opens the ' +
+          'hole a notch wider (. → o → O → ()). When () is wide ' +
+          'enough, the D slides inside, the parens engulf, and the ' +
+          '--secret "delivers" as the final 💌 frame. autoDelete ' +
+          'revokes the message after holdMs — the secret is delivered ' +
+          'once and then gone. Triple-backtick monospace preserves ' +
+          "the leading-space approach distance. Operator-greenlit; " +
+          'lighter touch than the full couple preset.',
+    build: (arg) => _buildDeliverFrames(arg),
   },
 
   // ── Utility presets ──────────────────────────────────────────
