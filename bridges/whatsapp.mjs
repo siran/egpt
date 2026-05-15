@@ -1230,7 +1230,13 @@ export async function startWhatsAppBridge({
       const ctx = _contextInfo(msg.message);
       if (ctx?.stanzaId) {
         for (const oracle of _liveOracles.values()) {
-          if (oracle.msgKey?.id === ctx.stanzaId) {
+          // Match against the oracle's associatedKeys set, not just
+          // msgKey.id. The set is seeded with the spinner key and
+          // gets the answer-message key appended after each Q+A so
+          // operators can reply to the answer to continue the
+          // conversation — natural UX. Without this, only replies
+          // to the spinner itself triggered the second question.
+          if (oracle.associatedKeys?.has(ctx.stanzaId)) {
             try { await oracle.onReply(msg); }
             catch (e) { err(`oracle onReply: ${e.message}`); }
             return;                          // bypass normal flow
@@ -1800,6 +1806,7 @@ export async function startWhatsAppBridge({
       chatId,
       phases = {},
       frameMs = 3000,
+      summonMs,                       // override for the summon-phase cadence; defaults to frameMs / 2 (min 1200)
       onReply,
       onBusy,
       questionsLeft = 1,
@@ -1823,11 +1830,19 @@ export async function startWhatsAppBridge({
       if (!msgKey) return null;
       rememberSent(msgKey.id);
 
+      const summonFrameMs = summonMs ?? Math.max(1200, Math.floor(frameMs / 2));
       const handle = {
         msgKey,
         chatId: target,
         state: 'summoning',           // → 'idle' → 'thinking' → 'idle' / 'retiring' → 'retired'
         questionsLeft,
+        // Set of message ids the oracle "owns" — the spinner key
+        // plus every answer-message key the host (slash file) adds
+        // after wa.replyTo + editMessage. Reply intercept matches
+        // against this so operators can reply to the answer to
+        // continue the conversation instead of having to hunt
+        // back to the spinner.
+        associatedKeys: new Set([msgKey.id]),
         onReply: async (replyMsg) => {
           if (handle.state !== 'idle') {
             if (typeof onBusy === 'function') {
@@ -1878,10 +1893,13 @@ export async function startWhatsAppBridge({
       // Phased animation driver. Walks summon → idle/thinking
       // cycle → retire, then deletes the message.
       (async () => {
-        // Phase 1: summon — linear after the initial send.
+        // Phase 1: summon — linear after the initial send. Faster
+        // cadence than idle/thinking since the recipient's chat
+        // is fresh and WA's edit-rate ceiling resets per message;
+        // the burst is fine, sustained edits are what trip it.
         for (let i = 1; i < summonFrames.length; i++) {
           if (handle.state !== 'summoning') break;
-          await sleep(frameMs);
+          await sleep(summonFrameMs);
           if (handle.state !== 'summoning') break;
           await emit(summonFrames[i]);
         }
