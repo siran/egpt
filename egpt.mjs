@@ -5232,10 +5232,11 @@ function App() {
                     h(Text, { color: T.recapHint }, `  (${row.age})`));
                 }
                 if (row.type === 'preview') {
-                  // Compact preview line: '       author: body'
-                  // No id, no timestamp — those clutter the at-a-
-                  // glance scan. Operator scrolls / runs /recap N
-                  // for more detail.
+                  // Preview line: '       author: body  wa_XXXXXXXX  HH:MM'
+                  // id + time at the end so the operator can reach
+                  // for a specific message to reply to without
+                  // opening /last. underscore form of the id keeps
+                  // double-click selection one token.
                   const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
                   const body = oneLine(row.body);
                   const bdDisp = row.mediaPath
@@ -5244,11 +5245,21 @@ function App() {
                   const folderDisp = row.mediaPath
                     ? '  ' + clickablePath('📁', dirname(row.mediaPath))
                     : '';
+                  const idDisp = (row.stableId || '').replace(/^([a-z]+)-/, '$1_').slice(0, 11);
+                  let hhmm = '';
+                  if (row.ts) {
+                    const d = new Date(row.ts);
+                    hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                  }
                   return h(Text, { key: i },
                     '       ',
                     h(Text, { color: T.recapAuthor }, row.author),
                     h(Text, { color: T.recapHint }, ': '),
-                    h(Text, { color: T.recapBody }, bdDisp + folderDisp));
+                    h(Text, { color: T.recapBody }, bdDisp + folderDisp),
+                    idDisp ? h(Text, null, '  ') : '',
+                    idDisp ? h(Text, { color: T.recapId }, idDisp) : '',
+                    hhmm ? h(Text, null, '  ') : '',
+                    hhmm ? h(Text, { color: T.recapTimestamp }, hhmm) : '');
                 }
                 if (row.type === 'hint')
                   return h(Text, { key: i, color: T.recapHint }, `  ${row.text}`);
