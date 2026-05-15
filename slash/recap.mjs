@@ -50,7 +50,11 @@ export async function run({ arg, ctx }) {
   //     '@waN <body>' / '/join @waN' / '/pin @waN' etc. resolve to the
   //     same chat the operator just read in the recap output. Same
   //     contract /channels uses.
-  const { sysOut, registerReplyTarget, theme, waChannelsCacheRef } = ctx;
+  //   waBridgeRef — fire-and-forget group-name backfill: each chat
+  //     in the recap that's a group without a name triggers
+  //     wa.ensureGroupName(jid) so the NEXT /recap (or live render)
+  //     shows the real subject instead of the bare JID prefix.
+  const { sysOut, registerReplyTarget, theme, waChannelsCacheRef, waBridgeRef } = ctx;
 
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
   const includeDms = tokens.some(t => t === '--all' || t === '-a');
@@ -75,6 +79,18 @@ export async function run({ arg, ctx }) {
   }
   if (waChannelsCacheRef && Array.isArray(out.chatList)) {
     waChannelsCacheRef.current = out.chatList;
+  }
+  // Fire-and-forget group-name backfill for any group whose disk
+  // record lacks a subject. Idempotent — _ensureGroupName skips
+  // chats that already have a name or have a lookup in flight.
+  // Results show up on the NEXT /recap (or live message arrival).
+  const wa = waBridgeRef?.current;
+  if (wa?.ensureGroupName && Array.isArray(out.chatList)) {
+    for (const c of out.chatList) {
+      if (c.isGroup && (!c.name || c.name.length <= 1)) {
+        try { wa.ensureGroupName(c.jid); } catch {}
+      }
+    }
   }
   // _recap + _recapRows: the renderer's _recap branch uses _recapRows
   // for per-column colored rendering; body stays as the flat text so

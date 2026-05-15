@@ -2870,6 +2870,19 @@ function App() {
           if (Array.isArray(out.chatList) && out.chatList.length) {
             _waChannelsCacheRef.current = out.chatList;
           }
+          // Fire-and-forget group-name backfill for any group whose
+          // disk record lacks a subject. Same idea as the /recap
+          // post-render hook — kicks an ensureGroupName lookup so
+          // the NEXT /recap shows the real subject instead of the
+          // bare JID prefix.
+          const wa = waBridgeRef?.current;
+          if (wa?.ensureGroupName && Array.isArray(out.chatList)) {
+            for (const c of out.chatList) {
+              if (c.isGroup && (!c.name || c.name.length <= 1)) {
+                try { wa.ensureGroupName(c.jid); } catch {}
+              }
+            }
+          }
           // Suppress transcript append — the welcome-back is a per-
           // session UI affordance, not a chat message; logging it on
           // every shell start would bloat the room md with reprints
