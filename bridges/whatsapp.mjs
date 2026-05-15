@@ -268,12 +268,15 @@ export async function startWhatsAppBridge({
   // group" — user request). Caching them is still SILENT tracking
   // (no UI / brain / mirror) per the deliver-vs-render rule —
   // /channels is a user-pulled read, not push.
-  // Per-chat recent retention. Operator was explicit: "NO CAP! …
-  // if anything 1000?". 1000 is generous enough that the cap
-  // effectively doesn't bite for normal usage (~a month of busy
-  // group activity per chat), while still bounding the wa-chats.json
-  // file size if a single chat ever turns truly pathological.
-  const RECENT_PER_CHAT = 1000;
+  // Per-chat recent retention. No cap — operator's policy is
+  // "never lose information". Every message the bridge observes
+  // stays in recent[] permanently; the splice below is a no-op.
+  // wa-chats.json grows linearly with activity (~80 chars × entry
+  // count); when that file ever feels too big the right fix is a
+  // per-chat append-only ndjson archive (recent[] keeps the hot
+  // tail, archive holds everything else), NOT a ring that
+  // silently drops content.
+  const RECENT_PER_CHAT = Infinity;
   const RECENT_BODY_CAP  = 200;      // chars stored per message body
   const _chats = new Map();   // jid → { jid, isGroup, lastActivityTs, creationTs, name, recent: [{ts,author,text}] }
   // Parallel msgId → short preview cache so reaction placeholders can
