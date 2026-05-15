@@ -5143,8 +5143,44 @@ function App() {
                   return h(Text, { key: i, color: T.listMuted, italic: true }, line);
                 if (/^\s*\/[a-z]/.test(line) || /^use\s+@/.test(line))
                   return h(Text, { key: i, color: T.listHint }, line);
-                // Lines containing the pin marker get a yellowBright
-                // tint on the whole row so pinned chats / items pop.
+                // /channels-shape chat header — '  [📌 ]@waN  [kind]  name  (age)'.
+                // Splits each segment into its own colored span so the
+                // operator can pick the addressable @waN out of a row
+                // without scanning. Same regex matches the welcome-back's
+                // legacy chat lines and anything else that adopts this
+                // shape. Pin marker is optional; `[kind]` covers
+                // [group], [1:1], [status]; `(age)` is anything in
+                // trailing parens.
+                const ch = line.match(/^(\s+)(📌\s+)?(\s*)(@wa\d+)(\s+)(\[[^\]]+\])(\s+)(.+?)(\s\s+)(\([^)]+\))\s*$/);
+                if (ch) {
+                  const [, indent, pin, padBeforeHandle, handle, sp1, tag, sp2, name, sp3, age] = ch;
+                  return h(Text, { key: i },
+                    indent,
+                    pin ? h(Text, { color: T.listAccent }, pin) : '',
+                    padBeforeHandle ?? '',
+                    h(Text, { color: T.recapId, bold: true }, handle),
+                    sp1,
+                    h(Text, { color: T.listHint }, tag),
+                    sp2,
+                    h(Text, { color: T.listAccent, bold: true }, name),
+                    sp3,
+                    h(Text, { color: T.listMuted }, age));
+                }
+                // Preview line — '      [Author] body'. The bracketed
+                // author block is the meta; the body's the content.
+                const pv = line.match(/^(\s{4,})\[([^\]]+)\]\s+(.+)$/);
+                if (pv) {
+                  const [, indent, author, body] = pv;
+                  return h(Text, { key: i },
+                    indent,
+                    h(Text, { color: T.listMuted }, '['),
+                    h(Text, { color: T.recapAuthor }, author),
+                    h(Text, { color: T.listMuted }, '] '),
+                    h(Text, { color: T.recapBody }, body));
+                }
+                // Lines containing the pin marker (but didn't match
+                // the chat-header regex above) get the accent tint on
+                // the whole row.
                 if (/📌/.test(line))
                   return h(Text, { key: i, color: T.listAccent }, line);
                 // First non-blank line is usually a header ("chats
