@@ -29,6 +29,7 @@ import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
 import { summonGenie as _summonGenieFromBridge } from './tools/genie.mjs';
+import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2329,6 +2330,36 @@ function App() {
             if (handle) sysOut(`🧞 @? summoned in "${chatName}"  (brain: @${brainName}, 3 wishes)`);
           } catch (e) {
             errOut(`@? summon failed: ${e.message}`);
+          }
+        },
+        // '@movie' in-chat trigger. Operator (or an allowed_users
+        // contact) types '@movie <preset> [args]' anywhere in a
+        // message; the bridge passes us the trigger key and the
+        // raw args. We share the parser with the /movie slash
+        // command via buildMoviePayload, then call wa.playFrames
+        // with existingKey set to the trigger message — so the
+        // chat ends up with one message that morphs from the
+        // typed command into the movie, and autoDelete revokes
+        // it cleanly when the animation ends.
+        onSummonMovie: async ({ chatId, triggerKey, argsStr }) => {
+          const wa = waBridgeRef.current;
+          if (!wa?.playFrames) return;
+          const payload = _buildMoviePayload(argsStr);
+          if (payload.error) {
+            errOut(`@movie: ${payload.error}`);
+            return;
+          }
+          const chatName = wa.getChatName?.(chatId) || chatId;
+          const { frames, frameMs: ms, autoDelete, holdMs, presetName } = payload;
+          const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
+          sysOut(`🎬 @movie ${presetName} in "${chatName}"  (${frames.length} fr · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s${autoDelete ? ' · auto-delete' : ''})`);
+          try {
+            await wa.playFrames({
+              chatId, frames, frameMs: ms, autoDelete, holdMs,
+              existingKey: triggerKey,
+            });
+          } catch (e) {
+            errOut(`@movie failed: ${e.message}`);
           }
         },
         onIncoming: async (text, from) => {

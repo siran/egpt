@@ -144,7 +144,7 @@ function _buildAlienFrames(secret) {
   return F;
 }
 
-const PRESETS = {
+export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 2500,
@@ -181,74 +181,28 @@ const PRESETS = {
   },
 };
 
-export const meta = {
-  cmd: '/movie',
-  section: 'ROOM',
-  surface: 'shell',
-  usage: '/movie @waN <preset> [args] [--secret "<text>"] [--keep] [--ms N]',
-  desc:
-    'play an emoji / ASCII animation in a WA chat. movies auto-delete ' +
-    'after the last frame unless --keep. --secret flashes a punchline ' +
-    '(alien folds it into the scene as the 👽 burp dialog). /movie ' +
-    'list enumerates presets.',
-};
-
-export async function run({ arg, ctx }) {
-  // ctx keys consumed:
-  //   sysOut(text)
-  //   waBridgeRef          — WA bridge (exposes playFrames)
-  //   waChannelsCacheRef   — @waN → chat object
-  const { sysOut, waBridgeRef, waChannelsCacheRef } = ctx;
-
-  const wa = waBridgeRef?.current;
-  if (!wa?.playFrames) {
-    sysOut('!! /movie: whatsapp bridge not running');
-    return true;
-  }
-
-  const tokens = arg.trim().split(/\s+/).filter(Boolean);
-  if (tokens[0] === 'list' || !tokens.length) {
-    const rows = Object.entries(PRESETS).map(([name, p]) => {
-      const lhs = `${name}${p.params ? '  ' + p.params : ''}`.padEnd(30);
-      const stat = (p.frames ? `${p.frames.length} fr` : 'dynamic') +
-                   ` @ ${p.ms}ms` +
-                   (p.monospace ? '  multi-line' : '') +
-                   (p.autoDelete ? '  auto-delete' : '');
-      return `  ${lhs}  — ${p.desc}\n  ${' '.repeat(30)}    ${stat}`;
-    });
-    sysOut(
-      'movie presets (all auto-delete after the last frame unless --keep):\n\n' +
-      rows.join('\n\n') +
-      '\n\nglobal flags:\n' +
-      '  --secret "<text>"   punchline shown before deletion (alien folds it into the scene)\n' +
-      '  --keep              don\'t delete after the last frame\n' +
-      '  --ms <N>            override per-frame delay (floor 80ms)\n' +
-      '  --frames "a|b|c"    custom frame sequence (no preset)\n' +
-      '\nusage: ' + meta.usage,
-    );
-    return true;
-  }
-
-  const targetTok = tokens[0];
-  const waN = targetTok.match(/^@wa(\d+)$/i);
-  if (!waN) {
-    sysOut(`!! /movie: "${targetTok}" isn't @waN — /recap or /channels first to populate indices`);
-    return true;
-  }
-  const idx = parseInt(waN[1], 10) - 1;
-  const chat = waChannelsCacheRef?.current?.[idx];
-  if (!chat) {
-    sysOut(`!! /movie: no chat at ${targetTok} — /recap or /channels first`);
-    return true;
-  }
-
+// Parse a movie spec string ("alien --secret \"hi\"", "typewriter
+// hello there", "loading") and return the ready-to-play payload.
+// Used by both the /movie slash command (operator side) and the
+// '@movie' wake-word handler in the WA bridge (in-chat side) so
+// argument parsing, preset lookup, and frame-building rules stay
+// in exactly one place.
+//
+// The first non-flag token is the preset name; everything else is
+// flag-controlled (--ms, --keep, --secret, --frames) or positional
+// args forwarded to the preset's build() (e.g. typewriter text).
+//
+// Returns { frames, frameMs, autoDelete, holdMs, presetName,
+//   secret, positional } on success, or { error } on failure.
+export function buildMoviePayload(argsStr) {
+  const tokens = String(argsStr ?? '').trim().split(/\s+/).filter(Boolean);
   let frameMs = null;
   let customFrames = null;
   let presetName = null;
   let positional = '';
   let secret = null;
   let keep = false;
-  for (let i = 1; i < tokens.length; i++) {
+  for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t === '--ms' && tokens[i + 1]) {
       const n = parseInt(tokens[i + 1], 10);
@@ -299,14 +253,91 @@ export async function run({ arg, ctx }) {
     autoDelete = keep ? false : (p.autoDelete ?? true);
     holdMs = secret ? Math.max(p.holdMs ?? 2000, 3500) : (p.holdMs ?? 2000);
   } else {
-    sysOut(`!! /movie: unknown preset "${presetName ?? '(none)'}". /movie list to see options.`);
-    return true;
+    return { error: `unknown preset "${presetName ?? '(none)'}"` };
   }
 
   if (frames.length > 60) {
-    sysOut(`!! /movie: ${frames.length} frames exceeds the 60-frame ceiling — split into shorter movies.`);
+    return { error: `${frames.length} frames exceeds the 60-frame ceiling — split into shorter movies` };
+  }
+  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional };
+}
+
+export const meta = {
+  cmd: '/movie',
+  section: 'ROOM',
+  surface: 'shell',
+  usage: '/movie @waN <preset> [args] [--secret "<text>"] [--keep] [--ms N]',
+  desc:
+    'play an emoji / ASCII animation in a WA chat. movies auto-delete ' +
+    'after the last frame unless --keep. --secret flashes a punchline ' +
+    '(alien folds it into the scene as the 👽 burp dialog). /movie ' +
+    'list enumerates presets. Also triggerable from inside a WA chat ' +
+    'by typing "@movie <preset> [args]" — the operator (or anyone in ' +
+    'whatsapp.allowed_users) can summon a movie that replaces the ' +
+    'trigger message in place and auto-deletes when done.',
+};
+
+export async function run({ arg, ctx }) {
+  // ctx keys consumed:
+  //   sysOut(text)
+  //   waBridgeRef          — WA bridge (exposes playFrames)
+  //   waChannelsCacheRef   — @waN → chat object
+  const { sysOut, waBridgeRef, waChannelsCacheRef } = ctx;
+
+  const wa = waBridgeRef?.current;
+  if (!wa?.playFrames) {
+    sysOut('!! /movie: whatsapp bridge not running');
     return true;
   }
+
+  const tokens = arg.trim().split(/\s+/).filter(Boolean);
+  if (tokens[0] === 'list' || !tokens.length) {
+    const rows = Object.entries(PRESETS).map(([name, p]) => {
+      const lhs = `${name}${p.params ? '  ' + p.params : ''}`.padEnd(30);
+      const stat = (p.frames ? `${p.frames.length} fr` : 'dynamic') +
+                   ` @ ${p.ms}ms` +
+                   (p.monospace ? '  multi-line' : '') +
+                   (p.autoDelete ? '  auto-delete' : '');
+      return `  ${lhs}  — ${p.desc}\n  ${' '.repeat(30)}    ${stat}`;
+    });
+    sysOut(
+      'movie presets (all auto-delete after the last frame unless --keep):\n\n' +
+      rows.join('\n\n') +
+      '\n\nglobal flags:\n' +
+      '  --secret "<text>"   punchline shown before deletion (alien folds it into the scene)\n' +
+      '  --keep              don\'t delete after the last frame\n' +
+      '  --ms <N>            override per-frame delay (floor 80ms)\n' +
+      '  --frames "a|b|c"    custom frame sequence (no preset)\n' +
+      '\nusage: ' + meta.usage +
+      '\nin-chat: type "@movie <preset> [args]" inside WA — the trigger ' +
+      'message becomes the movie (operator + allowed_users only).',
+    );
+    return true;
+  }
+
+  const targetTok = tokens[0];
+  const waN = targetTok.match(/^@wa(\d+)$/i);
+  if (!waN) {
+    sysOut(`!! /movie: "${targetTok}" isn't @waN — /recap or /channels first to populate indices`);
+    return true;
+  }
+  const idx = parseInt(waN[1], 10) - 1;
+  const chat = waChannelsCacheRef?.current?.[idx];
+  if (!chat) {
+    sysOut(`!! /movie: no chat at ${targetTok} — /recap or /channels first`);
+    return true;
+  }
+
+  // Everything after the @waN target is forwarded as-is to the
+  // shared parser. Preset name + flag handling lives there so
+  // /movie and the WA '@movie' wake-word stay in lockstep.
+  const argsStr = tokens.slice(1).join(' ');
+  const payload = buildMoviePayload(argsStr);
+  if (payload.error) {
+    sysOut(`!! /movie: ${payload.error}. /movie list to see options.`);
+    return true;
+  }
+  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional } = payload;
 
   const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
   const tag = positional || secret
