@@ -144,6 +144,211 @@ function _buildAlienFrames(secret) {
   return F;
 }
 
+// ── Pirate movie ──────────────────────────────────────────────
+//
+// 3D tilted-plane scene: sky → horizon → trapezoid sea →
+// shore → beach. The sea is drawn as a trapezoid that narrows
+// toward the back, so the row a sprite sits on reads as
+// distance from the viewer — top = far (horizon), bottom =
+// near (foreground).
+//
+// 9-row canvas, all base rows ASCII-only so column offsets
+// count visual cells 1:1. Emoji sprites overlay at known
+// (row, col) — each emoji takes 2 visual cells, so _overlay
+// slices out 2 chars from the base before splicing the sprite
+// in. Row widths are padded to ~26 cols so overlays near the
+// right edge don't fall off.
+
+const _SKY_P = [
+  '  *  .  ✦  .  *  .  ✦  . ',
+  '     ✦  .  *  .  ✦       ',
+  '                          ',
+];
+const _SEA = [
+  '      ╱─────────────╲    ', // 0  horizon (back edge of plane)
+  '     ╱ ~ ~ ~ ~ ~ ~ ~ ╲   ', // 1
+  '    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ╲  ', // 2
+  '   ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ ', // 3  near sea
+];
+const _SHORE_P = '═════════════════════════';
+const _BEACH_P = '.:.:.:.:.:.:.:.:.:.:.:.:.';
+
+// Sprite constants — every sprite MUST be exactly 2 UTF-16 code units
+// (a surrogate pair, OR a BMP codepoint + VS16) so that `_overlay`
+// stays correct after multiple compositions on the same row. Base
+// rows are ASCII (1 cu = 1 cell); a 2-cu sprite replaces 2 cu
+// without shifting downstream col→cu alignment for subsequent
+// overlays. Single-cu BMP emojis (e.g. bare '❌', U+274C) drift the
+// row after they're placed and break later overlays at fixed cols.
+const _SH_SHIP     = '🚢';
+const _SH_PIRATE   = '🧔';
+const _SH_MAP      = '\u{1F5FA}';        // 🗺 surrogate pair, 2 cu (no VS16)
+const _SH_SHOVEL   = '⛏️';     // ⛏️ BMP + VS16, 2 cu
+const _SH_GOLD     = '💰';
+const _SH_SCROLL   = '📜';
+const _SH_SPLASH   = '💦';
+const _SH_DIRT     = '🟫';
+const _SH_X        = '❌️';     // ❌ BMP + VS16, 2 cu
+
+function _overlay(row, col, sprite) {
+  // Replace 2 visual cells starting at `col` with one 2-cell sprite.
+  // Base rows are ASCII (1 cu = 1 cell) so col indexes code units
+  // directly; sprites must be 2 cu so the net code-unit count is
+  // preserved, keeping later col-based overlays aligned. Callers
+  // placing a head + prop pair must call _overlay twice (head at
+  // col, prop at col + 2) — concatenating sprites into a single
+  // overlay would only consume 2 cells but draw 4, widening the row.
+  return row.slice(0, col) + sprite + row.slice(col + 2);
+}
+
+function _pirateScene({ ship, pirate, beachOverlays = [], shoreOverlay, dialog }) {
+  const sea = [..._SEA];
+  let shore = _SHORE_P;
+  let beach = _BEACH_P;
+
+  if (ship && ship.seaRow >= 0 && ship.seaRow < sea.length) {
+    sea[ship.seaRow] = _overlay(sea[ship.seaRow], ship.col, _SH_SHIP);
+  }
+  if (shoreOverlay) {
+    shore = _overlay(shore, shoreOverlay.col, shoreOverlay.sprite);
+  }
+  for (const o of beachOverlays) {
+    beach = _overlay(beach, o.col, o.sprite);
+  }
+  if (pirate) {
+    beach = _overlay(beach, pirate.col, _SH_PIRATE);
+    if (pirate.prop) beach = _overlay(beach, pirate.col + 2, pirate.prop);
+  }
+
+  const lines = [..._SKY_P, ...sea, shore, beach];
+  if (dialog) lines.push('       "' + dialog + '"');
+  return lines.join('\n');
+}
+
+function _buildPirateFrames(secret) {
+  const motto = (secret || 'X marks the spot').trim().slice(0, 60) || 'X marks the spot';
+  const F = [];
+
+  // 1. Empty bay.
+  F.push(_pirateScene({}));
+
+  // 2-4. Ship appears at the horizon (right) and drifts toward center.
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 17 } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 13 } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 9  } }));
+
+  // 5-7. Ship descends through the trapezoid (closer = lower row).
+  F.push(_pirateScene({ ship: { seaRow: 1, col: 9  } }));
+  F.push(_pirateScene({ ship: { seaRow: 2, col: 10 } }));
+  F.push(_pirateScene({ ship: { seaRow: 3, col: 11 } }));
+
+  // 8. Anchor splash on the shore line.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    shoreOverlay: { col: 13, sprite: _SH_SPLASH },
+  }));
+
+  // 9-11. Pirate disembarks and walks along the beach.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 14 },
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 11 },
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 8 },
+  }));
+
+  // 12. Pulls out the map.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 8, prop: _SH_MAP },
+  }));
+
+  // 13-14. X appears further along the beach; pirate walks to it.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 6, prop: _SH_MAP },
+    beachOverlays: [{ col: 2, sprite: _SH_X }],
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4, prop: _SH_MAP },
+    beachOverlays: [{ col: 2, sprite: _SH_X }],
+  }));
+
+  // 15. Pirate arrives at the X.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4 },
+    beachOverlays: [{ col: 2, sprite: _SH_X }],
+  }));
+
+  // 16-18. Digging — shovel out, sand pile grows.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4, prop: _SH_SHOVEL },
+    beachOverlays: [{ col: 2, sprite: _SH_DIRT }],
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4, prop: _SH_SHOVEL },
+    beachOverlays: [{ col: 2, sprite: _SH_DIRT }, { col: 0, sprite: _SH_DIRT }],
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4, prop: _SH_SHOVEL },
+    beachOverlays: [{ col: 2, sprite: _SH_DIRT }, { col: 0, sprite: _SH_DIRT }],
+  }));
+
+  // 19. Treasure chest emerges.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 4 },
+    beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
+  }));
+
+  // 20-22. Pirate reads the scroll — secret reveal (3 holds for legibility).
+  for (let i = 0; i < 3; i++) {
+    F.push(_pirateScene({
+      ship: { seaRow: 3, col: 11 },
+      pirate: { col: 4, prop: _SH_SCROLL },
+      beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
+      dialog: motto,
+    }));
+  }
+
+  // 23-25. Pirate picks up the gold and walks back to the ship.
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 7, prop: _SH_GOLD },
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 10, prop: _SH_GOLD },
+  }));
+  F.push(_pirateScene({
+    ship: { seaRow: 3, col: 11 },
+    pirate: { col: 13, prop: _SH_GOLD },
+  }));
+
+  // 26. Boards the ship — pirate gone, treasure gone (he took it with him).
+  F.push(_pirateScene({ ship: { seaRow: 3, col: 11 } }));
+
+  // 27-29. Ship sails back to the horizon (up + right).
+  F.push(_pirateScene({ ship: { seaRow: 2, col: 12 } }));
+  F.push(_pirateScene({ ship: { seaRow: 1, col: 14 } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 16 } }));
+
+  // 30. Vanished over the horizon — empty bay, message auto-deletes.
+  F.push(_pirateScene({}));
+
+  return F;
+}
+
 export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
@@ -154,6 +359,16 @@ export const PRESETS = {
           'UFO flies away. Whole message auto-deletes; alien takes ' +
           'its props with it (no litter).',
     build: (arg) => _buildAlienFrames(arg),
+  },
+  pirate: {
+    ms: 700, monospace: true, autoDelete: true, holdMs: 3000,
+    params: '[--secret "<treasure note>"]',
+    desc: '3D tilted-plane bay: sky / horizon / trapezoid sea / shore / ' +
+          'beach. 🚢 sails in from the horizon → 🧔 pirate disembarks, ' +
+          'pulls out 🗺️, walks to the ❌, digs ⛏️ a treasure 💰 out of ' +
+          'the sand, reads 📜 with the secret as the treasure note, ' +
+          'walks back with the gold, ship sails back over the horizon.',
+    build: (arg) => _buildPirateFrames(arg),
   },
 
   // ── Utility presets ──────────────────────────────────────────
