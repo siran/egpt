@@ -147,31 +147,43 @@ function _buildAlienFrames(secret) {
 // ── Pirate movie ──────────────────────────────────────────────
 //
 // 3D tilted-plane scene: sky → horizon → trapezoid sea →
-// shore → beach. The sea is drawn as a trapezoid that narrows
-// toward the back, so the row a sprite sits on reads as
+// shore → 4-row stick-figure space → beach. The sea narrows
+// toward the back so the row a sprite sits on reads as
 // distance from the viewer — top = far (horizon), bottom =
-// near (foreground).
+// near (foreground). The pirate is a 4-row stick figure 🧔
+// with a 🦜 on his shoulder, walking and digging on the beach.
 //
-// 9-row canvas, all base rows ASCII-only so column offsets
-// count visual cells 1:1. Emoji sprites overlay at known
-// (row, col) — each emoji takes 2 visual cells, so _overlay
-// slices out 2 chars from the base before splicing the sprite
-// in. Row widths are padded to ~26 cols so overlays near the
-// right edge don't fall off.
+// 12-row × 28-col canvas. Base rows are ASCII-only so column
+// offsets count visual cells 1:1; sprites overlay at known
+// (row, col). The dirt pile during digging stacks vertically
+// onto the empty figure rows above the beach so the pile
+// grows upward as the hole grows downward.
+
+const _CANVAS_W = 28;
+
+function _padR(s) {
+  // Right-pad a base row to canvas width. Base rows are ASCII-only
+  // so .length == visual width. Sprite overlays preserve width
+  // (always 2 cu out, 2 cu in), so a padded base stays valid for
+  // any later overlay at any col within range.
+  const n = s.length;
+  return n >= _CANVAS_W ? s : s + ' '.repeat(_CANVAS_W - n);
+}
 
 const _SKY_P = [
-  '  *  .  ✦  .  *  .  ✦  . ',
-  '     ✦  .  *  .  ✦       ',
-  '                          ',
+  _padR('  *  .  ✦  .  *  .  ✦  . '),
+  _padR('     ✦  .  *  .  ✦       '),
 ];
 const _SEA = [
-  '      ╱─────────────╲    ', // 0  horizon (back edge of plane)
-  '     ╱ ~ ~ ~ ~ ~ ~ ~ ╲   ', // 1
-  '    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ╲  ', // 2
-  '   ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ ', // 3  near sea
+  _padR('       ╱─────────────╲    '),   // 0 horizon (back edge)
+  _padR('      ╱ ~ ~ ~ ~ ~ ~ ~ ╲   '),   // 1 far sea
+  _padR('     ╱ ~ ~ ~ ~ ~ ~ ~ ~ ╲  '),   // 2
+  _padR('    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ '),   // 3
+  _padR('   ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲'),   // 4 near sea
 ];
-const _SHORE_P = '═════════════════════════';
-const _BEACH_P = '.:.:.:.:.:.:.:.:.:.:.:.:.';
+const _SHORE_P = '═'.repeat(_CANVAS_W);
+const _BEACH_P = '.:'.repeat(_CANVAS_W / 2);
+const _EMPTY_FIG_ROW = ' '.repeat(_CANVAS_W);
 
 // Sprite constants — every sprite MUST be exactly 2 UTF-16 code units
 // (a surrogate pair, OR a BMP codepoint + VS16) so that `_overlay`
@@ -181,7 +193,8 @@ const _BEACH_P = '.:.:.:.:.:.:.:.:.:.:.:.:.';
 // overlays. Single-cu BMP emojis (e.g. bare '❌', U+274C) drift the
 // row after they're placed and break later overlays at fixed cols.
 const _SH_SHIP     = '🚢';
-const _SH_PIRATE   = '🧔';
+const _SH_HEAD     = '🧔';
+const _SH_PARROT   = '🦜';
 const _SH_MAP      = '\u{1F5FA}';        // 🗺 surrogate pair, 2 cu (no VS16)
 const _SH_SHOVEL   = '⛏️';     // ⛏️ BMP + VS16, 2 cu
 const _SH_GOLD     = '💰';
@@ -201,9 +214,32 @@ function _overlay(row, col, sprite) {
   return row.slice(0, col) + sprite + row.slice(col + 2);
 }
 
-function _pirateScene({ ship, pirate, beachOverlays = [], shoreOverlay, dialog }) {
+// Overwrite N visual cells of `row` at `col` with `text` (text is
+// plain ASCII, so cu count == cell count). Sister to _overlay,
+// which is for 2-cu emoji sprites.
+function _drawText(row, col, text) {
+  return row.slice(0, col) + text + row.slice(col + text.length);
+}
+
+// Compose a pirate scene frame.
+//   ship:    { seaRow: 0..4, col }        — null = no ship
+//   figure:  { col, prop?, legs?, parrot? } — 4-row stick figure
+//              standing with feet at (beach row, col..col+1)
+//              parrot defaults to true (on right shoulder)
+//   beachOverlays: array of { col, sprite } — beach-row decorations
+//   pile:    array of { row: 0|1|2, col, sprite } — vertical overlay
+//              into the figure-rows space (row 0 = bottom = beach
+//              level, row 1 = middle, row 2 = top). Used by the
+//              dig sequence so the dirt mound rises into the
+//              previously-empty rows above the beach.
+//   shoreOverlay: { col, sprite }
+//   dialog:  string — shown beneath the scene (omit when no secret)
+function _pirateScene({ ship, figure, beachOverlays = [], pile = [], shoreOverlay, dialog }) {
   const sea = [..._SEA];
   let shore = _SHORE_P;
+  let head  = _EMPTY_FIG_ROW;
+  let chest = _EMPTY_FIG_ROW;
+  let spine = _EMPTY_FIG_ROW;
   let beach = _BEACH_P;
 
   if (ship && ship.seaRow >= 0 && ship.seaRow < sea.length) {
@@ -212,138 +248,202 @@ function _pirateScene({ ship, pirate, beachOverlays = [], shoreOverlay, dialog }
   if (shoreOverlay) {
     shore = _overlay(shore, shoreOverlay.col, shoreOverlay.sprite);
   }
+
+  // Pile overlays first — figure parts go on top of them so a figure
+  // standing next to a tall pile doesn't get clipped by the pile
+  // sprite. The pile typically sits to one side of the figure anyway.
+  for (const p of pile) {
+    if (p.row === 0)      beach = _overlay(beach, p.col, p.sprite);
+    else if (p.row === 1) spine = _overlay(spine, p.col, p.sprite);
+    else if (p.row === 2) chest = _overlay(chest, p.col, p.sprite);
+    else if (p.row === 3) head  = _overlay(head,  p.col, p.sprite);
+  }
+
+  // Stick figure: 🧔 head, optional prop next to head (held item),
+  // /---\ chest with 🦜 on the right shoulder, | spine, /\ or ||
+  // feet on the beach. Each row is 28 cells wide so the figure
+  // composes cleanly with any pile/beach overlays.
+  if (figure) {
+    const c = figure.col;
+    head = _overlay(head, c, _SH_HEAD);
+    if (figure.prop) head = _overlay(head, c + 2, figure.prop);
+    chest = _drawText(chest, c - 1, '/---\\');
+    if (figure.parrot !== false) {
+      chest = _overlay(chest, c + 4, _SH_PARROT);
+    }
+    spine = _drawText(spine, c, '|');
+    const feetText = figure.legs === 'together' ? '||' : '/\\';
+    beach = _drawText(beach, c, feetText);
+  }
+
   for (const o of beachOverlays) {
     beach = _overlay(beach, o.col, o.sprite);
   }
-  if (pirate) {
-    beach = _overlay(beach, pirate.col, _SH_PIRATE);
-    if (pirate.prop) beach = _overlay(beach, pirate.col + 2, pirate.prop);
-  }
 
-  const lines = [..._SKY_P, ...sea, shore, beach];
+  const lines = [..._SKY_P, ...sea, shore, head, chest, spine, beach];
   if (dialog) lines.push('       "' + dialog + '"');
   return lines.join('\n');
 }
 
 function _buildPirateFrames(secret) {
-  const motto = (secret || 'X marks the spot').trim().slice(0, 60) || 'X marks the spot';
+  // Only show dialog when the operator actually passed --secret.
+  // The treasure dig is itself the climax visually; no need to
+  // narrate "X marks the spot" when no secret is set.
+  const motto = secret ? secret.trim().slice(0, 60) : '';
   const F = [];
+
+  // Anchored-ship positions for the beach scene. The ship gently
+  // bobs left/right between two near-shore cols so it feels rocked
+  // by waves while the pirate is ashore. Index this with frame
+  // parity to alternate.
+  const ANCHOR = [
+    { seaRow: 4, col: 14 },
+    { seaRow: 4, col: 15 },
+  ];
+  const bob = (i) => ANCHOR[i % 2];
+  let beat = 0;
 
   // 1. Empty bay.
   F.push(_pirateScene({}));
 
   // 2-4. Ship appears at the horizon (right) and drifts toward center.
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 17 } }));
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 13 } }));
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 9  } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 19 } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 15 } }));
+  F.push(_pirateScene({ ship: { seaRow: 1, col: 13 } }));
 
   // 5-7. Ship descends through the trapezoid (closer = lower row).
-  F.push(_pirateScene({ ship: { seaRow: 1, col: 9  } }));
-  F.push(_pirateScene({ ship: { seaRow: 2, col: 10 } }));
-  F.push(_pirateScene({ ship: { seaRow: 3, col: 11 } }));
+  F.push(_pirateScene({ ship: { seaRow: 2, col: 13 } }));
+  F.push(_pirateScene({ ship: { seaRow: 3, col: 14 } }));
+  F.push(_pirateScene({ ship: { seaRow: 4, col: 14 } }));
 
-  // 8. Anchor splash on the shore line.
+  // 8. Anchor splash on the shore line in front of the ship.
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    shoreOverlay: { col: 13, sprite: _SH_SPLASH },
+    ship: bob(beat++),
+    shoreOverlay: { col: 16, sprite: _SH_SPLASH },
   }));
 
-  // 9-11. Pirate disembarks and walks along the beach.
+  // 9-11. Pirate disembarks and walks toward the center of the beach.
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 14 },
+    ship: bob(beat++),
+    figure: { col: 18, legs: 'apart' },
   }));
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 11 },
+    ship: bob(beat++),
+    figure: { col: 14, legs: 'together' },
   }));
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 8 },
+    ship: bob(beat++),
+    figure: { col: 10, legs: 'apart' },
   }));
 
   // 12. Pulls out the map.
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 8, prop: _SH_MAP },
+    ship: bob(beat++),
+    figure: { col: 10, prop: _SH_MAP, legs: 'together' },
   }));
 
-  // 13-14. X appears further along the beach; pirate walks to it.
+  // 13-15. X appears further left on the beach; pirate walks to it.
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 6, prop: _SH_MAP },
+    ship: bob(beat++),
+    figure: { col: 8, prop: _SH_MAP, legs: 'apart' },
     beachOverlays: [{ col: 2, sprite: _SH_X }],
   }));
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4, prop: _SH_MAP },
+    ship: bob(beat++),
+    figure: { col: 6, prop: _SH_MAP, legs: 'together' },
+    beachOverlays: [{ col: 2, sprite: _SH_X }],
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 5, legs: 'apart' },
     beachOverlays: [{ col: 2, sprite: _SH_X }],
   }));
 
-  // 15. Pirate arrives at the X.
+  // 16-19. Digging — shovel out, dirt mound rises upward into the
+  // formerly-empty rows above the beach (the pile occupies the
+  // figure-row space at col 2, growing taller each frame).
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4 },
-    beachOverlays: [{ col: 2, sprite: _SH_X }],
+    ship: bob(beat++),
+    figure: { col: 5, prop: _SH_SHOVEL, legs: 'together' },
+    pile: [{ row: 0, col: 2, sprite: _SH_DIRT }],
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 5, prop: _SH_SHOVEL, legs: 'apart' },
+    pile: [
+      { row: 0, col: 2, sprite: _SH_DIRT },
+      { row: 1, col: 2, sprite: _SH_DIRT },
+    ],
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 5, prop: _SH_SHOVEL, legs: 'together' },
+    pile: [
+      { row: 0, col: 2, sprite: _SH_DIRT },
+      { row: 1, col: 2, sprite: _SH_DIRT },
+      { row: 2, col: 2, sprite: _SH_DIRT },
+    ],
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 5, prop: _SH_SHOVEL, legs: 'apart' },
+    pile: [
+      { row: 0, col: 2, sprite: _SH_DIRT },
+      { row: 1, col: 2, sprite: _SH_DIRT },
+      { row: 2, col: 2, sprite: _SH_DIRT },
+      { row: 3, col: 2, sprite: _SH_DIRT },
+    ],
   }));
 
-  // 16-18. Digging — shovel out, sand pile grows.
+  // 20. Hits the chest — treasure appears at the bottom of the hole,
+  // pile collapses (sand slid back when chest popped up).
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4, prop: _SH_SHOVEL },
-    beachOverlays: [{ col: 2, sprite: _SH_DIRT }],
-  }));
-  F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4, prop: _SH_SHOVEL },
-    beachOverlays: [{ col: 2, sprite: _SH_DIRT }, { col: 0, sprite: _SH_DIRT }],
-  }));
-  F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4, prop: _SH_SHOVEL },
-    beachOverlays: [{ col: 2, sprite: _SH_DIRT }, { col: 0, sprite: _SH_DIRT }],
-  }));
-
-  // 19. Treasure chest emerges.
-  F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 4 },
+    ship: bob(beat++),
+    figure: { col: 5, legs: 'together' },
     beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
   }));
 
-  // 20-22. Pirate reads the scroll — secret reveal (3 holds for legibility).
+  // 21-23. Pirate opens the scroll. Dialog (the secret) appears
+  // beneath the scene — held for three frames so it's legible.
   for (let i = 0; i < 3; i++) {
     F.push(_pirateScene({
-      ship: { seaRow: 3, col: 11 },
-      pirate: { col: 4, prop: _SH_SCROLL },
+      ship: bob(beat++),
+      figure: { col: 5, prop: _SH_SCROLL, legs: 'together' },
       beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
       dialog: motto,
     }));
   }
 
-  // 23-25. Pirate picks up the gold and walks back to the ship.
+  // 24. Pirate pockets the gold (it becomes his prop), beach clears.
   F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 7, prop: _SH_GOLD },
-  }));
-  F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 10, prop: _SH_GOLD },
-  }));
-  F.push(_pirateScene({
-    ship: { seaRow: 3, col: 11 },
-    pirate: { col: 13, prop: _SH_GOLD },
+    ship: bob(beat++),
+    figure: { col: 5, prop: _SH_GOLD, legs: 'apart' },
   }));
 
-  // 26. Boards the ship — pirate gone, treasure gone (he took it with him).
-  F.push(_pirateScene({ ship: { seaRow: 3, col: 11 } }));
+  // 25-27. Walks back to the ship.
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 9, prop: _SH_GOLD, legs: 'together' },
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 13, prop: _SH_GOLD, legs: 'apart' },
+  }));
+  F.push(_pirateScene({
+    ship: bob(beat++),
+    figure: { col: 17, prop: _SH_GOLD, legs: 'together' },
+  }));
 
-  // 27-29. Ship sails back to the horizon (up + right).
-  F.push(_pirateScene({ ship: { seaRow: 2, col: 12 } }));
-  F.push(_pirateScene({ ship: { seaRow: 1, col: 14 } }));
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 16 } }));
+  // 28. Boards — figure gone (and the gold went with him).
+  F.push(_pirateScene({ ship: bob(beat++) }));
 
-  // 30. Vanished over the horizon — empty bay, message auto-deletes.
+  // 29-31. Ship sails back to the horizon (up + right).
+  F.push(_pirateScene({ ship: { seaRow: 3, col: 15 } }));
+  F.push(_pirateScene({ ship: { seaRow: 2, col: 16 } }));
+  F.push(_pirateScene({ ship: { seaRow: 1, col: 17 } }));
+  F.push(_pirateScene({ ship: { seaRow: 0, col: 18 } }));
+
+  // 32. Vanished — empty bay, message auto-deletes.
   F.push(_pirateScene({}));
 
   return F;
@@ -353,6 +453,7 @@ export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 2500,
+    consumesSecret: true,
     params: '[--secret "<dialog>"]',
     desc: 'UFO lands → 👽 stick figure emerges, walks, drinks 🍾, ' +
           'smokes 🚬, burps 💨 revealing the secret, walks back, ' +
@@ -362,12 +463,16 @@ export const PRESETS = {
   },
   pirate: {
     ms: 700, monospace: true, autoDelete: true, holdMs: 3000,
+    consumesSecret: true,
     params: '[--secret "<treasure note>"]',
     desc: '3D tilted-plane bay: sky / horizon / trapezoid sea / shore / ' +
-          'beach. 🚢 sails in from the horizon → 🧔 pirate disembarks, ' +
-          'pulls out 🗺️, walks to the ❌, digs ⛏️ a treasure 💰 out of ' +
-          'the sand, reads 📜 with the secret as the treasure note, ' +
-          'walks back with the gold, ship sails back over the horizon.',
+          'beach. 🚢 sails in from the horizon (bobbing while anchored) ' +
+          '→ 🧔 stick-figure pirate with 🦜 on shoulder disembarks, ' +
+          'unrolls 🗺, walks to ❌, digs ⛏️ — dirt 🟫 piles upward into ' +
+          'the rows above the beach — uncovers 💰, reads 📜 with the ' +
+          'secret as the treasure note, walks back with the gold, ship ' +
+          'sails back over the horizon. Dialog only shows when --secret ' +
+          'is passed.',
     build: (arg) => _buildPirateFrames(arg),
   },
 
@@ -459,10 +564,15 @@ export function buildMoviePayload(argsStr) {
     holdMs = 1500;
   } else if (presetName && PRESETS[presetName]) {
     const p = PRESETS[presetName];
+    // Presets that consume the secret internally (alien, pirate)
+    // opt in via `consumesSecret: true` and receive the secret as
+    // their build() argument when no positional was given. Other
+    // presets (typewriter, scan, loading, ...) get the secret
+    // appended as a trailing 💬 frame so it surfaces somewhere.
     let buildArg = positional;
-    if (presetName === 'alien' && secret && !positional) buildArg = secret;
+    if (p.consumesSecret && secret && !positional) buildArg = secret;
     frames = p.frames ?? p.build(buildArg);
-    if (presetName !== 'alien' && secret) frames = [...frames, `💬 "${secret}"`];
+    if (!p.consumesSecret && secret) frames = [...frames, `💬 "${secret}"`];
     if (p.monospace) frames = frames.map(f => '```\n' + f + '\n```');
     ms = frameMs ?? p.ms;
     autoDelete = keep ? false : (p.autoDelete ?? true);
