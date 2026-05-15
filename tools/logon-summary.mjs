@@ -240,9 +240,53 @@ export async function buildRecap({
   const chatList = [];
   for (const s of sections) for (const c of s.chats) chatList.push(c);
 
-  const titleText = since
-    ? `recap — since ${_formatAgo(Date.now() - since)} ago` + (includeDms ? '' : ' (DMs hidden — --all)')
-    : 'recap' + (includeDms ? '' : ' (DMs hidden — --all)');
+  // Header summary fragments. Each is an independent computation
+  // that contributes a count + label to the title line; this is
+  // the seed of the "behavioral plugin" shape the operator wants —
+  // future watchers (whisper transcripts, btc ticker, calendar
+  // reminders, todo nudges) plug in here without restructuring
+  // the recap. Today: unreplied DMs + groups with You-not-last,
+  // plus status post count since `since`.
+  const summaries = [];
+
+  // Unreplied DMs — DMs whose last recent[] entry is from someone
+  // other than the operator. Conservative: a DM with no recent[]
+  // doesn't count. Walks every DM regardless of curation (the
+  // header reflects total state, not just the top 5 displayed).
+  const unrepliedDms = chats.filter(c => {
+    if (!isDm(c) || isPinned(c)) return false;
+    const recent = Array.isArray(c.recent) ? c.recent : [];
+    if (!recent.length) return false;
+    const last = recent[recent.length - 1];
+    return last.author && last.author !== 'You';
+  }).length;
+  if (unrepliedDms) summaries.push(`${unrepliedDms} unreplied DM${unrepliedDms === 1 ? '' : 's'}`);
+
+  // Unreplied groups (same shape, scoped to non-pinned groups
+  // since pinned ones the operator already cares about explicitly).
+  const unrepliedGroups = chats.filter(c => {
+    if (!isGroup(c) || isPinned(c)) return false;
+    const recent = Array.isArray(c.recent) ? c.recent : [];
+    if (!recent.length) return false;
+    const last = recent[recent.length - 1];
+    return last.author && last.author !== 'You';
+  }).length;
+  if (unrepliedGroups) summaries.push(`${unrepliedGroups} active group${unrepliedGroups === 1 ? '' : 's'}`);
+
+  // Status posts since the cutoff (or total stored if no cutoff).
+  const statusChat = chats.find(c => isStatus(c));
+  const statusCount = statusChat && Array.isArray(statusChat.recent)
+    ? (since ? statusChat.recent.filter(r => r.ts >= since).length : statusChat.recent.length)
+    : 0;
+  if (statusCount) summaries.push(`${statusCount} status post${statusCount === 1 ? '' : 's'}`);
+
+  // _formatAgo already appends ' ago' (e.g. '8h ago'); don't double-stamp it.
+  const sinceClause = since ? ` since ${_formatAgo(Date.now() - since)}` : '';
+  const summaryClause = summaries.length
+    ? ' · ' + summaries.join(' · ')
+    : (since ? ' · caught up' : '');
+  const dmsClause = includeDms ? '' : ' (DMs hidden — --all)';
+  const titleText = `recap${summaryClause}${sinceClause}${dmsClause}`;
 
   const rows = [{ type: 'title', text: titleText }];
   const lines = [titleText];
