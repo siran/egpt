@@ -9,25 +9,20 @@
 // echo; everything else (frame phases, wish counting, retire
 // orchestration) is encapsulated.
 
-// Genie face — three eyes (the operator: "the eye of wisdom").
-// Two on the bottom row, the third in the center top — classic
-// trinetra placement. The idle phase animates by swapping eye
-// states (all-open / blink / wink-left / wink-right / wisdom)
-// so the face feels alive rather than frozen between questions.
-// Same geometry across all idle frames so column widths hold
-// edit-to-edit.
+// Genie face — three eyes, no nose or mouth (operator: "it
+// doesn't need a nose or mouth"). The two mortal eyes (👁️) live
+// on the bottom row; the third eye of wisdom pulses above them
+// on a different rhythm — a pure-ASCII glyph cycle (◯ → ○ → o
+// → -) that reads as breathing/scanning regardless of WA's
+// emoji rendering quirks. Mortal pair holds steady mostly,
+// blinks/winks rarely; third eye pulses constantly. The two
+// rhythms aren't aligned, so the eyes feel like independent
+// organs rather than one coordinated face.
 //
-// State legend (top, left, right):
-//   open    : 👁️
-//   closed  : 〰️
-const _face = (top, left, right) =>
-  `  ${top}\n ${left} ${right}\n   ·\n  ╰─╯`;
-const FACE_OPEN     = _face('👁️', '👁️', '👁️');           // alert, all three open
-const FACE_BLINK    = _face('〰️', '〰️', '〰️');           // momentary blink
-const FACE_WINK_L   = _face('👁️', '〰️', '👁️');           // left eye winks
-const FACE_WINK_R   = _face('👁️', '👁️', '〰️');           // right eye winks
-const FACE_WISDOM   = _face('👁️', '〰️', '〰️');           // bottom two closed, third sees deeper
-const FACE_WISDOM_OFF = _face('〰️', '👁️', '👁️');         // mortal eyes open, wisdom rests
+// Third-eye states: '◯' (wide alert), '○' (watching), 'o' (dim),
+// '-' (resting).
+// Mortal states:    '👁️' (open), '〰️' (closed).
+const _face = (top, left, right) => `  ${top}\n ${left} ${right}`;
 
 // Compact summon — bottle → puff → wisdom eye peers out → full
 // three-eyed face. ~4.5s total. The peek frame opens the third
@@ -36,8 +31,8 @@ const FACE_WISDOM_OFF = _face('〰️', '👁️', '👁️');         // mortal
 const SUMMON_FRAMES = [
   '🍾',
   '🍾  💨',
-  '  👁️\n  ·\n 🍾',
-  FACE_OPEN,
+  '  ◯\n 🍾',
+  _face('◯', '👁️', '👁️'),
 ];
 
 const THINKING_FRAMES = [
@@ -48,38 +43,43 @@ const THINKING_FRAMES = [
   '🍾  *almost there…*  💡',
 ];
 
-// Retire — wisdom eye closes first (it saw the end coming), then
-// the mortal pair, then the face fades back into the bottle.
+// Retire — third eye dims first (it saw the end coming), then
+// mortal pair closes, then the face recedes into the bottle.
 const RETIRE_FRAMES = [
-  FACE_WISDOM_OFF + '\n\n_your wishes are spent._',
-  FACE_BLINK      + '\n\n_farewell._  👋',
-  '〰️ 〰️\n  ·\n  ◯  \n 🍾',
+  _face('-', '👁️', '👁️') + '\n\n_your wishes are spent._',
+  _face('-', '〰️', '〰️') + '\n\n_farewell._  👋',
+  '〰️ 〰️\n  🍾',
   '💨\n🍾',
   '🍾',
   '_(the bottle is empty)_',
 ];
 
-// Idle cycle — face mostly alert, occasional blinks/winks, rare
-// "wisdom" beat where the mortal pair closes and only the third
-// eye stays open (the genie is sensing something). Identical
-// consecutive frames are skipped by the bridge's no-change
-// optimization, so this is ~6 actual edits per 12-frame cycle.
+// Idle cycle. The third eye pulses every frame (◯ → ○ → o → -
+// → o → ○) on a 6-beat rhythm; the mortal pair stays open most
+// of the time with occasional blink/wink at frames that don't
+// line up with the third-eye cycle. Identical-frame skip-edit
+// in the bridge keeps actual WA edits to ~one per beat.
 function idleFrames(N) {
   const wishes = N === 1 ? '1 wish' : `${N} wishes`;
   const footer = `\n\n*${wishes} remaining*\n_reply with your question_`;
+  const f = (top, l, r) => _face(top, l, r) + footer;
+  // 12-beat idle. Third-eye column shows the pulse pattern; mortal
+  // pair holds 👁️/👁️ except at frames 4 (blink), 7 (wink-L),
+  // 10 (wink-R). The two rhythms (6-beat third eye vs 12-beat
+  // mortals) are coprime enough to read as independent.
   return [
-    FACE_OPEN       + footer,
-    FACE_OPEN       + footer,
-    FACE_BLINK      + footer,
-    FACE_OPEN       + footer,
-    FACE_OPEN       + footer,
-    FACE_WINK_L     + footer,
-    FACE_OPEN       + footer,
-    FACE_OPEN       + footer,
-    FACE_WISDOM     + footer,
-    FACE_OPEN       + footer,
-    FACE_WINK_R     + footer,
-    FACE_OPEN       + footer,
+    f('◯', '👁️', '👁️'),   //  0  full
+    f('○', '👁️', '👁️'),   //  1  watching
+    f('o', '👁️', '👁️'),   //  2  dim
+    f('-', '👁️', '👁️'),   //  3  resting
+    f('o', '〰️', '〰️'),   //  4  mortal blink during third's dim
+    f('○', '👁️', '👁️'),   //  5  watching
+    f('◯', '👁️', '👁️'),   //  6  full
+    f('○', '〰️', '👁️'),   //  7  left wink
+    f('o', '👁️', '👁️'),   //  8  dim
+    f('-', '👁️', '👁️'),   //  9  resting
+    f('o', '👁️', '〰️'),   // 10  right wink during third's dim
+    f('○', '👁️', '👁️'),   // 11  watching
   ];
 }
 
