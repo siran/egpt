@@ -549,24 +549,51 @@ function _buildCoupleFrames(secret) {
     fig1Legs: 'apart', fig2Legs: 'apart',
   }), motto));
 
-  // 11. Aftermath — figures lying down sharing one body line,
-  // both already asleep (💤). No legs visible (they're under
-  // the covers; we're being decorous about it).
+  // Aftermath cols — fig2 stays anchored at col 16 (where the
+  // climax left them) for frames 11..15 so they don't teleport
+  // between beats; fig1 drifts left across the walk-away frames.
+
+  // 11. Slap — 👋 lands at fig2's hip level. No directional
+  // cigarette/wind emojis (those break in either orientation);
+  // just the contact glyph.
   F.push(_coupleFrame([
-    '',
-    '',
-    '     0=========0',
-    '    💤         💤',
-    '',
+    '    O           O           ',
+    '   /-\\        /-\\          ',
+    '    |           |           ',
+    '    -        👋 -           ',
+    '   | |         | |          ',
   ]));
 
-  // 12. Fade to night.
+  // 12. Cash handoff — 💯💶 between the chests.
   F.push(_coupleFrame([
-    '',
-    '',
-    '       💤  ☾  💤',
-    '',
-    '',
+    '    O           O           ',
+    '   /-\\  💯💶  /-\\          ',
+    '    |           |           ',
+    '    -           -           ',
+    '   | |         | |          ',
+  ]));
+
+  // 13. Walk away (step 1) — fig1 strides left, fig2 stays put.
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 3, fig2Col: 16,
+    gap: '          ',       // 10-char gap, c2 = 3+2+10 = 15, ✓ chest2 cols 15-17
+    fig1Legs: 'apart', fig2Legs: 'together',
+  })));
+
+  // 14. Walk away (step 2) — fig1 near the canvas edge.
+  F.push(_coupleFrame(_figCouple({
+    fig1Col: 1, fig2Col: 16,
+    gap: '            ',     // 12-char gap, c2 = 1+2+12 = 15, ✓
+    fig1Legs: 'cross', fig2Legs: 'together',
+  })));
+
+  // 15. Alone — fig2 holding the cash, fig1 gone.
+  F.push(_coupleFrame([
+    '                O           ',
+    '               /-\\          ',
+    '                |    💯💶   ',
+    '                -           ',
+    '               | |          ',
   ]));
 
   return F;
