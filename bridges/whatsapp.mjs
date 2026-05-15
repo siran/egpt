@@ -294,12 +294,28 @@ export async function startWhatsAppBridge({
   function _enrichReactionText(rawText, msg) {
     const r = msg?.message?.reactionMessage;
     if (!r?.key?.id) return rawText;
-    const target = _msgBodyById.get(r.key.id);
+    let target = _msgBodyById.get(r.key.id);
+    if (!target) {
+      // Fallback: scan every observed chat's recent[] for an entry
+      // with the same key.id. Covers parents older than the in-memory
+      // _msgBodyById cache (it only fills as messages arrive this
+      // session, so reactions to anything from before a bridge
+      // restart kept landing as opaque placeholders).
+      for (const c of _chats.values()) {
+        const hit = c.recent?.find(rr => rr.key?.id === r.key.id);
+        if (hit?.text) { target = hit.text; break; }
+      }
+    }
     if (!target) return rawText;
+    // Snip the parent preview so reaction lines stay readable —
+    // anything over ~60 chars dominates the row and obscures the
+    // reaction itself.
+    const oneLine = String(target).replace(/\s+/g, ' ').trim();
+    const snippet = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
     const emoji = r.text || '·';
     return r.text
-      ? `[reaction ${emoji} to "${target}"]`
-      : `[reaction removed from "${target}"]`;
+      ? `[reaction ${emoji} to "${snippet}"]`
+      : `[reaction removed from "${snippet}"]`;
   }
 
   // Phase 2: reaction counts. Persisted across bridge restarts and
@@ -742,7 +758,13 @@ export async function startWhatsAppBridge({
         // Author is still whoever spoke.
         const remoteName = (!isGroup && !fromMe && pushedName) ? pushedName : null;
         const author = fromMe ? 'You' : (pushedName ?? null);
-        const body = textOf(m.message ?? {}) ?? null;
+        // Enrich reaction bodies at recording time so recent[] (which
+        // /recap reads from) stores '[reaction 👍 to "parent text"]'
+        // instead of the opaque '[reaction 👍 (msg AC8AD42D)]'
+        // placeholder. _enrichReactionText is a no-op for non-reaction
+        // messages, so passing every body through it is cheap.
+        const rawBody = textOf(m.message ?? {}) ?? null;
+        const body = rawBody ? _enrichReactionText(rawBody, m) : null;
         const key = m.key?.id ? { id: m.key.id, fromMe } : null;
         // type==='notify' is real-time push delivery from baileys.
         // 'append' / 'prepend' / undefined are history backfill — don't

@@ -324,6 +324,46 @@ function _sectionForChat(c) {
   return 'dm';
 }
 
+// Build a one-shot index of msgId.startsWith(prefix) → recent[].text
+// for re-enriching reaction placeholders that were stored before
+// the bridge's silent-track enrichment landed (or before the parent
+// was in cache). The placeholder shape is '[reaction <emoji> (msg
+// <8-char id-prefix>)]' — we prefix-match across every chat's
+// recent[] keys; first hit wins.
+function _findByKeyPrefix(chats, prefix) {
+  if (!prefix) return null;
+  for (const c of chats) {
+    if (!Array.isArray(c.recent)) continue;
+    for (const r of c.recent) {
+      if (r?.key?.id?.startsWith(prefix) && r?.text) return r.text;
+    }
+  }
+  return null;
+}
+
+const _REACTION_PLACEHOLDER_RE = /^\[reaction\s+(\S+)\s+\(msg\s+([A-Za-z0-9]+)\)\]$/;
+const _REACTION_REMOVED_RE     = /^\[reaction\s+removed\s+\(msg\s+([A-Za-z0-9]+)\)\]$/;
+function _enrichStoredReaction(text, chats) {
+  if (typeof text !== 'string') return text;
+  let m = text.match(_REACTION_PLACEHOLDER_RE);
+  if (m) {
+    const parent = _findByKeyPrefix(chats, m[2]);
+    if (!parent) return text;
+    const oneLine = parent.replace(/\s+/g, ' ').trim();
+    const snippet = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
+    return `[reaction ${m[1]} to "${snippet}"]`;
+  }
+  m = text.match(_REACTION_REMOVED_RE);
+  if (m) {
+    const parent = _findByKeyPrefix(chats, m[1]);
+    if (!parent) return text;
+    const oneLine = parent.replace(/\s+/g, ' ').trim();
+    const snippet = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
+    return `[reaction removed from "${snippet}"]`;
+  }
+  return text;
+}
+
 function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = null } = {}) {
   const all = [];
   for (const c of chats) {
@@ -378,7 +418,12 @@ function _collectRecent(chats, since, max, { includeDms = true, mediaIndex = nul
       all.push({
         ts: r.ts,
         author: r.author ?? '?',
-        text: r.text,
+        // Re-enrich '[reaction X (msg <prefix>)]' placeholders that
+        // were persisted before the bridge's silent-track enrichment
+        // shipped — looks the parent up by key prefix across every
+        // chat's recent[]. If the parent's no longer on disk, the
+        // placeholder stays unchanged.
+        text: _enrichStoredReaction(r.text, chats),
         chatLabel: label,
         section,
         stableId,
