@@ -16,6 +16,7 @@
 // the same indices the user just saw.
 
 import * as cdp from '../tools/cdp.mjs';
+import { assignWaIndex, waListToStableCache } from '../tools/wa-bindings.mjs';
 
 export const meta = {
   cmd: '/channels',
@@ -123,9 +124,12 @@ export async function run({ arg, ctx }) {
     const webPreviews = messagesPerChat > 0
       ? await scrapeWaWebPreviews()
       : new Map();
-    // Cache the listing so @waN refers back to the same index the
-    // user just saw. Reset on each /channels.
-    waChannelsCacheRef.current = chats;
+    // Cache the listing through the wa-bindings layer — @waN tokens
+    // are SESSION-STABLE (a chat keeps the index it was first shown
+    // at), so /movie @wa1 always lands in the chat the operator last
+    // saw at @wa1, even if recency order shuffles between this
+    // /channels call and the operator's next dispatch.
+    waChannelsCacheRef.current = waListToStableCache(chats);
 
     const ageLabel = (ts) => {
       const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -143,7 +147,7 @@ export async function run({ arg, ctx }) {
       return webPreviews.get(name) ?? webPreviews.get(stripped) ?? null;
     };
 
-    const blocks = chats.map((c, i) => {
+    const blocks = chats.map((c) => {
       const tag = c.isGroup ? '[group]' : '[1:1]';
       const age = c.lastActivityTs > 0
         ? ageLabel(c.lastActivityTs)
@@ -152,7 +156,10 @@ export async function run({ arg, ctx }) {
       // pin or eGPT's pin layer. listChats already floats them to
       // the top; the marker just makes the priority visible.
       const pin = (c.pinned || c.egptPinned) ? '📌 ' : '   ';
-      const header = `  ${pin}@wa${i + 1}  ${tag.padEnd(7)} ${c.name}  (${age})`;
+      // Stable @waN — already assigned by waListToStableCache
+      // above; assignWaIndex is idempotent so this just looks up.
+      const waN = assignWaIndex(c.jid);
+      const header = `  ${pin}@wa${waN}  ${tag.padEnd(7)} ${c.name}  (${age})`;
       if (!messagesPerChat) return header;
       if (Array.isArray(c.recent) && c.recent.length) {
         const previewLines = c.recent.map(r => {

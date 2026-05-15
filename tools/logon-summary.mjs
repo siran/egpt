@@ -34,6 +34,7 @@
 import { promises as fs, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { assignWaIndex, waListToStableCache } from './wa-bindings.mjs';
 
 const HOME = join(homedir(), '.egpt');
 const CHATS_PATH       = join(HOME, 'wa-chats.json');
@@ -255,7 +256,11 @@ export async function buildRecap({
 
   if (!sections.some(s => s.chats.length)) return null;
 
-  // Build chatList in display order so @waN resolves correctly.
+  // Display-ordered chat list, used below for the recap section
+  // headers. The cache the operator's @waN tokens resolve against
+  // is wrapped through waListToStableCache further down, so the
+  // per-row @wa label and the routed-to-chat both come from the
+  // session-stable binding rather than this list's position.
   const chatList = [];
   for (const s of sections) for (const c of s.chats) chatList.push(c);
 
@@ -294,7 +299,6 @@ export async function buildRecap({
   const rows = [{ type: 'title', text: titleText }];
   const lines = [titleText];
   const entries = [];
-  let waIdx = 0;
 
   for (const section of sections) {
     if (!section.chats.length) continue;
@@ -307,7 +311,10 @@ export async function buildRecap({
     lines.push(`  ${emoji} ${label}${more}`);
 
     for (const c of section.chats) {
-      waIdx++;
+      // Stable @waN — sticky across this session so /movie @wa1,
+      // /oracle @wa1, /pin @wa1 etc. all keep referring to whatever
+      // chat first claimed @wa1.
+      const waIdx = assignWaIndex(c.jid);
       const kindTag = isStatus(c) ? 'status' : (isGroup(c) ? 'group' : '1:1');
       const displayName = (c.name && c.name.trim() ? c.name.trim() : (c.jid?.split('@')[0] ?? '?'))
         .replace(/\s+\(group\)$/, '')
@@ -375,6 +382,10 @@ export async function buildRecap({
   lines.push('');
   lines.push('  @waN to address a chat · @<id> <body> to reply · /recap N for more previews · /recap --all for DMs');
 
+  // chatList stays dense (display order). Callers wrap it through
+  // waListToStableCache when stashing it as the @waN routing cache;
+  // dense form is what existing iterators (group-name backfill,
+  // pinned-chat post-processing) want.
   return { text: lines.join('\n'), entries, rows, chatList };
 }
 

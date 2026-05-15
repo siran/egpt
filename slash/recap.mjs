@@ -22,6 +22,7 @@
 // whether the brain was dispatched).
 
 import { buildRecap } from '../tools/logon-summary.mjs';
+import { waListToStableCache as _waListToStableCache } from '../tools/wa-bindings.mjs';
 
 export const meta = {
   cmd: '/recap',
@@ -83,7 +84,11 @@ export async function run({ arg, ctx }) {
     for (const e of out.entries) registerReplyTarget(e.stableId, e.replyTarget);
   }
   if (waChannelsCacheRef && Array.isArray(out.chatList)) {
-    waChannelsCacheRef.current = out.chatList;
+    // Wrap through waListToStableCache — @waN stays bound to the
+    // chat it first claimed (session-scoped), so recency reorders
+    // between /recap and the operator's next /movie / /pin /
+    // /oracle dispatch don't silently retarget the command.
+    waChannelsCacheRef.current = _waListToStableCache(out.chatList);
   }
   // Fire-and-forget group-name backfill for any group whose disk
   // record lacks a subject. Idempotent — _ensureGroupName skips
