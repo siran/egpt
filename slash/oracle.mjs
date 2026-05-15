@@ -40,12 +40,14 @@ export const meta = {
   cmd: '/oracle',
   section: 'ROOM',
   surface: 'shell',
-  usage: '/oracle @waN | /oracle stop [@waN] | /oracle list',
+  usage: '/oracle @waN [--keep] | /oracle stop [@waN] | /oracle list',
   desc:
     'summon a mystical Oracle in a WA chat. Anyone in the chat can ' +
-    'reply to it with a question; the brain answers as a reply, the ' +
-    'spinner retires. Multiple Oracles run in parallel across chats. ' +
-    '/oracle stop @waN retires one; /oracle stop retires all.',
+    'reply to it with a question; the brain answers as a reply. ' +
+    'Default: single-shot — oracle retires after one answer. --keep ' +
+    'keeps it alive for multiple replies (only /oracle stop retires). ' +
+    'Multiple Oracles run in parallel across chats. Q+A flows into ' +
+    'the shell so the operator can follow along.',
 };
 
 export async function run({ arg, ctx }) {
@@ -97,7 +99,7 @@ export async function run({ arg, ctx }) {
     return true;
   }
 
-  // Summon: /oracle @waN
+  // Summon: /oracle @waN [--keep]
   const m = sub.match(/^@wa(\d+)$/i);
   if (!m) {
     sysOut(`!! /oracle: usage: ${meta.usage}`);
@@ -109,6 +111,10 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /oracle: no chat at ${sub} — /recap or /channels first to populate indices`);
     return true;
   }
+  // --keep flag (or alias --multi): oracle stays alive after each
+  // answer, accepts the next question, and only retires on
+  // /oracle stop. Default: single-shot (answer once, retire).
+  const keep = tokens.some(t => t === '--keep' || t === '--multi');
 
   // Brain selection — config-driven, with 'e' as the universal default.
   // 'e' / 'egpt' is the node-global persona (default_brain config) and
@@ -131,13 +137,17 @@ export async function run({ arg, ctx }) {
     chatId: chat.jid,
     frames: ORACLE_FRAMES,
     frameMs,
+    multi: keep,
     onReply: async (replyMsg /*, oracle */) => {
-      // Extract the question via the bridge's textOf (already imported
-      // inside the bridge module; we get the body string off the msg).
-      // The bridge's contextInfo decoder set msg.message; we read the
-      // user-visible part the same way handleMessage would.
       const question = _extractQuestion(replyMsg);
       if (!question) return;
+      // Surface the question into the operator's room so the
+      // oracle conversation shows up alongside everything else
+      // in the shell. Without this echo the operator only sees
+      // "oracle summoned" and never knows the Q+A happened on
+      // the WA side.
+      const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
+      sysOut(`🔮 [${chat.name}] ${asker} → ${question}`);
       // Send "🔮 thinking…" as a reply to the question; capture key.
       const thinking = await wa.replyTo({
         chatId: chat.jid,
@@ -148,16 +158,18 @@ export async function run({ arg, ctx }) {
       const answer = await computeBrainTurn(brainName, question);
       const finalText = `🔮 ${answer || '(silence)'}`;
       if (thinking?.key) {
-        // Edit the thinking placeholder into the final answer.
         await wa.editMessage?.({ chatId: chat.jid, key: thinking.key, text: finalText });
       } else {
-        // Fallback: fresh reply-send (thinking placeholder failed).
         await wa.replyTo({ chatId: chat.jid, key: replyMsg.key, raw: replyMsg.message, text: finalText });
       }
+      sysOut(`🔮 [${chat.name}] @${brainName}: ${answer || '(silence)'}`);
     },
     onBusy: async (replyMsg /*, oracle */) => {
       if (busyBehavior === 'ignore' || busyBehavior === 'queued') return;
       // polite (default) — reply to the new question.
+      const asker = replyMsg.pushName?.trim() || (replyMsg.key?.fromMe ? 'You' : '?');
+      const question = _extractQuestion(replyMsg) || '(media)';
+      sysOut(`🔮 [${chat.name}] ${asker} → ${question}  (busy — replied politely)`);
       await wa.replyTo({
         chatId: chat.jid,
         key: replyMsg.key,
@@ -170,7 +182,8 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /oracle: bridge returned no handle — initial send may have failed`);
     return true;
   }
-  sysOut(`🔮 oracle summoned in @wa${m[1]} "${chat.name}"  (brain: @${brainName}, busy: ${busyBehavior})`);
+  const mode = keep ? 'keep' : 'single-shot';
+  sysOut(`🔮 oracle summoned in @wa${m[1]} "${chat.name}"  (brain: @${brainName}, busy: ${busyBehavior}, ${mode})`);
   return true;
 }
 
