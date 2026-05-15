@@ -1908,10 +1908,18 @@ export async function startWhatsAppBridge({
         // Phase 2: idle/thinking cycles. Loop until 'retiring' or
         // 'retired'. idleFn(N) re-rendered each iteration so a
         // changed wish count surfaces immediately.
+        // dwell carries the just-emitted frame's hold time. Idle
+        // frames may be either plain strings (dwell = frameMs) or
+        // { text, ms } objects (dwell = ms) — lets a storyboard
+        // flash a quick blink/wink (~300ms) between long open
+        // beats (~3s) so the face feels alive without burning
+        // WA's edit-rate ceiling on average.
         let idleIdx = 0, thinkingIdx = 0;
+        let dwell = frameMs;
         while (handle.state !== 'retired' && handle.state !== 'retiring') {
-          await sleep(frameMs);
+          await sleep(dwell);
           if (handle.state === 'retired' || handle.state === 'retiring') break;
+          dwell = frameMs;
           if (handle.state === 'thinking' && thinkingFrames.length) {
             thinkingIdx = (thinkingIdx + 1) % thinkingFrames.length;
             await emit(thinkingFrames[thinkingIdx]);
@@ -1919,7 +1927,12 @@ export async function startWhatsAppBridge({
             const frames = idleFn ? idleFn(handle.questionsLeft) : idleFrames;
             if (frames.length) {
               idleIdx = (idleIdx + 1) % frames.length;
-              await emit(frames[idleIdx]);
+              const f = frames[idleIdx];
+              const text = (f && typeof f === 'object') ? f.text : f;
+              if (f && typeof f === 'object' && Number(f.ms) > 0) {
+                dwell = Math.max(150, Number(f.ms));
+              }
+              await emit(text);
             }
           }
         }

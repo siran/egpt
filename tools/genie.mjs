@@ -9,29 +9,41 @@
 // echo; everything else (frame phases, wish counting, retire
 // orchestration) is encapsulated.
 
-// Genie face — three eyes, no nose or mouth (operator: "it
-// doesn't need a nose or mouth"). The two mortal eyes (👁️) live
-// on the bottom row; the third eye of wisdom pulses above them
-// on a different rhythm — a pure-ASCII glyph cycle (◯ → ○ → o
-// → -) that reads as breathing/scanning regardless of WA's
-// emoji rendering quirks. Mortal pair holds steady mostly,
-// blinks/winks rarely; third eye pulses constantly. The two
-// rhythms aren't aligned, so the eyes feel like independent
-// organs rather than one coordinated face.
+// Genie face — three eyes + nose + mouth. The two mortal eyes
+// (👁️) sit on row 2; the third eye of wisdom pulses above them
+// on a different rhythm (pure-ASCII ◯ → ○ → o → -, which reads
+// as breathing/scanning regardless of WA's emoji rendering
+// quirks). 👃 nose stays constant; 👄 mouth occasionally morphs
+// into 🫦 (biting lips) for a flicker of expression.
+//
+// Layout uses a triple-backtick monospace block so WA preserves
+// the leading spaces exactly — without the block, leading
+// whitespace gets stripped on some clients and the face slides
+// out of column. Inside the block, columns are: 4 spaces between
+// mortal eyes, 3 leading spaces for the center column (third
+// eye, nose, mouth) so they all sit visually centered between
+// the eyes.
 //
 // Third-eye states: '◯' (wide alert), '○' (watching), 'o' (dim),
 // '-' (resting).
 // Mortal states:    '👁️' (open), '〰️' (closed).
-const _face = (top, left, right) => `  ${top}\n ${left} ${right}`;
+// Mouth states:     '👄' (default), '🫦' (biting lips).
+const _face = (top, left, right, mouth = '👄') =>
+  '```\n' +
+  `   ${top}\n` +
+  `${left}    ${right}\n` +
+  '   👃\n' +
+  `   ${mouth}\n` +
+  '```';
 
 // Compact summon — bottle → puff → wisdom eye peers out → full
-// three-eyed face. ~4.5s total. The peek frame opens the third
-// eye first (it's the one of wisdom — it sees you coming); the
-// other two follow when the genie fully emerges.
+// face emerges. ~4.5s total. The peek frame opens the third eye
+// first (it's the one of wisdom — it sees you coming); the
+// other parts follow when the genie fully emerges.
 const SUMMON_FRAMES = [
   '🍾',
   '🍾  💨',
-  '  ◯\n 🍾',
+  '```\n   ◯\n  🍾\n```',
   _face('◯', '👁️', '👁️'),
 ];
 
@@ -48,38 +60,42 @@ const THINKING_FRAMES = [
 const RETIRE_FRAMES = [
   _face('-', '👁️', '👁️') + '\n\n_your wishes are spent._',
   _face('-', '〰️', '〰️') + '\n\n_farewell._  👋',
-  '〰️ 〰️\n  🍾',
+  '```\n〰️    〰️\n  🍾\n```',
   '💨\n🍾',
   '🍾',
   '_(the bottle is empty)_',
 ];
 
-// Idle cycle. The third eye pulses every frame (◯ → ○ → o → -
-// → o → ○) on a 6-beat rhythm; the mortal pair stays open most
-// of the time with occasional blink/wink at frames that don't
-// line up with the third-eye cycle. Identical-frame skip-edit
-// in the bridge keeps actual WA edits to ~one per beat.
+// Idle cycle. Each frame is { text, ms } — the bridge honors
+// the per-frame dwell, so blinks and winks flash quickly (~300ms)
+// between long open beats (~3s). That keeps the average edit
+// rate well under WA's ceiling while letting the blinks feel
+// like actual blinks rather than 3-second eye closures.
+//
+// Third-eye column shows the pulse pattern; mortal pair holds
+// 👁️/👁️ except on the blink/wink beats. Mouth occasionally
+// morphs into 🫦 on hold frames. The rhythms aren't aligned, so
+// the eyes/mouth feel like independent organs rather than one
+// coordinated face.
 function idleFrames(N) {
   const wishes = N === 1 ? '1 wish' : `${N} wishes`;
   const footer = `\n\n*${wishes} remaining*\n_reply with your question_`;
-  const f = (top, l, r) => _face(top, l, r) + footer;
-  // 12-beat idle. Third-eye column shows the pulse pattern; mortal
-  // pair holds 👁️/👁️ except at frames 4 (blink), 7 (wink-L),
-  // 10 (wink-R). The two rhythms (6-beat third eye vs 12-beat
-  // mortals) are coprime enough to read as independent.
+  const f = (top, l, r, mouth) => _face(top, l, r, mouth) + footer;
+  const HOLD = 3000;
+  const BLINK = 300;
   return [
-    f('◯', '👁️', '👁️'),   //  0  full
-    f('○', '👁️', '👁️'),   //  1  watching
-    f('o', '👁️', '👁️'),   //  2  dim
-    f('-', '👁️', '👁️'),   //  3  resting
-    f('o', '〰️', '〰️'),   //  4  mortal blink during third's dim
-    f('○', '👁️', '👁️'),   //  5  watching
-    f('◯', '👁️', '👁️'),   //  6  full
-    f('○', '〰️', '👁️'),   //  7  left wink
-    f('o', '👁️', '👁️'),   //  8  dim
-    f('-', '👁️', '👁️'),   //  9  resting
-    f('o', '👁️', '〰️'),   // 10  right wink during third's dim
-    f('○', '👁️', '👁️'),   // 11  watching
+    { text: f('◯', '👁️', '👁️'),       ms: HOLD  },   //  0  wide alert
+    { text: f('○', '👁️', '👁️'),       ms: HOLD  },   //  1  watching
+    { text: f('o', '👁️', '👁️'),       ms: HOLD  },   //  2  dim
+    { text: f('-', '👁️', '👁️'),       ms: HOLD  },   //  3  resting
+    { text: f('○', '〰️', '〰️'),       ms: BLINK },   //  4  *blink*
+    { text: f('○', '👁️', '👁️', '🫦'), ms: HOLD  },   //  5  watching (bites lip)
+    { text: f('◯', '👁️', '👁️'),       ms: HOLD  },   //  6  wide alert
+    { text: f('○', '〰️', '👁️'),       ms: BLINK },   //  7  wink-L
+    { text: f('o', '👁️', '👁️'),       ms: HOLD  },   //  8  dim
+    { text: f('-', '👁️', '👁️', '🫦'), ms: HOLD  },   //  9  resting (bites lip)
+    { text: f('○', '👁️', '〰️'),       ms: BLINK },   // 10  wink-R
+    { text: f('○', '👁️', '👁️'),       ms: HOLD  },   // 11  watching
   ];
 }
 
