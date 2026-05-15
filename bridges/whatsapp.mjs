@@ -1197,7 +1197,15 @@ export async function startWhatsAppBridge({
     // and short-circuit normal dispatch. Operator wanted: anyone in
     // the chat can ask, no wake-word, the question's reply-target
     // (stanzaId) is signal enough.
-    if (_liveOracles.size > 0 && !msg.key?.fromMe) {
+    //
+    // The filter is _sentIds.has(id), NOT fromMe. The bot IS the
+    // operator's WhatsApp account; when the operator long-press →
+    // Reply on their own phone, the message comes back fromMe=true.
+    // We want to PROCESS that. What we want to skip is our own
+    // bot-sent echoes (oracle frame edits, persona replies the
+    // bridge dispatched). Those are in _sentIds; everything else,
+    // including operator's phone-typed messages, falls through.
+    if (_liveOracles.size > 0 && !_sentIds.has(msg.key?.id)) {
       const ctx = _contextInfo(msg.message);
       if (ctx?.stanzaId) {
         for (const oracle of _liveOracles.values()) {
