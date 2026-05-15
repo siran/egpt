@@ -218,20 +218,39 @@ export async function buildRecap({
   const isDm     = (c) => !c.isGroup && !isStatus(c);
   const recencyDesc = (a, b) => (b.lastActivityTs || 0) - (a.lastActivityTs || 0);
 
-  // Selection by section. Pinned promotes regardless of kind, so a
-  // pinned DM lands in Pinned and doesn't appear in DMs again.
-  const pinnedChats = chats.filter(isPinned).sort(recencyDesc);
-  const groupsTop  = chats.filter(c => isGroup(c)  && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
-  const statusTop  = chats.filter(c => isStatus(c) && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
-  const dmsTop     = includeDms
-    ? chats.filter(c => isDm(c) && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection)
+  // Unreplied = chat has a recent[] tail whose latest entry is from
+  // someone OTHER than the operator. The operator owes a reply.
+  const isUnreplied = (c) => {
+    const recent = Array.isArray(c.recent) ? c.recent : [];
+    if (!recent.length) return false;
+    const last = recent[recent.length - 1];
+    return last.author && last.author !== 'You';
+  };
+
+  // Selection by section.
+  //   Pinned         all chats with pinned > 0 (operator priority)
+  //   Unreplied DMs  always visible — these are conversations the
+  //                  operator is on the hook for. Excluded from
+  //                  the plain DMs section so they don't double up.
+  //   Groups         top 5 non-pinned by lastActivityTs
+  //   Status         top 5 non-pinned posters
+  //   DMs            with --all: top 5 OTHER DMs (already-replied or
+  //                  quiet). Without --all, hidden; the unreplied
+  //                  ones still show in their own section above.
+  const pinnedChats   = chats.filter(isPinned).sort(recencyDesc);
+  const unrepliedDms  = chats.filter(c => isDm(c) && !isPinned(c) && isUnreplied(c)).sort(recencyDesc);
+  const groupsTop     = chats.filter(c => isGroup(c)  && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
+  const statusTop     = chats.filter(c => isStatus(c) && !isPinned(c)).sort(recencyDesc).slice(0, chatsPerSection);
+  const otherDmsTop   = includeDms
+    ? chats.filter(c => isDm(c) && !isPinned(c) && !isUnreplied(c)).sort(recencyDesc).slice(0, chatsPerSection)
     : [];
 
   const sections = [
-    { kind: 'pinned', chats: pinnedChats, capped: false },
-    { kind: 'group',  chats: groupsTop,   capped: groupsTop.length === chatsPerSection },
-    { kind: 'status', chats: statusTop,   capped: false },
-    { kind: 'dm',     chats: dmsTop,      capped: dmsTop.length === chatsPerSection },
+    { kind: 'pinned',     chats: pinnedChats,   capped: false },
+    { kind: 'unrepliedDm',chats: unrepliedDms,  capped: false, label: 'Unreplied DMs' },
+    { kind: 'group',      chats: groupsTop,     capped: groupsTop.length === chatsPerSection },
+    { kind: 'status',     chats: statusTop,     capped: false },
+    { kind: 'dm',         chats: otherDmsTop,   capped: otherDmsTop.length === chatsPerSection, label: 'Other DMs' },
   ];
 
   if (!sections.some(s => s.chats.length)) return null;
@@ -249,29 +268,13 @@ export async function buildRecap({
   // plus status post count since `since`.
   const summaries = [];
 
-  // Unreplied DMs — DMs whose last recent[] entry is from someone
-  // other than the operator. Conservative: a DM with no recent[]
-  // doesn't count. Walks every DM regardless of curation (the
-  // header reflects total state, not just the top 5 displayed).
-  const unrepliedDms = chats.filter(c => {
-    if (!isDm(c) || isPinned(c)) return false;
-    const recent = Array.isArray(c.recent) ? c.recent : [];
-    if (!recent.length) return false;
-    const last = recent[recent.length - 1];
-    return last.author && last.author !== 'You';
-  }).length;
-  if (unrepliedDms) summaries.push(`${unrepliedDms} unreplied DM${unrepliedDms === 1 ? '' : 's'}`);
-
-  // Unreplied groups (same shape, scoped to non-pinned groups
-  // since pinned ones the operator already cares about explicitly).
-  const unrepliedGroups = chats.filter(c => {
-    if (!isGroup(c) || isPinned(c)) return false;
-    const recent = Array.isArray(c.recent) ? c.recent : [];
-    if (!recent.length) return false;
-    const last = recent[recent.length - 1];
-    return last.author && last.author !== 'You';
-  }).length;
-  if (unrepliedGroups) summaries.push(`${unrepliedGroups} active group${unrepliedGroups === 1 ? '' : 's'}`);
+  // Unreplied count for the header — share isUnreplied() defined
+  // above. Names suffixed `Count` to avoid colliding with the
+  // section chat arrays that already live as unrepliedDms.
+  const unrepliedDmCount = chats.filter(c => isDm(c) && !isPinned(c) && isUnreplied(c)).length;
+  if (unrepliedDmCount) summaries.push(`${unrepliedDmCount} unreplied DM${unrepliedDmCount === 1 ? '' : 's'}`);
+  const unrepliedGroupCount = chats.filter(c => isGroup(c) && !isPinned(c) && isUnreplied(c)).length;
+  if (unrepliedGroupCount) summaries.push(`${unrepliedGroupCount} active group${unrepliedGroupCount === 1 ? '' : 's'}`);
 
   // Status posts since the cutoff (or total stored if no cutoff).
   const statusChat = chats.find(c => isStatus(c));
@@ -295,8 +298,8 @@ export async function buildRecap({
 
   for (const section of sections) {
     if (!section.chats.length) continue;
-    const emoji = emo[section.kind] ?? '';
-    const label = SECTION_LABEL_TEXT[section.kind] ?? section.kind;
+    const emoji = emo[section.kind] ?? emo.dm ?? '';
+    const label = section.label ?? SECTION_LABEL_TEXT[section.kind] ?? section.kind;
     const more = section.capped ? ` (top ${chatsPerSection})` : '';
     rows.push({ type: 'blank' });
     rows.push({ type: 'section', section: section.kind, emoji, label: label + more });
@@ -353,9 +356,16 @@ export async function buildRecap({
           author: r.author ?? '?',
           body: enriched,
           stableId,
+          ts: r.ts,
           mediaPath,
         });
-        lines.push(`       ${r.author ?? '?'}: ${enriched.replace(/\s+/g, ' ').trim()}`);
+        // Flat-text fallback: include the id + HH:MM at the end so
+        // operator can copy/paste from log dumps. The renderer's
+        // 'preview' branch formats this with per-segment colors.
+        const d = r.ts ? new Date(r.ts) : null;
+        const hhmm = d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : '';
+        const idDisp = stableId ? stableId.replace(/^([a-z]+)-/, '$1_').slice(0, 11) : '';
+        lines.push(`       ${r.author ?? '?'}: ${enriched.replace(/\s+/g, ' ').trim()}  ${idDisp}  ${hhmm}`);
       }
     }
   }
