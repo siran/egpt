@@ -275,17 +275,79 @@ async function main() {
   //    surface the same wa-chats.json. We read disk directly and
   //    cross-reference whatever the extension currently shows.
   let parityOk = false, parityDetail = '';
+  let diskChatNames = [];
   try {
     const { buildRecap } = await import('../tools/logon-summary.mjs');
     const r = await buildRecap({ max: 30, includeDms: true });
-    const diskChats = (r?.chatList ?? []).map(c => c.name ?? c.jid).filter(Boolean);
-    parityDetail = `node-side disk lists ${diskChats.length} chat${diskChats.length === 1 ? '' : 's'}` +
-      (diskChats.length ? `: ${diskChats.slice(0, 5).join(', ')}${diskChats.length > 5 ? ', …' : ''}` : '');
+    diskChatNames = (r?.chatList ?? []).map(c => c.name ?? c.jid).filter(Boolean);
+    parityDetail = `node-side disk lists ${diskChatNames.length} chat${diskChatNames.length === 1 ? '' : 's'}` +
+      (diskChatNames.length ? `: ${diskChatNames.slice(0, 5).join(', ')}${diskChatNames.length > 5 ? ', …' : ''}` : '');
     parityOk = true;   // we just verify the data path is reachable
   } catch (e) {
     parityDetail = `disk read failed: ${e.message}`;
   }
   record('node-side recap data reachable', parityOk, parityDetail);
+
+  // 9. /channels slash-dispatch on the extension surface. Earlier
+  //    intuition was that /channels would round-trip extension →
+  //    bus → daemon → baileys → bus → extension, but the architecture
+  //    is actually: each surface owns its own WA bridge. The daemon
+  //    owns baileys (real WA over websocket); the extension owns the
+  //    WA-CDP scraper (reads web.whatsapp.com's DOM). /channels
+  //    targets the surface-local bridge, so the extension's
+  //    /channels needs a web.whatsapp.com tab open in this Chrome
+  //    to return data; without one it errors '!! /channels: no WA
+  //    Web tab connected'. Either response is a valid signal — both
+  //    prove the slash interpreter is wired and emitting items into
+  //    the React state. PASS gate: body grew + tail contains either
+  //    chat data (matched disk names) OR the surface-appropriate
+  //    error. We log which path fired.
+  const ch = makeCdpClient(tab.webSocketDebuggerUrl);
+  await ch.ready;
+  await ch.send('Runtime.enable');
+  const chBefore = await ch.send('Runtime.evaluate', {
+    expression: `
+      (() => {
+        const ed = document.querySelector('.cm-content');
+        if (ed) ed.focus();
+        return { bodyLen: document.body.innerText.length };
+      })()
+    `,
+    returnByValue: true,
+  });
+  await ch.send('Input.insertText', { text: '/channels' });
+  await ch.send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'Enter', code: 'Enter',
+    windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+  });
+  await ch.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Enter', code: 'Enter',
+    windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13,
+  });
+  // /channels involves prefetch + WA Web scrape attempts (when the
+  // tab is open); settles around 2-3s in practice. Give it 4s.
+  await new Promise(r => setTimeout(r, 4000));
+  const chAfter = await ch.send('Runtime.evaluate', {
+    expression: `
+      (() => {
+        const text = document.body.innerText;
+        return { bodyLen: text.length, tail: text.slice(-2500) };
+      })()
+    `,
+    returnByValue: true,
+  });
+  ch.close();
+  const chGrew = chAfter.result.value.bodyLen > chBefore.result.value.bodyLen;
+  const chTail = chAfter.result.value.tail;
+  const matched = diskChatNames.filter(name => chTail.includes(name));
+  const errored = /!!\s*\/channels/.test(chTail);
+  const chOk = chGrew && (matched.length > 0 || errored);
+  const grewBy = chAfter.result.value.bodyLen - chBefore.result.value.bodyLen;
+  let path = 'unknown';
+  if (matched.length > 0) path = `WA Web data path (matched ${matched.length}/${diskChatNames.length} disk chats)`;
+  else if (errored) path = 'surface-local error response (no WA Web tab)';
+  else path = `body grew ${grewBy} but no recognizable response`;
+  record('/channels slash dispatch on extension', chOk, path);
 
   // Summary
   console.log('────────────────────');
