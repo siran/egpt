@@ -3281,6 +3281,32 @@ function App() {
           _scheduleReplyTargetSave();
         },
         runBrainTurn,
+        // Compute-only brain turn — call brain.stream() with no UI
+        // mirroring (no setItems, no bridge update / finish, no
+        // transcript append). Returns just the brain's final text.
+        // Used by /oracle so the slash command can render the
+        // answer however it wants (as a WA reply edit into a
+        // "thinking…" placeholder) without the normal dispatch
+        // path firing alongside.
+        computeBrainTurn: async (routedTo, question) => {
+          const session = sessions[routedTo];
+          if (!session) return null;
+          const brain = brainForName(session.brain);
+          if (!brain?.stream) return null;
+          const history = await readFile(FILE, 'utf8').catch(() => '');
+          try {
+            const result = await brain.stream(
+              { history, message: question, ask: null },
+              () => {},   // discard partials — we only want the final text
+              { ...session.options, sessionName: routedTo, userName: USER_NAME },
+            );
+            return typeof result === 'string'
+              ? result
+              : (result?.text ?? result?.content ?? '');
+          } catch (e) {
+            return `!! brain "${routedTo}" failed: ${e.message}`;
+          }
+        },
         findSessionJsonl,
         // Batch 11 additions
         loadIdentity:                _loadIdentity,
