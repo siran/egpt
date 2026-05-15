@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { promises as fs, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -85,6 +85,14 @@ const CHATS_CACHE_CAP = 500;
 // the most-reacted item without scanning the room md.
 const REACTION_COUNTS_PATH = join(homedir(), '.egpt', 'reaction-counts.json');
 const REACTION_COUNTS_CAP = 500;
+// Per-msg body preview cache (text snippeted to ≤60 chars, keyed by
+// WA stanza id). In-memory was 4000 entries scoped to one bridge
+// session — fine for "reply during the call", broken for "look up
+// what I reacted to yesterday". Persisting carries the cache across
+// restarts so the operator's '[reaction ❤️ to "…"]' enrichment can
+// still resolve parents that have already rolled off the recent[]
+// ring. ~60-byte values × 4000 entries ≈ 240KB on disk.
+const MSG_BODY_CACHE_PATH = join(homedir(), '.egpt', 'msg-body-cache.json');
 // WhatsApp's text-message Protobuf supports up to ~65k chars, but
 // baileys / WA Web silently misbehave at large sizes (edit can reject,
 // chunk boundaries break formatting). 4000 matches the Telegram
@@ -271,6 +279,36 @@ export async function startWhatsAppBridge({
   // the original message, so we keep more than _chats.recent's ring.
   const _msgBodyById = new Map();
   const _MSG_BODY_CACHE_CAP = 4_000;
+  // Load persisted cache on boot — survives bridge restarts so
+  // reaction enrichment can resolve parents from any session in the
+  // last ~4000 messages, not just this one.
+  try {
+    if (existsSync(MSG_BODY_CACHE_PATH)) {
+      const raw = readFileSync(MSG_BODY_CACHE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [keyId, preview] of Object.entries(parsed)) {
+          if (typeof keyId === 'string' && typeof preview === 'string') {
+            _msgBodyById.set(keyId, preview);
+          }
+        }
+      }
+    }
+  } catch (_) { /* corrupt cache file is non-fatal — just start fresh */ }
+  let _msgBodyDirty = false;
+  let _msgBodySaveTimer = null;
+  function _scheduleMsgBodySave() {
+    if (!_msgBodyDirty) return;
+    if (_msgBodySaveTimer) return;
+    _msgBodySaveTimer = setTimeout(() => {
+      _msgBodySaveTimer = null;
+      _msgBodyDirty = false;
+      try {
+        const obj = Object.fromEntries(_msgBodyById.entries());
+        writeFileSync(MSG_BODY_CACHE_PATH, JSON.stringify(obj), { mode: 0o600 });
+      } catch (_) { /* swallow — best-effort persistence */ }
+    }, 5_000);
+  }
   function _rememberMsgBody(keyId, body) {
     if (!keyId || !body || typeof body !== 'string') return;
     // Don't memoize placeholder-only bodies — a reaction-of-a-reaction
@@ -279,12 +317,15 @@ export async function startWhatsAppBridge({
     const oneLine = body.replace(/\s+/g, ' ').trim();
     if (!oneLine) return;
     const preview = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
+    if (_msgBodyById.get(keyId) === preview) return;   // no-op
     _msgBodyById.set(keyId, preview);
     if (_msgBodyById.size > _MSG_BODY_CACHE_CAP) {
       // Drop the oldest insertion. Map preserves insertion order.
       const firstKey = _msgBodyById.keys().next().value;
       _msgBodyById.delete(firstKey);
     }
+    _msgBodyDirty = true;
+    _scheduleMsgBodySave();
   }
   // Enrich a reaction placeholder with the target body when we know it.
   // textOf produces '[reaction <emoji> (msg <id8>)]'; this swaps the
@@ -1846,6 +1887,17 @@ export async function startWhatsAppBridge({
           const obj = Object.fromEntries(all);
           mkdirSync(dirname(REACTION_COUNTS_PATH), { recursive: true });
           writeFileSync(REACTION_COUNTS_PATH, JSON.stringify(obj, null, 2), { mode: 0o600 });
+        } catch (_) {}
+      }
+      if (_msgBodySaveTimer) {
+        clearTimeout(_msgBodySaveTimer);
+        _msgBodySaveTimer = null;
+      }
+      if (_msgBodyDirty) {
+        _msgBodyDirty = false;
+        try {
+          const obj = Object.fromEntries(_msgBodyById.entries());
+          writeFileSync(MSG_BODY_CACHE_PATH, JSON.stringify(obj), { mode: 0o600 });
         } catch (_) {}
       }
       try { sock?.end?.(undefined); } catch (_) {}

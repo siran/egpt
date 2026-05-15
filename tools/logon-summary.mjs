@@ -324,14 +324,46 @@ function _sectionForChat(c) {
   return 'dm';
 }
 
-// Build a one-shot index of msgId.startsWith(prefix) → recent[].text
-// for re-enriching reaction placeholders that were stored before
-// the bridge's silent-track enrichment landed (or before the parent
-// was in cache). The placeholder shape is '[reaction <emoji> (msg
-// <8-char id-prefix>)]' — we prefix-match across every chat's
-// recent[] keys; first hit wins.
+// Re-enrich a reaction placeholder ('[reaction <emoji> (msg <8-char
+// prefix>)]') by looking the parent up in two sources, in order:
+//   1. msg-body cache on disk (~/.egpt/msg-body-cache.json) — keyed
+//      by full WA stanza id, populated by the bridge across sessions
+//      so it survives bridge restarts and is wider than any single
+//      chat's recent[] ring.
+//   2. Each chat's recent[] (fallback for very fresh entries that
+//      may not have hit the debounced disk write yet).
+// Prefix-matches the 8-char placeholder id against both sources;
+// first hit wins.
+const _MSG_BODY_CACHE_PATH = join(HOME, 'msg-body-cache.json');
+let _msgBodyCache = null;
+function _loadMsgBodyCache() {
+  if (_msgBodyCache) return _msgBodyCache;
+  _msgBodyCache = new Map();
+  try {
+    if (existsSync(_MSG_BODY_CACHE_PATH)) {
+      const raw = readFileSync(_MSG_BODY_CACHE_PATH, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [keyId, preview] of Object.entries(parsed)) {
+          if (typeof keyId === 'string' && typeof preview === 'string') {
+            _msgBodyCache.set(keyId, preview);
+          }
+        }
+      }
+    }
+  } catch (_) { /* corrupt file — keep an empty map */ }
+  return _msgBodyCache;
+}
 function _findByKeyPrefix(chats, prefix) {
   if (!prefix) return null;
+  const cache = _loadMsgBodyCache();
+  // Cache lookup: exact match on full id (placeholder prefix is 8
+  // chars; cache keys are the full ~32-char WA stanza id, so we scan
+  // for any cached id that startsWith prefix). 4000-cap Map iteration
+  // is cheap.
+  for (const [keyId, preview] of cache.entries()) {
+    if (keyId.startsWith(prefix) && preview) return preview;
+  }
   for (const c of chats) {
     if (!Array.isArray(c.recent)) continue;
     for (const r of c.recent) {
