@@ -162,6 +162,7 @@ export async function startWhatsAppBridge({
   onQR,        // called with the rendered QR ASCII when WA wants a fresh pair; host can route to a visible surface
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
   onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
+  onSummonMovie, // called when '@movie <preset> [args]' token detected; host builds frames and calls playFrames with existingKey so the trigger message becomes the movie
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -1274,6 +1275,44 @@ export async function startWhatsAppBridge({
       }
     }
 
+    // '@movie' wake-word: in-chat movie trigger. The operator (or
+    // an allowed_users contact) types '@movie <preset> [args]'
+    // anywhere in a message; the bridge fires onSummonMovie with
+    // the trigger key so the host edits the trigger message
+    // itself into the movie (no separate send). Combined with
+    // autoDelete on most presets, the trigger gets revoked
+    // automatically after the movie finishes — exactly the
+    // 'command replaced by the movie' UX the operator asked for.
+    if (typeof onSummonMovie === 'function' && !_sentIds.has(msg.key?.id)) {
+      const _chatJid = msg.key?.remoteJid;
+      const _isGroup = _chatJid?.endsWith?.('@g.us');
+      const _isStatus = _chatJid === 'status@broadcast';
+      const _senderJid = (_isGroup || _isStatus) ? msg.key?.participant : _chatJid;
+      const _userId = _senderJid?.split(':')[0]?.split('@')[0] ?? '?';
+      const _normalize = (s) => String(s).replace(/[^\d]/g, '');
+      const _isAuthorized = msg.key?.fromMe || (allowedUsers.length > 0
+        && allowedUsers.some(u => _normalize(u) === _normalize(_userId)));
+      if (_isAuthorized) {
+        const body = textOf(msg.message);
+        // '@movie' must stand alone as a token (avoid catching '@movies' or
+        // someone's name '@moviefan'); the rest of the line is the args.
+        const m = body?.match(/(?:^|\s)@movie\b\s*(.*)$/is);
+        if (m) {
+          const argsStr = (m[1] || '').trim();
+          try {
+            await onSummonMovie({
+              chatId: _chatJid,
+              fromMessage: msg,
+              triggerKey: msg.key,
+              argsStr,
+            });
+          } catch (e) {
+            err(`onSummonMovie: ${e.message}`);
+          }
+        }
+      }
+    }
+
     // Backlog filter: messages whose timestamp is older than
     // (connectedAt - maxBacklogSeconds) are HELD instead of dispatched.
     // baileys hands you the recent backlog right after WS open, which
@@ -2022,17 +2061,32 @@ export async function startWhatsAppBridge({
     // protocolMessage.editedMessage echo handler folds the edits
     // onto the original recent[] entry, so /recap won't see N
     // mid-frame rows.
-    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000 }) {
+    // existingKey — when set, skip the initial send and use this
+    // pre-existing WA message key as the canvas. Frame 0 goes out as
+    // an edit (not a fresh send) so a chat-side trigger like an
+    // operator typing '@movie alien' becomes the movie in place,
+    // and autoDelete cleanly revokes the trigger at the end.
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
-      const r0 = await _timeBound(
-        _safeSend(target, { text: frames[0] }),
-        'movie initial',
-      ).catch(e => { err(`movie initial: ${e.message}`); return null; });
-      const msgKey = r0?.key;
-      if (!msgKey) return null;
-      rememberSent(msgKey.id);
+      let msgKey;
+      if (existingKey?.id) {
+        msgKey = existingKey;
+        await _timeBound(
+          _safeSend(target, { edit: msgKey, text: frames[0] }),
+          'movie initial (edit)',
+        ).catch(e => err(`movie initial edit: ${e.message}`));
+        rememberSent(msgKey.id);
+      } else {
+        const r0 = await _timeBound(
+          _safeSend(target, { text: frames[0] }),
+          'movie initial',
+        ).catch(e => { err(`movie initial: ${e.message}`); return null; });
+        msgKey = r0?.key;
+        if (!msgKey) return null;
+        rememberSent(msgKey.id);
+      }
       let lastSent = frames[0];
       for (let i = 1; i < frames.length; i++) {
         await new Promise(resolve => setTimeout(resolve, frameMs));
