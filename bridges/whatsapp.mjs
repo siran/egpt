@@ -212,6 +212,11 @@ export async function startWhatsAppBridge({
   // surfaces them via /wa-pending so the operator can review and
   // explicitly dispatch (re-running handleMessage) or clear.
   const _heldMessages = [];
+  // Live oracles per chat — at most one per chat (/oracle stop @waN to
+  // retire, /oracle @waN to summon a fresh one in its place). Each
+  // value is the handle returned by startOracle: { msgKey, chatId,
+  // onReply, stop, state }.
+  const _liveOracles = new Map();
   // Host-driven awareness bypass: chats whose every message should
   // pass through to onIncoming regardless of awareness defaults.
   // /use @waN and /join @waN add entries here so the operator sees
@@ -1187,6 +1192,24 @@ export async function startWhatsAppBridge({
   async function handleMessage(msg, { bypassAwareness = false } = {}) {
     if (!msg.message) return;               // protocol message / ignored type
 
+    // Oracle reply intercept — if this message is a reply to a live
+    // oracle's spinner, route it to the oracle's onReply callback
+    // and short-circuit normal dispatch. Operator wanted: anyone in
+    // the chat can ask, no wake-word, the question's reply-target
+    // (stanzaId) is signal enough.
+    if (_liveOracles.size > 0 && !msg.key?.fromMe) {
+      const ctx = _contextInfo(msg.message);
+      if (ctx?.stanzaId) {
+        for (const oracle of _liveOracles.values()) {
+          if (oracle.msgKey?.id === ctx.stanzaId) {
+            try { await oracle.onReply(msg); }
+            catch (e) { err(`oracle onReply: ${e.message}`); }
+            return;                          // bypass normal flow
+          }
+        }
+      }
+    }
+
     // Backlog filter: messages whose timestamp is older than
     // (connectedAt - maxBacklogSeconds) are HELD instead of dispatched.
     // baileys hands you the recent backlog right after WS open, which
@@ -1676,6 +1699,127 @@ export async function startWhatsAppBridge({
         sock.sendMessage(target, { react: { text: emoji ?? '', key } }),
         'react',
       ).catch(e => { err(`react: ${e.message}`); return null; });
+    },
+    // Edit an existing message in place. Used by /oracle to
+    // transform a '🔮 thinking…' placeholder into the brain's
+    // answer once it lands. Returns the baileys send result.
+    async editMessage({ chatId, key, text }) {
+      if (!sock) return null;
+      const target = chatId ?? lastChat;
+      if (!target || !key?.id) return null;
+      return _timeBound(
+        sock.sendMessage(target, { edit: key, text }),
+        'editMessage',
+      ).then(r => { rememberSent(r?.key?.id); return r; })
+       .catch(e => { err(`editMessage: ${e.message}`); return null; });
+    },
+    // Summon a long-running oracle in `chatId`. Sends frames[0] as a
+    // fresh message, then cycles through `frames` indefinitely
+    // (frameMs per beat) until a reply arrives or stop() is called.
+    // When a reply lands, onReply(replyMsg) is invoked and the
+    // handle's `state` flips to 'thinking' — further replies during
+    // that window go through onBusy (if provided) instead of onReply.
+    // Returns the handle ({ msgKey, stop, state, ... }) so the
+    // caller can retire the oracle from outside.
+    //
+    // Frame strings: wrap them yourself in ``` if you want WA's
+    // monospace block — playFrames-style wrapping isn't applied
+    // here, so the caller has full control over title / footer /
+    // panel composition.
+    async startOracle({ chatId, frames, frameMs = 1000, onReply, onBusy }) {
+      if (!sock) return null;
+      const target = chatId ?? lastChat;
+      if (!target || !Array.isArray(frames) || !frames.length) return null;
+      const r0 = await _timeBound(
+        sock.sendMessage(target, { text: frames[0] }),
+        'oracle initial',
+      ).catch(e => { err(`oracle initial: ${e.message}`); return null; });
+      const msgKey = r0?.key;
+      if (!msgKey) return null;
+      rememberSent(msgKey.id);
+
+      const handle = {
+        msgKey,
+        chatId: target,
+        state: 'spinning',
+        onReply: async (replyMsg) => {
+          // Busy gate — operator-configured behavior for subsequent
+          // replies while the brain is processing the first one.
+          if (handle.state !== 'spinning') {
+            if (typeof onBusy === 'function') {
+              try { await onBusy(replyMsg, handle); } catch (e) { err(`oracle onBusy: ${e.message}`); }
+            }
+            return;
+          }
+          handle.state = 'thinking';
+          try { await onReply?.(replyMsg, handle); }
+          finally {
+            // Whether onReply succeeded or threw, retire the oracle
+            // — operator can /oracle again to spawn a fresh one.
+            await handle.stop();
+          }
+        },
+        stop: async () => {
+          if (handle.state === 'retired') return;
+          handle.state = 'retired';
+          _liveOracles.delete(target);
+          try {
+            await _timeBound(sock.sendMessage(target, { delete: msgKey }), 'oracle delete');
+          } catch (_) {}
+        },
+      };
+      _liveOracles.set(target, handle);
+
+      // Spin loop — edits the message through frame cycles until
+      // state flips out of 'spinning'. Skip-identical-frame
+      // optimization plus a longer pause on edit failure so rate
+      // limits don't compound.
+      let frameIdx = 0;
+      let lastSent = frames[0];
+      (async () => {
+        while (handle.state === 'spinning') {
+          await new Promise(r => setTimeout(r, frameMs));
+          if (handle.state !== 'spinning') break;
+          frameIdx = (frameIdx + 1) % frames.length;
+          const text = frames[frameIdx];
+          if (text === lastSent) continue;
+          try {
+            await _timeBound(sock.sendMessage(target, { edit: msgKey, text }), 'oracle frame');
+            lastSent = text;
+          } catch (e) {
+            err(`oracle frame: ${e.message}`);
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        }
+      })().catch(e => err(`oracle loop: ${e.message}`));
+      return handle;
+    },
+    // Retire the oracle running in `chatId` (or do nothing if none).
+    // Returns true if an oracle was actually stopped.
+    async stopOracle(chatId) {
+      const target = chatId ?? lastChat;
+      const handle = _liveOracles.get(target);
+      if (!handle) return false;
+      await handle.stop();
+      return true;
+    },
+    // Retire every live oracle across every chat. Returns count.
+    async stopAllOracles() {
+      const handles = [..._liveOracles.values()];
+      for (const h of handles) {
+        try { await h.stop(); } catch (_) {}
+      }
+      return handles.length;
+    },
+    // Snapshot of currently-live oracles — used by /oracle (no arg)
+    // to list active oracles across chats. Returns { jid, name (via
+    // getChatName lookup at call time) }.
+    listOracles() {
+      return [..._liveOracles.values()].map(h => ({
+        chatId: h.chatId,
+        name: getChatName(h.chatId),
+        state: h.state,
+      }));
     },
     // Play a frame sequence as a single message that edits itself.
     // frames is an array of strings; the first is sent fresh, each
