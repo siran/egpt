@@ -842,17 +842,18 @@ export async function startWhatsAppBridge({
       }
       // — pushName harvest — every message carries the sender's
       // self-set display name on `msg.pushName`. We cache it keyed by
-      // the bare-jid form (device suffix stripped) so the read-
-      // receipt resolver can find a name even when sock.contacts is
-      // sparse. Skip fromMe rows — for the operator we read
-      // sock.user.name in the resolver instead, which is the
-      // authoritative self-pushName source.
+      // the BARE NUMBER (device suffix AND server suffix stripped:
+      // '1234@s.whatsapp.net:3' → '1234') so the read-receipt
+      // resolver can find a name even when sock.contacts is sparse.
+      // Skip fromMe rows — for the operator we read sock.user.name
+      // in the resolver instead, which is the authoritative
+      // self-pushName source.
       for (const m of messages) {
         if (m?.pushName && typeof m.pushName === 'string' && m.pushName.trim() && !m.key?.fromMe) {
           const sender = m.key?.participant ?? m.key?.remoteJid;
           if (sender) {
-            const bare = sender.split(':')[0];
-            _pushNameByJid.set(bare, m.pushName.trim());
+            const bareNum = sender.split(':')[0]?.split('@')[0];
+            if (bareNum) _pushNameByJid.set(bareNum, m.pushName.trim());
           }
         }
       }
@@ -1835,53 +1836,79 @@ export async function startWhatsAppBridge({
   }
 
   // ── Personalized-movie helpers ────────────────────────────────
+  // Friendly fallback names — when every pushName lookup falls
+  // through and we're left with a raw phone-number / LID-number,
+  // pick one of these instead so the greeting reads as "hi, friend!"
+  // not "hi, 1234567890!". Operator can replace any of these by
+  // editing the array — KISS.
+  const _FRIENDLY_NAMES = ['you', 'friend', 'mystery reader', 'whoever-this-is'];
+  function _pickFriendlyName() {
+    return _FRIENDLY_NAMES[Math.floor(Math.random() * _FRIENDLY_NAMES.length)];
+  }
+  // If a resolved name looks like just digits (or digits + punctuation),
+  // it's a phone-number leak — substitute a friendly nickname.
+  function _orFriendly(s) {
+    if (!s || typeof s !== 'string') return _pickFriendlyName();
+    const trimmed = s.trim();
+    if (!trimmed) return _pickFriendlyName();
+    // Real names have letters. Strings of only digits / +-() / spaces
+    // (e.g. '34836563681438' or '+34 836 563 681 438') get masked.
+    if (/^[\d\s+\-()]+$/.test(trimmed)) return _pickFriendlyName();
+    return trimmed;
+  }
+
   // Resolve a JID to a display name using pushName only — never the
   // operator's address book.
   //
   // Lookup order (pushName-only by construction; see the
   // wa-pushname-only feedback memory):
   //   1. msg.pushName       — per-message hint, most authoritative
-  //   2. sock.user.name     — when the jid matches the operator's
-  //                           own (myJid/myLid); baileys keeps the
-  //                           operator's self-pushName here, not on
-  //                           sock.contacts[myJid].notify (which is
-  //                           often empty).
+  //   2. sock.user.name     — when the jid's bare number matches the
+  //                           operator's own myNumber/myLidNumber.
+  //                           These are pre-computed at connection
+  //                           time and strip both device suffix
+  //                           (':5') and server suffix ('@lid' /
+  //                           '@s.whatsapp.net'), so they survive
+  //                           the LID-vs-phone-number split.
   //   3. _pushNameByJid     — cache populated from inbound message
   //                           events (msg.pushName captured at
-  //                           upsert time)
+  //                           upsert time, keyed by bare number)
   //   4. sock.contacts[jid].notify   — baileys' own contact cache
-  //   5. bare digits         — last resort
+  //   5. friendly fallback   — when nothing resolved or what did
+  //                           resolve is just digits
   function _resolvePushName(jid, msgPushName) {
     if (msgPushName && typeof msgPushName === 'string' && msgPushName.trim()) {
-      return msgPushName.trim();
+      return _orFriendly(msgPushName);
     }
-    const bare = jid?.split(':')[0] ?? null;
-    if (bare) {
-      const myBareJid = myJid?.split(':')[0];
-      const myBareLid = myLid?.split(':')[0];
-      if (bare === myBareJid || bare === myBareLid) {
-        const selfName = sock?.user?.name;
-        if (selfName && typeof selfName === 'string' && selfName.trim()) {
-          return selfName.trim();
-        }
-        const selfNotify = sock?.user?.notify;
-        if (selfNotify && typeof selfNotify === 'string' && selfNotify.trim()) {
-          return selfNotify.trim();
-        }
+    // Strip both ':<device>' suffix and '@<server>' suffix to get
+    // just the bare phone/LID number. This is the key we compare
+    // against myNumber/myLidNumber and the key we lookup in the
+    // _pushNameByJid cache.
+    const bareNum = jid?.split(':')[0]?.split('@')[0] ?? null;
+    if (bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
+      const selfName = sock?.user?.name;
+      if (selfName && typeof selfName === 'string' && selfName.trim()) {
+        return _orFriendly(selfName);
       }
-      const cached = _pushNameByJid.get(bare);
+      const selfNotify = sock?.user?.notify;
+      if (selfNotify && typeof selfNotify === 'string' && selfNotify.trim()) {
+        return _orFriendly(selfNotify);
+      }
+    }
+    if (bareNum) {
+      const cached = _pushNameByJid.get(bareNum);
       if (cached && typeof cached === 'string' && cached.trim()) {
-        return cached.trim();
+        return _orFriendly(cached);
       }
     }
     const contact = sock?.contacts?.[jid];
     if (contact?.notify && typeof contact.notify === 'string' && contact.notify.trim()) {
-      return contact.notify.trim();
+      return _orFriendly(contact.notify);
     }
     if (contact?.pushName && typeof contact.pushName === 'string' && contact.pushName.trim()) {
-      return contact.pushName.trim();
+      return _orFriendly(contact.pushName);
     }
-    return bare?.split('@')[0] ?? '?';
+    return _pickFriendlyName();
   }
 
   // Render <username> against a viewers list. mode 'append' uses an
@@ -1910,12 +1937,18 @@ export async function startWhatsAppBridge({
   function _handlePersonalizedRead(state, readerJid) {
     if (!state || !readerJid) return;
     const readerName = _resolvePushName(readerJid, null);
-    if (!readerName) return;
-    // Dedup — once a pushName is in the list, repeated reads from the
-    // same user (e.g. opening the chat multiple times) don't grow it.
-    if (state.viewers.includes(readerName)) return;
+    const shortId = state.msgKey?.id?.slice(0, 8) ?? '?';
+    const shortJid = readerJid.split(':')[0];
+    if (!readerName) {
+      log(`personalized[${shortId}]: read from ${shortJid} — resolver returned empty; skipping`);
+      return;
+    }
+    if (state.viewers.includes(readerName)) {
+      log(`personalized[${shortId}]: read from ${shortJid} resolved to "${readerName}" — already in viewers (dedup), skipping`);
+      return;
+    }
     state.viewers.push(readerName);
-
+    log(`personalized[${shortId}]: viewer added "${readerName}" (jid ${shortJid}); list now [${state.viewers.join(', ')}]; started=${state.started}, finished=${state.finished}`);
     if (!state.started) {
       state.started = true;
       _runPersonalizedAnimation(state).catch(e => err(`personalized run: ${e.message}`));
@@ -2316,6 +2349,7 @@ export async function startWhatsAppBridge({
           finished: false,
           lastFrameIdx: 0,
         });
+        log(`personalized[${msgKey.id.slice(0, 8)}]: stashed (${frames.length} frames) — waiting for first read receipt to start`);
         return { key: msgKey, personalized: true };
       }
 
