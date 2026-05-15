@@ -614,6 +614,39 @@ function _buildCoupleFrames(secret) {
 // wrap (per the preset's monospace:true flag) preserves the
 // leading spaces that encode how far the D has approached.
 
+// ── Hi movie ──────────────────────────────────────────────────
+//
+// The simplest personalized preset: a waving 👋 hand greets
+// whoever opened the message. Animation starts on first read,
+// the greeting text appears with the wave, and each subsequent
+// reader's pushName appends to the <username> list.
+//
+// Default template: "hi, <username>!" — operator can override
+// with --template. The bridge handles <username> substitution
+// at frame-emit time; the resolver here masks any phone-number-
+// shaped pushName with a friendly fallback ("you", "friend", ...).
+
+function _buildHiFrames(text) {
+  const motto = (text || 'hi, <username>!').trim().slice(0, 100);
+  const F = [];
+  // Three frames of just the wave to draw attention before the
+  // greeting text appears.
+  F.push('   👋');
+  F.push('  👋 ');
+  F.push('   👋');
+  // Greeting appears alongside the wave; hand alternates 👋/🖐️
+  // for a few more beats so the wave keeps going while the text
+  // is on screen.
+  F.push('   👋  ' + motto);
+  F.push('  🖐️  ' + motto);
+  F.push('   👋  ' + motto);
+  F.push('  🖐️  ' + motto);
+  F.push('   👋  ' + motto);
+  F.push('  🖐️  ' + motto);
+  F.push('   👋  ' + motto);
+  return F;
+}
+
 // ── Bomb movie ────────────────────────────────────────────────
 //
 // Multi-row bomb: bomb sits, fuse grows up from it, spark lights
@@ -897,6 +930,19 @@ export const PRESETS = {
           'comedy — ASCII only, no anatomy depicted. Trigger from a ' +
           'WA chat with @movie couple --secret "...".',
     build: (arg, opts = {}) => _buildCoupleFrames(opts.template || arg),
+  },
+  hi: {
+    ms: 350, monospace: true, autoDelete: true, holdMs: 5000,
+    consumesSecret: true,
+    params: '[--template "...<username>..."]',
+    desc: 'a waving 👋 says hi to whoever reads the message. Animation ' +
+          'starts on first read; the greeting text appears alongside ' +
+          'the wave; each subsequent reader appends to the <username> ' +
+          'list. Phone-number-shaped pushNames are masked with a ' +
+          'friendly fallback ("you", "friend", ...) so the greeting ' +
+          'never renders as a raw phone number. Default template: ' +
+          '"hi, <username>!" — override with --template.',
+    build: (arg, opts = {}) => _buildHiFrames(opts.template || arg),
   },
   bomb: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 3500,
