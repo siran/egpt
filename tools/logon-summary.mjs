@@ -41,7 +41,12 @@ const REACTIONS_PATH   = join(HOME, 'reaction-counts.json');
 const LAST_LOGON_PATH  = join(HOME, 'last-logon.json');
 const MEDIA_DIR        = join(HOME, 'media');
 
-const DEFAULT_RECAP_LINES = 30;
+// Default recap budget. Effectively uncapped — operator's policy
+// is "show everything in recent[]". recent[] per-chat caps at
+// 1000 so the total across observed chats is naturally bounded
+// (chat count × 1000 worst-case), but the recap itself imposes
+// no further cut by default. /recap N is the explicit scope-down.
+const DEFAULT_RECAP_LINES = Infinity;
 
 // Returns { text, entries } so the App-mount effect can register each
 // shown WA row in the shell's persisted reply-target sidecar (so
