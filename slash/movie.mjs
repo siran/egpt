@@ -1,27 +1,22 @@
 // slash/movie.mjs — play an ASCII / emoji movie inside a single WA
 // message by editing it frame-by-frame. The bridge's edit-echo
-// handler folds these edits onto the original recent[] entry, so
+// handler folds these edits onto the original recent[] entry so
 // /recap won't see N mid-frame rows.
 //
-// Movies auto-delete by default (message is revoked after a hold
-// period). --keep disables. --secret "<text>" supplies the
-// punchline; for the alien preset it lands inside the scene as the
-// dialog line, for utility presets it appends a final '💬 "<text>"'
-// frame.
+// Movies auto-delete by default (revoked after a hold). --keep
+// disables. --secret "<text>" supplies the punchline.
 
 // ── Alien movie ───────────────────────────────────────────────
 //
-// A 5-line fixed-frame scene: 4-line starfield + 1 ground line +
-// optional 1 dialog line. The frame stays at a constant 25 visible
-// columns and the alien plays out a small story on the ground line
-// over ~30 beats.
+// 9-line frame, constant height:
+//   4 sky rows  (starfield, sometimes a UFO drifting through)
+//   4 figure rows  (head / chest / spine / legs — blank when no figure)
+//   1 ground row  (sometimes carries a UFO or a dust kick)
+//   + 1 optional dialog row below the ground for the burp line
 //
-// Storyline:
-//   sky → UFO drifts in diagonally → lands with dust →
-//   👽 emerges, walks to center → pulls 🍾, drinks →
-//   pulls 🚬, smokes → burps 💨 revealing the secret →
-//   walks back leaving 🍾 → boards UFO → takeoff → warp out →
-//   empty sky again (bottle remains for a beat) → auto-delete.
+// The alien is a stick figure: 👽 head, /---\ chest+arms, | spine,
+// /\ or || legs alternating to read as a walk. Props ride on the
+// head row next to the emoji (🍾 / 🚬 / 💨).
 
 const _SKY = [
   '   . · ✦ . * · ⋆ .  ',
@@ -29,89 +24,124 @@ const _SKY = [
   '    . * · . ✦ .     ',
   '  · ⋆ . · *         ',
 ];
+const _GROUND_EMPTY = '─────────────────────────';
+const _GROUND_UFO   = '─────🛸──────────────────';
+const _GROUND_DUST  = '~~~~~🛸~~~~~~~~~~~~~~~~~~';
+const _EMPTY_FIG    = ['', '', '', ''];
 
-// Sky-only frames where a UFO replaces one cell in one row.
+// Stick figure poses at column `c` (where the head emoji sits).
+// The body wraps around the head — /---\ chest starts one column
+// to the left so the emoji visually centers above it. Each pose
+// returns the 4-row figure block; the caller composes it into the
+// 9-line scene below.
+//
+// `prop` (optional) attaches a held item to the right of the head:
+//   🍾 (held out) / 🍾 close (drinking) / 🚬 (held) / 🚬 close + 💨 (smoking)
+//   💨 (burp)
+// Two leg styles ('apart' = /\, 'together' = ||) alternate to make
+// the walk read as motion rather than translation.
+function _fig(c, opts = {}) {
+  const { prop = '', legs = 'apart' } = opts;
+  const sp = (n) => ' '.repeat(Math.max(0, n));
+  const head = sp(c) + '👽' + (prop ? prop : '');
+  const chest = sp(c - 1) + '/---\\';
+  const spine = sp(c) + '|';
+  const feet = sp(c) + (legs === 'apart' ? '/\\' : '||');
+  return [head, chest, spine, feet];
+}
+
+function _scene(fig, ground, dialog) {
+  const lines = [..._SKY, ...(fig?.length === 4 ? fig : _EMPTY_FIG), ground];
+  if (dialog) lines.push(dialog);
+  return lines.join('\n');
+}
+
+// Sky frames where a UFO replaces one cell in one sky row.
 function _skyUfo(line, col) {
   const rows = _SKY.map(l => l);
   const arr = rows[line].split('');
   if (col >= 0 && col < arr.length) arr[col] = '🛸';
   rows[line] = arr.join('');
-  return [...rows, '─────────────────────────'].join('\n');
+  return [...rows, ..._EMPTY_FIG, _GROUND_EMPTY].join('\n');
 }
 
 function _buildAlienFrames(secret) {
   const dialog = (secret || 'la verdad está allá afuera').trim().slice(0, 60) || 'la verdad está allá afuera';
-  const sky = _SKY.join('\n');
-  return [
-    // 1. Empty sky.
-    sky + '\n─────────────────────────',
-    // 2-7. UFO drifts in diagonally from upper-right.
-    _skyUfo(0, 18),
-    _skyUfo(0, 14),
-    _skyUfo(1, 12),
-    _skyUfo(2, 10),
-    _skyUfo(2, 8),
-    _skyUfo(3, 6),
-    // 8. Touchdown — UFO on the ground line.
-    sky + '\n─────🛸──────────────────',
-    // 9. Dust kick.
-    sky + '\n~~~~~🛸~~~~~~────────────',
-    // 10. Door opens.
-    sky + '\n─────🛸◎─────────────────',
-    // 11. 👽 emerges next to the UFO.
-    sky + '\n─────🛸 👽───────────────',
-    // 12-14. 👽 walks toward center.
-    sky + '\n─────🛸   👽─────────────',
-    sky + '\n─────🛸     👽───────────',
-    sky + '\n─────🛸       👽─────────',
-    // 15. Pulls out a bottle.
-    sky + '\n─────🛸       👽 🍾──────',
-    // 16-17. Drinks (bottle close).
-    sky + '\n─────🛸       👽🍾───────',
-    sky + '\n─────🛸       👽🍾───────',
-    // 18. Sets the bottle aside; pulls a cigarette.
-    sky + '\n─────🛸       👽 🚬──────',
-    // 19-20. Smokes — first puff, then a longer drag.
-    sky + '\n─────🛸       👽🚬💨─────',
-    sky + '\n─────🛸       👽 💨💨────',
-    // 21-23. The BURP — secret materializes in the cloud.
-    sky + '\n─────🛸       👽💨───────\n     "' + dialog + '"',
-    sky + '\n─────🛸       👽💨───────\n     "' + dialog + '"',
-    sky + '\n─────🛸       👽💨───────\n     "' + dialog + '"',
-    // 24-26. Walks back leaving the empty bottle.
-    sky + '\n─────🛸     👽   🍾──────',
-    sky + '\n─────🛸   👽     🍾──────',
-    sky + '\n─────🛸 👽       🍾──────',
-    // 27. Boards the UFO.
-    sky + '\n─────🛸          🍾──────',
-    // 28-31. UFO takes off, ascends, warps out.
-    _skyUfoWithBottle(3, 5,  '🍾', 15),
-    _skyUfoWithBottle(2, 7,  '🍾', 15),
-    _skyUfoWithBottle(1, 10, '🍾', 15),
-    _skyUfoWithBottle(0, 14, '🍾', 15),
-    // 32. Warp flash.
-    [
-      '   . · ✦ . * ✨💫⋆ .  ',
-      '  ✦ . · ✦ . * .     ',
-      '    . * · . ✦ .     ',
-      '  · ⋆ . · *         ',
-      '────────────────🍾───────',
-    ].join('\n'),
-    // 33. Empty sky, bottle still on the ridge (for one beat).
-    sky + '\n────────────────🍾───────',
-    // 34. Even the bottle's gone — clean sky for the final hold
-    //     before auto-delete revokes the whole message.
-    sky + '\n─────────────────────────',
-  ];
-}
-function _skyUfoWithBottle(line, col, bottle, bottleCol) {
-  const rows = _SKY.map(l => l);
-  const arr = rows[line].split('');
-  if (col >= 0 && col < arr.length) arr[col] = '🛸';
-  rows[line] = arr.join('');
-  const ground = Array(25).fill('─');
-  if (bottleCol >= 0 && bottleCol < ground.length) ground[bottleCol] = bottle;
-  return [...rows, ground.join('')].join('\n');
+  const F = [];
+
+  // 1. Empty nightscape.
+  F.push(_scene(null, _GROUND_EMPTY));
+
+  // 2-7. UFO drifts diagonally in from the upper-right.
+  F.push(_skyUfo(0, 18));
+  F.push(_skyUfo(0, 14));
+  F.push(_skyUfo(1, 12));
+  F.push(_skyUfo(2, 10));
+  F.push(_skyUfo(2, 8));
+  F.push(_skyUfo(3, 6));
+
+  // 8. Touchdown.
+  F.push(_scene(null, _GROUND_UFO));
+  // 9. Dust kick.
+  F.push(_scene(null, _GROUND_DUST));
+
+  // 10. 👽 emerges next to the UFO (col 8, just to its right).
+  F.push(_scene(_fig(8, { legs: 'apart' }),    _GROUND_UFO));
+  // 11-13. Walks to center, legs alternating.
+  F.push(_scene(_fig(10, { legs: 'together' }), _GROUND_UFO));
+  F.push(_scene(_fig(12, { legs: 'apart' }),    _GROUND_UFO));
+  F.push(_scene(_fig(14, { legs: 'together' }), _GROUND_UFO));
+
+  // 14. Pulls a 🍾 out (held to the right of head).
+  F.push(_scene(_fig(14, { prop: ' 🍾' }),       _GROUND_UFO));
+  // 15-16. Drinks (bottle moved tight against the head).
+  F.push(_scene(_fig(14, { prop: '🍾' }),         _GROUND_UFO));
+  F.push(_scene(_fig(14, { prop: '🍾' }),         _GROUND_UFO));
+  // 17. Bottle's empty — it disappears with the alien, no litter.
+  F.push(_scene(_fig(14, {}),                     _GROUND_UFO));
+
+  // 18. Pulls a 🚬.
+  F.push(_scene(_fig(14, { prop: ' 🚬' }),       _GROUND_UFO));
+  // 19-20. Smokes — first puff, longer drag.
+  F.push(_scene(_fig(14, { prop: '🚬💨' }),       _GROUND_UFO));
+  F.push(_scene(_fig(14, { prop: '🚬💨💨' }),     _GROUND_UFO));
+
+  // 21-23. BURP — 💨 cloud carries the secret line.
+  F.push(_scene(_fig(14, { prop: '💨' }),         _GROUND_UFO, '         "' + dialog + '"'));
+  F.push(_scene(_fig(14, { prop: '💨' }),         _GROUND_UFO, '         "' + dialog + '"'));
+  F.push(_scene(_fig(14, { prop: '💨' }),         _GROUND_UFO, '         "' + dialog + '"'));
+
+  // 24. Cigarette also disappears (no litter).
+  F.push(_scene(_fig(14, {}),                     _GROUND_UFO));
+
+  // 25-27. Walks back to the UFO, legs alternating.
+  F.push(_scene(_fig(12, { legs: 'apart' }),      _GROUND_UFO));
+  F.push(_scene(_fig(10, { legs: 'together' }),   _GROUND_UFO));
+  F.push(_scene(_fig(8,  { legs: 'apart' }),      _GROUND_UFO));
+
+  // 28. Boards the UFO — figure gone.
+  F.push(_scene(null, _GROUND_UFO));
+
+  // 29-32. UFO takes off, ascends along the reverse diagonal.
+  F.push(_skyUfo(3, 5));
+  F.push(_skyUfo(2, 7));
+  F.push(_skyUfo(1, 10));
+  F.push(_skyUfo(0, 14));
+
+  // 33. Warp flash.
+  F.push([
+    '   . · ✦ . *✨💫⋆ .  ',
+    '  ✦ . · ✦ . * .     ',
+    '    . * · . ✦ .     ',
+    '  · ⋆ . · *         ',
+    ..._EMPTY_FIG,
+    _GROUND_EMPTY,
+  ].join('\n'));
+
+  // 34. Clean sky. Whole message auto-deletes after the hold.
+  F.push(_scene(null, _GROUND_EMPTY));
+
+  return F;
 }
 
 const PRESETS = {
@@ -119,9 +149,10 @@ const PRESETS = {
   alien: {
     ms: 600, monospace: true, autoDelete: true, holdMs: 2500,
     params: '[--secret "<dialog>"]',
-    desc: 'UFO lands, 👽 emerges, drinks 🍾, smokes 🚬, burps 💨 ' +
-          'revealing the secret, returns to ship, flies away. Whole ' +
-          'message auto-deletes.',
+    desc: 'UFO lands → 👽 stick figure emerges, walks, drinks 🍾, ' +
+          'smokes 🚬, burps 💨 revealing the secret, walks back, ' +
+          'UFO flies away. Whole message auto-deletes; alien takes ' +
+          'its props with it (no litter).',
     build: (arg) => _buildAlienFrames(arg),
   },
 
@@ -158,8 +189,8 @@ export const meta = {
   desc:
     'play an emoji / ASCII animation in a WA chat. movies auto-delete ' +
     'after the last frame unless --keep. --secret flashes a punchline ' +
-    'before deletion (alien folds it inside the scene; other presets ' +
-    'append it). /movie list enumerates presets with their args.',
+    '(alien folds it into the scene as the 👽 burp dialog). /movie ' +
+    'list enumerates presets.',
 };
 
 export async function run({ arg, ctx }) {
