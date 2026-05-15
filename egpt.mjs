@@ -28,6 +28,7 @@ import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
 import { CONFIG_SCHEMA } from './config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
+import { waListToStableCache as _waListToStableCache } from './tools/wa-bindings.mjs';
 import { summonGenie as _summonGenieFromBridge } from './tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 
@@ -2959,7 +2960,10 @@ function App() {
           // the operator can /join @wa3 or /pin @wa3 right off the
           // first frame — no need to bounce through /channels.
           if (Array.isArray(out.chatList) && out.chatList.length) {
-            _waChannelsCacheRef.current = out.chatList;
+            // Wrap through waListToStableCache so @waN tokens stay
+            // session-stable across this seed and any later
+            // /channels / /recap rebuilds — see tools/wa-bindings.mjs.
+            _waChannelsCacheRef.current = _waListToStableCache(out.chatList);
           }
           // Fire-and-forget group-name backfill for any group whose
           // disk record lacks a subject. Same idea as the /recap
