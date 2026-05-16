@@ -18,7 +18,8 @@
 
 import { join } from 'node:path';
 import { mkdirSync, watch as fsWatch, existsSync } from 'node:fs';
-import { readFile, readdir, unlink } from 'node:fs/promises';
+import { readFile, readdir, unlink, writeFile, rename, mkdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 
 /**
@@ -61,6 +62,40 @@ export async function startBaileysBridge(opts) {
 export function isBaileysPaired(authDir) {
   if (!authDir) return false;
   return existsSync(join(authDir, 'creds.json'));
+}
+
+/**
+ * Atomically write a JSON event into a "kept directory" via the same
+ * write-then-rename pattern the outbox sibling-side helper uses, so
+ * the corresponding fs.watch reader on the other side never sees a
+ * partial file.
+ *
+ * Used by the keeper to deliver inbound WA events (wa-inbound, wa-qr,
+ * wa-presence, etc.) into ~/.egpt/inbox/, and reusable for any
+ * future file-IPC channels we add.
+ *
+ * @param {object}  event         - must have a string `type`; rest is consumer-defined
+ * @param {object}  opts
+ * @param {string}  opts.dir      - target directory; created if missing
+ * @param {string}  [opts.from]   - logical sender; defaults to 'keeper'
+ * @returns {Promise<{filename: string, posted: object}>}
+ */
+export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
+  if (!event || typeof event !== 'object' || !event.type) {
+    throw new Error('writeIpcEvent: event must be an object with a type');
+  }
+  if (!dir) throw new Error('writeIpcEvent: dir is required');
+  await mkdir(dir, { recursive: true });
+  const ts = Date.now();
+  const id = randomUUID();
+  const finalName = `${ts}-${id}.json`;
+  const tmpName   = `.tmp-${id}.json`;
+  const tmpPath   = join(dir, tmpName);
+  const finalPath = join(dir, finalName);
+  const payload = { from, ts, ...event };
+  await writeFile(tmpPath, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
+  await rename(tmpPath, finalPath);
+  return { filename: finalName, posted: payload };
 }
 
 /**
