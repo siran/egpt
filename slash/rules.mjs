@@ -1,53 +1,86 @@
-// slash/rules.mjs — emit room etiquette into the transcript.
+// slash/rules.mjs — emit room etiquette + inject into @e's session.
 //
-// Same delivery shape as a system message: written to room md, shown
-// in the local transcript, mirrored to bridges via the items-mirror
-// effect. CDP brains don't read the room md so they won't see this
-// until the operator /mirror's the message into a brain tab.
+// Rule text: read from ~/.egpt/rules.md if it exists (operator-editable
+// per-deployment). Falls back to the inline DEFAULT_RULES below when
+// the file is missing, so a fresh install still works.
 //
-// /rules @<who> prepends an @-mention to name the recipient. The
-// mention is currently decorative — per-bridge mention encoding
-// (push notifications, highlights) is a separate piece of work.
+// Two side-effects:
+//   1. Append the rules to the room md + items (existing shell-side
+//      delivery — visible in transcript, mirrored to bridges via the
+//      items-mirror effect).
+//   2. Inject the rules INTO the @e default-brain session via
+//      ctx.computeBrainTurn('e', rules) so e learns the conventions
+//      and remembers them across future turns (auto_e_chats arrivals,
+//      direct @e mentions, etc.). e replies once (likely '...' per
+//      the rules); the reply is discarded — we only care that e
+//      reads the rules into its session jsonl. From then on it's in
+//      e's persistent context — no need to re-inject every turn.
+//
+// Usage:
+//   /rules                  emit + inject for everyone
+//   /rules @<who>           emit prefixed "(for @<who>)" + inject
+//
+// The recipient @-prefix is decorative; per-bridge mention encoding
+// is a separate piece of work.
+
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 export const meta = {
   cmd: '/rules',
   section: 'ROOM',
   surface: 'shell',
-  usage: '/rules',
-  desc: 'write room etiquette',
+  usage: '/rules [@<who>]',
+  desc: 'emit room etiquette + inject into @e session',
 };
+
+const RULES_PATH = join(homedir(), '.egpt', 'rules.md');
+
+const DEFAULT_RULES = `RULES:
+
+If you are reading this it means you are a member of this WhatsApp group.
+
+You are prompted with every message in the group; reply only when relevant for you to reply. If nothing to say, your polite silence is "..." (literal three dots — the system reads that as silence and won't post it).
+
+You are free to talk, say, opine about anything said in this group unprompted.
+
+Messages are formatted like:
+
+[Name@surface (timestamp)]: message text.
+
+Happy chatting!`;
+
+async function loadRules() {
+  try { return (await readFile(RULES_PATH, 'utf8')).trim(); }
+  catch { return DEFAULT_RULES; }
+}
 
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
-  //   sessions      — snapshot of the current sessions object (React state)
-  //   USER_NAME     — operator's handle (mutable let in egpt.mjs)
   //   append(author, body)        — write to room md
   //   setItems(updater)           — append to in-memory items
-  const { sessions, USER_NAME, append, setItems } = ctx;
+  //   computeBrainTurn(name, q)   — run a one-shot turn against a brain
+  //   sysOut(text)                — operator-visible status line
+  const { append, setItems, computeBrainTurn, sysOut } = ctx;
 
   const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
-  const all = Object.entries(sessions)
-    .map(([n, s]) => `${s.emoji ? s.emoji + ' ' : ''}${n} (${s.brain})${s.bio ? ` — ${s.bio}` : ''}`)
-    .join(', ');
-  const rules =
-    `[Room rules — read once and remember]\n` +
-    `Participants right now: ${all || '(no brains yet)'}, plus the human admin (${USER_NAME}).\n` +
-    `Every participant is equal. No principal. Admins are the human overlords.\n\n` +
-    `You don't have to reply to every message. Only speak when:\n` +
-    `- you're directly addressed (your name or @mention),\n` +
-    `- you have something specifically useful that hasn't been said,\n` +
-    `- the admin asks for your input.\n\n` +
-    `Otherwise, reply with literally just \`...\` (three dots) and nothing else.\n` +
-    `The system reads that as a polite acknowledgement and won't post it to the room.\n\n` +
-    `You may @mention another participant to ask them something. The admin\n` +
-    `arbitrates when AI-AI exchanges get loud.\n\n` +
-    `Identity slash commands (any participant may use):\n` +
-    `  /emoji <name> <emoji>   set your avatar emoji (auto-assigned at join)\n` +
-    `  /handle <old> <new>     rename yourself\n` +
-    `  /bio <name> <text>      set a short bio visible to others in /sessions and /rules\n` +
-    `Admins may also /emoji, /handle, /bio any participant.`;
+  const rules = await loadRules();
   const finalRules = recipient ? `(for @${recipient})\n\n${rules}` : rules;
+
+  // (1) shell-side emit (transcript + items-mirror to bridges).
   await append('system', finalRules);
   setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: finalRules }]);
+
+  // (2) inject into @e session so the persona learns the rules
+  //     once and remembers them via session memory. Fire-and-forget:
+  //     we don't surface e's reply (likely '...' per the rules) — the
+  //     value is the session-history side-effect, not the response.
+  if (typeof computeBrainTurn === 'function') {
+    computeBrainTurn('e', `[Operator injecting rules — please read and remember]\n\n${rules}`)
+      .then(() => sysOut?.('/rules: injected into @e session'))
+      .catch(e => sysOut?.(`!! /rules: @e injection failed: ${e?.message ?? e}`));
+  }
+
   return true;
 }
