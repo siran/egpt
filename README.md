@@ -163,7 +163,7 @@ To keep eGPT running **across reboots even when nobody is logged in**, add
 
 **A — Import the bundled XML** (easiest, especially for non-developers).
 Open Task Scheduler (`Win+R` → `taskschd.msc`), Right pane → `Import Task...`,
-select `egpt-daemon-headless.task.xml` from this repo. In the Properties
+select `egpt-daemon-headless.xml` from this repo. In the Properties
 dialog click `Change User or Group...` and pick your own account, confirm
 `Run whether user is logged on or not` is selected, click `OK`, enter your
 Windows password. Done.
@@ -171,7 +171,7 @@ Windows password. Done.
 **B — Command-line** (elevated PowerShell):
 
 ```powershell
-schtasks /Create /XML "egpt-daemon-headless.task.xml" `
+schtasks /Create /XML "egpt-daemon-headless.xml" `
   /TN "egpt-daemon-headless" `
   /RU "$env:USERNAME" /RP * /F
 ```
