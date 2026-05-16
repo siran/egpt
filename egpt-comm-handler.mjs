@@ -17,8 +17,51 @@
 // spawned by tools/daemon-wrap.ps1.
 
 import { join } from 'node:path';
-import { mkdirSync, watch as fsWatch } from 'node:fs';
+import { mkdirSync, watch as fsWatch, existsSync } from 'node:fs';
 import { readFile, readdir, unlink } from 'node:fs/promises';
+import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
+
+/**
+ * Phase 1 wrapper around startWhatsAppBridge — establishes the
+ * comm-handler boundary in-process before the Phase 2 split into
+ * a separate Node process. All callbacks (onIncoming, onMediaSaved,
+ * onSummonGenie, onSummonMovie, onQR, onChatId, onLog, onError) come
+ * in via opts because they reference handler-side state (React refs,
+ * EGPT_CONFIG, runDefaultBrainTurn closure, etc.) that can't be
+ * imported cleanly without dragging the whole React tree in.
+ *
+ * Returns the same bridge handle today's egpt.mjs uses — get/send/
+ * sendReaction/edit/delete/playFrames/startStreamMessage/getChatName/
+ * getChatSlug/getJidFromShortIndex/refreshGroupNames/stop/etc.
+ *
+ * Phase 2 will:
+ *   - run startBaileysBridge in its own process (spawned by
+ *     daemon-wrap.ps1 alongside the handler process);
+ *   - replace direct callback delivery with file IPC: keeper writes
+ *     ~/.egpt/inbox/<id>.json for every inbound event (wa-inbound,
+ *     wa-qr, wa-presence, wa-media-saved, etc.), handler reads;
+ *   - replace the ~13 in-process sock.* call sites with outbox
+ *     events (wa-send, wa-react, wa-edit, wa-delete, wa-typing-*)
+ *     that the keeper drains and executes against baileys.
+ *
+ * @param {object} opts  - passes through to startWhatsAppBridge AS-IS
+ * @returns {Promise<object|null>}
+ */
+export async function startBaileysBridge(opts) {
+  return startWhatsAppBridge(opts);
+}
+
+/**
+ * Cheap check the handler uses before deciding to call
+ * startBaileysBridge. Avoids printing a QR unprompted on first run.
+ *
+ * @param {string} authDir  - e.g. ~/.egpt/wa-auth
+ * @returns {boolean}       - true iff baileys creds.json is present
+ */
+export function isBaileysPaired(authDir) {
+  if (!authDir) return false;
+  return existsSync(join(authDir, 'creds.json'));
+}
 
 /**
  * Watch ~/.egpt/outbox/ for JSON events written by sibling processes
