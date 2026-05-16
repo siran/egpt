@@ -10,3 +10,6 @@ coverage/
 
 
 .claude/
+
+# scratch / probe scripts — not for the repo
+tmp/
