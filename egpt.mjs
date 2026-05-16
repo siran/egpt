@@ -2586,7 +2586,8 @@ function App() {
     const DEFAULT_PROMPT = [
       '# @e heartbeat',
       '',
-      'Every 5 minutes the daemon fires this prompt at you so you can decide whether to act.',
+      'Addressed to @e. Every 5 minutes the daemon dispatches this prompt to you, @e, via',
+      'runDefaultBrainTurn — so you (and only you) can decide whether to act this tick.',
       '',
       'Options:',
       '',
