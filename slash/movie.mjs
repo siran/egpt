@@ -415,6 +415,11 @@ export function buildMoviePayload(argsStr) {
   let template = null;
   let mode = 'append';
   let joiner = ', ';
+  // includeSelf: by default the operator's own read on their
+  // outgoing message is skipped (auto-mark-as-read on send would
+  // otherwise consume the first-viewer slot). Pass --include-self
+  // to count yourself — useful for testing without a second device.
+  let includeSelf = false;
   // Multi-word flag collector: grabs tokens until the next --flag,
   // then strips one surrounding pair of quotes. Shared by --secret,
   // --template, --frames so they all handle "spaces in quotes" the
@@ -435,6 +440,8 @@ export function buildMoviePayload(argsStr) {
       i++;
     } else if (t === '--keep') {
       keep = true;
+    } else if (t === '--include-self') {
+      includeSelf = true;
     } else if (t === '--secret' && tokens[i + 1]) {
       const r = collectMultiWord(i + 1);
       secret = r.value;
@@ -496,7 +503,7 @@ export function buildMoviePayload(argsStr) {
   // read). The bridge skips these on re-animation so the names
   // don't flicker out between viewers. Default 0 — preset opts in.
   const placeholderFrames = (presetName && PRESETS[presetName]?.placeholderFrames) || 0;
-  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames };
+  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames, includeSelf };
 }
 
 export const meta = {
@@ -574,7 +581,7 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /movie: ${payload.error}. /movie list to see options.`);
     return true;
   }
-  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames } = payload;
+  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames, includeSelf } = payload;
 
   const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
   const tag = positional || secret
@@ -583,7 +590,7 @@ export async function run({ arg, ctx }) {
   const fate = autoDelete ? `auto-delete after ${holdMs}ms` : 'keep';
   const personalizedNote = template ? `  · personalized (waiting for first read)` : '';
   sysOut(`🎬 /movie ${tag} → ${targetTok} "${chat.name}" (${frames.length} frames · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s · ${fate}${personalizedNote})`);
-  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs, template, mode, joiner, placeholderFrames });
+  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs, template, mode, joiner, placeholderFrames, includeSelf });
   if (!r?.key) sysOut(`!! /movie: bridge returned no key — initial send may have failed`);
   return true;
 }
