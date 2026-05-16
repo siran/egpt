@@ -1425,6 +1425,31 @@ export async function startWhatsAppBridge({
     // oracle replies, and follow-ups on any bot reply across chats.
     const ctxInfo = _contextInfo(msg.message);
     const isReplyToUs = !!ctxInfo?.stanzaId && _sentIds.has(ctxInfo.stanzaId);
+    // Reply-as-mention: when the operator long-press → Replies to one
+    // of our outbound messages, parse the quoted body's leading
+    // persona tag ("🐦 wren: …", "🧠 e: …" per the persona-tag-prefix
+    // convention) and treat the reply as an implicit @<persona>
+    // mention. Without this, every reply defaults to @e even when
+    // the operator clearly meant to address wren — since the daemon
+    // sends from the operator's own WhatsApp account, the persona
+    // prefix in the body is the only identity channel available.
+    let replyPersona = null;
+    if (isReplyToUs && ctxInfo?.quotedMessage) {
+      const quotedBody = _baseTextOf(ctxInfo.quotedMessage);
+      if (quotedBody) {
+        // "<optional non-letter prefix like emoji>  <name>:" — the
+        // emoji is decorative, the name is what routes.
+        const m = quotedBody.match(/^\s*(?:[^a-z0-9\s]+\s+)?([a-z][a-z0-9]{0,15})\s*:/i);
+        if (m) {
+          const cand = m[1].toLowerCase();
+          // Only personas room.mjs / interpreter actually route. An
+          // unknown prefix falls through to the existing @e default.
+          if (cand === 'e' || cand === 'egpt' || cand === 'me' || cand === 'wren') {
+            replyPersona = cand;
+          }
+        }
+      }
+    }
     const isWakeWord = (!!text && /@(?:egpt|e)\b/i.test(text)) || isReplyToUs;
 
     // Awareness rules — decide whether this message reaches onIncoming.
@@ -1507,6 +1532,19 @@ export async function startWhatsAppBridge({
       && allowedUsers.some(u => normalize(u) === normalize(userId)));
 
     let processed = text.trim();
+
+    // Reply-as-mention synthesis (paired with replyPersona detection
+    // above). Drop the ↳ quote-preview that textOf prepended and
+    // rebuild the body as "@<persona> <reply-text>\n\n↳ <preview>" so
+    // parseInput sees a clean mention at start, while the brain still
+    // gets the quoted preview as trailing context.
+    if (replyPersona) {
+      const replyOnly = (_baseTextOf(msg.message) ?? '').trim();
+      const quoted = _quotedPreview(ctxInfo);
+      processed = quoted
+        ? `@${replyPersona} ${replyOnly}\n\n${quoted}`
+        : `@${replyPersona} ${replyOnly}`;
+    }
 
     // In groups, awareness 'mentions' (default) requires the message to
     // address us — either via @<our-number> or by replying to one of
