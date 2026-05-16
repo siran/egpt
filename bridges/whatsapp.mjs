@@ -219,25 +219,6 @@ export async function startWhatsAppBridge({
   // value is the handle returned by startOracle: { msgKey, chatId,
   // onReply, stop, state }.
   const _liveOracles = new Map();
-  // Live personalized movies — keyed by sent msgKey.id. When a movie
-  // is dispatched with a `template` containing <username>, the bridge
-  // holds animation start until the first read receipt arrives, then
-  // plays the frames substituting <username> with the running list of
-  // viewers' pushNames. Subsequent reads append to the list and (if
-  // the animation already finished) emit one in-place edit of the
-  // final frame. State persists until daemon exit; nothing here is
-  // written to disk.
-  const _personalizedMovies = new Map();
-  // pushName cache — baileys' sock.contacts[jid].notify is sparse:
-  // it isn't reliably populated for the operator's own JID (the
-  // operator's name lives on sock.user.name), and for friends'
-  // JIDs it sometimes empty until baileys has fully synced the
-  // contact list. We capture pushNames from every inbound message
-  // we see (msg.pushName) so subsequent read-receipt lookups can
-  // resolve a name even when sock.contacts is bare. pushName-only
-  // by construction — never seeded from sock.contacts[jid].name
-  // (the address-book label), per the wa-pushname-only memory.
-  const _pushNameByJid = new Map();
   // Host-driven awareness bypass: chats whose every message should
   // pass through to onIncoming regardless of awareness defaults.
   // /use @waN and /join @waN add entries here so the operator sees
@@ -718,52 +699,6 @@ export async function startWhatsAppBridge({
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Read-receipt routing for personalized movies. WA delivers
-    // status transitions on 'messages.update' (status enum 4 = READ
-    // for 1:1) and per-participant read events on
-    // 'message-receipt.update' (for groups). We listen on both,
-    // filter to keys we know are personalized-movie sends, and
-    // forward to the per-movie handler with the reader's pushName
-    // resolved via _resolvePushName (pushName-only, never the
-    // operator's address book — see the wa-pushname-only feedback).
-    sock.ev.on('messages.update', (updates) => {
-      if (!Array.isArray(updates)) return;
-      for (const u of updates) {
-        if (!u?.key?.id || !u.update) continue;
-        const state = _personalizedMovies.get(u.key.id);
-        if (!state) continue;
-        // Log EVERY status update on a personalized key, regardless of
-        // status — when the wave doesn't trigger we need to see what
-        // baileys is actually emitting (read=4, delivered=3, ack=2,
-        // or nothing at all).
-        const shortId = u.key.id.slice(0, 8);
-        log(`personalized[${shortId}]: messages.update status=${u.update.status} from=${u.key.fromMe ? 'me' : 'other'} participant=${u.key.participant?.split(':')[0] ?? '-'} remote=${u.key.remoteJid?.split(':')[0] ?? '-'}`);
-        if (u.update.status !== 4 /* READ */) continue;
-        state.totalReads = (state.totalReads || 0) + 1;
-        const readerJid = u.key.participant ?? u.key.remoteJid ?? null;
-        _handlePersonalizedRead(state, readerJid);
-      }
-    });
-    sock.ev.on('message-receipt.update', (updates) => {
-      if (!Array.isArray(updates)) return;
-      for (const u of updates) {
-        if (!u?.key?.id) continue;
-        const state = _personalizedMovies.get(u.key.id);
-        if (!state) continue;
-        const shortId = u.key.id.slice(0, 8);
-        const r = u.receipt ?? {};
-        log(`personalized[${shortId}]: message-receipt.update receipt=${JSON.stringify(r).slice(0, 140)}`);
-        // baileys shapes vary by version — accept both
-        // .receipt.readTimestamp (older) and .receipt.type === 'read'
-        // (newer). userJid may be on .receipt or top-level.
-        const isRead = r.readTimestamp != null || r.type === 'read';
-        if (!isRead) continue;
-        state.totalReads = (state.totalReads || 0) + 1;
-        const readerJid = r.userJid ?? u.participant ?? u.key.participant ?? null;
-        _handlePersonalizedRead(state, readerJid);
-      }
-    });
-
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
         // Render QR to a string so Ink can print it cleanly,
@@ -850,24 +785,6 @@ export async function startWhatsAppBridge({
           log(`whatsapp[debug]: upsert type=${type} jid=${m.key?.remoteJid} fromMe=${!!m.key?.fromMe} id=${m.key?.id} text=${JSON.stringify(peek)}`);
         }
       }
-      // — pushName harvest — every message carries the sender's
-      // self-set display name on `msg.pushName`. We cache it keyed by
-      // the BARE NUMBER (device suffix AND server suffix stripped:
-      // '1234@s.whatsapp.net:3' → '1234') so the read-receipt
-      // resolver can find a name even when sock.contacts is sparse.
-      // Skip fromMe rows — for the operator we read sock.user.name
-      // in the resolver instead, which is the authoritative
-      // self-pushName source.
-      for (const m of messages) {
-        if (m?.pushName && typeof m.pushName === 'string' && m.pushName.trim() && !m.key?.fromMe) {
-          const sender = m.key?.participant ?? m.key?.remoteJid;
-          if (sender) {
-            const bareNum = sender.split(':')[0]?.split('@')[0];
-            if (bareNum) _pushNameByJid.set(bareNum, m.pushName.trim());
-          }
-        }
-      }
-
       // — SILENT track — every row, regardless of type, feeds the
       // chat-list tracker. No UI, no onIncoming, no brain dispatch.
       // We extract the body here to keep a small recent-messages ring
@@ -1845,204 +1762,6 @@ export async function startWhatsAppBridge({
     return local ? _slugify(local, 24) : null;
   }
 
-  // ── Personalized-movie helpers ────────────────────────────────
-  // Friendly fallback names — when every pushName lookup falls
-  // through and we're left with a raw phone-number / LID-number,
-  // pick one of these instead so the greeting reads as "hi, friend!"
-  // not "hi, 1234567890!". Operator can replace any of these by
-  // editing the array — KISS.
-  const _FRIENDLY_NAMES = ['you', 'friend', 'mystery reader', 'whoever-this-is'];
-  function _pickFriendlyName() {
-    return _FRIENDLY_NAMES[Math.floor(Math.random() * _FRIENDLY_NAMES.length)];
-  }
-  // If a resolved name looks like just digits (or digits + punctuation),
-  // it's a phone-number leak — substitute a friendly nickname.
-  function _orFriendly(s) {
-    if (!s || typeof s !== 'string') return _pickFriendlyName();
-    const trimmed = s.trim();
-    if (!trimmed) return _pickFriendlyName();
-    // Real names have letters. Strings of only digits / +-() / spaces
-    // (e.g. '34836563681438' or '+34 836 563 681 438') get masked.
-    if (/^[\d\s+\-()]+$/.test(trimmed)) return _pickFriendlyName();
-    return trimmed;
-  }
-
-  // Resolve a JID to a display name using pushName only — never the
-  // operator's address book.
-  //
-  // Lookup order (pushName-only by construction; see the
-  // wa-pushname-only feedback memory):
-  //   1. msg.pushName       — per-message hint, most authoritative
-  //   2. sock.user.name     — when the jid's bare number matches the
-  //                           operator's own myNumber/myLidNumber.
-  //                           These are pre-computed at connection
-  //                           time and strip both device suffix
-  //                           (':5') and server suffix ('@lid' /
-  //                           '@s.whatsapp.net'), so they survive
-  //                           the LID-vs-phone-number split.
-  //   3. _pushNameByJid     — cache populated from inbound message
-  //                           events (msg.pushName captured at
-  //                           upsert time, keyed by bare number)
-  //   4. sock.contacts[jid].notify   — baileys' own contact cache
-  //   5. friendly fallback   — when nothing resolved or what did
-  //                           resolve is just digits
-  function _resolvePushName(jid, msgPushName) {
-    if (msgPushName && typeof msgPushName === 'string' && msgPushName.trim()) {
-      return _orFriendly(msgPushName);
-    }
-    // Strip both ':<device>' suffix and '@<server>' suffix to get
-    // just the bare phone/LID number. This is the key we compare
-    // against myNumber/myLidNumber and the key we lookup in the
-    // _pushNameByJid cache.
-    const bareNum = jid?.split(':')[0]?.split('@')[0] ?? null;
-    if (bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
-      const selfName = sock?.user?.name;
-      if (selfName && typeof selfName === 'string' && selfName.trim()) {
-        return _orFriendly(selfName);
-      }
-      const selfNotify = sock?.user?.notify;
-      if (selfNotify && typeof selfNotify === 'string' && selfNotify.trim()) {
-        return _orFriendly(selfNotify);
-      }
-    }
-    if (bareNum) {
-      const cached = _pushNameByJid.get(bareNum);
-      if (cached && typeof cached === 'string' && cached.trim()) {
-        return _orFriendly(cached);
-      }
-    }
-    const contact = sock?.contacts?.[jid];
-    if (contact?.notify && typeof contact.notify === 'string' && contact.notify.trim()) {
-      return _orFriendly(contact.notify);
-    }
-    if (contact?.pushName && typeof contact.pushName === 'string' && contact.pushName.trim()) {
-      return _orFriendly(contact.pushName);
-    }
-    return _pickFriendlyName();
-  }
-
-  // Render template placeholders against a personalized-movie state:
-  //   <username>    — viewers joined per mode/joiner
-  //   <viewercount> — unique viewers count (state.viewers.length)
-  //   <readcount>   — total read events that fired on this message,
-  //                   including operator self-reads and dedup'd
-  //                   repeats. Useful as a "how many times" counter
-  //                   even when 'how many people' stays at 1.
-  // mode 'append' uses an Oxford-comma "and" for the last name
-  // (`A, B, and C`); other modes (including 'first') just join.
-  function _renderUsername(text, viewers, mode, joiner, totalReads) {
-    if (!text || typeof text !== 'string') return text;
-    let out = text;
-    if (out.includes('<username>')) {
-      let resolved;
-      if (!Array.isArray(viewers) || viewers.length === 0) {
-        resolved = '...';
-      } else if (viewers.length === 1) {
-        resolved = viewers[0];
-      } else if (mode === 'append') {
-        const allButLast = viewers.slice(0, -1).join(joiner);
-        resolved = allButLast + ' and ' + viewers[viewers.length - 1];
-      } else {
-        resolved = viewers.join(joiner);
-      }
-      out = out.split('<username>').join(resolved);
-    }
-    if (out.includes('<viewercount>')) {
-      out = out.split('<viewercount>').join(String(viewers?.length ?? 0));
-    }
-    if (out.includes('<readcount>')) {
-      out = out.split('<readcount>').join(String(totalReads ?? 0));
-    }
-    return out;
-  }
-
-  // Called from the read-receipt event handlers. Appends a new viewer
-  // (dedup by pushName) and either starts the animation (first read)
-  // or — if the animation already finished — emits one in-place edit
-  // of the final frame with the updated viewer list.
-  function _handlePersonalizedRead(state, readerJid) {
-    if (!state || !readerJid) return;
-    const shortId = state.msgKey?.id?.slice(0, 8) ?? '?';
-    const shortJid = readerJid.split(':')[0];
-    // Skip operator self-reads by default. The phone marks-as-read
-    // fires the instant we send, which would consume the first-
-    // reader greeting before anyone else has opened. Operator is
-    // the sender by construction; counting their own read as a
-    // viewer collapses the "who saw this first" story.
-    //
-    // Override with --include-self on the slash invocation when the
-    // operator wants to test from their own phone — useful when
-    // no other viewer is available, or for self-DM debugging.
-    const bareNum = readerJid.split(':')[0]?.split('@')[0];
-    if (!state.includeSelf && bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
-      log(`personalized[${shortId}]: skipping operator self-read from ${shortJid} (pass --include-self to count yourself)`);
-      return;
-    }
-    const readerName = _resolvePushName(readerJid, null);
-    if (!readerName) {
-      log(`personalized[${shortId}]: read from ${shortJid} — resolver returned empty; skipping`);
-      return;
-    }
-    if (state.viewers.includes(readerName)) {
-      log(`personalized[${shortId}]: read from ${shortJid} resolved to "${readerName}" — already in viewers (dedup), skipping`);
-      return;
-    }
-    state.viewers.push(readerName);
-    log(`personalized[${shortId}]: viewer added "${readerName}" (jid ${shortJid}); list now [${state.viewers.join(', ')}]; started=${state.started}, finished=${state.finished}`);
-    if (!state.started) {
-      state.started = true;
-      _runPersonalizedAnimation(state, false).catch(e => err(`personalized run: ${e.message}`));
-    } else if (state.finished) {
-      // Animation completed and a new viewer arrived — re-run the
-      // full animation so each new reader sees the wave start, and
-      // ends with their name added to the rest-state list. Skip the
-      // preset's `placeholderFrames` count so we don't flicker back
-      // to a "no-greeting" intro between viewers.
-      state.finished = false;
-      _runPersonalizedAnimation(state, true).catch(e => err(`personalized re-run: ${e.message}`));
-    }
-    // else: animation in flight — next emit picks up the updated
-    // viewers list automatically.
-  }
-
-  // Drive the frame loop for a personalized movie. Each emit
-  // re-renders the frame against the current state.viewers, so
-  // names added mid-animation appear in subsequent frames without
-  // a restart.
-  async function _runPersonalizedAnimation(state, isReanim = false) {
-    const { msgKey, chatId, frames, frameMs, autoDelete, holdMs, mode, joiner, placeholderFrames } = state;
-    // On re-animation, skip the preset's leading placeholder frames
-    // (typically the static no-greeting frames the message rests
-    // on between viewers). For first-anim, walk all frames.
-    const startIdx = isReanim ? (placeholderFrames || 0) : 0;
-    let lastSent = null;
-    for (let i = startIdx; i < frames.length; i++) {
-      if (!_personalizedMovies.has(msgKey.id)) return; // stopped externally
-      state.lastFrameIdx = i;
-      const rendered = _renderUsername(frames[i], state.viewers, mode, joiner, state.totalReads);
-      if (rendered !== lastSent) {
-        await _timeBound(
-          _safeSend(chatId, { edit: msgKey, text: rendered }),
-          `personalized frame ${i + 1}/${frames.length}`,
-        ).catch(e => err(`personalized frame ${i + 1}: ${e.message}`));
-        lastSent = rendered;
-      }
-      if (i < frames.length - 1) {
-        await new Promise(r => setTimeout(r, frameMs));
-      }
-    }
-    state.finished = true;
-    if (autoDelete) {
-      await new Promise(r => setTimeout(r, holdMs));
-      if (!_personalizedMovies.has(msgKey.id)) return;
-      await _timeBound(
-        sock.sendMessage(chatId, { delete: msgKey }),
-        'personalized delete',
-      ).catch(e => err(`personalized delete: ${e.message}`));
-      _personalizedMovies.delete(msgKey.id);
-    }
-  }
-
   // eGPT-side pin layer. Independent of WA's 3-pin phone limit:
   // /pin @waN sets a positive timestamp; /unpin clears it. Returns
   // the new state ('pinned' | 'unpinned' | 'unknown') so the host
@@ -2347,58 +2066,10 @@ export async function startWhatsAppBridge({
     // an edit (not a fresh send) so a chat-side trigger like an
     // operator typing '@movie alien' becomes the movie in place,
     // and autoDelete cleanly revokes the trigger at the end.
-    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ', placeholderFrames = 0, includeSelf = false }) {
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
-
-      // Personalized path: engage when EITHER the operator passed
-      // --template OR any frame already contains a placeholder token
-      // (presets like 'hi' bake <username> into the default greeting
-      // so the personalization layer should activate even without
-      // an explicit --template flag). When engaged, the first frame
-      // animation start is deferred until the first read receipt
-      // arrives. We send a placeholder (the first frame rendered
-      // with an empty viewers list — `<username>` becomes '...'),
-      // stash state in _personalizedMovies, and return. The read-
-      // receipt handlers drive the rest.
-      const _hasPlaceholders = frames.some(f =>
-        typeof f === 'string' && (f.includes('<username>') || f.includes('<viewercount>') || f.includes('<readcount>'))
-      );
-      if (template || _hasPlaceholders) {
-        const placeholder = _renderUsername(frames[0], [], mode, joiner, 0);
-        let msgKey;
-        if (existingKey?.id) {
-          msgKey = existingKey;
-          await _timeBound(
-            _safeSend(target, { edit: msgKey, text: placeholder }),
-            'personalized initial (edit)',
-          ).catch(e => err(`personalized initial edit: ${e.message}`));
-        } else {
-          const r0 = await _timeBound(
-            _safeSend(target, { text: placeholder }),
-            'personalized initial',
-          ).catch(e => { err(`personalized initial: ${e.message}`); return null; });
-          msgKey = r0?.key;
-          if (!msgKey) return null;
-        }
-        rememberSent(msgKey.id);
-        _personalizedMovies.set(msgKey.id, {
-          msgKey, chatId: target,
-          frames, frameMs, autoDelete, holdMs,
-          template, mode, joiner, placeholderFrames, includeSelf,
-          viewers: [],
-          totalReads: 0,
-          started: false,
-          finished: false,
-          lastFrameIdx: 0,
-        });
-        log(`personalized[${msgKey.id.slice(0, 8)}]: stashed (${frames.length} frames) — waiting for first read receipt to start`);
-        return { key: msgKey, personalized: true };
-      }
-
-      // Non-personalized path: behave as before — send/edit frame 0,
-      // walk the rest, optionally auto-delete after a hold.
       let msgKey;
       if (existingKey?.id) {
         msgKey = existingKey;
