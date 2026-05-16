@@ -877,10 +877,37 @@ export async function startWhatsAppBridge({
           _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
         }
       }
+      // Presence: mark ourselves online to whoever just messaged us
+      // (so the operator sees a live "online" indicator in WA when
+      // egpt is listening). Also presenceSubscribe lazily so we
+      // receive their future presence events — handler below
+      // re-broadcasts 'available' the moment they open the chat,
+      // even before they type anything.
+      for (const msg of messages) {
+        const jid = msg.key?.remoteJid;
+        if (!jid || msg.key?.fromMe || type !== 'notify') continue;
+        sock.sendPresenceUpdate?.('available', jid).catch(() => {});
+        sock.presenceSubscribe?.(jid).catch(() => {});
+      }
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
       }
+    });
+
+    // When a subscribed contact opens our chat (their device broadcasts
+    // 'available' or 'composing'), echo 'available' back so they see
+    // the online indicator immediately — without having to send a
+    // message first. Matches the UX of chat apps that show the bot
+    // online the moment you open the conversation.
+    sock.ev.on('presence.update', ({ id, presences }) => {
+      if (!id) return;
+      const states = Object.values(presences || {});
+      const here = states.some(p =>
+        p?.lastKnownPresence === 'available' ||
+        p?.lastKnownPresence === 'composing'
+      );
+      if (here) sock.sendPresenceUpdate?.('available', id).catch(() => {});
     });
 
     // History sync — baileys delivers chats + their recent messages
