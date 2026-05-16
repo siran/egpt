@@ -130,6 +130,16 @@ export function stream({ history, message }, onUpdate, options = {}) {
     if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
       args.push('--append-system-prompt', options.appendSystemPrompt.trim());
     }
+    // Model selection — claude CLI accepts the alias names ('haiku',
+    // 'sonnet', 'opus') as well as full model IDs. Default (no flag)
+    // uses whatever claude is configured to use globally. Caller sets
+    // this via options.model; for the @e persona it comes from
+    // EGPT_CONFIG.default_brain.model (a quick latency knob —
+    // 'haiku' is ~2-3x faster first-token than sonnet, useful when
+    // most @e turns are short factual questions).
+    if (typeof options.model === 'string' && options.model.trim()) {
+      args.push('--model', options.model.trim());
+    }
     const isResume = !!options.sessionId;
     if (isResume) args.push('--resume', options.sessionId);
 
