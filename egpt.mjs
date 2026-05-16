@@ -2351,7 +2351,7 @@ function App() {
             return;
           }
           const chatName = wa.getChatName?.(chatId) || chatId;
-          const { frames, frameMs: ms, autoDelete, holdMs, presetName, template, mode, joiner } = payload;
+          const { frames, frameMs: ms, autoDelete, holdMs, presetName, template, mode, joiner, placeholderFrames } = payload;
           const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
           const personalizedNote = template ? ' · personalized (waiting for first read)' : '';
           sysOut(`🎬 @movie ${presetName} in "${chatName}"  (${frames.length} fr · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s${autoDelete ? ' · auto-delete' : ''}${personalizedNote})`);
@@ -2359,7 +2359,7 @@ function App() {
             await wa.playFrames({
               chatId, frames, frameMs: ms, autoDelete, holdMs,
               existingKey: triggerKey,
-              template, mode, joiner,
+              template, mode, joiner, placeholderFrames,
             });
           } catch (e) {
             errOut(`@movie failed: ${e.message}`);
