@@ -3712,6 +3712,56 @@ function App() {
     }
   }
 
+  // Run the @me / @wren engineer co-pilot — a SIBLING of the
+  // operator's main Claude Code design conversation (egpt0-branch).
+  // EGPT_CONFIG.meta_brain.session_id is pinned to that conversation
+  // via Claude Code's /branch slash command run from the operator's
+  // shell. From any surface (WA/TG/extension/another shell), this
+  // routes through `claude --resume <session-id>` so every @me turn
+  // lands in the same thread with full inherited context.
+  //
+  // Distinct from runDefaultBrainTurn: no session-id persistence
+  // (the session was created out-of-band by /branch; we just resume,
+  // never mutate the config-stored id from claude's init events).
+  // No identity-install loop (the inherited transcript already
+  // carries the framing forward). Sessions aren't recorded into
+  // a history list because there's only ever the one pinned thread.
+  //
+  // See project-egpt-at-me-identity + project-egpt-design-relationship
+  // in memory for the role this fills.
+  async function runMetaBrainTurn(text, onPartial = () => {}) {
+    const mbCfg = EGPT_CONFIG.meta_brain ?? null;
+    if (!mbCfg) {
+      return '!! @me: meta_brain not configured. Run Claude Code\'s /branch in your design conversation, then set EGPT_CONFIG.meta_brain.session_id to the resulting session id (via /config or by editing ~/.egpt/config.json).';
+    }
+    const brainType = canonicalBrainName(mbCfg.type ?? 'claude-code');
+    const brain = brainForName(brainType);
+    if (!brain) return `!! @me: meta brain "${brainType}" not found.`;
+    if (!mbCfg.session_id) {
+      return '!! @me: meta_brain.session_id is empty. After running Claude Code /branch in egpt0-branch, paste the new session id into meta_brain.session_id.';
+    }
+    const sessionOpts = {
+      sessionId: mbCfg.session_id,
+      cwd: mbCfg.cwd ?? process.cwd(),
+      sessionName: 'wren',
+      userName: USER_NAME,
+      ...(brainType === 'ccode'    ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
+      ...(mbCfg.system_prompt      ? { appendSystemPrompt: mbCfg.system_prompt   } : {}),
+      ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
+    };
+    try {
+      const result = await brain.stream(
+        { history: text, message: text },
+        onPartial,
+        sessionOpts,
+      );
+      const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+      return final.trim() || '(no reply)';
+    } catch (e) {
+      return `!! @me: ${e.message}`;
+    }
+  }
+
   // Compact "Ns/Nm/Nh/Nd ago" for /egpt list. Local to this scope to
   // keep the slash handler self-contained.
   function humanAge(at) {
@@ -4761,6 +4811,91 @@ function App() {
       }
       return;
     }
+    if (decision.kind === 'meta') {
+      // @me / @wren — engineer co-pilot. Resumes the operator's
+      // pinned Claude Code session (egpt0-sibling) via
+      // meta_brain.session_id. Same flow as the persona branch
+      // above (streaming UX, cross-surface mirroring, observed-
+      // chat audit) but routed through runMetaBrainTurn.
+      setBusy(true);
+      try {
+        const personaPrompt = formatPersonaPrompt(meta, decision.body);
+        const tgPrefix = `🐦 <b>wren</b>\n`;
+        const waPrefix = `🐦 wren\n`;
+        const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
+          ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
+              { chatId: meta.telegramChatId })
+          : null;
+        const waStream = (meta.fromWhatsApp && waBridgeRef.current?.startStreamMessage)
+          ? waBridgeRef.current.startStreamMessage(`${waPrefix}⌛ thinking…`,
+              { chatId: meta.waChatId })
+          : null;
+        const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
+          if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
+          if (waStream) waStream.update(`${waPrefix}${partial}`);
+        });
+        if (tgStream) {
+          await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
+        } else if (meta.fromTelegram && bridgeRef.current) {
+          bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
+            { chatId: meta.telegramChatId });
+        }
+        if (waStream) {
+          await waStream.finish(`${waPrefix}${reply}`);
+          if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
+            const r = await waBridgeRef.current.send(
+              `🐦 wren: ${reply}`,
+              { chatId: meta.waChatId },
+            );
+            if (!r) {
+              const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
+              errOut(`!! @me: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            }
+          }
+        } else if (meta.fromWhatsApp && waBridgeRef.current) {
+          const r = await waBridgeRef.current.send(
+            `🐦 wren: ${reply}`,
+            { chatId: meta.waChatId },
+          );
+          if (!r) {
+            errOut(`!! @me: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+          }
+        }
+        if (meta.observeOnly) {
+          const where = meta.waChatId ?? meta.telegramChatId ?? '?';
+          const preview = reply.length > 200 ? reply.slice(0, 200) + '…' : reply;
+          logOut(`(observed @me in ${where}): ${preview}`);
+        } else {
+          const replyAuthor = `wren@${SURFACE_TAG}`;
+          const replySource = meta.fromTelegram ? 'telegram'
+            : meta.fromWhatsApp ? 'whatsapp'
+            : null;
+          setItems(p => [...p, {
+            id: Date.now() + Math.random(),
+            author: replyAuthor,
+            body: reply,
+            ...(replySource ? { _source: replySource } : {}),
+            ...(meta.fromWhatsApp && meta.waChatId
+              ? { _sourceChatId: meta.waChatId } : {}),
+          }]);
+          await append(replyAuthor, reply);
+          const tid = busTargetIdRef.current;
+          if (tid) {
+            const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
+              : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+              : null;
+            bus.postEvent(tid, {
+              type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
+              session: 'wren', body: reply,
+              ...(via ? { via } : {}),
+            }).catch(() => {});
+          }
+        }
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (decision.kind === 'peer-mention') {
       const tid = busTargetIdRef.current;
       if (!tid) { sysOut(`!! bus not joined — can't forward @${decision.target}`); return; }
@@ -4997,6 +5132,22 @@ function App() {
           } catch (e) {
             await post({ type: 'mention-reply', to_node: ev.from,
               target: 'egpt', error: e.message, chain_depth: nextChain });
+          }
+          return;
+        }
+        if (ev.target === 'me' || ev.target === 'wren') {
+          log(`bus: running @me for ${ev.from}${ev.user ? ` (${ev.user})` : ''} (chain ${nextChain}/${maxChain})`);
+          try {
+            const reply = await runMetaBrainTurn(`[${ev.user ?? 'remote'}]: ${ev.body}`);
+            await post({ type: 'mention-reply', to_node: ev.from,
+              target: 'wren', body: reply ?? '', chain_depth: nextChain });
+            if (reply !== null && reply !== undefined) {
+              await post({ type: 'room-reply', role: 'shell',
+                session: 'wren', body: reply, chain_depth: nextChain });
+            }
+          } catch (e) {
+            await post({ type: 'mention-reply', to_node: ev.from,
+              target: 'wren', error: e.message, chain_depth: nextChain });
           }
           return;
         }
