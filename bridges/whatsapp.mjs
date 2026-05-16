@@ -1964,14 +1964,18 @@ export async function startWhatsAppBridge({
     if (!state || !readerJid) return;
     const shortId = state.msgKey?.id?.slice(0, 8) ?? '?';
     const shortJid = readerJid.split(':')[0];
-    // Skip operator self-reads. The phone marks-as-read fires the
-    // instant we send, which would consume the first-reader greeting
-    // before anyone else has opened. The operator is the sender by
-    // construction; counting their own read as a viewer collapses
-    // the "who saw this first" story.
+    // Skip operator self-reads by default. The phone marks-as-read
+    // fires the instant we send, which would consume the first-
+    // reader greeting before anyone else has opened. Operator is
+    // the sender by construction; counting their own read as a
+    // viewer collapses the "who saw this first" story.
+    //
+    // Override with --include-self on the slash invocation when the
+    // operator wants to test from their own phone — useful when
+    // no other viewer is available, or for self-DM debugging.
     const bareNum = readerJid.split(':')[0]?.split('@')[0];
-    if (bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
-      log(`personalized[${shortId}]: skipping operator self-read from ${shortJid}`);
+    if (!state.includeSelf && bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
+      log(`personalized[${shortId}]: skipping operator self-read from ${shortJid} (pass --include-self to count yourself)`);
       return;
     }
     const readerName = _resolvePushName(readerJid, null);
@@ -2343,18 +2347,25 @@ export async function startWhatsAppBridge({
     // an edit (not a fresh send) so a chat-side trigger like an
     // operator typing '@movie alien' becomes the movie in place,
     // and autoDelete cleanly revokes the trigger at the end.
-    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ', placeholderFrames = 0 }) {
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ', placeholderFrames = 0, includeSelf = false }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
 
-      // Personalized path: when `template` is set, the first frame
+      // Personalized path: engage when EITHER the operator passed
+      // --template OR any frame already contains a placeholder token
+      // (presets like 'hi' bake <username> into the default greeting
+      // so the personalization layer should activate even without
+      // an explicit --template flag). When engaged, the first frame
       // animation start is deferred until the first read receipt
       // arrives. We send a placeholder (the first frame rendered
       // with an empty viewers list — `<username>` becomes '...'),
       // stash state in _personalizedMovies, and return. The read-
       // receipt handlers drive the rest.
-      if (template) {
+      const _hasPlaceholders = frames.some(f =>
+        typeof f === 'string' && (f.includes('<username>') || f.includes('<viewercount>') || f.includes('<readcount>'))
+      );
+      if (template || _hasPlaceholders) {
         const placeholder = _renderUsername(frames[0], [], mode, joiner, 0);
         let msgKey;
         if (existingKey?.id) {
@@ -2375,7 +2386,7 @@ export async function startWhatsAppBridge({
         _personalizedMovies.set(msgKey.id, {
           msgKey, chatId: target,
           frames, frameMs, autoDelete, holdMs,
-          template, mode, joiner, placeholderFrames,
+          template, mode, joiner, placeholderFrames, includeSelf,
           viewers: [],
           totalReads: 0,
           started: false,
