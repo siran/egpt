@@ -3726,17 +3726,24 @@ function App() {
   //     classification, so the persona doesn't have to infer.
   //   - Shell: includes USER_NAME@SURFACE_TAG, matching the [handle]
   //     convention used in the items renderer + room md.
-  // Operator-editable rules text prepended to every auto_e_chats
-  // dispatch so e knows the conventions for the chat it's been
-  // dropped into (when to speak, how messages are formatted, what
-  // '...' means). Lives at ~/.egpt/rules.md so the operator can
-  // edit without restarting. Re-read on every turn (cheap — small
-  // file). Missing/unreadable file yields empty string (e then
-  // operates on session history alone).
-  const RULES_PATH = join(EGPT_HOME, 'rules.md');
-  async function readAutoDispatchRules() {
-    try { return (await readFile(RULES_PATH, 'utf8')).trim(); }
-    catch { return ''; }
+  // Stable surface tag for a WhatsApp chat — used in the
+  // [Name@surface (HH:MM)]: <body> format e sees for auto-dispatched
+  // messages. Includes the JID NUMBER (immutable group identifier)
+  // so e can distinguish groups even if their human-facing name/slug
+  // changes. Shape:
+  //   group        slug.<jid-num>.wa        e.g. compren_bitcoin.120363407494846096.wa
+  //   group (no slug)  wa.<jid-num>         fallback if slug lookup fails
+  //   non-group     wa.<jid>               DMs, status broadcast etc.
+  function buildWaSurfaceTag(chatId) {
+    if (!chatId) return 'wa';
+    const idStr = String(chatId);
+    const isGroup = idStr.endsWith('@g.us');
+    if (isGroup) {
+      const jidNum = idStr.replace(/@g\.us$/, '');
+      const slug = waBridgeRef.current?.getChatSlug?.(chatId);
+      return slug ? `${slug}.${jidNum}.wa` : `wa.${jidNum}`;
+    }
+    return `wa.${idStr}`;
   }
 
   // Format a single auto-dispatched message for e's eyes. Shape per
@@ -4901,26 +4908,23 @@ function App() {
       // Input was already logged at the top-of-submitInner echo block.
       setBusy(true);
       try {
-        // For auto_e_chats arrivals, format per operator spec
-        // ([Name@surface (HH:MM)]: <body>) and prepend ~/.egpt/rules.md
-        // so e knows the conventions ("..." = silence, free-to-opine, etc.).
-        // Plain @e mentions in self-DM / other chats keep the verbose
-        // formatPersonaPrompt with full chat context.
+        // For auto_e_chats arrivals, format per operator spec:
+        // "[Name@surface (HH:MM)]: <body>". e learns chat-specific
+        // rules via /rules (one-shot inject into e's session — see
+        // slash/rules.mjs); we do NOT prepend rules every turn
+        // (wasteful — e has session memory and remembers).
         // _personaBodyOverride bypasses formatting entirely — used by
-        // the queue drain to pass a pre-built rules+lines prompt.
+        // the queue drain to pass a pre-built joined-lines prompt.
         let personaPrompt;
         if (meta._personaBodyOverride) {
           personaPrompt = meta._personaBodyOverride;
         } else if (meta.autoDispatched && meta.fromWhatsApp) {
-          const rules = await readAutoDispatchRules();
-          const surface = waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? 'wa';
-          const line = formatAutoDispatchLine({
+          personaPrompt = formatAutoDispatchLine({
             senderName: meta.waSenderName,
             body: decision.body,
             ts: Date.now(),
-            surface,
+            surface: buildWaSurfaceTag(meta.waChatId),
           });
-          personaPrompt = rules ? `${rules}\n\n${line}` : line;
         } else {
           personaPrompt = formatPersonaPrompt(meta, decision.body);
         }
@@ -5076,19 +5080,18 @@ function App() {
           const drained = queueState.queue.splice(0);
           queueState.inFlight = false;
           if (drained.length > 0 && submitRef.current) {
-            // Build the full persona prompt here (rules + one
-            // formatted line per piled message) and pass it via
-            // _personaBodyOverride so persona dispatch uses it
-            // verbatim instead of re-formatting a single-message
-            // body. This keeps all the dispatch goodies (`...`
-            // filter, send paths, re-queue) while letting the
-            // drain decide its own prompt shape.
-            const rules = await readAutoDispatchRules();
-            const surface = waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? 'wa';
-            const lines = drained.map(it => formatAutoDispatchLine({
+            // Build the persona prompt here (one formatted line per
+            // piled message) and pass it via _personaBodyOverride
+            // so persona dispatch uses it verbatim instead of
+            // re-formatting a single-message body. Keeps all the
+            // dispatch goodies (`...` filter, send paths, re-queue)
+            // while letting the drain decide its own prompt shape.
+            // No per-turn rules prefix — e remembers from prior
+            // /rules injection (slash/rules.mjs).
+            const surface = buildWaSurfaceTag(meta.waChatId);
+            const fullPrompt = drained.map(it => formatAutoDispatchLine({
               senderName: it.senderName, body: it.body, ts: it.ts, surface,
             })).join('\n');
-            const fullPrompt = rules ? `${rules}\n\n${lines}` : lines;
             const drainMeta = {
               fromWhatsApp: meta.fromWhatsApp,
               waChatId: meta.waChatId,
