@@ -13,3 +13,6 @@ coverage/
 
 # scratch / probe scripts — not for the repo
 tmp/
+
+# runtime reply-target state — never commit
+conversation.replytargets.json
