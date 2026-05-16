@@ -22,6 +22,7 @@ import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
 import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
+import { startOutboxWatcher } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
@@ -2542,110 +2543,25 @@ function App() {
     return () => stopWaBridge();
   }, [startWaBridge, stopWaBridge]);
 
-  // Headless wa-send transport: a sibling subprocess (e.g. a Claude Code
-  // subagent spawned via cross-resume) drops a JSON file in
-  // ~/.egpt/outbox/ with shape {type:'wa-send', from, ts, jid, body},
-  // we pick it up and dispatch through the same wa.send path as the
-  // bus 'wa-send' case. The bus tab (CDP) isn't reachable from the
-  // headless deployment because no Chrome is running there; the file
-  // outbox is the headless-only sibling of the bus-tab transport.
-  // Vocabulary is unified: dispatchWaSendRef.current handles both.
-  //
-  // Atomicity: writer uses write-then-rename (sibling-side .tmp →
-  // .json), so we only ever see fully-formed JSON files. To avoid
-  // double-dispatch when fs.watch and the periodic sweep both notice
-  // the same file, a name-keyed Set acts as a lock — first claim
-  // wins, others return.
-  //
-  // Retry: if no WA bridge is up, we leave the file in place and the
-  // next sweep retries. No TTL in v1; operator cleans by hand if
-  // bridge is permanently down.
+  // Outbox watcher — extracted to ./egpt-comm-handler.mjs as the first
+  // step of the twin-soul split (see projects/egpt/play.md). Still
+  // in-process this commit; future phases move it to its own process
+  // and add inbox-side WA inbound delivery via the same file IPC.
+  // dispatchWaSend goes through the ref so this useEffect doesn't
+  // re-mount on every change.
   useEffect(() => {
-    const outboxDir = join(EGPT_HOME, 'outbox');
-    try { mkdirSync(outboxDir, { recursive: true }); } catch {}
-
-    const claimed = new Set();
-    let stopped = false;
-
     const sysLog = (msg) => setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     }]);
-
-    const handleFile = async (name) => {
-      if (stopped) return;
-      if (!name.endsWith('.json')) return;
-      if (claimed.has(name)) return;
-      claimed.add(name);
-      const full = join(outboxDir, name);
-      let payload;
-      try {
-        const raw = await readFile(full, 'utf8');
-        payload = JSON.parse(raw);
-      } catch (e) {
-        // Vanished mid-read or malformed. ENOENT → another claimer
-        // already deleted it; silently release. Anything else is a
-        // poison file — log + unlink so it doesn't loop forever.
-        if (e.code === 'ENOENT') { claimed.delete(name); return; }
-        sysLog(`!! outbox: dropping ${name} — ${e.message}`);
-        try { await unlink(full); } catch {}
-        return;
-      }
-      if (payload?.type === 'wa-send') {
-        const ok = dispatchWaSendRef.current?.(payload, 'outbox');
-        if (!ok) {
-          // Bridge down or malformed payload — leave file for retry.
-          // Release the claim so the next sweep can try again.
-          claimed.delete(name);
-          return;
-        }
-      } else if (payload?.type === 'daemon-restart') {
-        // Safe-restart channel. The daemon-wrap.ps1 wrapper respawns
-        // on every exit, so a clean process.exit(0) IS a restart —
-        // no detached schtasks /Run child needed. Sibling who wrote
-        // this file gets a clean cycle; if the wrapper isn't yet
-        // wired in TS XML, the daemon just stays down. See
-        // [[feedback-no-self-sighup]] — this path exists precisely so
-        // a daemon-spawned sibling can request a restart without
-        // SIGHUPing itself by calling Stop-ScheduledTask.
-        sysLog(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);
-        try { await unlink(full); } catch {}
-        // Small grace so the sysLog reaches the headless.log buffer
-        // before exit. 100ms is enough for Ink's render + flush.
-        setTimeout(() => process.exit(0), 100);
-        return;
-      } else {
-        sysLog(`outbox: ignoring ${name} — unknown type ${payload?.type ?? '<missing>'}`);
-      }
-      try { await unlink(full); } catch {}
-    };
-
-    const sweep = async () => {
-      if (stopped) return;
-      let names = [];
-      try { names = await readdir(outboxDir); } catch { return; }
-      for (const n of names) await handleFile(n);
-    };
-
-    // Drain on mount: any files written while daemon was down.
-    sweep().catch(() => {});
-
-    // fs.watch — fast path. Windows can miss rename events under
-    // load; the periodic sweep below catches anything dropped.
-    let watcher = null;
-    try {
-      watcher = fsWatch(outboxDir, (_eventType, filename) => {
-        if (!filename) return;
-        handleFile(filename).catch(() => {});
-      });
-    } catch (_) { /* watcher unavailable; sweep alone keeps things flowing */ }
-
-    const sweepTimer = setInterval(() => { sweep().catch(() => {}); }, 2000);
-
-    return () => {
-      stopped = true;
-      try { watcher?.close(); } catch {}
-      clearInterval(sweepTimer);
-    };
+    return startOutboxWatcher({
+      outboxDir:      join(EGPT_HOME, 'outbox'),
+      dispatchWaSend: (payload, src) => dispatchWaSendRef.current?.(payload, src),
+      log:            sysLog,
+      // process.exit(0) → wrapper's while-loop respawns. Post-split
+      // this becomes a restart-handler event the keeper sends to
+      // the wrapper, without exiting the keeper itself.
+      signalRestart:  () => setTimeout(() => process.exit(0), 100),
+    });
   }, []);
 
   // Broadcast our local sessions to the bus on change. Peers use this to
