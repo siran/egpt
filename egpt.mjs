@@ -20,9 +20,12 @@ import * as bus from './tools/bus.mjs';
 import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
 import { loadTheme, listThemes } from './tools/theme.mjs';
 import { startTelegramBridge } from './bridges/telegram.mjs';
-import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
+// Baileys init goes through egpt-comm-handler.mjs — the keeper side
+// of the twin-soul split. Today it's a thin in-process wrapper; in
+// Phase 2 the keeper runs in its own process and the handler reaches
+// WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
-import { startOutboxWatcher } from './egpt-comm-handler.mjs';
+import { startOutboxWatcher, startBaileysBridge, isBaileysPaired } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
@@ -2215,8 +2218,8 @@ function App() {
     if (!cfg || cfg.enabled === false) return false;
     // Don't auto-pair on first run — would print a QR unprompted.
     // `force` is set by /whatsapp pair to bypass this.
-    const credsPath = join(EGPT_HOME, 'wa-auth', 'creds.json');
-    if (!force && !existsSync(credsPath)) {
+    const authDir = join(EGPT_HOME, 'wa-auth');
+    if (!force && !isBaileysPaired(authDir)) {
       setItems(p => [...p, {
         id: Date.now() + Math.random(), author: 'system', _localOnly: true,
         body: 'whatsapp configured but not paired. Run /whatsapp pair to scan a QR with your phone.',
@@ -2224,7 +2227,7 @@ function App() {
       return false;
     }
     try {
-      const bridge = await startWhatsAppBridge({
+      const bridge = await startBaileysBridge({
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
         debug:             cfg.debug === true,
