@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  eGPT headless daemon — Windows Task Scheduler import file.
+
+  Triggers at boot (BootTrigger), runs '%USERPROFILE%\src\egpt\egpt-daemon.mjs
+  --headless' as the current user with HighestAvailable run level, restarts up
+  to 3 times on failure, no execution time limit. Survives reboots, fires
+  before any user logon. WA/TG bridges, the bus, file logging, and media
+  downloads all stay alive.
+
+  HOW TO INSTALL
+
+  Option A — GUI (recommended for first-time setup):
+    1. Open Task Scheduler (Windows + R → 'taskschd.msc').
+    2. Right pane → "Import Task..." → select this file.
+    3. In the Properties dialog, click "Change User or Group..."
+       and pick your own Windows account.
+    4. Confirm "Run whether user is logged on or not" is selected.
+    5. Click OK. Enter your Windows password when prompted.
+
+  Option B — Command-line (elevated PowerShell):
+    schtasks /Create /XML "egpt-daemon-headless.task.xml" `
+      /TN "egpt-daemon-headless" `
+      /RU "$env:USERNAME" /RP * /F
+    (Prompts for your Windows password; stored encrypted in the SAM.)
+
+  REQUIREMENTS
+    - Node.js on the running user's PATH (the task launches plain 'node').
+    - eGPT cloned at %USERPROFILE%\src\egpt (the default in the README).
+      If you put it elsewhere, edit the <Arguments> and <WorkingDirectory>
+      below before importing.
+
+  AFTER INSTALL
+    schtasks /Run /TN "egpt-daemon-headless"      # kick off without reboot
+    Get-Content "$env:USERPROFILE\.egpt\headless.log" -Tail 30
+    schtasks /Query /TN "egpt-daemon-headless" /V /FO LIST
+
+  TO REMOVE
+    schtasks /Delete /TN "egpt-daemon-headless" /F
+-->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>eGPT</Author>
+    <Description>eGPT headless daemon — keeps WhatsApp / Telegram bridges, the bus, file logging, and media downloads alive across reboots, even before any user logon.</Description>
+    <URI>\egpt-daemon-headless</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <BootTrigger>
+      <Enabled>true</Enabled>
+    </BootTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!--
+        Placeholder SID — the GUI import flow prompts you to pick your real
+        account via "Change User or Group..." before save. The CLI form
+        overrides this with /RU $env:USERNAME /RP *, so the value here is
+        irrelevant in that path.
+      -->
+      <UserId>S-1-5-21-0000000000-0000000000-0000000000-1000</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>node</Command>
+      <Arguments>"%USERPROFILE%\src\egpt\egpt-daemon.mjs" --headless</Arguments>
+      <WorkingDirectory>%USERPROFILE%\src\egpt</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
