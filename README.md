@@ -2,7 +2,7 @@
 
 eGPT is a tool that joins multiple AI(s) and human(s) in a chat-like room, shell-script, WhatsApp, Telegram, and browser extension (Chrome, Firefox).
 
-> **Anything that asks the operator to run a server has already lost.** Simplicity of operation — eGPT works wherever a browser works.
+> **Anything that asks the operator to run a server has already lost.** Simplicity of operation — eGPT works, as an extension, wherever a browser works; or as a daemon-script where there's an OS to run it.
 
 For example
 
@@ -159,14 +159,25 @@ the bridges come up and stay up across `/restart` / `/upgrade` cycles.
 ### Headless background mode
 
 To keep eGPT running **across reboots even when nobody is logged in**, add
-`--headless` and use Task Scheduler's `Run whether user is logged on or
-not` checkbox:
+`--headless`. Two ways to install the Task Scheduler entry:
+
+**A — Import the bundled XML** (easiest, especially for non-developers).
+Open Task Scheduler (`Win+R` → `taskschd.msc`), Right pane → `Import Task...`,
+select `egpt-daemon-headless.task.xml` from this repo. In the Properties
+dialog click `Change User or Group...` and pick your own account, confirm
+`Run whether user is logged on or not` is selected, click `OK`, enter your
+Windows password. Done.
+
+**B — Command-line** (elevated PowerShell):
 
 ```powershell
-schtasks /Create /TN "egpt-daemon-headless" `
-  /TR "node `"$env:USERPROFILE\src\egpt\egpt-daemon.mjs`" --headless" `
-  /SC ONSTART /RL HIGHEST /F
+schtasks /Create /XML "egpt-daemon-headless.task.xml" `
+  /TN "egpt-daemon-headless" `
+  /RU "$env:USERNAME" /RP * /F
 ```
+
+Either form prompts for your Windows password once. It's stored encrypted in
+the SAM so the task can authenticate at boot before any logon.
 
 In headless mode:
 
