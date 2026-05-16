@@ -1908,6 +1908,11 @@ function App() {
   // watcher uses that to leave the file in place when no bridge is up
   // (retry on the next sweep instead of losing the message).
   const dispatchWaSendRef = useRef(null);
+  // 5-minute @e heartbeat guard. true while a heartbeat tick is
+  // mid-dispatch; the next tick that fires during that window is
+  // skipped (try again in 5 minutes). Operator-driven @e activity
+  // is not gated — they can interrupt at any time.
+  const heartbeatBusyRef = useRef(false);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -2565,6 +2570,94 @@ function App() {
       // the wrapper, without exiting the keeper itself.
       signalRestart:  () => setTimeout(() => process.exit(0), 100),
     });
+  }, []);
+
+  // 5-minute @e heartbeat. Every interval tick, read the operator-
+  // editable prompt at ~/.egpt/e-heartbeat.md and dispatch it to the
+  // default brain. @e decides what to do — reply '...' to stay silent
+  // (logged, nothing sent), or use its Bash tool access to drop
+  // wa-send files into ~/.egpt/outbox/ for the keeper to send. The
+  // reply text itself is logged in shell but does NOT become a
+  // message by this path — actions happen via tool calls, not text.
+  // Operator can disable by emptying the prompt file.
+  useEffect(() => {
+    const HEARTBEAT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
+    const HEARTBEAT_MS = 5 * 60 * 1000;
+    const DEFAULT_PROMPT = [
+      '# @e heartbeat',
+      '',
+      'Every 5 minutes the daemon fires this prompt at you so you can decide whether to act.',
+      '',
+      'Options:',
+      '',
+      '- Stay silent — reply with the literal string `...` (logged, nothing sent anywhere).',
+      '- Send a WhatsApp message — use Bash to write `~/.egpt/outbox/<ms>-<6hex>.json` with shape',
+      '  `{"type":"wa-send","from":"e","ts":<ms>,"jid":"<targetJid>","body":"🧠 e: <text>"}`.',
+      '  The comm-handler picks the file up and sends it. JIDs wired for you live in',
+      '  `~/.egpt/config.json` under `whatsapp.auto_e_chats`.',
+      '- Other tools — any side effect reachable via Bash / file IO is fair game.',
+      '',
+      'Your reply text is logged so the operator can see what you considered, but does NOT',
+      'become a message by itself. Only files dropped in the outbox do.',
+      '',
+      'Empty this file to disable the heartbeat. Edit it freely — changes take effect on the',
+      'next tick.',
+      '',
+    ].join('\n');
+
+    const sysLog = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+
+    try { mkdirSync(EGPT_HOME, { recursive: true }); } catch {}
+    try {
+      if (!existsSync(HEARTBEAT_PATH)) {
+        writeFileSync(HEARTBEAT_PATH, DEFAULT_PROMPT, 'utf8');
+      }
+    } catch (e) {
+      sysLog(`!! heartbeat: failed to seed ${HEARTBEAT_PATH}: ${e.message}`);
+    }
+
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped) return;
+      if (heartbeatBusyRef.current) {
+        sysLog(`heartbeat: skipped — previous tick still running`);
+        return;
+      }
+      let prompt;
+      try { prompt = readFileSync(HEARTBEAT_PATH, 'utf8'); }
+      catch (e) {
+        sysLog(`!! heartbeat: cannot read ${HEARTBEAT_PATH}: ${e.message}`);
+        return;
+      }
+      if (!prompt || !prompt.trim()) return;   // empty file = disabled
+      heartbeatBusyRef.current = true;
+      try {
+        const reply = await runDefaultBrainTurn(prompt);
+        if (stopped) return;
+        const trimmed = (reply ?? '').trim();
+        if (trimmed === '...') {
+          sysLog(`heartbeat: @e chose silence (...)`);
+        } else {
+          const oneLine = trimmed.replace(/\s+/g, ' ');
+          const preview = oneLine.length > 200 ? oneLine.slice(0, 199) + '…' : oneLine;
+          sysLog(`heartbeat: @e — ${preview}`);
+        }
+      } catch (e) {
+        sysLog(`!! heartbeat: dispatch failed — ${e.message}`);
+      } finally {
+        heartbeatBusyRef.current = false;
+      }
+    };
+
+    const timer = setInterval(tick, HEARTBEAT_MS);
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }, []);
 
   // Broadcast our local sessions to the bus on change. Peers use this to
