@@ -3683,6 +3683,7 @@ function App() {
       userName: USER_NAME,
       ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
       ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
+      ...(dbCfg.model              ? { model: dbCfg.model                        } : {}),
     };
     // Identity install for @e — same protocol as runBrainTurn but
     // the persona has its own state in EGPT_CONFIG.default_brain
