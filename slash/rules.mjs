@@ -56,15 +56,31 @@ async function loadRules() {
   catch { return DEFAULT_RULES; }
 }
 
-export async function run({ arg, ctx }) {
+export async function run({ arg, meta, ctx }) {
   // ctx keys consumed:
-  //   append(author, body)        — write to room md
-  //   setItems(updater)           — append to in-memory items
-  //   computeBrainTurn(name, q)   — run a one-shot turn against a brain
-  //   sysOut(text)                — operator-visible status line
-  const { append, setItems, computeBrainTurn, sysOut } = ctx;
+  //   append(author, body)              — write to room md
+  //   setItems(updater)                 — append to in-memory items
+  //   computeBrainTurn(name, q)         — run a one-shot turn against a brain
+  //   sysOut(text)                      — operator-visible status line
+  //   buildWaSurfaceTag(chatId)         — '<slug>.<jid-num>.wa' formatter
+  //   formatAutoDispatchLine({...})     — '[Name@surface (HH:MM)]: body' formatter
+  //   EGPT_CONFIG                       — read auto_e_chats[0] as fallback target
+  const { append, setItems, computeBrainTurn, sysOut,
+          buildWaSurfaceTag, formatAutoDispatchLine, EGPT_CONFIG } = ctx;
 
-  const recipient = arg.trim().match(/^@(\S+)$/)?.[1] ?? null;
+  const tokens = arg.trim().split(/\s+/).filter(Boolean);
+  // Forms:
+  //   /rules                  recipient=null, jid from meta / first auto_e_chats
+  //   /rules @<who>           decorative recipient prefix
+  //   /rules <jid>            explicit JID target
+  //   /rules @<who> <jid>     both
+  let recipient = null;
+  let explicitJid = null;
+  for (const t of tokens) {
+    if (t.startsWith('@')) recipient = t.slice(1);
+    else if (t.includes('@g.us') || t.includes('@s.whatsapp.net') || t.includes('@lid')) explicitJid = t;
+  }
+
   const rules = await loadRules();
   const finalRules = recipient ? `(for @${recipient})\n\n${rules}` : rules;
 
@@ -72,13 +88,29 @@ export async function run({ arg, ctx }) {
   await append('system', finalRules);
   setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: finalRules }]);
 
-  // (2) inject into @e session so the persona learns the rules
-  //     once and remembers them via session memory. Fire-and-forget:
-  //     we don't surface e's reply (likely '...' per the rules) — the
-  //     value is the session-history side-effect, not the response.
+  // (2) inject into @e session as a natural chat message from a
+  //     special "Group SysAdmin" sender, formatted exactly like an
+  //     auto_e_chats arrival so e treats it as in-character
+  //     conversation rather than an out-of-band instruction. e
+  //     remembers via session memory — no per-turn rules prefix
+  //     needed afterwards.
   if (typeof computeBrainTurn === 'function') {
-    computeBrainTurn('e', `[Operator injecting rules — please read and remember]\n\n${rules}`)
-      .then(() => sysOut?.('/rules: injected into @e session'))
+    const autoChats = Array.isArray(EGPT_CONFIG?.whatsapp?.auto_e_chats)
+      ? EGPT_CONFIG.whatsapp.auto_e_chats : [];
+    const targetJid = explicitJid ?? meta?.waChatId ?? autoChats[0] ?? null;
+    if (!targetJid) {
+      sysOut?.('/rules: no target chat — pass a JID or add one to whatsapp.auto_e_chats');
+      return true;
+    }
+    const surface = buildWaSurfaceTag?.(targetJid) ?? 'wa';
+    const injectLine = formatAutoDispatchLine?.({
+      senderName: 'Group SysAdmin',
+      body: rules,
+      ts: Date.now(),
+      surface,
+    }) ?? `[Group SysAdmin@${surface}]: ${rules}`;
+    computeBrainTurn('e', injectLine)
+      .then(() => sysOut?.(`/rules: injected into @e session (as Group SysAdmin@${surface})`))
       .catch(e => sysOut?.(`!! /rules: @e injection failed: ${e?.message ?? e}`));
   }
 

@@ -3412,6 +3412,13 @@ function App() {
       // Other files can read it via { meta } in their run signature.
       const ctx = {
         sysOut,
+        // Auto-dispatch helpers — slash commands (notably /rules) need
+        // these to format synthesized messages that enter e's session
+        // in the SAME shape as real auto_e_chats arrivals, so e
+        // treats them as natural conversation rather than out-of-band
+        // system instructions.
+        buildWaSurfaceTag,
+        formatAutoDispatchLine,
         waBridgeRef,
         waChannelsCacheRef: _waChannelsCacheRef,
         stormRef:           _stormRef,
