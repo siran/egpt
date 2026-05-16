@@ -38,6 +38,15 @@
 //       (auto-spawned on first use, resumed thereafter). Works in any
 //       room including the default lobby; not tied to room sessions.
 //
+//   { kind: 'meta', body }
+//       The user wrote `@me …` (or `@wren …`) — the engineer co-pilot,
+//       a SIBLING of the operator's main Claude Code design conversation
+//       (egpt0-branch). Resumed from EGPT_CONFIG.meta_brain.session_id,
+//       which is pinned to a specific Claude Code conversation via the
+//       /branch slash command run from that conversation. Reachable from
+//       any surface (WA/TG/extension/shell); always the same thread.
+//       See project-egpt-at-me-identity in memory for design context.
+//
 // The room module never touches React state, files, or networks. The caller
 // owns the side effects.
 
@@ -90,6 +99,14 @@ export function resolveRoute(parsed, fullText, ctx) {
     const lower = token.toLowerCase();
     if (lower === 'egpt' || lower === 'e') {
       return { kind: 'persona', body };
+    }
+    // '@me' (or '@wren' — sibling's chosen name) is the engineer
+    // co-pilot — a Claude Code session forked from the operator's
+    // main design conversation via /branch, then resumed by the
+    // headless daemon from any surface. Same identity as the
+    // operator's design thread, addressable from anywhere.
+    if (lower === 'me' || lower === 'wren') {
+      return { kind: 'meta', body };
     }
 
     // 1. Direct hit on a local session name.
