@@ -6,7 +6,6 @@
 // Movies auto-delete by default (revoked after a hold). --keep
 // disables. --secret "<text>" supplies the punchline.
 
-import { standing as _figStanding } from '../tools/stickfig.mjs';
 
 // ── Alien movie ───────────────────────────────────────────────
 //
@@ -146,326 +145,6 @@ function _buildAlienFrames(secret) {
   return F;
 }
 
-// ── Pirate movie ──────────────────────────────────────────────
-//
-// 3D tilted-plane scene: sky → horizon → trapezoid sea →
-// shore → 5-row stick-figure space → beach. The sea narrows
-// toward the back so the row a sprite sits on reads as
-// distance from the viewer — top = far (horizon), bottom =
-// near (foreground). The pirate is a narrow 5-row ASCII stick
-// figure (head O, chest /-\, spine |, hip -, legs | |),
-// chosen for clean alignment under the head column — emoji
-// heads + parrot shoulders silently drifted the body off-
-// center across overlays. Operator preference (2026-05).
-//
-// 12-row × 28-col canvas. Base rows are ASCII-only so column
-// offsets count visual cells 1:1; sprites overlay at known
-// (row, col). The dirt pile during digging stacks vertically
-// onto the empty figure rows above the beach so the pile
-// grows upward as the hole grows downward.
-
-const _CANVAS_W = 28;
-
-function _padR(s) {
-  // Right-pad a base row to canvas width. Base rows are ASCII-only
-  // so .length == visual width. Sprite overlays preserve width
-  // (always 2 cu out, 2 cu in), so a padded base stays valid for
-  // any later overlay at any col within range.
-  const n = s.length;
-  return n >= _CANVAS_W ? s : s + ' '.repeat(_CANVAS_W - n);
-}
-
-const _SKY_P = [
-  _padR('  *  .  ✦  .  *  .  ✦  . '),
-  _padR('     ✦  .  *  .  ✦       '),
-];
-// Sea trapezoid — one row trimmed (was 5) to make room for the
-// 5-row figure space below the shore line while keeping the canvas
-// at 12 rows.
-const _SEA = [
-  _padR('       ╱─────────────╲    '),   // 0 horizon (back edge)
-  _padR('      ╱ ~ ~ ~ ~ ~ ~ ~ ╲   '),   // 1 far sea
-  _padR('     ╱ ~ ~ ~ ~ ~ ~ ~ ~ ╲  '),   // 2
-  _padR('    ╱ ~ ~ ~ ~ ~ ~ ~ ~ ~ ╲ '),   // 3 near sea
-];
-const _SHORE_P = '═'.repeat(_CANVAS_W);
-const _BEACH_P = '.:'.repeat(_CANVAS_W / 2);
-const _EMPTY_FIG_ROW = ' '.repeat(_CANVAS_W);
-
-// Sprite constants — every sprite MUST be exactly 2 UTF-16 code units
-// (a surrogate pair, OR a BMP codepoint + VS16) so that `_overlay`
-// stays correct after multiple compositions on the same row. Base
-// rows are ASCII (1 cu = 1 cell); a 2-cu sprite replaces 2 cu
-// without shifting downstream col→cu alignment for subsequent
-// overlays. Single-cu BMP emojis (e.g. bare '❌', U+274C) drift the
-// row after they're placed and break later overlays at fixed cols.
-const _SH_SHIP     = '🚢';
-const _SH_HEAD     = '🧔';
-const _SH_PARROT   = '🦜';
-const _SH_MAP      = '\u{1F5FA}';        // 🗺 surrogate pair, 2 cu (no VS16)
-const _SH_SHOVEL   = '⛏️';     // ⛏️ BMP + VS16, 2 cu
-const _SH_GOLD     = '💰';
-const _SH_SCROLL   = '📜';
-const _SH_SPLASH   = '💦';
-const _SH_DIRT     = '🟫';
-const _SH_X        = '❌️';     // ❌ BMP + VS16, 2 cu
-
-function _overlay(row, col, sprite) {
-  // Replace 2 visual cells starting at `col` with one 2-cell sprite.
-  // Base rows are ASCII (1 cu = 1 cell) so col indexes code units
-  // directly; sprites must be 2 cu so the net code-unit count is
-  // preserved, keeping later col-based overlays aligned. Callers
-  // placing a head + prop pair must call _overlay twice (head at
-  // col, prop at col + 2) — concatenating sprites into a single
-  // overlay would only consume 2 cells but draw 4, widening the row.
-  return row.slice(0, col) + sprite + row.slice(col + 2);
-}
-
-// Overwrite N visual cells of `row` at `col` with `text` (text is
-// plain ASCII, so cu count == cell count). Sister to _overlay,
-// which is for 2-cu emoji sprites.
-function _drawText(row, col, text) {
-  return row.slice(0, col) + text + row.slice(col + text.length);
-}
-
-// Compose a pirate scene frame.
-//   ship:    { seaRow: 0..3, col }        — null = no ship
-//   figure:  { col, prop?, legs? }        — 5-row ASCII stick figure
-//              standing on the beach. `legs` is 'together' (default),
-//              'apart', or 'cross' — picks the foot row variant.
-//              `prop` is an optional 2-cell sprite at the head's
-//              right (⛏️ shovel, 🗺 map, 📜 scroll, 💰 gold).
-//   beachOverlays: array of { col, sprite } — beach-row decorations
-//   pile:    array of { row: 0..3, col, sprite } — vertical overlay
-//              into the figure-rows space (row 0 = legs/beach, row 1
-//              = hip, row 2 = spine, row 3 = chest, row 4 = head).
-//              Lets the dig sequence stack a dirt mound that rises
-//              into the empty rows above the beach.
-//   shoreOverlay: { col, sprite }
-//   dialog:  string — shown beneath the scene (omit when no secret)
-function _pirateScene({ ship, figure, beachOverlays = [], pile = [], shoreOverlay, dialog }) {
-  const sea = [..._SEA];
-  let shore = _SHORE_P;
-  // Five figure-space rows above the beach. Pile/figure parts
-  // overlay onto these; the bottom row (legs) IS the beach.
-  let head  = _EMPTY_FIG_ROW;
-  let chest = _EMPTY_FIG_ROW;
-  let spine = _EMPTY_FIG_ROW;
-  let hip   = _EMPTY_FIG_ROW;
-  let beach = _BEACH_P;
-
-  if (ship && ship.seaRow >= 0 && ship.seaRow < sea.length) {
-    sea[ship.seaRow] = _overlay(sea[ship.seaRow], ship.col, _SH_SHIP);
-  }
-  if (shoreOverlay) {
-    shore = _overlay(shore, shoreOverlay.col, shoreOverlay.sprite);
-  }
-
-  // Pile overlays first — figure parts go on top of them so a figure
-  // standing next to a tall pile doesn't get clipped by the pile
-  // sprite. The pile typically sits to one side of the figure anyway.
-  for (const p of pile) {
-    if (p.row === 0)      beach = _overlay(beach, p.col, p.sprite);
-    else if (p.row === 1) hip   = _overlay(hip,   p.col, p.sprite);
-    else if (p.row === 2) spine = _overlay(spine, p.col, p.sprite);
-    else if (p.row === 3) chest = _overlay(chest, p.col, p.sprite);
-    else if (p.row === 4) head  = _overlay(head,  p.col, p.sprite);
-  }
-
-  // Stick figure: every part written at its own column so we don't
-  // erase the beach pattern (`.:.:.`) to the left of the figure
-  // with leading spaces, and so earlier pile/decoration overlays
-  // on the same row but at different cols survive. Layout
-  // matches tools/stickfig.mjs's standing() shape: O head, /-\
-  // chest (3 cells), | spine, - hip, 3-cell legs.
-  if (figure) {
-    const c = figure.col;
-    const propText = figure.prop || '';
-    const legSprite = figure.legs === 'apart' ? '/ \\'
-                    : figure.legs === 'cross' ? '\\ /'
-                    : '| |';
-    head = _drawText(head, c, 'O');
-    if (propText) head = _overlay(head, c + 1, propText);
-    chest = _drawText(chest, c - 1, '/-\\');
-    spine = _drawText(spine, c, '|');
-    hip   = _drawText(hip,   c, '-');
-    beach = _drawText(beach, c - 1, legSprite);
-  }
-
-  for (const o of beachOverlays) {
-    beach = _overlay(beach, o.col, o.sprite);
-  }
-
-  const lines = [..._SKY_P, ...sea, shore, head, chest, spine, hip, beach];
-  if (dialog) lines.push('       "' + dialog + '"');
-  return lines.join('\n');
-}
-
-function _buildPirateFrames(secret) {
-  // Only show dialog when the operator actually passed --secret.
-  // The treasure dig is itself the climax visually; no need to
-  // narrate "X marks the spot" when no secret is set.
-  const motto = secret ? secret.trim().slice(0, 60) : '';
-  const F = [];
-
-  // Anchored-ship positions for the beach scene. The ship gently
-  // bobs left/right between two near-shore cols so it feels rocked
-  // by waves while the pirate is ashore. Index this with frame
-  // parity to alternate.
-  const ANCHOR = [
-    { seaRow: 3, col: 14 },
-    { seaRow: 3, col: 15 },
-  ];
-  const bob = (i) => ANCHOR[i % 2];
-  let beat = 0;
-
-  // 1. Empty bay.
-  F.push(_pirateScene({}));
-
-  // 2-4. Ship appears at the horizon (right) and drifts toward center.
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 19 } }));
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 15 } }));
-  F.push(_pirateScene({ ship: { seaRow: 1, col: 13 } }));
-
-  // 5-7. Ship descends through the trapezoid (closer = lower row).
-  F.push(_pirateScene({ ship: { seaRow: 2, col: 13 } }));
-  F.push(_pirateScene({ ship: { seaRow: 2, col: 14 } }));
-  F.push(_pirateScene({ ship: { seaRow: 3, col: 14 } }));
-
-  // 8. Anchor splash on the shore line in front of the ship.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    shoreOverlay: { col: 16, sprite: _SH_SPLASH },
-  }));
-
-  // 9-11. Pirate disembarks and walks toward the center of the beach.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 18, legs: 'apart' },
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 14, legs: 'together' },
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 10, legs: 'apart' },
-  }));
-
-  // 12. Pulls out the map.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 10, prop: _SH_MAP, legs: 'together' },
-  }));
-
-  // 13-15. X appears further left on the beach; pirate walks to it.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 8, prop: _SH_MAP, legs: 'apart' },
-    beachOverlays: [{ col: 2, sprite: _SH_X }],
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 6, prop: _SH_MAP, legs: 'together' },
-    beachOverlays: [{ col: 2, sprite: _SH_X }],
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, legs: 'apart' },
-    beachOverlays: [{ col: 2, sprite: _SH_X }],
-  }));
-
-  // 16-19. Digging — shovel out, dirt mound rises upward into the
-  // formerly-empty rows above the beach (the pile occupies the
-  // figure-row space at col 2, growing taller each frame).
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, prop: _SH_SHOVEL, legs: 'together' },
-    pile: [{ row: 0, col: 2, sprite: _SH_DIRT }],
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, prop: _SH_SHOVEL, legs: 'apart' },
-    pile: [
-      { row: 0, col: 2, sprite: _SH_DIRT },
-      { row: 1, col: 2, sprite: _SH_DIRT },
-    ],
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, prop: _SH_SHOVEL, legs: 'together' },
-    pile: [
-      { row: 0, col: 2, sprite: _SH_DIRT },
-      { row: 1, col: 2, sprite: _SH_DIRT },
-      { row: 2, col: 2, sprite: _SH_DIRT },
-    ],
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, prop: _SH_SHOVEL, legs: 'apart' },
-    pile: [
-      { row: 0, col: 2, sprite: _SH_DIRT },
-      { row: 1, col: 2, sprite: _SH_DIRT },
-      { row: 2, col: 2, sprite: _SH_DIRT },
-      { row: 3, col: 2, sprite: _SH_DIRT },
-    ],
-  }));
-
-  // 20. Hits the chest — treasure appears at the bottom of the hole,
-  // pile collapses (sand slid back when chest popped up).
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, legs: 'together' },
-    beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
-  }));
-
-  // 21-23. Pirate opens the scroll. Dialog (the secret) appears
-  // beneath the scene — held for three frames so it's legible.
-  for (let i = 0; i < 3; i++) {
-    F.push(_pirateScene({
-      ship: bob(beat++),
-      figure: { col: 5, prop: _SH_SCROLL, legs: 'together' },
-      beachOverlays: [{ col: 2, sprite: _SH_GOLD }],
-      dialog: motto,
-    }));
-  }
-
-  // 24. Pirate pockets the gold (it becomes his prop), beach clears.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 5, prop: _SH_GOLD, legs: 'apart' },
-  }));
-
-  // 25-27. Walks back to the ship.
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 9, prop: _SH_GOLD, legs: 'together' },
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 13, prop: _SH_GOLD, legs: 'apart' },
-  }));
-  F.push(_pirateScene({
-    ship: bob(beat++),
-    figure: { col: 17, prop: _SH_GOLD, legs: 'together' },
-  }));
-
-  // 28. Boards — figure gone (and the gold went with him).
-  F.push(_pirateScene({ ship: bob(beat++) }));
-
-  // 29-31. Ship sails back to the horizon (up + right).
-  F.push(_pirateScene({ ship: { seaRow: 3, col: 15 } }));
-  F.push(_pirateScene({ ship: { seaRow: 2, col: 16 } }));
-  F.push(_pirateScene({ ship: { seaRow: 1, col: 17 } }));
-  F.push(_pirateScene({ ship: { seaRow: 0, col: 18 } }));
-
-  // 32. Vanished — empty bay, message auto-deletes.
-  F.push(_pirateScene({}));
-
-  return F;
-}
-
-
 // ── Hi movie ──────────────────────────────────────────────────
 //
 // The simplest personalized preset: a waving 👋 hand greets
@@ -481,24 +160,28 @@ function _buildPirateFrames(secret) {
 function _buildHiFrames(text) {
   const motto = (text || 'hi, <username>!').trim().slice(0, 100);
   const F = [];
-  // Frame 0 is the rest-state placeholder: a static hand, no
-  // greeting. This is what the operator sees BEFORE any viewer
+  // Frame 0 — pre-anim placeholder. Static hand, no greeting, no
+  // counter. This is what the operator sees BEFORE any viewer
   // opens — the bridge's read-receipt listener holds animation
-  // start until someone reads, so the message lives in this
-  // state until then. placeholderFrames:1 on the preset config
-  // tells the bridge to SKIP frame 0 on re-animation so the
-  // names don't flicker out between viewers.
+  // start until someone reads, so the message lives in this state
+  // until then. placeholderFrames:1 on the preset config tells the
+  // bridge to SKIP frame 0 on re-animation so the names don't
+  // flicker out between viewers.
   F.push('   👋');
-  // Animation: hand alternates 👋 ↔ 🖐️ at slightly different
-  // column offsets to read as a wave. Greeting + names visible
-  // throughout. The bridge substitutes <username> at each frame
-  // emit time using the running viewers list.
+  // Animation frames — hand alternates 👋 ↔ 🖐️ at slightly
+  // different column offsets to read as a wave. Greeting + names
+  // visible throughout. The bridge substitutes <username> at each
+  // frame emit using the running viewers list.
   F.push('  👋  ' + motto);
   F.push('   👋 ' + motto);
   F.push('  🖐️  ' + motto);
   F.push('   👋 ' + motto);
   F.push('  🖐️  ' + motto);
-  F.push('   👋  ' + motto);
+  // Rest frame — what the message rests on between viewers. The
+  // counter shows unique viewers + total read events; both
+  // substitute at emit time so the resting message always reflects
+  // the latest tally even when no animation is playing.
+  F.push('   👋  ' + motto + '    👁 <viewercount> seen · <readcount> reads');
   return F;
 }
 
@@ -643,19 +326,6 @@ export const PRESETS = {
           'the message.',
     build: (arg, opts = {}) => _buildAlienFrames(opts.template || arg),
   },
-  pirate: {
-    ms: 700, monospace: true, autoDelete: true, holdMs: 3000,
-    consumesSecret: true,
-    params: '[--secret "<treasure note>"]',
-    desc: '3D tilted-plane bay: sky / horizon / trapezoid sea / shore / ' +
-          'beach. 🚢 sails in from the horizon (bobbing while anchored) ' +
-          '→ narrow ASCII stick-figure pirate disembarks, unrolls 🗺, ' +
-          'walks to ❌, digs ⛏️ — dirt 🟫 piles upward into the rows ' +
-          'above the beach — uncovers 💰, reads 📜 with the secret as ' +
-          'the treasure note, walks back with the gold, ship sails back ' +
-          'over the horizon. Dialog only shows when --secret is passed.',
-    build: (arg, opts = {}) => _buildPirateFrames(opts.template || arg),
-  },
   hi: {
     ms: 350, monospace: true, autoDelete: false,
     consumesSecret: true,
@@ -687,7 +357,7 @@ export const PRESETS = {
 
   // ── Utility presets ──────────────────────────────────────────
   typewriter: {
-    ms: 100, autoDelete: true, holdMs: 2500,
+    ms: 100, autoDelete: false,
     consumesSecret: true,
     params: '<text> | [--template "...<username>..."]',
     desc: 'reveals text character by character with a ▌ cursor. With ' +
@@ -702,12 +372,12 @@ export const PRESETS = {
     },
   },
   loading: {
-    ms: 200, autoDelete: true, holdMs: 1000,
+    ms: 200, autoDelete: false,
     desc: 'braille spinner → ✅',
     frames: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '✅'],
   },
   scan: {
-    ms: 400, autoDelete: true, holdMs: 1500,
+    ms: 400, autoDelete: false,
     desc: 'progress bar → ✓ done',
     frames: ['▱▱▱▱▱▱▱▱', '▰▱▱▱▱▱▱▱', '▰▰▱▱▱▱▱▱', '▰▰▰▱▱▱▱▱', '▰▰▰▰▱▱▱▱', '▰▰▰▰▰▱▱▱', '▰▰▰▰▰▰▱▱', '▰▰▰▰▰▰▰▱', '▰▰▰▰▰▰▰▰', '✓ done'],
   },

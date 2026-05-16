@@ -732,7 +732,14 @@ export async function startWhatsAppBridge({
         if (!u?.key?.id || !u.update) continue;
         const state = _personalizedMovies.get(u.key.id);
         if (!state) continue;
+        // Log EVERY status update on a personalized key, regardless of
+        // status — when the wave doesn't trigger we need to see what
+        // baileys is actually emitting (read=4, delivered=3, ack=2,
+        // or nothing at all).
+        const shortId = u.key.id.slice(0, 8);
+        log(`personalized[${shortId}]: messages.update status=${u.update.status} from=${u.key.fromMe ? 'me' : 'other'} participant=${u.key.participant?.split(':')[0] ?? '-'} remote=${u.key.remoteJid?.split(':')[0] ?? '-'}`);
         if (u.update.status !== 4 /* READ */) continue;
+        state.totalReads = (state.totalReads || 0) + 1;
         const readerJid = u.key.participant ?? u.key.remoteJid ?? null;
         _handlePersonalizedRead(state, readerJid);
       }
@@ -743,12 +750,15 @@ export async function startWhatsAppBridge({
         if (!u?.key?.id) continue;
         const state = _personalizedMovies.get(u.key.id);
         if (!state) continue;
+        const shortId = u.key.id.slice(0, 8);
+        const r = u.receipt ?? {};
+        log(`personalized[${shortId}]: message-receipt.update receipt=${JSON.stringify(r).slice(0, 140)}`);
         // baileys shapes vary by version — accept both
         // .receipt.readTimestamp (older) and .receipt.type === 'read'
         // (newer). userJid may be on .receipt or top-level.
-        const r = u.receipt ?? {};
         const isRead = r.readTimestamp != null || r.type === 'read';
         if (!isRead) continue;
+        state.totalReads = (state.totalReads || 0) + 1;
         const readerJid = r.userJid ?? u.participant ?? u.key.participant ?? null;
         _handlePersonalizedRead(state, readerJid);
       }
@@ -1911,23 +1921,39 @@ export async function startWhatsAppBridge({
     return _pickFriendlyName();
   }
 
-  // Render <username> against a viewers list. mode 'append' uses an
-  // Oxford-comma "and" for the last name (`A, B, and C`); other
-  // modes (including 'first') just join with the joiner.
-  function _renderUsername(text, viewers, mode, joiner) {
-    if (!text || typeof text !== 'string' || !text.includes('<username>')) return text;
-    let resolved;
-    if (!Array.isArray(viewers) || viewers.length === 0) {
-      resolved = '...';
-    } else if (viewers.length === 1) {
-      resolved = viewers[0];
-    } else if (mode === 'append') {
-      const allButLast = viewers.slice(0, -1).join(joiner);
-      resolved = allButLast + ' and ' + viewers[viewers.length - 1];
-    } else {
-      resolved = viewers.join(joiner);
+  // Render template placeholders against a personalized-movie state:
+  //   <username>    — viewers joined per mode/joiner
+  //   <viewercount> — unique viewers count (state.viewers.length)
+  //   <readcount>   — total read events that fired on this message,
+  //                   including operator self-reads and dedup'd
+  //                   repeats. Useful as a "how many times" counter
+  //                   even when 'how many people' stays at 1.
+  // mode 'append' uses an Oxford-comma "and" for the last name
+  // (`A, B, and C`); other modes (including 'first') just join.
+  function _renderUsername(text, viewers, mode, joiner, totalReads) {
+    if (!text || typeof text !== 'string') return text;
+    let out = text;
+    if (out.includes('<username>')) {
+      let resolved;
+      if (!Array.isArray(viewers) || viewers.length === 0) {
+        resolved = '...';
+      } else if (viewers.length === 1) {
+        resolved = viewers[0];
+      } else if (mode === 'append') {
+        const allButLast = viewers.slice(0, -1).join(joiner);
+        resolved = allButLast + ' and ' + viewers[viewers.length - 1];
+      } else {
+        resolved = viewers.join(joiner);
+      }
+      out = out.split('<username>').join(resolved);
     }
-    return text.split('<username>').join(resolved);
+    if (out.includes('<viewercount>')) {
+      out = out.split('<viewercount>').join(String(viewers?.length ?? 0));
+    }
+    if (out.includes('<readcount>')) {
+      out = out.split('<readcount>').join(String(totalReads ?? 0));
+    }
+    return out;
   }
 
   // Called from the read-receipt event handlers. Appends a new viewer
@@ -1989,7 +2015,7 @@ export async function startWhatsAppBridge({
     for (let i = startIdx; i < frames.length; i++) {
       if (!_personalizedMovies.has(msgKey.id)) return; // stopped externally
       state.lastFrameIdx = i;
-      const rendered = _renderUsername(frames[i], state.viewers, mode, joiner);
+      const rendered = _renderUsername(frames[i], state.viewers, mode, joiner, state.totalReads);
       if (rendered !== lastSent) {
         await _timeBound(
           _safeSend(chatId, { edit: msgKey, text: rendered }),
@@ -2329,7 +2355,7 @@ export async function startWhatsAppBridge({
       // stash state in _personalizedMovies, and return. The read-
       // receipt handlers drive the rest.
       if (template) {
-        const placeholder = _renderUsername(frames[0], [], mode, joiner);
+        const placeholder = _renderUsername(frames[0], [], mode, joiner, 0);
         let msgKey;
         if (existingKey?.id) {
           msgKey = existingKey;
@@ -2351,6 +2377,7 @@ export async function startWhatsAppBridge({
           frames, frameMs, autoDelete, holdMs,
           template, mode, joiner, placeholderFrames,
           viewers: [],
+          totalReads: 0,
           started: false,
           finished: false,
           lastFrameIdx: 0,
