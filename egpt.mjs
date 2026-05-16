@@ -3726,6 +3726,28 @@ function App() {
   //     classification, so the persona doesn't have to infer.
   //   - Shell: includes USER_NAME@SURFACE_TAG, matching the [handle]
   //     convention used in the items renderer + room md.
+  // Operator-editable rules text prepended to every auto_e_chats
+  // dispatch so e knows the conventions for the chat it's been
+  // dropped into (when to speak, how messages are formatted, what
+  // '...' means). Lives at ~/.egpt/rules.md so the operator can
+  // edit without restarting. Re-read on every turn (cheap — small
+  // file). Missing/unreadable file yields empty string (e then
+  // operates on session history alone).
+  const RULES_PATH = join(EGPT_HOME, 'rules.md');
+  async function readAutoDispatchRules() {
+    try { return (await readFile(RULES_PATH, 'utf8')).trim(); }
+    catch { return ''; }
+  }
+
+  // Format a single auto-dispatched message for e's eyes. Shape per
+  // operator spec: "[Name@surface (HH:MM)]: <body>".
+  function formatAutoDispatchLine({ senderName, body, ts, surface }) {
+    const d = new Date(ts ?? Date.now());
+    const pad = (n) => String(n).padStart(2, '0');
+    const tstr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `[${senderName ?? 'someone'}@${surface ?? 'wa'} (${tstr})]: ${body}`;
+  }
+
   function formatPersonaPrompt(meta, body) {
     const stamp = ts();
     if (meta.fromTelegram) {
@@ -4709,7 +4731,16 @@ function App() {
     // do anything; they're just chatting in a non-egpt chat that
     // egpt happens to listen to. Persona dispatch (above) handles the
     // @egpt case and replies directly to the originating chat.
-    if (meta.observeOnly && decision.kind !== 'persona') return;
+    // Observed chats normally don't surface in the shell or trigger
+    // commands — but slash commands from the operator's own account
+    // (meta.fromWhatsApp + authorized === true) ARE operator intent
+    // and should always run regardless of chat status. Without this
+    // exception, /e auto on from inside an auto_e_chats group can
+    // never enable that group (a chicken-and-egg: the chat is
+    // observe-only UNTIL added to auto_e_chats, but the command to
+    // add it is filtered out by the same observe-only gate).
+    const isOperatorCommand = decision.kind === 'command' && meta.fromWhatsApp;
+    if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand) return;
 
     if (decision.kind === 'command') {
       const handled = await handleSlash(text, meta);
@@ -4870,7 +4901,29 @@ function App() {
       // Input was already logged at the top-of-submitInner echo block.
       setBusy(true);
       try {
-        const personaPrompt = formatPersonaPrompt(meta, decision.body);
+        // For auto_e_chats arrivals, format per operator spec
+        // ([Name@surface (HH:MM)]: <body>) and prepend ~/.egpt/rules.md
+        // so e knows the conventions ("..." = silence, free-to-opine, etc.).
+        // Plain @e mentions in self-DM / other chats keep the verbose
+        // formatPersonaPrompt with full chat context.
+        // _personaBodyOverride bypasses formatting entirely — used by
+        // the queue drain to pass a pre-built rules+lines prompt.
+        let personaPrompt;
+        if (meta._personaBodyOverride) {
+          personaPrompt = meta._personaBodyOverride;
+        } else if (meta.autoDispatched && meta.fromWhatsApp) {
+          const rules = await readAutoDispatchRules();
+          const surface = waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? 'wa';
+          const line = formatAutoDispatchLine({
+            senderName: meta.waSenderName,
+            body: decision.body,
+            ts: Date.now(),
+            surface,
+          });
+          personaPrompt = rules ? `${rules}\n\n${line}` : line;
+        } else {
+          personaPrompt = formatPersonaPrompt(meta, decision.body);
+        }
 
         // Bridge-originated @egpt gets streaming UX: open a stream
         // message with a 'thinking…' placeholder, debounced edits as
@@ -5023,30 +5076,35 @@ function App() {
           const drained = queueState.queue.splice(0);
           queueState.inFlight = false;
           if (drained.length > 0 && submitRef.current) {
-            const fmtTime = (ts) => {
-              const d = new Date(ts);
-              const pad = (n) => String(n).padStart(2, '0');
-              return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-            };
-            const lines = drained.map(it => `${it.senderName}: ${it.body} [${fmtTime(it.ts)}]`).join('\n');
-            // Prefix @e so the room routes it back as a persona
-            // dispatch. autoDispatched stays true so this combined
-            // turn is also queue-aware (further arrivals during it
-            // will pile again).
-            const combined = `@e ${lines}`;
+            // Build the full persona prompt here (rules + one
+            // formatted line per piled message) and pass it via
+            // _personaBodyOverride so persona dispatch uses it
+            // verbatim instead of re-formatting a single-message
+            // body. This keeps all the dispatch goodies (`...`
+            // filter, send paths, re-queue) while letting the
+            // drain decide its own prompt shape.
+            const rules = await readAutoDispatchRules();
+            const surface = waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? 'wa';
+            const lines = drained.map(it => formatAutoDispatchLine({
+              senderName: it.senderName, body: it.body, ts: it.ts, surface,
+            })).join('\n');
+            const fullPrompt = rules ? `${rules}\n\n${lines}` : lines;
             const drainMeta = {
               fromWhatsApp: meta.fromWhatsApp,
               waChatId: meta.waChatId,
               waUser: meta.waUser,
               waClientLabel: meta.waClientLabel,
-              waMsgKey: null,        // pile isn't a single source msg
+              waMsgKey: null,
               waMsgRaw: null,
               observeOnly: meta.observeOnly,
-              replyPersona: null,    // pile isn't a reply
+              replyPersona: null,
               waSenderName: 'multiple',
               autoDispatched: true,
+              _personaBodyOverride: fullPrompt,
             };
-            submitRef.current(combined, drainMeta).catch(e =>
+            // The text-arg doesn't matter since override is set;
+            // still pass '@e' so the router classifies as persona.
+            submitRef.current('@e (drained pile)', drainMeta).catch(e =>
               errOut(`!! auto_e_chats drain failed: ${e.message}`));
           }
         }
