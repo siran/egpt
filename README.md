@@ -2,6 +2,8 @@
 
 eGPT is a tool that joins multiple AI(s) and human(s) in a chat-like room, shell-script, WhatsApp, Telegram, and browser extension (Chrome, Firefox).
 
+> **Anything that asks the operator to run a server has already lost.** Simplicity of operation — eGPT works wherever a browser works.
+
 For example
 
 ```text
