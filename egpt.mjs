@@ -2561,6 +2561,21 @@ function App() {
           claimed.delete(name);
           return;
         }
+      } else if (payload?.type === 'daemon-restart') {
+        // Safe-restart channel. The daemon-wrap.ps1 wrapper respawns
+        // on every exit, so a clean process.exit(0) IS a restart —
+        // no detached schtasks /Run child needed. Sibling who wrote
+        // this file gets a clean cycle; if the wrapper isn't yet
+        // wired in TS XML, the daemon just stays down. See
+        // [[feedback-no-self-sighup]] — this path exists precisely so
+        // a daemon-spawned sibling can request a restart without
+        // SIGHUPing itself by calling Stop-ScheduledTask.
+        sysLog(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);
+        try { await unlink(full); } catch {}
+        // Small grace so the sysLog reaches the headless.log buffer
+        // before exit. 100ms is enough for Ink's render + flush.
+        setTimeout(() => process.exit(0), 100);
+        return;
       } else {
         sysLog(`outbox: ignoring ${name} — unknown type ${payload?.type ?? '<missing>'}`);
       }
