@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -1891,6 +1891,12 @@ function App() {
   // so bus events always read fresh state. Keeps the bus subscription
   // useEffect's [] deps stable.
   const handleBusEventRef = useRef(null);
+  // Shared wa-send dispatcher. Set each render (closes over the latest
+  // waBridgeRef + setItems); called by the 'wa-send' bus case AND by the
+  // outbox file watcher. Returns true iff the send was issued — the
+  // watcher uses that to leave the file in place when no bridge is up
+  // (retry on the next sweep instead of losing the message).
+  const dispatchWaSendRef = useRef(null);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -2498,6 +2504,97 @@ function App() {
     startWaBridge();
     return () => stopWaBridge();
   }, [startWaBridge, stopWaBridge]);
+
+  // Headless wa-send transport: a sibling subprocess (e.g. a Claude Code
+  // subagent spawned via cross-resume) drops a JSON file in
+  // ~/.egpt/outbox/ with shape {type:'wa-send', from, ts, jid, body},
+  // we pick it up and dispatch through the same wa.send path as the
+  // bus 'wa-send' case. The bus tab (CDP) isn't reachable from the
+  // headless deployment because no Chrome is running there; the file
+  // outbox is the headless-only sibling of the bus-tab transport.
+  // Vocabulary is unified: dispatchWaSendRef.current handles both.
+  //
+  // Atomicity: writer uses write-then-rename (sibling-side .tmp →
+  // .json), so we only ever see fully-formed JSON files. To avoid
+  // double-dispatch when fs.watch and the periodic sweep both notice
+  // the same file, a name-keyed Set acts as a lock — first claim
+  // wins, others return.
+  //
+  // Retry: if no WA bridge is up, we leave the file in place and the
+  // next sweep retries. No TTL in v1; operator cleans by hand if
+  // bridge is permanently down.
+  useEffect(() => {
+    const outboxDir = join(EGPT_HOME, 'outbox');
+    try { mkdirSync(outboxDir, { recursive: true }); } catch {}
+
+    const claimed = new Set();
+    let stopped = false;
+
+    const sysLog = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+
+    const handleFile = async (name) => {
+      if (stopped) return;
+      if (!name.endsWith('.json')) return;
+      if (claimed.has(name)) return;
+      claimed.add(name);
+      const full = join(outboxDir, name);
+      let payload;
+      try {
+        const raw = await readFile(full, 'utf8');
+        payload = JSON.parse(raw);
+      } catch (e) {
+        // Vanished mid-read or malformed. ENOENT → another claimer
+        // already deleted it; silently release. Anything else is a
+        // poison file — log + unlink so it doesn't loop forever.
+        if (e.code === 'ENOENT') { claimed.delete(name); return; }
+        sysLog(`!! outbox: dropping ${name} — ${e.message}`);
+        try { await unlink(full); } catch {}
+        return;
+      }
+      if (payload?.type === 'wa-send') {
+        const ok = dispatchWaSendRef.current?.(payload, 'outbox');
+        if (!ok) {
+          // Bridge down or malformed payload — leave file for retry.
+          // Release the claim so the next sweep can try again.
+          claimed.delete(name);
+          return;
+        }
+      } else {
+        sysLog(`outbox: ignoring ${name} — unknown type ${payload?.type ?? '<missing>'}`);
+      }
+      try { await unlink(full); } catch {}
+    };
+
+    const sweep = async () => {
+      if (stopped) return;
+      let names = [];
+      try { names = await readdir(outboxDir); } catch { return; }
+      for (const n of names) await handleFile(n);
+    };
+
+    // Drain on mount: any files written while daemon was down.
+    sweep().catch(() => {});
+
+    // fs.watch — fast path. Windows can miss rename events under
+    // load; the periodic sweep below catches anything dropped.
+    let watcher = null;
+    try {
+      watcher = fsWatch(outboxDir, (_eventType, filename) => {
+        if (!filename) return;
+        handleFile(filename).catch(() => {});
+      });
+    } catch (_) { /* watcher unavailable; sweep alone keeps things flowing */ }
+
+    const sweepTimer = setInterval(() => { sweep().catch(() => {}); }, 2000);
+
+    return () => {
+      stopped = true;
+      try { watcher?.close(); } catch {}
+      clearInterval(sweepTimer);
+    };
+  }, []);
 
   // Broadcast our local sessions to the bus on change. Peers use this to
   // know which @<name> they can forward our way. No-op until the bus is joined.
@@ -5004,6 +5101,27 @@ function App() {
   // sessions/runBrainTurn/tgPolling closures. The bus subscription was set up
   // once with [] deps and just calls handleBusEventRef.current(ev), so it
   // always runs through this fresh closure.
+  // wa-send dispatcher used by both the bus 'wa-send' case and the
+  // outbox file watcher. Pure-ish: only side effect is wa.send + a log
+  // item. Returns true iff the send was issued so the watcher can
+  // decide whether to unlink the file or leave it for the next sweep.
+  dispatchWaSendRef.current = (ev, source = 'outbox') => {
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const wa = waBridgeRef.current;
+    if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
+    if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
+    try {
+      wa.send(ev.body, { chatId: ev.jid });
+      log(`${source}: wa-send → ${ev.jid} for ${ev.from} (${(ev.body || '').slice(0, 40)}${ev.body.length > 40 ? '…' : ''})`);
+      return true;
+    } catch (e) {
+      log(`!! wa-send failed: ${e.message}`);
+      return false;
+    }
+  };
+
   handleBusEventRef.current = async (ev) => {
     if (ev.from === BUS_NODE_ID) return; // ignore self-echoes
 
@@ -5255,17 +5373,10 @@ function App() {
         // bridge inbound that doesn't have baileys locally). to_node
         // narrows delivery; if absent, any baileys-holding peer may
         // process. Body is sent as-is; the @waN prefix is already
-        // stripped by the originator.
+        // stripped by the originator. Headless-side equivalent of this
+        // path is the ~/.egpt/outbox/ file watcher below.
         if (ev.to_node && ev.to_node !== BUS_NODE_ID) return;
-        const wa = waBridgeRef.current;
-        if (!wa) { log(`bus: wa-send from ${ev.from} dropped — no baileys bridge here`); return; }
-        if (!ev.jid || !ev.body) { log(`bus: wa-send from ${ev.from} dropped — missing jid/body`); return; }
-        try {
-          wa.send(ev.body, { chatId: ev.jid });
-          log(`bus: wa-send → ${ev.jid} for ${ev.from} (${(ev.body || '').slice(0, 40)}${ev.body.length > 40 ? '…' : ''})`);
-        } catch (e) {
-          log(`!! wa-send failed: ${e.message}`);
-        }
+        dispatchWaSendRef.current?.(ev, 'bus');
         return;
       }
       case 'telegram-handoff': {
