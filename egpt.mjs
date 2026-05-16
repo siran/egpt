@@ -1794,6 +1794,13 @@ function App() {
   // referenced item is no longer in the in-memory items array (e.g.
   // post-restart).
   const persistedReplyTargets = useRef(new Map());
+  // auto_e_chats per-chat busy/queue state. Keyed by chatId (WA JID).
+  // Each entry: { inFlight: boolean, queue: [{body, senderName, ts}] }.
+  // While e is mid-turn for a chat in auto_e_chats, additional arrivals
+  // pile in `queue`; on turn-completion the pile drains as one combined
+  // dispatch formatted "<name>: <body> [HH:MM]" per line, so e can issue
+  // a joint reply. See [[project-egpt-auto-e-chats]] semantics.
+  const _personaChatQueues = useRef(new Map());
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -2433,7 +2440,29 @@ function App() {
           } else if (from.chatType === 'status') {
             waClientLabel = 'status.wa';
           }
-          if (submitRef.current) await submitRef.current(text, {
+          // auto_e_chats: in chats listed here, every notify-type
+          // message is auto-dispatched to the @e persona (e decides
+          // whether to reply per /rules; reply of literal '...' is
+          // dropped by the brain-reply pipeline). e participates as
+          // a member. The operator toggles this per-chat via
+          // /e auto on|off and globally via /e auto pause|resume.
+          // Skipped when:
+          //   - operator-level pause is set (paused === true)
+          //   - text already begins with @<mention> (operator/another
+          //     persona is explicitly addressed; honor the explicit
+          //     target instead of forcing @e)
+          //   - text is a slash command (starts with /)
+          const waCfg = EGPT_CONFIG.whatsapp ?? {};
+          const autoChats = Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : [];
+          const autoPaused = !!waCfg.auto_e_paused;
+          const trimmed = String(text ?? '').trimStart();
+          const hasMention = /^@[\w-]+/.test(trimmed);
+          const isSlash    = trimmed.startsWith('/');
+          let dispatchText = text;
+          if (autoChats.includes(from.chatId) && !autoPaused && !hasMention && !isSlash) {
+            dispatchText = `@e ${text}`;
+          }
+          if (submitRef.current) await submitRef.current(dispatchText, {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
@@ -2441,6 +2470,14 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
+            // Threaded from bridge (cf77999 detection): the persona
+            // slug if this WA message is a long-press-reply to one
+            // of our outbound messages, else null. Used by the
+            // persona dispatch to enable streaming/typing only on
+            // direct replies (not on auto_e_chats arrivals).
+            replyPersona: from.replyPersona ?? null,
+            waSenderName: from.senderName ?? null,
+            autoDispatched: dispatchText !== text,
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
@@ -4803,6 +4840,33 @@ function App() {
       // chat (friend's DM, group), the reply is sent ONLY to the
       // originating chat — never mirrored anywhere. The operator
       // gets a /log entry as audit.
+
+      // auto_e_chats busy/queue gate: if this message was
+      // auto-dispatched (chatId ∈ auto_e_chats), check the per-chat
+      // in-flight state. If e is already mid-turn for this chat,
+      // pile the message into the queue and return immediately —
+      // the running turn's finally block will drain the queue as
+      // one combined dispatch after it completes.
+      let queueState = null;
+      if (meta.autoDispatched && meta.waChatId) {
+        const chatId = meta.waChatId;
+        queueState = _personaChatQueues.current.get(chatId);
+        if (!queueState) {
+          queueState = { inFlight: false, queue: [] };
+          _personaChatQueues.current.set(chatId, queueState);
+        }
+        if (queueState.inFlight) {
+          queueState.queue.push({
+            body: decision.body,
+            senderName: meta.waSenderName ?? 'someone',
+            ts: Date.now(),
+          });
+          logOut(`auto_e_chats: piling msg for ${chatId} (queue=${queueState.queue.length})`);
+          return;
+        }
+        queueState.inFlight = true;
+      }
+
       // Input was already logged at the top-of-submitInner echo block.
       setBusy(true);
       try {
@@ -4814,13 +4878,23 @@ function App() {
         // on completion. Shell-originated @egpt sees the reply in
         // items at the end (no per-bridge stream — items-mirror
         // already broadcasts cross-surface).
+        //
+        // EXCEPT for WA auto_e_chats arrivals that are NOT a direct
+        // reply to one of e's outbound messages: those use plain
+        // bridge.send so the typing indicator doesn't spam for every
+        // group message. Direct-reply-to-e (replyPersona === 'e' or
+        // 'egpt', set by the cf77999 detection in the bridge) keeps
+        // the streaming UX — the operator/replier is engaging e
+        // specifically and the typing/edit cadence is appropriate.
+        const isReplyToE = meta.replyPersona === 'e' || meta.replyPersona === 'egpt';
+        const useWaStream = meta.fromWhatsApp && (!meta.autoDispatched || isReplyToE);
         const tgPrefix = `${EGPT_PERSONA_EMOJI} <b>egpt</b>\n`;
         const waPrefix = `${EGPT_PERSONA_EMOJI} egpt\n`;
         const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
-        const waStream = (meta.fromWhatsApp && waBridgeRef.current?.startStreamMessage)
+        const waStream = (useWaStream && waBridgeRef.current?.startStreamMessage)
           ? waBridgeRef.current.startStreamMessage(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
@@ -4829,6 +4903,24 @@ function App() {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) waStream.update(`${waPrefix}${partial}`);
         });
+
+        // Polite-ack filter (per /rules in slash/rules.mjs): a reply
+        // of literal '...' means e chose not to speak. Drop silently
+        // — don't send to any bridge, don't render in shell, don't
+        // mirror, don't broadcast on bus. Log to /log for audit so
+        // the operator can verify e is alive and exercising the
+        // skip option (vs hung).
+        if (reply.trim() === '...') {
+          // Best-effort close any stream we opened for the placeholder.
+          // For tgStream there's no concept of "delete", finishing with
+          // the polite-ack would post '...'; instead leave it as the
+          // last-edited '⌛ thinking…' and let the operator know via log.
+          if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
+          if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
+          const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+          logOut(`@e: polite '...' from ${where} (skipped per /rules)`);
+          return;
+        }
 
         // Final delivery: prefer stream.finish() so the placeholder
         // message becomes the final reply (rather than us sending a
@@ -4920,6 +5012,44 @@ function App() {
         }
       } finally {
         setBusy(false);
+        // auto_e_chats queue drain: if we were the in-flight turn
+        // for an auto-dispatched chat and messages piled while we
+        // were thinking, format them as one combined dispatch and
+        // re-enter via submitRef. The combined text is the literal
+        // shape an asked for: "<name>: <body> [HH:MM]" per line.
+        // Fire-and-forget so this finally returns promptly; if the
+        // re-entry itself errors, surface to shell.
+        if (queueState) {
+          const drained = queueState.queue.splice(0);
+          queueState.inFlight = false;
+          if (drained.length > 0 && submitRef.current) {
+            const fmtTime = (ts) => {
+              const d = new Date(ts);
+              const pad = (n) => String(n).padStart(2, '0');
+              return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+            };
+            const lines = drained.map(it => `${it.senderName}: ${it.body} [${fmtTime(it.ts)}]`).join('\n');
+            // Prefix @e so the room routes it back as a persona
+            // dispatch. autoDispatched stays true so this combined
+            // turn is also queue-aware (further arrivals during it
+            // will pile again).
+            const combined = `@e ${lines}`;
+            const drainMeta = {
+              fromWhatsApp: meta.fromWhatsApp,
+              waChatId: meta.waChatId,
+              waUser: meta.waUser,
+              waClientLabel: meta.waClientLabel,
+              waMsgKey: null,        // pile isn't a single source msg
+              waMsgRaw: null,
+              observeOnly: meta.observeOnly,
+              replyPersona: null,    // pile isn't a reply
+              waSenderName: 'multiple',
+              autoDispatched: true,
+            };
+            submitRef.current(combined, drainMeta).catch(e =>
+              errOut(`!! auto_e_chats drain failed: ${e.message}`));
+          }
+        }
       }
       return;
     }

@@ -1577,6 +1577,20 @@ export async function startWhatsAppBridge({
       // baileys with quoted: { key, message } pointing at this msg.
       msgKey: msg.key ? { ...msg.key } : null,
       msgRaw: msg.message ?? null,
+      // Reply-as-mention detection (cf77999): when the operator
+      // long-press → Replies to one of our outbound messages,
+      // this is the persona slug parsed from the quoted body
+      // ('e' | 'egpt' | 'me' | 'wren'), else null. The host uses
+      // this to enable the streaming/typing indicator only on
+      // direct-reply-to-persona — not on plain auto-dispatched
+      // arrivals (the latter would spam typing for every group
+      // message in an auto_e_chats chat).
+      replyPersona,
+      // Sender display name (pushName-only per
+      // [[feedback-wa-pushname-only]]; never the operator's
+      // address book). Used by auto_e_chats queueing to render
+      // 'Mike: msg [HH:MM]\nJane: …' when piling messages.
+      senderName: firstName ?? username ?? null,
     });
   }
 
