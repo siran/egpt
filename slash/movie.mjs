@@ -6,7 +6,7 @@
 // Movies auto-delete by default (revoked after a hold). --keep
 // disables. --secret "<text>" supplies the punchline.
 
-import { standing as _figStanding, couple as _figCouple } from '../tools/stickfig.mjs';
+import { standing as _figStanding } from '../tools/stickfig.mjs';
 
 // ── Alien movie ───────────────────────────────────────────────
 //
@@ -465,154 +465,6 @@ function _buildPirateFrames(secret) {
   return F;
 }
 
-// ── Couple movie ──────────────────────────────────────────────
-//
-// Two narrow ASCII stick figures meet under a moon, engage
-// (#====D between chests), oscillate through an in/out motion
-// loop, then a climax frame with the --secret as pillow talk,
-// then a 💤 lying-down aftermath. Adult cartoon comedy — pure
-// ASCII, no anatomy depicted, all the heavy lifting done by
-// the #====D meme. Operator-greenlit (2026-05). Access still
-// gated by the standard allowed_users awareness layer.
-//
-// 8-row canvas, 28 cols wide. Sky row + spacer + 5 figure rows
-// + floor. Same _overlay/_drawText conventions as pirate; uses
-// stickfig.couple() for the two-figure compositions.
-
-const _COUPLE_W   = 28;
-const _COUPLE_SKY = '   . * ☾ * . ✦ .            ';
-const _COUPLE_EMPTY_ROW = ' '.repeat(_COUPLE_W);
-const _COUPLE_FLOOR = '═'.repeat(_COUPLE_W);
-
-function _padRow(s, w = _COUPLE_W) {
-  return s.length >= w ? s : s + ' '.repeat(w - s.length);
-}
-
-function _coupleFrame(figRows, dialog) {
-  const padded = figRows.map(r => _padRow(r));
-  let s = [
-    _COUPLE_SKY,
-    _COUPLE_EMPTY_ROW,
-    ...padded,
-    _COUPLE_FLOOR,
-  ].join('\n');
-  if (dialog) s += '\n       "' + dialog + '"';
-  return s;
-}
-
-function _buildCoupleFrames(secret) {
-  const motto = secret ? secret.trim().slice(0, 60) : '';
-  const F = [];
-
-  // 1. Apart, idle — wide gap, both standing still.
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 4, fig2Col: 22, gap: '                ',
-  })));
-
-  // 2. Walking toward each other (legs apart, mid-stride).
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 8, fig2Col: 18, gap: '      ',
-    fig1Legs: 'apart', fig2Legs: 'apart',
-  })));
-
-  // 3. Almost meeting (legs crossed, stepping in).
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 11, fig2Col: 15, gap: '  ',
-    fig1Legs: 'cross', fig2Legs: 'cross',
-  })));
-
-  // 4. First contact — short implement, legs together.
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 4, fig2Col: 10, gap: '#=D',
-  })));
-
-  // 5-9. In/out loop: long extended (#====D, fig2 far) alternating
-  // with short retracted (#=D, fig2 close). Legs swap apart/cross
-  // each beat so the motion reads as rhythm rather than two
-  // stills cycling.
-  for (let i = 0; i < 5; i++) {
-    const isOut = (i % 2 === 0);
-    F.push(_coupleFrame(_figCouple({
-      fig1Col: 4,
-      fig2Col: isOut ? 13 : 10,
-      gap:    isOut ? '#====D' : '#=D',
-      fig1Legs: isOut ? 'apart' : 'cross',
-      fig2Legs: isOut ? 'cross' : 'apart',
-    })));
-  }
-
-  // 10. Climax — extended implement, legs apart, secret as pillow
-  // talk. Held longer via the preset's holdMs so the dialog is
-  // legible.
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 4, fig2Col: 16, gap: '#========D',
-    fig1Legs: 'apart', fig2Legs: 'apart',
-  }), motto));
-
-  // Aftermath cols — fig2 stays anchored at col 16 (where the
-  // climax left them) for frames 11..15 so they don't teleport
-  // between beats; fig1 drifts left across the walk-away frames.
-
-  // 11. Slap — 👋 lands at fig2's hip level. No directional
-  // cigarette/wind emojis (those break in either orientation);
-  // just the contact glyph.
-  F.push(_coupleFrame([
-    '    O           O           ',
-    '   /-\\        /-\\          ',
-    '    |           |           ',
-    '    -        👋 -           ',
-    '   | |         | |          ',
-  ]));
-
-  // 12. Cash handoff — 💯💶 between the chests.
-  F.push(_coupleFrame([
-    '    O           O           ',
-    '   /-\\  💯💶  /-\\          ',
-    '    |           |           ',
-    '    -           -           ',
-    '   | |         | |          ',
-  ]));
-
-  // 13. Walk away (step 1) — fig1 strides left, fig2 stays put.
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 3, fig2Col: 16,
-    gap: '          ',       // 10-char gap, c2 = 3+2+10 = 15, ✓ chest2 cols 15-17
-    fig1Legs: 'apart', fig2Legs: 'together',
-  })));
-
-  // 14. Walk away (step 2) — fig1 near the canvas edge.
-  F.push(_coupleFrame(_figCouple({
-    fig1Col: 1, fig2Col: 16,
-    gap: '            ',     // 12-char gap, c2 = 1+2+12 = 15, ✓
-    fig1Legs: 'cross', fig2Legs: 'together',
-  })));
-
-  // 15. Alone — fig2 holding the cash, fig1 gone.
-  F.push(_coupleFrame([
-    '                O           ',
-    '               /-\\          ',
-    '                |    💯💶   ',
-    '                -           ',
-    '               | |          ',
-  ]));
-
-  return F;
-}
-
-// ── Deliver movie ─────────────────────────────────────────────
-//
-// One-line cartoon: ====D approaches a . on the right. The hole
-// is too small, D bounces off; on each bounce the hole opens a
-// notch wider (. → o → O → ()). Once it's () the D slides
-// inside, the parens engulf, and the --secret "delivers" as
-// the final 💌 frame. autoDelete revokes the whole message
-// after holdMs, so the secret is genuinely ephemeral — the
-// wink-wink "how the message is delivered" the operator asked
-// about.
-//
-// The frame string is a single line; triple-backtick monospace
-// wrap (per the preset's monospace:true flag) preserves the
-// leading spaces that encode how far the D has approached.
 
 // ── Hi movie ──────────────────────────────────────────────────
 //
@@ -777,124 +629,6 @@ function _buildBombFrames(dialog) {
   return F;
 }
 
-function _buildDeliverFrames(secret) {
-  const motto = secret ? secret.trim().slice(0, 60) : '';
-  const W = 40;       // wider canvas — entry frames carry moan text past the hole
-  const HOLE_COL = 26;
-
-  // Compose one frame. `dCol` = column of the rightmost 'D' char of
-  // ====D (5 chars wide, so the ==== starts at dCol-4). `hole` is
-  // 1 or 2 ASCII chars at HOLE_COL. Pads to W on the right so the
-  // frame width is stable across emits.
-  const frame = (dCol, hole) => {
-    const lead = Math.max(0, dCol - 4);
-    const gap  = Math.max(0, HOLE_COL - dCol - 1);
-    let line = ' '.repeat(lead) + '====D' + ' '.repeat(gap) + hole;
-    if (line.length < W) line += ' '.repeat(W - line.length);
-    return line;
-  };
-
-  const F = [];
-
-  // Approach the . from far left — uniform stride, slowing as it
-  // nears the dot so the contact feels deliberate, not a fly-by.
-  F.push(frame(4,  '.'));
-  F.push(frame(8,  '.'));
-  F.push(frame(12, '.'));
-  F.push(frame(16, '.'));
-  F.push(frame(20, '.'));
-  F.push(frame(23, '.'));
-  F.push(frame(25, '.'));   // touching .
-
-  // Bounce 1 — D recoils, hole opens . → o.
-  F.push(frame(22, 'o'));
-  F.push(frame(20, 'o'));
-  F.push(frame(23, 'o'));
-  F.push(frame(25, 'o'));   // touching o
-
-  // Bounce 2 — recoil + o → O.
-  F.push(frame(22, 'O'));
-  F.push(frame(20, 'O'));
-  F.push(frame(23, 'O'));
-  F.push(frame(25, 'O'));   // touching O
-
-  // Bounce 3 — recoil + O → (), now wide enough.
-  F.push(frame(22, '()'));
-  F.push(frame(20, '()'));
-  F.push(frame(23, '()'));
-  F.push(frame(25, '()'));  // adjacent, primed
-
-  // Insertion — D vanishes behind the (), only the base # and a
-  // progressively-shorter shaft stay visible. # slides right as
-  // the dick goes deeper into the tunnel; the head is hidden
-  // behind ( (it's inside the hole, not wrapped by parens).
-  // Moan text grows with the depth.
-  const pad = (s) => s.length >= W ? s : s + ' '.repeat(W - s.length);
-  F.push(pad(' '.repeat(21) + '#====()'));
-  F.push(pad(' '.repeat(22) + '#===()  oh'));
-  F.push(pad(' '.repeat(23) + '#==()  ohhh'));
-  F.push(pad(' '.repeat(24) + '#=()  ooohhh'));
-  F.push(pad(' '.repeat(25) + '#()  oooohhhh!'));
-
-  // Withdrawal — the dick pulls out, hole stays open with a
-  // little 💨 puff of relief.
-  F.push(pad(' '.repeat(26) + '()  💨'));
-
-  // Hand arrives from the left and waves hello. 🖐️ palm, 👋 wave,
-  // back to 🖐️ — readable as a wave in two beats.
-  F.push(pad('  🖐️                      ()'));
-  F.push(pad('  👋                      ()'));
-  F.push(pad('  🖐️                      ()'));
-
-  // Arm extends — the hand reaches toward the hole, arm grows
-  // as a string of '=' between hand-base and palm. Same visual
-  // grammar as the ====D approach earlier.
-  F.push(pad('  ==🖐️                    ()'));
-  F.push(pad('  ========🖐️              ()'));
-  F.push(pad('  ==============🖐️        ()'));
-  F.push(pad('  ====================🖐️()'));   // palm touching
-
-  // Palm closes into a fist, fist enters the hole (knuckles go
-  // BEHIND the (, same model as the dick — () is the entrance,
-  // not a wrapper).
-  F.push(pad('  ====================✊()'));
-  F.push(pad('  ====================(✊)'));     // fist halfway through
-  F.push(pad('  ====================()'));      // knuckles inside, arm only
-
-  // Fist withdraws — but it's holding something. The arm shrinks
-  // back as the fist comes out, dragging the secret behind it on
-  // a banner. ━ (heavy horizontal) for the banner cloth.
-  F.push(pad('  ================✊'));            // fist out, banner not yet
-  F.push(pad('  ============✊━━'));              // banner cloth starting
-  F.push(pad('  ========✊━━━━━━━━'));            // banner unfurling
-  if (motto) {
-    F.push(pad('  ✊━━━━━━━━  "' + motto + '"')); // banner + secret
-  } else {
-    F.push(pad('  ✊━━━━━━━━  delivered'));
-  }
-
-  // Ass closes — () → O → o → . The reverse of the bounce-open
-  // at the start. The banner stays visible above (held by ✊).
-  F.push(pad(' '.repeat(26) + '()'));
-  F.push(pad(' '.repeat(26) + 'O'));
-  F.push(pad(' '.repeat(26) + 'o'));
-  F.push(pad(' '.repeat(26) + '.'));
-
-  // Message fades — UTF-8 block-density fade for the phrase
-  // itself. █ solid → ▓ dark → ▒ medium → ░ light → space. The
-  // banner stays visible on the left for one frame, then it
-  // dims with the text.
-  if (motto) {
-    const L = motto.length;
-    F.push(pad('  ✊━━━━━━━━  "' + '█'.repeat(L) + '"'));
-    F.push(pad('  ✊━━━━  ' + '▓'.repeat(L + 2)));
-    F.push(pad('  ✊  ' + '▒'.repeat(L)));
-    F.push(pad('  ' + '░'.repeat(L)));
-  }
-
-  return F;
-}
-
 export const PRESETS = {
   // ── Showcase ─────────────────────────────────────────────────
   alien: {
@@ -921,18 +655,6 @@ export const PRESETS = {
           'the treasure note, walks back with the gold, ship sails back ' +
           'over the horizon. Dialog only shows when --secret is passed.',
     build: (arg, opts = {}) => _buildPirateFrames(opts.template || arg),
-  },
-  couple: {
-    ms: 600, monospace: true, autoDelete: true, holdMs: 4000,
-    consumesSecret: true,
-    params: '[--secret "<pillow talk>"]',
-    desc: 'two narrow ASCII stick figures meet under a 🌙, approach, ' +
-          'engage (#====D between chests), pump through an in/out ' +
-          'motion loop, climax with the --secret as pillow talk, then ' +
-          '💤 lying-down aftermath, fade to night. Adult cartoon ' +
-          'comedy — ASCII only, no anatomy depicted. Trigger from a ' +
-          'WA chat with @movie couple --secret "...".',
-    build: (arg, opts = {}) => _buildCoupleFrames(opts.template || arg),
   },
   hi: {
     ms: 350, monospace: true, autoDelete: false,
@@ -961,21 +683,6 @@ export const PRESETS = {
           '--template containing <username>, the reveal personalizes ' +
           "to whoever read the message.",
     build: (arg, opts = {}) => _buildBombFrames(opts.template || arg),
-  },
-  deliver: {
-    ms: 500, monospace: true, autoDelete: true, holdMs: 3500,
-    consumesSecret: true,
-    params: '[--secret "<message>"] [--template "...<username>..."]',
-    desc: 'one-line cartoon: ====D approaches a . on the right. The ' +
-          'hole is too small, D bounces off; each bounce opens the ' +
-          'hole a notch wider (. → o → O → ()). When () is wide ' +
-          'enough, the D slides inside, the parens engulf, and the ' +
-          '--secret "delivers" as the final 💌 frame. autoDelete ' +
-          'revokes the message after holdMs — the secret is delivered ' +
-          'once and then gone. Triple-backtick monospace preserves ' +
-          "the leading-space approach distance. Operator-greenlit; " +
-          'lighter touch than the full couple preset.',
-    build: (arg, opts = {}) => _buildDeliverFrames(opts.template || arg),
   },
 
   // ── Utility presets ──────────────────────────────────────────
