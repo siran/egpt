@@ -629,19 +629,22 @@ function _buildCoupleFrames(secret) {
 function _buildHiFrames(text) {
   const motto = (text || 'hi, <username>!').trim().slice(0, 100);
   const F = [];
-  // Three frames of just the wave to draw attention before the
-  // greeting text appears.
+  // Frame 0 is the rest-state placeholder: a static hand, no
+  // greeting. This is what the operator sees BEFORE any viewer
+  // opens — the bridge's read-receipt listener holds animation
+  // start until someone reads, so the message lives in this
+  // state until then. placeholderFrames:1 on the preset config
+  // tells the bridge to SKIP frame 0 on re-animation so the
+  // names don't flicker out between viewers.
   F.push('   👋');
-  F.push('  👋 ');
-  F.push('   👋');
-  // Greeting appears alongside the wave; hand alternates 👋/🖐️
-  // for a few more beats so the wave keeps going while the text
-  // is on screen.
-  F.push('   👋  ' + motto);
+  // Animation: hand alternates 👋 ↔ 🖐️ at slightly different
+  // column offsets to read as a wave. Greeting + names visible
+  // throughout. The bridge substitutes <username> at each frame
+  // emit time using the running viewers list.
+  F.push('  👋  ' + motto);
+  F.push('   👋 ' + motto);
   F.push('  🖐️  ' + motto);
-  F.push('   👋  ' + motto);
-  F.push('  🖐️  ' + motto);
-  F.push('   👋  ' + motto);
+  F.push('   👋 ' + motto);
   F.push('  🖐️  ' + motto);
   F.push('   👋  ' + motto);
   return F;
@@ -932,16 +935,20 @@ export const PRESETS = {
     build: (arg, opts = {}) => _buildCoupleFrames(opts.template || arg),
   },
   hi: {
-    ms: 350, monospace: true, autoDelete: true, holdMs: 5000,
+    ms: 350, monospace: true, autoDelete: false,
     consumesSecret: true,
+    placeholderFrames: 1,
     params: '[--template "...<username>..."]',
-    desc: 'a waving 👋 says hi to whoever reads the message. Animation ' +
-          'starts on first read; the greeting text appears alongside ' +
-          'the wave; each subsequent reader appends to the <username> ' +
-          'list. Phone-number-shaped pushNames are masked with a ' +
-          'friendly fallback ("you", "friend", ...) so the greeting ' +
-          'never renders as a raw phone number. Default template: ' +
-          '"hi, <username>!" — override with --template.',
+    desc: 'a static 👋 hand that waves when anyone reads the message; ' +
+          'each new viewer triggers a fresh wave and gets their ' +
+          'pushName appended to the greeting. Hand stays put between ' +
+          'viewers (no auto-delete). Phone-number-shaped pushNames ' +
+          'are masked with a friendly fallback ("you", "friend", ...) ' +
+          'so the greeting never renders as a raw phone number. ' +
+          'Operator self-reads are skipped (the phone auto-marks-as-' +
+          'read on send and would otherwise consume the first-reader ' +
+          'greeting). Default template: "hi, <username>!" — override ' +
+          'with --template.',
     build: (arg, opts = {}) => _buildHiFrames(opts.template || arg),
   },
   bomb: {
@@ -1107,7 +1114,12 @@ export function buildMoviePayload(argsStr) {
   if (frames.length > 60) {
     return { error: `${frames.length} frames exceeds the 60-frame ceiling — split into shorter movies` };
   }
-  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner };
+  // placeholderFrames: how many leading frames are pre-animation
+  // placeholders (the message's resting state before the first
+  // read). The bridge skips these on re-animation so the names
+  // don't flicker out between viewers. Default 0 — preset opts in.
+  const placeholderFrames = (presetName && PRESETS[presetName]?.placeholderFrames) || 0;
+  return { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames };
 }
 
 export const meta = {
@@ -1185,7 +1197,7 @@ export async function run({ arg, ctx }) {
     sysOut(`!! /movie: ${payload.error}. /movie list to see options.`);
     return true;
   }
-  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner } = payload;
+  const { frames, frameMs: ms, autoDelete, holdMs, presetName, secret, positional, template, mode, joiner, placeholderFrames } = payload;
 
   const totalMs = frames.length * ms + (autoDelete ? holdMs : 0);
   const tag = positional || secret
@@ -1194,7 +1206,7 @@ export async function run({ arg, ctx }) {
   const fate = autoDelete ? `auto-delete after ${holdMs}ms` : 'keep';
   const personalizedNote = template ? `  · personalized (waiting for first read)` : '';
   sysOut(`🎬 /movie ${tag} → ${targetTok} "${chat.name}" (${frames.length} frames · ${ms}ms · ~${(totalMs / 1000).toFixed(1)}s · ${fate}${personalizedNote})`);
-  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs, template, mode, joiner });
+  const r = await wa.playFrames({ chatId: chat.jid, frames, frameMs: ms, autoDelete, holdMs, template, mode, joiner, placeholderFrames });
   if (!r?.key) sysOut(`!! /movie: bridge returned no key — initial send may have failed`);
   return true;
 }

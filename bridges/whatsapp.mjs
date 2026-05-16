@@ -1936,9 +1936,19 @@ export async function startWhatsAppBridge({
   // of the final frame with the updated viewer list.
   function _handlePersonalizedRead(state, readerJid) {
     if (!state || !readerJid) return;
-    const readerName = _resolvePushName(readerJid, null);
     const shortId = state.msgKey?.id?.slice(0, 8) ?? '?';
     const shortJid = readerJid.split(':')[0];
+    // Skip operator self-reads. The phone marks-as-read fires the
+    // instant we send, which would consume the first-reader greeting
+    // before anyone else has opened. The operator is the sender by
+    // construction; counting their own read as a viewer collapses
+    // the "who saw this first" story.
+    const bareNum = readerJid.split(':')[0]?.split('@')[0];
+    if (bareNum && (bareNum === myNumber || bareNum === myLidNumber)) {
+      log(`personalized[${shortId}]: skipping operator self-read from ${shortJid}`);
+      return;
+    }
+    const readerName = _resolvePushName(readerJid, null);
     if (!readerName) {
       log(`personalized[${shortId}]: read from ${shortJid} — resolver returned empty; skipping`);
       return;
@@ -1951,9 +1961,15 @@ export async function startWhatsAppBridge({
     log(`personalized[${shortId}]: viewer added "${readerName}" (jid ${shortJid}); list now [${state.viewers.join(', ')}]; started=${state.started}, finished=${state.finished}`);
     if (!state.started) {
       state.started = true;
-      _runPersonalizedAnimation(state).catch(e => err(`personalized run: ${e.message}`));
+      _runPersonalizedAnimation(state, false).catch(e => err(`personalized run: ${e.message}`));
     } else if (state.finished) {
-      _emitPersonalizedFinalFrame(state).catch(e => err(`personalized final update: ${e.message}`));
+      // Animation completed and a new viewer arrived — re-run the
+      // full animation so each new reader sees the wave start, and
+      // ends with their name added to the rest-state list. Skip the
+      // preset's `placeholderFrames` count so we don't flicker back
+      // to a "no-greeting" intro between viewers.
+      state.finished = false;
+      _runPersonalizedAnimation(state, true).catch(e => err(`personalized re-run: ${e.message}`));
     }
     // else: animation in flight — next emit picks up the updated
     // viewers list automatically.
@@ -1963,10 +1979,14 @@ export async function startWhatsAppBridge({
   // re-renders the frame against the current state.viewers, so
   // names added mid-animation appear in subsequent frames without
   // a restart.
-  async function _runPersonalizedAnimation(state) {
-    const { msgKey, chatId, frames, frameMs, autoDelete, holdMs, template, mode, joiner } = state;
+  async function _runPersonalizedAnimation(state, isReanim = false) {
+    const { msgKey, chatId, frames, frameMs, autoDelete, holdMs, mode, joiner, placeholderFrames } = state;
+    // On re-animation, skip the preset's leading placeholder frames
+    // (typically the static no-greeting frames the message rests
+    // on between viewers). For first-anim, walk all frames.
+    const startIdx = isReanim ? (placeholderFrames || 0) : 0;
     let lastSent = null;
-    for (let i = 0; i < frames.length; i++) {
+    for (let i = startIdx; i < frames.length; i++) {
       if (!_personalizedMovies.has(msgKey.id)) return; // stopped externally
       state.lastFrameIdx = i;
       const rendered = _renderUsername(frames[i], state.viewers, mode, joiner);
@@ -1991,20 +2011,6 @@ export async function startWhatsAppBridge({
       ).catch(e => err(`personalized delete: ${e.message}`));
       _personalizedMovies.delete(msgKey.id);
     }
-  }
-
-  // Re-render the last frame with the current viewers list — used
-  // when a new read arrives AFTER the animation has finished. One
-  // edit; no animation restart.
-  async function _emitPersonalizedFinalFrame(state) {
-    const { msgKey, chatId, frames, mode, joiner } = state;
-    if (!frames?.length) return;
-    const last = frames[frames.length - 1];
-    const rendered = _renderUsername(last, state.viewers, mode, joiner);
-    await _timeBound(
-      _safeSend(chatId, { edit: msgKey, text: rendered }),
-      'personalized final re-edit',
-    ).catch(e => err(`personalized final re-edit: ${e.message}`));
   }
 
   // eGPT-side pin layer. Independent of WA's 3-pin phone limit:
@@ -2311,7 +2317,7 @@ export async function startWhatsAppBridge({
     // an edit (not a fresh send) so a chat-side trigger like an
     // operator typing '@movie alien' becomes the movie in place,
     // and autoDelete cleanly revokes the trigger at the end.
-    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ' }) {
+    async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null, template = null, mode = 'append', joiner = ', ', placeholderFrames = 0 }) {
       if (!sock) return null;
       const target = chatId ?? lastChat;
       if (!target || !Array.isArray(frames) || !frames.length) return null;
@@ -2343,7 +2349,7 @@ export async function startWhatsAppBridge({
         _personalizedMovies.set(msgKey.id, {
           msgKey, chatId: target,
           frames, frameMs, autoDelete, holdMs,
-          template, mode, joiner,
+          template, mode, joiner, placeholderFrames,
           viewers: [],
           started: false,
           finished: false,
