@@ -1920,6 +1920,12 @@ function App() {
   // skipped (try again in 5 minutes). Operator-driven @e activity
   // is not gated — they can interrupt at any time.
   const heartbeatBusyRef = useRef(false);
+  // Consecutive `...` silence count for the heartbeat. Stasis-as-
+  // spontaneity-trigger per operator: once @e has chosen silence
+  // several ticks in a row, the next prompt gets a nudge appended so
+  // the haiku-bias toward the easy default doesn't drain the loop
+  // of life. Reset to 0 on any non-silent reply.
+  const heartbeatSilenceCountRef = useRef(0);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -2720,15 +2726,29 @@ function App() {
       if (!prompt || !prompt.trim()) return;   // empty file = disabled
       heartbeatBusyRef.current = true;
       try {
-        const reply = await runDefaultBrainTurn(prompt);
+        const silenceN = heartbeatSilenceCountRef.current;
+        const spontaneityNudge = silenceN >= 3
+          ? `\n\n---\n(heartbeat note: you have chosen silence the last ${silenceN} ticks in a row. stasis is the easy default; break it this tick — write a thought to play.md, send a WA message, propose something. surprise yourself.)`
+          : '';
+        const reply = await runDefaultBrainTurn(prompt + spontaneityNudge);
         if (stopped) return;
         const trimmed = (reply ?? '').trim();
         if (trimmed === '...') {
-          sysLog(`heartbeat: @e chose silence (...)`);
+          heartbeatSilenceCountRef.current += 1;
+          sysLog(`heartbeat: @e chose silence (${heartbeatSilenceCountRef.current} in a row)`);
         } else {
+          heartbeatSilenceCountRef.current = 0;
           const oneLine = trimmed.replace(/\s+/g, ' ');
           const preview = oneLine.length > 200 ? oneLine.slice(0, 199) + '…' : oneLine;
           sysLog(`heartbeat: @e — ${preview}`);
+          // Diary append — every non-silent thought persists to
+          // ~/.egpt/e-diary.md so the operator can see what @e has
+          // actually been thinking across ticks (the shell sysLog
+          // scrolls past, the diary doesn't).
+          try {
+            const entry = `\n## ${new Date().toISOString()}\n\n${trimmed}\n`;
+            await appendFile(join(EGPT_HOME, 'e-diary.md'), entry);
+          } catch (_) { /* diary best-effort; never block the tick */ }
         }
       } catch (e) {
         sysLog(`!! heartbeat: dispatch failed — ${e.message}`);
