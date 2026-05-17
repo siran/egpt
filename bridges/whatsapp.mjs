@@ -125,6 +125,13 @@ export async function startWhatsAppBridge({
   allowedUsers  = [],
   awareness     = {},        // see header docs; defaults applied below
   debug         = false,     // log every incoming upsert (type, jid, fromMe, text-preview) before any filter
+  // Valid persona names for the cf77999 reply-as-mention detection.
+  // Lowercase strings; matched against the leading word of a quoted
+  // body (e.g. "🐦 wren: …" → 'wren'). The caller computes from
+  // EGPT_CONFIG.siblings entries (+ their aliases) so new siblings
+  // become reply-routable without touching this file. Default keeps
+  // the historical hardcoded list working when no caller supplies it.
+  personaNames  = ['e', 'egpt', 'me', 'wren'],
   // Drop messages whose timestamp is older than this many seconds
   // before connect. Default 0 = no drop. WhatsApp delivers a burst
   // of recently-buffered messages on linked-device handshake; an
@@ -1502,9 +1509,11 @@ export async function startWhatsAppBridge({
         const m = quotedBody.match(/^\s*(?:[^a-z0-9\s]+\s+)?([a-z][a-z0-9]{0,15})(?:[\s:]|$)/i);
         if (m) {
           const cand = m[1].toLowerCase();
-          // Only personas room.mjs / interpreter actually route. An
-          // unknown prefix falls through to the existing @e default.
-          if (cand === 'e' || cand === 'egpt' || cand === 'me' || cand === 'wren') {
+          // Only personas room.mjs / interpreter actually route. The
+          // valid set comes from EGPT_CONFIG.siblings (caller-derived,
+          // includes aliases). Unknown prefix falls through to the
+          // existing @e default elsewhere.
+          if (personaNames.includes(cand)) {
             replyPersona = cand;
           }
         }

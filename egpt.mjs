@@ -2239,9 +2239,23 @@ function App() {
       return false;
     }
     try {
+      // Derive the valid persona-reply names from the sibling registry
+      // (canonical names + aliases). cf77999 in the bridge uses this
+      // to recognize "🦅 jay:" / "🐦 wren:" / "🧠 e:" reply prefixes.
+      // Legacy fallback when no registry: hardcoded list inside the bridge.
+      const sibs = EGPT_CONFIG.siblings;
+      const personaNames = (sibs && typeof sibs === 'object')
+        ? [...new Set(
+            Object.entries(sibs).flatMap(([n, e]) => [
+              n.toLowerCase(),
+              ...((e?.aliases ?? []).map(a => String(a).toLowerCase())),
+            ])
+          )]
+        : undefined;  // bridge default applies
       const bridge = await startBaileysBridge({
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
+        ...(personaNames ? { personaNames } : {}),
         // Default true: mid-body @e/@egpt routes to @e instead of
         // falling through to plain-text. Opt out with at_e_anywhere:false.
         atEAnywhere:       cfg.at_e_anywhere !== false,
@@ -3961,21 +3975,44 @@ function App() {
   //
   // See project-egpt-at-me-identity + project-egpt-design-relationship
   // in memory for the role this fills.
-  async function runMetaBrainTurn(text, onPartial = () => {}) {
-    const mbCfg = EGPT_CONFIG.meta_brain ?? null;
+  async function runMetaBrainTurn(text, onPartial = () => {}, name = 'wren') {
+    // Resolution order: EGPT_CONFIG.siblings[name] first (the registry
+    // shape — supports @jay / @wren / future siblings as distinct
+    // sessions). Falls back to EGPT_CONFIG.meta_brain only when no
+    // registry match (legacy single-pinned-sibling shape, preserved
+    // so old configs keep working).
+    const sibs = EGPT_CONFIG.siblings ?? null;
+    let mbCfg = null;
+    let source = '';
+    if (sibs && typeof sibs === 'object') {
+      // Direct hit on canonical name, then alias scan.
+      if (sibs[name] && typeof sibs[name] === 'object') {
+        mbCfg = sibs[name]; source = `siblings.${name}`;
+      } else {
+        for (const [n, e] of Object.entries(sibs)) {
+          if (e?.aliases?.some(a => String(a).toLowerCase() === String(name).toLowerCase())) {
+            mbCfg = e; name = n; source = `siblings.${n} (via alias)`; break;
+          }
+        }
+      }
+    }
     if (!mbCfg) {
-      return '!! @me: meta_brain not configured. Run Claude Code\'s /branch in your design conversation, then set EGPT_CONFIG.meta_brain.session_id to the resulting session id (via /config or by editing ~/.egpt/config.json).';
+      mbCfg = EGPT_CONFIG.meta_brain ?? null;
+      source = 'meta_brain (legacy fallback)';
+    }
+    if (!mbCfg) {
+      return `!! @${name}: not configured. Add EGPT_CONFIG.siblings.${name}.{session_id, cwd, model?} (preferred) or set EGPT_CONFIG.meta_brain.session_id (legacy single-sibling shape).`;
     }
     const brainType = canonicalBrainName(mbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
-    if (!brain) return `!! @me: meta brain "${brainType}" not found.`;
+    if (!brain) return `!! @${name}: brain "${brainType}" not found.`;
     if (!mbCfg.session_id) {
-      return '!! @me: meta_brain.session_id is empty. After running Claude Code /branch in egpt0-branch, paste the new session id into meta_brain.session_id.';
+      return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     const sessionOpts = {
       sessionId: mbCfg.session_id,
       cwd: mbCfg.cwd ?? process.cwd(),
-      sessionName: 'wren',
+      sessionName: name,
       userName: USER_NAME,
       ...(brainType === 'ccode'    ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
       ...(mbCfg.system_prompt      ? { appendSystemPrompt: mbCfg.system_prompt   } : {}),
@@ -3990,7 +4027,7 @@ function App() {
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       return final.trim() || '(no reply)';
     } catch (e) {
-      return `!! @me: ${e.message}`;
+      return `!! @${name}: ${e.message}`;
     }
   }
 
@@ -4781,9 +4818,19 @@ function App() {
     const peerSessionsView = new Map(
       [...peerNodesRef.current.entries()].map(([id, p]) => [id, p.sessions ?? []]),
     );
+    // Sibling registry (EGPT_CONFIG.siblings) — when present, becomes the
+    // source of truth for @<name> routing in room.mjs. Each entry is
+    // { kind: 'persona'|'sibling', session_id, cwd?, model?, emoji?,
+    //   body_emoji?, aliases?[] }. Absent / empty → legacy hardcoded
+    // routing applies (egpt/e/me/wren) for backwards compat.
+    const sibCfg = EGPT_CONFIG.siblings;
+    const siblingsView = (sibCfg && typeof sibCfg === 'object')
+      ? new Map(Object.entries(sibCfg).filter(([, v]) => v && typeof v === 'object'))
+      : new Map();
     const decision = resolveRoute(parsed, text, {
       sessions: sessionsView, peerSessions: peerSessionsView,
       brainForName, canonicalBrainName, activeSessions,
+      siblings: siblingsView,
     });
 
     // Observed chats: egpt only acts on @<persona> wake-words. Any
@@ -5169,16 +5216,20 @@ function App() {
       return;
     }
     if (decision.kind === 'meta') {
-      // @me / @wren — engineer co-pilot. Resumes the operator's
-      // pinned Claude Code session (egpt0-sibling) via
-      // meta_brain.session_id. Same flow as the persona branch
-      // above (streaming UX, cross-surface mirroring, observed-
-      // chat audit) but routed through runMetaBrainTurn.
+      // @<sibling> — engineer co-pilot. With the registry shape live,
+      // decision.name is the canonical sibling (wren, jay, …).
+      // Each entry in EGPT_CONFIG.siblings can carry its own
+      // body_emoji + emoji for the outbound tag prefix; falls back
+      // to 🐦 for backwards compat with the wren-only era.
       setBusy(true);
       try {
+        const sibName = decision.name ?? 'wren';
+        const sibsCfg = EGPT_CONFIG.siblings ?? {};
+        const sibEntry = sibsCfg[sibName] ?? {};
+        const sibEmoji = sibEntry.body_emoji ?? sibEntry.emoji ?? '🐦';
         const personaPrompt = formatPersonaPrompt(meta, decision.body);
-        const tgPrefix = `🐦 <b>wren</b>\n`;
-        const waPrefix = `🐦 wren\n`;
+        const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
+        const waPrefix = `${sibEmoji} ${sibName}\n`;
         const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
@@ -5190,7 +5241,7 @@ function App() {
         const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) waStream.update(`${waPrefix}${partial}`);
-        });
+        }, sibName);
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
         } else if (meta.fromTelegram && bridgeRef.current) {
