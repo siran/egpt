@@ -2213,12 +2213,17 @@ function App() {
     // mentioned member message before reaching auto_e_chats dispatch.
     // Operator (2026-05-17): "obviously do not skip my own messages."
     const wa = waBridgeRef.current;
-    if (!wa || typeof wa.setBypassChats !== 'function') return;
+    if (!wa || typeof wa.setBypassChats !== 'function') {
+      console.log(`[diag sync] _syncBypassToBridge called but wa=${!!wa} hasSetBypassChats=${typeof wa?.setBypassChats}`);
+      return;
+    }
     const joined = _waJoinedAll().map(e => e.jid);
     const auto = Array.isArray(EGPT_CONFIG.whatsapp?.auto_e_chats)
       ? EGPT_CONFIG.whatsapp.auto_e_chats
       : [];
-    wa.setBypassChats([...new Set([...joined, ...auto])]);
+    const merged = [...new Set([...joined, ...auto])];
+    console.log(`[diag sync] _syncBypassToBridge: joined=${joined.join(',')||'∅'} auto=${auto.join(',')||'∅'} merged=${merged.join(',')||'∅'} EGPT_CONFIG.whatsapp=${Object.keys(EGPT_CONFIG.whatsapp||{}).join(',')}`);
+    wa.setBypassChats(merged);
   };
   const _waJoinedAdd = (entry) => {
     if (!waJoinedRef.current) waJoinedRef.current = new Map();
