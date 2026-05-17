@@ -3895,8 +3895,15 @@ function App() {
     const idStr = String(chatId);
     const isGroup = idStr.endsWith('@g.us');
     if (isGroup) {
-      const jidNum = idStr.replace(/@g\.us$/, '');
+      // Prefer the chat's REAL displayed name (e.g. "tools still visible")
+      // over the slug — operator spec: "i identify the group by the header
+      // i see in the screen, or a book by its cover." Slug-form was reading
+      // as a technical identifier to @e (e.g. "tool_calls_still_visible.wa"),
+      // confusing instead of human. Fall back to slug, then to bare jid.
+      const name = waBridgeRef.current?.getChatName?.(chatId);
+      if (name) return name;
       const slug = waBridgeRef.current?.getChatSlug?.(chatId);
+      const jidNum = idStr.replace(/@g\.us$/, '');
       return slug ? `${slug}.${jidNum}.wa` : `wa.${jidNum}`;
     }
     return `wa.${idStr}`;
