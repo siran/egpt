@@ -1152,6 +1152,7 @@ export async function startWhatsAppBridge({
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
+    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
     const modelPath  = cfg.model_path;
     if (!modelPath) {
       log(`transcribe: enabled but model_path not set; skipping ${base}`);
@@ -1162,7 +1163,7 @@ export async function startWhatsAppBridge({
     const wavPath = join(outputDir, `${base}.tmp.wav`);
     // ffmpeg: opus/m4a/mp3 → 16kHz mono PCM WAV
     try {
-      await _runCmd('ffmpeg', ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
+      await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
     } catch (e) {
       log(`transcribe: ffmpeg failed for ${base}: ${e.message}`);
       return null;
