@@ -2204,14 +2204,21 @@ function App() {
   const _waJoinedHas = (jid) =>
     !!(waJoinedRef.current && waJoinedRef.current.has(jid));
   const _syncBypassToBridge = () => {
-    // Keep the WA bridge's awareness-bypass set aligned with the
-    // current joined set. Without this, joining a group with
-    // awareness:'mentions' (default) would drop every non-@-tag
-    // message at the bridge before the items-mirror got a chance
-    // to bridge it to the other joined chats.
+    // Keep the WA bridge's awareness-bypass set aligned with chats
+    // we want EVERY message from, not just @-tagged ones:
+    //   - joined chats (/use, /join binds)
+    //   - auto_e_chats (operator-configured @e participation groups)
+    // Without this, a group with the default 'mentions' awareness
+    // would drop the operator's own fromMe posts AND every non-
+    // mentioned member message before reaching auto_e_chats dispatch.
+    // Operator (2026-05-17): "obviously do not skip my own messages."
     const wa = waBridgeRef.current;
     if (!wa || typeof wa.setBypassChats !== 'function') return;
-    wa.setBypassChats(_waJoinedAll().map(e => e.jid));
+    const joined = _waJoinedAll().map(e => e.jid);
+    const auto = Array.isArray(EGPT_CONFIG.whatsapp?.auto_e_chats)
+      ? EGPT_CONFIG.whatsapp.auto_e_chats
+      : [];
+    wa.setBypassChats([...new Set([...joined, ...auto])]);
   };
   const _waJoinedAdd = (entry) => {
     if (!waJoinedRef.current) waJoinedRef.current = new Map();
@@ -2567,6 +2574,11 @@ function App() {
       });
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
+      // Seed the bypass set with auto_e_chats jids so fromMe + non-
+      // mentioned member messages reach the auto-dispatch path (vs
+      // being dropped by the default 'mentions' awareness gate).
+      // Joined chats merge in via _waJoinedAdd → _syncBypassToBridge.
+      _syncBypassToBridge();
       // Twin-soul phase 2b: spin up the stream factory bound to this
       // bridge. Reads streaming knobs fresh from EGPT_CONFIG so the
       // operator can re-tune update_coalesce_ms / finish_timeout_ms
