@@ -384,9 +384,10 @@ export async function startWhatsAppBridge({
   }
   function _rememberMsgBody(keyId, body) {
     if (!keyId || !body || typeof body !== 'string') return;
-    // Don't memoize placeholder-only bodies — a reaction-of-a-reaction
-    // preview "[reaction 👍 to "…"]" is not interesting context.
-    if (body.startsWith('[reaction ')) return;
+    // Don't memoize reaction-event bodies — a reaction-of-a-reaction
+    // preview is not interesting context. Matches both legacy
+    // `[reaction 👍 to "…"]` form and the new event-style `reacted 👍 to "…"`.
+    if (body.startsWith('[reaction ') || body.startsWith('reacted ') || body.startsWith('removed reaction ')) return;
     const oneLine = body.replace(/\s+/g, ' ').trim();
     if (!oneLine) return;
     const preview = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
@@ -519,6 +520,8 @@ export async function startWhatsAppBridge({
     const r = msg?.message?.reactionMessage;
     if (!r?.key?.id) return rawText;
     let target = _msgBodyById.get(r.key.id);
+    let targetAuthor = null;
+    let targetTs = null;
     if (!target) {
       // Fallback: scan every observed chat's recent[] for an entry
       // with the same key.id. Covers parents older than the in-memory
@@ -527,7 +530,23 @@ export async function startWhatsAppBridge({
       // restart kept landing as opaque placeholders).
       for (const c of _chats.values()) {
         const hit = c.recent?.find(rr => rr.key?.id === r.key.id);
-        if (hit?.text) { target = hit.text; break; }
+        if (hit?.text) {
+          target = hit.text;
+          targetAuthor = hit.author ?? null;
+          targetTs = hit.ts ?? null;
+          break;
+        }
+      }
+    } else {
+      // _msgBodyById is body-only; pull author/ts from recent[] if
+      // available for the same key.
+      for (const c of _chats.values()) {
+        const hit = c.recent?.find(rr => rr.key?.id === r.key.id);
+        if (hit) {
+          targetAuthor = targetAuthor ?? hit.author ?? null;
+          targetTs = targetTs ?? hit.ts ?? null;
+          break;
+        }
       }
     }
     if (!target) return rawText;
@@ -537,9 +556,22 @@ export async function startWhatsAppBridge({
     const oneLine = String(target).replace(/\s+/g, ' ').trim();
     const snippet = oneLine.length > 60 ? oneLine.slice(0, 59) + '…' : oneLine;
     const emoji = r.text || '·';
+    // Verb-form so the auto-dispatch envelope reads as an event,
+    // not a content placeholder. Compare:
+    //   OLD: [An@compren.wa (16:06)]: [reaction 😂 to "X"]
+    //   NEW: [An@compren.wa (16:06)]: reacted 😂 to "X" (Pancho at 14:21)
+    // Target author/timestamp included when available so @e can
+    // tell whether the reaction is to a fresh or old message.
+    const tsSuffix = (() => {
+      if (!targetTs) return '';
+      const d = new Date(targetTs);
+      const pad = (n) => String(n).padStart(2, '0');
+      const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      return targetAuthor ? ` (${targetAuthor} at ${hhmm})` : ` (at ${hhmm})`;
+    })();
     return r.text
-      ? `[reaction ${emoji} to "${snippet}"]`
-      : `[reaction removed from "${snippet}"]`;
+      ? `reacted ${emoji} to "${snippet}"${tsSuffix}`
+      : `removed reaction from "${snippet}"${tsSuffix}`;
   }
 
   // Phase 2: reaction counts. Persisted across bridge restarts and
