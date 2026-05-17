@@ -55,6 +55,7 @@ import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn as _spawnChild } from 'node:child_process';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -1114,6 +1115,87 @@ export async function startWhatsAppBridge({
   async function _writeMediaIndex(dir, idx) {
     try { await fs.writeFile(join(dir, '.media-index.json'), JSON.stringify(idx, null, 2)); } catch (_) {}
   }
+  // Spawn a command and resolve when it exits 0; reject otherwise.
+  // stdout is piped to capture but unused by transcribe today; stderr is
+  // included in the rejection so the log line points at the real cause.
+  function _runCmd(cmd, args, opts = {}) {
+    return new Promise((resolve, reject) => {
+      let proc;
+      try {
+        proc = _spawnChild(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+      } catch (e) { return reject(e); }
+      let stderr = '';
+      proc.stderr?.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`${cmd} exited ${code}${stderr ? `: ${stderr.slice(0, 240).trim()}` : ''}`));
+      });
+    });
+  }
+
+  // Audio transcription via whisper.cpp. Async / fire-and-forget per
+  // call — voice note save returns immediately; transcript sidecar
+  // (<base>.transcript.txt) lands alongside the audio when whisper
+  // finishes. ffmpeg pre-converts to 16kHz mono WAV (whisper.cpp's
+  // expected input shape).
+  //
+  // Disabled by default. Operator must:
+  //   1. Install ffmpeg (winget install Gyan.FFmpeg / brew install ffmpeg / apt install ffmpeg)
+  //   2. Install whisper.cpp + a model (github.com/ggerganov/whisper.cpp/releases)
+  //   3. Set whatsapp.media.audio_transcribe:
+  //        { enabled: true, command: "<path-to-whisper-cli-or-main.exe>",
+  //          model_path: "<path-to-ggml-*.bin>", language?: "es" }
+  //
+  // Idempotent: skips if <base>.transcript.txt already exists.
+  async function _transcribeAudio({ inputPath, outputDir, base }) {
+    const cfg = media.audio_transcribe ?? {};
+    if (!cfg.enabled) return null;
+    const whisperBin = cfg.command || 'whisper-cli';
+    const modelPath  = cfg.model_path;
+    if (!modelPath) {
+      log(`transcribe: enabled but model_path not set; skipping ${base}`);
+      return null;
+    }
+    const finalTxt = join(outputDir, `${base}.transcript.txt`);
+    if (existsSync(finalTxt)) return null;     // already transcribed
+    const wavPath = join(outputDir, `${base}.tmp.wav`);
+    // ffmpeg: opus/m4a/mp3 → 16kHz mono PCM WAV
+    try {
+      await _runCmd('ffmpeg', ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
+    } catch (e) {
+      log(`transcribe: ffmpeg failed for ${base}: ${e.message}`);
+      return null;
+    }
+    const args = ['-m', modelPath, '-f', wavPath, '--output-txt', '--no-prints'];
+    if (typeof cfg.language === 'string' && cfg.language.trim()) {
+      args.push('-l', cfg.language.trim());
+    }
+    try {
+      await _runCmd(whisperBin, args);
+    } catch (e) {
+      log(`transcribe: whisper failed for ${base}: ${e.message}`);
+      try { await fs.unlink(wavPath); } catch {}
+      return null;
+    }
+    // whisper.cpp writes <wavPath>.txt — move next to the audio
+    // with a stable suffix the host / @e can grep for.
+    const txtSrc = `${wavPath}.txt`;
+    let text = null;
+    try {
+      text = (await fs.readFile(txtSrc, 'utf8')).trim();
+      await fs.rename(txtSrc, finalTxt);
+    } catch (e) {
+      log(`transcribe: read/move failed for ${base}: ${e.message}`);
+    }
+    try { await fs.unlink(wavPath); } catch {}
+    if (text) {
+      const preview = text.length > 60 ? text.slice(0, 59) + '…' : text;
+      log(`transcribed ${base}: "${preview}"`);
+    }
+    return text ? { path: finalTxt, text } : null;
+  }
+
   async function _saveMediaIfAny(msg) {
     const downloadMode = media.download ?? 'all';
     if (downloadMode === 'off') return null;
@@ -1219,6 +1301,13 @@ export async function startWhatsAppBridge({
         msgKey: msg.key, msgRaw: msg.message,
         preConnect,
       }); } catch (_) {}
+      // Fire-and-forget audio transcription (no-op unless
+      // whatsapp.media.audio_transcribe.enabled). Doesn't block
+      // the saved-notice; transcript sidecar appears later.
+      if (hit.kind === 'audio') {
+        _transcribeAudio({ inputPath: path, outputDir: dir, base })
+          .catch(e => log(`transcribe error (${base}): ${e.message}`));
+      }
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
