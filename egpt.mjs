@@ -2235,6 +2235,9 @@ function App() {
       const bridge = await startBaileysBridge({
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
+        // Default true: mid-body @e/@egpt routes to @e instead of
+        // falling through to plain-text. Opt out with at_e_anywhere:false.
+        atEAnywhere:       cfg.at_e_anywhere !== false,
         debug:             cfg.debug === true,
         // Default to the bridge's own default (5) instead of falling
         // through to 0 — '|| 0' was a latent bug that disabled the

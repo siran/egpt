@@ -155,6 +155,14 @@ export async function startWhatsAppBridge({
   // the JID with @<host> turned into _<host-prefix> for filesystem
   // safety. msgId is the baileys stanza id (globally unique).
   media         = {},
+  // When true (default), `@e` / `@egpt` appearing ANYWHERE in a
+  // message body (not just at start) is rewritten to a leading
+  // `@e ` prefix before handing the body to the host — so
+  // parseInput, which anchors mentions at start, routes the
+  // message to @e. Without this, mid-sentence wake-words bypass
+  // awareness but fall through to plain-text routing. Set false
+  // to require @e at start (legacy behavior).
+  atEAnywhere   = true,
   onIncoming,
   onLog,
   onError,
@@ -1437,9 +1445,13 @@ export async function startWhatsAppBridge({
     if (isReplyToUs && ctxInfo?.quotedMessage) {
       const quotedBody = _baseTextOf(ctxInfo.quotedMessage);
       if (quotedBody) {
-        // "<optional non-letter prefix like emoji>  <name>:" — the
-        // emoji is decorative, the name is what routes.
-        const m = quotedBody.match(/^\s*(?:[^a-z0-9\s]+\s+)?([a-z][a-z0-9]{0,15})\s*:/i);
+        // "<optional non-letter prefix like emoji> <name><sep>" —
+        // the emoji is decorative, the name is what routes. The
+        // separator after the name is either ':' (persona-tag-prefix
+        // convention used by heartbeat / outbox-direct sends) or
+        // whitespace including '\n' (operator-dispatched and
+        // auto_e_chats sends use "<emoji> egpt\n<body>" — no colon).
+        const m = quotedBody.match(/^\s*(?:[^a-z0-9\s]+\s+)?([a-z][a-z0-9]{0,15})(?:[\s:]|$)/i);
         if (m) {
           const cand = m[1].toLowerCase();
           // Only personas room.mjs / interpreter actually route. An
@@ -1544,6 +1556,16 @@ export async function startWhatsAppBridge({
       processed = quoted
         ? `@${replyPersona} ${replyOnly}\n\n${quoted}`
         : `@${replyPersona} ${replyOnly}`;
+    } else if (atEAnywhere && !/^@\S/.test(processed)
+               && /@(?:egpt|e)\b/i.test(processed)) {
+      // Mid-body @e expansion. isWakeWord above detects @e / @egpt
+      // anywhere so the awareness gate bypasses, but parseInput is
+      // anchored at start — without this synthesis, "hello @e are
+      // you up?" wakes the bridge yet routes as a plain message
+      // instead of reaching @e. Skipped when the body already
+      // starts with any @-mention (operator's explicit target wins,
+      // including @wren / @waN / @session-name).
+      processed = `@e ${processed}`;
     }
 
     // In groups, awareness 'mentions' (default) requires the message to
