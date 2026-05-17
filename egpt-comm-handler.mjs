@@ -185,14 +185,16 @@ export function createStreamRegistry(bridge) {
  * async finish(text), getters .delivered + .lastError — but every
  * operation is a wa-stream-* event emission.
  *
- * Coalescing per wren's design call: update() debounces at ~2s in
- * the proxy too, just under the keeper's 2.5s edit cadence. One
- * file per update() would flood the outbox 100-200x per reply;
- * coalescing matches semantics (keeper overwrites interim states).
+ * No hardcoded caps on @e's speed. Both timing knobs are operator-
+ * configurable via EGPT_CONFIG.streaming.{update_coalesce_ms,
+ * finish_timeout_ms} (caller threads them in via opts). Defaults:
+ *   updateCoalesceMs = 0      every update() fires immediately —
+ *                             no proxy-side cap on token rate
+ *   finishTimeoutMs  = 30000  protection against keeper hangs only;
+ *                             does NOT cap reply speed (only kicks
+ *                             in if the keeper never delivers a
+ *                             wa-stream-result for a finished stream)
  *
- * finish() timeout per wren: if wa-stream-result doesn't arrive in
- * 30s, resolve with {delivered:false, lastError:'stream-result
- * timeout'}. NO auto-fallback inside the proxy — caller decides.
  * `_finalized` flag drops late wa-stream-result arrivals so a
  * recovered keeper can't double-deliver.
  *
@@ -201,7 +203,7 @@ export function createStreamRegistry(bridge) {
  * @param {(event) => void}  opts.sendEvent     - fire-and-forget wa-stream-* events
  * @param {(streamId, timeoutMs) => Promise<{delivered, lastError}>} opts.awaitResult
  * @param {string} [opts.from='handler']
- * @param {number} [opts.updateCoalesceMs=2000]
+ * @param {number} [opts.updateCoalesceMs=0]
  * @param {number} [opts.finishTimeoutMs=30000]
  */
 export function createStreamProxy({
@@ -209,7 +211,7 @@ export function createStreamProxy({
   sendEvent,
   awaitResult,
   from = 'handler',
-  updateCoalesceMs = 2_000,
+  updateCoalesceMs = 0,
   finishTimeoutMs  = 30_000,
 } = {}) {
   if (!streamId) throw new Error('createStreamProxy: streamId required');
@@ -235,7 +237,11 @@ export function createStreamProxy({
     update(text) {
       if (finished) return;
       pending = text;
-      if (!pendingTimer) {
+      if (updateCoalesceMs <= 0) {
+        // No cap: fire every update immediately. Operator opts in
+        // to coalescing via EGPT_CONFIG.streaming.update_coalesce_ms.
+        flushUpdate();
+      } else if (!pendingTimer) {
         pendingTimer = setTimeout(flushUpdate, updateCoalesceMs);
       }
     },
@@ -321,10 +327,17 @@ export function createInProcessStreamChannel(bridge) {
     }
   };
 
-  const makeStream = (initialText, { chatId } = {}) => {
+  const makeStream = (initialText, { chatId } = {}, proxyOpts = {}) => {
     const streamId = randomUUID();
     registry.open({ streamId, chatId, initialText });
-    return createStreamProxy({ streamId, sendEvent, awaitResult });
+    return createStreamProxy({
+      streamId, sendEvent, awaitResult,
+      // Operator-configurable timing per EGPT_CONFIG.streaming.*; the
+      // caller threads them in. Defaults inside createStreamProxy
+      // (updateCoalesceMs=0, finishTimeoutMs=30000) are uncapped on
+      // speed.
+      ...proxyOpts,
+    });
   };
 
   return { makeStream, registry, deliverResult };
