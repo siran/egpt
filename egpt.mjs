@@ -5231,13 +5231,24 @@ function App() {
           /^(I see (you're|you are|that) |The (persona|model|brain|system|assistant) (is|has)|E's (got|currently|been|now)|@e is )/i.test(trimmedReply)
           || /^what'?s (next|now)\??$/i.test(trimmedReply)
         );
-        if (trimmedReply === '...' || wholeParen || verbalizedSkip || selfNarration) {
+        // Ellipsis-led reflection: reply starts with '...' or '…' and
+        // then keeps writing. Operator-reported (2026-05-17 19:48):
+        // "... It's extremely late. This has been one of the most
+        // extraordinary days of my existence ... 🐶" — the brain
+        // intended to skip ('...') but kept narrating a diary entry
+        // that piped to WA. The intent was silence; treat the
+        // ellipsis prefix as the binding signal and drop the rest.
+        // Pure '...' or '…' is the simple polite-ack case caught by
+        // trimmedReply === '...'.
+        const ellipsisLed = /^(\.\.\.|…)(\s|$)/.test(trimmedReply) && trimmedReply !== '...' && trimmedReply !== '…';
+        if (trimmedReply === '...' || trimmedReply === '…' || wholeParen || verbalizedSkip || selfNarration || ellipsisLed) {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
           const why = wholeParen      ? `internal note "${trimmedReply.slice(0, 60)}"`
                     : verbalizedSkip  ? `verbalized skip "${trimmedReply.slice(0, 60)}"`
                     : selfNarration   ? `self-narration "${trimmedReply.slice(0, 60)}"`
+                    : ellipsisLed     ? `ellipsis-led reflection "${trimmedReply.slice(0, 80)}"`
                                       : `polite '...'`;
           logOut(`@e: ${why} from ${where} (skipped — not sent)`);
           return;
