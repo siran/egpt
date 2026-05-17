@@ -12,7 +12,7 @@
 //   await waSend({ jid: '34...@lid', body: 'hi' });
 //
 // CLI smoke test:
-//   node tools/bus-send.mjs --wa-to-an "wren-via-bus 👋"
+//   node tools/bus-send.mjs --wa-to-self "wren-via-bus 👋"
 
 import * as bus from './bus.mjs';
 import { promises as fs } from 'node:fs';
@@ -68,15 +68,15 @@ if (_invokedDirectly) {
   };
   try {
     let jid = get('--jid');
-    const waToAn = get('--wa-to-an');
-    const body = get('--body') ?? waToAn;
-    if (waToAn && !jid) {
+    const waToSelf = get('--wa-to-self');
+    const body = get('--body') ?? waToSelf;
+    if (waToSelf && !jid) {
       const cfg = await readEgptConfig();
       jid = cfg.whatsapp?.chat_id ?? null;
-      if (!jid) throw new Error('--wa-to-an: whatsapp.chat_id missing in ~/.egpt/config.json');
+      if (!jid) throw new Error('--wa-to-self: whatsapp.chat_id missing in ~/.egpt/config.json');
     }
     const type = get('--type') ?? 'wa-send';
-    if (!body) throw new Error('--body (or --wa-to-an "msg") required');
+    if (!body) throw new Error('--body (or --wa-to-self "msg") required');
     if (type === 'wa-send' && !jid) throw new Error('--jid required for wa-send');
     const from = get('--from') ?? DEFAULT_FROM;
     const ev = type === 'wa-send' ? { type: 'wa-send', jid, body } : { type, body };
