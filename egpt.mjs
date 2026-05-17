@@ -5185,20 +5185,24 @@ function App() {
         // mirror, don't broadcast on bus. Log to /log for audit so
         // the operator can verify e is alive and exercising the
         // skip option (vs hung).
-        // Polite-ack filter ('...') AND internal-note filter (reply
-        // is wholly a parenthetical aside, e.g. "(noted)" or
-        // "(thinking about ...)"). Operator-reported (2026-05-17): e
-        // sometimes treats parenthetical replies as internal notes
-        // but they ALL got piped to WA as actual messages. Treat as
-        // silence: log + leave the stream placeholder as "…", never
-        // send to any bridge.
+        // Polite-ack ('...') + internal-note (wholly-parenthetical) +
+        // verbalized-skip filters. Operator (2026-05-17): "(internal
+        // note about X)" leaks were one bucket; this commit also
+        // catches the brain VERBALIZING its skip decision in plain
+        // prose ("No response needed.", "Nothing to add.", "Skipping
+        // this one.", etc). Same drop: log + finish stream as "…",
+        // never send to any bridge.
         const trimmedReply = reply.trim();
         const wholeParen = /^\([^)]*\)$/s.test(trimmedReply);
-        if (trimmedReply === '...' || wholeParen) {
+        const verbalizedSkip = /^(no (response|reply|comment) (needed|necessary|required)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts)\.?$/i
+          .test(trimmedReply);
+        if (trimmedReply === '...' || wholeParen || verbalizedSkip) {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-          const why = wholeParen ? `internal note "${trimmedReply.slice(0, 60)}"` : `polite '...'`;
+          const why = wholeParen      ? `internal note "${trimmedReply.slice(0, 60)}"`
+                    : verbalizedSkip  ? `verbalized skip "${trimmedReply.slice(0, 60)}"`
+                                      : `polite '...'`;
           logOut(`@e: ${why} from ${where} (skipped — not sent)`);
           return;
         }
