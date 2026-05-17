@@ -3909,13 +3909,32 @@ function App() {
     return `wa.${idStr}`;
   }
 
-  // Format a single auto-dispatched message for e's eyes. Shape per
-  // operator spec: "[Name@surface (HH:MM)]: <body>".
-  function formatAutoDispatchLine({ senderName, body, ts, surface }) {
+  // Format a single auto-dispatched message for e's eyes. Two shapes
+  // depending on chatType — operator: "i identify the group by the
+  // header i see in the screen, like a book by its cover," and e was
+  // conflating sender vs chat in the prior @-tag form.
+  //
+  //   group:    [in "Compre Bitcoin", Auge at 12:30]: msg
+  //   private:  [Mauricio at 12:30]: msg            (sender = chat in DMs)
+  //   status:   [Friend's status at 12:30]: msg
+  //
+  // chatName falls back to the surface tag (which itself falls back to
+  // the bare jid in the bridge) when the WA bridge hasn't observed a
+  // name for the chat yet.
+  function formatAutoDispatchLine({ senderName, body, ts, surface, chatType, chatName }) {
     const d = new Date(ts ?? Date.now());
     const pad = (n) => String(n).padStart(2, '0');
     const tstr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    return `[${senderName ?? 'someone'}@${surface ?? 'wa'} (${tstr})]: ${body}`;
+    const sender = senderName ?? 'someone';
+    if (chatType === 'group') {
+      const where = chatName ?? surface ?? 'wa group';
+      return `[in "${where}", ${sender} at ${tstr}]: ${body}`;
+    }
+    if (chatType === 'status') {
+      return `[${sender}'s status at ${tstr}]: ${body}`;
+    }
+    // private DM — sender IS the chat; don't duplicate
+    return `[${sender} at ${tstr}]: ${body}`;
   }
 
   function formatPersonaPrompt(meta, body) {
@@ -5115,11 +5134,17 @@ function App() {
         if (meta._personaBodyOverride) {
           personaPrompt = meta._personaBodyOverride;
         } else if (meta.autoDispatched && meta.fromWhatsApp) {
+          const idStr = String(meta.waChatId ?? '');
+          const chatType = idStr.endsWith('@g.us')
+            ? 'group'
+            : idStr === 'status@broadcast' ? 'status' : 'private';
           personaPrompt = formatAutoDispatchLine({
             senderName: meta.waSenderName,
             body: decision.body,
             ts: Date.now(),
             surface: buildWaSurfaceTag(meta.waChatId),
+            chatType,
+            chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
           });
         } else {
           personaPrompt = formatPersonaPrompt(meta, decision.body);
@@ -5294,8 +5319,14 @@ function App() {
             // No per-turn rules prefix — e remembers from prior
             // /rules injection (slash/rules.mjs).
             const surface = buildWaSurfaceTag(meta.waChatId);
+            const idStr = String(meta.waChatId ?? '');
+            const chatType = idStr.endsWith('@g.us')
+              ? 'group'
+              : idStr === 'status@broadcast' ? 'status' : 'private';
+            const chatName = waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null;
             const fullPrompt = drained.map(it => formatAutoDispatchLine({
-              senderName: it.senderName, body: it.body, ts: it.ts, surface,
+              senderName: it.senderName, body: it.body, ts: it.ts,
+              surface, chatType, chatName,
             })).join('\n');
             const drainMeta = {
               fromWhatsApp: meta.fromWhatsApp,
