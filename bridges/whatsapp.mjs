@@ -1816,6 +1816,18 @@ export async function startWhatsAppBridge({
         }
       }
     }
+    // Operator (2026-05-17): "replies should always trigger e. user
+    // doesn't need to do anything special. replies should arrive and
+    // trigger e as normal messages do. do not overcomplicate things."
+    // When the message is a reply to ANY of our prior sends (isReplyToUs
+    // via persisted _sentIds, no 60s cap since a1339c9) and the prefix
+    // parse above couldn't pin a specific persona — quoted body was
+    // truncated, the original was a system message, the prefix shape
+    // didn't match — fall back to 'e' so EVERY reply routes to @e by
+    // default. No format requirement on the user side.
+    if (isReplyToUs && !replyPersona) {
+      replyPersona = 'e';
+    }
     const isWakeWord = (!!text && /@(?:egpt|e)\b/i.test(text)) || isReplyToUs;
 
     // Awareness rules — decide whether this message reaches onIncoming.
