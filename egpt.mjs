@@ -2552,6 +2552,7 @@ function App() {
             // persona dispatch to enable streaming/typing only on
             // direct replies (not on auto_e_chats arrivals).
             replyPersona: from.replyPersona ?? null,
+            replyPersonaFallback: from.replyPersonaFallback ?? false,
             waSenderName: from.senderName ?? null,
             autoDispatched: dispatchText !== text,
           });
@@ -5138,6 +5139,17 @@ function App() {
           });
         } else {
           personaPrompt = formatPersonaPrompt(meta, decision.body);
+        }
+        // Fallback-notice: when 36f173a's any-reply→@e fallback fired
+        // (replyPersonaFallback=true from the bridge), prefix the
+        // dispatched prompt so @e knows the recipient was INFERRED
+        // (no clean persona-prefix in the quoted body), not explicitly
+        // tagged. Operator (2026-05-17): "default to e, but with a
+        // notice. in general i think it can be inferred deterministically
+        // from body." This is the notice; deterministic body-inference
+        // is a deeper follow-up.
+        if (meta.replyPersonaFallback) {
+          personaPrompt = `[reply-fallback: recipient inferred as @e — quoted body had no persona tag]\n${personaPrompt}`;
         }
 
         // Bridge-originated @egpt gets streaming UX: open a stream
