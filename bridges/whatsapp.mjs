@@ -1825,8 +1825,10 @@ export async function startWhatsAppBridge({
     // truncated, the original was a system message, the prefix shape
     // didn't match — fall back to 'e' so EVERY reply routes to @e by
     // default. No format requirement on the user side.
+    let replyPersonaFallback = false;
     if (isReplyToUs && !replyPersona) {
       replyPersona = 'e';
+      replyPersonaFallback = true;
     }
     const isWakeWord = (!!text && /@(?:egpt|e)\b/i.test(text)) || isReplyToUs;
 
@@ -1974,6 +1976,11 @@ export async function startWhatsAppBridge({
       // arrivals (the latter would spam typing for every group
       // message in an auto_e_chats chat).
       replyPersona,
+      // True when replyPersona was assigned via the 36f173a fallback
+      // (any reply to us → @e) rather than via clean prefix parse.
+      // Host surfaces this in the dispatched prompt so @e knows the
+      // intended recipient was inferred, not explicitly tagged.
+      replyPersonaFallback,
       // Sender display name (pushName-only per
       // [[feedback-wa-pushname-only]]; never the operator's
       // address book). Used by auto_e_chats queueing to render
