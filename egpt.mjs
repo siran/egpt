@@ -2238,6 +2238,14 @@ function App() {
         // Default true: mid-body @e/@egpt routes to @e instead of
         // falling through to plain-text. Opt out with at_e_anywhere:false.
         atEAnywhere:       cfg.at_e_anywhere !== false,
+        // Per-instance timing knobs (uncapped principle — operator
+        // owns the limits, bridge ships with safe defaults that
+        // protect against WA-protocol floors). undefined = bridge
+        // default; any explicit number wins.
+        editCadenceMs:     cfg.edit_cadence_ms,
+        typingRefreshMs:   cfg.typing_refresh_ms,
+        sendTimeoutMs:     cfg.send_timeout_ms,
+        chunkChars:        cfg.chunk_chars,
         debug:             cfg.debug === true,
         // Default to the bridge's own default (5) instead of falling
         // through to 0 — '|| 0' was a latent bug that disabled the
