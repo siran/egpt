@@ -1929,6 +1929,23 @@ export async function startWhatsAppBridge({
     // group whose chat record is on disk but lacks a subject —
     // typically groups that haven't appeared in /channels yet.
     ensureGroupName: _ensureGroupName,
+    // Change a group's subject (the visible group name in WA UI).
+    // Requires the bot account to be an admin of the group; baileys
+    // throws otherwise (e.g. 403 / "not authorized"). Wrapped in
+    // _timeBound so a flapping WS doesn't hang the caller.
+    // Returns true on success, throws on failure (caller logs +
+    // surfaces). jid must be a group JID (ends with @g.us).
+    async setGroupSubject({ jid, subject }) {
+      if (!sock) throw new Error('setGroupSubject: no sock');
+      if (!jid || !String(jid).endsWith('@g.us')) {
+        throw new Error(`setGroupSubject: jid must be a group (@g.us), got ${jid}`);
+      }
+      if (typeof subject !== 'string') {
+        throw new Error('setGroupSubject: subject must be a string');
+      }
+      await _timeBound(sock.groupUpdateSubject(jid, subject), 'groupUpdateSubject');
+      return true;
+    },
     // React to an existing WA message. `key` is the WAMessageKey of
     // the target; `emoji` is the literal reaction text (or '' /
     // null to remove an existing reaction from the same target).
