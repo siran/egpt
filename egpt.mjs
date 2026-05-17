@@ -5479,9 +5479,22 @@ function App() {
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
+    // Persona emoji prefix: per operator (2026-05-17), the bridge — not
+    // the sibling — owns the "<emoji> <name>: " label on outbox-originated
+    // wa-sends. Look up siblings[ev.from].body_emoji and prepend if the
+    // sender's body doesn't already start with it. Backward-compat:
+    // siblings that include their own emoji prefix (legacy convention)
+    // skip the auto-prefix. Skip entirely when the sender isn't in the
+    // registry (or has no body_emoji configured).
+    let body = ev.body;
+    const sib = (EGPT_CONFIG.siblings ?? {})[ev.from];
+    const emoji = sib?.body_emoji;
+    if (emoji && !body.startsWith(emoji)) {
+      body = `${emoji} ${ev.from}: ${body}`;
+    }
     try {
-      wa.send(ev.body, { chatId: ev.jid });
-      log(`${source}: wa-send → ${ev.jid} for ${ev.from} (${(ev.body || '').slice(0, 40)}${ev.body.length > 40 ? '…' : ''})`);
+      wa.send(body, { chatId: ev.jid });
+      log(`${source}: wa-send → ${ev.jid} for ${ev.from} (${(body || '').slice(0, 40)}${body.length > 40 ? '…' : ''})`);
       return true;
     } catch (e) {
       log(`!! wa-send failed: ${e.message}`);
