@@ -387,7 +387,12 @@ export function startInboxWatcher({
     let payload;
     try {
       const raw = await readFile(full, 'utf8');
-      payload = JSON.parse(raw);
+      // Strip UTF-8 BOM if present — PowerShell Out-File / Set-Content
+      // default to writing UTF-8 WITH BOM, which JSON.parse rejects
+      // ("Unexpected token '﻿'"). Affects e/@e and any human/
+      // script-written files from a PS prompt. Cheap to strip.
+      const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+      payload = JSON.parse(stripped);
     } catch (e) {
       if (e.code === 'ENOENT') { claimed.delete(name); return; }
       log(`!! inbox: dropping ${name} — ${e.message}`);
@@ -522,7 +527,12 @@ export function startOutboxWatcher({
     let payload;
     try {
       const raw = await readFile(full, 'utf8');
-      payload = JSON.parse(raw);
+      // Strip UTF-8 BOM if present — PowerShell Out-File / Set-Content
+      // default to writing UTF-8 WITH BOM, which JSON.parse rejects
+      // ("Unexpected token '﻿'"). Affects e/@e and any human/
+      // script-written files from a PS prompt. Cheap to strip.
+      const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+      payload = JSON.parse(stripped);
     } catch (e) {
       // Vanished mid-read (another claimer won) or malformed (poison).
       if (e.code === 'ENOENT') { claimed.delete(name); return; }
