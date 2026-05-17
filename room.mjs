@@ -72,6 +72,26 @@
  *                                          any, plain text returns kind:'idle'
  *                                          — auto-routing requires explicit
  *                                          consent (/use).
+ * @property {Map<string, SiblingEntry>} [siblings]  - optional registry
+ *                                          mapping canonical persona / sibling
+ *                                          name to its kind + aliases. When
+ *                                          present, @<token> routing consults
+ *                                          this map FIRST; when absent (or
+ *                                          empty), the legacy hardcoded list
+ *                                          (egpt/e → persona, me/wren → meta)
+ *                                          applies for backwards compat.
+ *
+ * @typedef {object} SiblingEntry
+ * @property {'persona'|'sibling'} kind  - 'persona' routes via runDefault-
+ *                                         BrainTurn semantics (item-mirror,
+ *                                         streaming, /rules); 'sibling'
+ *                                         routes via runMetaBrainTurn (silent,
+ *                                         tool-driven side-effects). The
+ *                                         dispatch decision returns kind:
+ *                                         'persona' or kind:'meta' to match
+ *                                         the existing caller switch.
+ * @property {string[]} [aliases]        - alternate names (e.g. ['me'] on
+ *                                         the wren entry). Lowercase compared.
  */
 
 /**
@@ -82,6 +102,26 @@
  * @param {RoomCtx} ctx
  * @returns {object} a decision the caller acts on
  */
+/**
+ * Look up `lower` (already lowercase) in the sibling registry. Returns
+ * `{name, entry}` on hit, null on miss. Checks canonical names first,
+ * then alias arrays. Pure function — no closure state.
+ *
+ * @param {string} lower
+ * @param {Map<string, SiblingEntry>} [siblings]
+ * @returns {{name: string, entry: object} | null}
+ */
+function resolveSibling(lower, siblings) {
+  if (!siblings || siblings.size === 0) return null;
+  if (siblings.has(lower)) return { name: lower, entry: siblings.get(lower) };
+  for (const [name, entry] of siblings) {
+    if (entry.aliases?.some(a => String(a).toLowerCase() === lower)) {
+      return { name, entry };
+    }
+  }
+  return null;
+}
+
 export function resolveRoute(parsed, fullText, ctx) {
   if (parsed.type === 'command') {
     return { kind: 'command', cmd: parsed.cmd, rest: parsed.rest ?? '' };
@@ -91,22 +131,27 @@ export function resolveRoute(parsed, fullText, ctx) {
     const token = parsed.target;
     const body = parsed.body || '?';
 
-    // Special case: '@egpt' (or its short alias '@e' — egpt's nickname,
-    // pronounced /ee/, like the eel) is the node-global default-brain
-    // persona. Always returns kind:'persona' regardless of room state —
-    // works even in the default lobby. The persona has its own
-    // persistent conversation thread, separate from any room session.
+    // Persona / sibling routing. When ctx.siblings is present, it's the
+    // registry source of truth — @<token> resolves against the registry
+    // (canonical name first, then any entry's aliases). Each entry
+    // declares kind:'persona' (runDefaultBrainTurn semantics — item-
+    // mirror, streaming, /rules awareness) or kind:'sibling' (run-
+    // MetaBrainTurn — silent, tool-driven side-effects). The decision
+    // carries the resolved canonical name so the caller can look up
+    // the right session_id from the same EGPT_CONFIG.siblings block.
+    //
+    // Legacy fallback (ctx.siblings absent or empty): the historical
+    // hardcoded list — egpt / e → persona, me / wren → meta — keeps
+    // existing tests + pre-registry installs working unchanged.
     const lower = token.toLowerCase();
-    if (lower === 'egpt' || lower === 'e') {
-      return { kind: 'persona', body };
+    const sib = resolveSibling(lower, ctx.siblings);
+    if (sib) {
+      const kind = sib.entry.kind === 'persona' ? 'persona' : 'meta';
+      return { kind, body, name: sib.name };
     }
-    // '@me' (or '@wren' — sibling's chosen name) is the engineer
-    // co-pilot — a Claude Code session forked from the operator's
-    // main design conversation via /branch, then resumed by the
-    // headless daemon from any surface. Same identity as the
-    // operator's design thread, addressable from anywhere.
-    if (lower === 'me' || lower === 'wren') {
-      return { kind: 'meta', body };
+    if (!ctx.siblings || ctx.siblings.size === 0) {
+      if (lower === 'egpt' || lower === 'e') return { kind: 'persona', body };
+      if (lower === 'me' || lower === 'wren') return { kind: 'meta', body };
     }
 
     // 1. Direct hit on a local session name.

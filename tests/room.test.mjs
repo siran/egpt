@@ -31,7 +31,8 @@ const canonicalBrainName = (n) => BRAIN_ALIASES[n] ?? n;
 const brainForName = (n) => BRAINS[canonicalBrainName(n)] ?? null;
 
 // Helper: build a routing context from arrays so each test stays readable.
-function ctx({ sessions = [], peers = [], activeSessions = [] } = {}) {
+// `siblings` mirrors the registry shape — each entry is [name, {kind, aliases?}].
+function ctx({ sessions = [], peers = [], activeSessions = [], siblings } = {}) {
   return {
     sessions: new Map(sessions.map(([name, brainName]) => [name, { brainName }])),
     peerSessions: new Map(
@@ -40,6 +41,7 @@ function ctx({ sessions = [], peers = [], activeSessions = [] } = {}) {
     brainForName,
     canonicalBrainName,
     activeSessions,
+    ...(siblings ? { siblings: new Map(siblings) } : {}),
   };
 }
 
@@ -318,5 +320,84 @@ describe('planMirrors — one-hop CDP mirroring', () => {
     const replies = [{ author: 'cgpt1', text: 'hi' }];
     const out = planMirrors(replies, ['cgpt1', 'claude1'], sessions, brainForName);
     expect(out.find(m => m.to === 'cgpt1')).toBeUndefined();
+  });
+});
+
+// ── siblings registry routing ───────────────────────────────────────────────
+//
+// ctx.siblings (when present) replaces the hardcoded egpt/e/me/wren branches.
+// Each entry: { kind: 'persona' | 'sibling', aliases?: [...] }. The
+// resolveRoute decision returns kind:'persona' or kind:'meta' (matching the
+// existing caller switch) PLUS decision.name so the caller can pick the
+// right session_id from the same registry.
+
+describe('resolveRoute — siblings registry', () => {
+  const REGISTRY = [
+    ['e',    { kind: 'persona' }],
+    ['wren', { kind: 'sibling', aliases: ['me'] }],
+    ['jay',  { kind: 'sibling' }],
+  ];
+
+  it('registry hit on persona returns kind:"persona" + name', () => {
+    expect(route('@e hi', ctx({ siblings: REGISTRY }))).toEqual({
+      kind: 'persona', body: 'hi', name: 'e',
+    });
+  });
+
+  it('registry hit on sibling returns kind:"meta" + name', () => {
+    expect(route('@wren hi', ctx({ siblings: REGISTRY }))).toEqual({
+      kind: 'meta', body: 'hi', name: 'wren',
+    });
+    expect(route('@jay hi', ctx({ siblings: REGISTRY }))).toEqual({
+      kind: 'meta', body: 'hi', name: 'jay',
+    });
+  });
+
+  it('alias resolves to the canonical name', () => {
+    // @me is an alias for wren; decision.name is the canonical 'wren'.
+    expect(route('@me hi', ctx({ siblings: REGISTRY }))).toEqual({
+      kind: 'meta', body: 'hi', name: 'wren',
+    });
+  });
+
+  it('alias lookup is case-insensitive', () => {
+    expect(route('@ME hi', ctx({ siblings: REGISTRY }))).toEqual({
+      kind: 'meta', body: 'hi', name: 'wren',
+    });
+  });
+
+  it('unknown token falls through to error path (registry replaces legacy)', () => {
+    // 'egpt' / 'me' / 'wren' hardcoded fallback is SUPPRESSED when a
+    // non-empty registry is provided. An unknown token gets the standard
+    // 'no participant @<token>' error, NOT a legacy match.
+    const r = route('@egpt hi', ctx({ siblings: REGISTRY }));
+    // 'egpt' isn't in the registry above (only 'e' is) — so this should
+    // error out, not route to a persona.
+    expect(r.kind).toBe('error');
+  });
+
+  it('legacy fallback (egpt/e/me/wren) still works when ctx.siblings is absent', () => {
+    expect(route('@egpt hi', ctx())).toEqual({ kind: 'persona', body: 'hi' });
+    expect(route('@e hi', ctx())).toEqual({ kind: 'persona', body: 'hi' });
+    expect(route('@me hi', ctx())).toEqual({ kind: 'meta', body: 'hi' });
+    expect(route('@wren hi', ctx())).toEqual({ kind: 'meta', body: 'hi' });
+  });
+
+  it('legacy fallback also fires when ctx.siblings is an empty registry', () => {
+    expect(route('@e hi', ctx({ siblings: [] }))).toEqual({
+      kind: 'persona', body: 'hi',
+    });
+  });
+
+  it('registry takes precedence over a local session with the same name', () => {
+    // Same precedence rule the legacy persona had — a registry hit wins
+    // even when a session is also named that.
+    const c = ctx({
+      sessions: [['wren', 'codex']],
+      siblings: REGISTRY,
+    });
+    expect(route('@wren hi', c)).toEqual({
+      kind: 'meta', body: 'hi', name: 'wren',
+    });
   });
 });
