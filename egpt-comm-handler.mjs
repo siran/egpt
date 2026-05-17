@@ -344,6 +344,101 @@ export function createInProcessStreamChannel(bridge) {
 }
 
 /**
+ * Watch ~/.egpt/inbox/ for JSON events written by the keeper (or any
+ * other producer) and dispatch them through onEvent. Handler-side
+ * counterpart of startOutboxWatcher — same atomicity + claim-set
+ * pattern, only the direction is reversed (handler is the READER,
+ * keeper is the WRITER).
+ *
+ * Future Phase 2c step 3: egpt.mjs imports this and wires its
+ * existing onIncoming dispatch behind a startInboxWatcher subscription
+ * keyed on { type: 'wa-inbound' }. Other event types (wa-qr,
+ * wa-presence, wa-chat-seen, wa-chats-snapshot, wa-media-saved)
+ * route to the same callbacks the bridge used to call directly when
+ * baileys lived in-process.
+ *
+ * @param {object} opts
+ * @param {string} opts.inboxDir                    - default ~/.egpt/inbox
+ * @param {(event) => any} opts.onEvent             - dispatcher; truthy return = consumed (unlinked)
+ * @param {(msg) => void} [opts.log]                - optional log channel
+ * @returns {() => void} stop function
+ */
+export function startInboxWatcher({
+  inboxDir,
+  onEvent,
+  log = () => {},
+} = {}) {
+  if (typeof onEvent !== 'function') {
+    throw new Error('startInboxWatcher: onEvent is required');
+  }
+  if (!inboxDir) throw new Error('startInboxWatcher: inboxDir is required');
+
+  try { mkdirSync(inboxDir, { recursive: true }); } catch {}
+
+  const claimed = new Set();
+  let stopped = false;
+
+  const handleFile = async (name) => {
+    if (stopped) return;
+    if (!name.endsWith('.json')) return;
+    if (claimed.has(name)) return;
+    claimed.add(name);
+    const full = join(inboxDir, name);
+    let payload;
+    try {
+      const raw = await readFile(full, 'utf8');
+      payload = JSON.parse(raw);
+    } catch (e) {
+      if (e.code === 'ENOENT') { claimed.delete(name); return; }
+      log(`!! inbox: dropping ${name} — ${e.message}`);
+      try { await unlink(full); } catch {}
+      return;
+    }
+    let consumed = false;
+    try {
+      consumed = !!(await onEvent(payload));
+    } catch (e) {
+      log(`!! inbox onEvent threw on ${name}: ${e.message}`);
+      // Treat thrown errors as "not consumed" so the file stays for
+      // a follow-up — better than silently dropping events the
+      // handler couldn't yet process (e.g. during boot ordering).
+      claimed.delete(name);
+      return;
+    }
+    if (!consumed) {
+      claimed.delete(name);
+      return;
+    }
+    try { await unlink(full); } catch {}
+  };
+
+  const sweep = async () => {
+    if (stopped) return;
+    let names = [];
+    try { names = await readdir(inboxDir); } catch { return; }
+    for (const n of names) await handleFile(n);
+  };
+
+  sweep().catch(() => {});
+
+  let watcher = null;
+  try {
+    watcher = fsWatch(inboxDir, (_eventType, filename) => {
+      if (!filename) return;
+      handleFile(filename).catch(() => {});
+    });
+  } catch (_) { /* watcher unavailable; sweep alone keeps things flowing */ }
+
+  const sweepTimer = setInterval(() => { sweep().catch(() => {}); }, 2000);
+
+  return () => {
+    stopped = true;
+    try { watcher?.close(); } catch {}
+    clearInterval(sweepTimer);
+  };
+}
+
+/**
  * Atomically write a JSON event into a "kept directory" via the same
  * write-then-rename pattern the outbox sibling-side helper uses, so
  * the corresponding fs.watch reader on the other side never sees a
