@@ -5520,6 +5520,27 @@ function App() {
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
+    // Write-side whitelist for the @e persona: e can only post to
+    // chats explicitly enrolled by the operator (auto_e_chats + the
+    // operator's self_dm chat_id). Other sender labels (jay-*, wren-*,
+    // sibling subprocesses, scripts) are unrestricted — the trust
+    // model is: the operator controls who can write outbox files;
+    // 'from' is a label, not auth. Per "messages are sacred":
+    // BLOCKED sends are logged with reason and consumed (return true)
+    // so they don't retry — operator sees the audit in /log.
+    if (ev.from === 'e' || ev.from === 'egpt') {
+      const waCfg = EGPT_CONFIG.whatsapp ?? {};
+      const allowed = new Set(
+        [
+          ...(Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : []),
+          waCfg.chat_id,
+        ].filter(Boolean),
+      );
+      if (!allowed.has(ev.jid)) {
+        log(`!! ${source}: wa-send from e to ${ev.jid} BLOCKED — not in auto_e_chats or self_dm. body="${(ev.body || '').slice(0, 60)}${ev.body.length > 60 ? '…' : ''}"`);
+        return true;  // consume — don't retry; operator audits via /log
+      }
+    }
     // Persona emoji prefix: per operator (2026-05-17), the bridge — not
     // the sibling — owns the "<emoji> <name>: " label on outbox-originated
     // wa-sends. Look up siblings[ev.from].body_emoji and prepend if the
