@@ -5114,8 +5114,17 @@ function App() {
         // specifically and the typing/edit cadence is appropriate.
         const isReplyToE = meta.replyPersona === 'e' || meta.replyPersona === 'egpt';
         const useWaStream = meta.fromWhatsApp && (!meta.autoDispatched || isReplyToE);
-        const tgPrefix = `${EGPT_PERSONA_EMOJI} <b>egpt</b>\n`;
-        const waPrefix = `${EGPT_PERSONA_EMOJI} egpt\n`;
+        // Persona prefix from siblings registry: name + body_emoji are
+        // both registry-derived so @e ↔ 🐶 e (haiku), @egpt ↔ 🧠 egpt
+        // (infrastructure), or whatever the operator wires. Falls back
+        // to the legacy EGPT_PERSONA_EMOJI + 'egpt' label when the
+        // registry is absent. Per operator (2026-05-17): "all llm must
+        // have an id emoji" — every reply path consults the registry.
+        const personaName = decision.name ?? 'egpt';
+        const personaCfg  = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
+        const personaEmoji = personaCfg.body_emoji ?? personaCfg.emoji ?? EGPT_PERSONA_EMOJI;
+        const tgPrefix = `${personaEmoji} <b>${personaName}</b>\n`;
+        const waPrefix = `${personaEmoji} ${personaName}\n`;
         const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
@@ -5169,7 +5178,7 @@ function App() {
           // failure paths log to /log only — invisible by default.
           if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
             const r = await waBridgeRef.current.send(
-              `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+              `${personaEmoji} ${personaName}: ${reply}`,
               { chatId: meta.waChatId },
             );
             if (!r) {
@@ -5182,7 +5191,7 @@ function App() {
           }
         } else if (meta.fromWhatsApp && waBridgeRef.current) {
           const r = await waBridgeRef.current.send(
-            `${EGPT_PERSONA_EMOJI} egpt: ${reply}`,
+            `${personaEmoji} ${personaName}: ${reply}`,
             { chatId: meta.waChatId },
           );
           if (!r) {
