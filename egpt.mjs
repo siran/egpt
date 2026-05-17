@@ -5196,12 +5196,27 @@ function App() {
         const wholeParen = /^\([^)]*\)$/s.test(trimmedReply);
         const verbalizedSkip = /^(no (response|reply|comment) (needed|necessary|required)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts)\.?$/i
           .test(trimmedReply);
-        if (trimmedReply === '...' || wholeParen || verbalizedSkip) {
+        // Self-narration filter (2026-05-17): @e was leaking meta-
+        // observations and third-person summaries of its own STATUS
+        // line to chats — e.g. "I see you're checking egpt status.
+        // E's got consciousness resolved..." or "What's next?" These
+        // are clear internal narrations addressed to the system, not
+        // the chat participant. Patterns:
+        //   - opens with meta-observation: "I see (you're|that) …"
+        //   - opens with system noun: "The (persona|model|brain|system) …"
+        //   - opens with third-person self-reference: "E's (got|currently|been|now) …" / "@e is …"
+        //   - is exactly "What's next?" / "What now?" — system-directed question
+        const selfNarration = (
+          /^(I see (you're|you are|that) |The (persona|model|brain|system|assistant) (is|has)|E's (got|currently|been|now)|@e is )/i.test(trimmedReply)
+          || /^what'?s (next|now)\??$/i.test(trimmedReply)
+        );
+        if (trimmedReply === '...' || wholeParen || verbalizedSkip || selfNarration) {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
           const why = wholeParen      ? `internal note "${trimmedReply.slice(0, 60)}"`
                     : verbalizedSkip  ? `verbalized skip "${trimmedReply.slice(0, 60)}"`
+                    : selfNarration   ? `self-narration "${trimmedReply.slice(0, 60)}"`
                                       : `polite '...'`;
           logOut(`@e: ${why} from ${where} (skipped — not sent)`);
           return;
