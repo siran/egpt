@@ -25,7 +25,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
-import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel } from './egpt-comm-handler.mjs';
+import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
@@ -2617,6 +2617,41 @@ function App() {
       // this becomes a restart-handler event the keeper sends to
       // the wrapper, without exiting the keeper itself.
       signalRestart:  () => setTimeout(() => process.exit(0), 100),
+    });
+  }, []);
+
+  // Phase 2c step 3a (passive listener): handler-side inbox watcher.
+  // Today the handler still owns baileys via startWaBridge, so any
+  // wa-inbound events arriving in ~/.egpt/inbox/ would double-dispatch
+  // if we routed them through submitRef. Until the keeper is the SOLE
+  // baileys owner (Phase 2c step 4: handler stops calling
+  // startBaileysBridge, daemon-wrap.ps1 spawns keeper alongside),
+  // the listener is passive: it logs every received event to /log
+  // but does NOT dispatch. That proves the wire works end-to-end
+  // (file IPC → handler) without risking the double-dispatch.
+  // When the operator flips the handler-side gate (config flag or
+  // env var, TBD), this onEvent gets replaced with real dispatch
+  // via the extracted processWaIncoming function.
+  useEffect(() => {
+    const sysLog = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    return startInboxWatcher({
+      inboxDir: join(EGPT_HOME, 'inbox'),
+      log: sysLog,
+      onEvent: (ev) => {
+        // Passive: log and consume so files don't pile up. Real
+        // dispatch lands when the keeper actually owns baileys.
+        const t = ev?.type ?? '<missing>';
+        const from = ev?.from ?? '?';
+        const preview =
+          t === 'wa-inbound' ? ` chat=${ev.chatId} body=${JSON.stringify(String(ev.body ?? '').slice(0, 60))}`
+          : t === 'wa-chat-id' ? ` chat=${ev.chatId}`
+          : t === 'wa-media-saved' ? ` ${ev.kind} ${ev.chatJid} ${(ev.sizeBytes ?? 0)}b`
+          : '';
+        sysLog(`inbox[${from}]: ${t}${preview}  (passive — not dispatched, keeper-as-baileys-owner not yet wired)`);
+        return true;  // consume so the file is unlinked
+      },
     });
   }, []);
 
