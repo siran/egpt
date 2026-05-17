@@ -486,6 +486,9 @@ export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
  *   { type: 'wa-send', from, jid, body, to_node? }
  *     → dispatchWaSend(payload, 'outbox'). Truthy return = consumed
  *       (file unlinked). Falsy = retry on next sweep (bridge down).
+ *   { type: 'wa-group-subject', from, jid, subject }
+ *     → dispatchWaGroupSubject(payload, 'outbox'). Same truthy-=-consumed
+ *       contract. jid must be a group (@g.us); bot account must be admin.
  *   { type: 'daemon-restart', from }
  *     → signalRestart(payload). Caller decides what restart means
  *       (today: process.exit(0); future: just kill the handler half).
@@ -496,14 +499,16 @@ export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
  * both race to handleFile; first claim wins.
  *
  * @param {object} opts
- * @param {(payload, src) => any} opts.dispatchWaSend   - send via baileys; truthy if consumed
- * @param {(msg) => void} opts.log                      - operator-visible status (sysLog/sysOut)
- * @param {(payload) => void} opts.signalRestart        - daemon-restart handler
- * @param {string} [opts.outboxDir]                     - default ~/.egpt/outbox
+ * @param {(payload, src) => any} opts.dispatchWaSend          - send via baileys; truthy if consumed
+ * @param {(payload, src) => any} [opts.dispatchWaGroupSubject] - groupUpdateSubject; truthy if consumed; absent = log+drop
+ * @param {(msg) => void} opts.log                             - operator-visible status (sysLog/sysOut)
+ * @param {(payload) => void} opts.signalRestart               - daemon-restart handler
+ * @param {string} [opts.outboxDir]                            - default ~/.egpt/outbox
  * @returns {() => void} stop function
  */
 export function startOutboxWatcher({
   dispatchWaSend,
+  dispatchWaGroupSubject = null,
   log = () => {},
   signalRestart = () => {},
   outboxDir,
@@ -546,6 +551,18 @@ export function startOutboxWatcher({
         // Bridge down or malformed — leave for retry, release claim.
         claimed.delete(name);
         return;
+      }
+    } else if (payload?.type === 'wa-group-subject') {
+      if (typeof dispatchWaGroupSubject !== 'function') {
+        log(`outbox: dropping wa-group-subject from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
+      } else {
+        const ok = dispatchWaGroupSubject(payload, 'outbox');
+        if (!ok) {
+          // Bridge down / not admin / bad jid — leave for retry,
+          // release claim. Caller's log already explained.
+          claimed.delete(name);
+          return;
+        }
       }
     } else if (payload?.type === 'daemon-restart') {
       log(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);

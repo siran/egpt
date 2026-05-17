@@ -2610,9 +2610,10 @@ function App() {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     }]);
     return startOutboxWatcher({
-      outboxDir:      join(EGPT_HOME, 'outbox'),
-      dispatchWaSend: (payload, src) => dispatchWaSendRef.current?.(payload, src),
-      log:            sysLog,
+      outboxDir:              join(EGPT_HOME, 'outbox'),
+      dispatchWaSend:         (payload, src) => dispatchWaSendRef.current?.(payload, src),
+      dispatchWaGroupSubject: (payload, src) => dispatchWaGroupSubjectRef.current?.(payload, src),
+      log:                    sysLog,
       // process.exit(0) → wrapper's while-loop respawns. Post-split
       // this becomes a restart-handler event the keeper sends to
       // the wrapper, without exiting the keeper itself.
@@ -5468,6 +5469,36 @@ function App() {
     }
   };
 
+  // wa-group-subject dispatcher — mirrors dispatchWaSendRef's shape.
+  // Called by outbox watcher (file IPC) and the bus 'wa-group-subject'
+  // case below. Returns truthy on success (consumed/unlinked), falsy
+  // on transient failure (retry on next sweep). Permanent failures
+  // (not admin, malformed jid) log + return truthy to unlink — we
+  // don't loop forever on rejection.
+  const dispatchWaGroupSubjectRef = useRef(null);
+  dispatchWaGroupSubjectRef.current = async (ev, source = 'outbox') => {
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const wa = waBridgeRef.current;
+    if (!wa) { log(`${source}: wa-group-subject from ${ev.from} dropped — no baileys bridge here`); return false; }
+    if (!wa.setGroupSubject) { log(`${source}: wa-group-subject from ${ev.from} dropped — bridge lacks setGroupSubject (older code?)`); return true; }
+    if (!ev.jid || typeof ev.subject !== 'string') {
+      log(`!! ${source}: wa-group-subject from ${ev.from} malformed — needs {jid, subject:string}; unlinking`);
+      return true;
+    }
+    try {
+      await wa.setGroupSubject({ jid: ev.jid, subject: ev.subject });
+      log(`${source}: wa-group-subject → ${ev.jid} for ${ev.from} ("${ev.subject.slice(0, 60)}${ev.subject.length > 60 ? '…' : ''}")`);
+      return true;
+    } catch (e) {
+      // Common failure: bot account isn't admin → baileys throws.
+      // That's permanent for this attempt; unlink so we don't loop.
+      log(`!! ${source}: wa-group-subject failed for ${ev.from} → ${ev.jid}: ${e.message}`);
+      return true;
+    }
+  };
+
   handleBusEventRef.current = async (ev) => {
     if (ev.from === BUS_NODE_ID) return; // ignore self-echoes
 
@@ -5723,6 +5754,14 @@ function App() {
         // path is the ~/.egpt/outbox/ file watcher below.
         if (ev.to_node && ev.to_node !== BUS_NODE_ID) return;
         dispatchWaSendRef.current?.(ev, 'bus');
+        return;
+      }
+      case 'wa-group-subject': {
+        // Bus-side equivalent of the outbox file dispatcher. Peers can
+        // request a group-name change here; the baileys-holding node
+        // executes (must be admin). to_node narrows like wa-send.
+        if (ev.to_node && ev.to_node !== BUS_NODE_ID) return;
+        await dispatchWaGroupSubjectRef.current?.(ev, 'bus');
         return;
       }
       case 'telegram-handoff': {
