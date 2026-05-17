@@ -448,6 +448,73 @@ export async function startWhatsAppBridge({
     return `${rawText} ${transcript}`;
   }
 
+  // Append the saved file path to image placeholders so @e can use
+  // its Read tool to actually view the image (Claude Read supports
+  // image inputs). On-demand viewing — no per-message image token
+  // cost up front. Body becomes '[image] <caption> path: /...'.
+  function _enrichImageText(rawText, msg) {
+    if (!rawText) return rawText;
+    const m = msg?.message ?? {};
+    const inner = m.imageMessage
+      ?? m.ephemeralMessage?.message?.imageMessage
+      ?? m.viewOnceMessage?.message?.imageMessage
+      ?? m.viewOnceMessageV2?.message?.imageMessage
+      ?? m.documentWithCaptionMessage?.message?.imageMessage
+      ?? null;
+    if (!inner) return rawText;
+    const chatJid = msg?.key?.remoteJid;
+    const msgId = msg?.key?.id;
+    if (!chatJid || !msgId) return rawText;
+    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    let imgPath = null;
+    try {
+      const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
+      imgPath = idx[msgId]?.path ?? null;
+    } catch (_) { /* no index yet */ }
+    if (!imgPath || !existsSync(imgPath)) return rawText;
+    return `${rawText} path: ${imgPath}`;
+  }
+
+  // Append video file path + keyframe path + audio transcript (if
+  // any) to video placeholders. @e Reads the keyframe JPG to "see"
+  // the visual content (Claude Read supports JPG/PNG); the audio
+  // transcript covers spoken content. Body becomes
+  // '[video] <caption> path: /<video> keyframe: /<jpg> transcript: <text>'.
+  function _enrichVideoText(rawText, msg) {
+    if (!rawText) return rawText;
+    const m = msg?.message ?? {};
+    const inner = m.videoMessage
+      ?? m.ephemeralMessage?.message?.videoMessage
+      ?? m.viewOnceMessage?.message?.videoMessage
+      ?? m.viewOnceMessageV2?.message?.videoMessage
+      ?? null;
+    if (!inner) return rawText;
+    const chatJid = msg?.key?.remoteJid;
+    const msgId = msg?.key?.id;
+    if (!chatJid || !msgId) return rawText;
+    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    let base = null, vidPath = null;
+    try {
+      const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
+      base = idx[msgId]?.base ?? null;
+      vidPath = idx[msgId]?.path ?? null;
+    } catch (_) { /* no index yet */ }
+    if (!base) return rawText;
+    const extras = [];
+    if (vidPath && existsSync(vidPath)) extras.push(`path: ${vidPath}`);
+    const keyframePath = join(dir, `${base}.keyframe.jpg`);
+    if (existsSync(keyframePath)) extras.push(`keyframe: ${keyframePath}`);
+    const txtPath = join(dir, `${base}.transcript.txt`);
+    if (existsSync(txtPath)) {
+      try {
+        const transcript = readFileSync(txtPath, 'utf8').trim();
+        if (transcript) extras.push(`transcript: ${transcript}`);
+      } catch (_) {}
+    }
+    if (extras.length === 0) return rawText;
+    return `${rawText} ${extras.join(' ')}`;
+  }
+
   function _enrichReactionText(rawText, msg) {
     const r = msg?.message?.reactionMessage;
     if (!r?.key?.id) return rawText;
@@ -1251,6 +1318,36 @@ export async function startWhatsAppBridge({
     return text ? { path: finalTxt, text } : null;
   }
 
+  // Extract one representative keyframe from a video as a JPG sidecar.
+  // ffmpeg's `thumbnail` filter picks the most visually-distinctive
+  // frame from a sliding window — better than first-frame (often
+  // black) or fixed-offset (misses motion). Scaled to 640px wide
+  // for smaller files. Saved next to the video as <base>.keyframe.jpg.
+  //
+  // Gated by media.audio_transcribe.enabled (same ffmpeg dep). If
+  // operator wants to disable keyframes specifically, add a
+  // future media.video_keyframe.enabled toggle.
+  async function _extractVideoKeyframe({ inputPath, outputDir, base }) {
+    const cfg = media.audio_transcribe ?? {};
+    if (!cfg.enabled) return null;
+    const ffmpegBin = cfg.ffmpeg_command || 'ffmpeg';
+    const jpgPath = join(outputDir, `${base}.keyframe.jpg`);
+    if (existsSync(jpgPath)) return jpgPath;
+    try {
+      await _runCmd(ffmpegBin, [
+        '-y', '-i', inputPath,
+        '-vf', 'thumbnail,scale=640:-1',
+        '-frames:v', '1',
+        jpgPath,
+      ]);
+      log(`keyframe extracted ${base}.keyframe.jpg`);
+      return jpgPath;
+    } catch (e) {
+      log(`keyframe extract failed for ${base}: ${e.message}`);
+      return null;
+    }
+  }
+
   async function _saveMediaIfAny(msg) {
     const downloadMode = media.download ?? 'all';
     if (downloadMode === 'off') return null;
@@ -1359,14 +1456,19 @@ export async function startWhatsAppBridge({
       // text. No-op when whatsapp.media.audio_transcribe.enabled
       // is false (returns null fast).
       let transcript = null;
-      if (hit.kind === 'audio') {
+      let keyframePath = null;
+      if (hit.kind === 'audio' || hit.kind === 'video') {
+        // Same _transcribeAudio for video — ffmpeg pulls the audio
+        // track and ignores the video stream. Silent videos return null.
         transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
           .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
-        // Stash transcript text keyed by msgId so handleMessage's
-        // textOf path can inline it into the dispatched body.
         if (transcript?.text && msg.key?.id) {
           _transcriptByMsgId.set(msg.key.id, transcript.text);
         }
+      }
+      if (hit.kind === 'video') {
+        keyframePath = await _extractVideoKeyframe({ inputPath: path, outputDir: dir, base })
+          .catch(e => { log(`keyframe error (${base}): ${e.message}`); return null; });
       }
       try { onMediaSaved?.({
         kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length,
@@ -1374,6 +1476,7 @@ export async function startWhatsAppBridge({
         preConnect,
         transcriptPath: transcript?.path ?? null,
         transcript: transcript?.text ?? null,
+        keyframePath,
       }); } catch (_) {}
       return path;
     } catch (e) {
@@ -1625,7 +1728,13 @@ export async function startWhatsAppBridge({
     // counter for the logon-summary "most-reacted item" line —
     // happens regardless of whether the reaction reaches onIncoming.
     if (msg.message?.reactionMessage) _recordReaction(msg);
-    const text = _enrichAudioText(_enrichReactionText(textOf(msg.message), msg), msg);
+    const text = _enrichVideoText(
+      _enrichImageText(
+        _enrichAudioText(
+          _enrichReactionText(textOf(msg.message), msg),
+          msg),
+        msg),
+      msg);
 
     // Wake-word: any message containing '@egpt' (as a token) bypasses
     // awareness. Lets the user summon egpt from a friend DM (where
