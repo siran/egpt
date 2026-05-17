@@ -163,6 +163,36 @@ export async function startWhatsAppBridge({
   // awareness but fall through to plain-text routing. Set false
   // to require @e at start (legacy behavior).
   atEAnywhere   = true,
+  // Per-instance timing knobs. All four were hardcoded const values
+  // until 2026-05-16 (operator principle: "limits must never be
+  // hardcoded, they all should have configurable keys"). Defaults
+  // below preserve the previous behavior — each protects against a
+  // WhatsApp-protocol or baileys-internals floor; lowering risks
+  // server-side rate-limits or silent failures. Surface knobs so
+  // the operator owns the trade-off, not the bridge.
+  //
+  //   editCadenceMs:   min ms between stream-message edits during
+  //                    persona streaming. WA rate-limits edits at
+  //                    ~1/2s sustained — going below 2000 risks
+  //                    rejected edits. Default 2500 reads as smooth
+  //                    typing without throttle pressure.
+  //   typingRefreshMs: how often to re-emit the 'composing' presence
+  //                    while a stream is open. WA's indicator times
+  //                    out around 15s without refresh; 8000 keeps it
+  //                    alive without spam.
+  //   sendTimeoutMs:   _timeBound default for sock.sendMessage calls
+  //                    so a flapping WS doesn't block the bridge.
+  //                    12000 was the empirically-set floor that
+  //                    catches stalls without aborting normal sends.
+  //   chunkChars:      max chars per outbound text body — long
+  //                    replies are split into multiple messages.
+  //                    WA's protobuf supports ~65k but baileys / WA
+  //                    Web misbehave above ~5k; 4000 matches the TG
+  //                    chunk size and is safe across surfaces.
+  editCadenceMs   = 2500,
+  typingRefreshMs = 8000,
+  sendTimeoutMs   = SEND_TIMEOUT_MS,
+  chunkChars      = WA_CHUNK_CHARS,
   onIncoming,
   onLog,
   onError,
@@ -193,7 +223,7 @@ export async function startWhatsAppBridge({
   // WS dropped mid-call, queue stalled waiting for reconnect). Used to
   // wrap every sock.sendMessage on the outbound path so the host gets
   // a visible failure instead of a deadlocked await.
-  const _timeBound = (promise, label, ms = SEND_TIMEOUT_MS) => {
+  const _timeBound = (promise, label, ms = sendTimeoutMs) => {
     let t;
     const timeout = new Promise((_, reject) => {
       t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -2207,7 +2237,7 @@ export async function startWhatsAppBridge({
       // caller gets back — that's the one whose key matters for
       // @m<N> reply-target threading. Subsequent chunks fire
       // sequentially as fresh sends so order is preserved.
-      const chunks = chunkText(text, WA_CHUNK_CHARS);
+      const chunks = chunkText(text, chunkChars);
       let firstResult = null;
       for (let i = 0; i < chunks.length; i++) {
         try {
@@ -2285,7 +2315,7 @@ export async function startWhatsAppBridge({
         if (finished) return;
         sock.sendPresenceUpdate?.('composing', target).catch(() => {});
         if (typingTimer) clearTimeout(typingTimer);
-        typingTimer = setTimeout(refreshTyping, 8_000);
+        typingTimer = setTimeout(refreshTyping, typingRefreshMs);
       };
       const stopTyping = () => {
         if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
@@ -2330,7 +2360,7 @@ export async function startWhatsAppBridge({
 
       function maybeEdit() {
         const since    = Date.now() - lastEditAt;
-        const interval = 2_500;
+        const interval = editCadenceMs;
         if (since >= interval) flush();
         else if (!editTimer) {
           editTimer = setTimeout(() => { editTimer = null; flush(); }, interval - since);
@@ -2358,7 +2388,7 @@ export async function startWhatsAppBridge({
             // misbehave at large sizes, and the recipient sees a
             // tidier "head edited + continuation messages" instead
             // of either a silent truncation or a giant scroll-wall.
-            const chunks = chunkText(pending, WA_CHUNK_CHARS);
+            const chunks = chunkText(pending, chunkChars);
             if (initialDone && msgKey) {
               if (chunks[0] !== lastSent) {
                 const r = await _timeBound(
