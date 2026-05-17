@@ -2514,26 +2514,28 @@ function App() {
           } else if (from.chatType === 'status') {
             waClientLabel = 'status.wa';
           }
-          // auto_e_chats: in chats listed here, every notify-type
-          // message is auto-dispatched to the @e persona (e decides
-          // whether to reply per /rules; reply of literal '...' is
-          // dropped by the brain-reply pipeline). e participates as
-          // a member. The operator toggles this per-chat via
-          // /e auto on|off and globally via /e auto pause|resume.
+          // @e auto-dispatch: every notify-type message reaching
+          // onIncoming gets @e-prefixed so @e reads every chat the
+          // operator does. Operator (2026-05-17): "e must reply only
+          // on authorized channels, but read everything." Read = all
+          // chats that survive the bridge's awareness gate. Write =
+          // restricted to whatsapp.auto_e_chats + self_dm by 35c740d
+          // (enforced bridge-side on outbox wa-sends from 'e'). The
+          // auto_e_chats list is now exclusively the write-whitelist
+          // (also the bridge-bypass list per 05e1f82 — same chats).
+          //
           // Skipped when:
-          //   - operator-level pause is set (paused === true)
+          //   - operator-level pause is set (auto_e_paused === true)
           //   - text already begins with @<mention> (operator/another
-          //     persona is explicitly addressed; honor the explicit
-          //     target instead of forcing @e)
+          //     persona is explicitly addressed; honor that)
           //   - text is a slash command (starts with /)
           const waCfg = EGPT_CONFIG.whatsapp ?? {};
-          const autoChats = Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : [];
           const autoPaused = !!waCfg.auto_e_paused;
           const trimmed = String(text ?? '').trimStart();
           const hasMention = /^@[\w-]+/.test(trimmed);
           const isSlash    = trimmed.startsWith('/');
           let dispatchText = text;
-          if (autoChats.includes(from.chatId) && !autoPaused && !hasMention && !isSlash) {
+          if (!autoPaused && !hasMention && !isSlash) {
             dispatchText = `@e ${text}`;
           }
           if (submitRef.current) await submitRef.current(dispatchText, {
