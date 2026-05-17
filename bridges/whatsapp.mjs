@@ -925,7 +925,17 @@ export async function startWhatsAppBridge({
       // bypasses the gate intentionally (operator wants to see
       // everything baileys actually delivers); leave debug off in
       // normal production use.
+      // TEMP DIAG: also log the LOUD-track type filter decision for compren
+      // so we know if messages are being dropped here (vs at awareness gate).
+      for (const m of messages) {
+        const jid = m.key?.remoteJid;
+        if (jid === '120363407494846096@g.us') {
+          log(`[diag compren] LOUD type=${type} fromMe=${!!m.key?.fromMe} id=${m.key?.id} debug=${!!debug}`);
+        }
+      }
       if (!debug && type !== 'notify' && type !== 'append') return;
+      // Stamp the type onto each msg so handleMessage's diag can see it.
+      for (const m of messages) { m.__upsertType = type; }
       // Media save — runs for every real-time delivery regardless
       // of awareness gates (the operator asked to retain ALL media,
       // for both observed chats and bound rooms; see whatsapp.media
@@ -1531,6 +1541,11 @@ export async function startWhatsAppBridge({
     // when the host has marked this chat for full passthrough via
     // setBypassChats (e.g. /use or /join binds the chat).
     const hostBypassEarly = _bypassChats.has(chatJid0);
+    // TEMP DIAG: trace gate decisions for compren-bitcoin to find why
+    // fromMe messages don't reach @e (remove after debugging).
+    if (chatJid0 === '120363407494846096@g.us') {
+      log(`[diag compren] handleMessage fromMe=${fromMe} type=${msg.__upsertType ?? '?'} isWakeWord=${isWakeWord} hostBypassEarly=${hostBypassEarly} bypassSet=${[..._bypassChats].join(',')||'∅'}`);
+    }
     if (!bypassAwareness && !isWakeWord && !hostBypassEarly && !_storm) {
       if (isSelfDM) {
         if (aware.self_chat === 'off') return;
