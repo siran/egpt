@@ -128,6 +128,209 @@ export function isBaileysPaired(authDir) {
 // END Phase 2b design notes ────────────────────────────────────────────
 
 /**
+ * Keeper-side stream registry. Holds the live `bridgeStream` objects
+ * (returned by bridge.startStreamMessage) keyed by handler-minted
+ * streamId. The registry receives wa-stream-open/update/finish events
+ * (in-process today, file IPC after the split) and drives the bridge.
+ *
+ * On registry-miss (wa-stream-update or finish for a streamId that
+ * isn't registered — keeper crashed/restarted mid-stream, or update
+ * raced past open), finish() returns
+ * {delivered:false, lastError:'no such stream'} and update() no-ops.
+ *
+ * @param {object} bridge - the WA bridge handle (today: result of startBaileysBridge)
+ */
+export function createStreamRegistry(bridge) {
+  if (!bridge?.startStreamMessage) {
+    throw new Error('createStreamRegistry: bridge.startStreamMessage missing');
+  }
+  const streams = new Map();
+  return {
+    open({ streamId, chatId, initialText }) {
+      if (!streamId) return;
+      if (streams.has(streamId)) return;        // duplicate-open is a no-op
+      const s = bridge.startStreamMessage(initialText, { chatId });
+      if (s) streams.set(streamId, s);
+    },
+    update({ streamId, text }) {
+      streams.get(streamId)?.update(text);
+    },
+    async finish({ streamId, text }) {
+      const s = streams.get(streamId);
+      if (!s) return { streamId, delivered: false, lastError: 'no such stream' };
+      try { await s.finish(text); } catch (_) { /* swallowed; lastError already set on s */ }
+      const result = { streamId, delivered: !!s.delivered, lastError: s.lastError ?? null };
+      streams.delete(streamId);
+      return result;
+    },
+    // Cancel orphans on shutdown / restart — synthesizes a
+    // wa-stream-result for each pending stream so the handler-side
+    // finish() promises resolve instead of hanging until their 30s
+    // timeout fires.
+    cancelAll(reason = 'keeper restarted mid-stream') {
+      const out = [];
+      for (const streamId of streams.keys()) {
+        out.push({ streamId, delivered: false, lastError: reason });
+      }
+      streams.clear();
+      return out;
+    },
+    size() { return streams.size; },
+  };
+}
+
+/**
+ * Handler-side stream proxy. Implements the SAME surface as the in-
+ * process object bridge.startStreamMessage returns — update(text),
+ * async finish(text), getters .delivered + .lastError — but every
+ * operation is a wa-stream-* event emission.
+ *
+ * Coalescing per wren's design call: update() debounces at ~2s in
+ * the proxy too, just under the keeper's 2.5s edit cadence. One
+ * file per update() would flood the outbox 100-200x per reply;
+ * coalescing matches semantics (keeper overwrites interim states).
+ *
+ * finish() timeout per wren: if wa-stream-result doesn't arrive in
+ * 30s, resolve with {delivered:false, lastError:'stream-result
+ * timeout'}. NO auto-fallback inside the proxy — caller decides.
+ * `_finalized` flag drops late wa-stream-result arrivals so a
+ * recovered keeper can't double-deliver.
+ *
+ * @param {object} opts
+ * @param {string} opts.streamId
+ * @param {(event) => void}  opts.sendEvent     - fire-and-forget wa-stream-* events
+ * @param {(streamId, timeoutMs) => Promise<{delivered, lastError}>} opts.awaitResult
+ * @param {string} [opts.from='handler']
+ * @param {number} [opts.updateCoalesceMs=2000]
+ * @param {number} [opts.finishTimeoutMs=30000]
+ */
+export function createStreamProxy({
+  streamId,
+  sendEvent,
+  awaitResult,
+  from = 'handler',
+  updateCoalesceMs = 2_000,
+  finishTimeoutMs  = 30_000,
+} = {}) {
+  if (!streamId) throw new Error('createStreamProxy: streamId required');
+  if (typeof sendEvent !== 'function') throw new Error('createStreamProxy: sendEvent required');
+  if (typeof awaitResult !== 'function') throw new Error('createStreamProxy: awaitResult required');
+
+  let pending     = null;
+  let pendingTimer = null;
+  let finished    = false;
+  let finalized   = false;
+  let delivered   = false;
+  let lastError   = null;
+
+  const flushUpdate = () => {
+    if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    if (pending === null || finished) return;
+    const text = pending;
+    pending = null;
+    sendEvent({ type: 'wa-stream-update', from, ts: Date.now(), streamId, text });
+  };
+
+  return {
+    update(text) {
+      if (finished) return;
+      pending = text;
+      if (!pendingTimer) {
+        pendingTimer = setTimeout(flushUpdate, updateCoalesceMs);
+      }
+    },
+    async finish(text) {
+      if (finished) return;
+      finished = true;
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+      sendEvent({ type: 'wa-stream-finish', from, ts: Date.now(), streamId, text });
+      const result = await awaitResult(streamId, finishTimeoutMs);
+      // Late arrivals after finalization get silently dropped by the
+      // caller of sendStreamResult — finalized acts as the boundary.
+      finalized = true;
+      delivered = !!result?.delivered;
+      lastError = result?.lastError ?? null;
+    },
+    get delivered() { return delivered; },
+    get lastError() { return lastError; },
+    get finalized() { return finalized; },
+  };
+}
+
+/**
+ * Convenience: wire a registry + proxy together IN-PROCESS via a
+ * tiny result-promise registry. Used during Phase 2b before the
+ * keeper runs in its own process. The returned factory has the
+ * exact same call shape as bridge.startStreamMessage so call-site
+ * swaps in egpt.mjs are mechanical.
+ *
+ * Late wa-stream-result deliveries (after the proxy has finalized
+ * via timeout) are silently dropped — pendingResults entry is
+ * already gone.
+ *
+ * @param {object} bridge
+ * @returns {{ makeStream, registry, deliverResult }}
+ *   makeStream: (initialText, {chatId}) => proxy   // drop-in
+ *   registry: createStreamRegistry(bridge)         // exposed for tests / inspection
+ *   deliverResult: ({streamId, delivered, lastError}) => void
+ */
+export function createInProcessStreamChannel(bridge) {
+  const registry = createStreamRegistry(bridge);
+  const pendingResults = new Map();   // streamId -> resolve fn
+
+  const awaitResult = (streamId, timeoutMs) => new Promise((resolve) => {
+    const tmo = setTimeout(() => {
+      pendingResults.delete(streamId);
+      resolve({ delivered: false, lastError: 'stream-result timeout' });
+    }, timeoutMs);
+    pendingResults.set(streamId, (res) => {
+      clearTimeout(tmo);
+      pendingResults.delete(streamId);
+      resolve(res);
+    });
+  });
+
+  const deliverResult = (result) => {
+    const fn = pendingResults.get(result?.streamId);
+    if (fn) fn(result);
+    // else: late arrival, proxy already finalized → silent drop
+  };
+
+  // sendEvent fans out to the registry synchronously (in-process)
+  // and queues the wa-stream-result back through deliverResult for
+  // finish events. In-process there's no actual file IPC; this just
+  // exercises the same surface area that the file-IPC version will.
+  const sendEvent = (ev) => {
+    switch (ev?.type) {
+      case 'wa-stream-update': registry.update(ev); return;
+      case 'wa-stream-finish': {
+        // Run async so the proxy's awaitResult registration has
+        // happened by the time we resolve. Without this, the
+        // resolve fn isn't yet in pendingResults when we deliver.
+        Promise.resolve()
+          .then(() => registry.finish(ev))
+          .then(deliverResult)
+          .catch((e) => deliverResult({ streamId: ev.streamId, delivered: false, lastError: e?.message ?? String(e) }));
+        return;
+      }
+      case 'wa-stream-cancel': {
+        // Future hook. v1 doesn't emit; included for completeness.
+        return;
+      }
+      default: return;
+    }
+  };
+
+  const makeStream = (initialText, { chatId } = {}) => {
+    const streamId = randomUUID();
+    registry.open({ streamId, chatId, initialText });
+    return createStreamProxy({ streamId, sendEvent, awaitResult });
+  };
+
+  return { makeStream, registry, deliverResult };
+}
+
+/**
  * Atomically write a JSON event into a "kept directory" via the same
  * write-then-rename pattern the outbox sibling-side helper uses, so
  * the corresponding fs.watch reader on the other side never sees a
