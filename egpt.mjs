@@ -25,7 +25,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
-import { startOutboxWatcher, startBaileysBridge, isBaileysPaired } from './egpt-comm-handler.mjs';
+import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
@@ -1908,6 +1908,13 @@ function App() {
   // watcher uses that to leave the file in place when no bridge is up
   // (retry on the next sweep instead of losing the message).
   const dispatchWaSendRef = useRef(null);
+  // Stream factory ref — set when the WA bridge starts (twin-soul
+  // phase 2b). makeStream(initialText, {chatId}) is the proxy-aware
+  // replacement for waBridgeRef.current.startStreamMessage. Today
+  // it's an in-process wrapper around bridge.startStreamMessage;
+  // when the keeper runs in its own process the same call site
+  // gets a file-IPC implementation, transparent to callers.
+  const streamFactoryRef = useRef(null);
   // 5-minute @e heartbeat guard. true while a heartbeat tick is
   // mid-dispatch; the next tick that fires during that window is
   // skipped (try again in 5 minutes). Operator-driven @e activity
@@ -2540,6 +2547,21 @@ function App() {
       });
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
+      // Twin-soul phase 2b: spin up the stream factory bound to this
+      // bridge. Reads streaming knobs fresh from EGPT_CONFIG so the
+      // operator can re-tune update_coalesce_ms / finish_timeout_ms
+      // without restart. createInProcessStreamChannel wraps the
+      // bridge in-process today; the file-IPC variant slots in later
+      // when the keeper runs as its own process.
+      const streamCfg = EGPT_CONFIG.streaming ?? {};
+      const streamChannel = createInProcessStreamChannel(bridge);
+      streamFactoryRef.current = (initialText, opts = {}) =>
+        streamChannel.makeStream(initialText, opts, {
+          ...(typeof streamCfg.update_coalesce_ms === 'number'
+            ? { updateCoalesceMs: streamCfg.update_coalesce_ms } : {}),
+          ...(typeof streamCfg.finish_timeout_ms === 'number'
+            ? { finishTimeoutMs: streamCfg.finish_timeout_ms } : {}),
+        });
       logOut('whatsapp bridge enabled');
       return true;
     } catch (e) {
@@ -2552,6 +2574,7 @@ function App() {
     if (!waBridgeRef.current) return false;
     waBridgeRef.current.stop();
     waBridgeRef.current = null;
+    streamFactoryRef.current = null;
     _globalWaBridge = null;
     setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge stopped', _localOnly: true }]);
     return true;
@@ -4263,7 +4286,7 @@ function App() {
     const waStreamChatId = waChatId ?? _waJoinedFirst()?.jid;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
     const wa = (!fromAnyBridge || waChatId)
-      ? waBridgeRef.current?.startStreamMessage?.(`${waPrefix}\n⌛ thinking…`,
+      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`,
           waStreamChatId ? { chatId: waStreamChatId } : {})
       : null;
     const tgFmt = (text) => {
@@ -4982,8 +5005,8 @@ function App() {
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
-        const waStream = (useWaStream && waBridgeRef.current?.startStreamMessage)
-          ? waBridgeRef.current.startStreamMessage(`${waPrefix}⌛ thinking…`,
+        const waStream = (useWaStream && streamFactoryRef.current)
+          ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
 
@@ -5160,8 +5183,8 @@ function App() {
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
-        const waStream = (meta.fromWhatsApp && waBridgeRef.current?.startStreamMessage)
-          ? waBridgeRef.current.startStreamMessage(`${waPrefix}⌛ thinking…`,
+        const waStream = (meta.fromWhatsApp && streamFactoryRef.current)
+          ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
         const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
