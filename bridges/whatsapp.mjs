@@ -655,15 +655,33 @@ export async function startWhatsAppBridge({
   console.info  = (...args) => { if (!isLibsignalNoise(...args)) _origInfo(...args); };
   console.warn  = (...args) => { if (!isLibsignalNoise(...args)) _origWarn(...args); };
   console.error = (...args) => { if (!isLibsignalNoise(...args)) _origError(...args); };
-  // Track WAMessage IDs we sent ourselves so we can filter the echoes
-  // WhatsApp sends back to all linked devices (us included). 60-second
-  // window is plenty — IDs live shorter than that on the wire.
+  // Track WAMessage IDs we sent ourselves so we can filter the
+  // echoes WhatsApp sends back to all linked devices AND so the
+  // reply-as-mention detection works for ANY past bot message —
+  // not just the last N seconds. Persisted at ~/.egpt/wa-sent.jsonl
+  // (load on bridge start, append on each send) so a daemon restart
+  // does not amnesia the history. Operator can rm the file to reset;
+  // bridge rebuilds from the next send onward.
+  const SENT_LOG = join(homedir(), '.egpt', 'wa-sent.jsonl');
   const _sentIds = new Map();    // id -> ts
+  try {
+    const raw = readFileSync(SENT_LOG, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const { id, ts } = JSON.parse(line);
+        if (id) _sentIds.set(id, ts ?? 0);
+      } catch (_) { /* skip malformed lines */ }
+    }
+  } catch (_) { /* file missing on first run; created lazily by rememberSent */ }
   function rememberSent(id) {
     if (!id) return;
-    _sentIds.set(id, Date.now());
-    const cutoff = Date.now() - 60_000;
-    for (const [k, t] of _sentIds) if (t < cutoff) _sentIds.delete(k);
+    if (_sentIds.has(id)) return;                  // dedupe re-tracks
+    const ts = Date.now();
+    _sentIds.set(id, ts);
+    // Async append; in-memory map is already updated above so
+    // concurrent reads see the new id immediately.
+    fs.appendFile(SENT_LOG, JSON.stringify({ id, ts }) + '\n').catch(() => {});
   }
 
   // Override baileys' default auto-extraction of @<digits> patterns
