@@ -345,6 +345,13 @@ export async function startWhatsAppBridge({
   // via the 5s debounced disk save below.
   const _msgBodyById = new Map();
   const _MSG_BODY_CACHE_CAP = Infinity;
+  // msgId → whisper.cpp transcript (string). Populated during
+  // _saveMediaIfAny when audio transcription completes; consumed by
+  // _enrichAudioText so handleMessage can inline the transcript into
+  // the dispatched body ("[voice note: 31s] <transcript>") instead of
+  // making @e read the sidecar file. Unbounded — transcripts are
+  // small (~1KB typical) and bounded by audio msg count.
+  const _transcriptByMsgId = new Map();
   // Load persisted cache on boot — survives bridge restarts so
   // reaction enrichment can resolve parents from any session in the
   // last ~4000 messages, not just this one.
@@ -398,6 +405,49 @@ export async function startWhatsAppBridge({
   // truncated id for a short quoted preview of the referenced message.
   // Falls through unchanged when the target isn't in our cache (history
   // older than session start, or a chat we haven't observed before).
+  // Enrich an audio placeholder ('[voice note: 8s]' / '[audio: 31s]')
+  // with the whisper.cpp transcript when a sidecar exists. The
+  // sidecar is written by _transcribeAudio synchronously inside
+  // _saveMediaIfAny, so by the time handleMessage runs (which is
+  // awaited AFTER the save Promise.all), the file is on disk.
+  // Pattern: append the transcript after the bracketed placeholder
+  // (keeping the placeholder visible so @e knows the source is audio).
+  // No-op if no audioMessage / no sidecar / read fails.
+  function _enrichAudioText(rawText, msg) {
+    if (!rawText) return rawText;
+    // Only enrich when the underlying message is audio (peel envelopes).
+    const m = msg?.message ?? {};
+    const inner = m.audioMessage
+      ?? m.ephemeralMessage?.message?.audioMessage
+      ?? m.viewOnceMessage?.message?.audioMessage
+      ?? m.viewOnceMessageV2?.message?.audioMessage
+      ?? null;
+    if (!inner) return rawText;
+    const chatJid = msg?.key?.remoteJid;
+    const msgId = msg?.key?.id;
+    if (!chatJid || !msgId) return rawText;
+    // Look up base from the media-index for this chat (written by
+    // _saveMediaIfAny). The index ties msgId → filename so we don't
+    // have to recompute the slug-stamp here.
+    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    let base = null;
+    try {
+      const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
+      base = idx[msgId]?.base ?? null;
+    } catch (_) { /* no index yet */ }
+    if (!base) return rawText;
+    const txtPath = join(dir, `${base}.transcript.txt`);
+    if (!existsSync(txtPath)) return rawText;
+    let transcript = null;
+    try { transcript = readFileSync(txtPath, 'utf8').trim(); }
+    catch (_) { return rawText; }
+    if (!transcript) return rawText;
+    // Append after the placeholder; preserve quoted-preview (↳) prefix
+    // if textOf already glued one on. Pattern in rawText is either
+    // '[voice note: Xs]' / '[audio: Xs]' at start, or '↳ … (from …)\n[voice note: Xs]'.
+    return `${rawText} ${transcript}`;
+  }
+
   function _enrichReactionText(rawText, msg) {
     const r = msg?.message?.reactionMessage;
     if (!r?.key?.id) return rawText;
@@ -934,13 +984,17 @@ export async function startWhatsAppBridge({
       // dropped at the awareness gate still lands on disk. Revoke
       // notifications (a sender deleting a message) are handled in
       // the same loop — the file moves to a 'deleted/' subfolder.
-      for (const msg of messages) {
+      // Await saves+transcribes BEFORE dispatch so the body that
+      // reaches @e includes any transcripts inlined. Parallel via
+      // Promise.all — within a batch, multiple media saves can run
+      // concurrently; dispatch waits for all of them. Voice notes
+      // transcribed via whisper.cpp dominate the wait when present.
+      await Promise.all(messages.map(msg => {
         if (msg.message?.protocolMessage) {
-          _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
-        } else {
-          _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+          return _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
         }
-      }
+        return _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+      }));
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
@@ -1297,18 +1351,30 @@ export async function startWhatsAppBridge({
       const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
       const preConnect = maxBacklogSeconds >= 0 && connectedAt > 0
         && msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000;
+      // For audio: await transcription synchronously BEFORE the
+      // saved-notice fires + before this function returns. Caller's
+      // dispatch loop awaits save, so by the time handleMessage
+      // computes the body for @e, the <base>.transcript.txt sidecar
+      // exists and _enrichAudioText can inline it into the wa-inbound
+      // text. No-op when whatsapp.media.audio_transcribe.enabled
+      // is false (returns null fast).
+      let transcript = null;
+      if (hit.kind === 'audio') {
+        transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+          .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+        // Stash transcript text keyed by msgId so handleMessage's
+        // textOf path can inline it into the dispatched body.
+        if (transcript?.text && msg.key?.id) {
+          _transcriptByMsgId.set(msg.key.id, transcript.text);
+        }
+      }
       try { onMediaSaved?.({
         kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length,
         msgKey: msg.key, msgRaw: msg.message,
         preConnect,
+        transcriptPath: transcript?.path ?? null,
+        transcript: transcript?.text ?? null,
       }); } catch (_) {}
-      // Fire-and-forget audio transcription (no-op unless
-      // whatsapp.media.audio_transcribe.enabled). Doesn't block
-      // the saved-notice; transcript sidecar appears later.
-      if (hit.kind === 'audio') {
-        _transcribeAudio({ inputPath: path, outputDir: dir, base })
-          .catch(e => log(`transcribe error (${base}): ${e.message}`));
-      }
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
@@ -1559,7 +1625,7 @@ export async function startWhatsAppBridge({
     // counter for the logon-summary "most-reacted item" line —
     // happens regardless of whether the reaction reaches onIncoming.
     if (msg.message?.reactionMessage) _recordReaction(msg);
-    const text = _enrichReactionText(textOf(msg.message), msg);
+    const text = _enrichAudioText(_enrichReactionText(textOf(msg.message), msg), msg);
 
     // Wake-word: any message containing '@egpt' (as a token) bypasses
     // awareness. Lets the user summon egpt from a friend DM (where
