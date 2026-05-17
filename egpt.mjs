@@ -134,10 +134,30 @@ function clearPidfile() {
 
 // Load config: global (~/.egpt/config.json) then local (.egpt/config.json).
 // Local keys override global ones. Both files are optional.
+//
+// Merge is ONE-LEVEL DEEP for plain-object values (telegram, whatsapp,
+// default_brain, meta_brain, siblings, oracle, etc.) so a local file
+// that overrides ONE sub-key (e.g. {whatsapp:{client_name:"moto"}})
+// doesn't clobber the rest of the global whatsapp block (chat_id,
+// auto_e_chats, allowed_users, awareness, etc.). Shipped 2026-05-17
+// after a silent config-clobber bug caused auto_e_chats to vanish
+// in-memory, dropping fromMe messages at the bridge awareness gate.
 let EGPT_CONFIG = {};
 try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
 const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
-try { EGPT_CONFIG = { ...EGPT_CONFIG, ...JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')) }; } catch {}
+function _isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
+function _shallowDeepMerge(base, override) {
+  if (!_isPlainObject(override)) return override;
+  const out = { ...base };
+  for (const [k, v] of Object.entries(override)) {
+    out[k] = _isPlainObject(v) && _isPlainObject(base?.[k]) ? { ...base[k], ...v } : v;
+  }
+  return out;
+}
+try {
+  const local = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8'));
+  EGPT_CONFIG = _shallowDeepMerge(EGPT_CONFIG, local);
+} catch {}
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 // dp(path) — display a filesystem path, converting to POSIX style when
@@ -2213,17 +2233,12 @@ function App() {
     // mentioned member message before reaching auto_e_chats dispatch.
     // Operator (2026-05-17): "obviously do not skip my own messages."
     const wa = waBridgeRef.current;
-    if (!wa || typeof wa.setBypassChats !== 'function') {
-      console.log(`[diag sync] _syncBypassToBridge called but wa=${!!wa} hasSetBypassChats=${typeof wa?.setBypassChats}`);
-      return;
-    }
+    if (!wa || typeof wa.setBypassChats !== 'function') return;
     const joined = _waJoinedAll().map(e => e.jid);
     const auto = Array.isArray(EGPT_CONFIG.whatsapp?.auto_e_chats)
       ? EGPT_CONFIG.whatsapp.auto_e_chats
       : [];
-    const merged = [...new Set([...joined, ...auto])];
-    console.log(`[diag sync] _syncBypassToBridge: joined=${joined.join(',')||'∅'} auto=${auto.join(',')||'∅'} merged=${merged.join(',')||'∅'} EGPT_CONFIG.whatsapp=${Object.keys(EGPT_CONFIG.whatsapp||{}).join(',')}`);
-    wa.setBypassChats(merged);
+    wa.setBypassChats([...new Set([...joined, ...auto])]);
   };
   const _waJoinedAdd = (entry) => {
     if (!waJoinedRef.current) waJoinedRef.current = new Map();
