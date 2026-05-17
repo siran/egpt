@@ -5197,15 +5197,21 @@ function App() {
         // mirror, don't broadcast on bus. Log to /log for audit so
         // the operator can verify e is alive and exercising the
         // skip option (vs hung).
-        if (reply.trim() === '...') {
-          // Best-effort close any stream we opened for the placeholder.
-          // For tgStream there's no concept of "delete", finishing with
-          // the polite-ack would post '...'; instead leave it as the
-          // last-edited '⌛ thinking…' and let the operator know via log.
+        // Polite-ack filter ('...') AND internal-note filter (reply
+        // is wholly a parenthetical aside, e.g. "(noted)" or
+        // "(thinking about ...)"). Operator-reported (2026-05-17): e
+        // sometimes treats parenthetical replies as internal notes
+        // but they ALL got piped to WA as actual messages. Treat as
+        // silence: log + leave the stream placeholder as "…", never
+        // send to any bridge.
+        const trimmedReply = reply.trim();
+        const wholeParen = /^\([^)]*\)$/s.test(trimmedReply);
+        if (trimmedReply === '...' || wholeParen) {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-          logOut(`@e: polite '...' from ${where} (skipped per /rules)`);
+          const why = wholeParen ? `internal note "${trimmedReply.slice(0, 60)}"` : `polite '...'`;
+          logOut(`@e: ${why} from ${where} (skipped — not sent)`);
           return;
         }
 
