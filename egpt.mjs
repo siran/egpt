@@ -3895,46 +3895,34 @@ function App() {
     const idStr = String(chatId);
     const isGroup = idStr.endsWith('@g.us');
     if (isGroup) {
-      // Prefer the chat's REAL displayed name (e.g. "tools still visible")
-      // over the slug — operator spec: "i identify the group by the header
-      // i see in the screen, or a book by its cover." Slug-form was reading
-      // as a technical identifier to @e (e.g. "tool_calls_still_visible.wa"),
-      // confusing instead of human. Fall back to slug, then to bare jid.
-      const name = waBridgeRef.current?.getChatName?.(chatId);
-      if (name) return name;
+      // Group surface = '<slug>.wa' per operator's preferred shape:
+      // '[Sender@compren-bitcoin.wa (HH:MM)]: msg'. Slug is the
+      // kebab/underscore form of the chat's name; renames re-derive
+      // it on next bridge refresh. Bare-jid fallback if the bridge
+      // hasn't observed a slug yet.
       const slug = waBridgeRef.current?.getChatSlug?.(chatId);
       const jidNum = idStr.replace(/@g\.us$/, '');
-      return slug ? `${slug}.${jidNum}.wa` : `wa.${jidNum}`;
+      return slug ? `${slug}.wa` : `wa.${jidNum}`;
     }
     return `wa.${idStr}`;
   }
 
-  // Format a single auto-dispatched message for e's eyes. Two shapes
-  // depending on chatType — operator: "i identify the group by the
-  // header i see in the screen, like a book by its cover," and e was
-  // conflating sender vs chat in the prior @-tag form.
+  // Format a single auto-dispatched message for e's eyes. Canonical
+  // operator-mandated shape: `[Sender@surface (HH:MM)]: body`.
   //
-  //   group:    [in "Compre Bitcoin", Auge at 12:30]: msg
-  //   private:  [Mauricio at 12:30]: msg            (sender = chat in DMs)
-  //   status:   [Friend's status at 12:30]: msg
+  //   group:    [Simon@compren-bitcoin.wa (14:06)]: like tears in the rain
+  //   private:  [Mauricio@wa.5491... (14:06)]: hola
+  //   status:   [Friend@wa.status@broadcast (14:06)]: <body>
   //
-  // chatName falls back to the surface tag (which itself falls back to
-  // the bare jid in the bridge) when the WA bridge hasn't observed a
-  // name for the chat yet.
-  function formatAutoDispatchLine({ senderName, body, ts, surface, chatType, chatName }) {
+  // The same one-line form across all chat types keeps the parser
+  // simple for @e and avoids the sender-vs-chat ambiguity that the
+  // earlier `[in "Chat", Sender at HH:MM]` form introduced.
+  function formatAutoDispatchLine({ senderName, body, ts, surface }) {
     const d = new Date(ts ?? Date.now());
     const pad = (n) => String(n).padStart(2, '0');
     const tstr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
     const sender = senderName ?? 'someone';
-    if (chatType === 'group') {
-      const where = chatName ?? surface ?? 'wa group';
-      return `[in "${where}", ${sender} at ${tstr}]: ${body}`;
-    }
-    if (chatType === 'status') {
-      return `[${sender}'s status at ${tstr}]: ${body}`;
-    }
-    // private DM — sender IS the chat; don't duplicate
-    return `[${sender} at ${tstr}]: ${body}`;
+    return `[${sender}@${surface ?? 'wa'} (${tstr})]: ${body}`;
   }
 
   function formatPersonaPrompt(meta, body) {
