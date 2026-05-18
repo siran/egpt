@@ -5188,14 +5188,14 @@ function App() {
         // the streaming UX — the operator/replier is engaging e
         // specifically and the typing/edit cadence is appropriate.
         const isReplyToE = meta.replyPersona === 'e' || meta.replyPersona === 'egpt';
-        // Operator-from-own-account messages count as direct intent to engage @e
-        // (per operator 2026-05-17: "me gustaría que respondieses más rapido…
-        // apenas recibas el mensaje, para saber que estás ahí"). Stream those
-        // so the '⌛ thinking…' placeholder lands instantly even in auto_e_chats.
-        // Other participants' messages still skip the stream — @e silently
-        // '...'-acks most, no need to spam typing indicators in the group.
-        const isOperatorMsg = meta.waMsgKey?.fromMe === true;
-        const useWaStream = meta.fromWhatsApp && (!meta.autoDispatched || isReplyToE || isOperatorMsg);
+        // Stream only when there's explicit intent to engage @e (a long-press
+        // reply to one of @e's messages). Earlier (f89207b) the stream also
+        // opened for any fromMe message in auto_e_chats so operator saw a
+        // snappy "⌛ thinking…" placeholder — but when @e returned silence,
+        // the placeholder appeared briefly and then got revoked, producing a
+        // visible flicker. Operator (2026-05-18): "if not necessary i
+        // wouldn't even reply" — prefer invisible silence over flicker.
+        const useWaStream = meta.fromWhatsApp && (!meta.autoDispatched || isReplyToE);
         // Persona prefix from siblings registry: name + body_emoji are
         // both registry-derived so @e ↔ 🐶 e (haiku), @egpt ↔ 🧠 egpt
         // (infrastructure), or whatever the operator wires. Falls back
