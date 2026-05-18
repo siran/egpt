@@ -5243,8 +5243,19 @@ function App() {
         // trimmedReply === '...'.
         const ellipsisLed = /^(\.\.\.|…)(\s|$)/.test(trimmedReply) && trimmedReply !== '...' && trimmedReply !== '…';
         if (trimmedReply === '...' || trimmedReply === '…' || wholeParen || verbalizedSkip || selfNarration || ellipsisLed) {
+          // Revoke any placeholder we opened — finish('…') was leaving
+          // a visible "🐶 …" message in the chat. Telegram's edit can
+          // shrink the placeholder text but we still want minimal noise;
+          // tg finish to '…' is harmless (no badge spam there) but if a
+          // cancel method shows up on tg streams later, swap it in.
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
-          if (waStream) await waStream.finish(`${waPrefix}…`).catch(() => {});
+          if (waStream) {
+            if (typeof waStream.cancel === 'function') {
+              await waStream.cancel().catch(() => {});
+            } else {
+              await waStream.finish(`${waPrefix}…`).catch(() => {});
+            }
+          }
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
           const why = wholeParen      ? `internal note "${trimmedReply.slice(0, 60)}"`
                     : verbalizedSkip  ? `verbalized skip "${trimmedReply.slice(0, 60)}"`
