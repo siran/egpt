@@ -67,15 +67,19 @@ const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 // literal "..." into WA. Operator (2026-05-17): "e keeps posting
 // visibly '...' i think this should be filtered by bridge."
 //
-// Matches: '...', '…', '🐶 ...', '🐶 e: ...', '🐶 e: …', etc. The
-// optional leading emoji + optional "<name>: " preamble covers the
+// Matches: '...', '…', '🐶 ...', '🐶 e: ...', '🐶 e: …', '🐶 e\n…' etc.
+// The optional leading emoji + optional "<name><sep>" preamble covers the
 // persona-tag-prefix shape the bridge auto-adds upstream of this layer.
+// The separator after the name accepts EITHER ':' OR pure whitespace
+// (including '\n') because egpt.mjs's persona-dispatch waPrefix uses
+// '<emoji> <name>\n' (newline-delimited) — the prior ':\s' shape missed
+// the leak (operator-reported 2026-05-17 23:05: '🐶 e\n…' still visible).
 // Trailing letters / a real message body break the match — only pure
 // silence variants are dropped.
 export function isSilenceMarker(text) {
   if (!text) return false;
   const trimmed = String(text).trim();
-  return /^(\p{Extended_Pictographic}[\p{Extended_Pictographic}️‍]*\s*)?(\w{1,16}\s*:\s*)?(\.{3}|…)\s*$/u.test(trimmed);
+  return /^(\p{Extended_Pictographic}[\p{Extended_Pictographic}️‍]*\s*)?(\w{1,16}[:\s]\s*)?(\.{3}|…)\s*$/u.test(trimmed);
 }
 // Reconnect backoff. Initial wait, doubled on each consecutive
 // failure, capped. baileys often reports 'connection.update' close
