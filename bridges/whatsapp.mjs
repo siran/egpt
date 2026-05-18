@@ -59,6 +59,24 @@ import { spawn as _spawnChild } from 'node:child_process';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
+
+// Silence-marker detector. egpt.mjs's persona dispatch already filters
+// '...' / '…' / "(internal note)" / etc. before invoking bridge.send,
+// but defense-in-depth: a caller that bypasses that path (a future
+// slash command, an outbox event, an extension write) must not leak a
+// literal "..." into WA. Operator (2026-05-17): "e keeps posting
+// visibly '...' i think this should be filtered by bridge."
+//
+// Matches: '...', '…', '🐶 ...', '🐶 e: ...', '🐶 e: …', etc. The
+// optional leading emoji + optional "<name>: " preamble covers the
+// persona-tag-prefix shape the bridge auto-adds upstream of this layer.
+// Trailing letters / a real message body break the match — only pure
+// silence variants are dropped.
+export function isSilenceMarker(text) {
+  if (!text) return false;
+  const trimmed = String(text).trim();
+  return /^(\p{Extended_Pictographic}[\p{Extended_Pictographic}️‍]*\s*)?(\w{1,16}\s*:\s*)?(\.{3}|…)\s*$/u.test(trimmed);
+}
 // Reconnect backoff. Initial wait, doubled on each consecutive
 // failure, capped. baileys often reports 'connection.update' close
 // → open → close in quick succession when WA's edge is flapping;
@@ -2588,6 +2606,11 @@ export async function startWhatsAppBridge({
     async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return null;
+      // Defense-in-depth silence filter — see isSilenceMarker docs.
+      if (isSilenceMarker(text)) {
+        log(`send: dropping silence-marker "${String(text).trim().slice(0, 40)}" → ${target}`);
+        return { silenced: true };
+      }
       // Chunk long bodies so WA's per-message limit (or any
       // intermediate baileys quirk at large sizes) doesn't silently
       // truncate the reply. First chunk's send result is what the
@@ -2732,6 +2755,13 @@ export async function startWhatsAppBridge({
           maybeEdit();
         },
         async finish(text) {
+          // Silence-marker → revoke the placeholder instead of editing it
+          // to "…" (which the recipient sees as a stranded "🐶 …" message).
+          // Operator-reported leak path: persona returns '...', caller calls
+          // finish('🐶 …'), placeholder gets edited to '🐶 …', stays visible.
+          if (isSilenceMarker(text)) {
+            return this.cancel();
+          }
           finished = true;
           pending = text;
           if (editTimer) { clearTimeout(editTimer); editTimer = null; }
@@ -2797,6 +2827,30 @@ export async function startWhatsAppBridge({
         // also threw, no message visible on the recipient's phone.
         get delivered() { return delivered; },
         get lastError() { return lastError; },
+        // Cancel — caller decided no reply should be sent (persona '...'
+        // ack). Revoke the in-flight placeholder so the recipient sees
+        // nothing instead of a stranded "⌛ thinking…" / "🐶 …".
+        // Waits briefly for the initial send to land so we have a
+        // msgKey to revoke; if it never lands within the grace window,
+        // the orphaned placeholder is acceptable (the alternative is
+        // racing baileys' internal queue).
+        async cancel() {
+          finished = true;
+          pending = null;
+          if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+          stopTyping();
+          const deadline = Date.now() + 3000;
+          while (!initialDone && Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+          if (!msgKey) return;
+          try {
+            await _timeBound(_safeSend(target, { delete: msgKey }), 'stream cancel revoke');
+          } catch (e) {
+            lastError = e.message;
+            err(`stream cancel revoke: ${e.message}`);
+          }
+        },
       };
     },
     stop() {
