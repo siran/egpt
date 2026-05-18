@@ -156,6 +156,40 @@ export function stream({ history, message }, onUpdate, options = {}) {
     }
     const proc = spawn('claude', args, spawnOpts);
 
+    // Watchdog: kill the subprocess if it produces no output for
+    // STALL_MS (likely hung) or runs longer than HARD_MS (runaway).
+    // Real-world failure mode (2026-05-17): claude subprocess exits
+    // but Node's 'close' event never fires (stdio pipe stays half-
+    // open), so the awaiting daemon spins forever. Without this
+    // watchdog the only recovery is a manual daemon restart.
+    const STALL_MS = options.stallTimeoutMs ?? 180_000;
+    const HARD_MS  = options.hardTimeoutMs  ?? 600_000;
+    const startedAt = Date.now();
+    let lastProgressAt = startedAt;
+    const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
+    const watchdog = setInterval(() => {
+      const idle = Date.now() - lastProgressAt;
+      const total = Date.now() - startedAt;
+      if (idle < STALL_MS && total < HARD_MS) return;
+      const reason = total >= HARD_MS ? `hard timeout ${HARD_MS}ms` : `stalled ${idle}ms`;
+      try { onLog(`claude-code: killing pid ${proc.pid} — ${reason} (acc=${acc.length}ch)`); } catch {}
+      try { proc.kill('SIGTERM'); } catch {}
+      // Hard kill after 2s grace if SIGTERM didn't take.
+      setTimeout(() => { try { proc.kill('SIGKILL'); } catch {} }, 2000);
+      // Don't reject here — let close/error handler fire naturally.
+      // If close still doesn't fire after kill, the safety net below trips.
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          clearInterval(watchdog);
+          reject(new Error(`claude-code: pid ${proc.pid} ${reason} and never closed after kill`));
+        }
+      }, 5000);
+    }, 5000);
+    let settled = false;
+    const wrapReject = (err) => { if (!settled) { settled = true; clearInterval(watchdog); reject(err); } };
+    const wrapResolve = (v)   => { if (!settled) { settled = true; clearInterval(watchdog); resolve(v); } };
+
     let buf = '';
     let acc = '';
     let finalText = null;
@@ -169,6 +203,7 @@ export function stream({ history, message }, onUpdate, options = {}) {
 
     proc.stdout.setEncoding('utf8');
     proc.stdout.on('data', chunk => {
+      lastProgressAt = Date.now();
       buf += chunk;
       const lines = buf.split('\n');
       buf = lines.pop();
@@ -217,17 +252,19 @@ export function stream({ history, message }, onUpdate, options = {}) {
               if (parts.length === 0) parts.push(`raw event: ${raw.slice(0, 600)}${raw.length > 600 ? '…' : ''}`);
             } catch {}
             const detail = parts.join('\n  ');
-            return reject(new Error(`claude: ${ev.subtype}${detail ? '\n  ' + detail : ''}`));
+            return wrapReject(new Error(`claude: ${ev.subtype}${detail ? '\n  ' + detail : ''}`));
           }
         }
       }
     });
 
     proc.stderr.setEncoding('utf8');
-    proc.stderr.on('data', c => (stderrBuf += c));
+    proc.stderr.on('data', c => { lastProgressAt = Date.now(); stderrBuf += c; });
 
     proc.on('close', code => {
-      if (code !== 0) return reject(new Error(`claude exit ${code}: ${stderrBuf.trim() || 'no stderr'}`));
+      const dur = Date.now() - startedAt;
+      try { onLog(`claude-code: pid ${proc.pid} exit ${code} after ${dur}ms (acc=${acc.length}ch, final=${finalText ? finalText.length+'ch' : 'null'})`); } catch {}
+      if (code !== 0) return wrapReject(new Error(`claude exit ${code}: ${stderrBuf.trim() || 'no stderr'}`));
       const text = finalText ?? acc;
       // Object return form: runBrainTurn / runDefaultBrainTurn both
       // recognize { text, optionsPatch } and persist optionsPatch
@@ -235,7 +272,7 @@ export function stream({ history, message }, onUpdate, options = {}) {
       // --resume <session>). When session_id wasn't surfaced for
       // any reason, optionsPatch is null and runBrainTurn falls
       // back to its legacy string-handling path.
-      resolve({
+      wrapResolve({
         text,
         optionsPatch: capturedSessionId ? { sessionId: capturedSessionId } : null,
       });
@@ -246,9 +283,9 @@ export function stream({ history, message }, onUpdate, options = {}) {
         const msg = cwd
           ? `spawn ENOENT: claude binary or cwd not found. cwd=${cwd}, original options.cwd=${options.cwd ?? '(none)'}`
           : 'claude not found on PATH';
-        return reject(new Error(msg));
+        return wrapReject(new Error(msg));
       }
-      reject(err);
+      wrapReject(err);
     });
 
     // Resume mode: send only the new user turn (claude has session in JSONL).
