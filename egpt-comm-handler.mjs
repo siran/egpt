@@ -489,6 +489,8 @@ export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
  *   { type: 'wa-group-subject', from, jid, subject }
  *     → dispatchWaGroupSubject(payload, 'outbox'). Same truthy-=-consumed
  *       contract. jid must be a group (@g.us); bot account must be admin.
+ *   { type: 'wa-group-members', from, jid }
+ *     → dispatchWaGroupMembers(payload, 'outbox'). Fetches group members.
  *   { type: 'daemon-restart', from }
  *     → signalRestart(payload). Caller decides what restart means
  *       (today: process.exit(0); future: just kill the handler half).
@@ -501,6 +503,7 @@ export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
  * @param {object} opts
  * @param {(payload, src) => any} opts.dispatchWaSend          - send via baileys; truthy if consumed
  * @param {(payload, src) => any} [opts.dispatchWaGroupSubject] - groupUpdateSubject; truthy if consumed; absent = log+drop
+ * @param {(payload, src) => any} [opts.dispatchWaGroupMembers] - getGroupMembers; truthy if consumed; absent = log+drop
  * @param {(msg) => void} opts.log                             - operator-visible status (sysLog/sysOut)
  * @param {(payload) => void} opts.signalRestart               - daemon-restart handler
  * @param {string} [opts.outboxDir]                            - default ~/.egpt/outbox
@@ -509,6 +512,7 @@ export async function writeIpcEvent(event, { dir, from = 'keeper' } = {}) {
 export function startOutboxWatcher({
   dispatchWaSend,
   dispatchWaGroupSubject = null,
+  dispatchWaGroupMembers = null,
   log = () => {},
   signalRestart = () => {},
   outboxDir,
@@ -560,6 +564,17 @@ export function startOutboxWatcher({
         if (!ok) {
           // Bridge down / not admin / bad jid — leave for retry,
           // release claim. Caller's log already explained.
+          claimed.delete(name);
+          return;
+        }
+      }
+    } else if (payload?.type === 'wa-group-members') {
+      if (typeof dispatchWaGroupMembers !== 'function') {
+        log(`outbox: dropping wa-group-members from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
+      } else {
+        const ok = dispatchWaGroupMembers(payload, 'outbox');
+        if (!ok) {
+          // Bridge down / bad jid — leave for retry, release claim.
           claimed.delete(name);
           return;
         }

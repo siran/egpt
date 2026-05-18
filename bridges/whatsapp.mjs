@@ -2262,6 +2262,21 @@ export async function startWhatsAppBridge({
       await _timeBound(sock.groupUpdateSubject(jid, subject), 'groupUpdateSubject');
       return true;
     },
+    async getGroupMembers({ jid }) {
+      if (!sock) throw new Error('getGroupMembers: no sock');
+      if (!jid || !String(jid).endsWith('@g.us')) {
+        throw new Error(`getGroupMembers: jid must be a group (@g.us), got ${jid}`);
+      }
+      const meta = await _timeBound(sock.groupMetadata(jid), 'groupMetadata');
+      if (!meta || !meta.participants) {
+        return [];
+      }
+      return meta.participants.map(p => ({
+        jid: p.jid,
+        pushName: p.name || p.pushName || '',
+        admin: p.admin || null
+      }));
+    },
     // React to an existing WA message. `key` is the WAMessageKey of
     // the target; `emoji` is the literal reaction text (or '' /
     // null to remove an existing reaction from the same target).
