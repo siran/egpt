@@ -2754,6 +2754,14 @@ export async function startWhatsAppBridge({
       return {
         update(text) {
           if (finished) return;
+          // Never let a silence-marker (e.g. "🐶 e\n…") land as a
+          // placeholder edit — finish/cancel handles the silence path
+          // by revoking. Without this guard, a fast brain that returns
+          // '...' produces update('🐶 e\n...') → flush edits the
+          // placeholder → cancel's revoke races against the already-
+          // landed edit and the recipient sees "🐶 e\n…" anyway.
+          // Operator-reported leak path (2026-05-17 22:31 in Lu Lu chat).
+          if (isSilenceMarker(text)) return;
           pending = text;
           refreshTyping();   // keep "typing…" alive while the brain is still producing
           maybeEdit();
