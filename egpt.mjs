@@ -2654,6 +2654,7 @@ function App() {
       outboxDir:              join(EGPT_HOME, 'outbox'),
       dispatchWaSend:         (payload, src) => dispatchWaSendRef.current?.(payload, src),
       dispatchWaGroupSubject: (payload, src) => dispatchWaGroupSubjectRef.current?.(payload, src),
+      dispatchWaGroupMembers: (payload, src) => dispatchWaGroupMembersRef.current?.(payload, src),
       log:                    sysLog,
       // process.exit(0) → wrapper's while-loop respawns. Post-split
       // this becomes a restart-handler event the keeper sends to
@@ -5673,6 +5674,30 @@ function App() {
       // Common failure: bot account isn't admin → baileys throws.
       // That's permanent for this attempt; unlink so we don't loop.
       log(`!! ${source}: wa-group-subject failed for ${ev.from} → ${ev.jid}: ${e.message}`);
+      return true;
+    }
+  };
+
+  // wa-group-members dispatcher — fetch group members and log them
+  const dispatchWaGroupMembersRef = useRef(null);
+  dispatchWaGroupMembersRef.current = async (ev, source = 'outbox') => {
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const wa = waBridgeRef.current;
+    if (!wa) { log(`${source}: wa-group-members from ${ev.from} dropped — no baileys bridge here`); return false; }
+    if (!wa.getGroupMembers) { log(`${source}: wa-group-members from ${ev.from} dropped — bridge lacks getGroupMembers`); return true; }
+    if (!ev.jid) {
+      log(`!! ${source}: wa-group-members from ${ev.from} malformed — needs {jid}; unlinking`);
+      return true;
+    }
+    try {
+      const members = await wa.getGroupMembers({ jid: ev.jid });
+      const memberList = members.map(m => `  ${m.pushName || '(no name)'} (${m.jid})${m.admin ? ' [admin]' : ''}`).join('\n');
+      log(`${source}: Group members for ${ev.jid}:\n${memberList}`);
+      return true;
+    } catch (e) {
+      log(`!! ${source}: wa-group-members failed for ${ev.from} → ${ev.jid}: ${e.message}`);
       return true;
     }
   };
