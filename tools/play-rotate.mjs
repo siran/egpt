@@ -84,10 +84,13 @@ export function parsePlay(text) {
  * Returns null when the entry doesn't match the expected NAME [HH:MM]: shape.
  */
 export function parseEntry(entry) {
-  const head = entry.match(/^([A-Z][A-Z0-9_-]*)\s*\[(\d{1,2}:\d{2})\]\s*:/);
+  // Accept both formats:
+  //   NAME [HH:MM]: body                     (legacy)
+  //   NAME [YYYY-MM-DD HH:MM]: body          (operator-requested 2026-05-18)
+  const head = entry.match(/^([A-Z][A-Z0-9_-]*)\s*\[([^\]]+)\]\s*:/);
   if (!head) return null;
   const author = head[1].toUpperCase();
-  const time = head[2];
+  const time = head[2].trim();
   const acks = new Set([author]); // author implicit-acks own entry
   const ackRe = /\[([A-Za-z][A-Za-z0-9_-]*)\s*:\s*read\b/g;
   let m;
