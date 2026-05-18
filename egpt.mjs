@@ -2795,9 +2795,29 @@ function App() {
 
     const timer = setInterval(tick, HEARTBEAT_MS);
 
+    // play.md hard-cap rotator — runs on the same 5-min cadence as the
+    // heartbeat. play.md is loaded into every sibling's context on every
+    // cross-resume; unchecked growth is a direct token-cost multiplier.
+    // Policy-driven rotation (reader-ack) is the social layer; this is
+    // the machine safety net.
+    const PLAY_PATH    = join(homedir(), 'Documents', 'notes-markdown', 'projects', 'egpt', 'play.md');
+    const HISTORY_PATH = join(homedir(), 'Documents', 'notes-markdown', 'projects', 'egpt', 'play.history.md');
+    const rotateTick = async () => {
+      if (stopped) return;
+      try {
+        const m = await import('./tools/play-rotate.mjs');
+        const r = await m.rotatePlay({ playPath: PLAY_PATH, historyPath: HISTORY_PATH });
+        if (r) sysLog(`play-rotate: ${r.rotated} entries → history (${r.beforeBytes}→${r.afterBytes} bytes)`);
+      } catch (e) {
+        sysLog(`!! play-rotate: ${e.message}`);
+      }
+    };
+    const playTimer = setInterval(rotateTick, HEARTBEAT_MS);
+
     return () => {
       stopped = true;
       clearInterval(timer);
+      clearInterval(playTimer);
     };
   }, []);
 
