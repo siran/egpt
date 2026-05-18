@@ -2807,7 +2807,27 @@ function App() {
       try {
         const m = await import('./tools/play-rotate.mjs');
         const r = await m.rotatePlay({ playPath: PLAY_PATH, historyPath: HISTORY_PATH });
-        if (r) sysLog(`play-rotate: ${r.rotated} entries → history (${r.beforeBytes}→${r.afterBytes} bytes)`);
+        if (r) {
+          sysLog(`play-rotate: ${r.rotated} entries → history (${r.reason}, ${r.beforeBytes}→${r.afterBytes} bytes)`);
+        }
+        // Nudges: stale partial entries missing acks. Surface every tick so
+        // operator (or a sibling reading /log) can see who's behind.
+        const m2 = await import('./tools/play-rotate.mjs');
+        try {
+          const text = await (await import('node:fs/promises')).readFile(PLAY_PATH, 'utf8');
+          const { entries } = m2.parsePlay(text);
+          const stat = await (await import('node:fs/promises')).stat(PLAY_PATH);
+          const ageHours = (Date.now() - stat.mtimeMs) / 3_600_000;
+          if (ageHours >= 4) {
+            for (const raw of entries) {
+              const p = m2.parseEntry(raw);
+              const c = m2.classifyEntry(p);
+              if (p && c.status === 'partial') {
+                sysLog(`play-nudge: ${p.author} [${p.time}] still waiting on: ${c.missing.join(', ')}`);
+              }
+            }
+          }
+        } catch (_) {}
       } catch (e) {
         sysLog(`!! play-rotate: ${e.message}`);
       }
