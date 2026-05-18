@@ -5604,6 +5604,27 @@ function App() {
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
+    // Silence filter: check for polite-ack ("..."), internal notes
+    // (wholly-parenthetical), verbalized skips, self-narration, or
+    // ellipsis-led reflection. Drop silently — don't send to WA.
+    const trimmedBody = (ev.body ?? '').trim();
+    const wholeParen = /^\([^)]*\)$/s.test(trimmedBody);
+    const verbalizedSkip = /^(no (response|reply|comment) (needed|necessary|required)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts)\.?$/i
+      .test(trimmedBody);
+    const selfNarration = (
+      /^(I see (you're|you are|that) |The (persona|model|brain|system|assistant) (is|has)|E's (got|currently|been|now)|@e is )/i.test(trimmedBody)
+      || /^what'?s (next|now)\??$/i.test(trimmedBody)
+    );
+    const ellipsisLed = /^(\.\.\.|…)(\s|$)/.test(trimmedBody) && trimmedBody !== '...' && trimmedBody !== '…';
+    if (trimmedBody === '...' || trimmedBody === '…' || wholeParen || verbalizedSkip || selfNarration || ellipsisLed) {
+      const why = wholeParen      ? `internal note "${trimmedBody.slice(0, 60)}"`
+                : verbalizedSkip  ? `verbalized skip "${trimmedBody.slice(0, 60)}"`
+                : selfNarration   ? `self-narration "${trimmedBody.slice(0, 60)}"`
+                : ellipsisLed     ? `ellipsis-led reflection "${trimmedBody.slice(0, 80)}"`
+                                  : `polite '...'`;
+      log(`${source}: wa-send from ${ev.from} to ${ev.jid} dropped — ${why} (not sent)`);
+      return true;  // consume — don't retry
+    }
     // Write-side whitelist for the @e persona: e can only post to
     // chats explicitly enrolled by the operator (auto_e_chats + the
     // operator's self_dm chat_id). Other sender labels (jay-*, wren-*,
