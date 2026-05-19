@@ -20,15 +20,17 @@ export const meta = {
   desc: 'manage @egpt persona session-history state',
 };
 
-export async function run({ arg, ctx }) {
+export async function run({ arg, meta, ctx }) {
   // ctx keys consumed:
   //   sysOut(text)
   //   readDefaultBrainState()                    — read persisted state
   //   persistDefaultBrainState(next)             — write
   //   canonicalBrainName(s) / brainForName(s)    — type lookups
   //   humanAge(ts)                               — '5m ago' formatter
+  //   EGPT_CONFIG, injectIdentityIntoPersona, USER_NAME — for /egpt new → identity chain
   const { sysOut, readDefaultBrainState, persistDefaultBrainState,
-          canonicalBrainName, brainForName, humanAge } = ctx;
+          canonicalBrainName, brainForName, humanAge,
+          EGPT_CONFIG, injectIdentityIntoPersona, USER_NAME } = ctx;
 
   const parts = arg.trim().split(/\s+/);
   const sub = (parts[0] || 'status').toLowerCase();
@@ -77,12 +79,60 @@ export async function run({ arg, ctx }) {
   }
   if (sub === 'new') {
     const next = startNew(state);
-    if (next === state) {
-      sysOut('egpt: already on a fresh state — next @egpt starts a new thread');
-      return true;
+    const wasFresh = (next === state);
+    if (!wasFresh) await persistDefaultBrainState(next);
+    sysOut(wasFresh
+      ? 'egpt: already on a fresh state — running identity inject now'
+      : 'egpt: cleared active session — injecting identity into fresh thread');
+
+    // Operator (2026-05-19): "/e new should inject also identity."
+    // Chain straight into a forced identity install so the new
+    // session starts with the persona manifest in place — no
+    // dangling window where @e is naked claude-code until /identity
+    // is run separately. injectIdentityIntoPersona spawns claude
+    // with sessionId=null, captures the new session_id via
+    // optionsPatch, and persists it back to default_brain.
+    try {
+      const dbCfg = next.type
+        ? { ...EGPT_CONFIG.default_brain, type: next.type, session_id: null, url: null }
+        : { ...EGPT_CONFIG.default_brain, session_id: null, url: null };
+      const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
+      const brain = brainForName(brainType);
+      if (!brain) { sysOut(`!! /egpt new: brain "${brainType}" not found`); return true; }
+      const sessionOpts = {
+        sessionId: null,
+        cwd:       dbCfg.cwd ?? process.cwd(),
+        sessionName: 'egpt',
+        userName:    USER_NAME,
+        ...(brainType === 'ccode'   ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(dbCfg.system_prompt     ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
+        ...(dbCfg.model             ? { model: dbCfg.model                        } : {}),
+      };
+      const ack = await injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
+      sysOut(`egpt: identity installed — fresh session active${ack ? ` (@e: "${String(ack).slice(0, 80)}${String(ack).length > 80 ? '…' : ''}")` : ''}`);
+
+      // Same wa-relay path as /identity: if invoked from a chat,
+      // ack lands back in that chat.
+      const ackText = String(ack ?? '').trim();
+      const originJid = meta?.waChatId;
+      if (ackText && ackText !== '...' && ackText !== '…' && originJid) {
+        try {
+          const fsmod   = await import('node:fs/promises');
+          const pathmod = await import('node:path');
+          const osmod   = await import('node:os');
+          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
+          await fsmod.writeFile(
+            pathmod.join(osmod.homedir(), '.egpt', 'outbox', id + '.json'),
+            JSON.stringify(ev),
+          );
+        } catch (e) {
+          sysOut(`!! /egpt new: failed to relay ack to ${originJid}: ${e?.message ?? e}`);
+        }
+      }
+    } catch (e) {
+      sysOut(`!! /egpt new: identity inject failed — ${e?.message ?? e}. session is cleared; run /identity manually after next @e turn.`);
     }
-    await persistDefaultBrainState(next);
-    sysOut('egpt: cleared active session — next @egpt starts a new thread');
     return true;
   }
   if (sub === 'rewind') {
