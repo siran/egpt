@@ -2706,33 +2706,48 @@ export async function startWhatsAppBridge({
         sock.sendPresenceUpdate?.('paused', target).catch(() => {});
       };
 
-      // Initial send (async — updates that arrive before this resolves
-      // queue into `pending` and flush once initialDone is true).
-      // `delivered` is NOT set here: the placeholder reaching WA isn't
-      // useful — we only care that the FINAL text did. finish() flips
-      // delivered after a successful edit/send of the final body.
-      // _timeBound prevents a baileys-internal stall from blocking
-      // initialDone forever (would otherwise hang every update + finish).
-      (async () => {
+      // Deferred initial send — operator (2026-05-19): when @e returns
+      // '…' the recipient should see NOTHING. Sending the '⌛ thinking…'
+      // placeholder upfront, then revoking, leaks: recipient glimpses
+      // the placeholder before the revoke lands. Solution: don't send
+      // anything until the first non-silence update / finish arrives.
+      // initialText is dropped; the first real content becomes the
+      // initial send. cancel() before that = nothing ever sent.
+      //
+      // Typing indicator still fires immediately so OTHER party sees
+      // "typing…" while haiku produces; that's free (presence update,
+      // no message in the chat).
+      refreshTyping();
+
+      // Send the first chunk that arrives — promotes update→initial
+      // when no msgKey yet. Marked async so we await it from flush();
+      // concurrent updates queue via pending+lastSent the same as edits.
+      async function _doInitialSend(text) {
+        if (msgKey || initialDone) return;
+        initialDone = true; // claim slot synchronously to avoid double-send
         try {
-          const r = await _timeBound(_safeSend(target, { text: initialText }), 'stream start');
+          const r = await _timeBound(_safeSend(target, { text }), 'stream initial');
           msgKey = r?.key ?? null;
           rememberSent(r?.key?.id);
+          if (r?.key) { delivered = true; lastSent = text; }
         } catch (e) {
           lastError = e.message;
-          err(`stream start: ${e.message}`);
+          err(`stream initial: ${e.message}`);
+          initialDone = false; // let a retry happen on finish()
         }
-        initialDone = true;
-        if (pending !== null) maybeEdit();
-      })();
-      refreshTyping();
+      }
 
       function flush() {
         if (editTimer) { clearTimeout(editTimer); editTimer = null; }
-        if (!initialDone || !msgKey) return;
         if (pending === null || pending === lastSent) return;
         const text = pending;
         pending = null;
+        // No initial sent yet — first chunk becomes the initial send
+        // (deferred-placeholder model). Subsequent flushes edit it.
+        if (!msgKey) {
+          _doInitialSend(text).catch(() => {});
+          return;
+        }
         _timeBound(_safeSend(target, { edit: msgKey, text }), 'stream edit')
           .then((r) => {
             rememberSent(r?.key?.id);
@@ -2839,22 +2854,17 @@ export async function startWhatsAppBridge({
         // also threw, no message visible on the recipient's phone.
         get delivered() { return delivered; },
         get lastError() { return lastError; },
-        // Cancel — caller decided no reply should be sent (persona '...'
-        // ack). Revoke the in-flight placeholder so the recipient sees
-        // nothing instead of a stranded "⌛ thinking…" / "🐶 …".
-        // Waits briefly for the initial send to land so we have a
-        // msgKey to revoke; if it never lands within the grace window,
-        // the orphaned placeholder is acceptable (the alternative is
-        // racing baileys' internal queue).
+        // Cancel — caller decided no reply should be sent. Under the
+        // deferred-initial model, if no first content ever arrived
+        // (msgKey null) NOTHING was sent and there's nothing to clean
+        // up beyond stopping the typing indicator. If a chunk landed
+        // before cancel (rare race: update arrived between flush and
+        // cancel), revoke it via baileys delete.
         async cancel() {
           finished = true;
           pending = null;
           if (editTimer) { clearTimeout(editTimer); editTimer = null; }
           stopTyping();
-          const deadline = Date.now() + 3000;
-          while (!initialDone && Date.now() < deadline) {
-            await new Promise(r => setTimeout(r, 50));
-          }
           if (!msgKey) return;
           try {
             await _timeBound(_safeSend(target, { delete: msgKey }), 'stream cancel revoke');
