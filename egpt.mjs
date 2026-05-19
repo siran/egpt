@@ -4074,20 +4074,30 @@ function App() {
   }
 
   // Build a per-thread filename for ~/.egpt/conversations/e/.
-  //   Stable JID prefix + optional human suffix.
-  //   customName (operator override) wins; else pushedName from table;
-  //   else slug from ctx; else just the JID.
   //
-  //   34836563681438@lid (customName 'self')           → 34836563681438_lid__self.md
-  //   120363407494846096@g.us (pushedName from group)  → 120363407494846096_g_us__premise_driven_bitcoin_e.md
-  //   13920072921144@lid (pushedName 'José Lorenzo')   → 13920072921144_lid__jose_lorenzo.md
-  //   heartbeat                                        → heartbeat.md
+  //   - customName set     → just '<customName>.md' (no JID prefix).
+  //                          Operator-curated alias; multiple JIDs for
+  //                          the same contact (WA gives both 'phone@s.whatsapp.net'
+  //                          and 'lid@lid' for the same person) route to
+  //                          one file when both rows share customName.
+  //   - customName missing → '<JID>__<pushedName-or-slug>.md'. Stable
+  //                          JID prefix until operator curates an alias.
+  //
+  // Operator (2026-05-19): "two JIDs for the same contact should
+  // not split the conversation across files." Setting customName on
+  // both rows in conversations.json merges them here.
   function _sanitizeForFilenameSuffix(s) { return _sanitizeForFilename(s); }
   function _threadFileName(threadId, ctx = {}) {
     const idPart = _sanitizeForFilename(threadId ?? 'unknown') || 'unknown';
     const table = _readConversationsTable();
     const row = table[threadId] ?? {};
-    const suffixRaw = row.customName || row.pushedName || ctx.slug || ctx.name || '';
+    // Operator alias wins — drop the JID prefix entirely so different
+    // JIDs with the same customName share one file.
+    if (row.customName) {
+      const alias = _sanitizeForFilenameSuffix(row.customName);
+      if (alias) return `${alias}.md`;
+    }
+    const suffixRaw = row.pushedName || ctx.slug || ctx.name || '';
     const suffix = _sanitizeForFilenameSuffix(suffixRaw);
     return suffix ? `${idPart}__${suffix}.md` : `${idPart}.md`;
   }
@@ -4193,7 +4203,7 @@ function App() {
           ? `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: \`${threadId}\`  ·  surface: \`${threadCtx.surface ?? '?'}\`  ·  slug: \`${threadCtx.slug ?? '?'}\`\n\n---\n\n`
           : '';
         const entry = header + [
-          `### ${stamp}  →  fed to @e  (${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
+          `### ${stamp}  →  fed to @e  (jid: \`${threadId}\`, ${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
           '',
           '```',
           text,
