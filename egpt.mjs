@@ -27,6 +27,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
+import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './interpreter.mjs';
 import { resolveRoute, planMirrors } from './room.mjs';
@@ -2753,21 +2754,22 @@ function App() {
         sysLog(`heartbeat: skipped — previous tick still running`);
         return;
       }
-      let prompt;
-      try { prompt = readFileSync(HEARTBEAT_PATH, 'utf8'); }
-      catch (e) {
-        sysLog(`!! heartbeat: cannot read ${HEARTBEAT_PATH}: ${e.message}`);
-        return;
+      // Heartbeat resolution chain (C2): try ~/.egpt/heartbeats/default.md
+      // first, then fall back to the legacy ~/.egpt/e-heartbeat.md.
+      // Per-contact / per-personality heartbeats fire separately below.
+      let prompt = await conversationsState.readHeartbeat(null, 'default');
+      if (prompt == null) {
+        try { prompt = readFileSync(HEARTBEAT_PATH, 'utf8'); }
+        catch (e) {
+          sysLog(`!! heartbeat: cannot read ${HEARTBEAT_PATH}: ${e.message}`);
+          return;
+        }
       }
-      if (!prompt || !prompt.trim()) return;   // empty file = disabled
+      if (!prompt || !prompt.trim()) return;   // empty content = disabled
       heartbeatBusyRef.current = true;
       try {
-        // Time-stamp substitution: heartbeat content can use ${time}
-        // (HH:MM local) so @e knows the current time without us
-        // re-injecting identity / repeating context every tick.
-        // Operator (2026-05-19): "let the model be" — no silence-
-        // count nudge, no spontaneity prompt, no system second-
-        // guessing. Just the tick + current time.
+        // ${time} substitution: HH:MM local so @e knows current time
+        // without us repeating context every tick.
         const tstr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
         const resolved = prompt.replace(/\$\{time\}/g, tstr);
         const reply = await runDefaultBrainTurn(resolved, undefined, { threadId: 'heartbeat', surface: 'system', name: 'heartbeat tick' });
@@ -2793,6 +2795,44 @@ function App() {
       } finally {
         heartbeatBusyRef.current = false;
       }
+
+      // Per-contact heartbeats (C2). Iterate contacts; fire a tick to
+      // each whose heartbeatEnabled is true and whose interval has
+      // elapsed. Resolution chain: contact-slug.md > personality.md >
+      // default.md. Errors per-contact don't abort the loop.
+      try {
+        const cs = await _loadConvState();
+        const now = Date.now();
+        const tstr2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        for (const [slug, entry] of Object.entries(cs.contacts ?? {})) {
+          if (stopped) break;
+          if (!conversationsState.shouldFireHeartbeat(entry, now)) continue;
+          if (conversationsState.isMuted(entry)) continue;
+          const personality = entry.personality || 'default';
+          const hbContent = await conversationsState.readHeartbeat(slug, personality);
+          if (!hbContent || !hbContent.trim()) continue;
+          const text = hbContent.replace(/\$\{time\}/g, tstr2);
+          const jid = entry.jids?.[0];
+          if (!jid) continue;
+          try {
+            await runDefaultBrainTurn(text, undefined, {
+              threadId: jid,
+              surface:  'wa',
+              slug,
+              name:     entry.pushedName || slug,
+            });
+            // Mark fired time + persist.
+            const updated = conversationsState.patchContact(
+              await _loadConvState(),
+              slug,
+              { heartbeatLastFiredAt: conversationsState.nowIsoString() },
+            );
+            await _writeConvState(updated);
+          } catch (e) {
+            sysLog(`!! heartbeat[${slug}]: ${e.message}`);
+          }
+        }
+      } catch (_) { /* per-contact heartbeat best-effort */ }
     };
 
     const timer = setInterval(tick, HEARTBEAT_MS);
@@ -4126,6 +4166,39 @@ function App() {
     return fallback ? `${fallback}.md` : `${idPart}.md`;
   }
 
+  // Path to the per-contact YAML registry (operator-editable, daemon-written).
+  const _CONV_YAML_PATH = join(EGPT_HOME, 'conversations', 'e', 'conversations.yaml');
+  const _CONV_JSON_LEGACY = join(EGPT_HOME, 'conversations', 'e', 'conversations.json');
+
+  async function _loadConvState() {
+    // Cheap read each call — YAML is tiny. If yaml missing but legacy
+    // JSON exists, migrate once. Returns conversations-state shape.
+    try {
+      const yamlExists = existsSync(_CONV_YAML_PATH);
+      if (!yamlExists && existsSync(_CONV_JSON_LEGACY)) {
+        try {
+          const json = JSON.parse(readFileSync(_CONV_JSON_LEGACY, 'utf8'));
+          const r = conversationsState.migrateJsonToYaml(json);
+          if (r) {
+            await conversationsState.writeState(_CONV_YAML_PATH, r.state);
+            try { await rename(_CONV_JSON_LEGACY, _CONV_JSON_LEGACY + '.bak'); } catch (_) {}
+            sysLog(`conversations: migrated ${r.migrated} contacts (${r.jids} jids) from JSON → YAML; legacy renamed to .json.bak`);
+          }
+        } catch (e) {
+          sysLog(`!! conversations: migration failed — ${e.message}`);
+        }
+      }
+      return await conversationsState.readState(_CONV_YAML_PATH);
+    } catch (_) {
+      return conversationsState.emptyState();
+    }
+  }
+
+  async function _writeConvState(state) {
+    try { await conversationsState.writeState(_CONV_YAML_PATH, state); }
+    catch (e) { sysLog(`!! conversations: write failed — ${e.message}`); }
+  }
+
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
     const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
     const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
@@ -4191,6 +4264,69 @@ function App() {
       ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
       ...(dbCfg.model              ? { model: dbCfg.model                        } : {}),
     };
+
+    // Per-contact threadId lookup + mute intercept (commit C2). When
+    // the dispatch carries a WA chat JID, route to that contact's
+    // dedicated claude thread so contexts stay separated (haiku can't
+    // juggle 20+ chats in one session). System-level threads
+    // ('heartbeat', 'shell') skip this — they keep using
+    // default_brain.session_id.
+    let _convState = null;
+    let _convSlug = null;
+    let _convEntry = null;
+    let _isNewContact = false;
+    let _wrappedText = text;
+    const isWaContact = (
+      threadCtx.threadId
+      && threadCtx.threadId !== 'heartbeat'
+      && threadCtx.threadId !== 'shell'
+      && (threadCtx.threadId.includes('@') || threadCtx.surface === 'wa')
+    );
+    if (isWaContact) {
+      _convState = await _loadConvState();
+      const r = conversationsState.ensureContact(_convState, threadCtx.threadId, {
+        pushedName: threadCtx.name ?? '',
+        slugHint: threadCtx.slug ?? '',
+      });
+      _convState = r.state;
+      _convSlug = r.slug;
+      _convEntry = r.entry;
+      _isNewContact = r.isNew || !_convEntry.threadId;
+      if (r.changed) await _writeConvState(_convState);
+
+      // Mute intercept: never spawn a brain turn for muted contacts.
+      // Operator (2026-05-19): mute is router-level, not brain-level.
+      if (conversationsState.isMuted(_convEntry)) {
+        return '';
+      }
+
+      // Use this contact's dedicated threadId; if none yet, leave null
+      // so claude spawns a fresh session (captured + persisted below).
+      sessionOpts.sessionId = _convEntry.threadId ?? null;
+
+      // First turn for a new contact: bundle the personality into the
+      // user message so identity lands in the new session AS the first
+      // turn. One round-trip instead of two; the brain's reply IS the
+      // answer to operator's actual text, with personality already in
+      // context. Personality resolution: ~/.egpt/personalities/<name>.md
+      // (operator) → repo personalities/<name>.md (shipped).
+      if (_isNewContact) {
+        const personality = _convEntry.personality || 'default';
+        const identity = await conversationsState.readPersonality(personality);
+        if (identity) {
+          _wrappedText = [
+            `... system: a new conversation thread is being opened for contact "${_convSlug}".`,
+            `   This is your personality profile for this thread:`,
+            ``,
+            identity,
+            ``,
+            `--- end personality. now responding to the actual incoming message ---`,
+            ``,
+            text,
+          ].join('\n');
+        }
+      }
+    }
     // Identity auto-injection disabled per operator (2026-05-19):
     // "never inject identity. sysadmin inject on demand if needed on
     // a conversation." Use /identity in the shell (or WA Self DM)
@@ -4206,11 +4342,22 @@ function App() {
     const _feedStart = Date.now();
     try {
       const result = await brain.stream(
-        { history: text, message: text },
+        { history: _wrappedText, message: _wrappedText },
         onPartial,
         sessionOpts,
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+
+      // Per-contact: capture the spawned threadId on first turn and
+      // persist via recordThread. Subsequent turns will use this
+      // threadId (--resume) so context accumulates per contact.
+      if (isWaContact && _isNewContact) {
+        const newThreadId = result?.optionsPatch?.sessionId;
+        if (newThreadId && _convSlug) {
+          _convState = conversationsState.recordThread(_convState, _convSlug, newThreadId);
+          await _writeConvState(_convState);
+        }
+      }
       try {
         const threadId = threadCtx.threadId ?? 'shell';
         _upsertConversationEntry(threadId, threadCtx);
@@ -4279,11 +4426,12 @@ function App() {
         await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
       } catch (_) { /* conversation log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
-      if (newSessionId) {
-        // Record into history (dedupes / refreshes timestamp if the
-        // brain returned the same id on a resumed turn). Always persist
-        // so the in-disk shape stays current — write is once per @egpt
-        // turn, cheap.
+      if (newSessionId && !isWaContact) {
+        // Persist new session_id into default_brain ONLY for system
+        // threads (heartbeat, shell). WA-contact threads have their
+        // own threadId field in conversations.yaml (handled above);
+        // overwriting default_brain.session_id here would clobber
+        // the heartbeat thread.
         const next = recordSession(readDefaultBrainState(), newSessionId, { type: brainType });
         await persistDefaultBrainState(next);
       }
