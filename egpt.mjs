@@ -4458,8 +4458,15 @@ function App() {
     }
     let captured = '';
     try {
+      // brains/claude-code writes `history` to stdin in stateless mode
+      // (when sessionOpts.sessionId is null) and `message` in --resume
+      // mode (when sessionId is set). Setting both to the same prompt
+      // covers both paths — required for /egpt new (sessionId=null)
+      // which previously crashed with "Input must be provided either
+      // through stdin or as a prompt argument" because history was ''.
+      const prompt = `... system restarted, new persona installed ...\n\n${identity}`;
       const r = await brain.stream(
-        { history: '', message: `... system restarted, new persona installed ...\n\n${identity}` },
+        { history: prompt, message: prompt },
         (p) => { captured = p; },
         sessionOpts,
       );
