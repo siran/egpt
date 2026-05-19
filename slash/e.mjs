@@ -96,9 +96,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (hbAction === 'on')  patch.heartbeatEnabled = true;
     if (hbAction === 'off') patch.heartbeatEnabled = false;
     if (hbAction === 'interval') {
-      const mins = parseInt(value, 10);
-      if (!Number.isFinite(mins) || mins < 1) {
-        sysOut('!! /e heartbeat interval: minutes must be a positive integer'); return true;
+      const mins = parseFloat(value);
+      if (!Number.isFinite(mins) || mins < 0.1) {
+        sysOut('!! /e heartbeat interval: minutes must be a positive number (>= 0.1, fractional OK)'); return true;
       }
       patch.heartbeatIntervalMin = mins;
     }
