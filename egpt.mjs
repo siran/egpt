@@ -5256,7 +5256,7 @@ function App() {
         // never send to any bridge.
         const trimmedReply = reply.trim();
         const wholeParen = /^\([^)]*\)$/s.test(trimmedReply);
-        const verbalizedSkip = /^(no (response|reply|comment) (needed|necessary|required)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts)\.?$/i
+        const verbalizedSkip = /^(no (response|reply|comment|action) (needed|necessary|required|requested|wanted|warranted|expected)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts|no further (comment|reply|action))\.?$/i
           .test(trimmedReply);
         // Self-narration filter (2026-05-17): @e was leaking meta-
         // observations and third-person summaries of its own STATUS
