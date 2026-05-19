@@ -36,14 +36,19 @@ export function emptyState({ type = 'claude-code' } = {}) {
 // History entries carry { type, at } plus exactly one of { id } or { url }.
 // Backwards-compat history entries from before this version still have
 // { id, type, at } — rewind/list handle both shapes.
-export function recordSession(state, ref, { type = state.type, at = Date.now() } = {}) {
+export function recordSession(state, ref, { type = state.type, at = null } = {}) {
   if (!ref) return state;
   const useUrl = isUrlBrain(type);
   const cleanState = { ...state, type, session_id: null, url: null };
   cleanState[useUrl ? 'url' : 'session_id'] = ref;
   // Dedupe: drop any prior entry whose id OR url matches the new ref
   const stripped = (state.history ?? []).filter(h => h.id !== ref && h.url !== ref);
-  const entry = useUrl ? { url: ref, type, at } : { id: ref, type, at };
+  // Timestamps are ISO 8601 strings — operator-readable in config.json.
+  // Legacy numeric `at` is converted on read by tests / display helpers.
+  const atIso = at == null
+    ? new Date().toISOString()
+    : (typeof at === 'number' ? new Date(at).toISOString() : String(at));
+  const entry = useUrl ? { url: ref, type, at: atIso } : { id: ref, type, at: atIso };
   cleanState.history = [entry, ...stripped].slice(0, HISTORY_CAP);
   return cleanState;
 }
