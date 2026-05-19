@@ -4014,13 +4014,81 @@ function App() {
   // the first turn; we persist it to ~/.egpt/config.json and pass it
   // back as --resume on subsequent turns.
   // Sanitize a JID / arbitrary string for use as a filename.
-  // 34836563681438@lid → 34836563681438_lid
-  // 120363407494846096@g.us → 120363407494846096_g_us
-  function _threadFileName(threadId) {
-    return String(threadId ?? 'unknown')
+  function _sanitizeForFilename(s) {
+    return String(s ?? '')
       .replace(/[@:.\\/]/g, '_')
       .replace(/[^A-Za-z0-9_-]/g, '_')
-      .slice(0, 128);
+      .replace(/_+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, 80);
+  }
+
+  // Conversations table — single source of truth for JID → display
+  // names. Operator (2026-05-19): "we can have a conversations-table,
+  // and we list JID:PushedName:CustomName."
+  //
+  // Stored as JSON at ~/.egpt/conversations/e/conversations.json:
+  //   { "<jid>": { "pushedName": "...", "customName": "..." } }
+  //
+  // Daemon auto-adds entries when @e first encounters a chat
+  // (pushedName from bridge.getChatName, customName left blank).
+  // Operator fills customName to override the per-thread filename
+  // suffix. Daemon-side updates only refresh pushedName when it
+  // changes; customName is never touched by the daemon.
+  //
+  // Privacy: pushedName comes from bridge's getChatName which uses
+  // group-subject / WA pushName (the contact's self-declared name),
+  // never the operator's address book labels.
+  function _readConversationsTable() {
+    try {
+      const p = join(EGPT_HOME, 'conversations', 'e', 'conversations.json');
+      if (!existsSync(p)) return {};
+      const m = JSON.parse(readFileSync(p, 'utf8'));
+      return (m && typeof m === 'object') ? m : {};
+    } catch (_) { return {}; }
+  }
+  function _writeConversationsTable(table) {
+    try {
+      const dir = join(EGPT_HOME, 'conversations', 'e');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, 'conversations.json'),
+        JSON.stringify(table, null, 2) + '\n',
+      );
+    } catch (_) { /* best-effort */ }
+  }
+  function _upsertConversationEntry(threadId, ctx = {}) {
+    if (!threadId || threadId === 'heartbeat' || threadId === 'shell') return;
+    const table = _readConversationsTable();
+    const pushedName = ctx.name ?? null;
+    const cur = table[threadId];
+    if (!cur) {
+      table[threadId] = { pushedName: pushedName ?? '', customName: '' };
+      _writeConversationsTable(table);
+    } else if (pushedName && cur.pushedName !== pushedName) {
+      // Refresh pushedName; preserve operator-edited customName.
+      table[threadId] = { ...cur, pushedName };
+      _writeConversationsTable(table);
+    }
+  }
+
+  // Build a per-thread filename for ~/.egpt/conversations/e/.
+  //   Stable JID prefix + optional human suffix.
+  //   customName (operator override) wins; else pushedName from table;
+  //   else slug from ctx; else just the JID.
+  //
+  //   34836563681438@lid (customName 'self')           → 34836563681438_lid__self.md
+  //   120363407494846096@g.us (pushedName from group)  → 120363407494846096_g_us__premise_driven_bitcoin_e.md
+  //   13920072921144@lid (pushedName 'José Lorenzo')   → 13920072921144_lid__jose_lorenzo.md
+  //   heartbeat                                        → heartbeat.md
+  function _sanitizeForFilenameSuffix(s) { return _sanitizeForFilename(s); }
+  function _threadFileName(threadId, ctx = {}) {
+    const idPart = _sanitizeForFilename(threadId ?? 'unknown') || 'unknown';
+    const table = _readConversationsTable();
+    const row = table[threadId] ?? {};
+    const suffixRaw = row.customName || row.pushedName || ctx.slug || ctx.name || '';
+    const suffix = _sanitizeForFilenameSuffix(suffixRaw);
+    return suffix ? `${idPart}__${suffix}.md` : `${idPart}.md`;
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
@@ -4110,7 +4178,8 @@ function App() {
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       try {
         const threadId = threadCtx.threadId ?? 'shell';
-        const fname    = _threadFileName(threadId) + '.md';
+        _upsertConversationEntry(threadId, threadCtx);
+        const fname    = _threadFileName(threadId, threadCtx);
         const convDir  = join(EGPT_HOME, 'conversations', 'e');
         const fpath    = join(convDir, fname);
         await mkdir(convDir, { recursive: true });
