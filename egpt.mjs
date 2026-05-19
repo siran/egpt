@@ -4062,15 +4062,35 @@ function App() {
     if (!threadId || threadId === 'heartbeat' || threadId === 'shell') return;
     const table = _readConversationsTable();
     const pushedName = ctx.name ?? null;
-    const cur = table[threadId];
+    let cur = table[threadId];
+    let changed = false;
     if (!cur) {
-      table[threadId] = { pushedName: pushedName ?? '', customName: '' };
-      _writeConversationsTable(table);
+      cur = { pushedName: pushedName ?? '', customName: '' };
+      table[threadId] = cur;
+      changed = true;
     } else if (pushedName && cur.pushedName !== pushedName) {
-      // Refresh pushedName; preserve operator-edited customName.
-      table[threadId] = { ...cur, pushedName };
-      _writeConversationsTable(table);
+      cur.pushedName = pushedName;
+      changed = true;
     }
+    // Fire-once customName auto-fill — operator (2026-05-19) sets a
+    // per-row 'customNameSource' field on a row in conversations.json
+    // ('pushname' | 'pushedname' | 'jid'); on the next message we
+    // fill customName from that source and clear the flag. Lets the
+    // operator pre-seed customName without manually typing it,
+    // useful when one JID for a multi-JID contact has empty
+    // pushedName until the contact replies.
+    if (cur.customNameSource && !cur.customName) {
+      const src = String(cur.customNameSource).toLowerCase();
+      let val = '';
+      if (src === 'pushname' || src === 'pushedname') val = cur.pushedName || threadId;
+      else if (src === 'jid')                          val = threadId;
+      if (val) {
+        cur.customName = val;
+        delete cur.customNameSource;
+        changed = true;
+      }
+    }
+    if (changed) _writeConversationsTable(table);
   }
 
   // Build a per-thread filename for ~/.egpt/conversations/e/.
