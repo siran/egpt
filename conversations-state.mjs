@@ -29,6 +29,10 @@ const PERSONALITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'personalities');
 const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'heartbeats');
 const LEGACY_HEARTBEAT_PATH      = join(homedir(), '.egpt', 'e-heartbeat.md');
 
+// Canonical location of the per-contact YAML registry. Exported so
+// daemon + slashes + tools all agree.
+export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations', 'e', 'conversations.yaml');
+
 // ── State shape ─────────────────────────────────────────────────────────────
 
 // emptyState() returns the empty registry.

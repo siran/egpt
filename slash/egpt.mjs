@@ -11,12 +11,22 @@
 // tests/persona-state.test.mjs); this handler is just I/O.
 
 import { startNew, rewind as rewindFn, listHistory, summarize, setBrain } from '../persona-state.mjs';
+import {
+  CONV_YAML_PATH,
+  readState as readConvState,
+  writeState as writeConvState,
+  findContactByJid,
+  patchContact,
+} from '../conversations-state.mjs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { writeFile as writeFileAsync } from 'node:fs/promises';
 
 export const meta = {
   cmd: '/egpt',
   section: 'PERSONA',
   surface: 'shell',
-  usage: '/egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]',
+  usage: '/egpt [status | new [--personality <name>] [--jid <jid>] [--slug <slug>] [--all] | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]',
   desc: 'manage @egpt persona session-history state',
 };
 
@@ -28,9 +38,11 @@ export async function run({ arg, meta, ctx }) {
   //   canonicalBrainName(s) / brainForName(s)    — type lookups
   //   humanAge(ts)                               — '5m ago' formatter
   //   EGPT_CONFIG, injectIdentityIntoPersona, USER_NAME — for /egpt new → identity chain
+  //   computeBrainTurn — for per-contact thread kickoff
   const { sysOut, readDefaultBrainState, persistDefaultBrainState,
           canonicalBrainName, brainForName, humanAge,
-          EGPT_CONFIG, injectIdentityIntoPersona, USER_NAME } = ctx;
+          EGPT_CONFIG, injectIdentityIntoPersona, USER_NAME,
+          computeBrainTurn } = ctx;
 
   const parts = arg.trim().split(/\s+/);
   const sub = (parts[0] || 'status').toLowerCase();
@@ -78,24 +90,89 @@ export async function run({ arg, meta, ctx }) {
     return true;
   }
   if (sub === 'new') {
-    const next = startNew(state);
-    const wasFresh = (next === state);
-    if (!wasFresh) await persistDefaultBrainState(next);
-    // No status line here — _injectIdentityIntoPersona prints
-    // "(installing persona into @e…)" immediately, which IS the
-    // single "installing" indicator. We print "installed" on success.
+    // Flag parsing: --personality <name>, --jid <jid>, --slug <slug>, --all
+    let personality = null;
+    let jidFlag = null;
+    let slugFlag = null;
+    let allFlag = false;
+    for (let i = 1; i < parts.length; i++) {
+      const t = parts[i];
+      if (t === '--personality' && parts[i + 1]) { personality = parts[++i]; continue; }
+      if (t === '--jid'         && parts[i + 1]) { jidFlag    = parts[++i]; continue; }
+      if (t === '--slug'        && parts[i + 1]) { slugFlag   = parts[++i]; continue; }
+      if (t === '--all')                         { allFlag    = true;       continue; }
+    }
+    const originJid = meta?.waChatId ?? null;
 
-    // Operator (2026-05-19): "/e new should inject also identity."
-    // Chain straight into a forced identity install so the new
-    // session starts with the persona manifest in place — no
-    // dangling window where @e is naked claude-code until /identity
-    // is run separately. injectIdentityIntoPersona spawns claude
-    // with sessionId=null, captures the new session_id via
-    // optionsPatch, and persists it back to default_brain.
+    // --- Branch 1: --all → reset every contact's threadId ---
+    if (allFlag) {
+      const convState = await readConvState(CONV_YAML_PATH);
+      const slugs = Object.keys(convState.contacts ?? {});
+      let next = convState;
+      for (const sl of slugs) {
+        next = patchContact(next, sl, { threadId: null, identityInjectedAt: null });
+      }
+      await writeConvState(CONV_YAML_PATH, next);
+      sysOut(`egpt new --all: cleared threadIds on ${slugs.length} contacts. Next dispatch to each spawns fresh with their assigned personality.`);
+      return true;
+    }
+
+    // --- Branch 2: per-contact (--slug, --jid, or origin chat) ---
+    if (slugFlag || jidFlag || originJid) {
+      let convState = await readConvState(CONV_YAML_PATH);
+      let targetSlug = slugFlag;
+      if (!targetSlug) {
+        targetSlug = findContactByJid(convState, jidFlag ?? originJid);
+      }
+      if (!targetSlug) {
+        sysOut(`!! /egpt new: no contact registered for jid "${jidFlag ?? originJid}". Send a message in that chat first so @e registers it, then try again. Or pass --slug <existing-slug>.`);
+        return true;
+      }
+      const patch = { threadId: null, identityInjectedAt: null };
+      if (personality) patch.personality = personality;
+      convState = patchContact(convState, targetSlug, patch);
+      await writeConvState(CONV_YAML_PATH, convState);
+
+      const entry = convState.contacts[targetSlug];
+      const jid = entry.jids?.[0];
+      if (!jid) { sysOut(`!! /egpt new ${targetSlug}: contact has no JIDs registered`); return true; }
+
+      // Kickoff turn — runDefaultBrainTurn's per-contact branch sees
+      // threadId=null on the entry, treats this as new contact,
+      // bundles personality into the first user message. The brain's
+      // reply is @e's introduction in that personality.
+      const kickoff = `... operator just reset this thread${personality ? ` to the '${personality}' personality` : ''}. Introduce yourself briefly in character (1-2 sentences). ...`;
+      try {
+        const reply = await computeBrainTurn('e', kickoff, {
+          threadId: jid,
+          surface:  'wa',
+          slug:     targetSlug,
+          name:     entry.pushedName || targetSlug,
+        });
+        const ackText = String(reply ?? '').trim();
+        if (!ackText) {
+          sysOut(`!! /egpt new ${targetSlug}: kickoff produced empty reply — thread may not be initialized. Check /log; consider re-running.`);
+        } else {
+          sysOut(`egpt new ${targetSlug}: thread reset, personality=${entry.personality} (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
+        }
+        // Relay ack to originating chat if invoked from WA.
+        if (originJid && ackText && ackText !== '...' && ackText !== '…') {
+          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
+          await writeFileAsync(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+        }
+      } catch (e) {
+        sysOut(`!! /egpt new ${targetSlug}: kickoff failed — ${e?.message ?? e}`);
+      }
+      return true;
+    }
+
+    // --- Branch 3: no flag, no origin chat → reset heartbeat (default_brain) thread ---
+    // Legacy global behavior preserved for the heartbeat session.
+    const next = startNew(state);
+    if (next !== state) await persistDefaultBrainState(next);
     try {
-      const dbCfg = next.type
-        ? { ...EGPT_CONFIG.default_brain, type: next.type, session_id: null, url: null }
-        : { ...EGPT_CONFIG.default_brain, session_id: null, url: null };
+      const dbCfg = { ...EGPT_CONFIG.default_brain, session_id: null, url: null };
       const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
       const brain = brainForName(brainType);
       if (!brain) { sysOut(`!! /egpt new: brain "${brainType}" not found`); return true; }
@@ -111,31 +188,12 @@ export async function run({ arg, meta, ctx }) {
       const ack = await injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
       const ackText = String(ack ?? '').trim();
       if (!ackText) {
-        sysOut('!! /egpt new: identity inject completed with empty reply — session may not be initialized. Check /log for the actual error; consider running /identity manually.');
+        sysOut('!! /egpt new: identity inject empty — heartbeat session may not be initialized. Check /log.');
       } else {
-        sysOut(`egpt: identity installed — fresh session active (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
-      }
-
-      // Same wa-relay path as /identity: if invoked from a chat,
-      // ack lands back in that chat.
-      const originJid = meta?.waChatId;
-      if (ackText && ackText !== '...' && ackText !== '…' && originJid) {
-        try {
-          const fsmod   = await import('node:fs/promises');
-          const pathmod = await import('node:path');
-          const osmod   = await import('node:os');
-          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-          const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
-          await fsmod.writeFile(
-            pathmod.join(osmod.homedir(), '.egpt', 'outbox', id + '.json'),
-            JSON.stringify(ev),
-          );
-        } catch (e) {
-          sysOut(`!! /egpt new: failed to relay ack to ${originJid}: ${e?.message ?? e}`);
-        }
+        sysOut(`egpt new: heartbeat thread reset (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
       }
     } catch (e) {
-      sysOut(`!! /egpt new: identity inject failed — ${e?.message ?? e}. session is cleared; run /identity manually after next @e turn.`);
+      sysOut(`!! /egpt new: identity inject failed — ${e?.message ?? e}`);
     }
     return true;
   }

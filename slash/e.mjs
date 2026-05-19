@@ -1,30 +1,38 @@
 // slash/e.mjs — operator controls for the @e persona's behavior.
 //
-// Subcommands (today: just `auto`, the auto_e_chats toggle):
+// Subcommands:
 //
-//   /e auto on              add the CURRENT chat to auto_e_chats
-//   /e auto off             remove the CURRENT chat
-//   /e auto pause           globally suspend auto-dispatch (per-chat list unchanged)
-//   /e auto resume          re-enable auto-dispatch
-//   /e auto status          list configured chats + paused state
+//   /e auto on|off [<jid>]         — toggle auto_e_chats membership
+//   /e auto pause|resume           — globally suspend / re-enable dispatch
+//   /e auto status                 — list configured chats + paused state
+//
+//   /e personality <name>          — set personality on the current
+//                                    chat's contact (or --slug / --jid)
+//   /e heartbeat on|off            — opt the current contact in/out of
+//                                    per-contact heartbeats
+//   /e heartbeat interval <min>    — set per-contact heartbeat cadence
+//                                    (minutes; default 30)
 //
 // "Current chat" = where the slash was invoked. WA-originated invocations
-// use the WA chat JID. Shell-originated invocations have no chat context,
-// so on/off require the JID as an explicit second arg: `/e auto on <jid>`.
-//
-// State lives in EGPT_CONFIG.whatsapp.auto_e_chats (array of JIDs) and
-// EGPT_CONFIG.whatsapp.auto_e_paused (boolean). Persisted to
-// ~/.egpt/config.json via the same path as other whatsapp config.
+// use the WA chat JID. Shell-originated invocations require an explicit
+// --jid <jid> or --slug <slug>.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  CONV_YAML_PATH,
+  readState as readConvState,
+  writeState as writeConvState,
+  findContactByJid,
+  patchContact,
+} from '../conversations-state.mjs';
 
 export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'shell',
-  usage: '/e auto on|off [<jid>] | /e auto pause|resume | /e auto status',
-  desc: 'control @e auto-dispatch in chats (auto_e_chats)',
+  usage: '/e auto on|off [<jid>] | /e auto pause|resume|status | /e personality <name> [--slug|--jid] | /e heartbeat on|off|interval <min> [--slug|--jid]',
+  desc: 'control @e auto-dispatch, personality, and heartbeats per contact',
 };
 
 async function _persistWaConfig(EGPT_HOME) {
@@ -40,8 +48,69 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
 
+  // ── /e personality <name> [--slug <s> | --jid <j>] ──────────────
+  if (sub === 'personality') {
+    const tokens2 = arg.split(/\s+/).filter(Boolean);
+    let name = tokens2[1] ?? null;
+    let slugFlag = null;
+    let jidFlag = null;
+    for (let i = 2; i < tokens2.length; i++) {
+      if (tokens2[i] === '--slug' && tokens2[i + 1]) slugFlag = tokens2[++i];
+      if (tokens2[i] === '--jid'  && tokens2[i + 1]) jidFlag  = tokens2[++i];
+    }
+    if (!name) { sysOut('usage: /e personality <name> [--slug <s> | --jid <j>]'); return true; }
+    const cs = await readConvState(CONV_YAML_PATH);
+    const targetSlug = slugFlag ?? findContactByJid(cs, jidFlag ?? dispatchMeta?.waChatId);
+    if (!targetSlug) {
+      sysOut(`!! /e personality: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
+      return true;
+    }
+    const next = patchContact(cs, targetSlug, { personality: name });
+    await writeConvState(CONV_YAML_PATH, next);
+    sysOut(`/e personality: ${targetSlug} → ${name} (run /egpt new --slug ${targetSlug} to apply on a fresh thread)`);
+    return true;
+  }
+
+  // ── /e heartbeat on|off | interval <min> [--slug | --jid] ────────
+  if (sub === 'heartbeat') {
+    const tokens2 = arg.split(/\s+/).filter(Boolean);
+    const hbAction = tokens2[1] ?? null;
+    let value = tokens2[2] ?? null;
+    let slugFlag = null;
+    let jidFlag = null;
+    for (let i = 1; i < tokens2.length; i++) {
+      if (tokens2[i] === '--slug' && tokens2[i + 1]) slugFlag = tokens2[++i];
+      if (tokens2[i] === '--jid'  && tokens2[i + 1]) jidFlag  = tokens2[++i];
+    }
+    if (!hbAction || !['on','off','interval'].includes(hbAction)) {
+      sysOut('usage: /e heartbeat on|off | /e heartbeat interval <min> [--slug | --jid]');
+      return true;
+    }
+    const cs = await readConvState(CONV_YAML_PATH);
+    const targetSlug = slugFlag ?? findContactByJid(cs, jidFlag ?? dispatchMeta?.waChatId);
+    if (!targetSlug) {
+      sysOut(`!! /e heartbeat: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
+      return true;
+    }
+    let patch = {};
+    if (hbAction === 'on')  patch.heartbeatEnabled = true;
+    if (hbAction === 'off') patch.heartbeatEnabled = false;
+    if (hbAction === 'interval') {
+      const mins = parseInt(value, 10);
+      if (!Number.isFinite(mins) || mins < 1) {
+        sysOut('!! /e heartbeat interval: minutes must be a positive integer'); return true;
+      }
+      patch.heartbeatIntervalMin = mins;
+    }
+    const next = patchContact(cs, targetSlug, patch);
+    await writeConvState(CONV_YAML_PATH, next);
+    const e = next.contacts[targetSlug];
+    sysOut(`/e heartbeat: ${targetSlug} enabled=${!!e.heartbeatEnabled} interval=${e.heartbeatIntervalMin ?? 30}min`);
+    return true;
+  }
+
   if (sub !== 'auto') {
-    sysOut('usage: /e auto on|off [<jid>] | pause | resume | status');
+    sysOut('usage: /e auto on|off [<jid>] | /e auto pause|resume|status | /e personality <name> | /e heartbeat on|off|interval <min>');
     return true;
   }
 
