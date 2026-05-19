@@ -3778,9 +3778,9 @@ function App() {
         // global butler with its own persistent thread, available
         // in every room without /attach. Route those calls through
         // runDefaultBrainTurn which manages that thread.
-        computeBrainTurn: async (routedTo, question) => {
+        computeBrainTurn: async (routedTo, question, threadCtx = {}) => {
           if (routedTo === 'e' || routedTo === 'egpt') {
-            try { return await runDefaultBrainTurn(question, () => {}); }
+            try { return await runDefaultBrainTurn(question, () => {}, threadCtx); }
             catch (e) { return `!! @e failed: ${e.message}`; }
           }
           const session = sessions[routedTo];
@@ -4467,7 +4467,15 @@ function App() {
     const sibs = EGPT_CONFIG.siblings ?? null;
     let mbCfg = null;
     let source = '';
-    if (sibs && typeof sibs === 'object') {
+    // @me → resolved via top-level main_engineer config (operator
+    // 2026-05-19: 'main_engineer' is a top-level key naming the
+    // sibling @me should route to). Falls back to alias-on-sibling
+    // when main_engineer isn't set.
+    if (String(name).toLowerCase() === 'me' && EGPT_CONFIG.main_engineer && sibs?.[EGPT_CONFIG.main_engineer]) {
+      mbCfg = sibs[EGPT_CONFIG.main_engineer];
+      name = EGPT_CONFIG.main_engineer;
+      source = `siblings.${name} (via main_engineer)`;
+    } else if (sibs && typeof sibs === 'object') {
       // Direct hit on canonical name, then alias scan.
       if (sibs[name] && typeof sibs[name] === 'object') {
         mbCfg = sibs[name]; source = `siblings.${name}`;
