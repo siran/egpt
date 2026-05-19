@@ -2656,6 +2656,7 @@ function App() {
       dispatchWaGroupSubject: (payload, src) => dispatchWaGroupSubjectRef.current?.(payload, src),
       dispatchWaGroupMembers: (payload, src) => dispatchWaGroupMembersRef.current?.(payload, src),
       dispatchSlash:          (payload, src) => dispatchSlashRef.current?.(payload, src),
+      dispatchButlerTask:     (payload, src) => dispatchButlerTaskRef.current?.(payload, src),
       log:                    sysLog,
       // process.exit(0) → wrapper's while-loop respawns. Post-split
       // this becomes a restart-handler event the keeper sends to
@@ -6098,6 +6099,72 @@ function App() {
 
   // wa-group-members dispatcher — fetch group members and log them
   const dispatchWaGroupMembersRef = useRef(null);
+  // Butler-task dispatcher (C4). Conversation-e (or operator) drops
+  // { type: 'butler-task', from, prompt, relayToSlug?, model?,
+  //   allowedTools? } in outbox. Butler is an ephemeral haiku
+  // subprocess: no --resume (no session memory), default all-tools.
+  // Output optionally relays back to a contact thread.
+  const dispatchButlerTaskRef = useRef(null);
+  dispatchButlerTaskRef.current = async (ev, source = 'outbox') => {
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const prompt = (ev.prompt ?? '').trim();
+    if (!prompt) { log(`!! ${source}: butler-task from ${ev.from} dropped — empty prompt`); return true; }
+    log(`${source}: butler-task from ${ev.from} (${prompt.length} chars) — spawning haiku…`);
+    try {
+      const { runButler } = await import('./tools/butler.mjs');
+      const r = await runButler({
+        prompt,
+        model: ev.model ?? 'haiku',
+        allowedTools: ev.allowedTools ?? 'all',
+      });
+      const archive = join(EGPT_HOME, 'butler-outbox');
+      try {
+        await mkdir(archive, { recursive: true });
+        const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        await writeFile(join(archive, id + '.md'), [
+          `# butler-task from ${ev.from} (${new Date().toISOString()})`,
+          `duration: ${r.durationMs}ms`,
+          `exit: ${r.exitCode}`,
+          r.error ? `error: ${r.error}` : '',
+          '',
+          '## prompt',
+          prompt,
+          '',
+          '## result',
+          r.text || '(empty)',
+        ].filter(Boolean).join('\n'));
+      } catch (_) {}
+      if (r.error) { log(`!! butler: ${r.error}`); }
+      else { log(`butler-e done (${r.durationMs}ms, ${r.text.length} chars)`); }
+      // Optional relay: dispatch butler's output as a system turn
+      // into the requesting contact's thread so conversation-e sees
+      // the result on its next round.
+      if (ev.relayToSlug && r.text) {
+        const cs = await _loadConvState();
+        const entry = cs.contacts?.[ev.relayToSlug];
+        const jid = entry?.jids?.[0];
+        if (jid) {
+          try {
+            await runDefaultBrainTurn(
+              `... butler-e returned the following for the task you delegated ...\n\n${r.text}`,
+              undefined,
+              { threadId: jid, surface: 'wa', slug: ev.relayToSlug, name: entry.pushedName || ev.relayToSlug },
+            );
+          } catch (e) {
+            log(`!! butler-relay → ${ev.relayToSlug}: ${e.message}`);
+          }
+        } else {
+          log(`!! butler-relay: contact "${ev.relayToSlug}" has no JIDs registered`);
+        }
+      }
+    } catch (e) {
+      log(`!! ${source}: butler-task threw: ${e.message}`);
+    }
+    return true;
+  };
+
   // Programmatic slash dispatcher — siblings / scripts drop a
   // { type: 'slash', from, cmd } outbox event to invoke any slash
   // command without round-tripping through a bridge. Operator
