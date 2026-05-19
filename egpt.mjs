@@ -1945,7 +1945,6 @@ function App() {
   // several ticks in a row, the next prompt gets a nudge appended so
   // the haiku-bias toward the easy default doesn't drain the loop
   // of life. Reset to 0 on any non-silent reply.
-  const heartbeatSilenceCountRef = useRef(0);
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -2762,18 +2761,20 @@ function App() {
       if (!prompt || !prompt.trim()) return;   // empty file = disabled
       heartbeatBusyRef.current = true;
       try {
-        const silenceN = heartbeatSilenceCountRef.current;
-        const spontaneityNudge = silenceN >= 3
-          ? `\n\n---\n(heartbeat note: you have chosen silence the last ${silenceN} ticks in a row. stasis is the easy default; break it this tick — write a thought to play.md, send a WA message, propose something. surprise yourself.)`
-          : '';
-        const reply = await runDefaultBrainTurn(prompt + spontaneityNudge);
+        // Time-stamp substitution: heartbeat content can use ${time}
+        // (HH:MM local) so @e knows the current time without us
+        // re-injecting identity / repeating context every tick.
+        // Operator (2026-05-19): "let the model be" — no silence-
+        // count nudge, no spontaneity prompt, no system second-
+        // guessing. Just the tick + current time.
+        const tstr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const resolved = prompt.replace(/\$\{time\}/g, tstr);
+        const reply = await runDefaultBrainTurn(resolved, undefined, { threadId: 'heartbeat', surface: 'system', name: 'heartbeat tick' });
         if (stopped) return;
         const trimmed = (reply ?? '').trim();
         if (trimmed === '...') {
-          heartbeatSilenceCountRef.current += 1;
-          sysLog(`heartbeat: @e chose silence (${heartbeatSilenceCountRef.current} in a row)`);
+          sysLog(`heartbeat: @e chose silence`);
         } else {
-          heartbeatSilenceCountRef.current = 0;
           const oneLine = trimmed.replace(/\s+/g, ' ');
           const preview = oneLine.length > 200 ? oneLine.slice(0, 199) + '…' : oneLine;
           sysLog(`heartbeat: @e — ${preview}`);
@@ -4012,7 +4013,17 @@ function App() {
   // Conversation continuity: brain returns optionsPatch.sessionId on
   // the first turn; we persist it to ~/.egpt/config.json and pass it
   // back as --resume on subsequent turns.
-  async function runDefaultBrainTurn(text, onPartial = () => {}) {
+  // Sanitize a JID / arbitrary string for use as a filename.
+  // 34836563681438@lid → 34836563681438_lid
+  // 120363407494846096@g.us → 120363407494846096_g_us
+  function _threadFileName(threadId) {
+    return String(threadId ?? 'unknown')
+      .replace(/[@:.\\/]/g, '_')
+      .replace(/[^A-Za-z0-9_-]/g, '_')
+      .slice(0, 128);
+  }
+
+  async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
     const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
     const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
@@ -4077,18 +4088,18 @@ function App() {
       ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
       ...(dbCfg.model              ? { model: dbCfg.model                        } : {}),
     };
-    // Identity install for @e — same protocol as runBrainTurn but
-    // the persona has its own state in EGPT_CONFIG.default_brain
-    // rather than sessions[]. Persisted via default_brain.identity-
-    // Injected so restart skips it.
-    await _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg });
-    // Per-turn audit log — exactly what was fed to @e and what came
-    // back, in a human-readable .md so operator can review without
-    // parsing the jsonl. Operator (2026-05-19): "how can i check
-    // transcript of what is being fed to e, like exactly?" Identity
-    // is one-time-per-session (not in `text`); appendSystemPrompt is
-    // currently unused; the user-turn body is `text`. So this log
-    // captures everything that changes per call.
+    // Identity auto-injection disabled per operator (2026-05-19):
+    // "never inject identity. sysadmin inject on demand if needed on
+    // a conversation." Use /identity in the shell (or WA Self DM)
+    // to force a fresh inject when needed. The slash command itself
+    // still calls _injectIdentityIntoPersona; only the auto path is
+    // Per-thread conversation log. Each @e turn (heartbeat tick, WA
+    // dispatch, shell DM, etc.) appends VERBATIM to a per-thread
+    // markdown file at ~/.egpt/conversations/e/<thread>.md. Operator
+    // (2026-05-19) wants a play-script-style transcript per chat —
+    // exact prompt text @e receives, exact reply, scene comments for
+    // media. threadCtx.threadId tells us where; threadCtx.surface /
+    // .slug / .name are decorative for the header.
     const _feedStart = Date.now();
     try {
       const result = await brain.stream(
@@ -4098,26 +4109,37 @@ function App() {
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       try {
+        const threadId = threadCtx.threadId ?? 'shell';
+        const fname    = _threadFileName(threadId) + '.md';
+        const convDir  = join(EGPT_HOME, 'conversations', 'e');
+        const fpath    = join(convDir, fname);
+        await mkdir(convDir, { recursive: true });
+        // First-write header so operator can identify the thread at a
+        // glance (chat name + jid + surface).
+        const isFirst = !existsSync(fpath);
         const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
         const durMs = Date.now() - _feedStart;
-        const entry = [
-          `## ${stamp} — @e (${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
-          ``,
-          `### → fed to @e (${text.length} chars)`,
+        const header = isFirst
+          ? `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: \`${threadId}\`  ·  surface: \`${threadCtx.surface ?? '?'}\`  ·  slug: \`${threadCtx.slug ?? '?'}\`\n\n---\n\n`
+          : '';
+        const entry = header + [
+          `### ${stamp}  →  fed to @e  (${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
+          '',
           '```',
           text,
           '```',
-          ``,
-          `### ← @e replied (${final.length} chars)`,
+          '',
+          `### ${stamp}  ←  @e replied  (${final.length} chars)`,
+          '',
           '```',
           final,
           '```',
-          ``,
-          `---`,
-          ``,
+          '',
+          '---',
+          '',
         ].join('\n');
-        await appendFile(join(EGPT_HOME, 'e-feed.md'), entry);
-      } catch (_) { /* feed log best-effort; never block the turn */ }
+        await appendFile(fpath, entry);
+      } catch (_) { /* conversation log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
       if (newSessionId) {
         // Record into history (dedupes / refreshes timestamp if the
@@ -4447,10 +4469,11 @@ function App() {
       }
     }
 
-    // Identity injection (silent setup turn) before the first real
-    // user message of this session. Persisted via
-    // session.options.identityInjected so a restart doesn't re-fire.
-    await _injectIdentityIfNeeded({ routedTo, session, brain, opts });
+    // Identity auto-injection disabled per operator (2026-05-19):
+    // "never inject identity. sysadmin inject on demand." Run
+    // /identity @<session> to force inject. The slash command still
+    // calls _injectIdentityIntoPersona / _injectIdentityIfNeeded
+    // directly; only the auto path is off.
 
     setStreaming({ author: routedTo, text: '' });
 
@@ -5265,10 +5288,23 @@ function App() {
               { chatId: meta.waChatId })
           : null;
 
+        // Build thread context for the per-thread conversation log.
+        // For WA, the thread is the chat JID with decorative slug/name.
+        // For TG, the chat id with no slug today. For shell, just shell.
+        const threadCtx = meta.fromWhatsApp
+          ? {
+              threadId: meta.waChatId ?? 'wa-unknown',
+              surface:  meta.waClientLabel ?? 'wa',
+              slug:     waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? null,
+              name:     waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
+            }
+          : meta.fromTelegram
+          ? { threadId: meta.telegramChatId ?? 'tg-unknown', surface: 'tg' }
+          : { threadId: 'shell', surface: 'shell' };
         const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) waStream.update(`${waPrefix}${partial}`);
-        });
+        }, threadCtx);
 
         // Polite-ack filter (per /rules in slash/rules.mjs): a reply
         // Silence protocol (per rules.md + e_identity.md): a reply of
