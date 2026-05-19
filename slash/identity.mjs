@@ -23,7 +23,7 @@ export const meta = {
     '@e + every active session. "show" prints the manifest.',
 };
 
-export async function run({ arg, ctx }) {
+export async function run({ arg, meta, ctx }) {
   // ctx keys consumed:
   //   sysOut, EGPT_CONFIG
   //   sessions, USER_NAME
@@ -87,7 +87,28 @@ export async function run({ arg, ctx }) {
           ...(dbCfg.system_prompt     ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
         };
       }
-      await injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
+      const ack = await injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
+      // Operator (2026-05-19): "replies should be sent to originating
+      // chat." Relay @e's identity-install ack back to the WA chat that
+      // invoked /identity, via wa-send outbox event. Silence-protocol
+      // replies are skipped.
+      const ackText = String(ack ?? '').trim();
+      const originJid = meta?.waChatId;
+      if (ackText && ackText !== '...' && ackText !== '…' && originJid) {
+        try {
+          const fsmod   = await import('node:fs/promises');
+          const pathmod = await import('node:path');
+          const osmod   = await import('node:os');
+          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
+          await fsmod.writeFile(
+            pathmod.join(osmod.homedir(), '.egpt', 'outbox', id + '.json'),
+            JSON.stringify(ev),
+          );
+        } catch (e) {
+          sysOut(`!! /identity: failed to relay @e's ack to ${originJid}: ${e?.message ?? e}`);
+        }
+      }
     } else {
       const s = sessions[t.name];
       if (!s) continue;
