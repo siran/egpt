@@ -514,6 +514,7 @@ export function startOutboxWatcher({
   dispatchWaGroupSubject = null,
   dispatchWaGroupMembers = null,
   dispatchSlash         = null,
+  dispatchButlerTask    = null,
   log = () => {},
   signalRestart = () => {},
   outboxDir,
@@ -579,6 +580,17 @@ export function startOutboxWatcher({
           claimed.delete(name);
           return;
         }
+      }
+    } else if (payload?.type === 'butler-task') {
+      // Ephemeral haiku sub-agent invocation. Body shape:
+      //   { type: 'butler-task', from, prompt, relayToSlug?, model?, allowedTools? }
+      // 'relayToSlug' (optional): when set, butler's output is
+      // dispatched as a system turn into that contact's thread.
+      if (typeof dispatchButlerTask !== 'function') {
+        log(`outbox: dropping butler-task from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
+      } else {
+        const ok = await dispatchButlerTask(payload, 'outbox');
+        if (!ok) { claimed.delete(name); return; }
       }
     } else if (payload?.type === 'slash') {
       // Programmatic slash command. Bypasses the bridge round-trip

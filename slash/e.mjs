@@ -48,6 +48,26 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
 
+  // ── /e butler <prompt> ──────────────────────────────────────────
+  // Ephemeral haiku sub-agent. No session memory; default all-tools.
+  // Prints the result to the shell (operator-facing). Programmatic
+  // invocations should use the `butler-task` outbox event instead so
+  // the result can be relayed back to a specific contact thread.
+  if (sub === 'butler') {
+    const prompt = arg.replace(/^\s*butler\s*/, '').trim();
+    if (!prompt) { sysOut('usage: /e butler <prompt>'); return true; }
+    sysOut(`(butler-e working… haiku, no session memory, default all-tools)`);
+    try {
+      const { runButler } = await import('../tools/butler.mjs');
+      const r = await runButler({ prompt });
+      const head = r.error ? `!! butler: ${r.error}` : `butler-e (${r.durationMs}ms):`;
+      sysOut([head, '', r.text || '(no output)'].join('\n'));
+    } catch (e) {
+      sysOut(`!! /e butler: ${e?.message ?? e}`);
+    }
+    return true;
+  }
+
   // ── /e personality <name> [--slug <s> | --jid <j>] ──────────────
   if (sub === 'personality') {
     const tokens2 = arg.split(/\s+/).filter(Boolean);
