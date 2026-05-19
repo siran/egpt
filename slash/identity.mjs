@@ -15,7 +15,7 @@ export const meta = {
   cmd: '/identity',
   section: 'BRAINS',
   surface: 'shell',
-  usage: '/identity [@<session> | show]',
+  usage: '/identity [@<session> | show | reset [all]]',
   desc:
     'install the egpt persona manifest (brains.identity, default ./e_identity.md) ' +
     'into a brain. New sessions auto-install on first dispatch; this command forces ' +
@@ -34,6 +34,37 @@ export async function run({ arg, meta, ctx }) {
           loadIdentity, injectIdentityIntoPersona, injectIdentityIfNeeded } = ctx;
 
   const a = arg.trim();
+
+  // /identity reset [all] — wipe threadIds on per-contact threads so
+  // next dispatch to each spawns a fresh thread with the current
+  // personality bundled. Without `all`: only contacts with the
+  // default personality (the un-customized ones). With `all`: every
+  // contact regardless of personality. Operator (2026-05-19): use
+  // this after rewriting personalities/default.md to refresh the
+  // un-customized fleet without disturbing custom personas.
+  if (a === 'reset' || a === 'reset all') {
+    const all = (a === 'reset all');
+    try {
+      const { CONV_YAML_PATH, readState, writeState, patchContact } = await import('../conversations-state.mjs');
+      const cs = await readState(CONV_YAML_PATH);
+      let next = cs;
+      let touched = 0;
+      const skipped = [];
+      for (const [slug, entry] of Object.entries(cs.contacts ?? {})) {
+        const isDefault = (entry.personality || 'default') === 'default';
+        if (!all && !isDefault) { skipped.push(`${slug}(${entry.personality})`); continue; }
+        next = patchContact(next, slug, { threadId: null, identityInjectedAt: null });
+        touched++;
+      }
+      await writeState(CONV_YAML_PATH, next);
+      const skippedMsg = skipped.length ? `; skipped ${skipped.length} customized: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}` : '';
+      sysOut(`/identity reset${all ? ' all' : ''}: cleared threadIds on ${touched} contacts. Next dispatch to each spawns fresh with their current personality${skippedMsg}.`);
+    } catch (e) {
+      sysOut(`!! /identity reset: ${e?.message ?? e}`);
+    }
+    return true;
+  }
+
   const identity = await loadIdentity();
   if (!identity) {
     sysOut(`!! /identity: no identity file (brains.identity = "${EGPT_CONFIG.brains?.identity ?? './e_identity.md'}", set or check path; "off" disables)`);
