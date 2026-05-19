@@ -4464,6 +4464,21 @@ function App() {
         sessionOpts,
       );
       const final = (typeof r === 'object' ? (r.text ?? captured) : (r ?? captured) ?? '').trim();
+      // Capture + persist the new session_id when claude spawned a fresh
+      // session (sessionOpts.sessionId was null going in — typical for
+      // /egpt new -> /identity chain). Without this, the next @e turn
+      // would spawn YET ANOTHER fresh session and lose the identity we
+      // just installed.
+      const newSessionId = r?.optionsPatch?.sessionId;
+      if (newSessionId && dbCfg && !isUrlBrain(canonicalBrainName(dbCfg.type ?? 'claude-code'))) {
+        try {
+          const cur = readDefaultBrainState();
+          if (cur.session_id !== newSessionId) {
+            const next = recordSession(cur, newSessionId, { type: dbCfg.type ?? 'claude-code' });
+            await persistDefaultBrainState(next);
+          }
+        } catch (_) { /* best-effort persist */ }
+      }
       if (final) {
         setItems(p => [...p, {
           id: Date.now() + Math.random(),
