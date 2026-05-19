@@ -109,11 +109,15 @@ export async function run({ arg, meta, ctx }) {
         ...(dbCfg.model             ? { model: dbCfg.model                        } : {}),
       };
       const ack = await injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced: true });
-      sysOut(`egpt: identity installed — fresh session active${ack ? ` (@e: "${String(ack).slice(0, 80)}${String(ack).length > 80 ? '…' : ''}")` : ''}`);
+      const ackText = String(ack ?? '').trim();
+      if (!ackText) {
+        sysOut('!! /egpt new: identity inject completed with empty reply — session may not be initialized. Check /log for the actual error; consider running /identity manually.');
+      } else {
+        sysOut(`egpt: identity installed — fresh session active (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
+      }
 
       // Same wa-relay path as /identity: if invoked from a chat,
       // ack lands back in that chat.
-      const ackText = String(ack ?? '').trim();
       const originJid = meta?.waChatId;
       if (ackText && ackText !== '...' && ackText !== '…' && originJid) {
         try {
