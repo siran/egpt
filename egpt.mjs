@@ -2796,10 +2796,17 @@ function App() {
         heartbeatBusyRef.current = false;
       }
 
-      // Per-contact heartbeats (C2). Iterate contacts; fire a tick to
-      // each whose heartbeatEnabled is true and whose interval has
-      // elapsed. Resolution chain: contact-slug.md > personality.md >
-      // default.md. Errors per-contact don't abort the loop.
+    };
+
+    // Per-contact heartbeat scanner — separate, faster tick than the
+    // global @e heartbeat so sub-5min intervals actually fire. Each
+    // call iterates contacts; fires a turn for those whose
+    // heartbeatEnabled is true AND interval has elapsed. Resolution
+    // chain: contact-slug.md > personality.md > default.md.
+    let perContactBusy = false;
+    const perContactTick = async () => {
+      if (stopped || perContactBusy) return;
+      perContactBusy = true;
       try {
         const cs = await _loadConvState();
         const now = Date.now();
@@ -2821,7 +2828,6 @@ function App() {
               slug,
               name:     entry.pushedName || slug,
             });
-            // Mark fired time + persist.
             const updated = conversationsState.patchContact(
               await _loadConvState(),
               slug,
@@ -2832,10 +2838,12 @@ function App() {
             sysLog(`!! heartbeat[${slug}]: ${e.message}`);
           }
         }
-      } catch (_) { /* per-contact heartbeat best-effort */ }
+      } finally { perContactBusy = false; }
     };
 
     const timer = setInterval(tick, HEARTBEAT_MS);
+    const PER_CONTACT_TICK_MS = 30 * 1000;  // 30s scan; enables fractional-minute intervals
+    const perContactTimer = setInterval(perContactTick, PER_CONTACT_TICK_MS);
 
     // play.md hard-cap rotator — runs on the same 5-min cadence as the
     // heartbeat. play.md is loaded into every sibling's context on every
@@ -2880,6 +2888,7 @@ function App() {
       stopped = true;
       clearInterval(timer);
       clearInterval(playTimer);
+      clearInterval(perContactTimer);
     };
   }, []);
 
