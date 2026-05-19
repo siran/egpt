@@ -4082,6 +4082,14 @@ function App() {
     // rather than sessions[]. Persisted via default_brain.identity-
     // Injected so restart skips it.
     await _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg });
+    // Per-turn audit log — exactly what was fed to @e and what came
+    // back, in a human-readable .md so operator can review without
+    // parsing the jsonl. Operator (2026-05-19): "how can i check
+    // transcript of what is being fed to e, like exactly?" Identity
+    // is one-time-per-session (not in `text`); appendSystemPrompt is
+    // currently unused; the user-turn body is `text`. So this log
+    // captures everything that changes per call.
+    const _feedStart = Date.now();
     try {
       const result = await brain.stream(
         { history: text, message: text },
@@ -4089,6 +4097,27 @@ function App() {
         sessionOpts,
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+      try {
+        const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        const durMs = Date.now() - _feedStart;
+        const entry = [
+          `## ${stamp} — @e (${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
+          ``,
+          `### → fed to @e (${text.length} chars)`,
+          '```',
+          text,
+          '```',
+          ``,
+          `### ← @e replied (${final.length} chars)`,
+          '```',
+          final,
+          '```',
+          ``,
+          `---`,
+          ``,
+        ].join('\n');
+        await appendFile(join(EGPT_HOME, 'e-feed.md'), entry);
+      } catch (_) { /* feed log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
       if (newSessionId) {
         // Record into history (dedupes / refreshes timestamp if the
