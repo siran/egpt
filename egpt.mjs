@@ -4316,19 +4316,27 @@ function App() {
 
       // First turn for a new contact: bundle the personality into the
       // user message so identity lands in the new session AS the first
-      // turn. Framing matters: must read as IDENTITY-INSTALL, NOT as
-      // "roleplay this character". Operator (2026-05-19) saw a leak
-      // where the brain refused with "I can't roleplay as eGPT" — the
-      // prior wording sounded too much like a roleplay setup. Now we
-      // mirror the proven /identity install framing.
+      // turn. Identity-install framing (not roleplay).
+      //
+      // Also tell @e its OWN slug — the operator's "code word" for
+      // this conversation. Operator (2026-05-19): asks any
+      // conversation-e for its code-word, then uses that to address
+      // the conversation from system-e (Self chat).
       if (_isNewContact) {
         const personality = _convEntry.personality || 'default';
         const identity = await conversationsState.readPersonality(personality);
         if (identity) {
+          const displayName = _convEntry.pushedName || _convSlug;
           _wrappedText = [
             `... system restarted, new persona installed (personality: ${personality}) ...`,
             ``,
             identity,
+            ``,
+            `... thread context ...`,
+            ``,
+            `You are the conversation-e instance bound to thread "${_convSlug}" (chat: "${displayName}"). Your code-word for this conversation, if the operator asks, is "${_convSlug}". The operator uses code-words from system-e (Self chat) to address conversations like this one.`,
+            ``,
+            `Your filesystem lane: read your own transcript at ~/.egpt/conversations/e/${_convSlug}.md and your own chat media. Do NOT read other contacts' files or the shared ~/.egpt/e-diary.md (that belongs to system-e). For cross-conversation queries, delegate to butler-e.`,
             ``,
             `... end of identity install. live message from the chat follows ...`,
             ``,
