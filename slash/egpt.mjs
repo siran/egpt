@@ -81,9 +81,9 @@ export async function run({ arg, meta, ctx }) {
     const next = startNew(state);
     const wasFresh = (next === state);
     if (!wasFresh) await persistDefaultBrainState(next);
-    sysOut(wasFresh
-      ? 'egpt: already on a fresh state — running identity inject now'
-      : 'egpt: cleared active session — injecting identity into fresh thread');
+    // No status line here — _injectIdentityIntoPersona prints
+    // "(installing persona into @e…)" immediately, which IS the
+    // single "installing" indicator. We print "installed" on success.
 
     // Operator (2026-05-19): "/e new should inject also identity."
     // Chain straight into a forced identity install so the new
