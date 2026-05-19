@@ -4214,35 +4214,69 @@ function App() {
       try {
         const threadId = threadCtx.threadId ?? 'shell';
         _upsertConversationEntry(threadId, threadCtx);
-        const fname    = _threadFileName(threadId, threadCtx);
-        const convDir  = join(EGPT_HOME, 'conversations', 'e');
-        const fpath    = join(convDir, fname);
-        await mkdir(convDir, { recursive: true });
-        // First-write header so operator can identify the thread at a
-        // glance (chat name + jid + surface).
-        const isFirst = !existsSync(fpath);
+
+        // Per-thread location: real conversations under
+        // ~/.egpt/conversations/e/<name>.md; system threads
+        // (heartbeat, shell, anything that isn't a chat) under
+        // ~/.egpt/state/<thread>.md so they don't pollute the
+        // conversations folder. Operator (2026-05-19): "heartbeat
+        // ticks et al don't belong in conversations/."
+        const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
+        const baseDir = isSystemThread
+          ? join(EGPT_HOME, 'state')
+          : join(EGPT_HOME, 'conversations', 'e');
+        const fname = isSystemThread
+          ? `${_sanitizeForFilename(threadId)}.md`
+          : _threadFileName(threadId, threadCtx);
+        const fpath = join(baseDir, fname);
+        await mkdir(baseDir, { recursive: true });
+
         const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
         const durMs = Date.now() - _feedStart;
+        const isFirst = !existsSync(fpath);
         const header = isFirst
-          ? `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: \`${threadId}\`  ·  surface: \`${threadCtx.surface ?? '?'}\`  ·  slug: \`${threadCtx.slug ?? '?'}\`\n\n---\n\n`
+          ? (isSystemThread
+              ? `# @e ${threadId} log\n\n---\n\n`
+              : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n---\n\n`)
           : '';
+        // Play-script style: no fences. Operator (2026-05-19): "omit
+        // the ``` — pollutes the file." The body lines are the body
+        // text directly, indented or not based on caller's format.
+        const subjectLine = isSystemThread
+          ? `### ${stamp} — ${threadId} → fed to @e  (${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`
+          : `### ${stamp} — fed to @e  (jid: ${threadId}, ${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`;
         const entry = header + [
-          `### ${stamp}  →  fed to @e  (jid: \`${threadId}\`, ${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`,
-          '',
-          '```',
+          subjectLine,
           text,
-          '```',
           '',
-          `### ${stamp}  ←  @e replied  (${final.length} chars)`,
-          '',
-          '```',
+          `### ${stamp} — @e replied  (${final.length} chars)`,
           final,
-          '```',
           '',
           '---',
           '',
         ].join('\n');
         await appendFile(fpath, entry);
+
+        // Unified feed — everything @e processes, chronological,
+        // single file. Coalesces per-thread streams into the canon
+        // play-script transcript. Operator (2026-05-19): "all
+        // conversations should coalesce in e-feed.md, basically a
+        // clean jsonl without noise."
+        const feedScene = isSystemThread
+          ? `## ${stamp} — [${threadId}]`
+          : `## ${stamp} — [${threadCtx.name || threadId}] (${threadId})`;
+        const feedEntry = [
+          feedScene,
+          '',
+          text,
+          '',
+          `@e:`,
+          final,
+          '',
+          '---',
+          '',
+        ].join('\n');
+        await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
       } catch (_) { /* conversation log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
       if (newSessionId) {
