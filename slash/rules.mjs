@@ -110,7 +110,31 @@ export async function run({ arg, meta, ctx }) {
       surface,
     }) ?? `[Group SysAdmin@${surface}]: ${rules}`;
     computeBrainTurn('e', injectLine)
-      .then(() => sysOut?.(`/rules: injected into @e session (as Group SysAdmin@${surface})`))
+      .then(async (reply) => {
+        sysOut?.(`/rules: injected into @e session (as Group SysAdmin@${surface})`);
+        // Operator (2026-05-19): "replies should be sent to
+        // originating chat." When the slash came from a chat (WA
+        // self-DM, a group, etc.), surface @e's ack to that chat
+        // via a wa-send outbox event so the human sees confirmation.
+        // Silence-protocol replies are skipped — nothing to surface.
+        const replyText = String(reply ?? '').trim();
+        if (!replyText || replyText === '...' || replyText === '…') return;
+        const originJid = meta?.waChatId;
+        if (!originJid) return;
+        try {
+          const fsmod   = await import('node:fs/promises');
+          const pathmod = await import('node:path');
+          const osmod   = await import('node:os');
+          const id  = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          const ev  = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: replyText };
+          await fsmod.writeFile(
+            pathmod.join(osmod.homedir(), '.egpt', 'outbox', id + '.json'),
+            JSON.stringify(ev),
+          );
+        } catch (e) {
+          sysOut?.(`!! /rules: failed to relay @e's ack to ${originJid}: ${e?.message ?? e}`);
+        }
+      })
       .catch(e => sysOut?.(`!! /rules: @e injection failed: ${e?.message ?? e}`));
   }
 

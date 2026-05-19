@@ -4447,10 +4447,10 @@ function App() {
   async function _injectIdentityIntoPersona({ brain, sessionOpts, dbCfg, forced = false }) {
     if (!forced) {
       const hasThread = !!(dbCfg?.url || dbCfg?.session_id);
-      if (hasThread) return;
+      if (hasThread) return '';
     }
     const identity = await _loadIdentity();
-    if (!identity) return;
+    if (!identity) return '';
     sysOut(`(installing persona into @e…)`);
     if (sessionOpts.targetId && brain.urlMatch) {
       cdp.activateTarget(sessionOpts.targetId).catch(() => {});
@@ -4472,7 +4472,11 @@ function App() {
           _localOnly: true,
         }]);
       }
-    } catch (e) { sysOut(`!! identity install (@e) failed: ${e.message}`); }
+      return final;
+    } catch (e) {
+      sysOut(`!! identity install (@e) failed: ${e.message}`);
+      return '';
+    }
   }
 
   async function _injectIdentityIfNeeded({ routedTo, session, brain, opts, forced = false }) {
