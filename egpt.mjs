@@ -4075,31 +4075,35 @@ function App() {
 
   // Build a per-thread filename for ~/.egpt/conversations/e/.
   //
-  //   - customName set     → just '<customName>.md' (no JID prefix).
-  //                          Operator-curated alias; multiple JIDs for
-  //                          the same contact (WA gives both 'phone@s.whatsapp.net'
-  //                          and 'lid@lid' for the same person) route to
-  //                          one file when both rows share customName.
-  //   - customName missing → '<JID>__<pushedName-or-slug>.md'. Stable
-  //                          JID prefix until operator curates an alias.
+  // Priority (operator 2026-05-19: "always pushname or whatsapp
+  // stable id" — auto-merge contacts without manual config):
+  //   1. customName (operator override) → '<customName>.md'.
+  //      Manual escape hatch when auto-merge can't link two JIDs.
+  //   2. pushedName from table → '<pushedName>.md' (NO JID prefix).
+  //      Two JIDs with the same pushedName share one file —
+  //      auto-merges the WA lid/pn split for one contact.
+  //   3. ctx.slug or ctx.name from bridge → '<slug-or-name>.md'.
+  //   4. Fallback → '<jid>.md'.
   //
-  // Operator (2026-05-19): "two JIDs for the same contact should
-  // not split the conversation across files." Setting customName on
-  // both rows in conversations.json merges them here.
+  // Caveat: full cross-JID auto-merge (lid ↔ phone-number) requires
+  // both rows to have the same pushedName. WA only fills pushedName
+  // when the contact sends a message; outbound-only JIDs may stay
+  // unmerged until they reply. customName remains as manual fix.
   function _sanitizeForFilenameSuffix(s) { return _sanitizeForFilename(s); }
   function _threadFileName(threadId, ctx = {}) {
     const idPart = _sanitizeForFilename(threadId ?? 'unknown') || 'unknown';
     const table = _readConversationsTable();
     const row = table[threadId] ?? {};
-    // Operator alias wins — drop the JID prefix entirely so different
-    // JIDs with the same customName share one file.
     if (row.customName) {
       const alias = _sanitizeForFilenameSuffix(row.customName);
       if (alias) return `${alias}.md`;
     }
-    const suffixRaw = row.pushedName || ctx.slug || ctx.name || '';
-    const suffix = _sanitizeForFilenameSuffix(suffixRaw);
-    return suffix ? `${idPart}__${suffix}.md` : `${idPart}.md`;
+    if (row.pushedName) {
+      const name = _sanitizeForFilenameSuffix(row.pushedName);
+      if (name) return `${name}.md`;
+    }
+    const fallback = _sanitizeForFilenameSuffix(ctx.slug || ctx.name || '');
+    return fallback ? `${fallback}.md` : `${idPart}.md`;
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
