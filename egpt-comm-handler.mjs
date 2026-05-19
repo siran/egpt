@@ -513,6 +513,7 @@ export function startOutboxWatcher({
   dispatchWaSend,
   dispatchWaGroupSubject = null,
   dispatchWaGroupMembers = null,
+  dispatchSlash         = null,
   log = () => {},
   signalRestart = () => {},
   outboxDir,
@@ -575,6 +576,19 @@ export function startOutboxWatcher({
         const ok = dispatchWaGroupMembers(payload, 'outbox');
         if (!ok) {
           // Bridge down / bad jid — leave for retry, release claim.
+          claimed.delete(name);
+          return;
+        }
+      }
+    } else if (payload?.type === 'slash') {
+      // Programmatic slash command. Bypasses the bridge round-trip
+      // (which would dedupe via _sentIds and never fire onIncoming).
+      // Body shape: { type: 'slash', from, cmd: '/identity' [, meta] }
+      if (typeof dispatchSlash !== 'function') {
+        log(`outbox: dropping slash from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
+      } else {
+        const ok = await dispatchSlash(payload, 'outbox');
+        if (!ok) {
           claimed.delete(name);
           return;
         }

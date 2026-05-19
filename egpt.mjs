@@ -2654,6 +2654,7 @@ function App() {
       dispatchWaSend:         (payload, src) => dispatchWaSendRef.current?.(payload, src),
       dispatchWaGroupSubject: (payload, src) => dispatchWaGroupSubjectRef.current?.(payload, src),
       dispatchWaGroupMembers: (payload, src) => dispatchWaGroupMembersRef.current?.(payload, src),
+      dispatchSlash:          (payload, src) => dispatchSlashRef.current?.(payload, src),
       log:                    sysLog,
       // process.exit(0) → wrapper's while-loop respawns. Post-split
       // this becomes a restart-handler event the keeper sends to
@@ -5838,6 +5839,32 @@ function App() {
 
   // wa-group-members dispatcher — fetch group members and log them
   const dispatchWaGroupMembersRef = useRef(null);
+  // Programmatic slash dispatcher — siblings / scripts drop a
+  // { type: 'slash', from, cmd } outbox event to invoke any slash
+  // command without round-tripping through a bridge. Operator
+  // (2026-05-19) needed this when /identity-via-self-DM failed
+  // because the bridge dedupes its own sent messages.
+  const dispatchSlashRef = useRef(null);
+  dispatchSlashRef.current = async (ev, source = 'outbox') => {
+    const log = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const cmd = (ev.cmd ?? '').trim();
+    if (!cmd.startsWith('/')) {
+      log(`!! ${source}: slash from ${ev.from} malformed — needs {cmd: '/...'}; got "${cmd.slice(0, 40)}"`);
+      return true;
+    }
+    log(`${source}: slash from ${ev.from} → ${cmd}`);
+    try {
+      const meta = { ...(ev.meta ?? {}), fromOutboxSlash: true };
+      const handled = await handleSlash(cmd, meta);
+      if (!handled) log(`!! ${source}: slash "${cmd}" from ${ev.from} — handleSlash returned false`);
+    } catch (e) {
+      log(`!! ${source}: slash "${cmd}" from ${ev.from} threw: ${e.message}`);
+    }
+    return true;
+  };
+
   dispatchWaGroupMembersRef.current = async (ev, source = 'outbox') => {
     const log = (msg) => setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
