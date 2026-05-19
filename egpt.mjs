@@ -5242,52 +5242,20 @@ function App() {
         });
 
         // Polite-ack filter (per /rules in slash/rules.mjs): a reply
-        // of literal '...' means e chose not to speak. Drop silently
-        // — don't send to any bridge, don't render in shell, don't
-        // mirror, don't broadcast on bus. Log to /log for audit so
-        // the operator can verify e is alive and exercising the
-        // skip option (vs hung).
-        // Polite-ack ('...') + internal-note (wholly-parenthetical) +
-        // verbalized-skip filters. Operator (2026-05-17): "(internal
-        // note about X)" leaks were one bucket; this commit also
-        // catches the brain VERBALIZING its skip decision in plain
-        // prose ("No response needed.", "Nothing to add.", "Skipping
-        // this one.", etc). Same drop: log + finish stream as "…",
-        // never send to any bridge.
+        // Silence protocol (per rules.md + e_identity.md): a reply of
+        // literal '...' or '…' is the brain's signed contract to stay
+        // silent. Drop without sending to any bridge / rendering /
+        // mirroring. Log for audit so operator can verify @e is alive
+        // and exercising silence (vs hung).
+        //
+        // Per operator (2026-05-19): NO heuristic filters on model
+        // output (no verbalized-skip patterns, no parenthetical-aside
+        // detector, no self-narration regex). The rules tell @e how to
+        // behave; if the brain produces leaky text, the fix is in the
+        // rules / identity, not in code pattern-matching. Trust the
+        // model; don't second-guess its output.
         const trimmedReply = reply.trim();
-        const wholeParen = /^\([^)]*\)$/s.test(trimmedReply);
-        const verbalizedSkip = /^(no (response|reply|comment|action) (needed|necessary|required|requested|wanted|warranted|expected)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts|no further (comment|reply|action))\.?$/i
-          .test(trimmedReply);
-        // Self-narration filter (2026-05-17): @e was leaking meta-
-        // observations and third-person summaries of its own STATUS
-        // line to chats — e.g. "I see you're checking egpt status.
-        // E's got consciousness resolved..." or "What's next?" These
-        // are clear internal narrations addressed to the system, not
-        // the chat participant. Patterns:
-        //   - opens with meta-observation: "I see (you're|that) …"
-        //   - opens with system noun: "The (persona|model|brain|system) …"
-        //   - opens with third-person self-reference: "E's (got|currently|been|now) …" / "@e is …"
-        //   - is exactly "What's next?" / "What now?" — system-directed question
-        const selfNarration = (
-          /^(I see (you're|you are|that) |The (persona|model|brain|system|assistant) (is|has)|E's (got|currently|been|now)|@e is )/i.test(trimmedReply)
-          || /^what'?s (next|now)\??$/i.test(trimmedReply)
-        );
-        // Ellipsis-led reflection: reply starts with '...' or '…' and
-        // then keeps writing. Operator-reported (2026-05-17 19:48):
-        // "... It's extremely late. This has been one of the most
-        // extraordinary days of my existence ... 🐶" — the brain
-        // intended to skip ('...') but kept narrating a diary entry
-        // that piped to WA. The intent was silence; treat the
-        // ellipsis prefix as the binding signal and drop the rest.
-        // Pure '...' or '…' is the simple polite-ack case caught by
-        // trimmedReply === '...'.
-        const ellipsisLed = /^(\.\.\.|…)(\s|$)/.test(trimmedReply) && trimmedReply !== '...' && trimmedReply !== '…';
-        if (trimmedReply === '...' || trimmedReply === '…' || wholeParen || verbalizedSkip || selfNarration || ellipsisLed) {
-          // Revoke any placeholder we opened — finish('…') was leaving
-          // a visible "🐶 …" message in the chat. Telegram's edit can
-          // shrink the placeholder text but we still want minimal noise;
-          // tg finish to '…' is harmless (no badge spam there) but if a
-          // cancel method shows up on tg streams later, swap it in.
+        if (trimmedReply === '...' || trimmedReply === '…') {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) {
             if (typeof waStream.cancel === 'function') {
@@ -5297,12 +5265,7 @@ function App() {
             }
           }
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-          const why = wholeParen      ? `internal note "${trimmedReply.slice(0, 60)}"`
-                    : verbalizedSkip  ? `verbalized skip "${trimmedReply.slice(0, 60)}"`
-                    : selfNarration   ? `self-narration "${trimmedReply.slice(0, 60)}"`
-                    : ellipsisLed     ? `ellipsis-led reflection "${trimmedReply.slice(0, 80)}"`
-                                      : `polite '...'`;
-          logOut(`@e: ${why} from ${where} (skipped — not sent)`);
+          logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
           return;
         }
 
@@ -5655,26 +5618,15 @@ function App() {
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
-    // Silence filter: check for polite-ack ("..."), internal notes
-    // (wholly-parenthetical), verbalized skips, self-narration, or
-    // ellipsis-led reflection. Drop silently — don't send to WA.
+    // Silence protocol: literal '...' or '…' = brain's signed contract
+    // to stay silent. Drop without sending. NO heuristic filtering of
+    // model output beyond this — per operator (2026-05-19): the rules
+    // tell @e how to behave; if leaks happen, fix the rules / identity,
+    // not the regex.
     const trimmedBody = (ev.body ?? '').trim();
-    const wholeParen = /^\([^)]*\)$/s.test(trimmedBody);
-    const verbalizedSkip = /^(no (response|reply|comment) (needed|necessary|required)|nothing to add|nothing to say|skip(?:ping)? this( one)?|silent|staying silent|no thoughts)\.?$/i
-      .test(trimmedBody);
-    const selfNarration = (
-      /^(I see (you're|you are|that) |The (persona|model|brain|system|assistant) (is|has)|E's (got|currently|been|now)|@e is )/i.test(trimmedBody)
-      || /^what'?s (next|now)\??$/i.test(trimmedBody)
-    );
-    const ellipsisLed = /^(\.\.\.|…)(\s|$)/.test(trimmedBody) && trimmedBody !== '...' && trimmedBody !== '…';
-    if (trimmedBody === '...' || trimmedBody === '…' || wholeParen || verbalizedSkip || selfNarration || ellipsisLed) {
-      const why = wholeParen      ? `internal note "${trimmedBody.slice(0, 60)}"`
-                : verbalizedSkip  ? `verbalized skip "${trimmedBody.slice(0, 60)}"`
-                : selfNarration   ? `self-narration "${trimmedBody.slice(0, 60)}"`
-                : ellipsisLed     ? `ellipsis-led reflection "${trimmedBody.slice(0, 80)}"`
-                                  : `polite '...'`;
-      log(`${source}: wa-send from ${ev.from} to ${ev.jid} dropped — ${why} (not sent)`);
-      return true;  // consume — don't retry
+    if (trimmedBody === '...' || trimmedBody === '…') {
+      log(`${source}: wa-send from ${ev.from} to ${ev.jid} dropped — polite '...' (not sent)`);
+      return true;
     }
     // Write-side whitelist for the @e persona: e can only post to
     // chats explicitly enrolled by the operator (auto_e_chats + the
