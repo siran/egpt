@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch } from 'node:fs';
 import { PassThrough } from 'node:stream';
-import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -4358,6 +4358,25 @@ function App() {
           sluggedDir,
           ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
         ];
+        // Operator (2026-05-20): media + voice-transcripts should appear
+        // in conversation-e's current dir, not at an absolute path.
+        // Create a junction (Windows) / symlink (POSIX) from
+        // <slug-dir>/media → <jid-media-dir>. Single-JID contacts get
+        // './media'; multi-JID contacts get './media-<jid>' per JID
+        // (junctions can only point to one target).
+        try {
+          const jids = _convEntry.jids ?? [];
+          for (let i = 0; i < jids.length; i++) {
+            const mDir = conversationsState.jidMediaDir(jids[i]);
+            if (!existsSync(mDir)) continue;
+            const linkName = (jids.length === 1)
+              ? 'media'
+              : `media-${jids[i].replace(/[^A-Za-z0-9_-]/g, '_')}`;
+            const linkPath = join(sluggedDir, linkName);
+            if (existsSync(linkPath)) continue;
+            try { await symlink(mDir, linkPath, 'junction'); } catch (_) {}
+          }
+        } catch (_) { /* junction creation best-effort */ }
       }
 
       // First turn for a new contact: bundle the personality into the
