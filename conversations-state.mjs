@@ -334,32 +334,53 @@ export async function migrateLayoutIfNeeded() {
   }
   if (!state) return { skipped: 'no old registry found' };
 
-  // For each slug: create new dir, move transcript file in.
+  // For each slug: create new dir, find + move transcript file in.
+  // Old filename shapes we've used (worst case all five):
+  //   <slug>.md
+  //   <jid-sanitized>.md            (early days, jid-only)
+  //   <jid-sanitized>__<slug>.md    (most common)
+  //   <slug>__...md
+  //   <jid-sanitized>__<pushedName-sanitized>.md   (pushedName variant)
+  // Match case-insensitively + try each contact JID.
   let moved = 0;
   const entries = existsSync(oldDirRoot) ? readdirSync(oldDirRoot) : [];
-  for (const slug of Object.keys(state.contacts ?? {})) {
+  const lcEntries = entries.map(fn => ({ fn, lc: fn.toLowerCase() }));
+  for (const [slug, entry] of Object.entries(state.contacts ?? {})) {
     const newDir = slugDir(slug);
     try { await mkdir(newDir, { recursive: true }); } catch {}
-    // Old filename shapes we've used: `<slug>.md`, `<jid>__<slug>.md`,
-    // sanitized pushedName forms. Match any that contain the slug.
-    const safeSlug = sanitizeSlug(slug);
-    const candidates = entries.filter(fn =>
-      fn.endsWith('.md') && (
-        fn === `${safeSlug}.md` ||
-        fn.endsWith(`__${safeSlug}.md`) ||
-        fn.startsWith(`${safeSlug}__`)
+    const safeSlug = sanitizeSlug(slug).toLowerCase();
+    const jids = entry.jids ?? [];
+    const jidSluglets = jids.map(j => sanitizeSlug(j).toLowerCase());
+    const candidates = lcEntries
+      .filter(({ fn, lc }) => fn.endsWith('.md') && lc !== 'conversations.yaml')
+      .filter(({ lc }) =>
+        lc === `${safeSlug}.md` ||
+        lc.endsWith(`__${safeSlug}.md`) ||
+        lc.startsWith(`${safeSlug}__`) ||
+        jidSluglets.some(j => lc === `${j}.md` || lc.startsWith(`${j}__`))
       )
-    );
-    for (const fn of candidates) {
-      try {
-        const target = join(newDir, 'transcript.md');
-        if (!existsSync(target)) {
-          await rename(join(oldDirRoot, fn), target);
-          moved++;
-          break;
-        }
-      } catch (_) {}
-    }
+      .map(({ fn }) => fn);
+    if (!candidates.length) continue;
+    // Pick the longest filename (most descriptive); if multiple, move
+    // the first into transcript.md and append the rest below the header
+    // so no history is lost.
+    candidates.sort((a, b) => b.length - a.length);
+    const target = join(newDir, 'transcript.md');
+    try {
+      if (!existsSync(target)) {
+        await rename(join(oldDirRoot, candidates[0]), target);
+        moved++;
+      }
+      // Any leftover candidates: append their content + bak-rename
+      for (const fn of candidates.slice(1)) {
+        try {
+          const extra = await readFile(join(oldDirRoot, fn), 'utf8');
+          const sep = `\n\n<!-- merged from legacy file: ${fn} -->\n\n`;
+          await (await import('node:fs/promises')).appendFile(target, sep + extra);
+          await rename(join(oldDirRoot, fn), join(oldDirRoot, fn + '.merged.bak'));
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
   await writeFile(newRegistry, serialize(state), 'utf8');
   if (existsSync(oldYaml)) { try { await rename(oldYaml, oldYaml + '.bak'); } catch {} }
