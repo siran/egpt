@@ -100,6 +100,42 @@ export function findThreadJsonl(threadId) {
   return null;
 }
 
+// Move media for each contact from ~/.egpt/media/<jid-sanitized>/ into
+// the contact's <slug-dir>/media/. Operator (2026-05-20): media should
+// live inside the conversation's own dir so conversation-e sees it at
+// ./media without crossing its sandbox.
+// Multi-JID contacts merge contents (filename-collision tolerant — on
+// collision the existing file in slug-dir wins, the legacy stays for
+// audit). Idempotent: skips contacts whose jid-media-dirs no longer
+// exist (already migrated).
+export async function migrateMediaToSlugDirs() {
+  if (!existsSync(CONV_YAML_PATH)) return { migrated: 0, files: 0 };
+  const state = await readState(CONV_YAML_PATH);
+  let contactsTouched = 0, filesMoved = 0;
+  for (const [slug, entry] of Object.entries(state.contacts ?? {})) {
+    const dstDir = join(slugDir(slug), 'media');
+    let touched = false;
+    for (const jid of (entry.jids ?? [])) {
+      const srcDir = jidMediaDir(jid);
+      if (!existsSync(srcDir)) continue;
+      try { await mkdir(dstDir, { recursive: true }); } catch {}
+      // Move every file (and .media-index.json) from srcDir → dstDir.
+      const { readdir } = await import('node:fs/promises');
+      let names;
+      try { names = await readdir(srcDir); } catch { continue; }
+      for (const name of names) {
+        const srcPath = join(srcDir, name);
+        const dstPath = join(dstDir, name);
+        if (existsSync(dstPath)) continue;   // don't clobber existing in slug-dir
+        try { await rename(srcPath, dstPath); filesMoved++; touched = true; }
+        catch (_) { /* cross-volume rename or perm — leave file in place */ }
+      }
+    }
+    if (touched) contactsTouched++;
+  }
+  return { migrated: contactsTouched, files: filesMoved };
+}
+
 // Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
 // Idempotent: skips entries that already match the pattern. Suffix is
 // derived from firstSeenAt (set once at creation) → threadCreatedAt
