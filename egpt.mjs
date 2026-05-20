@@ -4308,16 +4308,17 @@ function App() {
       // so claude spawns a fresh session (captured + persisted below).
       sessionOpts.sessionId = _convEntry.threadId ?? null;
 
-      // Per-conversation filesystem sandbox. cwd = the per-slug dir so
-      // `process.cwd()` introspection gives the slug (= "code-word")
-      // naturally — no need to bake it into the prompt. --add-dir
-      // pins claude to that dir + the per-JID media folders. Other
-      // conversations' dirs, the shared ~/.egpt/e-diary.md, the
-      // registry — all outside the sandbox.
+      // Per-conversation filesystem sandbox. cwd defaults to the per-
+      // slug dir (clean isolation). Legacy threads created before the
+      // migration may have a different threadCwd persisted on the
+      // contact entry — honor that so --resume can find the original
+      // jsonl. New contacts: threadCwd is unset until claude tells us
+      // the session id (saved later as part of the per-contact spawn).
       const sluggedDir = conversationsState.slugDir(_convSlug);
       try { await mkdir(sluggedDir, { recursive: true }); } catch {}
-      sessionOpts.cwd = sluggedDir;
+      sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
       sessionOpts.addDirs = [
+        sessionOpts.cwd,
         sluggedDir,
         ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
       ];
@@ -4458,16 +4459,30 @@ function App() {
       // to chat as a real message. Now: empty == '...' == drop.
       return final.trim() || '...';
     } catch (e) {
-      // Operator rule (2026-05-19): NEVER drop state without consulting
-      // first. Previous self-heal auto-cleared the contact's threadId
-      // when --resume failed — that destroyed the linkage to a JSONL
-      // that might still exist on disk (just at a different cwd-derived
-      // project path). The right behavior is: leave the threadId
-      // intact, log the failure to /log, notify the operator via
-      // system-e (Self DM), return '' so the chat sees nothing. The
-      // operator then decides: investigate, restore via `/egpt new
-      // --slug <slug>` if they want a fresh thread, or leave alone.
       const msg = e?.message ?? '';
+
+      // Cwd-recovery (operator rule: don't drop state — find where the
+      // jsonl lives and use that cwd). When --resume failed AND we
+      // haven't retried yet, scan ~/.claude/projects for the threadId's
+      // jsonl; if found at a different project-dir than we tried, derive
+      // the original cwd and retry with it. Persist threadCwd on the
+      // contact so subsequent spawns go straight to the right path.
+      const triedResume = !!(isWaContact && _convSlug && _convEntry?.threadId);
+      if (triedResume && !threadCtx._retried) {
+        try {
+          const found = conversationsState.findThreadJsonl(_convEntry.threadId);
+          if (found?.cwd && found.cwd !== sessionOpts.cwd) {
+            const cs = await _loadConvState();
+            const next = conversationsState.patchContact(cs, _convSlug, { threadCwd: found.cwd });
+            await _writeConvState(next);
+            sysLog(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
+            return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
+          }
+        } catch (_) { /* recovery best-effort */ }
+      }
+
+      // No recovery possible. Log + notify operator via Self DM.
+      // State is preserved (threadId untouched).
       sysLog(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
       if (isWaContact && _convSlug) {
         try {

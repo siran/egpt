@@ -57,6 +57,48 @@ export function jidMediaDir(jid) {
   return join(homedir(), '.egpt', 'media', sanitized);
 }
 
+// Best-effort reverse-engineer of claude's project-dir sanitization.
+// Claude-code stores session JSONLs at ~/.claude/projects/<sanitized>/
+// where sanitized = cwd.replace(/[\\\/:]/g, '-'). Reversing is lossy
+// (a '-' in the result could have been '/' or '\' or ':') but the
+// typical case is unambiguous:
+//   Windows 'C:/Users/an/src/egpt'         → 'C--Users-an-src-egpt'
+//   POSIX   '/home/user/.egpt'             → '-home-user-.egpt'
+// Heuristic recovers the leading drive-letter or root, then maps
+// remaining '-' back to '/'. Returns null when the input doesn't
+// look like a recognizable path.
+export function reverseSanitizeCwd(projectDir) {
+  if (!projectDir || typeof projectDir !== 'string') return null;
+  // Windows: 'X--rest' came from 'X:/rest'
+  const winMatch = projectDir.match(/^([A-Za-z])--(.+)$/);
+  if (winMatch) {
+    return `${winMatch[1]}:/${winMatch[2].replace(/-/g, '/')}`;
+  }
+  // POSIX: '-rest' came from '/rest'
+  if (projectDir.startsWith('-')) {
+    return '/' + projectDir.slice(1).replace(/-/g, '/');
+  }
+  return null;
+}
+
+// Scan ~/.claude/projects/*/<threadId>.jsonl. Returns { projectDir, cwd }
+// or null when not found anywhere.
+import { readdirSync as _readdirSync, existsSync as _existsSync } from 'node:fs';
+export function findThreadJsonl(threadId) {
+  if (!threadId) return null;
+  const projects = join(homedir(), '.claude', 'projects');
+  if (!_existsSync(projects)) return null;
+  let entries;
+  try { entries = _readdirSync(projects); } catch { return null; }
+  for (const d of entries) {
+    const candidate = join(projects, d, `${threadId}.jsonl`);
+    if (_existsSync(candidate)) {
+      return { projectDir: d, cwd: reverseSanitizeCwd(d), jsonlPath: candidate };
+    }
+  }
+  return null;
+}
+
 // ── State shape ─────────────────────────────────────────────────────────────
 
 // emptyState() returns the empty registry.
