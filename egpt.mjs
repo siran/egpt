@@ -4361,15 +4361,36 @@ function App() {
         const personality = _convEntry.personality || 'default';
         const identity = await conversationsState.readPersonality(personality);
         if (identity) {
-          _wrappedText = [
-            `... system restarted, new persona installed (personality: ${personality}) ...`,
-            ``,
-            identity,
-            ``,
-            `... end of identity install. live message from the chat follows ...`,
-            ``,
-            text,
-          ].join('\n');
+          // Two framings depending on personality. Operator (2026-05-19)
+          // saw haiku refuse the 'system' persona ('I'm not going to
+          // roleplay as it') because Claude is calibration-strict about
+          // claiming fabricated identities/capabilities. For 'system'
+          // (operator-direct channel) we use a plain task-briefing
+          // wrap — no identity-install claim. For chat-facing personas
+          // (default/joke/serious/silent) the identity-install framing
+          // works because the brain reads the WA dispatch line as a
+          // real chat message and plays the role naturally.
+          if (personality === 'system') {
+            _wrappedText = [
+              identity,
+              ``,
+              `---`,
+              ``,
+              `Operator's incoming message follows:`,
+              ``,
+              text,
+            ].join('\n');
+          } else {
+            _wrappedText = [
+              `... system restarted, new persona installed (personality: ${personality}) ...`,
+              ``,
+              identity,
+              ``,
+              `... end of identity install. live message from the chat follows ...`,
+              ``,
+              text,
+            ].join('\n');
+          }
         }
       }
     }
