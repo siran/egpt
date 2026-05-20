@@ -4249,7 +4249,10 @@ function App() {
         // /egpt list.
         const next = recordSession(readDefaultBrainState(), url, { type: brainType });
         await persistDefaultBrainState(next);
-        return final.trim() || '(no reply)';
+        // Empty successful reply → silence protocol marker. Was previously
+      // the verbose string '(no reply)' which the dispatcher would ship
+      // to chat as a real message. Now: empty == '...' == drop.
+      return final.trim() || '...';
       } catch (e) {
         return `!! @e: ${e.message}`;
       }
@@ -4450,9 +4453,40 @@ function App() {
         const next = recordSession(readDefaultBrainState(), newSessionId, { type: brainType });
         await persistDefaultBrainState(next);
       }
-      return final.trim() || '(no reply)';
+      // Empty successful reply → silence protocol marker. Was previously
+      // the verbose string '(no reply)' which the dispatcher would ship
+      // to chat as a real message. Now: empty == '...' == drop.
+      return final.trim() || '...';
     } catch (e) {
-      return `!! egpt: ${e.message}`;
+      // Self-heal stale per-contact threadId. Symptom seen post-
+      // migration: `claude --resume <id>` fails with "No conversation
+      // found with session ID: <id>" because the JSONL doesn't exist
+      // at the cwd-derived path (cwd changed mid-migration, or the
+      // claude home was wiped, or the operator nuked it). Clear the
+      // contact's threadId and retry ONCE — second attempt sees
+      // threadId=null, treats as new contact, bundles personality,
+      // spawns a fresh thread. _retried flag guards against loops.
+      const msg = e?.message ?? '';
+      if (isWaContact && _convSlug && !threadCtx._retried
+          && /No conversation found with session ID/i.test(msg)) {
+        try {
+          const cs = await _loadConvState();
+          const cleared = conversationsState.patchContact(cs, _convSlug, {
+            threadId: null,
+            identityInjectedAt: null,
+          });
+          await _writeConvState(cleared);
+          sysLog(`@e: stale threadId on contact "${_convSlug}" (${msg.slice(0, 60)}…) — cleared, retrying with fresh thread`);
+          return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
+        } catch (e2) {
+          sysLog(`!! @e: self-heal failed for ${_convSlug}: ${e2.message}`);
+        }
+      }
+      // Surface errors to /log, not to the chat. Operator (2026-05-19)
+      // saw '!! egpt: claude: error_during_execution' leak to a WA
+      // chat as @e's reply — never ship error prose downstream.
+      sysLog(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
+      return '';
     }
   }
 
@@ -4531,7 +4565,10 @@ function App() {
         sessionOpts,
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
-      return final.trim() || '(no reply)';
+      // Empty successful reply → silence protocol marker. Was previously
+      // the verbose string '(no reply)' which the dispatcher would ship
+      // to chat as a real message. Now: empty == '...' == drop.
+      return final.trim() || '...';
     } catch (e) {
       return `!! @${name}: ${e.message}`;
     }
@@ -5655,7 +5692,10 @@ function App() {
         // rules / identity, not in code pattern-matching. Trust the
         // model; don't second-guess its output.
         const trimmedReply = reply.trim();
-        if (trimmedReply === '...' || trimmedReply === '…') {
+        // Treat empty reply as silence too — runDefaultBrainTurn returns
+        // '' when an error was silenced (e.g. self-healed stale threadId,
+        // or any other claude failure routed to /log instead of chat).
+        if (trimmedReply === '' || trimmedReply === '...' || trimmedReply === '…') {
           if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
           if (waStream) {
             if (typeof waStream.cancel === 'function') {
