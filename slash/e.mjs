@@ -26,6 +26,7 @@ import {
   findContactByJid,
   patchContact,
 } from '../conversations-state.mjs';
+import { readConfig, writeConfig } from '../tools/config-io.mjs';
 
 export const meta = {
   cmd: '/e',
@@ -35,12 +36,12 @@ export const meta = {
   desc: 'control @e auto-dispatch, personality, and heartbeats per contact',
 };
 
-async function _persistWaConfig(EGPT_HOME) {
-  const cfgPath = join(EGPT_HOME, 'config.json');
-  let saved = {};
-  try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+// Legacy stub kept only because other call paths may import it. The
+// /e auto branch now reads/writes directly via config-io.
+async function _persistWaConfig() {
+  const saved = await readConfig();
   if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-  return { cfgPath, saved };
+  return { saved };
 }
 
 export async function run({ arg, meta: dispatchMeta, ctx }) {
@@ -175,13 +176,13 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
-  // Persist to ~/.egpt/config.json (merge with whatever else is there).
+  // Persist to ~/.egpt/config.yaml (merge with whatever else is there).
   try {
-    const { cfgPath, saved } = await _persistWaConfig(EGPT_HOME);
+    const saved = await readConfig();
+    if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
     saved.whatsapp.auto_e_chats = wa.auto_e_chats;
     saved.whatsapp.auto_e_paused = !!wa.auto_e_paused;
-    await mkdir(EGPT_HOME, { recursive: true });
-    await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+    await writeConfig(saved);
   } catch (e) {
     sysOut(`!! /e auto: persist failed: ${e.message}`);
     return true;
