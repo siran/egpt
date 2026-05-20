@@ -2529,13 +2529,21 @@ function App() {
           //   - text already begins with @<mention> (operator/another
           //     persona is explicitly addressed; honor that)
           //   - text is a slash command (starts with /)
+          //   - chat is NOT in auto_e_chats — only enrolled chats get
+          //     the free-post @e dispatch. Operator (2026-05-20):
+          //     'router-wise, e can only answer to direct mention or
+          //     post freely in auto_e_chats.' Direct @e mentions still
+          //     work everywhere because hasMention catches them above
+          //     and submitInner routes them through @-resolution.
           const waCfg = EGPT_CONFIG.whatsapp ?? {};
           const autoPaused = !!waCfg.auto_e_paused;
+          const isAutoEChat = Array.isArray(waCfg.auto_e_chats)
+            && waCfg.auto_e_chats.includes(from.chatId);
           const trimmed = String(text ?? '').trimStart();
           const hasMention = /^@[\w-]+/.test(trimmed);
           const isSlash    = trimmed.startsWith('/');
           let dispatchText = text;
-          if (!autoPaused && !hasMention && !isSlash) {
+          if (!autoPaused && !hasMention && !isSlash && isAutoEChat) {
             dispatchText = `@e ${text}`;
           }
           if (submitRef.current) await submitRef.current(dispatchText, {
