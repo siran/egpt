@@ -4458,17 +4458,17 @@ function App() {
       // to chat as a real message. Now: empty == '...' == drop.
       return final.trim() || '...';
     } catch (e) {
-      // Self-heal stale per-contact threadId. Symptom seen post-
-      // migration: `claude --resume <id>` fails with "No conversation
-      // found with session ID: <id>" because the JSONL doesn't exist
-      // at the cwd-derived path (cwd changed mid-migration, or the
-      // claude home was wiped, or the operator nuked it). Clear the
-      // contact's threadId and retry ONCE — second attempt sees
-      // threadId=null, treats as new contact, bundles personality,
-      // spawns a fresh thread. _retried flag guards against loops.
+      // Behavioral self-heal: if we tried `--resume <threadId>` (had a
+      // non-null sessionId at spawn) and it failed, the threadId is
+      // probably stale (jsonl missing, cwd-path drift, etc). Clear it
+      // and retry ONCE with sessionId=null — that spawns a fresh
+      // thread, bundles the personality, lands clean. No text-parsing
+      // of the error message (operator rule 2026-05-19: 'never parse
+      // messages for routing'). Structural state: we tried resume,
+      // resume failed, try without.
       const msg = e?.message ?? '';
-      if (isWaContact && _convSlug && !threadCtx._retried
-          && /No conversation found with session ID/i.test(msg)) {
+      const triedResume = !!(isWaContact && _convSlug && _convEntry?.threadId);
+      if (triedResume && !threadCtx._retried) {
         try {
           const cs = await _loadConvState();
           const cleared = conversationsState.patchContact(cs, _convSlug, {
@@ -4476,7 +4476,7 @@ function App() {
             identityInjectedAt: null,
           });
           await _writeConvState(cleared);
-          sysLog(`@e: stale threadId on contact "${_convSlug}" (${msg.slice(0, 60)}…) — cleared, retrying with fresh thread`);
+          sysLog(`@e: per-contact resume failed on "${_convSlug}" — clearing threadId, retrying with fresh thread (${msg.slice(0, 80)})`);
           return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
         } catch (e2) {
           sysLog(`!! @e: self-heal failed for ${_convSlug}: ${e2.message}`);
