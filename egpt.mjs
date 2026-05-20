@@ -144,7 +144,14 @@ function clearPidfile() {
 // after a silent config-clobber bug caused auto_e_chats to vanish
 // in-memory, dropping fromMe messages at the bridge awareness gate.
 let EGPT_CONFIG = {};
-try { EGPT_CONFIG = JSON.parse(readFileSync(join(EGPT_HOME, 'config.json'), 'utf8')); } catch {}
+// Config now reads ~/.egpt/config.yaml (operator-editable YAML). Sync
+// reader auto-migrates from legacy config.json on first call.
+try {
+  const { readConfigSync } = await import('./tools/config-io.mjs');
+  EGPT_CONFIG = readConfigSync();
+} catch {}
+// Per-cwd override config — still JSON, this is meant to be checked
+// into the project repo by power users (e.g. for tests).
 const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
 function _isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 function _shallowDeepMerge(base, override) {
@@ -1978,8 +1985,10 @@ function App() {
     if (bridgeRef.current) return true;
     let cfg = tgCfgRef.current;
     if (!cfg) {
-      try { cfg = JSON.parse(await readFile(join(homedir(), '.egpt', 'config.json'), 'utf8')); }
-      catch { return false; }
+      try {
+        const { readConfig } = await import('./tools/config-io.mjs');
+        cfg = await readConfig();
+      } catch { return false; }
       tgCfgRef.current = cfg;
     }
     if (!cfg.telegram?.bot_token) return false;
@@ -2058,15 +2067,13 @@ function App() {
         // First captured chat — persist so future runs know the outbound
         // target without waiting for an inbound. Also update the live
         // ref + bridge.chatId getter so /telegram (no arg) reflects it.
-        const cfgPath = join(EGPT_HOME, 'config.json');
-        let saved = {};
-        try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+        const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+        const saved = await readConfig();
         if (!saved.telegram || typeof saved.telegram !== 'object') saved.telegram = {};
         if (saved.telegram.chat_id === id) return;
         saved.telegram.chat_id = id;
         try {
-          await mkdir(EGPT_HOME, { recursive: true });
-          await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+          await writeConfig(saved);
           if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
           logOut(`telegram: outbound chat ${id} captured and saved`);
         } catch (e) {
@@ -2603,15 +2610,13 @@ function App() {
           EGPT_CONFIG.whatsapp.chat_id = id;
           // Then async-persist to disk so future runs default to
           // this chat without recapture.
-          const cfgPath = join(EGPT_HOME, 'config.json');
-          let saved = {};
-          try { saved = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+          const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+          const saved = await readConfig();
           if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
           if (saved.whatsapp.chat_id === id) return;
           saved.whatsapp.chat_id = id;
           try {
-            await mkdir(EGPT_HOME, { recursive: true });
-            await writeFile(cfgPath, JSON.stringify(saved, null, 2) + '\n');
+            await writeConfig(saved);
             logOut(`whatsapp: outbound chat ${id} captured and saved`);
           } catch (_) {}
         },
@@ -4757,25 +4762,20 @@ function App() {
   // and EGPT_CONFIG.default_brain. Preserves any unrelated fields the
   // user has set on default_brain (allowed_tools, system_prompt, cwd).
   async function persistDefaultBrainState(state) {
-    const cfgPath = join(EGPT_HOME, 'config.json');
-    let cfg = {};
-    try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch (_) {}
+    const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+    const cfg = await readConfig();
     if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
     // Merge in-memory default_brain fields that may not yet be on
     // disk (e.g. identityInjected flag set during the install turn
-    // earlier this session). Disk-first, memory-overrides keeps the
-    // 'last write wins' shape for fields the user edited externally
-    // while still preserving in-session flips.
+    // earlier this session).
     cfg.default_brain = { ...cfg.default_brain, ...(EGPT_CONFIG.default_brain ?? {}) };
     cfg.default_brain.type        = state.type;
     cfg.default_brain.session_id  = state.session_id;
     cfg.default_brain.url         = state.url;
     cfg.default_brain.history     = state.history;
     EGPT_CONFIG.default_brain = cfg.default_brain;
-    try {
-      await mkdir(EGPT_HOME, { recursive: true });
-      await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
-    } catch (e) { sysOut(`!! couldn't persist default_brain: ${e.message}`); }
+    try { await writeConfig(cfg); }
+    catch (e) { sysOut(`!! couldn't persist default_brain: ${e.message}`); }
   }
 
   // Run a single brain-turn for one session.

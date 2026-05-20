@@ -67,9 +67,8 @@ export async function run({ arg, ctx }) {
     // Read ~/.egpt/config.json, update telegram.allowed_users, write back.
     // Prefer mutating the live tgCfgRef array in place so the running
     // bridge's closure sees the change without a restart.
-    const cfgPath = join(EGPT_HOME, 'config.json');
-    let cfg = {};
-    try { cfg = JSON.parse(await readFile(cfgPath, 'utf8')); } catch {}
+    const { readConfig, writeConfig } = await import('../tools/config-io.mjs');
+    const cfg = await readConfig();
     if (!cfg.telegram || typeof cfg.telegram !== 'object') cfg.telegram = {};
     if (!Array.isArray(cfg.telegram.allowed_users)) cfg.telegram.allowed_users = [];
     if (sub === 'allow') {
@@ -77,8 +76,7 @@ export async function run({ arg, ctx }) {
     } else {
       cfg.telegram.allowed_users = cfg.telegram.allowed_users.filter(id => id !== userId);
     }
-    await mkdir(EGPT_HOME, { recursive: true });
-    await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + '\n');
+    await writeConfig(cfg);
 
     const live = tgCfgRef.current?.telegram?.allowed_users;
     if (Array.isArray(live)) {
