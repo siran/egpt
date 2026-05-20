@@ -4191,8 +4191,29 @@ function App() {
         }
       } catch (e) { sysLog(`!! conversations migration: ${e.message}`); }
     }
-    try { return await conversationsState.readState(_CONV_YAML_PATH); }
-    catch (_) { return conversationsState.emptyState(); }
+    try {
+      const state = await conversationsState.readState(_CONV_YAML_PATH);
+      // Auto-elevate the Self DM contact to personality='system' if it's
+      // still on the default. Operator (2026-05-19): the Self DM is the
+      // operator-direct channel; system-e there has full computer access.
+      // This migration is idempotent — runs at most once per dispatch but
+      // only writes when an actual change is needed.
+      const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+      if (selfDm) {
+        const selfSlug = conversationsState.findContactByJid(state, selfDm);
+        if (selfSlug && (state.contacts[selfSlug].personality ?? 'default') === 'default') {
+          const elevated = conversationsState.patchContact(state, selfSlug, {
+            personality: 'system',
+            threadId: null,              // force fresh thread with 'system' bundle
+            identityInjectedAt: null,
+          });
+          await conversationsState.writeState(_CONV_YAML_PATH, elevated);
+          sysLog(`conversations: auto-elevated self-DM contact "${selfSlug}" → personality 'system' (full-computer access; fresh thread on next message)`);
+          return elevated;
+        }
+      }
+      return state;
+    } catch (_) { return conversationsState.emptyState(); }
   }
 
   async function _writeConvState(state) {
@@ -4308,20 +4329,28 @@ function App() {
       // so claude spawns a fresh session (captured + persisted below).
       sessionOpts.sessionId = _convEntry.threadId ?? null;
 
-      // Per-conversation filesystem sandbox. cwd defaults to the per-
-      // slug dir (clean isolation). Legacy threads created before the
-      // migration may have a different threadCwd persisted on the
-      // contact entry — honor that so --resume can find the original
-      // jsonl. New contacts: threadCwd is unset until claude tells us
-      // the session id (saved later as part of the per-contact spawn).
+      // Filesystem scope depends on personality:
+      //   'system' → full computer (operator's right hand: Self DM and
+      //              any operator-elevated contact). cwd = homedir,
+      //              no --add-dir restriction so claude sees everything.
+      //   other    → per-conversation sandbox. cwd = slug-dir
+      //              (clean isolation), --add-dir pins the lane.
+      // Legacy threads with persisted threadCwd honor that so --resume
+      // can find the original jsonl.
       const sluggedDir = conversationsState.slugDir(_convSlug);
       try { await mkdir(sluggedDir, { recursive: true }); } catch {}
-      sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
-      sessionOpts.addDirs = [
-        sessionOpts.cwd,
-        sluggedDir,
-        ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
-      ];
+      const isSystemPersonality = (_convEntry.personality === 'system');
+      if (isSystemPersonality) {
+        sessionOpts.cwd = _convEntry.threadCwd ?? homedir();
+        // No addDirs restriction — system-e roams the whole machine.
+      } else {
+        sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
+        sessionOpts.addDirs = [
+          sessionOpts.cwd,
+          sluggedDir,
+          ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
+        ];
+      }
 
       // First turn for a new contact: bundle the personality into the
       // user message so identity lands in the new session AS the first
@@ -5442,7 +5471,45 @@ function App() {
 
     if (decision.kind === 'command') {
       const handled = await handleSlash(text, meta);
-      if (!handled) sysOut(`!! unknown command: ${decision.cmd}`);
+      if (!handled) {
+        // Operator (2026-05-19): any unrecognized slash typed in Self
+        // DM should route as a free-form prompt to system-e (instead
+        // of '!! unknown command'). Lets operator say things like
+        // '/whats diego's code-word' and get a real answer back.
+        const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+        const isSelfDm = meta?.fromWhatsApp && meta.waChatId && selfDm && meta.waChatId === selfDm;
+        if (isSelfDm) {
+          const prompt = text.replace(/^\s*\/+\s*/, '').trim();
+          if (prompt) {
+            try {
+              // Dispatch as a normal turn to the Self DM @e thread.
+              // ensureContact + system-personality routing happens
+              // inside runDefaultBrainTurn; result flows back to the
+              // chat the same way an auto-dispatch would.
+              const cs = await _loadConvState();
+              const slug = conversationsState.findContactByJid(cs, selfDm);
+              const entry = slug ? cs.contacts[slug] : null;
+              const ctxForTurn = {
+                threadId: selfDm,
+                surface:  'wa',
+                slug,
+                name:     entry?.pushedName || slug || 'self',
+              };
+              const reply = await runDefaultBrainTurn(prompt, () => {}, ctxForTurn);
+              const replyText = String(reply ?? '').trim();
+              if (replyText && replyText !== '...' && replyText !== '…') {
+                const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+                const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: selfDm, body: replyText };
+                await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+              }
+            } catch (e) {
+              sysOut(`!! /-prompt-to-system-e failed: ${e?.message ?? e}`);
+            }
+            return;
+          }
+        }
+        sysOut(`!! unknown command: ${decision.cmd}`);
+      }
       return;
     }
 
