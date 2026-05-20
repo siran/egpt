@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 
 const _here = dirname(fileURLToPath(import.meta.url));
@@ -99,11 +100,94 @@ export function findThreadJsonl(threadId) {
   return null;
 }
 
+// Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
+// Idempotent: skips entries that already match the pattern. Suffix is
+// derived from firstSeenAt (set once at creation) → threadCreatedAt
+// (best-effort proxy for old entries) → file mtime → now. Renames the
+// on-disk dir and updates the YAML key.
+export async function migrateSlugSuffix() {
+  if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 0 };
+  const state = await readState(CONV_YAML_PATH);
+  const oldContacts = state.contacts ?? {};
+  const nextContacts = {};
+  let renamed = 0, skipped = 0;
+  for (const [oldSlug, entry] of Object.entries(oldContacts)) {
+    if (hasSlugSuffix(oldSlug) || !entry?.jids?.length) {
+      // Already migrated or has no JIDs to derive from — keep as-is.
+      // Backfill firstSeenAt for already-suffixed entries that lack it.
+      if (hasSlugSuffix(oldSlug) && !entry.firstSeenAt) {
+        const inferredFromSlug = (() => {
+          const m = oldSlug.match(/-(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/);
+          if (!m) return null;
+          const [, yy, MM, dd, HH, mm] = m;
+          return new Date(Date.UTC(2000 + Number(yy), Number(MM) - 1, Number(dd), Number(HH), Number(mm))).toISOString();
+        })();
+        nextContacts[oldSlug] = { ...entry, firstSeenAt: inferredFromSlug ?? entry.threadCreatedAt ?? new Date().toISOString() };
+      } else {
+        nextContacts[oldSlug] = entry;
+      }
+      skipped++;
+      continue;
+    }
+    // Determine firstSeenAt: explicit field, then threadCreatedAt,
+    // then dir mtime, then now.
+    let firstSeenAt = entry.firstSeenAt;
+    if (!firstSeenAt) {
+      if (entry.threadCreatedAt) firstSeenAt = entry.threadCreatedAt;
+      else {
+        try {
+          const s = await stat(slugDir(oldSlug));
+          firstSeenAt = new Date(s.birthtimeMs || s.mtimeMs).toISOString();
+        } catch { firstSeenAt = new Date().toISOString(); }
+      }
+    }
+    const newSlug = appendSlugSuffix(oldSlug, new Date(firstSeenAt));
+    const oldDir = slugDir(oldSlug);
+    const newDir = slugDir(newSlug);
+    if (existsSync(oldDir) && !existsSync(newDir)) {
+      try { await rename(oldDir, newDir); } catch (_) {}
+    }
+    nextContacts[newSlug] = { ...entry, firstSeenAt };
+    renamed++;
+  }
+  if (renamed > 0 || Object.keys(nextContacts).some(k => oldContacts[k]?.firstSeenAt !== nextContacts[k]?.firstSeenAt)) {
+    await writeState(CONV_YAML_PATH, { ...state, contacts: nextContacts });
+  }
+  return { renamed, skipped };
+}
+
 // ── State shape ─────────────────────────────────────────────────────────────
 
 // emptyState() returns the empty registry.
 export function emptyState() {
   return { contacts: {} };
+}
+
+// ── Slug uniqueness ────────────────────────────────────────────────────────
+
+// Operator (2026-05-20): use a local-time suffix so the slug encodes
+// the contact's creation time at a glance — '-yymmddhhmm'. Two groups
+// with the same name across time will have different suffixes and
+// won't collide.
+//   diego-2605201243  =  contact 'diego' first seen 2026-05-20 12:43 local
+export function slugSuffix(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return '';
+  // UTC — stable across operator's TZ changes; not the local clock.
+  const yy = String(d.getUTCFullYear() % 100).padStart(2, '0');
+  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const HH = String(d.getUTCHours()).padStart(2, '0');
+  const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return yy + MM + dd + HH + mm;
+}
+export function hasSlugSuffix(slug) {
+  return /-\d{10}$/.test(String(slug ?? ''));
+}
+export function appendSlugSuffix(baseSlug, date = new Date()) {
+  const base = sanitizeSlug(baseSlug);
+  const suf = slugSuffix(date);
+  return suf ? `${base}-${suf}` : base;
 }
 
 // ── Slug sanitization (filename + YAML-key safe) ───────────────────────────
@@ -163,12 +247,17 @@ export function ensureContact(state, jid, ctx = {}) {
   }
 
   // 2. Does a contact with our intended slug already exist? If so, merge
-  //    this JID into it (multi-JID auto-merge by slug).
-  const candidateSlug = (
+  //    this JID into it (multi-JID auto-merge by slug). The slug carries
+  //    a local-time suffix '-yymmddhhmm' tied to firstSeenAt so the dir
+  //    name encodes when the contact was first registered (operator
+  //    2026-05-20).
+  const firstSeen = new Date();
+  const baseSlug = (
     sanitizeSlug(ctx.slugHint)
     || sanitizeSlug(ctx.pushedName)
-    || `contact_${sanitizeSlug(jid).slice(0, 12)}`
+    || 'contact'
   );
+  const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
   if (next.contacts[candidateSlug]) {
     const cur = next.contacts[candidateSlug];
     const jids = Array.isArray(cur.jids) ? [...cur.jids, jid] : [jid];
@@ -180,11 +269,14 @@ export function ensureContact(state, jid, ctx = {}) {
     return { state: next, slug: candidateSlug, entry: next.contacts[candidateSlug], isNew: false, changed: true };
   }
 
-  // 3. Brand-new contact.
+  // 3. Brand-new contact. firstSeenAt is set once and never overwritten —
+  //    that's what the slug-suffix is derived from, so /egpt new resets
+  //    don't rename the dir.
   const entry = {
     personality: 'default',
     threadId: null,
     threadCreatedAt: null,
+    firstSeenAt: firstSeen.toISOString(),
     identityInjectedAt: null,
     pushedName: ctx.pushedName ?? '',
     jids: [jid],

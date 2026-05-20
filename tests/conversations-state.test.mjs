@@ -39,36 +39,41 @@ describe('ensureContact — new contact, multi-JID merge', () => {
       slugHint: 'diego',
     });
     expect(isNew).toBe(true);
-    expect(slug).toBe('diego');
+    // Slug now carries a '-yymmddhhmm' (UTC) suffix tied to firstSeenAt
+    // for collision-proofness across time.
+    expect(slug).toMatch(/^diego-\d{10}$/);
     expect(entry.personality).toBe('default');
+    expect(entry.firstSeenAt).toBeTruthy();
     expect(entry.jids).toEqual(['26087681749235@lid']);
     expect(entry.pushedName).toBe('Diego Pérez (Koma)');
-    expect(state.contacts.diego).toEqual(entry);
+    expect(state.contacts[slug]).toEqual(entry);
   });
 
   it('merges a second JID into the SAME slug when slugHint matches', () => {
     let s = emptyState();
-    s = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' }).state;
-    const r = ensureContact(s, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
-    expect(r.slug).toBe('diego');
-    expect(r.isNew).toBe(false);
-    expect(r.entry.jids).toEqual(['26087681749235@lid', '584122182178@s.whatsapp.net']);
+    const r1 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
+    s = r1.state;
+    const r2 = ensureContact(s, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
+    expect(r2.slug).toBe(r1.slug);   // same suffix because base slug matches
+    expect(r2.isNew).toBe(false);
+    expect(r2.entry.jids).toEqual(['26087681749235@lid', '584122182178@s.whatsapp.net']);
   });
 
   it('finds the existing slug when JID was already registered (refresh pushedName only)', () => {
     let s = emptyState();
-    s = ensureContact(s, '26087681749235@lid', { pushedName: '', slugHint: 'diego' }).state;
-    const r = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
-    expect(r.slug).toBe('diego');
-    expect(r.isNew).toBe(false);
-    expect(r.changed).toBe(true);
-    expect(r.entry.pushedName).toBe('Diego Pérez (Koma)');
+    const r1 = ensureContact(s, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
+    s = r1.state;
+    const r2 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
+    expect(r2.slug).toBe(r1.slug);
+    expect(r2.isNew).toBe(false);
+    expect(r2.changed).toBe(true);
+    expect(r2.entry.pushedName).toBe('Diego Pérez (Koma)');
   });
 
-  it('falls back to a contact_<short> slug when no slugHint or pushedName', () => {
+  it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
     const s = emptyState();
     const r = ensureContact(s, '584122182178@s.whatsapp.net', {});
-    expect(r.slug.startsWith('contact_')).toBe(true);
+    expect(r.slug).toMatch(/^contact-\d{10}$/);
     expect(r.entry.jids).toEqual(['584122182178@s.whatsapp.net']);
   });
 });
