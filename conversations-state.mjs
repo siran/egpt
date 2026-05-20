@@ -112,23 +112,42 @@ export async function migrateMediaToSlugDirs() {
   if (!existsSync(CONV_YAML_PATH)) return { migrated: 0, files: 0 };
   const state = await readState(CONV_YAML_PATH);
   let contactsTouched = 0, filesMoved = 0;
-  for (const [slug, entry] of Object.entries(state.contacts ?? {})) {
+  const isJid = _isJidKeyed(state);
+  // Collect (slug, jids[]) tuples for both schemas.
+  const groups = [];
+  if (isJid) {
+    // New shape: iterate primary entries (those with `slug`, not `aliasOf`).
+    // Each primary's jids[] = the primary jid + every alias pointing to it.
+    for (const [primaryJid, entry] of Object.entries(state.contacts ?? {})) {
+      if (entry?.aliasOf || !entry?.slug) continue;
+      const jids = [primaryJid];
+      for (const [j, e] of Object.entries(state.contacts ?? {})) {
+        if (e?.aliasOf === primaryJid) jids.push(j);
+      }
+      groups.push({ slug: entry.slug, jids });
+    }
+  } else {
+    // Old shape: slug-keyed.
+    for (const [slug, entry] of Object.entries(state.contacts ?? {})) {
+      groups.push({ slug, jids: entry?.jids ?? [] });
+    }
+  }
+  for (const { slug, jids } of groups) {
     const dstDir = join(slugDir(slug), 'media');
     let touched = false;
-    for (const jid of (entry.jids ?? [])) {
+    for (const jid of jids) {
       const srcDir = jidMediaDir(jid);
       if (!existsSync(srcDir)) continue;
       try { await mkdir(dstDir, { recursive: true }); } catch {}
-      // Move every file (and .media-index.json) from srcDir → dstDir.
       const { readdir } = await import('node:fs/promises');
       let names;
       try { names = await readdir(srcDir); } catch { continue; }
       for (const name of names) {
         const srcPath = join(srcDir, name);
         const dstPath = join(dstDir, name);
-        if (existsSync(dstPath)) continue;   // don't clobber existing in slug-dir
+        if (existsSync(dstPath)) continue;
         try { await rename(srcPath, dstPath); filesMoved++; touched = true; }
-        catch (_) { /* cross-volume rename or perm — leave file in place */ }
+        catch (_) {}
       }
     }
     if (touched) contactsTouched++;
@@ -136,14 +155,64 @@ export async function migrateMediaToSlugDirs() {
   return { migrated: contactsTouched, files: filesMoved };
 }
 
+// Detect whether the on-disk state uses the new JID-keyed shape.
+// JID-keyed entries always have '@' in the key; slug-keyed never do.
+function _isJidKeyed(state) {
+  const keys = Object.keys(state?.contacts ?? {});
+  return keys.length > 0 && keys[0].includes('@');
+}
+
+// Convert slug-keyed → JID-keyed (one-time, idempotent). For each
+// slug-keyed entry, pick the first JID in its jids[] as primary; drop
+// jids[] from the entry, replace the YAML key with primary JID, add
+// alias stubs ({aliasOf: <primary>}) for additional JIDs.
+//
+//   contacts:
+//     diego_p_rez_koma-2605200133:
+//       jids: [A, B]
+//       personality: default
+//   →
+//     contacts:
+//       A:
+//         slug: diego_p_rez_koma-2605200133
+//         personality: default
+//       B:
+//         aliasOf: A
+export async function migrateConversationsToJidKey() {
+  if (!existsSync(CONV_YAML_PATH)) return null;
+  const state = await readState(CONV_YAML_PATH);
+  if (_isJidKeyed(state)) return { skipped: 'already-jid-keyed' };
+  const oldContacts = state.contacts ?? {};
+  const newContacts = {};
+  let primaries = 0, aliases = 0, dangling = 0;
+  for (const [slug, entry] of Object.entries(oldContacts)) {
+    const jids = entry?.jids ?? [];
+    if (!jids.length) {
+      // No JID to key on — keep under old key (rare edge case).
+      newContacts[slug] = entry;
+      dangling++;
+      continue;
+    }
+    const primaryJid = jids[0];
+    const { jids: _drop, ...rest } = entry;
+    newContacts[primaryJid] = { ...rest, slug };
+    primaries++;
+    for (const aliasJid of jids.slice(1)) {
+      newContacts[aliasJid] = { aliasOf: primaryJid };
+      aliases++;
+    }
+  }
+  await writeState(CONV_YAML_PATH, { contacts: newContacts });
+  return { migrated: primaries, aliases, dangling };
+}
+
 // Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
-// Idempotent: skips entries that already match the pattern. Suffix is
-// derived from firstSeenAt (set once at creation) → threadCreatedAt
-// (best-effort proxy for old entries) → file mtime → now. Renames the
-// on-disk dir and updates the YAML key.
+// Idempotent: skips entries that already match the pattern. Only runs
+// for slug-keyed state — once converted to JID-keyed, this is a no-op.
 export async function migrateSlugSuffix() {
   if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 0 };
   const state = await readState(CONV_YAML_PATH);
+  if (_isJidKeyed(state)) return { renamed: 0, skipped: 'jid-keyed' };
   const oldContacts = state.contacts ?? {};
   const nextContacts = {};
   let renamed = 0, skipped = 0;
@@ -237,105 +306,160 @@ export function sanitizeSlug(s) {
     .slice(0, 80);
 }
 
+// ── Schema notes ───────────────────────────────────────────────────────────
+//
+// Operator (2026-05-20): conversations are now JID-keyed (the JID is the
+// stable identifier; the slug is a label/dir-name field on the entry).
+// Multi-JID humans (one person with `<phone>@s.whatsapp.net` and `<id>@lid`)
+// are modeled with a primary entry holding the data + alias entries
+// pointing back via `aliasOf: <primary-jid>`. The on-disk slug-dir is
+// shared (one per logical contact).
+//
+//   contacts:
+//     "26087681749235@lid":
+//       slug: diego_p_rez_koma-2605200133
+//       personality: default
+//       threadId: …
+//       firstSeenAt: …
+//       pushedName: "Diego Pérez (Koma)"
+//       ...
+//     "584122182178@s.whatsapp.net":
+//       aliasOf: "26087681749235@lid"
+
 // ── Lookups ─────────────────────────────────────────────────────────────────
 
-// Find which contact slug owns a given JID. O(N) but N is small.
+// Resolve a JID through one level of aliasing. Returns {primaryJid, entry}
+// or null when the JID isn't registered (or alias dangles).
+function _resolveByJid(state, jid) {
+  const direct = state.contacts?.[jid];
+  if (!direct) return null;
+  if (direct.aliasOf) {
+    const primary = state.contacts[direct.aliasOf];
+    if (!primary) return null;
+    return { primaryJid: direct.aliasOf, entry: primary };
+  }
+  return { primaryJid: jid, entry: direct };
+}
+
+// Find which contact's primary entry owns a given JID. Returns the
+// SLUG (string) so existing slug-passing call sites keep working.
 export function findContactByJid(state, jid) {
-  const contacts = state.contacts ?? {};
-  for (const [slug, entry] of Object.entries(contacts)) {
-    if (Array.isArray(entry?.jids) && entry.jids.includes(jid)) return slug;
+  const r = _resolveByJid(state, jid);
+  return r?.entry?.slug ?? null;
+}
+
+// Get the resolved contact entry + slug + primary-JID for a JID.
+export function getContact(state, jid) {
+  const r = _resolveByJid(state, jid);
+  return r ? { jid: r.primaryJid, slug: r.entry.slug, entry: r.entry } : null;
+}
+
+// Look up a contact by its slug (linear scan; N is small).
+function _findByslug(state, slug) {
+  for (const [jid, entry] of Object.entries(state.contacts ?? {})) {
+    if (entry?.aliasOf) continue;
+    if (entry?.slug === slug) return { primaryJid: jid, entry };
   }
   return null;
 }
 
-// Get the contact entry for a JID, or null if not registered.
-export function getContact(state, jid) {
-  const slug = findContactByJid(state, jid);
-  return slug ? { slug, entry: state.contacts[slug] } : null;
-}
-
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
-// Idempotent: add JID → existing contact, OR create new contact when JID is
-// new. Refreshes pushedName when WA gives us a new one. Never overwrites
-// operator-edited fields (personality, customName, threadId once set).
-//
-// Returns { state, slug, entry, isNew, changed }.
-//
-// ctx fields:
-//   pushedName  — WA push name / group subject (best effort, may be '')
-//   slugHint    — preferred slug when creating new (e.g., from getChatSlug);
-//                 falls back to sanitize(pushedName) → 'contact_<short-hash>'
+// Idempotent. Schema is JID-keyed; multi-JID humans get alias entries
+// pointing to a primary. Returns { state, jid, slug, entry, isNew, changed }
+// where jid is the PRIMARY jid (alias resolution already applied).
 export function ensureContact(state, jid, ctx = {}) {
-  if (!jid) return { state, slug: null, entry: null, isNew: false, changed: false };
+  if (!jid) return { state, jid: null, slug: null, entry: null, isNew: false, changed: false };
   const next = { contacts: { ...(state.contacts ?? {}) } };
 
-  // 1. JID already registered?
-  const existingSlug = findContactByJid(state, jid);
-  if (existingSlug) {
-    const cur = next.contacts[existingSlug];
+  // 1. JID already known (directly or as alias) → refresh pushedName on primary.
+  const resolved = _resolveByJid(state, jid);
+  if (resolved) {
+    const cur = resolved.entry;
     let changed = false;
     if (ctx.pushedName && cur.pushedName !== ctx.pushedName) {
-      next.contacts[existingSlug] = { ...cur, pushedName: ctx.pushedName };
+      next.contacts[resolved.primaryJid] = { ...cur, pushedName: ctx.pushedName };
       changed = true;
     }
-    return { state: changed ? next : state, slug: existingSlug, entry: next.contacts[existingSlug], isNew: false, changed };
-  }
-
-  // 2. Does a contact with our intended slug already exist? If so, merge
-  //    this JID into it (multi-JID auto-merge by slug). The slug carries
-  //    a local-time suffix '-yymmddhhmm' tied to firstSeenAt so the dir
-  //    name encodes when the contact was first registered (operator
-  //    2026-05-20).
-  const firstSeen = new Date();
-  const baseSlug = (
-    sanitizeSlug(ctx.slugHint)
-    || sanitizeSlug(ctx.pushedName)
-    || 'contact'
-  );
-  const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
-  if (next.contacts[candidateSlug]) {
-    const cur = next.contacts[candidateSlug];
-    const jids = Array.isArray(cur.jids) ? [...cur.jids, jid] : [jid];
-    next.contacts[candidateSlug] = {
-      ...cur,
-      jids,
-      ...(ctx.pushedName && !cur.pushedName ? { pushedName: ctx.pushedName } : {}),
+    return {
+      state: changed ? next : state,
+      jid: resolved.primaryJid,
+      slug: cur.slug,
+      entry: changed ? next.contacts[resolved.primaryJid] : cur,
+      isNew: false,
+      changed,
     };
-    return { state: next, slug: candidateSlug, entry: next.contacts[candidateSlug], isNew: false, changed: true };
   }
 
-  // 3. Brand-new contact. firstSeenAt is set once and never overwritten —
-  //    that's what the slug-suffix is derived from, so /egpt new resets
-  //    don't rename the dir.
+  // 2. New JID. Multi-JID auto-merge: does a primary entry already exist
+  //    whose slug matches our intended slug (within the same minute)?
+  //    Same-base-slug + same suffix == same contact → add as alias.
+  const firstSeen = new Date();
+  const baseSlug = sanitizeSlug(ctx.slugHint)
+    || sanitizeSlug(ctx.pushedName)
+    || 'contact';
+  const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
+  const slugMatch = _findByslug(state, candidateSlug);
+  if (slugMatch) {
+    next.contacts[jid] = { aliasOf: slugMatch.primaryJid };
+    return {
+      state: next,
+      jid: slugMatch.primaryJid,
+      slug: slugMatch.entry.slug,
+      entry: slugMatch.entry,
+      isNew: false,
+      changed: true,
+    };
+  }
+
+  // 3. Brand-new contact. firstSeenAt set once, drives the slug-suffix,
+  //    never overwritten on /egpt new.
   const entry = {
+    slug: candidateSlug,
     personality: 'default',
     threadId: null,
     threadCreatedAt: null,
     firstSeenAt: firstSeen.toISOString(),
     identityInjectedAt: null,
     pushedName: ctx.pushedName ?? '',
-    jids: [jid],
     heartbeatEnabled: false,
     heartbeatIntervalMin: null,
     heartbeatLastFiredAt: null,
   };
-  next.contacts[candidateSlug] = entry;
-  return { state: next, slug: candidateSlug, entry, isNew: true, changed: true };
+  next.contacts[jid] = entry;
+  return { state: next, jid, slug: candidateSlug, entry, isNew: true, changed: true };
 }
 
-// Set a specific field on a contact entry. Operator-grade edits go via this
-// (or operator just edits the YAML by hand — same shape).
-export function patchContact(state, slug, patch) {
-  const cur = state.contacts?.[slug];
-  if (!cur) return state;
-  const next = { contacts: { ...state.contacts, [slug]: { ...cur, ...patch } } };
-  return next;
+// patchContact accepts EITHER a JID or a slug as the lookup key. The
+// patch always lands on the primary entry (aliases never carry data).
+// Returns a new state; if not found, returns the original state unchanged.
+export function patchContact(state, jidOrSlug, patch) {
+  // First try JID lookup (preferred for new code).
+  const byJid = _resolveByJid(state, jidOrSlug);
+  if (byJid) {
+    return {
+      contacts: {
+        ...(state.contacts ?? {}),
+        [byJid.primaryJid]: { ...byJid.entry, ...patch },
+      },
+    };
+  }
+  // Fall back: slug lookup (back-compat with slug-passing callers).
+  const bySlug = _findByslug(state, jidOrSlug);
+  if (bySlug) {
+    return {
+      contacts: {
+        ...(state.contacts ?? {}),
+        [bySlug.primaryJid]: { ...bySlug.entry, ...patch },
+      },
+    };
+  }
+  return state;
 }
 
-// Record that a new thread was just spawned for a contact.
-export function recordThread(state, slug, threadId, nowIso = nowIsoString()) {
-  return patchContact(state, slug, {
+// Record that a new claude thread was just spawned for a contact.
+export function recordThread(state, jidOrSlug, threadId, nowIso = nowIsoString()) {
+  return patchContact(state, jidOrSlug, {
     threadId,
     threadCreatedAt: nowIso,
     identityInjectedAt: nowIso,

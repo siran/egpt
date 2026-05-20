@@ -4237,6 +4237,15 @@ function App() {
           sysLog(`conversations: migrated ${r3.files} media files across ${r3.migrated} contacts into slug-dirs`);
         }
       } catch (e) { sysLog(`!! media migration: ${e.message}`); }
+      // JID-key migration: convert slug-keyed conversations.yaml to
+      // JID-keyed (operator 2026-05-20 'jid as stable key'). One-time,
+      // idempotent — skips state that's already JID-keyed.
+      try {
+        const r4 = await conversationsState.migrateConversationsToJidKey();
+        if (r4 && r4.migrated != null) {
+          sysLog(`conversations: rekeyed by JID — ${r4.migrated} primaries, ${r4.aliases} aliases (${r4.dangling} dangling without JIDs)`);
+        }
+      } catch (e) { sysLog(`!! jid-key migration: ${e.message}`); }
     }
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);

@@ -32,38 +32,43 @@ describe('emptyState / sanitizeSlug basics', () => {
 });
 
 describe('ensureContact — new contact, multi-JID merge', () => {
-  it('creates a fresh contact when JID is unknown', () => {
+  it('creates a fresh contact when JID is unknown (JID-keyed)', () => {
     const s0 = emptyState();
-    const { state, slug, entry, isNew } = ensureContact(s0, '26087681749235@lid', {
+    const jid = '26087681749235@lid';
+    const { state, jid: primary, slug, entry, isNew } = ensureContact(s0, jid, {
       pushedName: 'Diego Pérez (Koma)',
       slugHint: 'diego',
     });
     expect(isNew).toBe(true);
-    // Slug now carries a '-yymmddhhmm' (UTC) suffix tied to firstSeenAt
-    // for collision-proofness across time.
+    // The state map is keyed by JID. Entry holds slug + fields, no jids[].
+    expect(primary).toBe(jid);
     expect(slug).toMatch(/^diego-\d{10}$/);
+    expect(entry.slug).toBe(slug);
     expect(entry.personality).toBe('default');
     expect(entry.firstSeenAt).toBeTruthy();
-    expect(entry.jids).toEqual(['26087681749235@lid']);
     expect(entry.pushedName).toBe('Diego Pérez (Koma)');
-    expect(state.contacts[slug]).toEqual(entry);
+    expect(entry.jids).toBeUndefined();
+    expect(state.contacts[jid]).toEqual(entry);
   });
 
-  it('merges a second JID into the SAME slug when slugHint matches', () => {
+  it('a second JID with matching slugHint becomes an alias of the primary', () => {
     let s = emptyState();
     const r1 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
     s = r1.state;
     const r2 = ensureContact(s, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
-    expect(r2.slug).toBe(r1.slug);   // same suffix because base slug matches
+    expect(r2.slug).toBe(r1.slug);       // same slug (primary's)
+    expect(r2.jid).toBe(r1.jid);         // resolved to primary
     expect(r2.isNew).toBe(false);
-    expect(r2.entry.jids).toEqual(['26087681749235@lid', '584122182178@s.whatsapp.net']);
+    // The aliased JID has its own state entry pointing back.
+    expect(r2.state.contacts['584122182178@s.whatsapp.net']).toEqual({ aliasOf: r1.jid });
   });
 
-  it('finds the existing slug when JID was already registered (refresh pushedName only)', () => {
+  it('re-encountering a known JID refreshes pushedName on the primary', () => {
     let s = emptyState();
     const r1 = ensureContact(s, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
     s = r1.state;
     const r2 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
+    expect(r2.jid).toBe(r1.jid);
     expect(r2.slug).toBe(r1.slug);
     expect(r2.isNew).toBe(false);
     expect(r2.changed).toBe(true);
@@ -72,43 +77,77 @@ describe('ensureContact — new contact, multi-JID merge', () => {
 
   it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
     const s = emptyState();
-    const r = ensureContact(s, '584122182178@s.whatsapp.net', {});
+    const jid = '584122182178@s.whatsapp.net';
+    const r = ensureContact(s, jid, {});
     expect(r.slug).toMatch(/^contact-\d{10}$/);
-    expect(r.entry.jids).toEqual(['584122182178@s.whatsapp.net']);
+    expect(r.entry.slug).toBe(r.slug);
+    expect(r.state.contacts[jid].slug).toBe(r.slug);
+  });
+
+  it('aliasOf resolves through findContactByJid', () => {
+    let s = emptyState();
+    const r1 = ensureContact(s, '26087681749235@lid', { slugHint: 'diego' });
+    s = ensureContact(r1.state, '584122182178@s.whatsapp.net', { slugHint: 'diego' }).state;
+    // Either JID should resolve to the same slug.
+    const slug1 = findContactByJid(s, '26087681749235@lid');
+    const slug2 = findContactByJid(s, '584122182178@s.whatsapp.net');
+    expect(slug1).toBe(r1.slug);
+    expect(slug2).toBe(r1.slug);
   });
 });
 
-describe('findContactByJid', () => {
+describe('findContactByJid (JID-keyed schema)', () => {
   it('returns null for unknown JID', () => {
     expect(findContactByJid(emptyState(), '0@lid')).toBe(null);
   });
-  it('returns the slug for a JID that lives inside an entry', () => {
+  it('returns the slug for a JID with a primary entry', () => {
     const s = {
       contacts: {
-        diego: { jids: ['26087681749235@lid', '584122182178@s.whatsapp.net'], personality: 'default' },
-        bob:   { jids: ['1@lid'], personality: 'default' },
+        '26087681749235@lid':           { slug: 'diego', personality: 'default' },
+        '584122182178@s.whatsapp.net':  { aliasOf: '26087681749235@lid' },
+        '1@lid':                        { slug: 'bob', personality: 'default' },
       },
     };
+    expect(findContactByJid(s, '26087681749235@lid')).toBe('diego');
     expect(findContactByJid(s, '584122182178@s.whatsapp.net')).toBe('diego');
     expect(findContactByJid(s, '1@lid')).toBe('bob');
     expect(findContactByJid(s, '999@lid')).toBe(null);
   });
 });
 
-describe('patchContact + recordThread', () => {
-  it('patchContact merges fields, does not delete others', () => {
-    const s = { contacts: { diego: { personality: 'default', pushedName: 'D', jids: ['j'] } } };
-    const s2 = patchContact(s, 'diego', { personality: 'serious' });
-    expect(s2.contacts.diego.personality).toBe('serious');
-    expect(s2.contacts.diego.pushedName).toBe('D');
-    expect(s2.contacts.diego.jids).toEqual(['j']);
+describe('patchContact + recordThread (polymorphic: JID or slug)', () => {
+  const baseState = () => ({
+    contacts: {
+      'j': { slug: 'diego', personality: 'default', pushedName: 'D' },
+    },
   });
-  it('recordThread sets threadId + ISO timestamp', () => {
-    const s = { contacts: { diego: { personality: 'default', jids: ['j'] } } };
-    const s2 = recordThread(s, 'diego', 'thr-abc', '2026-05-19T18:34:00.000Z');
-    expect(s2.contacts.diego.threadId).toBe('thr-abc');
-    expect(s2.contacts.diego.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
-    expect(s2.contacts.diego.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+  it('patchContact accepts a JID key', () => {
+    const s2 = patchContact(baseState(), 'j', { personality: 'serious' });
+    expect(s2.contacts.j.personality).toBe('serious');
+    expect(s2.contacts.j.pushedName).toBe('D');
+    expect(s2.contacts.j.slug).toBe('diego');
+  });
+  it('patchContact accepts a slug for back-compat', () => {
+    const s2 = patchContact(baseState(), 'diego', { personality: 'joke' });
+    expect(s2.contacts.j.personality).toBe('joke');
+  });
+  it('patchContact resolves through aliasOf to primary', () => {
+    const s = {
+      contacts: {
+        'j': { slug: 'diego', personality: 'default' },
+        'k': { aliasOf: 'j' },
+      },
+    };
+    const s2 = patchContact(s, 'k', { personality: 'silent' });
+    expect(s2.contacts.j.personality).toBe('silent');
+    expect(s2.contacts.k).toEqual({ aliasOf: 'j' }); // alias untouched
+  });
+  it('recordThread sets threadId + ISO timestamp on the primary', () => {
+    const s = { contacts: { 'j': { slug: 'diego', personality: 'default' } } };
+    const s2 = recordThread(s, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z');
+    expect(s2.contacts.j.threadId).toBe('thr-abc');
+    expect(s2.contacts.j.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts.j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
   });
 });
 
@@ -143,20 +182,21 @@ describe('YAML parse / serialize round-trip', () => {
     const s = emptyState();
     expect(parse(serialize(s))).toEqual(s);
   });
-  it('round-trips a populated state', () => {
+  it('round-trips a populated state (JID-keyed + aliasOf)', () => {
     const s = {
       contacts: {
-        diego: {
+        '26087681749235@lid': {
+          slug: 'diego-2605200133',
           personality: 'default',
           threadId: 'abc',
           threadCreatedAt: '2026-05-19T18:34:00.000Z',
           identityInjectedAt: '2026-05-19T18:34:00.000Z',
           pushedName: 'Diego Pérez (Koma)',
-          jids: ['26087681749235@lid', '584122182178@s.whatsapp.net'],
           heartbeatEnabled: true,
           heartbeatIntervalMin: 60,
           heartbeatLastFiredAt: null,
         },
+        '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
       },
     };
     expect(parse(serialize(s))).toEqual(s);
