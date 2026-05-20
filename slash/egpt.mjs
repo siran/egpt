@@ -16,7 +16,11 @@ import {
   readState as readConvState,
   writeState as writeConvState,
   findContactByJid,
+  findContactsByName,
   patchContact,
+  installPersonaIntoSlugDir,
+  buildRebootAnnouncement,
+  resolvePersonalityFile,
 } from '../conversations-state.mjs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -25,10 +29,22 @@ import { writeFile as writeFileAsync } from 'node:fs/promises';
 export const meta = {
   cmd: '/egpt',
   section: 'PERSONA',
-  surface: 'shell',
-  usage: '/egpt [status | new [--personality <name>] [--jid <jid>] [--slug <slug>] [--all] | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]',
-  desc: 'manage @egpt persona session-history state',
+  surface: 'both',
+  usage: '/egpt [status | new [<persona>] [<name-search>] | persona [<persona>] [<name-search>] | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]',
+  desc: 'manage @egpt persona session-history state; reboot conversation-e in any chat by name search',
 };
+
+// Resolve a name-search term to a single contact. Returns one of:
+//   { ok: true, jid, slug, entry, pushedName }
+//   { ok: false, reason: 'none' | 'multi', candidates? }
+async function _resolveNameSearch(term) {
+  const cs = await readConvState(CONV_YAML_PATH);
+  const matches = findContactsByName(cs, term);
+  if (matches.length === 0) return { ok: false, reason: 'none' };
+  if (matches.length > 1)  return { ok: false, reason: 'multi', candidates: matches };
+  const [hit] = matches;
+  return { ok: true, jid: hit.jid, slug: hit.slug, entry: hit.entry, pushedName: hit.pushedName };
+}
 
 export async function run({ arg, meta, ctx }) {
   // ctx keys consumed:
@@ -89,7 +105,76 @@ export async function run({ arg, meta, ctx }) {
     sysOut(['egpt: sessions (newest first, * = active):', ...lines].join('\n'));
     return true;
   }
+  // ── /egpt persona [<persona>] [<name-search…>] ──────────────────
+  // Install (or re-install) a persona on an EXISTING thread, identified
+  // by name-search. Without name-search → current chat (alias of /e persona).
+  if (sub === 'persona') {
+    const positional = parts.slice(1).filter(t => !t.startsWith('--'));
+    const personaName = positional[0] || 'default';
+    const searchTerm = positional.slice(1).join(' ').trim();
+    const originJid = meta?.waChatId ?? null;
+
+    let targetJid;
+    if (!searchTerm) {
+      if (!originJid) {
+        sysOut('!! /egpt persona: no name-search and no chat context. Try `/egpt persona <persona> <name-search>` from the shell.');
+        return true;
+      }
+      targetJid = originJid;
+    } else {
+      const r = await _resolveNameSearch(searchTerm);
+      if (!r.ok && r.reason === 'none') {
+        sysOut(`!! /egpt persona: no chat matches "${searchTerm}"`);
+        return true;
+      }
+      if (!r.ok && r.reason === 'multi') {
+        const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] — ${c.jid}`).join('\n');
+        sysOut(`!! /egpt persona: "${searchTerm}" matches multiple chats — pick one:\n${lines}`);
+        return true;
+      }
+      targetJid = r.jid;
+      sysOut(`/egpt persona: target → ${r.pushedName || '(no name)'} [${r.slug}]`);
+    }
+    const { _runReboot } = await import('./e.mjs');
+    return await _runReboot({ resetThread: false, personaName, targetJid, sysOut, ctx, originJid });
+  }
+
   if (sub === 'new') {
+    // New positional shape: /egpt new [<persona>] [<name-search…>]
+    // Detected when there are positional (non-`--`) tokens after 'new'.
+    // Falls through to flag-based form otherwise (--all / --slug / --jid /
+    // --personality), preserved for back-compat with older muscle memory.
+    const positional = parts.slice(1).filter(t => !t.startsWith('--'));
+    const hasPositional = positional.length > 0;
+    if (hasPositional) {
+      const personaName = positional[0] || 'default';
+      const searchTerm = positional.slice(1).join(' ').trim();
+      const originJid = meta?.waChatId ?? null;
+      let targetJid;
+      if (!searchTerm) {
+        if (!originJid) {
+          sysOut('!! /egpt new: no name-search and no chat context. Try `/egpt new <persona> <name-search>` from the shell.');
+          return true;
+        }
+        targetJid = originJid;
+      } else {
+        const r = await _resolveNameSearch(searchTerm);
+        if (!r.ok && r.reason === 'none') {
+          sysOut(`!! /egpt new: no chat matches "${searchTerm}"`);
+          return true;
+        }
+        if (!r.ok && r.reason === 'multi') {
+          const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] — ${c.jid}`).join('\n');
+          sysOut(`!! /egpt new: "${searchTerm}" matches multiple chats — pick one:\n${lines}`);
+          return true;
+        }
+        targetJid = r.jid;
+        sysOut(`/egpt new: target → ${r.pushedName || '(no name)'} [${r.slug}]`);
+      }
+      const { _runReboot } = await import('./e.mjs');
+      return await _runReboot({ resetThread: true, personaName, targetJid, sysOut, ctx, originJid });
+    }
+
     // Flag parsing: --personality <name>, --jid <jid>, --slug <slug>, --all
     let personality = null;
     let jidFlag = null;

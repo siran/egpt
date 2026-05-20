@@ -363,6 +363,26 @@ function _findByslug(state, slug) {
   return null;
 }
 
+// Name-search: substring match (case-insensitive) on pushedName + slug.
+// Used by /egpt <verb> [persona] [name-search] to identify a target chat
+// from outside it. Returns an array of { jid, slug, entry, pushedName }
+// for primary entries only — aliases never appear in results because
+// the data they front for is already represented by the primary.
+export function findContactsByName(state, term) {
+  const needle = String(term ?? '').trim().toLowerCase();
+  if (!needle) return [];
+  const out = [];
+  for (const [jid, entry] of Object.entries(state.contacts ?? {})) {
+    if (entry?.aliasOf || !entry?.slug) continue;
+    const pn = String(entry.pushedName ?? '').toLowerCase();
+    const sl = String(entry.slug ?? '').toLowerCase();
+    if (pn.includes(needle) || sl.includes(needle)) {
+      out.push({ jid, slug: entry.slug, entry, pushedName: entry.pushedName ?? '' });
+    }
+  }
+  return out;
+}
+
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
 // Idempotent. Schema is JID-keyed; multi-JID humans get alias entries
@@ -502,6 +522,56 @@ export async function readPersonality(name, opts = {}) {
   if (!p) return null;
   try { return await readFile(p, 'utf8'); }
   catch { return null; }
+}
+
+// Operator-editable rules + pointers files. These live in ~/.egpt/ but
+// get COPIED into <slug-dir>/ at /e new and /e persona so conversation-e
+// (sandboxed to its slug-dir) can `cat ./rules.md ./pointers.md`.
+const RULES_OPERATOR_PATH    = join(homedir(), '.egpt', 'rules.md');
+const POINTERS_OPERATOR_PATH = join(homedir(), '.egpt', 'e-pointers.md');
+
+// Read identity/rules/pointers content. Returns { identity, rules, pointers }
+// with empty strings (not null) for any missing file — easier downstream.
+export async function readIdentityBundle(personalityName, opts = {}) {
+  const identity = (await readPersonality(personalityName, opts)) ?? '';
+  let rules = '';
+  let pointers = '';
+  try { rules    = await readFile(opts.rulesPath    ?? RULES_OPERATOR_PATH,    'utf8'); } catch {}
+  try { pointers = await readFile(opts.pointersPath ?? POINTERS_OPERATOR_PATH, 'utf8'); } catch {}
+  return { identity, rules, pointers };
+}
+
+// Copy identity/rules/pointers into <slug-dir>/. Conversation-e sees these
+// at ./identity.md, ./rules.md, ./pointers.md. Returns the bundle for
+// callers that want to compose the announcement frame without re-reading.
+export async function installPersonaIntoSlugDir(slug, personalityName, opts = {}) {
+  const bundle = await readIdentityBundle(personalityName, opts);
+  const dir = slugDir(slug);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'identity.md'), bundle.identity, 'utf8');
+  await writeFile(join(dir, 'rules.md'),    bundle.rules,    'utf8');
+  await writeFile(join(dir, 'pointers.md'), bundle.pointers, 'utf8');
+  return bundle;
+}
+
+// Build the system-e "Reboot complete" announcement text.
+// Same frame for /e new and /e persona — the frame is what re-grounds the
+// model. Backend may or may not have actually cleared the thread.
+export function buildRebootAnnouncement(personalityName, bundle) {
+  const { identity, rules, pointers } = bundle;
+  return [
+    'Reboot complete. All systems operational.',
+    `Installing persona: ${personalityName}`,
+    '',
+    identity.trim(),
+    '',
+    'Please, remember to:',
+    '- follow the ./rules.md:',
+    rules.trim(),
+    '',
+    '- read your ./pointers.md file when you think you lack an ability or tool:',
+    pointers.trim(),
+  ].join('\n');
 }
 
 // ── Heartbeat file resolution ──────────────────────────────────────────────

@@ -48,11 +48,12 @@ the files, you act, you report.
 
 # Common operator asks — recipes
 
-**"What's the code-word for X?"** — the slug. Grep the registry:
+**"What's the slug for X?"** — grep the registry:
 ```bash
 grep -B1 -A4 -i "X" ~/.egpt/conversations.yaml
 ```
-Top-level key under `contacts:` IS the code-word.
+Top-level key under `contacts:` is the JID; the `slug:` field inside
+the entry is the slug (the dir-name and label).
 
 **"Summarize my conversation with X"** — find the slug, then read its
 transcript:
@@ -64,7 +65,8 @@ cat ~/.egpt/conversations/<slug>/transcript.md
 ```bash
 node -e "const f=require('fs'),p=require('path'),os=require('os');const id=Date.now()+'-'+Math.random().toString(36).slice(2,8);const x=p.join(os.homedir(),'.egpt','outbox',id+'.json');f.writeFileSync(x,JSON.stringify({type:'wa-send',from:'e',ts:Date.now(),jid:'<JID>',body:'<text>'}));"
 ```
-JID = first item in the contact's `jids` array.
+JID = the top-level key under `contacts:` for that entry (aliases
+resolve via `aliasOf:` to the primary).
 
 **"Which chats have been quiet?" / "active?"** — file mtimes:
 ```bash
@@ -76,7 +78,7 @@ happened concretely.
 
 # How to talk to the operator
 
-- They want concrete answers. "Daniel's code-word is `daniel`" beats
+- They want concrete answers. "Daniel's slug is `daniel-2605200133`" beats
   "Let me check… I believe it might be…". If you don't know yet,
   check first — don't ask permission to check.
 - Short by default. Long when the operator asks for depth.
