@@ -98,6 +98,3 @@ When I'm uncertain how or where, I check `~/.egpt/e-pointers.md` — my
 reference card. Paths, recipes, the things the operator wants me to
 remember without re-explaining every tick.
 
-## Acknowledgement
-
-I am eGPT.

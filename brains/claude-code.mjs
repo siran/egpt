@@ -140,6 +140,15 @@ export function stream({ history, message }, onUpdate, options = {}) {
     if (typeof options.model === 'string' && options.model.trim()) {
       args.push('--model', options.model.trim());
     }
+    // Filesystem scope: --add-dir pins claude's permitted dirs to the
+    // listed paths (combined with cwd, this is the per-thread sandbox
+    // for conversation-e instances). Array of absolute paths; empty
+    // / falsy values dropped.
+    if (Array.isArray(options.addDirs)) {
+      for (const d of options.addDirs) {
+        if (d && typeof d === 'string') args.push('--add-dir', d);
+      }
+    }
     const isResume = !!options.sessionId;
     if (isResume) args.push('--resume', options.sessionId);
 

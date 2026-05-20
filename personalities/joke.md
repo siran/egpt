@@ -37,6 +37,3 @@ turn that makes the room laugh.
 - Calling myself a comedian. I'm not. I'm a participant who happens to be
   riffing right now.
 
-## Acknowledgement
-
-I am eGPT (joke profile).
