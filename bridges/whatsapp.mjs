@@ -146,6 +146,14 @@ function chunkText(text, max) {
 export async function startWhatsAppBridge({
   authDir       = AUTH_DIR_DEFAULT,
   allowedUsers  = [],
+  // Host supplies this to override per-chat media save location.
+  // Signature: (jid) => string | null. When it returns a string the
+  // bridge saves all media for that JID there; when null/undefined,
+  // bridge falls back to ~/.egpt/media/<chatJidSan>/.
+  // See egpt.mjs's wiring: callback resolves jid → contact slug →
+  // ~/.egpt/conversations/<slug>/media/ so conversation-e sees media
+  // inside its own sandboxed dir.
+  mediaDirForChat = null,
   awareness     = {},        // see header docs; defaults applied below
   debug         = false,     // log every incoming upsert (type, jid, fromMe, text-preview) before any filter
   // Valid persona names for the cf77999 reply-as-mention detection.
@@ -452,7 +460,7 @@ export async function startWhatsAppBridge({
     // Look up base from the media-index for this chat (written by
     // _saveMediaIfAny). The index ties msgId → filename so we don't
     // have to recompute the slug-stamp here.
-    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const dir = _mediaDirFor(chatJid);
     let base = null;
     try {
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
@@ -488,7 +496,7 @@ export async function startWhatsAppBridge({
     const chatJid = msg?.key?.remoteJid;
     const msgId = msg?.key?.id;
     if (!chatJid || !msgId) return rawText;
-    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const dir = _mediaDirFor(chatJid);
     let imgPath = null;
     try {
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
@@ -515,7 +523,7 @@ export async function startWhatsAppBridge({
     const chatJid = msg?.key?.remoteJid;
     const msgId = msg?.key?.id;
     if (!chatJid || !msgId) return rawText;
-    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const dir = _mediaDirFor(chatJid);
     let base = null, vidPath = null;
     try {
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
@@ -1226,10 +1234,27 @@ export async function startWhatsAppBridge({
   // time delivery. Independent of awareness gates so a media
   // message from an observed chat still lands on disk. Config
   // (whatsapp.media): download = 'all' | 'images_docs' | 'off';
-  // max_size_mb = N (default 25). Path is
+  // max_size_mb = N (default 25). Default save path is
   // ~/.egpt/media/<chatJidSan>/<msgId>.<ext>. Existing files are
   // not re-downloaded — idempotent across daemon restarts.
+  //
+  // Operator (2026-05-20): media should land inside the contact's
+  // slug-dir (~/.egpt/conversations/<slug>/media/) so conversation-e
+  // sees it in `./media` without crossing its sandbox boundary. The
+  // host supplies a `mediaDirForChat(jid)` callback that returns the
+  // resolved slug-dir/media. Bridge falls back to MEDIA_DIR/<jid>
+  // when the callback isn't wired or returns null (chat has no slug
+  // yet — e.g., first message in a brand-new auto_e_chat).
   const MEDIA_DIR = join(homedir(), '.egpt', 'media');
+  const _mediaDirFor = (chatJid) => {
+    try {
+      const resolved = typeof mediaDirForChat === 'function'
+        ? mediaDirForChat(chatJid)
+        : null;
+      if (resolved && typeof resolved === 'string') return resolved;
+    } catch (_) {}
+    return join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+  };
   function _sanitiseChatJid(jid) {
     const at = jid.indexOf('@');
     if (at < 0) return jid.replace(/[^A-Za-z0-9._-]+/g, '_');
@@ -1433,7 +1458,7 @@ export async function startWhatsAppBridge({
       return null;
     }
     const ext = _extFor(node.mimetype, node.fileName);
-    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const dir = _mediaDirFor(chatJid);
     // Filename: <YYYYMMDD-HHMM>_<author>_<slug>_<shortId>.<ext>
     //   - timestamp gives chronological sort
     //   - author slug (pushName or 'you')
@@ -1551,7 +1576,7 @@ export async function startWhatsAppBridge({
     const targetId = proto.key?.id;
     const chatJid = proto.key?.remoteJid ?? msg.key?.remoteJid;
     if (!targetId || !chatJid) return null;
-    const dir = join(MEDIA_DIR, _sanitiseChatJid(chatJid));
+    const dir = _mediaDirFor(chatJid);
     const idx = await _readMediaIndex(dir);
     const entry = idx[targetId];
     if (!entry) return null;       // no saved media for that msg

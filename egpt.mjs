@@ -2311,8 +2311,21 @@ function App() {
         // Pass through whatsapp.media to the bridge. Defaults (set
         // inside the bridge) are { download: 'all', max_size_mb: 25 }
         // — every image / video / voice note / document / sticker is
-        // saved automatically to ~/.egpt/media/<chat>/<msgId>.<ext>.
+        // saved automatically.
         media:             cfg.media ?? {},
+        // Override per-chat media destination so files land inside
+        // the contact's slug-dir (operator 2026-05-20). Sync callback;
+        // bridge falls back to the legacy ~/.egpt/media/<jid>/ path
+        // when this returns null (chat not yet registered).
+        mediaDirForChat:   (jid) => {
+          try {
+            const cs = _convStateCache;
+            if (!cs) return null;
+            const slug = conversationsState.findContactByJid(cs, jid);
+            if (!slug) return null;
+            return join(conversationsState.slugDir(slug), 'media');
+          } catch (_) { return null; }
+        },
         // Visible shell notice when a file is saved. Filters out
         // status@broadcast (the WA Status feed — every contact's
         // 24h stories, would flood the room) unless the config
@@ -4189,6 +4202,11 @@ function App() {
   // own dir — can't read it). Migrate flat layout once on first load.
   const _CONV_YAML_PATH = conversationsState.CONV_YAML_PATH;
   let _convMigrated = false;
+  // Module-level cache of conversations state. Updated on every
+  // _loadConvState; consumed by sync paths like the bridge's
+  // mediaDirForChat callback (which can't await). Slightly stale
+  // is acceptable — next dispatch refreshes.
+  let _convStateCache = null;
   async function _loadConvState() {
     if (!_convMigrated) {
       _convMigrated = true;
@@ -4206,9 +4224,18 @@ function App() {
           sysLog(`conversations: slug-suffix added to ${r2.renamed} contacts (skipped ${r2.skipped} already-suffixed)`);
         }
       } catch (e) { sysLog(`!! slug-suffix migration: ${e.message}`); }
+      // Media migration: move ~/.egpt/media/<jid>/ files into each
+      // contact's <slug-dir>/media/ (operator 2026-05-20).
+      try {
+        const r3 = await conversationsState.migrateMediaToSlugDirs();
+        if (r3 && r3.files > 0) {
+          sysLog(`conversations: migrated ${r3.files} media files across ${r3.migrated} contacts into slug-dirs`);
+        }
+      } catch (e) { sysLog(`!! media migration: ${e.message}`); }
     }
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);
+      _convStateCache = state;
       // Auto-elevate the Self DM contact to personality='system' if it's
       // still on the default. Operator (2026-05-19): the Self DM is the
       // operator-direct channel; system-e there has full computer access.
@@ -4225,6 +4252,7 @@ function App() {
           });
           await conversationsState.writeState(_CONV_YAML_PATH, elevated);
           sysLog(`conversations: auto-elevated self-DM contact "${selfSlug}" → personality 'system' (full-computer access; fresh thread on next message)`);
+          _convStateCache = elevated;
           return elevated;
         }
       }
@@ -4233,8 +4261,10 @@ function App() {
   }
 
   async function _writeConvState(state) {
-    try { await conversationsState.writeState(_CONV_YAML_PATH, state); }
-    catch (e) { sysLog(`!! conversations: write failed — ${e.message}`); }
+    try {
+      await conversationsState.writeState(_CONV_YAML_PATH, state);
+      _convStateCache = state;
+    } catch (e) { sysLog(`!! conversations: write failed — ${e.message}`); }
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
@@ -4361,30 +4391,19 @@ function App() {
         // No addDirs restriction — system-e roams the whole machine.
       } else {
         sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
+        // Per-conversation sandbox: just the slug-dir. Media lives
+        // INSIDE it now (<slug-dir>/media/) since the bridge writes
+        // there directly. Legacy ~/.egpt/media/<jid>/ paths added
+        // only as fallback so historical files remain reachable —
+        // future versions can drop this once migration is complete.
         sessionOpts.addDirs = [
           sessionOpts.cwd,
           sluggedDir,
           ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
         ];
-        // Operator (2026-05-20): media + voice-transcripts should appear
-        // in conversation-e's current dir, not at an absolute path.
-        // Create a junction (Windows) / symlink (POSIX) from
-        // <slug-dir>/media → <jid-media-dir>. Single-JID contacts get
-        // './media'; multi-JID contacts get './media-<jid>' per JID
-        // (junctions can only point to one target).
-        try {
-          const jids = _convEntry.jids ?? [];
-          for (let i = 0; i < jids.length; i++) {
-            const mDir = conversationsState.jidMediaDir(jids[i]);
-            if (!existsSync(mDir)) continue;
-            const linkName = (jids.length === 1)
-              ? 'media'
-              : `media-${jids[i].replace(/[^A-Za-z0-9_-]/g, '_')}`;
-            const linkPath = join(sluggedDir, linkName);
-            if (existsSync(linkPath)) continue;
-            try { await symlink(mDir, linkPath, 'junction'); } catch (_) {}
-          }
-        } catch (_) { /* junction creation best-effort */ }
+        // Media now saves directly into <slug-dir>/media via the
+        // bridge's mediaDirForChat callback (operator 2026-05-20).
+        // No junction needed — media is genuinely IN the slug-dir.
       }
 
       // First turn for a new contact: bundle the personality into the
