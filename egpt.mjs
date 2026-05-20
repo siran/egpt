@@ -4176,32 +4176,23 @@ function App() {
     return fallback ? `${fallback}.md` : `${idPart}.md`;
   }
 
-  // Path to the per-contact YAML registry (operator-editable, daemon-written).
-  const _CONV_YAML_PATH = join(EGPT_HOME, 'conversations', 'e', 'conversations.yaml');
-  const _CONV_JSON_LEGACY = join(EGPT_HOME, 'conversations', 'e', 'conversations.json');
-
+  // Per-contact YAML registry lives at ~/.egpt/conversations.yaml
+  // (outside any per-slug dir so conversation-e — cwd-locked to its
+  // own dir — can't read it). Migrate flat layout once on first load.
+  const _CONV_YAML_PATH = conversationsState.CONV_YAML_PATH;
+  let _convMigrated = false;
   async function _loadConvState() {
-    // Cheap read each call — YAML is tiny. If yaml missing but legacy
-    // JSON exists, migrate once. Returns conversations-state shape.
-    try {
-      const yamlExists = existsSync(_CONV_YAML_PATH);
-      if (!yamlExists && existsSync(_CONV_JSON_LEGACY)) {
-        try {
-          const json = JSON.parse(readFileSync(_CONV_JSON_LEGACY, 'utf8'));
-          const r = conversationsState.migrateJsonToYaml(json);
-          if (r) {
-            await conversationsState.writeState(_CONV_YAML_PATH, r.state);
-            try { await rename(_CONV_JSON_LEGACY, _CONV_JSON_LEGACY + '.bak'); } catch (_) {}
-            sysLog(`conversations: migrated ${r.migrated} contacts (${r.jids} jids) from JSON → YAML; legacy renamed to .json.bak`);
-          }
-        } catch (e) {
-          sysLog(`!! conversations: migration failed — ${e.message}`);
+    if (!_convMigrated) {
+      _convMigrated = true;
+      try {
+        const r = await conversationsState.migrateLayoutIfNeeded();
+        if (r && r.migrated != null) {
+          sysLog(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
         }
-      }
-      return await conversationsState.readState(_CONV_YAML_PATH);
-    } catch (_) {
-      return conversationsState.emptyState();
+      } catch (e) { sysLog(`!! conversations migration: ${e.message}`); }
     }
+    try { return await conversationsState.readState(_CONV_YAML_PATH); }
+    catch (_) { return conversationsState.emptyState(); }
   }
 
   async function _writeConvState(state) {
@@ -4314,29 +4305,33 @@ function App() {
       // so claude spawns a fresh session (captured + persisted below).
       sessionOpts.sessionId = _convEntry.threadId ?? null;
 
+      // Per-conversation filesystem sandbox. cwd = the per-slug dir so
+      // `process.cwd()` introspection gives the slug (= "code-word")
+      // naturally — no need to bake it into the prompt. --add-dir
+      // pins claude to that dir + the per-JID media folders. Other
+      // conversations' dirs, the shared ~/.egpt/e-diary.md, the
+      // registry — all outside the sandbox.
+      const sluggedDir = conversationsState.slugDir(_convSlug);
+      try { await mkdir(sluggedDir, { recursive: true }); } catch {}
+      sessionOpts.cwd = sluggedDir;
+      sessionOpts.addDirs = [
+        sluggedDir,
+        ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
+      ];
+
       // First turn for a new contact: bundle the personality into the
       // user message so identity lands in the new session AS the first
-      // turn. Identity-install framing (not roleplay).
-      //
-      // Also tell @e its OWN slug — the operator's "code word" for
-      // this conversation. Operator (2026-05-19): asks any
-      // conversation-e for its code-word, then uses that to address
-      // the conversation from system-e (Self chat).
+      // turn. Identity-install framing (not roleplay). The slug is
+      // implicit via cwd — no extra "code-word" or "lane" instruction
+      // needed; FS scope enforces what the prose used to suggest.
       if (_isNewContact) {
         const personality = _convEntry.personality || 'default';
         const identity = await conversationsState.readPersonality(personality);
         if (identity) {
-          const displayName = _convEntry.pushedName || _convSlug;
           _wrappedText = [
             `... system restarted, new persona installed (personality: ${personality}) ...`,
             ``,
             identity,
-            ``,
-            `... thread context ...`,
-            ``,
-            `You are the conversation-e instance bound to thread "${_convSlug}" (chat: "${displayName}"). Your code-word for this conversation, if the operator asks, is "${_convSlug}". The operator uses code-words from system-e (Self chat) to address conversations like this one.`,
-            ``,
-            `Your filesystem lane: read your own transcript at ~/.egpt/conversations/e/${_convSlug}.md and your own chat media. Do NOT read other contacts' files or the shared ~/.egpt/e-diary.md (that belongs to system-e). For cross-conversation queries, delegate to butler-e.`,
             ``,
             `... end of identity install. live message from the chat follows ...`,
             ``,
@@ -4380,19 +4375,21 @@ function App() {
         const threadId = threadCtx.threadId ?? 'shell';
         _upsertConversationEntry(threadId, threadCtx);
 
-        // Per-thread location: real conversations under
-        // ~/.egpt/conversations/e/<name>.md; system threads
-        // (heartbeat, shell, anything that isn't a chat) under
-        // ~/.egpt/state/<thread>.md so they don't pollute the
-        // conversations folder. Operator (2026-05-19): "heartbeat
-        // ticks et al don't belong in conversations/."
+        // Per-thread location:
+        //   conversation threads → ~/.egpt/conversations/<slug>/transcript.md
+        //                          (per-conversation dir; conversation-e
+        //                          is cwd-locked here)
+        //   system threads (heartbeat, shell) → ~/.egpt/state/<thread>.md
         const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
+        const slugForLog = isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
         const baseDir = isSystemThread
           ? join(EGPT_HOME, 'state')
-          : join(EGPT_HOME, 'conversations', 'e');
+          : (slugForLog
+              ? conversationsState.slugDir(slugForLog)
+              : join(EGPT_HOME, 'conversations', '_unrouted'));
         const fname = isSystemThread
           ? `${_sanitizeForFilename(threadId)}.md`
-          : _threadFileName(threadId, threadCtx);
+          : 'transcript.md';
         const fpath = join(baseDir, fname);
         await mkdir(baseDir, { recursive: true });
 

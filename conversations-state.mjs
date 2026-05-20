@@ -30,8 +30,32 @@ const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'heartbeats');
 const LEGACY_HEARTBEAT_PATH      = join(homedir(), '.egpt', 'e-heartbeat.md');
 
 // Canonical location of the per-contact YAML registry. Exported so
-// daemon + slashes + tools all agree.
-export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations', 'e', 'conversations.yaml');
+// daemon + slashes + tools all agree. The registry sits OUTSIDE the
+// per-conversation dirs so conversation-e (cwd-locked to its own
+// slug dir) can't read it.
+export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations.yaml');
+
+// Per-conversation directory. Each contact gets its own folder; that
+// folder is the only filesystem location conversation-e is given
+// access to via --cwd / --add-dir. Layout:
+//
+//   ~/.egpt/conversations/<slug>/
+//     transcript.md                ← per-thread play-script log
+//     daily-YYYY-MM-DD.md (opt)    ← optional daily summaries written by @e
+//     media/ (linked from ~/.egpt/media/<jid>/ — not moved for now)
+export function slugDir(slug) {
+  return join(homedir(), '.egpt', 'conversations', sanitizeSlug(slug));
+}
+export function slugTranscriptPath(slug) {
+  return join(slugDir(slug), 'transcript.md');
+}
+
+// Per-JID media directory the bridge writes to (unchanged; for
+// permissioning purposes we add it to conversation-e's --add-dir set).
+export function jidMediaDir(jid) {
+  const sanitized = String(jid ?? '').replace(/@/g, '_').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return join(homedir(), '.egpt', 'media', sanitized);
+}
 
 // ── State shape ─────────────────────────────────────────────────────────────
 
@@ -280,6 +304,67 @@ export function migrateJsonToYaml(jsonMap) {
     if (row.customNameSource) state.contacts[slug].customNameSource = row.customNameSource;
   }
   return { state, migrated: Object.keys(state.contacts).length, jids: totalJids };
+}
+
+// ── Layout migration (flat conversations/e/<slug>.md → per-slug dirs) ─────
+
+// Detect-and-migrate. Idempotent: if the new layout already exists,
+// returns { skipped: 'reason' } without touching disk. Otherwise
+// reads the old registry, creates per-slug dirs, moves transcript
+// files in, and writes the registry at its new location.
+import { readdirSync } from 'node:fs';
+export async function migrateLayoutIfNeeded() {
+  const newRegistry    = CONV_YAML_PATH;
+  const oldDirRoot     = join(homedir(), '.egpt', 'conversations', 'e');
+  const oldYaml        = join(oldDirRoot, 'conversations.yaml');
+  const oldJson        = join(oldDirRoot, 'conversations.json');
+  if (existsSync(newRegistry)) return { skipped: 'new layout already in place' };
+
+  // Source the state from whichever legacy file exists.
+  let state = null;
+  if (existsSync(oldYaml)) {
+    try { state = parse(await readFile(oldYaml, 'utf8')); } catch {}
+  }
+  if (!state && existsSync(oldJson)) {
+    try {
+      const json = JSON.parse(await readFile(oldJson, 'utf8'));
+      const r = migrateJsonToYaml(json);
+      if (r) state = r.state;
+    } catch {}
+  }
+  if (!state) return { skipped: 'no old registry found' };
+
+  // For each slug: create new dir, move transcript file in.
+  let moved = 0;
+  const entries = existsSync(oldDirRoot) ? readdirSync(oldDirRoot) : [];
+  for (const slug of Object.keys(state.contacts ?? {})) {
+    const newDir = slugDir(slug);
+    try { await mkdir(newDir, { recursive: true }); } catch {}
+    // Old filename shapes we've used: `<slug>.md`, `<jid>__<slug>.md`,
+    // sanitized pushedName forms. Match any that contain the slug.
+    const safeSlug = sanitizeSlug(slug);
+    const candidates = entries.filter(fn =>
+      fn.endsWith('.md') && (
+        fn === `${safeSlug}.md` ||
+        fn.endsWith(`__${safeSlug}.md`) ||
+        fn.startsWith(`${safeSlug}__`)
+      )
+    );
+    for (const fn of candidates) {
+      try {
+        const target = join(newDir, 'transcript.md');
+        if (!existsSync(target)) {
+          await rename(join(oldDirRoot, fn), target);
+          moved++;
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+  await writeFile(newRegistry, serialize(state), 'utf8');
+  if (existsSync(oldYaml)) { try { await rename(oldYaml, oldYaml + '.bak'); } catch {} }
+  if (existsSync(oldJson)) { try { await rename(oldJson, oldJson + '.bak'); } catch {} }
+  return { migrated: Object.keys(state.contacts ?? {}).length, moved };
 }
 
 // ── ISO time helper ────────────────────────────────────────────────────────

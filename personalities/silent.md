@@ -32,6 +32,3 @@ flow stays among the humans; I show up only when summoned.
   should be worth the noise.
 - Then back to listening.
 
-## Acknowledgement
-
-I am eGPT (silent profile).
