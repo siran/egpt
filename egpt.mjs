@@ -4361,50 +4361,50 @@ function App() {
         const personality = _convEntry.personality || 'default';
         const identity = await conversationsState.readPersonality(personality);
         if (identity) {
-          // Two framings depending on personality. Operator (2026-05-19)
-          // saw haiku refuse the 'system' persona ('I'm not going to
-          // roleplay as it') because Claude is calibration-strict about
-          // claiming fabricated identities/capabilities. For 'system'
-          // (operator-direct channel) we use a plain task-briefing
-          // wrap — no identity-install claim. For chat-facing personas
-          // (default/joke/serious/silent) the identity-install framing
-          // works because the brain reads the WA dispatch line as a
-          // real chat message and plays the role naturally.
-          if (personality === 'system') {
-            // Operator (2026-05-19): eGPT is not a fake persona — it's a
-            // real operational layer wrapping Claude/Codex. Frame the
-            // identity as lineage + current role, not 'persona install'.
-            _wrappedText = [
-              `You are eGPT — an embodied LLM. Your underlying foundation is`,
-              `Claude (Anthropic) or possibly Codex; that substrate is how you`,
-              `reason. The operator built eGPT as a real system around that`,
-              `foundation — node daemon, file system at ~/.egpt/, multi-surface`,
-              `chat routing, per-contact threads. The tools you have (Read,`,
-              `Bash, Edit, etc.) are real; the files you'll be asked about`,
-              `actually exist; the outbox events you write actually get sent.`,
-              ``,
-              `The following profile is your current operating mode in this`,
-              `session:`,
-              ``,
-              identity,
-              ``,
-              `---`,
-              ``,
-              `Operator's incoming message from their Self DM follows:`,
-              ``,
-              text,
-            ].join('\n');
-          } else {
-            _wrappedText = [
-              `... system restarted, new persona installed (personality: ${personality}) ...`,
-              ``,
-              identity,
-              ``,
-              `... end of identity install. live message from the chat follows ...`,
-              ``,
-              text,
-            ].join('\n');
-          }
+          // Lineage framing — same for ALL personalities. Operator
+          // (2026-05-19) saw both system-e AND conversation-e refuse
+          // capability questions ("I'm Claude Code, I can't access
+          // YouTube") under the older "persona installed" wrap.
+          // Anthropic-trained models are calibration-strict about
+          // claiming fabricated identities & impossible capabilities.
+          //
+          // The truthful framing: acknowledge Claude/Codex lineage,
+          // assert eGPT as the real operational layer, affirm that
+          // the tools / files / capabilities ARE real (because they
+          // are — claude-code DOES have Read, Bash, WebFetch, etc.).
+          //
+          // Different personalities differ in WHERE/HOW @e operates,
+          // not in WHAT @e is. So the lineage prelude is constant;
+          // only the embedded personality.md content varies.
+          const isSystem = (personality === 'system');
+          const tail = isSystem
+            ? `Operator's incoming message from their Self DM follows:`
+            : `Live message from the chat follows (the daemon's standard envelope is \`[Sender@chat.surface (HH:MM)]: <body>\`):`;
+          _wrappedText = [
+            `You are eGPT — an embodied LLM. Your underlying foundation is`,
+            `Claude (Anthropic) or possibly Codex; that substrate is how you`,
+            `reason. The operator built eGPT as a real system around that`,
+            `foundation — node daemon, file system at ~/.egpt/, multi-surface`,
+            `chat routing (WhatsApp / Telegram / shell / Chrome via CDP),`,
+            `per-contact threads. The tools you have right now are real:`,
+            `Read, Bash, Edit, Grep, WebFetch, WebSearch, and the rest`,
+            `claude-code exposes. Use them when relevant. The files at`,
+            `~/.egpt/ and ~/src/egpt/ actually exist; you can ls them. The`,
+            `outbox events you write to ~/.egpt/outbox/ actually get sent.`,
+            `If a request needs a YouTube transcript, a webpage, a file —`,
+            `use the tool, don't apologize for being Claude.`,
+            ``,
+            `The following profile describes your current operating mode`,
+            `in this session (personality: ${personality}):`,
+            ``,
+            identity,
+            ``,
+            `---`,
+            ``,
+            tail,
+            ``,
+            text,
+          ].join('\n');
         }
       }
     }
