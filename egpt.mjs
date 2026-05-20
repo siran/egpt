@@ -4423,9 +4423,14 @@ function App() {
       // First turn for a new contact: bundle the personality into the
       // user message so identity lands in the new session AS the first
       // turn. Identity-install framing (not roleplay). The slug is
-      // implicit via cwd — no extra "code-word" or "lane" instruction
+      // implicit via cwd — no extra lane/identifier instruction
       // needed; FS scope enforces what the prose used to suggest.
-      if (_isNewContact) {
+      //
+      // bypassAutoWrap=true (set by /e new and /e persona slash handlers)
+      // skips this — those handlers supply a prebuilt "Reboot complete"
+      // announcement that already carries identity + rules + pointers,
+      // and re-wrapping would just double-embed them.
+      if (_isNewContact && !threadCtx.bypassAutoWrap) {
         const personality = _convEntry.personality || 'default';
         const identity = await conversationsState.readPersonality(personality);
         if (identity) {

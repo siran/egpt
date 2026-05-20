@@ -1,21 +1,31 @@
-// slash/e.mjs — operator controls for the @e persona's behavior.
+// slash/e.mjs — operator controls for conversation-e in the current chat.
+//
+// `/e` always acts on the chat where it was typed (its `waChatId`). For
+// targeting a chat from outside, use `/egpt <verb> [<persona>] <name-search>`.
 //
 // Subcommands:
+//
+//   /e new [<persona>]             — reboot conversation-e: clear the
+//                                    claude thread, install <persona>
+//                                    (default 'default'), copy
+//                                    identity/rules/pointers into the
+//                                    slug-dir, and send the "Reboot
+//                                    complete" announcement.
+//   /e persona [<persona>]         — install (or re-install) a persona
+//                                    on the EXISTING thread. Same
+//                                    announcement frame, threadId
+//                                    preserved.
 //
 //   /e auto on|off [<jid>]         — toggle auto_e_chats membership
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
 //
-//   /e personality <name>          — set personality on the current
-//                                    chat's contact (or --slug / --jid)
 //   /e heartbeat on|off            — opt the current contact in/out of
 //                                    per-contact heartbeats
 //   /e heartbeat interval <min>    — set per-contact heartbeat cadence
 //                                    (minutes; default 30)
-//
-// "Current chat" = where the slash was invoked. WA-originated invocations
-// use the WA chat JID. Shell-originated invocations require an explicit
-// --jid <jid> or --slug <slug>.
+//   /e butler <prompt>             — ephemeral haiku sub-agent (no
+//                                    session memory, default all-tools)
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,15 +35,19 @@ import {
   writeState as writeConvState,
   findContactByJid,
   patchContact,
+  installPersonaIntoSlugDir,
+  buildRebootAnnouncement,
+  resolvePersonalityFile,
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../tools/config-io.mjs';
+import { homedir } from 'node:os';
 
 export const meta = {
   cmd: '/e',
   section: 'PERSONA',
-  surface: 'shell',
-  usage: '/e auto on|off [<jid>] | /e auto pause|resume|status | /e personality <name> [--slug|--jid] | /e heartbeat on|off|interval <min> [--slug|--jid]',
-  desc: 'control @e auto-dispatch, personality, and heartbeats per contact',
+  surface: 'both',
+  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid]',
+  desc: 'reboot conversation-e in this chat; control auto-dispatch and heartbeats',
 };
 
 // Legacy stub kept only because other call paths may import it. The
@@ -44,10 +58,125 @@ async function _persistWaConfig() {
   return { saved };
 }
 
+// Shared kickoff used by /e new (resetThread=true) and /e persona (false).
+// Both fire the same "Reboot complete" announcement frame; the difference
+// is whether the underlying claude thread is cleared first or continued.
+// Exported so /egpt new and /egpt persona can call it with a JID resolved
+// from a name-search.
+export async function _runReboot({ resetThread, personaName, targetJid, sysOut, ctx, originJid }) {
+  const { computeBrainTurn } = ctx;
+  // Validate persona exists before touching state.
+  const personaFile = resolvePersonalityFile(personaName);
+  if (!personaFile) {
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no personality "${personaName}" (looked under personalities/ and ~/.egpt/personalities/)`);
+    return true;
+  }
+
+  let cs = await readConvState(CONV_YAML_PATH);
+  const slug = findContactByJid(cs, targetJid);
+  if (!slug) {
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no contact registered for jid "${targetJid}". Send a message in that chat first so @e registers it.`);
+    return true;
+  }
+
+  // Patch persona + (for /e new) clear thread state. Both branches re-stamp
+  // identityInjectedAt because both are doing an identity install.
+  const patch = { personality: personaName, identityInjectedAt: null };
+  if (resetThread) { patch.threadId = null; patch.threadCreatedAt = null; }
+  cs = patchContact(cs, slug, patch);
+  await writeConvState(CONV_YAML_PATH, cs);
+
+  // Copy identity.md, rules.md, pointers.md into the slug-dir.
+  // Conversation-e is sandboxed to that dir and will read them at ./*.md.
+  let bundle;
+  try {
+    bundle = await installPersonaIntoSlugDir(slug, personaName);
+  } catch (e) {
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: copying persona files failed — ${e?.message ?? e}`);
+    return true;
+  }
+
+  // Build the announcement frame (same for /e new and /e persona).
+  const announcement = buildRebootAnnouncement(personaName, bundle);
+
+  // 1) Send announcement to the chat directly via outbox, framed as system-e.
+  try {
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    const ev = {
+      type: 'wa-send', from: 'e', ts: Date.now(),
+      jid: targetJid,
+      body: `🧠 eGPT:\n\n${announcement}`,
+    };
+    await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+  } catch (e) {
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: outbox write failed — ${e?.message ?? e}`);
+    // Continue anyway — the kickoff turn below may still succeed.
+  }
+
+  // 2) Kick off the conversation-e thread with the same announcement as
+  //    its first user-turn. bypassAutoWrap skips the lineage auto-wrap so
+  //    we don't double-embed identity.
+  const entry = cs.contacts[targetJid] ?? Object.values(cs.contacts).find(e => e?.slug === slug);
+  const pushedName = entry?.pushedName ?? slug;
+  try {
+    const reply = await computeBrainTurn('e', announcement, {
+      threadId: targetJid,
+      surface:  'wa',
+      slug,
+      name:     pushedName,
+      bypassAutoWrap: true,
+    });
+    const ackText = String(reply ?? '').trim();
+    if (!ackText) {
+      sysOut(`!! /e ${resetThread ? 'new' : 'persona'} ${slug}: kickoff produced empty reply — check /log.`);
+    } else {
+      sysOut(`/e ${resetThread ? 'new' : 'persona'} ${slug}: persona=${personaName} (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
+    }
+    // Relay conversation-e's reply to the chat if we have a different
+    // originating chat (so the operator who typed the slash sees it too).
+    if (originJid && originJid !== targetJid && ackText && ackText !== '...' && ackText !== '…') {
+      const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
+      await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+    }
+  } catch (e) {
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'} ${slug}: kickoff failed — ${e?.message ?? e}`);
+  }
+  return true;
+}
+
 export async function run({ arg, meta: dispatchMeta, ctx }) {
   const { sysOut, EGPT_CONFIG, EGPT_HOME } = ctx;
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
+
+  // ── /e new [<persona>] ──────────────────────────────────────────
+  // Reboot the conversation-e thread in the current chat. Clears
+  // threadId so the next dispatch spawns a fresh claude session, sets
+  // the personality, and sends the "Reboot complete" announcement.
+  if (sub === 'new') {
+    const personaName = tokens[1] || 'default';
+    const targetJid = dispatchMeta?.waChatId;
+    if (!targetJid) {
+      sysOut('!! /e new: no chat context. Use `/egpt new [<persona>] <name-search>` from the shell instead.');
+      return true;
+    }
+    return await _runReboot({ resetThread: true, personaName, targetJid, sysOut, ctx, originJid: targetJid });
+  }
+
+  // ── /e persona [<persona>] ──────────────────────────────────────
+  // Install (or re-install) a persona on the EXISTING conversation-e
+  // thread for the current chat. Same announcement frame, but the
+  // backend keeps the threadId.
+  if (sub === 'persona') {
+    const personaName = tokens[1] || 'default';
+    const targetJid = dispatchMeta?.waChatId;
+    if (!targetJid) {
+      sysOut('!! /e persona: no chat context. Use `/egpt persona [<persona>] <name-search>` from the shell instead.');
+      return true;
+    }
+    return await _runReboot({ resetThread: false, personaName, targetJid, sysOut, ctx, originJid: targetJid });
+  }
 
   // ── /e butler <prompt> ──────────────────────────────────────────
   // Ephemeral haiku sub-agent. No session memory; default all-tools.
@@ -66,29 +195,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     } catch (e) {
       sysOut(`!! /e butler: ${e?.message ?? e}`);
     }
-    return true;
-  }
-
-  // ── /e personality <name> [--slug <s> | --jid <j>] ──────────────
-  if (sub === 'personality') {
-    const tokens2 = arg.split(/\s+/).filter(Boolean);
-    let name = tokens2[1] ?? null;
-    let slugFlag = null;
-    let jidFlag = null;
-    for (let i = 2; i < tokens2.length; i++) {
-      if (tokens2[i] === '--slug' && tokens2[i + 1]) slugFlag = tokens2[++i];
-      if (tokens2[i] === '--jid'  && tokens2[i + 1]) jidFlag  = tokens2[++i];
-    }
-    if (!name) { sysOut('usage: /e personality <name> [--slug <s> | --jid <j>]'); return true; }
-    const cs = await readConvState(CONV_YAML_PATH);
-    const targetSlug = slugFlag ?? findContactByJid(cs, jidFlag ?? dispatchMeta?.waChatId);
-    if (!targetSlug) {
-      sysOut(`!! /e personality: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
-      return true;
-    }
-    const next = patchContact(cs, targetSlug, { personality: name });
-    await writeConvState(CONV_YAML_PATH, next);
-    sysOut(`/e personality: ${targetSlug} → ${name} (run /egpt new --slug ${targetSlug} to apply on a fresh thread)`);
     return true;
   }
 
@@ -131,7 +237,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e auto on|off [<jid>] | /e auto pause|resume|status | /e personality <name> | /e heartbeat on|off|interval <min>');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min>');
     return true;
   }
 
