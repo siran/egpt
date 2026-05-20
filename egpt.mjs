@@ -4198,6 +4198,14 @@ function App() {
           sysLog(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
         }
       } catch (e) { sysLog(`!! conversations migration: ${e.message}`); }
+      // Slug-suffix migration: append '-yymmddhhmm' (UTC) to any slug
+      // that lacks it, derived from firstSeenAt/threadCreatedAt/mtime.
+      try {
+        const r2 = await conversationsState.migrateSlugSuffix();
+        if (r2 && r2.renamed > 0) {
+          sysLog(`conversations: slug-suffix added to ${r2.renamed} contacts (skipped ${r2.skipped} already-suffixed)`);
+        }
+      } catch (e) { sysLog(`!! slug-suffix migration: ${e.message}`); }
     }
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);
