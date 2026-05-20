@@ -4458,34 +4458,39 @@ function App() {
       // to chat as a real message. Now: empty == '...' == drop.
       return final.trim() || '...';
     } catch (e) {
-      // Behavioral self-heal: if we tried `--resume <threadId>` (had a
-      // non-null sessionId at spawn) and it failed, the threadId is
-      // probably stale (jsonl missing, cwd-path drift, etc). Clear it
-      // and retry ONCE with sessionId=null — that spawns a fresh
-      // thread, bundles the personality, lands clean. No text-parsing
-      // of the error message (operator rule 2026-05-19: 'never parse
-      // messages for routing'). Structural state: we tried resume,
-      // resume failed, try without.
+      // Operator rule (2026-05-19): NEVER drop state without consulting
+      // first. Previous self-heal auto-cleared the contact's threadId
+      // when --resume failed — that destroyed the linkage to a JSONL
+      // that might still exist on disk (just at a different cwd-derived
+      // project path). The right behavior is: leave the threadId
+      // intact, log the failure to /log, notify the operator via
+      // system-e (Self DM), return '' so the chat sees nothing. The
+      // operator then decides: investigate, restore via `/egpt new
+      // --slug <slug>` if they want a fresh thread, or leave alone.
       const msg = e?.message ?? '';
-      const triedResume = !!(isWaContact && _convSlug && _convEntry?.threadId);
-      if (triedResume && !threadCtx._retried) {
-        try {
-          const cs = await _loadConvState();
-          const cleared = conversationsState.patchContact(cs, _convSlug, {
-            threadId: null,
-            identityInjectedAt: null,
-          });
-          await _writeConvState(cleared);
-          sysLog(`@e: per-contact resume failed on "${_convSlug}" — clearing threadId, retrying with fresh thread (${msg.slice(0, 80)})`);
-          return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
-        } catch (e2) {
-          sysLog(`!! @e: self-heal failed for ${_convSlug}: ${e2.message}`);
-        }
-      }
-      // Surface errors to /log, not to the chat. Operator (2026-05-19)
-      // saw '!! egpt: claude: error_during_execution' leak to a WA
-      // chat as @e's reply — never ship error prose downstream.
       sysLog(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
+      if (isWaContact && _convSlug) {
+        try {
+          const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+          if (selfDm) {
+            const ev = {
+              type: 'wa-send',
+              from: 'system',
+              ts: Date.now(),
+              jid: selfDm,
+              body: [
+                `[egpt] contact "${_convSlug}" turn failed.`,
+                `  threadId: ${_convEntry?.threadId ?? '(none)'}`,
+                `  error: ${msg.slice(0, 300)}`,
+                ``,
+                `Nothing was cleared. To investigate: search ~/.claude/projects for the threadId. To start fresh: /egpt new --slug ${_convSlug}.`,
+              ].join('\n'),
+            };
+            const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+            await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+          }
+        } catch (_) {}
+      }
       return '';
     }
   }
