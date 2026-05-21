@@ -4607,12 +4607,16 @@ function App() {
               ? `# @e ${threadId} log\n\n`
               : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
           : '';
-        // Play-script style: just the inbound + reply, blank line between
-        // turns. Operator (2026-05-21): "the 'fed to @e' subject lines
-        // and '---' separators are unnecessary." The envelope inside
-        // `text` already carries the sender/timestamp; the reply is
-        // what conversation-e produced.
-        const entry = header + text + '\n\n' + final + '\n\n';
+        // Play-script style: inbound + speaker-prefixed reply, blank
+        // line between turns. Operator (2026-05-21): the `### fed to @e`
+        // and `---` separators were unnecessary noise — but the reply
+        // STILL needs a speaker envelope so the transcript reads as a
+        // dialogue, not a wall of indistinguishable text. The inbound's
+        // envelope (`[An@wa.xxxxx (HH:MM)]:`) is already inside `text`;
+        // the reply gets a symmetric `[@e (HH:MM)]:` prefix here.
+        const replyClock = stamp.slice(11, 16);   // 'HH:MM' from 'YYYY-MM-DD HH:MM:SS'
+        const personaTag = (_convEntry?.personality === 'system') ? 'system-e' : '@e';
+        const entry = header + text + '\n\n[' + personaTag + ' (' + replyClock + ')]: ' + final + '\n\n';
         await appendFile(fpath, entry);
 
         // Unified feed — everything @e processes, chronological,
@@ -5539,62 +5543,48 @@ function App() {
       logOut(`(observed) ${echoAuthor}: ${text}`);
     }
 
-    // Mirror the utterance to peer surfaces on the bus so the room shows
-    // the same conversation regardless of which surface someone is looking
-    // at. Pure visibility — peer surfaces render the line and do NOT
-    // re-route to their brains (we already drove ours below).
-    //
-    // Slash commands DON'T ride the bus: they're operator tooling
-    // (e.g. /restart, /sessions, /upgrade), channel-specific, and
-    // exposing them to bridges would have peers mirror them to
-    // telegram / extension where they'd surface as conversational
-    // noise. The local _localOnly flag also keeps them out of the
-    // local items-mirror, but that doesn't reach peers.
-    //
-    // observeOnly also skips the bus broadcast — the same logic as the
-    // local echo. Other surfaces don't need to see chats the operator
-    // isn't actively participating in via egpt.
-    {
-      const tid = busTargetIdRef.current;
-      // Observed chats stay off the bus — only egpt chats and chats the
-      // operator has /join'd reach peers. By the time we get here,
-      // meta.observeOnly has already been resolved against the /join
-      // state in the bridge's onIncoming, so this single gate covers
-      // both cases.
-      if (tid && !isSlashCommand && !meta.observeOnly) {
-        // When the input came from Telegram or WhatsApp, attribute the
-        // utterance to the upstream user and tag the surface as
-        // 'telegram[chatId]' / 'whatsapp[chatId]' so peers see where it
-        // actually originated, not the shell node carrying the bridge.
-        const fromTg = !!meta.fromTelegram;
-        const fromWa = !!meta.fromWhatsApp;
-        const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]`
-          : fromWa ? `whatsapp[${meta.waChatId ?? '?'}]`
-          : null;
-        const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME)
-          : fromWa ? (meta.waUser ?? USER_NAME)
-          : USER_NAME;
-        // client: which surface this came from — 'tg' / 'wa' /
-        // user-renamed (e.g. 'moto'). Peers use this to render
-        // 'handle@client[.node]'. null when shell-typed: shell has no
-        // client_name by default and the tag stays 'handle@node'.
-        const client = fromTg ? tgClient
-          : fromWa ? (meta.waClientLabel ?? waClient)
-          : null;
-        bus.postEvent(tid, {
-          type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
-          role: 'shell', user: utteranceUser, body: text,
-          ...(client ? { client } : {}),
-          ...(via ? { via } : {}),
-        }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-      }
-    }
+    // Bus broadcast of the operator's utterance moved to AFTER
+    // resolveRoute (search below for `// bus broadcast (room-utterance)`).
+    // Operator (2026-05-21): "router first, then {brain dispatch, mirror}"
+    // — TG mirror shouldn't happen before the routing decision has been
+    // made and (for persona dispatches) the brain has been kicked off.
+    // The broadcast is still fire-and-forget so it doesn't delay the
+    // brain.
 
     // skipRoute: replication-only mode. Used when a Telegram plain-text
     // message reaches the room but the mirror policy says don't trigger
-    // brain calls. The room-utterance is already on the bus; we stop
-    // before resolveRoute dispatches anywhere.
-    if (meta.skipRoute) return;
+    // brain calls. The room-utterance broadcast happens below after
+    // resolveRoute (but for skipRoute we ALSO want the broadcast since
+    // the whole point is mirror-without-routing) — handled by the
+    // doBroadcast() call before the early return.
+    const _broadcastRoomUtterance = () => {
+      const tid = busTargetIdRef.current;
+      if (!tid || isSlashCommand || meta.observeOnly) return;
+      const fromTg = !!meta.fromTelegram;
+      const fromWa = !!meta.fromWhatsApp;
+      const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]`
+        : fromWa ? `whatsapp[${meta.waChatId ?? '?'}]`
+        : null;
+      const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME)
+        : fromWa ? (meta.waUser ?? USER_NAME)
+        : USER_NAME;
+      const client = fromTg ? tgClient
+        : fromWa ? (meta.waClientLabel ?? waClient)
+        : null;
+      bus.postEvent(tid, {
+        type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
+        role: 'shell', user: utteranceUser, body: text,
+        ...(client ? { client } : {}),
+        ...(via ? { via } : {}),
+      }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
+    };
+
+    if (meta.skipRoute) {
+      // Plain-text TG with mirror policy = "mirror only" — still
+      // broadcast so peers see it, just don't route to a brain.
+      _broadcastRoomUtterance();
+      return;
+    }
 
     const parsed = parseInput(text);
 
@@ -5639,6 +5629,14 @@ function App() {
     // add it is filtered out by the same observe-only gate).
     const isOperatorCommand = decision.kind === 'command' && meta.fromWhatsApp;
     if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand) return;
+
+    // bus broadcast (room-utterance) — happens AFTER the router decision
+    // is made, so peers see the message only once we know it's going to
+    // be routed somewhere (persona / turn / peer-mention / etc.). Slash
+    // commands and observed chats still don't broadcast. The call is
+    // fire-and-forget, so it runs in parallel with the brain dispatch
+    // below; the brain isn't delayed by the broadcast.
+    _broadcastRoomUtterance();
 
     if (decision.kind === 'command') {
       const handled = await handleSlash(text, meta);
