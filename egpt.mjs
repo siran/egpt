@@ -4361,11 +4361,16 @@ function App() {
     let _convEntry = null;
     let _isNewContact = false;
     let _wrappedText = text;
+    // Telegram chat_ids are numbers, WA JIDs are strings — coerce
+    // before .includes(). Without the cast, every TG dispatch
+    // crashes here with "threadCtx.threadId.includes is not a function"
+    // and the streaming placeholder never resolves.
+    const _tidStr = String(threadCtx.threadId ?? '');
     const isWaContact = (
       threadCtx.threadId
       && threadCtx.threadId !== 'heartbeat'
       && threadCtx.threadId !== 'shell'
-      && (threadCtx.threadId.includes('@') || threadCtx.surface === 'wa')
+      && (_tidStr.includes('@') || threadCtx.surface === 'wa')
     );
     if (isWaContact) {
       _convState = await _loadConvState();
