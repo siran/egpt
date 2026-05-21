@@ -97,7 +97,11 @@ export function startTelegramBridge({
       const updates = await apiFetch('getUpdates', {
         offset,
         timeout:          POLL_TIMEOUT,
-        allowed_updates:  ['message'],
+        // 'message_reaction' delivers per-user reactions on messages the
+        // bot can see (its own outbound in DMs, all messages in groups
+        // where the bot is admin). Without this in allowed_updates,
+        // reactions are silently invisible to the bridge.
+        allowed_updates:  ['message', 'message_reaction'],
       });
 
       if (stopped) return;
@@ -134,6 +138,41 @@ export function startTelegramBridge({
   }
 
   async function handleUpdate(upd) {
+    // Reaction events arrive as `message_reaction` updates, distinct from
+    // `message`. Format them as a text envelope the host can route the
+    // same way it routes a plain message — analog to the WA bridge's
+    // _enrichReactionText, which turns reactions into '[reaction 👍 to
+    // "..."]' lines. Without this, reactions are invisible to the host
+    // even when allowed_updates includes 'message_reaction'.
+    if (upd.message_reaction) {
+      const r = upd.message_reaction;
+      // new_reaction is the current state of the user's reactions on
+      // the message. Empty = reaction removed; non-empty = added/changed.
+      const newRs = Array.isArray(r.new_reaction) ? r.new_reaction : [];
+      const oldRs = Array.isArray(r.old_reaction) ? r.old_reaction : [];
+      const newEmojis = newRs.map(x => x.emoji ?? x.custom_emoji_id ?? '?').join('');
+      const oldEmojis = oldRs.map(x => x.emoji ?? x.custom_emoji_id ?? '?').join('');
+      const user = r.user?.username ? `@${r.user.username}` : (r.user?.first_name ?? `tg:${r.user?.id ?? '?'}`);
+      const action = newEmojis ? `reacted ${newEmojis}` : (oldEmojis ? `removed reaction ${oldEmojis}` : 'changed reaction');
+      const text = `${user} ${action} to msg ${r.message_id}`;
+      const authorized = allowedUsers.length > 0 && allowedUsers.includes(r.user?.id ?? 0);
+      try {
+        await onIncoming?.(text, {
+          userId:    r.user?.id ?? 0,
+          username:  r.user?.username ?? null,
+          firstName: r.user?.first_name ?? 'reactor',
+          chatId:    r.chat?.id ?? null,
+          chatType:  r.chat?.type ?? 'private',
+          authorized,
+          tgMessageId: r.message_id ?? null,
+          isReaction:  true,
+        });
+      } catch (e) {
+        err(`onIncoming(reaction) threw: ${e.message}`);
+      }
+      return;
+    }
+
     const msg = upd.message;
     if (!msg?.text) return;
 
