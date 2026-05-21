@@ -4257,15 +4257,22 @@ function App() {
       // only writes when an actual change is needed.
       const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
       if (selfDm) {
-        const selfSlug = conversationsState.findContactByJid(state, selfDm);
-        if (selfSlug && (state.contacts[selfSlug].personality ?? 'default') === 'default') {
-          const elevated = conversationsState.patchContact(state, selfSlug, {
+        // Resolve by JID — the state is JID-keyed post-Phase-2 migration.
+        // The earlier `state.contacts[selfSlug]` lookup was a remnant of
+        // the slug-keyed schema and threw TypeError on the .personality
+        // access, which the surrounding catch swallowed → emptyState(),
+        // → next ensureContact wrote a near-empty YAML to disk → 15+
+        // contacts vanished. Use getContact() which returns the entry
+        // directly via JID resolution + alias chase.
+        const selfContact = conversationsState.getContact(state, selfDm);
+        if (selfContact && (selfContact.entry.personality ?? 'default') === 'default') {
+          const elevated = conversationsState.patchContact(state, selfDm, {
             personality: 'system',
             threadId: null,              // force fresh thread with 'system' bundle
             identityInjectedAt: null,
           });
           await conversationsState.writeState(_CONV_YAML_PATH, elevated);
-          sysLog(`conversations: auto-elevated self-DM contact "${selfSlug}" → personality 'system' (full-computer access; fresh thread on next message)`);
+          sysLog(`conversations: auto-elevated self-DM contact "${selfContact.slug}" → personality 'system' (full-computer access; fresh thread on next message)`);
           _convStateCache = elevated;
           return elevated;
         }
