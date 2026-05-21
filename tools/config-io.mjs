@@ -23,19 +23,19 @@ export const CONFIG_JSON_LEGACY = join(homedir(), '.egpt', 'config.json');
 export function readConfigSync() {
   if (existsSync(CONFIG_YAML_PATH)) {
     try { return YAML.parse(readFileSync(CONFIG_YAML_PATH, 'utf8')) ?? {}; }
-    catch { return {}; }
+    catch (e) { console.error(`!! readConfigSync(YAML): ${e?.stack ?? e?.message ?? e}`); return {}; }
   }
   if (existsSync(CONFIG_JSON_LEGACY)) {
     let cfg = {};
     try { cfg = JSON.parse(readFileSync(CONFIG_JSON_LEGACY, 'utf8')) ?? {}; }
-    catch { return {}; }
+    catch (e) { console.error(`!! readConfigSync(JSON legacy): ${e?.stack ?? e?.message ?? e}`); return {}; }
     // One-time sync migration. If anything fails, leave the JSON in
     // place so subsequent runs can retry — caller still gets the parsed
     // config either way.
     try {
       writeFileSync(CONFIG_YAML_PATH, YAML.stringify(cfg, { lineWidth: 100 }), 'utf8');
       renameSync(CONFIG_JSON_LEGACY, CONFIG_JSON_LEGACY + '.bak');
-    } catch (_) {}
+    } catch (e) { console.error(`!! readConfigSync(migrate): ${e?.stack ?? e?.message ?? e}`); }
     return cfg;
   }
   return {};
@@ -44,11 +44,11 @@ export function readConfigSync() {
 export async function readConfig() {
   if (existsSync(CONFIG_YAML_PATH)) {
     try { return YAML.parse(await readFile(CONFIG_YAML_PATH, 'utf8')) ?? {}; }
-    catch { return {}; }
+    catch (e) { console.error(`!! readConfig(YAML): ${e?.stack ?? e?.message ?? e}`); return {}; }
   }
   if (existsSync(CONFIG_JSON_LEGACY)) {
     try { return JSON.parse(await readFile(CONFIG_JSON_LEGACY, 'utf8')) ?? {}; }
-    catch { return {}; }
+    catch (e) { console.error(`!! readConfig(JSON legacy): ${e?.stack ?? e?.message ?? e}`); return {}; }
   }
   return {};
 }

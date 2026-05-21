@@ -125,7 +125,7 @@ export function startTelegramBridge({
         log('telegram: 409 conflict — another node is polling this token; yielding');
         stopped = true;
         if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-        try { onYield?.(); } catch (_) {}
+        try { onYield?.(); } catch (e) { console.error(`!! telegram.mjs:[catch] ${e?.message ?? e}`); }
         return;
       }
       err(`telegram poll error: ${e.message}`);
@@ -176,7 +176,7 @@ export function startTelegramBridge({
       lastChat = msgChat;
       if (!chatIdNotified) {
         chatIdNotified = true;
-        try { onChatId?.(msgChat); } catch (_) {}
+        try { onChatId?.(msgChat); } catch (e) { console.error(`!! telegram.mjs:[catch] ${e?.message ?? e}`); }
       }
     }
 

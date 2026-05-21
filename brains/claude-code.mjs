@@ -161,7 +161,7 @@ export function stream({ history, message }, onUpdate, options = {}) {
     // passed. Cheap (one log line per turn) and saves a lot of
     // "why is the persona claiming no web access" debugging.
     if (typeof options.onLog === 'function') {
-      try { options.onLog(`claude-code: spawn claude ${args.join(' ')}`); } catch (_) {}
+      try { options.onLog(`claude-code: spawn claude ${args.join(' ')}`); } catch (e) { console.error(`!! claude-code.mjs:[catch] ${e?.message ?? e}`); }
     }
     const proc = spawn('claude', args, spawnOpts);
 

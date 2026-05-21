@@ -141,13 +141,19 @@ export async function migrateMediaToSlugDirs() {
       try { await mkdir(dstDir, { recursive: true }); } catch {}
       const { readdir } = await import('node:fs/promises');
       let names;
-      try { names = await readdir(srcDir); } catch { continue; }
+      try { names = await readdir(srcDir); }
+      catch (e) {
+        console.error(`!! migrateMediaToSlugDirs readdir(${srcDir}): ${e?.message ?? e}`);
+        continue;
+      }
       for (const name of names) {
         const srcPath = join(srcDir, name);
         const dstPath = join(dstDir, name);
         if (existsSync(dstPath)) continue;
         try { await rename(srcPath, dstPath); filesMoved++; touched = true; }
-        catch (_) {}
+        catch (e) {
+          console.error(`!! migrateMediaToSlugDirs rename(${srcPath} -> ${dstPath}): ${e?.message ?? e}`);
+        }
       }
     }
     if (touched) contactsTouched++;
@@ -250,7 +256,8 @@ export async function migrateSlugSuffix() {
     const oldDir = slugDir(oldSlug);
     const newDir = slugDir(newSlug);
     if (existsSync(oldDir) && !existsSync(newDir)) {
-      try { await rename(oldDir, newDir); } catch (_) {}
+      try { await rename(oldDir, newDir); }
+      catch (e) { console.error(`!! migrateSlugSuffix rename(${oldDir} -> ${newDir}): ${e?.message ?? e}`); }
     }
     nextContacts[newSlug] = { ...entry, firstSeenAt };
     renamed++;
@@ -618,7 +625,16 @@ export async function readState(yamlPath) {
   try {
     const text = await readFile(yamlPath, 'utf8');
     return parse(text);
-  } catch (_) { return emptyState(); }
+  } catch (e) {
+    // ENOENT on first daemon run is legitimate (empty registry).
+    // Anything else (parse error, permission, IO) must surface so
+    // the operator can see WHY the registry came back empty
+    // — silent fallback is how we lost yesterday's contacts.
+    if (e?.code !== 'ENOENT') {
+      console.error(`!! readState(${yamlPath}): ${e?.stack ?? e?.message ?? e}`);
+    }
+    return emptyState();
+  }
 }
 
 export async function writeState(yamlPath, state) {
@@ -742,13 +758,13 @@ export async function migrateLayoutIfNeeded() {
           const sep = `\n\n<!-- merged from legacy file: ${fn} -->\n\n`;
           await (await import('node:fs/promises')).appendFile(target, sep + extra);
           await rename(join(oldDirRoot, fn), join(oldDirRoot, fn + '.merged.bak'));
-        } catch (_) {}
+        } catch (e) { console.error(`!! migrateLayoutIfNeeded merge(${fn}): ${e?.message ?? e}`); }
       }
-    } catch (_) {}
+    } catch (e) { console.error(`!! migrateLayoutIfNeeded transcript-merge: ${e?.message ?? e}`); }
   }
   await writeFile(newRegistry, serialize(state), 'utf8');
-  if (existsSync(oldYaml)) { try { await rename(oldYaml, oldYaml + '.bak'); } catch {} }
-  if (existsSync(oldJson)) { try { await rename(oldJson, oldJson + '.bak'); } catch {} }
+  if (existsSync(oldYaml)) { try { await rename(oldYaml, oldYaml + '.bak'); } catch (e) { console.error(`!! migrateLayoutIfNeeded yaml-bak: ${e?.message ?? e}`); } }
+  if (existsSync(oldJson)) { try { await rename(oldJson, oldJson + '.bak'); } catch (e) { console.error(`!! migrateLayoutIfNeeded json-bak: ${e?.message ?? e}`); } }
   return { migrated: Object.keys(state.contacts ?? {}).length, moved };
 }
 

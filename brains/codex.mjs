@@ -127,7 +127,7 @@ async function ensureLogPath(options) {
 function logLine(path, value) {
   if (!path) return;
   const line = typeof value === 'string' ? value : JSON.stringify(value);
-  void appendFile(path, line.replace(/\r?\n$/, '') + '\n').catch(() => {});
+  void appendFile(path, line.replace(/\r?\n$/, '') + '\n').catch(e => console.error(`!! codex.mjs:[promise-catch] ${e?.message ?? e}`));
 }
 
 function appendCapped(current, chunk, maxChars) {
@@ -425,7 +425,7 @@ async function runCodex(turn, onUpdate, options) {
       });
     });
   } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await rm(tempDir, { recursive: true, force: true }).catch(e => console.error(`!! codex.mjs:[promise-catch] ${e?.message ?? e}`));
   }
 }
 

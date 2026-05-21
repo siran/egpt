@@ -143,7 +143,7 @@ export async function run({ arg, ctx }) {
       },
     });
     setStreaming(null);
-    if (!keepTab) cdp.closeTab(browseResult.targetId).catch(() => {});
+    if (!keepTab) cdp.closeTab(browseResult.targetId).catch(e => console.error(`!! browse.mjs:[promise-catch] ${e?.message ?? e}`));
 
     const chars = browseResult.text.length;
     const header = `[browse: ${browseResult.title || browseResult.url}]\n${browseResult.url}  (${chars.toLocaleString()} chars)`;
@@ -170,7 +170,7 @@ export async function run({ arg, ctx }) {
     }
   } catch (e) {
     setStreaming(null);
-    if (browseResult && !keepTab) cdp.closeTab(browseResult.targetId).catch(() => {});
+    if (browseResult && !keepTab) cdp.closeTab(browseResult.targetId).catch(e => console.error(`!! browse.mjs:[promise-catch] ${e?.message ?? e}`));
     sysOut(`!! browse: ${e.message}`);
   } finally {
     setBusy(false);

@@ -215,7 +215,7 @@ export async function run({ cmd, arg, ctx }) {
         bus.postEvent(tid, {
           type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
           jid: a.jid, name: a.name,
-        }).catch(() => {});
+        }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
       }
     }
     const dirNote =
@@ -250,7 +250,7 @@ export async function run({ cmd, arg, ctx }) {
         bus.postEvent(tid, {
           type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
           removed: chat.jid,
-        }).catch(() => {});
+        }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
       }
       sysOut(`released @wa${idx + 1} "${chat.name}"  (${waJoined.size()} remaining)`);
       return true;
@@ -261,7 +261,7 @@ export async function run({ cmd, arg, ctx }) {
     if (tid) {
       bus.postEvent(tid, {
         type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
-      }).catch(() => {});
+      }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
     }
     sysOut(`released ${all.length === 1
       ? `@wa${all[0].idx + 1} "${all[0].name}"`
