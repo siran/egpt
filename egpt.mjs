@@ -4278,27 +4278,36 @@ function App() {
       // operator-direct channel; system-e there has full computer access.
       // This migration is idempotent — runs at most once per dispatch but
       // only writes when an actual change is needed.
-      const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
-      if (selfDm) {
-        // Resolve by JID inside the whatsapp surface bucket. Self DM is
-        // always WA (operator's own WA JID). The earlier
-        // `state.contacts[selfSlug]` lookup was a remnant of the
-        // slug-keyed schema and threw TypeError, which the surrounding
-        // catch swallowed → emptyState(), → next ensureContact wrote a
-        // near-empty YAML → 15+ contacts vanished. Use getContact()
-        // which is surface-scoped now.
-        const selfContact = conversationsState.getContact(state, 'whatsapp', selfDm);
+      // Auto-elevate operator-DM contacts on each surface to
+      // personality='system'. These are the chats where the operator
+      // talks to their own infrastructure (WA Self DM, TG bot-DM with
+      // operator). All elevated contacts share ONE system-e thread
+      // (state.system_thread) so memory carries across surfaces — operator
+      // (2026-05-21): "system-e is a same conversation thread".
+      let elevatedState = state;
+      let elevatedAny = false;
+      const elevateSelf = async (surface, configKey) => {
+        if (!configKey) return;
+        const selfJidRaw = EGPT_CONFIG[surface === 'whatsapp' ? 'whatsapp' : 'telegram']?.chat_id;
+        if (!selfJidRaw) return;
+        const selfJid = String(selfJidRaw);
+        const selfContact = conversationsState.getContact(elevatedState, surface, selfJid);
         if (selfContact && (selfContact.entry.personality ?? 'default') === 'default') {
-          const elevated = conversationsState.patchContact(state, 'whatsapp', selfDm, {
+          elevatedState = conversationsState.patchContact(elevatedState, surface, selfJid, {
             personality: 'system',
-            threadId: null,              // force fresh thread with 'system' bundle
+            threadId: null,              // force shared system_thread on next dispatch
             identityInjectedAt: null,
           });
-          await conversationsState.writeState(_CONV_YAML_PATH, elevated);
-          console.error(`conversations: auto-elevated self-DM contact "${selfContact.slug}" → personality 'system' (full-computer access; fresh thread on next message)`);
-          _convStateCache = elevated;
-          return elevated;
+          console.error(`conversations: auto-elevated ${surface} self-DM "${selfContact.slug}" → personality 'system'`);
+          elevatedAny = true;
         }
+      };
+      await elevateSelf('whatsapp', 'whatsapp.chat_id');
+      await elevateSelf('telegram', 'telegram.chat_id');
+      if (elevatedAny) {
+        await conversationsState.writeState(_CONV_YAML_PATH, elevatedState);
+        _convStateCache = elevatedState;
+        return elevatedState;
       }
       return state;
     } catch (e) {
@@ -4441,25 +4450,31 @@ function App() {
         return '';
       }
 
-      // Use this contact's dedicated threadId; if none yet, leave null
-      // so claude spawns a fresh session (captured + persisted below).
-      sessionOpts.sessionId = _convEntry.threadId ?? null;
-
-      // Filesystem scope depends on personality:
-      //   'system' → full computer (operator's right hand: Self DM and
-      //              any operator-elevated contact). cwd = homedir,
-      //              no --add-dir restriction so claude sees everything.
-      //   other    → per-conversation sandbox. cwd = slug-dir
-      //              (clean isolation), --add-dir pins the lane.
-      // Legacy threads with persisted threadCwd honor that so --resume
-      // can find the original jsonl.
-      const sluggedDir = conversationsState.slugDir(_registrySurface, _convSlug);
-      try { await mkdir(sluggedDir, { recursive: true }); } catch {}
+      // Filesystem scope + thread resolution depend on personality:
+      //   'system' → ONE shared thread across all operator-DM contacts
+      //              (WA Self, TG operator-bot-DM, etc.). Reads / writes
+      //              `state.system_thread.threadId` instead of the per-
+      //              contact threadId field. Same as siblings (wren/jay)
+      //              which have one session_id at the registry level.
+      //              cwd = homedir (full machine), no --add-dir.
+      //   other    → per-conversation sandbox. cwd = surface/<slug-dir>,
+      //              --add-dir pins the lane, threadId is per-contact.
+      // Legacy threadCwd is honored either way so --resume can find the
+      // original jsonl when the cwd has shifted (rare, e.g. migration).
       const isSystemPersonality = (_convEntry.personality === 'system');
+      const sluggedDir = conversationsState.slugDir(_registrySurface, _convSlug);
+      try { await mkdir(sluggedDir, { recursive: true }); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
       if (isSystemPersonality) {
-        sessionOpts.cwd = _convEntry.threadCwd ?? homedir();
+        const sysThread = conversationsState.getSystemThread(_convState) ?? {};
+        sessionOpts.sessionId = sysThread.threadId ?? null;
+        sessionOpts.cwd = sysThread.threadCwd ?? _convEntry.threadCwd ?? homedir();
+        // Override _isNewContact based on the SHARED thread, not the
+        // per-contact entry — first system-e turn ever spawns the shared
+        // thread; subsequent turns from ANY operator-DM surface resume it.
+        _isNewContact = !sysThread.threadId;
         // No addDirs restriction — system-e roams the whole machine.
       } else {
+        sessionOpts.sessionId = _convEntry.threadId ?? null;
         sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
         // Per-conversation sandbox: just the slug-dir. Media lives
         // INSIDE it now (<slug-dir>/media/) since the bridge writes
@@ -4577,17 +4592,25 @@ function App() {
     //     error."
     const _threadId = threadCtx.threadId ?? 'shell';
     const _isSystemThread = _threadId === 'heartbeat' || _threadId === 'shell';
+    const _isSystemPersonality = (_convEntry?.personality === 'system');
     const _slugForLog = _isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
+    // Transcript path:
+    //   heartbeat/shell        → ~/.egpt/state/<thread>.md
+    //   personality='system'   → ~/.egpt/conversations/_system/system-e/transcript.md
+    //                            (shared across all operator-DM surfaces)
+    //   per-contact            → ~/.egpt/conversations/<surface>/<slug>/transcript.md
     const _baseDir = _isSystemThread
       ? join(EGPT_HOME, 'state')
-      : (_slugForLog && _registrySurface
-          ? conversationsState.slugDir(_registrySurface, _slugForLog)
-          : join(EGPT_HOME, 'conversations', '_unrouted'));
+      : (_isSystemPersonality
+          ? conversationsState.SYSTEM_SLUG_DIR
+          : (_slugForLog && _registrySurface
+              ? conversationsState.slugDir(_registrySurface, _slugForLog)
+              : join(EGPT_HOME, 'conversations', '_unrouted')));
     const _fname = _isSystemThread ? `${_sanitizeForFilename(_threadId)}.md` : 'transcript.md';
     const _fpath = join(_baseDir, _fname);
     const _stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
     const _replyClock = _stamp.slice(11, 16);
-    const _personaTag = (_convEntry?.personality === 'system') ? 'system-e' : '@e';
+    const _personaTag = _isSystemPersonality ? 'system-e' : '@e';
 
     // Fire brain.stream NOW — non-awaited, so the inbound transcript
     // write below runs in parallel rather than gating the brain.
@@ -4635,13 +4658,25 @@ function App() {
       const result = await _brainPromise;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
 
-      // Per-contact: capture the spawned threadId on first turn and
-      // persist via recordThread. Subsequent turns will use this
-      // threadId (--resume) so context accumulates per contact.
+      // Capture the spawned threadId on first turn and persist for
+      // resume on next turn. Persistence destination depends on
+      // personality:
+      //   'system' → shared state.system_thread (one thread across all
+      //              operator-DM surfaces)
+      //   other    → per-contact threadId (per-chat conversation-e)
       if (isPerContactDispatch && _isNewContact) {
         const newThreadId = result?.optionsPatch?.sessionId;
         if (newThreadId && _convSlug) {
-          _convState = conversationsState.recordThread(_convState, _registrySurface, _convSlug, newThreadId);
+          const isSystem = (_convEntry?.personality === 'system');
+          if (isSystem) {
+            _convState = conversationsState.setSystemThread(_convState, {
+              threadId: newThreadId,
+              threadCreatedAt: new Date().toISOString(),
+              identityInjectedAt: new Date().toISOString(),
+            });
+          } else {
+            _convState = conversationsState.recordThread(_convState, _registrySurface, _convSlug, newThreadId);
+          }
           await _writeConvState(_convState);
         }
       }
