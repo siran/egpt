@@ -4446,7 +4446,23 @@ function App() {
 
       // Mute intercept: never spawn a brain turn for muted contacts.
       // Operator (2026-05-19): mute is router-level, not brain-level.
+      // (2026-05-21): even on skip, persist the inbound + reason. The
+      // per-chat transcript gets a `[muted (HH:MM)]: <text>` line, the
+      // activity log gets a SKIP entry. Operator can grep either.
       if (conversationsState.isMuted(_convEntry)) {
+        try {
+          const skipStamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+          const skipClock = skipStamp.slice(11, 16);
+          const skipDir = conversationsState.slugDir(_registrySurface, _convSlug);
+          await mkdir(skipDir, { recursive: true });
+          const skipFpath = join(skipDir, 'transcript.md');
+          await appendFile(skipFpath, text + '\n\n[skip (' + skipClock + ')]: muted contact — brain not dispatched\n\n');
+        } catch (e) { console.error(`!! mute-skip transcript: ${e?.message ?? e}`); }
+        try {
+          await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+          await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
+            `${new Date().toISOString()}\tSKIP\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\tmuted\n`);
+        } catch (e) { console.error(`!! mute-skip activity-log: ${e?.message ?? e}`); }
         return '';
       }
 
@@ -5706,7 +5722,21 @@ function App() {
     // observe-only UNTIL added to auto_e_chats, but the command to
     // add it is filtered out by the same observe-only gate).
     const isOperatorCommand = decision.kind === 'command' && meta.fromWhatsApp;
-    if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand) return;
+    if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand) {
+      // Observed chat, no @e mention, not an operator command → no
+      // dispatch. Log to activity log so "did @e see my message?" has
+      // a grep-able answer: the message arrived, was observed, not
+      // dispatched (because the chat is observe-only and the message
+      // didn't include a @persona wake-word).
+      try {
+        const chatId = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+        const surface = meta.fromWhatsApp ? 'wa' : meta.fromTelegram ? 'tg' : 'shell';
+        await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+        await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
+          `${new Date().toISOString()}\tSKIP\t${surface}/${chatId}\tobserve-only ${decision.kind}\n`);
+      } catch (e) { console.error(`!! observe-skip activity-log: ${e?.message ?? e}`); }
+      return;
+    }
 
     // bus broadcast (room-utterance) — happens AFTER the router decision
     // is made, so peers see the message only once we know it's going to
