@@ -63,7 +63,7 @@ async function _persistWaConfig() {
 // is whether the underlying claude thread is cleared first or continued.
 // Exported so /egpt new and /egpt persona can call it with a JID resolved
 // from a name-search.
-export async function _runReboot({ resetThread, personaName, targetJid, sysOut, ctx, originJid }) {
+export async function _runReboot({ resetThread, personaName, targetJid, sysOut, ctx, originJid, surface = 'whatsapp' }) {
   const { computeBrainTurn } = ctx;
   // Validate persona exists before touching state.
   const personaFile = resolvePersonalityFile(personaName);
@@ -73,9 +73,9 @@ export async function _runReboot({ resetThread, personaName, targetJid, sysOut, 
   }
 
   let cs = await readConvState(CONV_YAML_PATH);
-  const slug = findContactByJid(cs, targetJid);
+  const slug = findContactByJid(cs, surface, targetJid);
   if (!slug) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no contact registered for jid "${targetJid}". Send a message in that chat first so @e registers it.`);
+    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no contact registered for jid "${targetJid}" under surface "${surface}". Send a message in that chat first so @e registers it.`);
     return true;
   }
 
@@ -83,14 +83,14 @@ export async function _runReboot({ resetThread, personaName, targetJid, sysOut, 
   // identityInjectedAt because both are doing an identity install.
   const patch = { personality: personaName, identityInjectedAt: null };
   if (resetThread) { patch.threadId = null; patch.threadCreatedAt = null; }
-  cs = patchContact(cs, slug, patch);
+  cs = patchContact(cs, surface, slug, patch);
   await writeConvState(CONV_YAML_PATH, cs);
 
   // Copy identity.md, rules.md, pointers.md into the slug-dir.
   // Conversation-e is sandboxed to that dir and will read them at ./*.md.
   let bundle;
   try {
-    bundle = await installPersonaIntoSlugDir(slug, personaName);
+    bundle = await installPersonaIntoSlugDir(surface, slug, personaName);
   } catch (e) {
     sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: copying persona files failed — ${e?.message ?? e}`);
     return true;
@@ -116,7 +116,7 @@ export async function _runReboot({ resetThread, personaName, targetJid, sysOut, 
   // 2) Kick off the conversation-e thread with the same announcement as
   //    its first user-turn. bypassAutoWrap skips the lineage auto-wrap so
   //    we don't double-embed identity.
-  const entry = cs.contacts[targetJid] ?? Object.values(cs.contacts).find(e => e?.slug === slug);
+  const entry = cs.contacts[surface]?.[targetJid] ?? null;
   const pushedName = entry?.pushedName ?? slug;
   try {
     const reply = await computeBrainTurn('e', announcement, {
@@ -214,7 +214,10 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
     const cs = await readConvState(CONV_YAML_PATH);
-    const targetSlug = slugFlag ?? findContactByJid(cs, jidFlag ?? dispatchMeta?.waChatId);
+    // /e is WA-scoped by default — dispatchMeta.waChatId is a WA jid.
+    // TG-side equivalent will be added with task #20.
+    const surface = 'whatsapp';
+    const targetSlug = slugFlag ?? findContactByJid(cs, surface, jidFlag ?? dispatchMeta?.waChatId);
     if (!targetSlug) {
       sysOut(`!! /e heartbeat: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
       return true;
@@ -229,10 +232,11 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       }
       patch.heartbeatIntervalMin = mins;
     }
-    const next = patchContact(cs, targetSlug, patch);
+    const next = patchContact(cs, surface, targetSlug, patch);
     await writeConvState(CONV_YAML_PATH, next);
-    const e = next.contacts[targetSlug];
-    sysOut(`/e heartbeat: ${targetSlug} enabled=${!!e.heartbeatEnabled} interval=${e.heartbeatIntervalMin ?? 30}min`);
+    // Find the updated entry (by slug) for the status line.
+    const updated = Object.values(next.contacts[surface] ?? {}).find(e => e?.slug === targetSlug);
+    sysOut(`/e heartbeat: ${targetSlug} enabled=${!!updated?.heartbeatEnabled} interval=${updated?.heartbeatIntervalMin ?? 30}min`);
     return true;
   }
 

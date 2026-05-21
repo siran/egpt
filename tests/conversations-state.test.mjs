@@ -7,6 +7,7 @@ import {
   emptyState,
   sanitizeSlug,
   findContactByJid,
+  findContactsByName,
   ensureContact,
   patchContact,
   recordThread,
@@ -17,7 +18,11 @@ import {
   serialize,
   nowIsoString,
   isoFromMs,
+  KNOWN_SURFACES,
 } from '../conversations-state.mjs';
+
+const WA = 'whatsapp';
+const TG = 'telegram';
 
 describe('emptyState / sanitizeSlug basics', () => {
   it('emptyState() has no contacts', () => {
@@ -29,18 +34,23 @@ describe('emptyState / sanitizeSlug basics', () => {
     expect(sanitizeSlug('  hello world!  ')).toBe('hello_world');
     expect(sanitizeSlug('')).toBe('');
   });
+  it('KNOWN_SURFACES is the canonical bucket list', () => {
+    expect(KNOWN_SURFACES).toContain('whatsapp');
+    expect(KNOWN_SURFACES).toContain('telegram');
+    expect(KNOWN_SURFACES).toContain('shell');
+  });
 });
 
-describe('ensureContact — new contact, multi-JID merge', () => {
-  it('creates a fresh contact when JID is unknown (JID-keyed)', () => {
+describe('ensureContact — surface-aware, new contact, multi-JID merge', () => {
+  it('creates a fresh contact under the named surface', () => {
     const s0 = emptyState();
     const jid = '26087681749235@lid';
-    const { state, jid: primary, slug, entry, isNew } = ensureContact(s0, jid, {
+    const { state, jid: primary, slug, entry, isNew, surface } = ensureContact(s0, WA, jid, {
       pushedName: 'Diego Pérez (Koma)',
       slugHint: 'diego',
     });
     expect(isNew).toBe(true);
-    // The state map is keyed by JID. Entry holds slug + fields, no jids[].
+    expect(surface).toBe(WA);
     expect(primary).toBe(jid);
     expect(slug).toMatch(/^diego-\d{10}$/);
     expect(entry.slug).toBe(slug);
@@ -48,26 +58,35 @@ describe('ensureContact — new contact, multi-JID merge', () => {
     expect(entry.firstSeenAt).toBeTruthy();
     expect(entry.pushedName).toBe('Diego Pérez (Koma)');
     expect(entry.jids).toBeUndefined();
-    expect(state.contacts[jid]).toEqual(entry);
+    expect(state.contacts[WA][jid]).toEqual(entry);
   });
 
-  it('a second JID with matching slugHint becomes an alias of the primary', () => {
+  it('a second JID with matching slugHint becomes an alias within the same surface', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
+    const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
     s = r1.state;
-    const r2 = ensureContact(s, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
-    expect(r2.slug).toBe(r1.slug);       // same slug (primary's)
-    expect(r2.jid).toBe(r1.jid);         // resolved to primary
+    const r2 = ensureContact(s, WA, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
+    expect(r2.slug).toBe(r1.slug);
+    expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
-    // The aliased JID has its own state entry pointing back.
-    expect(r2.state.contacts['584122182178@s.whatsapp.net']).toEqual({ aliasOf: r1.jid });
+    expect(r2.state.contacts[WA]['584122182178@s.whatsapp.net']).toEqual({ aliasOf: r1.jid });
+  });
+
+  it('same JID under different surfaces is independent', () => {
+    let s = emptyState();
+    const r1 = ensureContact(s, WA, '88164392', { slugHint: 'an-wa' });
+    s = r1.state;
+    const r2 = ensureContact(s, TG, '88164392', { slugHint: 'an-tg' });
+    expect(r1.slug).not.toBe(r2.slug);
+    expect(r2.state.contacts[WA]['88164392'].slug).toMatch(/^an-wa-\d{10}$/);
+    expect(r2.state.contacts[TG]['88164392'].slug).toMatch(/^an-tg-\d{10}$/);
   });
 
   it('re-encountering a known JID refreshes pushedName on the primary', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
+    const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
     s = r1.state;
-    const r2 = ensureContact(s, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
+    const r2 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
     expect(r2.jid).toBe(r1.jid);
     expect(r2.slug).toBe(r1.slug);
     expect(r2.isNew).toBe(false);
@@ -78,76 +97,126 @@ describe('ensureContact — new contact, multi-JID merge', () => {
   it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
     const s = emptyState();
     const jid = '584122182178@s.whatsapp.net';
-    const r = ensureContact(s, jid, {});
+    const r = ensureContact(s, WA, jid, {});
     expect(r.slug).toMatch(/^contact-\d{10}$/);
-    expect(r.entry.slug).toBe(r.slug);
-    expect(r.state.contacts[jid].slug).toBe(r.slug);
+    expect(r.state.contacts[WA][jid].slug).toBe(r.slug);
   });
 
   it('aliasOf resolves through findContactByJid', () => {
     let s = emptyState();
-    const r1 = ensureContact(s, '26087681749235@lid', { slugHint: 'diego' });
-    s = ensureContact(r1.state, '584122182178@s.whatsapp.net', { slugHint: 'diego' }).state;
-    // Either JID should resolve to the same slug.
-    const slug1 = findContactByJid(s, '26087681749235@lid');
-    const slug2 = findContactByJid(s, '584122182178@s.whatsapp.net');
-    expect(slug1).toBe(r1.slug);
-    expect(slug2).toBe(r1.slug);
+    const r1 = ensureContact(s, WA, '26087681749235@lid', { slugHint: 'diego' });
+    s = ensureContact(r1.state, WA, '584122182178@s.whatsapp.net', { slugHint: 'diego' }).state;
+    expect(findContactByJid(s, WA, '26087681749235@lid')).toBe(r1.slug);
+    expect(findContactByJid(s, WA, '584122182178@s.whatsapp.net')).toBe(r1.slug);
+  });
+
+  it('ensureContact rejects an unknown surface', () => {
+    expect(() => ensureContact(emptyState(), 'martian-radio', '1@lid', {}))
+      .toThrow(/unknown surface/);
+  });
+
+  it('honors ctx.personality on new contact creation', () => {
+    const r = ensureContact(emptyState(), WA, '34836563681438@lid', {
+      pushedName: 'self', slugHint: 'self', personality: 'system',
+    });
+    expect(r.entry.personality).toBe('system');
   });
 });
 
-describe('findContactByJid (JID-keyed schema)', () => {
+describe('findContactByJid (surface-scoped)', () => {
   it('returns null for unknown JID', () => {
-    expect(findContactByJid(emptyState(), '0@lid')).toBe(null);
+    expect(findContactByJid(emptyState(), WA, '0@lid')).toBe(null);
   });
-  it('returns the slug for a JID with a primary entry', () => {
+  it('returns the slug for a JID with a primary entry, scoped to surface', () => {
     const s = {
       contacts: {
-        '26087681749235@lid':           { slug: 'diego', personality: 'default' },
-        '584122182178@s.whatsapp.net':  { aliasOf: '26087681749235@lid' },
-        '1@lid':                        { slug: 'bob', personality: 'default' },
+        whatsapp: {
+          '26087681749235@lid':           { slug: 'diego', personality: 'default' },
+          '584122182178@s.whatsapp.net':  { aliasOf: '26087681749235@lid' },
+          '1@lid':                        { slug: 'bob', personality: 'default' },
+        },
+        telegram: {
+          '88164392': { slug: 'an-tg', personality: 'system' },
+        },
       },
     };
-    expect(findContactByJid(s, '26087681749235@lid')).toBe('diego');
-    expect(findContactByJid(s, '584122182178@s.whatsapp.net')).toBe('diego');
-    expect(findContactByJid(s, '1@lid')).toBe('bob');
-    expect(findContactByJid(s, '999@lid')).toBe(null);
+    expect(findContactByJid(s, WA, '26087681749235@lid')).toBe('diego');
+    expect(findContactByJid(s, WA, '584122182178@s.whatsapp.net')).toBe('diego');
+    expect(findContactByJid(s, WA, '1@lid')).toBe('bob');
+    expect(findContactByJid(s, WA, '88164392')).toBe(null);          // TG-only
+    expect(findContactByJid(s, TG, '88164392')).toBe('an-tg');
+    expect(findContactByJid(s, TG, '26087681749235@lid')).toBe(null); // WA-only
   });
 });
 
-describe('patchContact + recordThread (polymorphic: JID or slug)', () => {
+describe('patchContact + recordThread (surface-scoped)', () => {
   const baseState = () => ({
-    contacts: {
+    contacts: { whatsapp: {
       'j': { slug: 'diego', personality: 'default', pushedName: 'D' },
-    },
+    } },
   });
   it('patchContact accepts a JID key', () => {
-    const s2 = patchContact(baseState(), 'j', { personality: 'serious' });
-    expect(s2.contacts.j.personality).toBe('serious');
-    expect(s2.contacts.j.pushedName).toBe('D');
-    expect(s2.contacts.j.slug).toBe('diego');
+    const s2 = patchContact(baseState(), WA, 'j', { personality: 'serious' });
+    expect(s2.contacts[WA].j.personality).toBe('serious');
+    expect(s2.contacts[WA].j.pushedName).toBe('D');
+    expect(s2.contacts[WA].j.slug).toBe('diego');
   });
   it('patchContact accepts a slug for back-compat', () => {
-    const s2 = patchContact(baseState(), 'diego', { personality: 'joke' });
-    expect(s2.contacts.j.personality).toBe('joke');
+    const s2 = patchContact(baseState(), WA, 'diego', { personality: 'joke' });
+    expect(s2.contacts[WA].j.personality).toBe('joke');
   });
   it('patchContact resolves through aliasOf to primary', () => {
-    const s = {
-      contacts: {
-        'j': { slug: 'diego', personality: 'default' },
-        'k': { aliasOf: 'j' },
-      },
-    };
-    const s2 = patchContact(s, 'k', { personality: 'silent' });
-    expect(s2.contacts.j.personality).toBe('silent');
-    expect(s2.contacts.k).toEqual({ aliasOf: 'j' }); // alias untouched
+    const s = { contacts: { whatsapp: {
+      'j': { slug: 'diego', personality: 'default' },
+      'k': { aliasOf: 'j' },
+    } } };
+    const s2 = patchContact(s, WA, 'k', { personality: 'silent' });
+    expect(s2.contacts[WA].j.personality).toBe('silent');
+    expect(s2.contacts[WA].k).toEqual({ aliasOf: 'j' });
+  });
+  it('patchContact rejects unknown surface', () => {
+    expect(() => patchContact(baseState(), 'mars', 'j', {}))
+      .toThrow(/unknown surface/);
   });
   it('recordThread sets threadId + ISO timestamp on the primary', () => {
-    const s = { contacts: { 'j': { slug: 'diego', personality: 'default' } } };
-    const s2 = recordThread(s, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z');
-    expect(s2.contacts.j.threadId).toBe('thr-abc');
-    expect(s2.contacts.j.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
-    expect(s2.contacts.j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+    const s = { contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default' } } } };
+    const s2 = recordThread(s, WA, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.threadId).toBe('thr-abc');
+    expect(s2.contacts[WA].j.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+  });
+});
+
+describe('findContactsByName (cross-surface name search)', () => {
+  const s = {
+    contacts: {
+      whatsapp: {
+        '1@lid': { slug: 'diego-2605200133', pushedName: 'Diego Pérez (Koma)' },
+        '2@lid': { aliasOf: '1@lid' },
+        '3@lid': { slug: 'jorge-2605200419', pushedName: 'Jorge' },
+      },
+      telegram: {
+        '88164392': { slug: 'an-self-2605211200', pushedName: 'An (TG)', personality: 'system' },
+      },
+    },
+  };
+  it('matches across all surfaces by default', () => {
+    const r = findContactsByName(s, 'di');
+    const slugs = r.map(x => x.slug);
+    expect(slugs).toContain('diego-2605200133');
+    expect(slugs.length).toBe(1);   // aliases excluded
+  });
+  it('returns surface in each result', () => {
+    const r = findContactsByName(s, 'an');
+    expect(r[0].surface).toBe(TG);
+  });
+  it('respects an explicit surface filter', () => {
+    const r = findContactsByName(s, 'an', WA);
+    expect(r).toEqual([]);                // no WA contact named 'an'
+  });
+  it('returns empty for empty / whitespace term', () => {
+    expect(findContactsByName(s, '')).toEqual([]);
+    expect(findContactsByName(s, '   ')).toEqual([]);
   });
 });
 
@@ -166,7 +235,7 @@ describe('isMuted + shouldFireHeartbeat predicates', () => {
     const e = {
       heartbeatEnabled: true,
       heartbeatIntervalMin: 30,
-      heartbeatLastFiredAt: new Date(now - 10 * 60_000).toISOString(),  // 10 min ago
+      heartbeatLastFiredAt: new Date(now - 10 * 60_000).toISOString(),
     };
     expect(shouldFireHeartbeat(e, now)).toBe(false);
     const e2 = { ...e, heartbeatLastFiredAt: new Date(now - 35 * 60_000).toISOString() };
@@ -182,21 +251,31 @@ describe('YAML parse / serialize round-trip', () => {
     const s = emptyState();
     expect(parse(serialize(s))).toEqual(s);
   });
-  it('round-trips a populated state (JID-keyed + aliasOf)', () => {
+  it('round-trips a populated, multi-surface state', () => {
     const s = {
       contacts: {
-        '26087681749235@lid': {
-          slug: 'diego-2605200133',
-          personality: 'default',
-          threadId: 'abc',
-          threadCreatedAt: '2026-05-19T18:34:00.000Z',
-          identityInjectedAt: '2026-05-19T18:34:00.000Z',
-          pushedName: 'Diego Pérez (Koma)',
-          heartbeatEnabled: true,
-          heartbeatIntervalMin: 60,
-          heartbeatLastFiredAt: null,
+        whatsapp: {
+          '26087681749235@lid': {
+            slug: 'diego-2605200133',
+            personality: 'default',
+            threadId: 'abc',
+            threadCreatedAt: '2026-05-19T18:34:00.000Z',
+            identityInjectedAt: '2026-05-19T18:34:00.000Z',
+            pushedName: 'Diego Pérez (Koma)',
+            heartbeatEnabled: true,
+            heartbeatIntervalMin: 60,
+            heartbeatLastFiredAt: null,
+          },
+          '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
         },
-        '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
+        telegram: {
+          '88164392': {
+            slug: 'an-self-2605211200',
+            personality: 'system',
+            threadId: null,
+            pushedName: 'An',
+          },
+        },
       },
     };
     expect(parse(serialize(s))).toEqual(s);
@@ -208,7 +287,7 @@ describe('YAML parse / serialize round-trip', () => {
   });
 });
 
-describe('migrateJsonToYaml — JID-keyed JSON → slug-keyed YAML', () => {
+describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   it('groups multiple JIDs with the same customName into one contact', () => {
     const json = {
       '26087681749235@lid':         { pushedName: 'Diego Pérez (Koma)', customName: 'diego' },

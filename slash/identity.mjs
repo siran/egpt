@@ -50,11 +50,17 @@ export async function run({ arg, meta, ctx }) {
       let next = cs;
       let touched = 0;
       const skipped = [];
-      for (const [slug, entry] of Object.entries(cs.contacts ?? {})) {
-        const isDefault = (entry.personality || 'default') === 'default';
-        if (!all && !isDefault) { skipped.push(`${slug}(${entry.personality})`); continue; }
-        next = patchContact(next, slug, { threadId: null, identityInjectedAt: null });
-        touched++;
+      // Surface-nested schema: iterate each surface bucket.
+      for (const surface of Object.keys(cs.contacts ?? {})) {
+        const bucket = cs.contacts[surface] ?? {};
+        for (const [_jid, entry] of Object.entries(bucket)) {
+          if (entry?.aliasOf || !entry?.slug) continue;
+          const slug = entry.slug;
+          const isDefault = (entry.personality || 'default') === 'default';
+          if (!all && !isDefault) { skipped.push(`${surface}/${slug}(${entry.personality})`); continue; }
+          next = patchContact(next, surface, slug, { threadId: null, identityInjectedAt: null });
+          touched++;
+        }
       }
       await writeState(CONV_YAML_PATH, next);
       const skippedMsg = skipped.length ? `; skipped ${skipped.length} customized: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}` : '';

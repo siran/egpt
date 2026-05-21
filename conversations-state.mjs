@@ -36,19 +36,40 @@ const LEGACY_HEARTBEAT_PATH      = join(homedir(), '.egpt', 'e-heartbeat.md');
 // slug dir) can't read it.
 export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations.yaml');
 
+// Known surfaces — used as the first dir level under conversations/
+// and the first key level under contacts: in the YAML. Adding a new
+// surface = add it here + wire its bridge in egpt.mjs.
+export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
+
 // Per-conversation directory. Each contact gets its own folder; that
 // folder is the only filesystem location conversation-e is given
 // access to via --cwd / --add-dir. Layout:
 //
-//   ~/.egpt/conversations/<slug>/
+//   ~/.egpt/conversations/<surface>/<slug>/
 //     transcript.md                ← per-thread play-script log
 //     daily-YYYY-MM-DD.md (opt)    ← optional daily summaries written by @e
-//     media/ (linked from ~/.egpt/media/<jid>/ — not moved for now)
-export function slugDir(slug) {
-  return join(homedir(), '.egpt', 'conversations', sanitizeSlug(slug));
+//     media/                       ← per-chat media downloads
+//
+// Surface separation lets WA / TG / Signal / shell each be backed up,
+// wiped, or moved without touching the others. Pre-2026-05-21 the
+// layout was a flat conversations/<slug>/ (everything WA) — see
+// migrateToSurfaceLayout() for the one-shot migration.
+export function slugDir(surface, slug) {
+  if (!surface || !KNOWN_SURFACES.includes(surface)) {
+    throw new Error(`slugDir: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
+  }
+  return join(homedir(), '.egpt', 'conversations', surface, sanitizeSlug(slug));
 }
-export function slugTranscriptPath(slug) {
-  return join(slugDir(slug), 'transcript.md');
+export function slugTranscriptPath(surface, slug) {
+  return join(slugDir(surface, slug), 'transcript.md');
+}
+
+// Pre-surface-layout slug dir — used only inside the legacy migration
+// chain that operates on the flat ~/.egpt/conversations/<slug>/ shape.
+// Once migrateToSurfaceLayout has run, callers use slugDir(surface, slug)
+// for the new ~/.egpt/conversations/<surface>/<slug>/ shape.
+function _legacySlugDir(slug) {
+  return join(homedir(), '.egpt', 'conversations', sanitizeSlug(slug));
 }
 
 // Per-JID media directory the bridge writes to (unchanged; for
@@ -111,6 +132,9 @@ export function findThreadJsonl(threadId) {
 export async function migrateMediaToSlugDirs() {
   if (!existsSync(CONV_YAML_PATH)) return { migrated: 0, files: 0 };
   const state = await readState(CONV_YAML_PATH);
+  // Surface-layout is the post-2026-05-21 shape — media already lives
+  // under conversations/<surface>/<slug>/media/. Nothing to migrate.
+  if (_isSurfaceLayout(state)) return { migrated: 0, files: 0, skipped: 'surface-layout' };
   let contactsTouched = 0, filesMoved = 0;
   const isJid = _isJidKeyed(state);
   // Collect (slug, jids[]) tuples for both schemas.
@@ -133,7 +157,10 @@ export async function migrateMediaToSlugDirs() {
     }
   }
   for (const { slug, jids } of groups) {
-    const dstDir = join(slugDir(slug), 'media');
+    // This migration predates surface-layout — destination is the
+    // legacy flat path. Later migrateToSurfaceLayout moves the whole
+    // slug-dir (media included) into conversations/whatsapp/<slug>/.
+    const dstDir = join(_legacySlugDir(slug), 'media');
     let touched = false;
     for (const jid of jids) {
       const srcDir = jidMediaDir(jid);
@@ -168,6 +195,17 @@ function _isJidKeyed(state) {
   return keys.length > 0 && keys[0].includes('@');
 }
 
+// New shape detection: top-level keys under contacts: are surface names
+// (whatsapp / telegram / shell / signal), not JIDs. The migration
+// migrateToSurfaceLayout() converts JID-keyed → surface-nested. Empty
+// state counts as surface-layout (avoids re-running the migration when
+// nothing's there yet).
+function _isSurfaceLayout(state) {
+  const keys = Object.keys(state?.contacts ?? {});
+  if (keys.length === 0) return true;
+  return keys.every(k => KNOWN_SURFACES.includes(k));
+}
+
 // Convert slug-keyed → JID-keyed (one-time, idempotent). For each
 // slug-keyed entry, pick the first JID in its jids[] as primary; drop
 // jids[] from the entry, replace the YAML key with primary JID, add
@@ -187,6 +225,7 @@ function _isJidKeyed(state) {
 export async function migrateConversationsToJidKey() {
   if (!existsSync(CONV_YAML_PATH)) return null;
   const state = await readState(CONV_YAML_PATH);
+  if (_isSurfaceLayout(state)) return { skipped: 'surface-layout' };
   if (_isJidKeyed(state)) return { skipped: 'already-jid-keyed' };
   const oldContacts = state.contacts ?? {};
   const newContacts = {};
@@ -212,12 +251,59 @@ export async function migrateConversationsToJidKey() {
   return { migrated: primaries, aliases, dangling };
 }
 
+// One-shot migration: flat JID-keyed → nested-by-surface.
+//
+// Pre-2026-05-21: contacts at top-level under `contacts:`, slug-dirs flat at
+// ~/.egpt/conversations/<slug>/. Everything was WhatsApp.
+//
+// Post: contacts.whatsapp.<jid>, slug-dirs at
+// ~/.egpt/conversations/whatsapp/<slug>/. Telegram and Signal get
+// their own buckets as their bridges register chats.
+//
+// Idempotent: returns { skipped } when state already surface-layout.
+// Migrates BOTH yaml and on-disk slug-dirs. Crash-safe insofar as each
+// dir rename is atomic; partial completion is detectable on next boot
+// (some dirs in new path, some still in old) and the migration will
+// finish the move.
+export async function migrateToSurfaceLayout() {
+  if (!existsSync(CONV_YAML_PATH)) return { skipped: 'no registry yet' };
+  const state = await readState(CONV_YAML_PATH);
+  if (_isSurfaceLayout(state)) return { skipped: 'already surface-layout' };
+
+  // Move yaml: wrap existing flat contacts in { whatsapp: ... }.
+  const flat = state.contacts ?? {};
+  const newState = { ...state, contacts: { whatsapp: flat } };
+
+  // Move slug-dirs: ~/.egpt/conversations/<slug>/ → conversations/whatsapp/<slug>/.
+  // Iterate by primary entries (those with `.slug`, not aliases).
+  const newSurfaceRoot = join(homedir(), '.egpt', 'conversations', 'whatsapp');
+  await mkdir(newSurfaceRoot, { recursive: true });
+  let dirsMoved = 0, missingDirs = 0;
+  for (const [_jid, entry] of Object.entries(flat)) {
+    if (entry?.aliasOf || !entry?.slug) continue;
+    const oldDir = _legacySlugDir(entry.slug);
+    const newDir = join(newSurfaceRoot, sanitizeSlug(entry.slug));
+    if (!existsSync(oldDir)) { missingDirs++; continue; }
+    if (existsSync(newDir)) { dirsMoved++; continue; }   // already moved
+    try {
+      await rename(oldDir, newDir);
+      dirsMoved++;
+    } catch (e) {
+      console.error(`!! migrateToSurfaceLayout rename(${oldDir} -> ${newDir}): ${e?.message ?? e}`);
+    }
+  }
+
+  await writeState(CONV_YAML_PATH, newState);
+  return { migrated: Object.keys(flat).length, dirsMoved, missingDirs };
+}
+
 // Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
 // Idempotent: skips entries that already match the pattern. Only runs
 // for slug-keyed state — once converted to JID-keyed, this is a no-op.
 export async function migrateSlugSuffix() {
   if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 0 };
   const state = await readState(CONV_YAML_PATH);
+  if (_isSurfaceLayout(state)) return { renamed: 0, skipped: 'surface-layout' };
   if (_isJidKeyed(state)) return { renamed: 0, skipped: 'jid-keyed' };
   const oldContacts = state.contacts ?? {};
   const nextContacts = {};
@@ -247,14 +333,14 @@ export async function migrateSlugSuffix() {
       if (entry.threadCreatedAt) firstSeenAt = entry.threadCreatedAt;
       else {
         try {
-          const s = await stat(slugDir(oldSlug));
+          const s = await stat(_legacySlugDir(oldSlug));
           firstSeenAt = new Date(s.birthtimeMs || s.mtimeMs).toISOString();
-        } catch { firstSeenAt = new Date().toISOString(); }
+        } catch (e) { console.error(`!! migrateSlugSuffix stat(${oldSlug}): ${e?.message ?? e}`); firstSeenAt = new Date().toISOString(); }
       }
     }
     const newSlug = appendSlugSuffix(oldSlug, new Date(firstSeenAt));
-    const oldDir = slugDir(oldSlug);
-    const newDir = slugDir(newSlug);
+    const oldDir = _legacySlugDir(oldSlug);
+    const newDir = _legacySlugDir(newSlug);
     if (existsSync(oldDir) && !existsSync(newDir)) {
       try { await rename(oldDir, newDir); }
       catch (e) { console.error(`!! migrateSlugSuffix rename(${oldDir} -> ${newDir}): ${e?.message ?? e}`); }
@@ -315,55 +401,67 @@ export function sanitizeSlug(s) {
 
 // ── Schema notes ───────────────────────────────────────────────────────────
 //
-// Operator (2026-05-20): conversations are now JID-keyed (the JID is the
-// stable identifier; the slug is a label/dir-name field on the entry).
-// Multi-JID humans (one person with `<phone>@s.whatsapp.net` and `<id>@lid`)
-// are modeled with a primary entry holding the data + alias entries
-// pointing back via `aliasOf: <primary-jid>`. The on-disk slug-dir is
-// shared (one per logical contact).
+// Operator (2026-05-21): conversations are nested by surface, then keyed by
+// JID/chat-id within each surface. Surface separation lets each bridge
+// own its own contact namespace. Multi-JID humans (within ONE surface)
+// are modeled with a primary entry + alias entries pointing back via
+// `aliasOf: <primary-jid>`. The on-disk slug-dir lives under
+// conversations/<surface>/<slug>/.
 //
 //   contacts:
-//     "26087681749235@lid":
-//       slug: diego_p_rez_koma-2605200133
-//       personality: default
-//       threadId: …
-//       firstSeenAt: …
-//       pushedName: "Diego Pérez (Koma)"
-//       ...
-//     "584122182178@s.whatsapp.net":
-//       aliasOf: "26087681749235@lid"
+//     whatsapp:
+//       "26087681749235@lid":
+//         slug: diego_p_rez_koma-2605200133
+//         personality: default
+//         threadId: …
+//         firstSeenAt: …
+//         pushedName: "Diego Pérez (Koma)"
+//         ...
+//       "584122182178@s.whatsapp.net":
+//         aliasOf: "26087681749235@lid"
+//     telegram:
+//       "tg:user:88164392":
+//         slug: an-self-tg-2605211200
+//         personality: system
+//         ...
 
 // ── Lookups ─────────────────────────────────────────────────────────────────
 
-// Resolve a JID through one level of aliasing. Returns {primaryJid, entry}
-// or null when the JID isn't registered (or alias dangles).
-function _resolveByJid(state, jid) {
-  const direct = state.contacts?.[jid];
+// Resolve a JID within one surface, following one level of aliasing.
+// Returns {primaryJid, entry} or null when not registered (or alias
+// dangles).
+function _resolveByJid(state, surface, jid) {
+  const bucket = state.contacts?.[surface];
+  if (!bucket) return null;
+  const direct = bucket[jid];
   if (!direct) return null;
   if (direct.aliasOf) {
-    const primary = state.contacts[direct.aliasOf];
+    const primary = bucket[direct.aliasOf];
     if (!primary) return null;
     return { primaryJid: direct.aliasOf, entry: primary };
   }
   return { primaryJid: jid, entry: direct };
 }
 
-// Find which contact's primary entry owns a given JID. Returns the
-// SLUG (string) so existing slug-passing call sites keep working.
-export function findContactByJid(state, jid) {
-  const r = _resolveByJid(state, jid);
+// Find which contact's primary entry owns a given JID inside surface.
+// Returns the slug (string) or null. Slug-callers will still get the
+// dir under conversations/<surface>/<slug>/.
+export function findContactByJid(state, surface, jid) {
+  const r = _resolveByJid(state, surface, jid);
   return r?.entry?.slug ?? null;
 }
 
-// Get the resolved contact entry + slug + primary-JID for a JID.
-export function getContact(state, jid) {
-  const r = _resolveByJid(state, jid);
-  return r ? { jid: r.primaryJid, slug: r.entry.slug, entry: r.entry } : null;
+// Get the resolved contact entry + slug + primary-JID for a JID within
+// a surface. Returns { jid, slug, entry, surface } or null.
+export function getContact(state, surface, jid) {
+  const r = _resolveByJid(state, surface, jid);
+  return r ? { jid: r.primaryJid, slug: r.entry.slug, entry: r.entry, surface } : null;
 }
 
-// Look up a contact by its slug (linear scan; N is small).
-function _findByslug(state, slug) {
-  for (const [jid, entry] of Object.entries(state.contacts ?? {})) {
+// Look up a contact by its slug WITHIN one surface (linear scan; N small).
+function _findByslug(state, surface, slug) {
+  const bucket = state.contacts?.[surface] ?? {};
+  for (const [jid, entry] of Object.entries(bucket)) {
     if (entry?.aliasOf) continue;
     if (entry?.slug === slug) return { primaryJid: jid, entry };
   }
@@ -371,20 +469,24 @@ function _findByslug(state, slug) {
 }
 
 // Name-search: substring match (case-insensitive) on pushedName + slug.
-// Used by /egpt <verb> [persona] [name-search] to identify a target chat
-// from outside it. Returns an array of { jid, slug, entry, pushedName }
-// for primary entries only — aliases never appear in results because
-// the data they front for is already represented by the primary.
-export function findContactsByName(state, term) {
+// Searches ALL surfaces unless one is named explicitly (operator might
+// want "@e new daniel" to disambiguate by surface later — for now,
+// cross-surface is the default). Returns an array of
+// { jid, slug, entry, pushedName, surface } for primary entries only.
+export function findContactsByName(state, term, surface = null) {
   const needle = String(term ?? '').trim().toLowerCase();
   if (!needle) return [];
   const out = [];
-  for (const [jid, entry] of Object.entries(state.contacts ?? {})) {
-    if (entry?.aliasOf || !entry?.slug) continue;
-    const pn = String(entry.pushedName ?? '').toLowerCase();
-    const sl = String(entry.slug ?? '').toLowerCase();
-    if (pn.includes(needle) || sl.includes(needle)) {
-      out.push({ jid, slug: entry.slug, entry, pushedName: entry.pushedName ?? '' });
+  const surfaces = surface ? [surface] : Object.keys(state.contacts ?? {});
+  for (const surf of surfaces) {
+    const bucket = state.contacts?.[surf] ?? {};
+    for (const [jid, entry] of Object.entries(bucket)) {
+      if (entry?.aliasOf || !entry?.slug) continue;
+      const pn = String(entry.pushedName ?? '').toLowerCase();
+      const sl = String(entry.slug ?? '').toLowerCase();
+      if (pn.includes(needle) || sl.includes(needle)) {
+        out.push({ jid, slug: entry.slug, entry, pushedName: entry.pushedName ?? '', surface: surf });
+      }
     }
   }
   return out;
@@ -392,45 +494,55 @@ export function findContactsByName(state, term) {
 
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
-// Idempotent. Schema is JID-keyed; multi-JID humans get alias entries
-// pointing to a primary. Returns { state, jid, slug, entry, isNew, changed }
-// where jid is the PRIMARY jid (alias resolution already applied).
-export function ensureContact(state, jid, ctx = {}) {
-  if (!jid) return { state, jid: null, slug: null, entry: null, isNew: false, changed: false };
-  const next = { contacts: { ...(state.contacts ?? {}) } };
+// Idempotent. Schema is surface-nested + JID-keyed. Multi-JID humans
+// (within one surface) get alias entries pointing to a primary. Returns
+// { state, jid, slug, entry, surface, isNew, changed } where jid is the
+// PRIMARY jid (alias resolution already applied).
+export function ensureContact(state, surface, jid, ctx = {}) {
+  if (!surface || !KNOWN_SURFACES.includes(surface)) {
+    throw new Error(`ensureContact: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
+  }
+  if (!jid) return { state, surface, jid: null, slug: null, entry: null, isNew: false, changed: false };
+
+  // Deep-clone the touched bucket so the original state is unchanged.
+  const prevBucket = state.contacts?.[surface] ?? {};
+  const nextBucket = { ...prevBucket };
+  const next = { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
 
   // 1. JID already known (directly or as alias) → refresh pushedName on primary.
-  const resolved = _resolveByJid(state, jid);
+  const resolved = _resolveByJid(state, surface, jid);
   if (resolved) {
     const cur = resolved.entry;
     let changed = false;
     if (ctx.pushedName && cur.pushedName !== ctx.pushedName) {
-      next.contacts[resolved.primaryJid] = { ...cur, pushedName: ctx.pushedName };
+      nextBucket[resolved.primaryJid] = { ...cur, pushedName: ctx.pushedName };
       changed = true;
     }
     return {
       state: changed ? next : state,
+      surface,
       jid: resolved.primaryJid,
       slug: cur.slug,
-      entry: changed ? next.contacts[resolved.primaryJid] : cur,
+      entry: changed ? nextBucket[resolved.primaryJid] : cur,
       isNew: false,
       changed,
     };
   }
 
   // 2. New JID. Multi-JID auto-merge: does a primary entry already exist
-  //    whose slug matches our intended slug (within the same minute)?
-  //    Same-base-slug + same suffix == same contact → add as alias.
+  //    in this surface whose slug matches our intended slug (within the
+  //    same minute)? Same-base-slug + same suffix == same contact → alias.
   const firstSeen = new Date();
   const baseSlug = sanitizeSlug(ctx.slugHint)
     || sanitizeSlug(ctx.pushedName)
     || 'contact';
   const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
-  const slugMatch = _findByslug(state, candidateSlug);
+  const slugMatch = _findByslug(state, surface, candidateSlug);
   if (slugMatch) {
-    next.contacts[jid] = { aliasOf: slugMatch.primaryJid };
+    nextBucket[jid] = { aliasOf: slugMatch.primaryJid };
     return {
       state: next,
+      surface,
       jid: slugMatch.primaryJid,
       slug: slugMatch.entry.slug,
       entry: slugMatch.entry,
@@ -440,10 +552,10 @@ export function ensureContact(state, jid, ctx = {}) {
   }
 
   // 3. Brand-new contact. firstSeenAt set once, drives the slug-suffix,
-  //    never overwritten on /egpt new.
+  //    never overwritten on /e new.
   const entry = {
     slug: candidateSlug,
-    personality: 'default',
+    personality: ctx.personality ?? 'default',
     threadId: null,
     threadCreatedAt: null,
     firstSeenAt: firstSeen.toISOString(),
@@ -453,40 +565,36 @@ export function ensureContact(state, jid, ctx = {}) {
     heartbeatIntervalMin: null,
     heartbeatLastFiredAt: null,
   };
-  next.contacts[jid] = entry;
-  return { state: next, jid, slug: candidateSlug, entry, isNew: true, changed: true };
+  nextBucket[jid] = entry;
+  return { state: next, surface, jid, slug: candidateSlug, entry, isNew: true, changed: true };
 }
 
-// patchContact accepts EITHER a JID or a slug as the lookup key. The
-// patch always lands on the primary entry (aliases never carry data).
-// Returns a new state; if not found, returns the original state unchanged.
-export function patchContact(state, jidOrSlug, patch) {
+// patchContact accepts EITHER a JID or a slug as the lookup key, scoped
+// to one surface. The patch always lands on the primary entry. Returns
+// a new state; if not found, returns the original state unchanged.
+export function patchContact(state, surface, jidOrSlug, patch) {
+  if (!surface || !KNOWN_SURFACES.includes(surface)) {
+    throw new Error(`patchContact: unknown surface "${surface}"`);
+  }
+  const prevBucket = state.contacts?.[surface] ?? {};
   // First try JID lookup (preferred for new code).
-  const byJid = _resolveByJid(state, jidOrSlug);
+  const byJid = _resolveByJid(state, surface, jidOrSlug);
   if (byJid) {
-    return {
-      contacts: {
-        ...(state.contacts ?? {}),
-        [byJid.primaryJid]: { ...byJid.entry, ...patch },
-      },
-    };
+    const nextBucket = { ...prevBucket, [byJid.primaryJid]: { ...byJid.entry, ...patch } };
+    return { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
   }
   // Fall back: slug lookup (back-compat with slug-passing callers).
-  const bySlug = _findByslug(state, jidOrSlug);
+  const bySlug = _findByslug(state, surface, jidOrSlug);
   if (bySlug) {
-    return {
-      contacts: {
-        ...(state.contacts ?? {}),
-        [bySlug.primaryJid]: { ...bySlug.entry, ...patch },
-      },
-    };
+    const nextBucket = { ...prevBucket, [bySlug.primaryJid]: { ...bySlug.entry, ...patch } };
+    return { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
   }
   return state;
 }
 
 // Record that a new claude thread was just spawned for a contact.
-export function recordThread(state, jidOrSlug, threadId, nowIso = nowIsoString()) {
-  return patchContact(state, jidOrSlug, {
+export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString()) {
+  return patchContact(state, surface, jidOrSlug, {
     threadId,
     threadCreatedAt: nowIso,
     identityInjectedAt: nowIso,
@@ -543,17 +651,19 @@ export async function readIdentityBundle(personalityName, opts = {}) {
   const identity = (await readPersonality(personalityName, opts)) ?? '';
   let rules = '';
   let pointers = '';
-  try { rules    = await readFile(opts.rulesPath    ?? RULES_OPERATOR_PATH,    'utf8'); } catch {}
-  try { pointers = await readFile(opts.pointersPath ?? POINTERS_OPERATOR_PATH, 'utf8'); } catch {}
+  try { rules    = await readFile(opts.rulesPath    ?? RULES_OPERATOR_PATH,    'utf8'); }
+  catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle rules.md: ${e?.message ?? e}`); }
+  try { pointers = await readFile(opts.pointersPath ?? POINTERS_OPERATOR_PATH, 'utf8'); }
+  catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle pointers.md: ${e?.message ?? e}`); }
   return { identity, rules, pointers };
 }
 
 // Copy identity/rules/pointers into <slug-dir>/. Conversation-e sees these
 // at ./identity.md, ./rules.md, ./pointers.md. Returns the bundle for
 // callers that want to compose the announcement frame without re-reading.
-export async function installPersonaIntoSlugDir(slug, personalityName, opts = {}) {
+export async function installPersonaIntoSlugDir(surface, slug, personalityName, opts = {}) {
   const bundle = await readIdentityBundle(personalityName, opts);
-  const dir = slugDir(slug);
+  const dir = slugDir(surface, slug);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, 'identity.md'), bundle.identity, 'utf8');
   await writeFile(join(dir, 'rules.md'),    bundle.rules,    'utf8');
@@ -726,8 +836,11 @@ export async function migrateLayoutIfNeeded() {
   const entries = existsSync(oldDirRoot) ? readdirSync(oldDirRoot) : [];
   const lcEntries = entries.map(fn => ({ fn, lc: fn.toLowerCase() }));
   for (const [slug, entry] of Object.entries(state.contacts ?? {})) {
-    const newDir = slugDir(slug);
-    try { await mkdir(newDir, { recursive: true }); } catch {}
+    // This migration converts JSON → flat slug-keyed YAML. The "new"
+    // dir at this point is still the legacy flat path; the later
+    // migrateToSurfaceLayout pushes it under conversations/whatsapp/.
+    const newDir = _legacySlugDir(slug);
+    try { await mkdir(newDir, { recursive: true }); } catch (e) { console.error(`!! migrateLayoutIfNeeded mkdir(${newDir}): ${e?.message ?? e}`); }
     const safeSlug = sanitizeSlug(slug).toLowerCase();
     const jids = entry.jids ?? [];
     const jidSluglets = jids.map(j => sanitizeSlug(j).toLowerCase());

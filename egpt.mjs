@@ -2328,9 +2328,10 @@ function App() {
           try {
             const cs = _convStateCache;
             if (!cs) return null;
-            const slug = conversationsState.findContactByJid(cs, jid);
+            // WA bridge only — every JID this callback sees is a WA jid.
+            const slug = conversationsState.findContactByJid(cs, 'whatsapp', jid);
             if (!slug) return null;
-            return join(conversationsState.slugDir(slug), 'media');
+            return join(conversationsState.slugDir('whatsapp', slug), 'media');
           } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); return null; }
         },
         // Visible shell notice when a file is saved. Filters out
@@ -2838,31 +2839,36 @@ function App() {
         const cs = await _loadConvState();
         const now = Date.now();
         const tstr2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-        for (const [slug, entry] of Object.entries(cs.contacts ?? {})) {
-          if (stopped) break;
-          if (!conversationsState.shouldFireHeartbeat(entry, now)) continue;
-          if (conversationsState.isMuted(entry)) continue;
-          const personality = entry.personality || 'default';
-          const hbContent = await conversationsState.readHeartbeat(slug, personality);
-          if (!hbContent || !hbContent.trim()) continue;
-          const text = hbContent.replace(/\$\{time\}/g, tstr2);
-          const jid = entry.jids?.[0];
-          if (!jid) continue;
-          try {
-            await runDefaultBrainTurn(text, undefined, {
-              threadId: jid,
-              surface:  'wa',
-              slug,
-              name:     entry.pushedName || slug,
-            });
-            const updated = conversationsState.patchContact(
-              await _loadConvState(),
-              slug,
-              { heartbeatLastFiredAt: conversationsState.nowIsoString() },
-            );
-            await _writeConvState(updated);
-          } catch (e) {
-            sysLog(`!! heartbeat[${slug}]: ${e.message}`);
+        // Surface-nested schema: iterate each surface bucket separately.
+        // Aliases (entries with aliasOf, no slug) are skipped.
+        for (const surface of Object.keys(cs.contacts ?? {})) {
+          const bucket = cs.contacts[surface] ?? {};
+          for (const [jid, entry] of Object.entries(bucket)) {
+            if (stopped) break;
+            if (entry?.aliasOf || !entry?.slug) continue;
+            if (!conversationsState.shouldFireHeartbeat(entry, now)) continue;
+            if (conversationsState.isMuted(entry)) continue;
+            const slug = entry.slug;
+            const personality = entry.personality || 'default';
+            const hbContent = await conversationsState.readHeartbeat(slug, personality);
+            if (!hbContent || !hbContent.trim()) continue;
+            const text = hbContent.replace(/\$\{time\}/g, tstr2);
+            try {
+              await runDefaultBrainTurn(text, undefined, {
+                threadId: jid,
+                surface,
+                slug,
+                name:     entry.pushedName || slug,
+              });
+              const updated = conversationsState.patchContact(
+                await _loadConvState(),
+                surface, slug,
+                { heartbeatLastFiredAt: conversationsState.nowIsoString() },
+              );
+              await _writeConvState(updated);
+            } catch (e) {
+              sysLog(`!! heartbeat[${surface}/${slug}]: ${e.message}`);
+            }
           }
         }
       } finally { perContactBusy = false; }
@@ -4249,6 +4255,16 @@ function App() {
           sysLog(`conversations: rekeyed by JID — ${r4.migrated} primaries, ${r4.aliases} aliases (${r4.dangling} dangling without JIDs)`);
         }
       } catch (e) { sysLog(`!! jid-key migration: ${e.message}`); }
+      // Surface-layout migration: flat JID-keyed → nested by surface
+      // (operator 2026-05-21 'per-surface dir + YAML'). Moves yaml AND
+      // on-disk slug-dirs (~/.egpt/conversations/<slug>/ →
+      // ~/.egpt/conversations/whatsapp/<slug>/).
+      try {
+        const r5 = await conversationsState.migrateToSurfaceLayout();
+        if (r5 && r5.migrated != null) {
+          sysLog(`conversations: surface-layout migration — ${r5.migrated} contacts moved under whatsapp/, ${r5.dirsMoved} dirs renamed (${r5.missingDirs} missing)`);
+        }
+      } catch (e) { sysLog(`!! surface-layout migration: ${e.message}`); }
     }
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);
@@ -4260,16 +4276,16 @@ function App() {
       // only writes when an actual change is needed.
       const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
       if (selfDm) {
-        // Resolve by JID — the state is JID-keyed post-Phase-2 migration.
-        // The earlier `state.contacts[selfSlug]` lookup was a remnant of
-        // the slug-keyed schema and threw TypeError on the .personality
-        // access, which the surrounding catch swallowed → emptyState(),
-        // → next ensureContact wrote a near-empty YAML to disk → 15+
-        // contacts vanished. Use getContact() which returns the entry
-        // directly via JID resolution + alias chase.
-        const selfContact = conversationsState.getContact(state, selfDm);
+        // Resolve by JID inside the whatsapp surface bucket. Self DM is
+        // always WA (operator's own WA JID). The earlier
+        // `state.contacts[selfSlug]` lookup was a remnant of the
+        // slug-keyed schema and threw TypeError, which the surrounding
+        // catch swallowed → emptyState(), → next ensureContact wrote a
+        // near-empty YAML → 15+ contacts vanished. Use getContact()
+        // which is surface-scoped now.
+        const selfContact = conversationsState.getContact(state, 'whatsapp', selfDm);
         if (selfContact && (selfContact.entry.personality ?? 'default') === 'default') {
-          const elevated = conversationsState.patchContact(state, selfDm, {
+          const elevated = conversationsState.patchContact(state, 'whatsapp', selfDm, {
             personality: 'system',
             threadId: null,              // force fresh thread with 'system' bundle
             identityInjectedAt: null,
@@ -4383,15 +4399,27 @@ function App() {
     // crashes here with "threadCtx.threadId.includes is not a function"
     // and the streaming placeholder never resolves.
     const _tidStr = String(threadCtx.threadId ?? '');
-    const isWaContact = (
+    // Map UI-side surface tag ('wa', 'tg', 'wa-moto', etc.) → registry
+    // surface name ('whatsapp', 'telegram'). Registry only knows the
+    // full names; display strings retain their compact form.
+    const _registrySurface = (() => {
+      const s = threadCtx.surface ?? '';
+      if (s === 'whatsapp' || s === 'wa' || s.startsWith('wa-')) return 'whatsapp';
+      if (s === 'telegram' || s === 'tg' || s.startsWith('tg-')) return 'telegram';
+      // Fallback heuristic for legacy WA threads that pre-date the
+      // surface field — '@' in the threadId is a WA JID signature.
+      if (_tidStr.includes('@')) return 'whatsapp';
+      return null;
+    })();
+    const isPerContactDispatch = (
       threadCtx.threadId
       && threadCtx.threadId !== 'heartbeat'
       && threadCtx.threadId !== 'shell'
-      && (_tidStr.includes('@') || threadCtx.surface === 'wa')
+      && _registrySurface != null
     );
-    if (isWaContact) {
+    if (isPerContactDispatch) {
       _convState = await _loadConvState();
-      const r = conversationsState.ensureContact(_convState, threadCtx.threadId, {
+      const r = conversationsState.ensureContact(_convState, _registrySurface, threadCtx.threadId, {
         pushedName: threadCtx.name ?? '',
         slugHint: threadCtx.slug ?? '',
       });
@@ -4419,7 +4447,7 @@ function App() {
       //              (clean isolation), --add-dir pins the lane.
       // Legacy threads with persisted threadCwd honor that so --resume
       // can find the original jsonl.
-      const sluggedDir = conversationsState.slugDir(_convSlug);
+      const sluggedDir = conversationsState.slugDir(_registrySurface, _convSlug);
       try { await mkdir(sluggedDir, { recursive: true }); } catch {}
       const isSystemPersonality = (_convEntry.personality === 'system');
       if (isSystemPersonality) {
@@ -4545,10 +4573,10 @@ function App() {
       // Per-contact: capture the spawned threadId on first turn and
       // persist via recordThread. Subsequent turns will use this
       // threadId (--resume) so context accumulates per contact.
-      if (isWaContact && _isNewContact) {
+      if (isPerContactDispatch && _isNewContact) {
         const newThreadId = result?.optionsPatch?.sessionId;
         if (newThreadId && _convSlug) {
-          _convState = conversationsState.recordThread(_convState, _convSlug, newThreadId);
+          _convState = conversationsState.recordThread(_convState, _registrySurface, _convSlug, newThreadId);
           await _writeConvState(_convState);
         }
       }
@@ -4565,8 +4593,8 @@ function App() {
         const slugForLog = isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
         const baseDir = isSystemThread
           ? join(EGPT_HOME, 'state')
-          : (slugForLog
-              ? conversationsState.slugDir(slugForLog)
+          : (slugForLog && _registrySurface
+              ? conversationsState.slugDir(_registrySurface, slugForLog)
               : join(EGPT_HOME, 'conversations', '_unrouted'));
         const fname = isSystemThread
           ? `${_sanitizeForFilename(threadId)}.md`
@@ -4644,13 +4672,13 @@ function App() {
       // jsonl; if found at a different project-dir than we tried, derive
       // the original cwd and retry with it. Persist threadCwd on the
       // contact so subsequent spawns go straight to the right path.
-      const triedResume = !!(isWaContact && _convSlug && _convEntry?.threadId);
+      const triedResume = !!(isPerContactDispatch && _convSlug && _convEntry?.threadId);
       if (triedResume && !threadCtx._retried) {
         try {
           const found = conversationsState.findThreadJsonl(_convEntry.threadId);
           if (found?.cwd && found.cwd !== sessionOpts.cwd) {
             const cs = await _loadConvState();
-            const next = conversationsState.patchContact(cs, _convSlug, { threadCwd: found.cwd });
+            const next = conversationsState.patchContact(cs, _registrySurface, _convSlug, { threadCwd: found.cwd });
             await _writeConvState(next);
             sysLog(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
             return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
@@ -4661,7 +4689,7 @@ function App() {
       // No recovery possible. Log + notify operator via Self DM.
       // State is preserved (threadId untouched).
       sysLog(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
-      if (isWaContact && _convSlug) {
+      if (isPerContactDispatch && _convSlug) {
         try {
           const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
           if (selfDm) {
@@ -5630,13 +5658,13 @@ function App() {
               // inside runDefaultBrainTurn; result flows back to the
               // chat the same way an auto-dispatch would.
               const cs = await _loadConvState();
-              const slug = conversationsState.findContactByJid(cs, selfDm);
-              const entry = slug ? cs.contacts[slug] : null;
+              const selfContact = conversationsState.getContact(cs, 'whatsapp', selfDm);
+              const slug = selfContact?.slug ?? null;
               const ctxForTurn = {
                 threadId: selfDm,
-                surface:  'wa',
+                surface:  'whatsapp',
                 slug,
-                name:     entry?.pushedName || slug || 'self',
+                name:     selfContact?.entry?.pushedName || slug || 'self',
               };
               const reply = await runDefaultBrainTurn(prompt, () => {}, ctxForTurn);
               const replyText = String(reply ?? '').trim();
