@@ -26,6 +26,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
+import { dispatchPersonaTurn } from './dispatch.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
@@ -5993,67 +5994,6 @@ function App() {
       // Input was already logged at the top-of-submitInner echo block.
       setBusy(true);
       try {
-        // For auto_e_chats arrivals, format per operator spec:
-        // "[Name@surface (HH:MM)]: <body>". e learns chat-specific
-        // rules via /rules (one-shot inject into e's session — see
-        // slash/rules.mjs); we do NOT prepend rules every turn
-        // (wasteful — e has session memory and remembers).
-        // _personaBodyOverride bypasses formatting entirely — used by
-        // the queue drain to pass a pre-built joined-lines prompt.
-        let personaPrompt;
-        if (meta._personaBodyOverride) {
-          personaPrompt = meta._personaBodyOverride;
-        } else if (meta.autoDispatched && meta.fromWhatsApp) {
-          const idStr = String(meta.waChatId ?? '');
-          const chatType = idStr.endsWith('@g.us')
-            ? 'group'
-            : idStr === 'status@broadcast' ? 'status' : 'private';
-          personaPrompt = formatAutoDispatchLine({
-            senderName: meta.waSenderName,
-            body: decision.body,
-            ts: Date.now(),
-            surface: buildWaSurfaceTag(meta.waChatId),
-            chatType,
-            chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-          });
-        } else {
-          personaPrompt = formatPersonaPrompt(meta, decision.body);
-        }
-        // Fallback-notice: when 36f173a's any-reply→@e fallback fired
-        // (replyPersonaFallback=true from the bridge), prefix the
-        // dispatched prompt so @e knows the recipient was INFERRED
-        // (no clean persona-prefix in the quoted body), not explicitly
-        // tagged. Operator (2026-05-17): "default to e, but with a
-        // notice. in general i think it can be inferred deterministically
-        // from body." This is the notice; deterministic body-inference
-        // is a deeper follow-up.
-        if (meta.replyPersonaFallback) {
-          personaPrompt = `[reply-fallback: recipient inferred as @e — quoted body had no persona tag]\n${personaPrompt}`;
-        }
-
-        // Bridge-originated @egpt gets streaming UX: open a stream
-        // message with a 'thinking…' placeholder, debounced edits as
-        // tokens arrive, typing indicator alongside (WA), final flush
-        // on completion. Shell-originated @egpt sees the reply in
-        // items at the end (no per-bridge stream — items-mirror
-        // already broadcasts cross-surface).
-        //
-        // EXCEPT for WA auto_e_chats arrivals that are NOT a direct
-        // reply to one of e's outbound messages: those use plain
-        // bridge.send so the typing indicator doesn't spam for every
-        // group message. Direct-reply-to-e (replyPersona === 'e' or
-        // 'egpt', set by the cf77999 detection in the bridge) keeps
-        // the streaming UX — the operator/replier is engaging e
-        // specifically and the typing/edit cadence is appropriate.
-        const isReplyToE = meta.replyPersona === 'e' || meta.replyPersona === 'egpt';
-        // Stream only when there's explicit intent to engage @e (a long-press
-        // reply to one of @e's messages). Earlier (f89207b) the stream also
-        // opened for any fromMe message in auto_e_chats so operator saw a
-        // snappy "⌛ thinking…" placeholder — but when @e returned silence,
-        // the placeholder appeared briefly and then got revoked, producing a
-        // visible flicker. Operator (2026-05-18): "if not necessary i
-        // wouldn't even reply" — prefer invisible silence over flicker.
-        const useWaStream = meta.fromWhatsApp && (!meta.autoDispatched || isReplyToE);
         // Persona prefix from siblings registry: name + body_emoji are
         // both registry-derived so @e ↔ 🐶 e (haiku), @egpt ↔ 🧠 egpt
         // (infrastructure), or whatever the operator wires. Falls back
@@ -6063,119 +6003,28 @@ function App() {
         const personaName = decision.name ?? 'egpt';
         const personaCfg  = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
         const personaEmoji = personaCfg.body_emoji ?? personaCfg.emoji ?? EGPT_PERSONA_EMOJI;
-        const tgPrefix = `${personaEmoji} <b>${personaName}</b>\n`;
-        const waPrefix = `${personaEmoji} ${personaName}\n`;
-        // Operator (2026-05-21): drop the "⌛ thinking…" placeholder.
-        // Reasoning: when reply is silence (`…`), the placeholder
-        // appears then has to be cancelled — visible flicker that
-        // makes things FEEL sluggish even when the SDK is replying
-        // in ~1-2s. Cleaner: no placeholder. Reply lands when ready,
-        // sent as a plain message via bridge.send below. Tradeoff:
-        // no streaming token-by-token UX, but with the SDK brain
-        // the latency is short enough that streaming wasn't adding
-        // much.
-        const tgStream = null;
-        const waStream = null;
-
-        // Build thread context for the per-thread conversation log.
-        // For WA, the thread is the chat JID with decorative slug/name.
-        // For TG, the chat id with no slug today. For shell, just shell.
-        const threadCtx = meta.fromWhatsApp
-          ? {
-              threadId: meta.waChatId ?? 'wa-unknown',
-              surface:  meta.waClientLabel ?? 'wa',
-              slug:     waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? null,
-              name:     waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-            }
-          : meta.fromTelegram
-          ? { threadId: meta.telegramChatId ?? 'tg-unknown', surface: 'tg' }
-          : { threadId: 'shell', surface: 'shell' };
-        const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
-          if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
-          if (waStream) waStream.update(`${waPrefix}${partial}`);
-        }, threadCtx);
-
-        // Polite-ack filter (per /rules in slash/rules.mjs): a reply
-        // Silence protocol (per rules.md + e_identity.md): a reply of
-        // literal '...' or '…' is the brain's signed contract to stay
-        // silent. Drop without sending to any bridge / rendering /
-        // mirroring. Log for audit so operator can verify @e is alive
-        // and exercising silence (vs hung).
-        //
-        // Per operator (2026-05-19): NO heuristic filters on model
-        // output (no verbalized-skip patterns, no parenthetical-aside
-        // detector, no self-narration regex). The rules tell @e how to
-        // behave; if the brain produces leaky text, the fix is in the
-        // rules / identity, not in code pattern-matching. Trust the
-        // model; don't second-guess its output.
-        const trimmedReply = reply.trim();
-        // Treat empty reply as silence too — runDefaultBrainTurn returns
-        // '' when an error was silenced (e.g. self-healed stale threadId,
-        // or any other claude failure routed to /log instead of chat).
-        if (trimmedReply === '' || trimmedReply === '...' || trimmedReply === '…') {
-          if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-          if (waStream) {
-            if (typeof waStream.cancel === 'function') {
-              await waStream.cancel().catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-            } else {
-              await waStream.finish(`${waPrefix}…`).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-            }
-          }
-          const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-          logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
-          return;
-        }
-
-        // Final delivery: prefer stream.finish() so the placeholder
-        // message becomes the final reply (rather than us sending a
-        // second message). Fallback to bridge.send() for surfaces
-        // that didn't have streamMessage (or weren't engaged).
-        if (tgStream) {
-          await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
-        } else if (meta.fromTelegram && bridgeRef.current) {
-          bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
-            { chatId: meta.telegramChatId });
-        }
-        if (waStream) {
-          await waStream.finish(`${waPrefix}${reply}`);
-          // Defensive: if the streaming path silently failed (initial
-          // send rate-limited, WS blipped, edit rejected, etc) the user
-          // sees nothing on WA. Fall back to a plain send; if THAT also
-          // returns null (bridge.send swallows errors and returns null
-          // on failure), surface to the operator's shell so the human
-          // knows their reply didn't reach the chat. Without this both
-          // failure paths log to /log only — invisible by default.
-          if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
-            const r = await waBridgeRef.current.send(
-              `${personaEmoji} ${personaName}: ${reply}`,
-              { chatId: meta.waChatId },
-            );
-            if (!r) {
-              const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
-              // errOut, not sysOut: WA is what's failing — routing the
-              // error back through the same broken bridge would just
-              // generate a second silent failure. Keep it shell-local.
-              errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
-            }
-          }
-        } else if (meta.fromWhatsApp && waBridgeRef.current) {
-          const r = await waBridgeRef.current.send(
-            `${personaEmoji} ${personaName}: ${reply}`,
-            { chatId: meta.waChatId },
-          );
-          if (!r) {
-            errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
-            // Activity log: bridge.send failed. The earlier REPLY entry
-            // from runDefaultBrainTurn reflected brain completion, not
-            // delivery — append a SEND-FAIL so the grep-able timeline
-            // shows the truth. (Codex review 2026-05-21: REPLY landed
-            // before bridge confirmation, misleading on failure.)
-            try {
-              await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
-                `${new Date().toISOString()}\tSEND-FAIL\twa/${meta.waChatId}\twa bridge.send returned null\n`);
-            } catch (e) { console.error(`!! activity SEND-FAIL: ${e?.message ?? e}`); }
-          }
-        }
+        const bridgeForReply = meta.fromWhatsApp ? waBridgeRef.current
+          : meta.fromTelegram ? bridgeRef.current
+          : null;
+        const turn = await dispatchPersonaTurn({
+          bridge: bridgeForReply,
+          buildWaSurfaceTag,
+          decision,
+          errOut,
+          formatAutoDispatchLine,
+          formatPersonaPrompt,
+          getWaChatName: (chatId) => waBridgeRef.current?.getChatName?.(chatId) ?? null,
+          getWaChatSlug: (chatId) => waBridgeRef.current?.getChatSlug?.(chatId) ?? null,
+          logOut,
+          mdToTgHtml,
+          meta,
+          personaEmoji,
+          personaName,
+          runDefaultBrainTurn,
+          stateDir: EGPT_HOME,
+        });
+        if (turn.kind === 'silence') return;
+        const reply = turn.reply;
 
         if (meta.observeOnly) {
           // Observed-chat invocation: reply went to the originating
