@@ -72,6 +72,29 @@ function _legacySlugDir(slug) {
   return join(homedir(), '.egpt', 'conversations', sanitizeSlug(slug));
 }
 
+// system-e shared dir. All operator-DM contacts with personality='system'
+// (WA Self DM, TG operator-bot-DM, future surfaces) share ONE conversation
+// thread and ONE transcript file living here. Operator (2026-05-21):
+// "system-e is a same conversation thread" across surfaces — distinct from
+// per-chat conversation-e which stays surface-scoped under whatsapp/, etc.
+export const SYSTEM_SLUG_DIR = join(homedir(), '.egpt', 'conversations', '_system', 'system-e');
+
+// Shared system-e thread state — sits at the YAML root, sibling to
+// `contacts:`. All system-personality dispatches read from / write to here
+// instead of the per-contact threadId field.
+//
+//   system_thread:
+//     threadId: <claude session id>
+//     threadCreatedAt: <iso>
+//     identityInjectedAt: <iso>
+//     threadCwd: <override path; usually null = homedir>
+export function getSystemThread(state) {
+  return state?.system_thread ?? null;
+}
+export function setSystemThread(state, patch) {
+  return { ...(state ?? {}), system_thread: { ...(state?.system_thread ?? {}), ...patch } };
+}
+
 // Per-JID media directory the bridge writes to (unchanged; for
 // permissioning purposes we add it to conversation-e's --add-dir set).
 export function jidMediaDir(jid) {
