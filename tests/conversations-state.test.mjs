@@ -185,6 +185,31 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     expect(s2.contacts[WA].j.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
     expect(s2.contacts[WA].j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
   });
+
+  // Regression: root fields (system_thread, etc.) must survive contact
+  // mutations. Earlier the rebuild `{ contacts: ... }` was dropping
+  // system_thread on every non-system contact dispatch, wiping the
+  // shared system-e memory. Caught by Codex review 2026-05-21.
+  it('patchContact preserves root state fields (system_thread, etc.)', () => {
+    const s = {
+      system_thread: { threadId: 'sys-thr-xyz', threadCreatedAt: '2026-05-21T22:00:00.000Z' },
+      contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default' } } },
+    };
+    const s2 = patchContact(s, WA, 'j', { personality: 'serious' });
+    expect(s2.system_thread).toBeDefined();
+    expect(s2.system_thread.threadId).toBe('sys-thr-xyz');
+  });
+  it('ensureContact preserves root state fields', () => {
+    const s = {
+      system_thread: { threadId: 'sys-thr-zzz' },
+      _meta: { somethingElseAtRoot: true },
+      contacts: { whatsapp: {} },
+    };
+    const r = ensureContact(s, WA, '99@lid', { slugHint: 'newguy' });
+    expect(r.state.system_thread).toBeDefined();
+    expect(r.state.system_thread.threadId).toBe('sys-thr-zzz');
+    expect(r.state._meta).toEqual({ somethingElseAtRoot: true });
+  });
 });
 
 describe('findContactsByName (cross-surface name search)', () => {
