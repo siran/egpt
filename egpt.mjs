@@ -5,7 +5,7 @@ import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch } from 'node:fs';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -7291,11 +7291,44 @@ writePidfile();
 
 if (HEADLESS) {
   // Ink wants tty-like stdin/stdout. Stub both so the render call
-  // doesn't crash on setRawMode() / cursor positioning. ANSI escapes
-  // end up in headless.log — ugly but harmless; the canonical record
-  // is the room .md, chats-cache.json, and .media-index.json files
-  // the bridges write directly. This log is just post-mortem.
-  const stdoutLog = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  // doesn't crash on setRawMode() / cursor positioning. Ink emits
+  // ANSI escape sequences (cursor save/restore, clear-line, alt-screen
+  // mode) on every redraw — when the destination is a plain file these
+  // pollute the log AND trip VS Code's ambiguous-unicode warning.
+  // Strip them on the way out + collapse the consecutive duplicate
+  // lines Ink's churn produces. Operator (2026-05-21).
+  const rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  // CSI sequences (\x1b[...letter), OSC (\x1b]...\x07 or \x1b\\), and
+  // 2-char designation escapes (\x1b(B etc.).
+  const ANSI_REGEX = /\x1b\[[\d;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z]/g;
+  let _lastNonEmptyLine = '';
+  let _pendingTail = '';
+  const stdoutLog = new Writable({
+    write(chunk, enc, cb) {
+      const str = (typeof chunk === 'string') ? chunk : chunk.toString('utf8');
+      const cleaned = (_pendingTail + str).replace(ANSI_REGEX, '');
+      // Buffer the final partial line so we don't dedupe mid-write.
+      const lastNl = cleaned.lastIndexOf('\n');
+      const complete = lastNl >= 0 ? cleaned.slice(0, lastNl + 1) : '';
+      _pendingTail = lastNl >= 0 ? cleaned.slice(lastNl + 1) : cleaned;
+      if (!complete) { cb(); return; }
+      const lines = complete.split('\n');
+      const out = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i === lines.length - 1 && line === '') { out.push(''); continue; }
+        // Suppress consecutive identical non-empty lines (Ink redraw churn).
+        if (line !== '' && line === _lastNonEmptyLine) continue;
+        out.push(line);
+        if (line !== '') _lastNonEmptyLine = line;
+      }
+      rawFile.write(out.join('\n'), cb);
+    },
+    final(cb) {
+      if (_pendingTail) rawFile.write(_pendingTail);
+      rawFile.end(cb);
+    },
+  });
   stdoutLog.isTTY = true;
   stdoutLog.columns = 120;
   stdoutLog.rows = 40;
