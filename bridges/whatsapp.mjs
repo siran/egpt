@@ -278,7 +278,8 @@ export async function startWhatsAppBridge({
   try {
     const fetched = await fetchLatestBaileysVersion();
     version = fetched.version;
-  } catch (_) {
+  } catch (e) {
+    console.error(`!! whatsapp.mjs fetchLatestBaileysVersion: ${e?.message ?? e}`);
     // Offline or fetch blocked — baileys will use its default fallback.
     version = undefined;
   }
@@ -397,7 +398,7 @@ export async function startWhatsAppBridge({
         }
       }
     }
-  } catch (_) { /* corrupt cache file is non-fatal — just start fresh */ }
+  } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* corrupt cache file is non-fatal — just start fresh */ }
   let _msgBodyDirty = false;
   let _msgBodySaveTimer = null;
   function _scheduleMsgBodySave() {
@@ -409,7 +410,7 @@ export async function startWhatsAppBridge({
       try {
         const obj = Object.fromEntries(_msgBodyById.entries());
         writeFileSync(MSG_BODY_CACHE_PATH, JSON.stringify(obj), { mode: 0o600 });
-      } catch (_) { /* swallow — best-effort persistence */ }
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* swallow — best-effort persistence */ }
     }, 5_000);
   }
   function _rememberMsgBody(keyId, body) {
@@ -465,13 +466,13 @@ export async function startWhatsAppBridge({
     try {
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
       base = idx[msgId]?.base ?? null;
-    } catch (_) { /* no index yet */ }
+    } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* no index yet */ }
     if (!base) return rawText;
     const txtPath = join(dir, `${base}.transcript.txt`);
     if (!existsSync(txtPath)) return rawText;
     let transcript = null;
     try { transcript = readFileSync(txtPath, 'utf8').trim(); }
-    catch (_) { return rawText; }
+    catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); return rawText; }
     if (!transcript) return rawText;
     // Append after the placeholder; preserve quoted-preview (↳) prefix
     // if textOf already glued one on. Pattern in rawText is either
@@ -501,7 +502,7 @@ export async function startWhatsAppBridge({
     try {
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
       imgPath = idx[msgId]?.path ?? null;
-    } catch (_) { /* no index yet */ }
+    } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* no index yet */ }
     if (!imgPath || !existsSync(imgPath)) return rawText;
     return `${rawText} path: ${imgPath}`;
   }
@@ -529,7 +530,7 @@ export async function startWhatsAppBridge({
       const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
       base = idx[msgId]?.base ?? null;
       vidPath = idx[msgId]?.path ?? null;
-    } catch (_) { /* no index yet */ }
+    } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* no index yet */ }
     if (!base) return rawText;
     const extras = [];
     if (vidPath && existsSync(vidPath)) extras.push(`path: ${vidPath}`);
@@ -540,7 +541,7 @@ export async function startWhatsAppBridge({
       try {
         const transcript = readFileSync(txtPath, 'utf8').trim();
         if (transcript) extras.push(`transcript: ${transcript}`);
-      } catch (_) {}
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     }
     if (extras.length === 0) return rawText;
     return `${rawText} ${extras.join(' ')}`;
@@ -622,7 +623,7 @@ export async function startWhatsAppBridge({
         }
       }
     }
-  } catch (_) { /* corrupt — start empty */ }
+  } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* corrupt — start empty */ }
 
   let _reactionsWriteTimer = null;
   function _scheduleReactionsWrite() {
@@ -637,7 +638,7 @@ export async function startWhatsAppBridge({
         const obj = Object.fromEntries(all);
         await fs.mkdir(dirname(REACTION_COUNTS_PATH), { recursive: true });
         await fs.writeFile(REACTION_COUNTS_PATH, JSON.stringify(obj, null, 2), { mode: 0o600 });
-      } catch (_) { /* best-effort */ }
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* best-effort */ }
     }, 2_000);
     _reactionsWriteTimer.unref?.();
   }
@@ -721,7 +722,7 @@ export async function startWhatsAppBridge({
         }
       }
     }
-  } catch (_) { /* corrupt / unreadable — fall through to empty */ }
+  } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* corrupt / unreadable — fall through to empty */ }
 
   // Debounced write. Many messages can arrive in a burst; we don't
   // need to fsync after each one. 2s lets a burst settle, then one
@@ -739,7 +740,7 @@ export async function startWhatsAppBridge({
         const trimmed = all.slice(0, CHATS_CACHE_CAP);
         await fs.mkdir(dirname(CHATS_CACHE_PATH), { recursive: true });
         await fs.writeFile(CHATS_CACHE_PATH, JSON.stringify(trimmed, null, 2), { mode: 0o600 });
-      } catch (_) { /* best-effort; in-memory state still works */ }
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* best-effort; in-memory state still works */ }
     }, 2_000);
     _chatsWriteTimer.unref?.();
   }
@@ -888,9 +889,9 @@ export async function startWhatsAppBridge({
       try {
         const { id, ts } = JSON.parse(line);
         if (id) _sentIds.set(id, ts ?? 0);
-      } catch (_) { /* skip malformed lines */ }
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* skip malformed lines */ }
     }
-  } catch (_) { /* file missing on first run; created lazily by rememberSent */ }
+  } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* file missing on first run; created lazily by rememberSent */ }
   function rememberSent(id) {
     if (!id) return;
     if (_sentIds.has(id)) return;                  // dedupe re-tracks
@@ -898,7 +899,7 @@ export async function startWhatsAppBridge({
     _sentIds.set(id, ts);
     // Async append; in-memory map is already updated above so
     // concurrent reads see the new id immediately.
-    fs.appendFile(SENT_LOG, JSON.stringify({ id, ts }) + '\n').catch(() => {});
+    fs.appendFile(SENT_LOG, JSON.stringify({ id, ts }) + '\n').catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
   }
 
   // Override baileys' default auto-extraction of @<digits> patterns
@@ -951,7 +952,7 @@ export async function startWhatsAppBridge({
         // onLog for backwards compat with older hosts.
         qrcode.generate(qr, { small: true }, (qrText) => {
           const msg = 'whatsapp: scan this QR (WhatsApp → Settings → Linked devices → Link a device):\n' + qrText;
-          if (typeof onQR === 'function') { try { onQR(qrText, msg); return; } catch (_) {} }
+          if (typeof onQR === 'function') { try { onQR(qrText, msg); return; } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); } }
           log(msg);
         });
       }
@@ -1252,7 +1253,7 @@ export async function startWhatsAppBridge({
         ? mediaDirForChat(chatJid)
         : null;
       if (resolved && typeof resolved === 'string') return resolved;
-    } catch (_) {}
+    } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     return join(MEDIA_DIR, _sanitiseChatJid(chatJid));
   };
   function _sanitiseChatJid(jid) {
@@ -1313,7 +1314,7 @@ export async function startWhatsAppBridge({
     } catch { return {}; }
   }
   async function _writeMediaIndex(dir, idx) {
-    try { await fs.writeFile(join(dir, '.media-index.json'), JSON.stringify(idx, null, 2)); } catch (_) {}
+    try { await fs.writeFile(join(dir, '.media-index.json'), JSON.stringify(idx, null, 2)); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
   }
   // Spawn a command and resolve when it exits 0; reject otherwise.
   // stdout is piped to capture but unused by transcribe today; stderr is
@@ -1492,7 +1493,7 @@ export async function startWhatsAppBridge({
       // truncated slug doesn't carry it all (the slug is capped at
       // 40 chars; a 200-char caption deserves the full record).
       if (caption && caption.length > 40) {
-        try { await fs.writeFile(join(dir, `${base}.txt`), caption); } catch (_) {}
+        try { await fs.writeFile(join(dir, `${base}.txt`), caption); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
       // Update the index. Stores enough to identify and locate the
       // file later (delete handler glues msgId → filename).
@@ -1556,7 +1557,7 @@ export async function startWhatsAppBridge({
         transcriptPath: transcript?.path ?? null,
         transcript: transcript?.text ?? null,
         keyframePath,
-      }); } catch (_) {}
+      }); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
@@ -1588,7 +1589,7 @@ export async function startWhatsAppBridge({
       // Move sidecar .txt if present.
       const sidecar = join(dir, `${entry.base}.txt`);
       if (existsSync(sidecar)) {
-        try { await fs.rename(sidecar, join(deletedDir, `${entry.base}.txt`)); } catch (_) {}
+        try { await fs.rename(sidecar, join(deletedDir, `${entry.base}.txt`)); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
       // Update index: mark deleted, point at new path.
       idx[targetId] = { ...entry, path: newPath, deleted: true, deletedAt: Date.now() };
@@ -1604,7 +1605,7 @@ export async function startWhatsAppBridge({
           sizeBytes: 0, deleted: true,
           msgKey: proto.key, msgRaw: null,
         });
-      } catch (_) {}
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       return newPath;
     } catch (e) {
       log(`media-revoke move failed (${targetId} in ${chatJid}): ${e.message}`);
@@ -1937,7 +1938,7 @@ export async function startWhatsAppBridge({
       });
       if (shouldCaptureChatId) {
         chatIdNotified = true;
-        try { onChatId?.(chatJid); } catch (_) {}
+        try { onChatId?.(chatJid); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
     }
 
@@ -2049,7 +2050,7 @@ export async function startWhatsAppBridge({
   // server-side. Falls back to the bare JID when we can't reach it.
   async function _groupSubject(jid) {
     try { return (await sock?.groupMetadata?.(jid))?.subject ?? null; }
-    catch (_) { return null; }
+    catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); return null; }
   }
 
   // One-shot proactive refresh of every cached group's name against
@@ -2132,7 +2133,7 @@ export async function startWhatsAppBridge({
         const creationMs = (Number(meta?.creation) || 0) * 1000;
         _recordChat({ jid, isGroup: true, name: subject, ts: creationMs, kind: 'creation' });
       }
-    } catch (_) { /* offline / not yet connected — fall through with what we have */ }
+    } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* offline / not yet connected — fall through with what we have */ }
 
     // Filter + sort. Pinned chats float to the top (sorted among
     // themselves by pin timestamp desc — most recent pin first,
@@ -2448,7 +2449,7 @@ export async function startWhatsAppBridge({
           handle.state = 'retired';
           _liveOracles.delete(target);
           try { await _timeBound(sock.sendMessage(target, { delete: msgKey }), 'oracle delete'); }
-          catch (_) {}
+          catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
         },
       };
       _liveOracles.set(target, handle);
@@ -2554,7 +2555,7 @@ export async function startWhatsAppBridge({
     async stopAllOracles() {
       const handles = [..._liveOracles.values()];
       for (const h of handles) {
-        try { await h.stop(); } catch (_) {}
+        try { await h.stop(); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
       return handles.length;
     },
@@ -2722,13 +2723,13 @@ export async function startWhatsAppBridge({
 
       const refreshTyping = () => {
         if (finished) return;
-        sock.sendPresenceUpdate?.('composing', target).catch(() => {});
+        sock.sendPresenceUpdate?.('composing', target).catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
         if (typingTimer) clearTimeout(typingTimer);
         typingTimer = setTimeout(refreshTyping, typingRefreshMs);
       };
       const stopTyping = () => {
         if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
-        sock.sendPresenceUpdate?.('paused', target).catch(() => {});
+        sock.sendPresenceUpdate?.('paused', target).catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
       };
 
       // Deferred initial send — operator (2026-05-19): when @e returns
@@ -2770,7 +2771,7 @@ export async function startWhatsAppBridge({
         // No initial sent yet — first chunk becomes the initial send
         // (deferred-placeholder model). Subsequent flushes edit it.
         if (!msgKey) {
-          _doInitialSend(text).catch(() => {});
+          _doInitialSend(text).catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
           return;
         }
         _timeBound(_safeSend(target, { edit: msgKey, text }), 'stream edit')
@@ -2917,7 +2918,7 @@ export async function startWhatsAppBridge({
           const trimmed = all.slice(0, CHATS_CACHE_CAP);
           mkdirSync(dirname(CHATS_CACHE_PATH), { recursive: true });
           writeFileSync(CHATS_CACHE_PATH, JSON.stringify(trimmed, null, 2), { mode: 0o600 });
-        } catch (_) {}
+        } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
       if (_reactionsWriteTimer) {
         clearTimeout(_reactionsWriteTimer);
@@ -2929,7 +2930,7 @@ export async function startWhatsAppBridge({
           const obj = Object.fromEntries(all);
           mkdirSync(dirname(REACTION_COUNTS_PATH), { recursive: true });
           writeFileSync(REACTION_COUNTS_PATH, JSON.stringify(obj, null, 2), { mode: 0o600 });
-        } catch (_) {}
+        } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
       if (_msgBodySaveTimer) {
         clearTimeout(_msgBodySaveTimer);
@@ -2940,9 +2941,9 @@ export async function startWhatsAppBridge({
         try {
           const obj = Object.fromEntries(_msgBodyById.entries());
           writeFileSync(MSG_BODY_CACHE_PATH, JSON.stringify(obj), { mode: 0o600 });
-        } catch (_) {}
+        } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       }
-      try { sock?.end?.(undefined); } catch (_) {}
+      try { sock?.end?.(undefined); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       // Restore the four console methods we patched at start. If
       // something else patched between then and now, the ordering
       // will be slightly off, but in practice we're the only

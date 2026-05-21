@@ -54,7 +54,7 @@ const SLASH_REGISTRY = new Map();
 {
   const slashDir = join(APP_DIR, 'slash');
   let entries = [];
-  try { entries = readdirSync(slashDir); } catch (_) { /* dir missing — empty registry */ }
+  try { entries = readdirSync(slashDir); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* dir missing — empty registry */ }
   for (const f of entries) {
     if (!f.endsWith('.mjs')) continue;
     try {
@@ -1247,7 +1247,7 @@ async function loadAllRooms() {
         if (norm) sessions[sname] = norm;
       }
       out[name] = sessions;
-    } catch (_) { /* skip malformed */ }
+    } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* skip malformed */ }
   }
   return out;
 }
@@ -1260,7 +1260,7 @@ async function saveRoomToDisk(name, sessionsMap) {
 }
 
 async function deleteRoomFile(name) {
-  try { await unlink(join(ROOMS_DIR, `${name}.yaml`)); } catch (_) {}
+  try { await unlink(join(ROOMS_DIR, `${name}.yaml`)); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
 }
 
 // On-screen time only (HH:MM + short tz). Date is shown via day-change
@@ -2139,7 +2139,7 @@ function App() {
         const tid = busTargetIdRef.current;
         if (tid) {
           bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-            ts: Date.now(), to: BUS_NODE_ID }).catch(() => {});
+            ts: Date.now(), to: BUS_NODE_ID }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
           setTimeout(() => startTgBridge(), 1500);
           return;
         }
@@ -2331,7 +2331,7 @@ function App() {
             const slug = conversationsState.findContactByJid(cs, jid);
             if (!slug) return null;
             return join(conversationsState.slugDir(slug), 'media');
-          } catch (_) { return null; }
+          } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); return null; }
         },
         // Visible shell notice when a file is saved. Filters out
         // status@broadcast (the WA Status feed — every contact's
@@ -2359,7 +2359,7 @@ function App() {
           try {
             const name = bridge?.getChatName?.(chatJid);
             if (name) chatLabel = name;
-          } catch (_) {}
+          } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
           // Wrap the displayed path in OSC 8 so terminals that support
           // hyperlinks (Windows Terminal, iTerm2, VS Code, GNOME
           // Terminal, etc.) let the operator Ctrl/Cmd-click to open
@@ -2618,7 +2618,7 @@ function App() {
           try {
             await writeConfig(saved);
             logOut(`whatsapp: outbound chat ${id} captured and saved`);
-          } catch (_) {}
+          } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
         },
       });
       waBridgeRef.current = bridge;
@@ -2815,7 +2815,7 @@ function App() {
           try {
             const entry = `\n## ${new Date().toISOString()}\n\n${trimmed}\n`;
             await appendFile(join(EGPT_HOME, 'e-diary.md'), entry);
-          } catch (_) { /* diary best-effort; never block the tick */ }
+          } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* diary best-effort; never block the tick */ }
         }
       } catch (e) {
         sysLog(`!! heartbeat: dispatch failed — ${e.message}`);
@@ -2904,7 +2904,7 @@ function App() {
               }
             }
           }
-        } catch (_) {}
+        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
       } catch (e) {
         sysLog(`!! play-rotate: ${e.message}`);
       }
@@ -2927,7 +2927,7 @@ function App() {
     bus.postEvent(tid, {
       type: 'sessions-update', from: BUS_NODE_ID, ts: Date.now(),
       sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
-    }).catch(() => {});
+    }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
   }, [sessions]);
 
   // Broadcast our polling state on change so /telegram (no arg) on peers
@@ -2938,7 +2938,7 @@ function App() {
     bus.postEvent(tid, {
       type: 'telegram-status', from: BUS_NODE_ID, ts: Date.now(),
       polling: tgPolling,
-    }).catch(() => {});
+    }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
   }, [tgPolling]);
 
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
@@ -3048,7 +3048,7 @@ function App() {
             persistedRoomsRef.current.delete(name);
           }
         }
-      })().catch(() => {});
+      })().catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
     }, 500);
     return () => clearTimeout(t);
   }, [roomSessionsMap]);
@@ -3874,7 +3874,7 @@ function App() {
           const oldName = BUS_NODE_ID;
           const tid = busTargetIdRef.current;
           if (tid && oldName !== newName) {
-            try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (_) {}
+            try { await bus.postEvent(tid, { type: 'node-offline', from: oldName, ts: Date.now() }); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
           }
           BUS_NODE_ID = newName;
           SURFACE_TAG = newName;
@@ -3886,7 +3886,7 @@ function App() {
                 polling: tgPolling,
                 wa: !!waBridgeRef.current,
               });
-            } catch (_) {}
+            } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
           }
         },
         // Batch 16 additions
@@ -4069,7 +4069,7 @@ function App() {
       try {
         const name = waBridgeRef.current?.getChatName?.(chat);
         if (name) where = `"${name}" (${chat})`;
-      } catch (_) {}
+      } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
       return `[${stamp}, in ${kind} ${where}, ${user} said:]\n${body}`;
     }
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
@@ -4122,7 +4122,10 @@ function App() {
       if (!existsSync(p)) return {};
       const m = JSON.parse(readFileSync(p, 'utf8'));
       return (m && typeof m === 'object') ? m : {};
-    } catch (_) { return {}; }
+    } catch (e) {
+      sysLog(`!! _readConversationsTable: ${e?.stack ?? e?.message ?? e}`);
+      return {};
+    }
   }
   function _writeConversationsTable(table) {
     try {
@@ -4132,7 +4135,7 @@ function App() {
         join(dir, 'conversations.json'),
         JSON.stringify(table, null, 2) + '\n',
       );
-    } catch (_) { /* best-effort */ }
+    } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* best-effort */ }
   }
   function _upsertConversationEntry(threadId, ctx = {}) {
     if (!threadId || threadId === 'heartbeat' || threadId === 'shell') return;
@@ -4278,7 +4281,14 @@ function App() {
         }
       }
       return state;
-    } catch (_) { return conversationsState.emptyState(); }
+    } catch (e) {
+      // CRITICAL: this catch previously swallowed a TypeError that nuked
+      // the conversations registry (state.contacts[selfSlug] under
+      // JID-keyed schema). Log loudly so any future wipe-class bug
+      // surfaces immediately instead of silently emptying the YAML.
+      sysLog(`!! _loadConvState: ${e?.stack ?? e?.message ?? e}`);
+      return conversationsState.emptyState();
+    }
   }
 
   async function _writeConvState(state) {
@@ -4322,7 +4332,7 @@ function App() {
       // operator can watch the streaming response. CDP + OS-level
       // — see runBrainTurn comment block for the why-two-layers.
       if (targetId) {
-        cdp.activateTarget(targetId).catch(() => {});
+        cdp.activateTarget(targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
         _osFocusBrainChrome();
       }
       try {
@@ -4610,7 +4620,7 @@ function App() {
           '',
         ].join('\n');
         await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
-      } catch (_) { /* conversation log best-effort; never block the turn */ }
+      } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* conversation log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
       if (newSessionId && !isWaContact) {
         // Persist new session_id into default_brain ONLY for system
@@ -4645,7 +4655,7 @@ function App() {
             sysLog(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
             return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
           }
-        } catch (_) { /* recovery best-effort */ }
+        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* recovery best-effort */ }
       }
 
       // No recovery possible. Log + notify operator via Self DM.
@@ -4671,7 +4681,7 @@ function App() {
             const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
             await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
           }
-        } catch (_) {}
+        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
       }
       return '';
     }
@@ -4843,7 +4853,7 @@ function App() {
     if (!identity) return '';
     sysOut(`(installing persona into @e…)`);
     if (sessionOpts.targetId && brain.urlMatch) {
-      cdp.activateTarget(sessionOpts.targetId).catch(() => {});
+      cdp.activateTarget(sessionOpts.targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
       _osFocusBrainChrome();
     }
     let captured = '';
@@ -4874,7 +4884,7 @@ function App() {
             const next = recordSession(cur, newSessionId, { type: dbCfg.type ?? 'claude-code' });
             await persistDefaultBrainState(next);
           }
-        } catch (_) { /* best-effort persist */ }
+        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* best-effort persist */ }
       }
       if (final) {
         setItems(p => [...p, {
@@ -4909,7 +4919,7 @@ function App() {
     // page sits behind another window and the model never sees it
     // until the operator clicks Chrome by hand.
     if (brain.urlMatch && opts.targetId) {
-      cdp.activateTarget(opts.targetId).catch(() => {});
+      cdp.activateTarget(opts.targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
       _osFocusBrainChrome();
     }
     const setupMessage = `... system restarted, new persona installed ...\n\n${content}`;
@@ -5042,7 +5052,7 @@ function App() {
     //      app — CDP alone often can't break Windows' SetForegroundWindow
     //      restrictions, so the OS path actually clicks Chrome forward.
     if (brain.urlMatch && opts.targetId) {
-      cdp.activateTarget(opts.targetId).catch(() => {});
+      cdp.activateTarget(opts.targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
       _osFocusBrainChrome();
     }
 
@@ -5548,7 +5558,7 @@ function App() {
           role: 'shell', user: utteranceUser, body: text,
           ...(client ? { client } : {}),
           ...(via ? { via } : {}),
-        }).catch(() => {});
+        }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
       }
     }
 
@@ -5916,12 +5926,12 @@ function App() {
         // '' when an error was silenced (e.g. self-healed stale threadId,
         // or any other claude failure routed to /log instead of chat).
         if (trimmedReply === '' || trimmedReply === '...' || trimmedReply === '…') {
-          if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(() => {});
+          if (tgStream) await tgStream.finish(`${tgPrefix}…`).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
           if (waStream) {
             if (typeof waStream.cancel === 'function') {
-              await waStream.cancel().catch(() => {});
+              await waStream.cancel().catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
             } else {
-              await waStream.finish(`${waPrefix}…`).catch(() => {});
+              await waStream.finish(`${waPrefix}…`).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
             }
           }
           const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
@@ -6014,7 +6024,7 @@ function App() {
               type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
               session: 'egpt', body: reply,
               ...(via ? { via } : {}),
-            }).catch(() => {});
+            }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
           }
         }
       } finally {
@@ -6151,7 +6161,7 @@ function App() {
               type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
               session: 'wren', body: reply,
               ...(via ? { via } : {}),
-            }).catch(() => {});
+            }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
           }
         }
       } finally {
@@ -6235,7 +6245,7 @@ function App() {
           bus.postEvent(tid, {
             type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
             role: 'shell', session: recipient, body: reply,
-          }).catch(() => {});
+          }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
         }
       }
     }
@@ -6400,7 +6410,7 @@ function App() {
           '## result',
           r.text || '(empty)',
         ].filter(Boolean).join('\n'));
-      } catch (_) {}
+      } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
       if (r.error) { log(`!! butler: ${r.error}`); }
       else { log(`butler-e done (${r.durationMs}ms, ${r.text.length} chars)`); }
       // Optional relay: dispatch butler's output as a system turn
@@ -7184,7 +7194,7 @@ const _exitClean = async (code = 0) => {
   // a reachable network; if the WS was already dead it's just dead
   // wait. process.on('exit') below catches synchronous-exit paths
   // (uncaught throws, etc.) where we can't await.
-  try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
+  try { await new Promise(r => setTimeout(r, 800)); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
   if (!HEADLESS) writeLastLogonNow();
   clearPidfile();
   process.exit(code);

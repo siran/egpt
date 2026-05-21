@@ -165,16 +165,16 @@ export function resetCountersOnDisk() {
         writeFileSync(CHATS_PATH, JSON.stringify(arr, null, 2), { mode: 0o600 });
       }
     }
-  } catch (_) {}
+  } catch (e) { console.error(`!! logon-summary.mjs:[catch] ${e?.message ?? e}`); }
   try {
     if (existsSync(REACTIONS_PATH)) writeFileSync(REACTIONS_PATH, '{}', { mode: 0o600 });
-  } catch (_) {}
+  } catch (e) { console.error(`!! logon-summary.mjs:[catch] ${e?.message ?? e}`); }
 }
 
 export function writeLastLogonNow() {
   try {
     writeFileSync(LAST_LOGON_PATH, JSON.stringify({ ts: Date.now() }), { mode: 0o600 });
-  } catch (_) {}
+  } catch (e) { console.error(`!! logon-summary.mjs:[catch] ${e?.message ?? e}`); }
 }
 
 // Public helper for the /recap slash command. Reads the same data
@@ -456,7 +456,7 @@ function _loadMsgBodyCache() {
         }
       }
     }
-  } catch (_) { /* corrupt file — keep an empty map */ }
+  } catch (e) { console.error(`!! logon-summary.mjs:[catch] ${e?.message ?? e}`); /* corrupt file — keep an empty map */ }
   return _msgBodyCache;
 }
 function _findByKeyPrefix(chats, prefix) {

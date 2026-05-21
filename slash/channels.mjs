@@ -74,7 +74,7 @@ export async function run({ arg, ctx }) {
       for (const r of arr) {
         if (r?.name && r.preview) previews.set(r.name, r.preview);
       }
-    } catch (_) { /* WA Web tab not reachable; baileys-only output */ }
+    } catch (e) { console.error(`!! channels.mjs:[catch] ${e?.message ?? e}`); /* WA Web tab not reachable; baileys-only output */ }
     return previews;
   }
 
@@ -112,7 +112,7 @@ export async function run({ arg, ctx }) {
           // can just /channels again to pick up later arrivals.
           await new Promise(r => setTimeout(r, 1500));
         }
-      } catch (_) { /* fall through; render what we have */ }
+      } catch (e) { console.error(`!! channels.mjs:[catch] ${e?.message ?? e}`); /* fall through; render what we have */ }
     }
     const chats = await wa.listChats({ limit, messagesPerChat });
     if (!chats.length) {

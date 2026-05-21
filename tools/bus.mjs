@@ -49,12 +49,12 @@ export async function loadOrCreateBusKey({ keyPath = DEFAULT_KEY_PATH } = {}) {
     const raw = await fs.readFile(keyPath, 'utf8');
     const trimmed = raw.trim();
     if (trimmed) return trimmed;
-  } catch (_) { /* missing — fall through to generate */ }
+  } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); /* missing — fall through to generate */ }
   const fresh = await generateKey();
   try {
     await fs.mkdir(path.dirname(keyPath), { recursive: true });
     await fs.writeFile(keyPath, fresh + '\n', { mode: 0o600 });
-  } catch (_) { /* persist best-effort; in-memory still works */ }
+  } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); /* persist best-effort; in-memory still works */ }
   return fresh;
 }
 
@@ -108,9 +108,9 @@ export async function pairBusKeyToExtension(targetId, busKeyString) {
 }
 function _logInvalid(ev, where) {
   if (_onInvalidSig) {
-    try { _onInvalidSig(ev, where); } catch (_) {}
+    try { _onInvalidSig(ev, where); } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); }
   } else {
-    try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${(ev?.type ?? '?')}`); } catch (_) {}
+    try { console.warn(`[bus-sign] dropped event with invalid signature (${where}): ${(ev?.type ?? '?')}`); } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); }
   }
 }
 
@@ -280,9 +280,9 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
                 // 'missing' is permissive — pass through (peers may not yet sign)
               }
               try { onEvent({ ...ev, _replayed: true }); }
-              catch (_) { /* per-event errors don't abort replay */ }
+              catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); /* per-event errors don't abort replay */ }
             }
-          } catch (_) { /* malformed replay payload — give up on replay */ }
+          } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); /* malformed replay payload — give up on replay */ }
           finishSubscribe();
         })();
         return;
@@ -298,17 +298,17 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
       if (typeof raw !== 'string') return;
       let parsed;
       try { parsed = JSON.parse(raw); }
-      catch (_) { return; /* malformed event; ignore */ }
+      catch (e) { console.error(`!! bus.mjs JSON.parse: ${e?.message ?? e}`); return; /* malformed event; ignore */ }
       if (_busKeyBytes) {
         // Async verify — don't block the event loop on each event,
         // but preserve order via a serial chain.
         (async () => {
           const result = await verifyEvent(parsed, _busKeyBytes);
           if (result === 'invalid') { _logInvalid(parsed, 'live'); return; }
-          try { onEvent(parsed); } catch (_) {}
+          try { onEvent(parsed); } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); }
         })();
       } else {
-        try { onEvent(parsed); } catch (_) {}
+        try { onEvent(parsed); } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); }
       }
     });
 
@@ -326,7 +326,7 @@ export async function subscribeBusEvents(targetId, onEvent, opts = {}) {
       const wasAttached = !stopped;
       stopped = true;
       if (wasAttached && typeof onClose === 'function') {
-        try { onClose(); } catch (_) {}
+        try { onClose(); } catch (e) { console.error(`!! bus.mjs:[catch] ${e?.message ?? e}`); }
       }
     });
 

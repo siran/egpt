@@ -42,7 +42,7 @@ export async function extractYouTubeTranscript(url, { verbose = false } = {}) {
     const cleanup = () => {
       clearTimeout(timeout);
       try { ws.close(); } catch {}
-      closeTab(targetId).catch(() => {}); // Close tab in background
+      closeTab(targetId).catch(e => console.error(`!! extract-yt-transcript.mjs:[promise-catch] ${e?.message ?? e}`)); // Close tab in background
     };
 
     ws.addEventListener('error', () => {

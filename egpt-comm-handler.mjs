@@ -158,7 +158,8 @@ export function createStreamRegistry(bridge) {
     async finish({ streamId, text }) {
       const s = streams.get(streamId);
       if (!s) return { streamId, delivered: false, lastError: 'no such stream' };
-      try { await s.finish(text); } catch (_) { /* swallowed; lastError already set on s */ }
+      try { await s.finish(text); }
+      catch (e) { console.error(`!! comm-handler stream.finish(${streamId}): ${e?.message ?? e}`); /* lastError already set on s */ }
       const result = { streamId, delivered: !!s.delivered, lastError: s.lastError ?? null };
       streams.delete(streamId);
       return result;
@@ -424,17 +425,17 @@ export function startInboxWatcher({
     for (const n of names) await handleFile(n);
   };
 
-  sweep().catch(() => {});
+  sweep().catch(e => console.error(`!! comm-handler initial sweep: ${e?.message ?? e}`));
 
   let watcher = null;
   try {
     watcher = fsWatch(inboxDir, (_eventType, filename) => {
       if (!filename) return;
-      handleFile(filename).catch(() => {});
+      handleFile(filename).catch(e => console.error(`!! comm-handler handleFile(${filename}): ${e?.message ?? e}`));
     });
-  } catch (_) { /* watcher unavailable; sweep alone keeps things flowing */ }
+  } catch (e) { console.error(`!! comm-handler fsWatch(${inboxDir}): ${e?.message ?? e}`); /* sweep alone keeps things flowing */ }
 
-  const sweepTimer = setInterval(() => { sweep().catch(() => {}); }, 2000);
+  const sweepTimer = setInterval(() => { sweep().catch(e => console.error(`!! comm-handler periodic sweep: ${e?.message ?? e}`)); }, 2000);
 
   return () => {
     stopped = true;
@@ -626,7 +627,7 @@ export function startOutboxWatcher({
   };
 
   // Drain on mount: any files written while we were down.
-  sweep().catch(() => {});
+  sweep().catch(e => console.error(`!! outbox-watcher initial sweep: ${e?.message ?? e}`));
 
   // fs.watch is the fast path. Windows can miss rename events under
   // load; the 2s sweep below catches anything dropped.
@@ -634,11 +635,11 @@ export function startOutboxWatcher({
   try {
     watcher = fsWatch(outboxDir, (_eventType, filename) => {
       if (!filename) return;
-      handleFile(filename).catch(() => {});
+      handleFile(filename).catch(e => console.error(`!! outbox-watcher handleFile(${filename}): ${e?.message ?? e}`));
     });
-  } catch (_) { /* watcher unavailable; sweep alone keeps things flowing */ }
+  } catch (e) { console.error(`!! outbox-watcher fsWatch(${outboxDir}): ${e?.message ?? e}`); /* sweep alone keeps things flowing */ }
 
-  const sweepTimer = setInterval(() => { sweep().catch(() => {}); }, 2000);
+  const sweepTimer = setInterval(() => { sweep().catch(e => console.error(`!! outbox-watcher periodic sweep: ${e?.message ?? e}`)); }, 2000);
 
   return () => {
     stopped = true;

@@ -56,7 +56,7 @@ export async function run({ arg, ctx }) {
 
   if (sub === 'pair') {
     if (waBridgeRef.current) {
-      try { waBridgeRef.current.stop(); } catch (_) {}
+      try { waBridgeRef.current.stop(); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       waBridgeRef.current = null;
       clearGlobalWaBridge();
     }
@@ -69,7 +69,7 @@ export async function run({ arg, ctx }) {
 
   if (sub === 'disconnect') {
     if (!waBridgeRef.current) { sysOut('whatsapp: not running'); return true; }
-    try { waBridgeRef.current.stop(); } catch (_) {}
+    try { waBridgeRef.current.stop(); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     waBridgeRef.current = null;
     clearGlobalWaBridge();
     sysOut('whatsapp: disconnected (auth preserved). /whatsapp pair to start over');
@@ -83,7 +83,7 @@ export async function run({ arg, ctx }) {
       return true;
     }
     let cfg = {};
-    try { cfg = JSON.parse(await readFile(CFG_PATH, 'utf8')); } catch (_) {}
+    try { cfg = JSON.parse(await readFile(CFG_PATH, 'utf8')); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     if (!cfg.whatsapp || typeof cfg.whatsapp !== 'object') cfg.whatsapp = {};
     if (!Array.isArray(cfg.whatsapp.allowed_users)) cfg.whatsapp.allowed_users = [];
     if (sub === 'allow') {
@@ -103,7 +103,7 @@ export async function run({ arg, ctx }) {
 
   if (sub === 'allowed') {
     let cfg = {};
-    try { cfg = JSON.parse(await readFile(CFG_PATH, 'utf8')); } catch (_) {}
+    try { cfg = JSON.parse(await readFile(CFG_PATH, 'utf8')); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     const ids = cfg.whatsapp?.allowed_users ?? [];
     sysOut(ids.length === 0
       ? 'whatsapp: no allowed users — commands and mentions are rejected'
