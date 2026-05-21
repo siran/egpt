@@ -4636,7 +4636,7 @@ function App() {
         await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
       } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* conversation log best-effort; never block the turn */ }
       const newSessionId = result?.optionsPatch?.sessionId;
-      if (newSessionId && !isWaContact) {
+      if (newSessionId && !isPerContactDispatch) {
         // Persist new session_id into default_brain ONLY for system
         // threads (heartbeat, shell). WA-contact threads have their
         // own threadId field in conversations.yaml (handled above);
