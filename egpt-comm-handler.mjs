@@ -608,15 +608,31 @@ export function startOutboxWatcher({
       }
     } else if (payload?.type === 'daemon-restart') {
       log(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);
-      try { await unlink(full); } catch {}
+      try { await unlink(full); } catch (e) { console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`); }
       // Caller decides the actual restart shape (today: process.exit(0);
       // post-split: just kill the handler-side process).
       signalRestart(payload);
       return;
     } else {
-      log(`outbox: ignoring ${name} — unknown type ${payload?.type ?? '<missing>'}`);
+      // Unknown event type — quarantine instead of just deleting, so the
+      // operator can grep ~/.egpt/outbox-quarantine/ for misshapen
+      // payloads from buggy scripts / typo'd outbox writes. The log
+      // message names the file so post-mortem is easy.
+      log(`!! outbox: ignoring ${name} — unknown type ${payload?.type ?? '<missing>'} — quarantined`);
+      try {
+        const qdir = join(outboxDir, '..', 'outbox-quarantine');
+        await (async () => {
+          const { mkdir, rename } = await import('node:fs/promises');
+          await mkdir(qdir, { recursive: true });
+          await rename(full, join(qdir, name));
+        })();
+        return;
+      } catch (e) {
+        console.error(`!! outbox quarantine(${full}): ${e?.message ?? e}`);
+        // Fall through to plain unlink so the bad event doesn't loop.
+      }
     }
-    try { await unlink(full); } catch {}
+    try { await unlink(full); } catch (e) { console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`); }
   };
 
   const sweep = async () => {
