@@ -4600,6 +4600,7 @@ function App() {
         const fpath = join(baseDir, fname);
         await mkdir(baseDir, { recursive: true });
 
+        const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
         const isFirst = !existsSync(fpath);
         const header = isFirst
           ? (isSystemThread
