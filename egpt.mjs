@@ -4129,7 +4129,7 @@ function App() {
       const m = JSON.parse(readFileSync(p, 'utf8'));
       return (m && typeof m === 'object') ? m : {};
     } catch (e) {
-      sysLog(`!! _readConversationsTable: ${e?.stack ?? e?.message ?? e}`);
+      console.error(`!! _readConversationsTable: ${e?.stack ?? e?.message ?? e}`);
       return {};
     }
   }
@@ -4224,37 +4224,33 @@ function App() {
   async function _loadConvState() {
     if (!_convMigrated) {
       _convMigrated = true;
+      // sysLog is NOT in scope here — it's a hook-local const inside
+      // useEffect/useCallback bodies. Use console.error so the boot-time
+      // migration logs are visible without crashing onIncoming.
       try {
         const r = await conversationsState.migrateLayoutIfNeeded();
         if (r && r.migrated != null) {
-          sysLog(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
+          console.error(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
         }
-      } catch (e) { sysLog(`!! conversations migration: ${e.message}`); }
-      // Slug-suffix migration: append '-yymmddhhmm' (UTC) to any slug
-      // that lacks it, derived from firstSeenAt/threadCreatedAt/mtime.
+      } catch (e) { console.error(`!! conversations migration: ${e?.message ?? e}`); }
       try {
         const r2 = await conversationsState.migrateSlugSuffix();
         if (r2 && r2.renamed > 0) {
-          sysLog(`conversations: slug-suffix added to ${r2.renamed} contacts (skipped ${r2.skipped} already-suffixed)`);
+          console.error(`conversations: slug-suffix added to ${r2.renamed} contacts (skipped ${r2.skipped} already-suffixed)`);
         }
-      } catch (e) { sysLog(`!! slug-suffix migration: ${e.message}`); }
-      // Media migration: move ~/.egpt/media/<jid>/ files into each
-      // contact's <slug-dir>/media/ (operator 2026-05-20).
+      } catch (e) { console.error(`!! slug-suffix migration: ${e?.message ?? e}`); }
       try {
         const r3 = await conversationsState.migrateMediaToSlugDirs();
         if (r3 && r3.files > 0) {
-          sysLog(`conversations: migrated ${r3.files} media files across ${r3.migrated} contacts into slug-dirs`);
+          console.error(`conversations: migrated ${r3.files} media files across ${r3.migrated} contacts into slug-dirs`);
         }
-      } catch (e) { sysLog(`!! media migration: ${e.message}`); }
-      // JID-key migration: convert slug-keyed conversations.yaml to
-      // JID-keyed (operator 2026-05-20 'jid as stable key'). One-time,
-      // idempotent — skips state that's already JID-keyed.
+      } catch (e) { console.error(`!! media migration: ${e?.message ?? e}`); }
       try {
         const r4 = await conversationsState.migrateConversationsToJidKey();
         if (r4 && r4.migrated != null) {
-          sysLog(`conversations: rekeyed by JID — ${r4.migrated} primaries, ${r4.aliases} aliases (${r4.dangling} dangling without JIDs)`);
+          console.error(`conversations: rekeyed by JID — ${r4.migrated} primaries, ${r4.aliases} aliases (${r4.dangling} dangling without JIDs)`);
         }
-      } catch (e) { sysLog(`!! jid-key migration: ${e.message}`); }
+      } catch (e) { console.error(`!! jid-key migration: ${e?.message ?? e}`); }
       // Surface-layout migration: flat JID-keyed → nested by surface
       // (operator 2026-05-21 'per-surface dir + YAML'). Moves yaml AND
       // on-disk slug-dirs (~/.egpt/conversations/<slug>/ →
@@ -4262,9 +4258,9 @@ function App() {
       try {
         const r5 = await conversationsState.migrateToSurfaceLayout();
         if (r5 && r5.migrated != null) {
-          sysLog(`conversations: surface-layout migration — ${r5.migrated} contacts moved under whatsapp/, ${r5.dirsMoved} dirs renamed (${r5.missingDirs} missing)`);
+          console.error(`conversations: surface-layout migration — ${r5.migrated} contacts moved under whatsapp/, ${r5.dirsMoved} dirs renamed (${r5.missingDirs} missing)`);
         }
-      } catch (e) { sysLog(`!! surface-layout migration: ${e.message}`); }
+      } catch (e) { console.error(`!! surface-layout migration: ${e?.message ?? e}`); }
     }
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);
@@ -4291,7 +4287,7 @@ function App() {
             identityInjectedAt: null,
           });
           await conversationsState.writeState(_CONV_YAML_PATH, elevated);
-          sysLog(`conversations: auto-elevated self-DM contact "${selfContact.slug}" → personality 'system' (full-computer access; fresh thread on next message)`);
+          console.error(`conversations: auto-elevated self-DM contact "${selfContact.slug}" → personality 'system' (full-computer access; fresh thread on next message)`);
           _convStateCache = elevated;
           return elevated;
         }
@@ -4302,7 +4298,9 @@ function App() {
       // the conversations registry (state.contacts[selfSlug] under
       // JID-keyed schema). Log loudly so any future wipe-class bug
       // surfaces immediately instead of silently emptying the YAML.
-      sysLog(`!! _loadConvState: ${e?.stack ?? e?.message ?? e}`);
+      // console.error (not sysLog) — _loadConvState is in a scope
+      // where sysLog isn't visible; using it crashed onIncoming.
+      console.error(`!! _loadConvState: ${e?.stack ?? e?.message ?? e}`);
       return conversationsState.emptyState();
     }
   }
