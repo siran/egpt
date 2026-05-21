@@ -4560,12 +4560,54 @@ function App() {
     // media. threadCtx.threadId tells us where; threadCtx.surface /
     // .slug / .name are decorative for the header.
     const _feedStart = Date.now();
+
+    // Compute transcript paths + headers BEFORE firing the brain so
+    // (a) brain.stream fires as the first async work (snappiest), and
+    // (b) we can log the inbound to disk regardless of whether brain
+    //     succeeds, fails, or hangs. Operator (2026-05-21): "snappiest
+    //     brain reaction, then you can log in transcript even if it had
+    //     error."
+    const _threadId = threadCtx.threadId ?? 'shell';
+    const _isSystemThread = _threadId === 'heartbeat' || _threadId === 'shell';
+    const _slugForLog = _isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
+    const _baseDir = _isSystemThread
+      ? join(EGPT_HOME, 'state')
+      : (_slugForLog && _registrySurface
+          ? conversationsState.slugDir(_registrySurface, _slugForLog)
+          : join(EGPT_HOME, 'conversations', '_unrouted'));
+    const _fname = _isSystemThread ? `${_sanitizeForFilename(_threadId)}.md` : 'transcript.md';
+    const _fpath = join(_baseDir, _fname);
+    const _stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const _replyClock = _stamp.slice(11, 16);
+    const _personaTag = (_convEntry?.personality === 'system') ? 'system-e' : '@e';
+
+    // Fire brain.stream NOW — non-awaited, so the inbound transcript
+    // write below runs in parallel rather than gating the brain.
+    const _brainPromise = brain.stream(
+      { history: _wrappedText, message: _wrappedText },
+      onPartial,
+      sessionOpts,
+    );
+
+    // Log the inbound to transcript immediately. This way the turn is
+    // captured even if brain.stream throws below — the reply slot will
+    // get the error message instead of the response, but the inbound
+    // is never lost. Best-effort fs I/O — failure here logs but doesn't
+    // affect the brain dispatch (it's already in flight).
     try {
-      const result = await brain.stream(
-        { history: _wrappedText, message: _wrappedText },
-        onPartial,
-        sessionOpts,
-      );
+      await mkdir(_baseDir, { recursive: true });
+      const isFirst = !existsSync(_fpath);
+      const header = isFirst
+        ? (_isSystemThread
+            ? `# @e ${_threadId} log\n\n`
+            : `# @e conversation — ${threadCtx.name ?? _threadId}\n\nthread: ${_threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
+        : '';
+      await appendFile(_fpath, header + text + '\n\n');
+      _upsertConversationEntry(_threadId, threadCtx);
+    } catch (e) { console.error(`!! transcript (inbound) ${_fpath}: ${e?.message ?? e}`); }
+
+    try {
+      const result = await _brainPromise;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
 
       // Per-contact: capture the spawned threadId on first turn and
@@ -4578,68 +4620,23 @@ function App() {
           await _writeConvState(_convState);
         }
       }
+      // Append the reply to the same transcript file.
       try {
-        const threadId = threadCtx.threadId ?? 'shell';
-        _upsertConversationEntry(threadId, threadCtx);
-
-        // Per-thread location:
-        //   conversation threads → ~/.egpt/conversations/<slug>/transcript.md
-        //                          (per-conversation dir; conversation-e
-        //                          is cwd-locked here)
-        //   system threads (heartbeat, shell) → ~/.egpt/state/<thread>.md
-        const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
-        const slugForLog = isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
-        const baseDir = isSystemThread
-          ? join(EGPT_HOME, 'state')
-          : (slugForLog && _registrySurface
-              ? conversationsState.slugDir(_registrySurface, slugForLog)
-              : join(EGPT_HOME, 'conversations', '_unrouted'));
-        const fname = isSystemThread
-          ? `${_sanitizeForFilename(threadId)}.md`
-          : 'transcript.md';
-        const fpath = join(baseDir, fname);
-        await mkdir(baseDir, { recursive: true });
-
-        const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        const isFirst = !existsSync(fpath);
-        const header = isFirst
-          ? (isSystemThread
-              ? `# @e ${threadId} log\n\n`
-              : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
-          : '';
-        // Play-script style: inbound + speaker-prefixed reply, blank
-        // line between turns. Operator (2026-05-21): the `### fed to @e`
-        // and `---` separators were unnecessary noise — but the reply
-        // STILL needs a speaker envelope so the transcript reads as a
-        // dialogue, not a wall of indistinguishable text. The inbound's
-        // envelope (`[An@wa.xxxxx (HH:MM)]:`) is already inside `text`;
-        // the reply gets a symmetric `[@e (HH:MM)]:` prefix here.
-        const replyClock = stamp.slice(11, 16);   // 'HH:MM' from 'YYYY-MM-DD HH:MM:SS'
-        const personaTag = (_convEntry?.personality === 'system') ? 'system-e' : '@e';
-        const entry = header + text + '\n\n[' + personaTag + ' (' + replyClock + ')]: ' + final + '\n\n';
-        await appendFile(fpath, entry);
+        await appendFile(_fpath, '[' + _personaTag + ' (' + _replyClock + ')]: ' + final + '\n\n');
 
         // Unified feed — everything @e processes, chronological,
-        // single file. Coalesces per-thread streams into the canon
-        // play-script transcript. Operator (2026-05-19): "all
-        // conversations should coalesce in e-feed.md, basically a
-        // clean jsonl without noise."
-        const feedScene = isSystemThread
-          ? `## ${stamp} — [${threadId}]`
-          : `## ${stamp} — [${threadCtx.name || threadId}] (${threadId})`;
+        // single file. Operator (2026-05-19): "all conversations
+        // should coalesce in e-feed.md, basically a clean jsonl
+        // without noise."
+        const feedScene = _isSystemThread
+          ? `## ${_stamp} — [${_threadId}]`
+          : `## ${_stamp} — [${threadCtx.name || _threadId}] (${_threadId})`;
         const feedEntry = [
-          feedScene,
-          '',
-          text,
-          '',
-          `@e:`,
-          final,
-          '',
-          '---',
-          '',
+          feedScene, '', text, '',
+          `[${_personaTag} (${_replyClock})]:`, final, '', '',
         ].join('\n');
         await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
-      } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* conversation log best-effort; never block the turn */ }
+      } catch (e) { console.error(`!! transcript (reply) ${_fpath}: ${e?.message ?? e}`); }
       const newSessionId = result?.optionsPatch?.sessionId;
       if (newSessionId && !isPerContactDispatch) {
         // Persist new session_id into default_brain ONLY for system
@@ -4656,6 +4653,13 @@ function App() {
       return final.trim() || '...';
     } catch (e) {
       const msg = e?.message ?? '';
+
+      // Log the failure into the same transcript so the operator can
+      // grep the per-thread file and see WHAT errored on this turn
+      // (the inbound was already written above).
+      try {
+        await appendFile(_fpath, '[' + _personaTag + ' (' + _replyClock + ')]: !! brain error: ' + msg + '\n\n');
+      } catch (e2) { console.error(`!! transcript (error) ${_fpath}: ${e2?.message ?? e2}`); }
 
       // Cwd-recovery (operator rule: don't drop state — find where the
       // jsonl lives and use that cwd). When --resume failed AND we
