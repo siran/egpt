@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as ccode from './brains/claude-code.mjs';
+import * as claudeSdk from './brains/claude-sdk.mjs';
 import * as codex from './brains/codex.mjs';
 import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './brains/claude-cdp.mjs';
@@ -252,6 +253,7 @@ function resolveOperatorSession(explicit, sessions) {
 
 const BRAINS = {
   [ccode.name]: ccode,
+  [claudeSdk.name]: claudeSdk,
   [codex.name]: codex,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
@@ -267,6 +269,7 @@ const BRAIN_PREFIX = {
   'chatgpt-cdp': 'cgpt',
   'claude-cdp':  'claude',
   'ccode':       'ccode',
+  'claude-sdk':  'csdk',
   'codex':       'codex',
 };
 
