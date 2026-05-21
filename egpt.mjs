@@ -4661,9 +4661,22 @@ function App() {
       const triedResume = !!(isPerContactDispatch && _convSlug && _convEntry?.threadId);
       if (triedResume && !threadCtx._retried) {
         try {
-          const found = conversationsState.findThreadJsonl(_convEntry.threadId);
+          // Build the candidate-cwd list from the current registry so
+          // reverseSanitizeCwd can match the project-dir against a real
+          // slug-dir we know about. Without candidates, the function
+          // falls back to a lossy heuristic that produces broken paths
+          // when slugs contain `_` or `.`.
+          const cs = await _loadConvState();
+          const candidateCwds = [];
+          for (const surf of Object.keys(cs.contacts ?? {})) {
+            const bucket = cs.contacts[surf] ?? {};
+            for (const [_j, e] of Object.entries(bucket)) {
+              if (e?.aliasOf || !e?.slug) continue;
+              candidateCwds.push(conversationsState.slugDir(surf, e.slug));
+            }
+          }
+          const found = conversationsState.findThreadJsonl(_convEntry.threadId, candidateCwds);
           if (found?.cwd && found.cwd !== sessionOpts.cwd) {
-            const cs = await _loadConvState();
             const next = conversationsState.patchContact(cs, _registrySurface, _convSlug, { threadCwd: found.cwd });
             await _writeConvState(next);
             console.error(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
