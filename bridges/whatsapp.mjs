@@ -600,9 +600,15 @@ export async function startWhatsAppBridge({
       const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
       return targetAuthor ? ` (${targetAuthor} at ${hhmm})` : ` (at ${hhmm})`;
     })();
-    return r.text
+    // Operator (2026-05-21): "reactions should reach @e too."
+    // For operator's own reactions (fromMe), prepend "@e " so the
+    // router dispatches them to @e / system-e (per personality of
+    // the target chat). Others' reactions stay plain — only the
+    // operator's reactions wake the brain.
+    const body = r.text
       ? `reacted ${emoji} to "${snippet}"${tsSuffix}`
       : `removed reaction from "${snippet}"${tsSuffix}`;
+    return msg?.key?.fromMe ? `@e ${body}` : body;
   }
 
   // Phase 2: reaction counts. Persisted across bridge restarts and
