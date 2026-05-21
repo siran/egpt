@@ -154,8 +154,15 @@ export function startTelegramBridge({
       const oldEmojis = oldRs.map(x => x.emoji ?? x.custom_emoji_id ?? '?').join('');
       const user = r.user?.username ? `@${r.user.username}` : (r.user?.first_name ?? `tg:${r.user?.id ?? '?'}`);
       const action = newEmojis ? `reacted ${newEmojis}` : (oldEmojis ? `removed reaction ${oldEmojis}` : 'changed reaction');
-      const text = `${user} ${action} to msg ${r.message_id}`;
       const authorized = allowedUsers.length > 0 && allowedUsers.includes(r.user?.id ?? 0);
+      // Operator (2026-05-21): "in telegram it would need to be
+      // prepended with '@e'." Auto-prefix operator's own reactions so
+      // the router dispatches them to @e / system-e. Others' reactions
+      // stay un-routed (they'd never reach @e anyway without explicit
+      // mention in TG; this only wakes the brain on the operator's
+      // own engagement).
+      const body = `${user} ${action} to msg ${r.message_id}`;
+      const text = authorized ? `@e ${body}` : body;
       try {
         await onIncoming?.(text, {
           userId:    r.user?.id ?? 0,
