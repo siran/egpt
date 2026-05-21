@@ -35,15 +35,15 @@ export const meta = {
 };
 
 // Resolve a name-search term to a single contact. Returns one of:
-//   { ok: true, jid, slug, entry, pushedName }
+//   { ok: true, jid, slug, entry, pushedName, surface }
 //   { ok: false, reason: 'none' | 'multi', candidates? }
 async function _resolveNameSearch(term) {
   const cs = await readConvState(CONV_YAML_PATH);
-  const matches = findContactsByName(cs, term);
+  const matches = findContactsByName(cs, term);   // cross-surface
   if (matches.length === 0) return { ok: false, reason: 'none' };
   if (matches.length > 1)  return { ok: false, reason: 'multi', candidates: matches };
   const [hit] = matches;
-  return { ok: true, jid: hit.jid, slug: hit.slug, entry: hit.entry, pushedName: hit.pushedName };
+  return { ok: true, jid: hit.jid, slug: hit.slug, entry: hit.entry, pushedName: hit.pushedName, surface: hit.surface };
 }
 
 export async function run({ arg, meta, ctx }) {
@@ -115,6 +115,7 @@ export async function run({ arg, meta, ctx }) {
     const originJid = meta?.waChatId ?? null;
 
     let targetJid;
+    let surface = 'whatsapp';   // default when invoked from a WA chat
     if (!searchTerm) {
       if (!originJid) {
         sysOut('!! /egpt persona: no name-search and no chat context. Try `/egpt persona <persona> <name-search>` from the shell.');
@@ -128,15 +129,16 @@ export async function run({ arg, meta, ctx }) {
         return true;
       }
       if (!r.ok && r.reason === 'multi') {
-        const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] — ${c.jid}`).join('\n');
+        const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] @ ${c.surface} — ${c.jid}`).join('\n');
         sysOut(`!! /egpt persona: "${searchTerm}" matches multiple chats — pick one:\n${lines}`);
         return true;
       }
       targetJid = r.jid;
-      sysOut(`/egpt persona: target → ${r.pushedName || '(no name)'} [${r.slug}]`);
+      surface = r.surface;
+      sysOut(`/egpt persona: target → ${r.pushedName || '(no name)'} [${r.slug}] @ ${r.surface}`);
     }
     const { _runReboot } = await import('./e.mjs');
-    return await _runReboot({ resetThread: false, personaName, targetJid, sysOut, ctx, originJid });
+    return await _runReboot({ resetThread: false, personaName, targetJid, sysOut, ctx, originJid, surface });
   }
 
   if (sub === 'new') {
@@ -151,6 +153,7 @@ export async function run({ arg, meta, ctx }) {
       const searchTerm = positional.slice(1).join(' ').trim();
       const originJid = meta?.waChatId ?? null;
       let targetJid;
+      let surface = 'whatsapp';
       if (!searchTerm) {
         if (!originJid) {
           sysOut('!! /egpt new: no name-search and no chat context. Try `/egpt new <persona> <name-search>` from the shell.');
@@ -164,15 +167,16 @@ export async function run({ arg, meta, ctx }) {
           return true;
         }
         if (!r.ok && r.reason === 'multi') {
-          const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] — ${c.jid}`).join('\n');
+          const lines = r.candidates.map(c => `  - ${c.pushedName || '(no name)'} [${c.slug}] @ ${c.surface} — ${c.jid}`).join('\n');
           sysOut(`!! /egpt new: "${searchTerm}" matches multiple chats — pick one:\n${lines}`);
           return true;
         }
         targetJid = r.jid;
-        sysOut(`/egpt new: target → ${r.pushedName || '(no name)'} [${r.slug}]`);
+        surface = r.surface;
+        sysOut(`/egpt new: target → ${r.pushedName || '(no name)'} [${r.slug}] @ ${r.surface}`);
       }
       const { _runReboot } = await import('./e.mjs');
-      return await _runReboot({ resetThread: true, personaName, targetJid, sysOut, ctx, originJid });
+      return await _runReboot({ resetThread: true, personaName, targetJid, sysOut, ctx, originJid, surface });
     }
 
     // Flag parsing: --personality <name>, --jid <jid>, --slug <slug>, --all
@@ -189,38 +193,47 @@ export async function run({ arg, meta, ctx }) {
     }
     const originJid = meta?.waChatId ?? null;
 
-    // --- Branch 1: --all → reset every contact's threadId ---
+    // --- Branch 1: --all → reset every contact's threadId across all surfaces ---
     if (allFlag) {
-      const convState = await readConvState(CONV_YAML_PATH);
-      const slugs = Object.keys(convState.contacts ?? {});
-      let next = convState;
-      for (const sl of slugs) {
-        next = patchContact(next, sl, { threadId: null, identityInjectedAt: null });
+      let convState = await readConvState(CONV_YAML_PATH);
+      let totalSlugs = 0;
+      for (const surface of Object.keys(convState.contacts ?? {})) {
+        const bucket = convState.contacts[surface] ?? {};
+        for (const [_jid, entry] of Object.entries(bucket)) {
+          if (entry?.aliasOf || !entry?.slug) continue;
+          convState = patchContact(convState, surface, entry.slug, { threadId: null, identityInjectedAt: null });
+          totalSlugs++;
+        }
       }
-      await writeConvState(CONV_YAML_PATH, next);
-      sysOut(`egpt new --all: cleared threadIds on ${slugs.length} contacts. Next dispatch to each spawns fresh with their assigned personality.`);
+      await writeConvState(CONV_YAML_PATH, convState);
+      sysOut(`egpt new --all: cleared threadIds on ${totalSlugs} contacts. Next dispatch to each spawns fresh with their assigned personality.`);
       return true;
     }
 
     // --- Branch 2: per-contact (--slug, --jid, or origin chat) ---
     if (slugFlag || jidFlag || originJid) {
       let convState = await readConvState(CONV_YAML_PATH);
+      // Flag-based form assumes WA (legacy callers). For TG-specific
+      // targeting, use the positional name-search form instead.
+      const surface = 'whatsapp';
       let targetSlug = slugFlag;
       if (!targetSlug) {
-        targetSlug = findContactByJid(convState, jidFlag ?? originJid);
+        targetSlug = findContactByJid(convState, surface, jidFlag ?? originJid);
       }
       if (!targetSlug) {
-        sysOut(`!! /egpt new: no contact registered for jid "${jidFlag ?? originJid}". Send a message in that chat first so @e registers it, then try again. Or pass --slug <existing-slug>.`);
+        sysOut(`!! /egpt new: no contact registered for jid "${jidFlag ?? originJid}" under ${surface}. Send a message in that chat first so @e registers it, then try again. Or pass --slug <existing-slug>.`);
         return true;
       }
       const patch = { threadId: null, identityInjectedAt: null };
       if (personality) patch.personality = personality;
-      convState = patchContact(convState, targetSlug, patch);
+      convState = patchContact(convState, surface, targetSlug, patch);
       await writeConvState(CONV_YAML_PATH, convState);
 
-      const entry = convState.contacts[targetSlug];
-      const jid = entry.jids?.[0];
-      if (!jid) { sysOut(`!! /egpt new ${targetSlug}: contact has no JIDs registered`); return true; }
+      // Find the entry by slug to get its primary jid for the kickoff turn.
+      const bucket = convState.contacts[surface] ?? {};
+      const jidEntry = Object.entries(bucket).find(([_j, e]) => e?.slug === targetSlug);
+      if (!jidEntry) { sysOut(`!! /egpt new ${targetSlug}: contact disappeared during patch`); return true; }
+      const [jid, entry] = jidEntry;
 
       // Kickoff turn — runDefaultBrainTurn's per-contact branch sees
       // threadId=null on the entry, treats this as new contact,
