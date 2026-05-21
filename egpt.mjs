@@ -5985,14 +5985,17 @@ function App() {
         const personaEmoji = personaCfg.body_emoji ?? personaCfg.emoji ?? EGPT_PERSONA_EMOJI;
         const tgPrefix = `${personaEmoji} <b>${personaName}</b>\n`;
         const waPrefix = `${personaEmoji} ${personaName}\n`;
-        const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
-          ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
-              { chatId: meta.telegramChatId })
-          : null;
-        const waStream = (useWaStream && streamFactoryRef.current)
-          ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
-              { chatId: meta.waChatId })
-          : null;
+        // Operator (2026-05-21): drop the "⌛ thinking…" placeholder.
+        // Reasoning: when reply is silence (`…`), the placeholder
+        // appears then has to be cancelled — visible flicker that
+        // makes things FEEL sluggish even when the SDK is replying
+        // in ~1-2s. Cleaner: no placeholder. Reply lands when ready,
+        // sent as a plain message via bridge.send below. Tradeoff:
+        // no streaming token-by-token UX, but with the SDK brain
+        // the latency is short enough that streaming wasn't adding
+        // much.
+        const tgStream = null;
+        const waStream = null;
 
         // Build thread context for the per-thread conversation log.
         // For WA, the thread is the chat JID with decorative slug/name.
