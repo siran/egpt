@@ -109,19 +109,26 @@ export async function run({ arg, ctx }) {
 
   // Hand off to a peer (or to ourselves to reclaim).
   const tid = busTargetIdRef.current;
-  if (!tid) { sysOut('!! bus not joined — handoff requires bus'); return true; }
   const to = sub.replace(/^@/, '');
 
   if (to === BUS_NODE_ID || to === 'shell') {
-    // Self-reclaim: broadcast handoff first so any peer holding the
-    // slot yields, then start ours after a 1.5s settle (Bot API
-    // 409s for several seconds after a polling stop).
-    await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-      ts: Date.now(), to: BUS_NODE_ID });
-    await new Promise(r => setTimeout(r, 1500));
-    await startTgBridge();
+    // Self-reclaim. If the bus is up, broadcast handoff first so any
+    // peer holding the slot yields, then start ours after a 1.5s settle
+    // (Bot API 409s for several seconds after a polling stop). If the
+    // bus is down (no Chrome), there are no peers to notify — just
+    // start the bridge directly; whatever was polling on this machine
+    // is already gone.
+    if (tid) {
+      await bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
+        ts: Date.now(), to: BUS_NODE_ID });
+      await new Promise(r => setTimeout(r, 1500));
+    }
+    const ok = await startTgBridge();
+    sysOut(`telegram: ${ok ? 'bridge started' : 'startBridge returned false — check bot_token in ~/.egpt/config.yaml'}`);
     return true;
   }
+
+  if (!tid) { sysOut('!! bus not joined — peer handoff requires bus'); return true; }
 
   // Validate peer; if no exact id match, try role-based dispatch.
   const peer = peerNodesRef.current.get(to);
