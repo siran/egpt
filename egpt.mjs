@@ -4309,7 +4309,7 @@ function App() {
     try {
       await conversationsState.writeState(_CONV_YAML_PATH, state);
       _convStateCache = state;
-    } catch (e) { sysLog(`!! conversations: write failed — ${e.message}`); }
+    } catch (e) { console.error(`!! conversations: write failed — ${e?.message ?? e}`); }
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
@@ -4600,30 +4600,18 @@ function App() {
         const fpath = join(baseDir, fname);
         await mkdir(baseDir, { recursive: true });
 
-        const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        const durMs = Date.now() - _feedStart;
         const isFirst = !existsSync(fpath);
         const header = isFirst
           ? (isSystemThread
-              ? `# @e ${threadId} log\n\n---\n\n`
-              : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n---\n\n`)
+              ? `# @e ${threadId} log\n\n`
+              : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
           : '';
-        // Play-script style: no fences. Operator (2026-05-19): "omit
-        // the ``` — pollutes the file." The body lines are the body
-        // text directly, indented or not based on caller's format.
-        const subjectLine = isSystemThread
-          ? `### ${stamp} — ${threadId} → fed to @e  (${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`
-          : `### ${stamp} — fed to @e  (jid: ${threadId}, ${text.length} chars, ${durMs}ms, ${brainType}/${dbCfg.model ?? 'default'})`;
-        const entry = header + [
-          subjectLine,
-          text,
-          '',
-          `### ${stamp} — @e replied  (${final.length} chars)`,
-          final,
-          '',
-          '---',
-          '',
-        ].join('\n');
+        // Play-script style: just the inbound + reply, blank line between
+        // turns. Operator (2026-05-21): "the 'fed to @e' subject lines
+        // and '---' separators are unnecessary." The envelope inside
+        // `text` already carries the sender/timestamp; the reply is
+        // what conversation-e produced.
+        const entry = header + text + '\n\n' + final + '\n\n';
         await appendFile(fpath, entry);
 
         // Unified feed — everything @e processes, chronological,
@@ -4678,7 +4666,7 @@ function App() {
             const cs = await _loadConvState();
             const next = conversationsState.patchContact(cs, _registrySurface, _convSlug, { threadCwd: found.cwd });
             await _writeConvState(next);
-            sysLog(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
+            console.error(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
             return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
           }
         } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* recovery best-effort */ }
@@ -4686,7 +4674,7 @@ function App() {
 
       // No recovery possible. Log + notify operator via Self DM.
       // State is preserved (threadId untouched).
-      sysLog(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
+      console.error(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
       if (isPerContactDispatch && _convSlug) {
         try {
           const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
