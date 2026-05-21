@@ -79,24 +79,43 @@ export function jidMediaDir(jid) {
   return join(homedir(), '.egpt', 'media', sanitized);
 }
 
-// Best-effort reverse-engineer of claude's project-dir sanitization.
-// Claude-code stores session JSONLs at ~/.claude/projects/<sanitized>/
-// where sanitized = cwd.replace(/[\\\/:]/g, '-'). Reversing is lossy
-// (a '-' in the result could have been '/' or '\' or ':') but the
-// typical case is unambiguous:
-//   Windows 'C:/Users/an/src/egpt'         → 'C--Users-an-src-egpt'
-//   POSIX   '/home/user/.egpt'             → '-home-user-.egpt'
-// Heuristic recovers the leading drive-letter or root, then maps
-// remaining '-' back to '/'. Returns null when the input doesn't
-// look like a recognizable path.
-export function reverseSanitizeCwd(projectDir) {
+// Best-effort reverse of claude-code's project-dir sanitization.
+//
+// Claude-code derives the project-dir name from cwd by mapping `\`,
+// `/`, `:`, `.`, AND `_` ALL to `-`. That's many-to-one — an output
+// dash could have come from any of them — so the reverse is
+// fundamentally ambiguous. This function tries the obvious case
+// (drive letter prefix, slash-only) but is NOT reliable when cwd
+// contained `.`, `_`, or other chars that sanitize to `-`.
+//
+// Returns: the resolved cwd matched against `candidateCwds` when
+// possible (preferred), or a heuristic guess otherwise.
+//
+// Callers should treat the return as a hint, not ground truth.
+// The previous implementation hard-mapped every `-` to `/` and
+// produced paths like `C:/Users/an//egpt/conversations/premise/driven/bitcoin/e/2605211611`
+// for the cwd `C:/Users/an/.egpt/conversations/premise_driven_bitcoin_e-2605211611`
+// — totally broken. Surface-layout migration now invalidates
+// threadIds instead of relying on this recovery path.
+export function reverseSanitizeCwd(projectDir, candidateCwds = []) {
   if (!projectDir || typeof projectDir !== 'string') return null;
-  // Windows: 'X--rest' came from 'X:/rest'
+
+  // If the host provided a list of known cwds (e.g., from the
+  // conversations registry), find one whose claude-sanitized form
+  // matches the project-dir. This is the only reliable reverse.
+  const sanitize = (cwd) => String(cwd).replace(/[\\\/:._]/g, '-');
+  for (const cwd of candidateCwds) {
+    if (sanitize(cwd) === projectDir) return cwd;
+  }
+
+  // Fallback heuristic: drive-letter unambiguously maps to 'X--'.
+  // The rest is unreliable, but we attempt it for the simplest case
+  // (cwd with no `.` or `_`). Callers should verify the resulting
+  // path exists on disk before trusting it.
   const winMatch = projectDir.match(/^([A-Za-z])--(.+)$/);
   if (winMatch) {
     return `${winMatch[1]}:/${winMatch[2].replace(/-/g, '/')}`;
   }
-  // POSIX: '-rest' came from '/rest'
   if (projectDir.startsWith('-')) {
     return '/' + projectDir.slice(1).replace(/-/g, '/');
   }
@@ -106,16 +125,20 @@ export function reverseSanitizeCwd(projectDir) {
 // Scan ~/.claude/projects/*/<threadId>.jsonl. Returns { projectDir, cwd }
 // or null when not found anywhere.
 import { readdirSync as _readdirSync, existsSync as _existsSync } from 'node:fs';
-export function findThreadJsonl(threadId) {
+export function findThreadJsonl(threadId, candidateCwds = []) {
   if (!threadId) return null;
   const projects = join(homedir(), '.claude', 'projects');
   if (!_existsSync(projects)) return null;
   let entries;
-  try { entries = _readdirSync(projects); } catch { return null; }
+  try { entries = _readdirSync(projects); } catch (e) { console.error(`!! findThreadJsonl readdir(${projects}): ${e?.message ?? e}`); return null; }
   for (const d of entries) {
     const candidate = join(projects, d, `${threadId}.jsonl`);
     if (_existsSync(candidate)) {
-      return { projectDir: d, cwd: reverseSanitizeCwd(d), jsonlPath: candidate };
+      return {
+        projectDir: d,
+        cwd:        reverseSanitizeCwd(d, candidateCwds),
+        jsonlPath:  candidate,
+      };
     }
   }
   return null;
@@ -271,7 +294,27 @@ export async function migrateToSurfaceLayout() {
   if (_isSurfaceLayout(state)) return { skipped: 'already surface-layout' };
 
   // Move yaml: wrap existing flat contacts in { whatsapp: ... }.
-  const flat = state.contacts ?? {};
+  // Each primary entry's cwd moves from conversations/<slug>/ to
+  // conversations/whatsapp/<slug>/, which means claude-code's
+  // sanitized project-dir name changes too (cwd is its key). Any
+  // stored `threadId` points to a jsonl in the OLD project-dir,
+  // unreachable from the new cwd. `reverseSanitizeCwd` can't help
+  // reliably because claude-code's sanitize is many-to-one (`.`, `_`,
+  // `/`, `:` all map to `-`). Cleanest fix: invalidate thread state
+  // on migrated entries. Next dispatch spawns a fresh thread at the
+  // new cwd. Transcripts on disk are preserved; only the live
+  // claude session_id is lost.
+  const flat = {};
+  for (const [jid, entry] of Object.entries(state.contacts ?? {})) {
+    if (entry?.aliasOf) { flat[jid] = entry; continue; }
+    flat[jid] = {
+      ...entry,
+      threadId:           null,
+      threadCwd:          null,
+      threadCreatedAt:    null,
+      identityInjectedAt: null,
+    };
+  }
   const newState = { ...state, contacts: { whatsapp: flat } };
 
   // Move slug-dirs: ~/.egpt/conversations/<slug>/ → conversations/whatsapp/<slug>/.
