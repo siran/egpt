@@ -4223,15 +4223,26 @@ function App() {
   // (outside any per-slug dir so conversation-e — cwd-locked to its
   // own dir — can't read it). Migrate flat layout once on first load.
   const _CONV_YAML_PATH = conversationsState.CONV_YAML_PATH;
-  let _convMigrated = false;
+  // Migration-once promise. The old boolean guard had a race: two
+  // concurrent dispatches at boot could both see _convMigrated === false,
+  // both set it to true, both run the (idempotent but expensive) migration
+  // chain in parallel — file races on rename/writeState. Codex review
+  // 2026-05-21. The promise ensures the migration chain runs exactly
+  // once, and all callers await the same completion.
+  let _convMigrationPromise = null;
   // Module-level cache of conversations state. Updated on every
   // _loadConvState; consumed by sync paths like the bridge's
   // mediaDirForChat callback (which can't await). Slightly stale
   // is acceptable — next dispatch refreshes.
   let _convStateCache = null;
+  // Write serialization: every state write awaits the previous one.
+  // Prevents the lost-update race where two concurrent dispatches each
+  // read state, mutate, write — the second write overwriting the first.
+  // Codex review 2026-05-21: per-chat RMW wasn't atomic.
+  let _convWriteQueue = Promise.resolve();
   async function _loadConvState() {
-    if (!_convMigrated) {
-      _convMigrated = true;
+    if (!_convMigrationPromise) {
+      _convMigrationPromise = (async () => {
       // sysLog is NOT in scope here — it's a hook-local const inside
       // useEffect/useCallback bodies. Use console.error so the boot-time
       // migration logs are visible without crashing onIncoming.
@@ -4269,7 +4280,9 @@ function App() {
           console.error(`conversations: surface-layout migration — ${r5.migrated} contacts moved under whatsapp/, ${r5.dirsMoved} dirs renamed (${r5.missingDirs} missing)`);
         }
       } catch (e) { console.error(`!! surface-layout migration: ${e?.message ?? e}`); }
+      })();   // end of _convMigrationPromise IIFE
     }
+    await _convMigrationPromise;
     try {
       const state = await conversationsState.readState(_CONV_YAML_PATH);
       _convStateCache = state;
@@ -4323,10 +4336,19 @@ function App() {
   }
 
   async function _writeConvState(state) {
-    try {
-      await conversationsState.writeState(_CONV_YAML_PATH, state);
-      _convStateCache = state;
-    } catch (e) { console.error(`!! conversations: write failed — ${e?.message ?? e}`); }
+    // Serialize all writes through a single FIFO queue so concurrent
+    // dispatches can't lose updates. Each writeState is preceded by
+    // an awaited rendezvous on the previous one. Combined with the
+    // atomic temp-then-rename writeState (in conversations-state.mjs),
+    // this gives us a torn-write-free + lost-update-free state file.
+    // Codex review 2026-05-21: per-chat RMW lost concurrent updates.
+    _convWriteQueue = _convWriteQueue.then(async () => {
+      try {
+        await conversationsState.writeState(_CONV_YAML_PATH, state);
+        _convStateCache = state;
+      } catch (e) { console.error(`!! conversations: write failed — ${e?.message ?? e}`); }
+    });
+    return _convWriteQueue;
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
@@ -4345,6 +4367,22 @@ function App() {
       if (!url) {
         return `!! @e: ${brainType} is configured but no URL is set. Try /egpt brain ${brainType} <url> or use a CDP brain with a thread.`;
       }
+      // Activity log: URL/CDP brains also get RECV/REPLY/ERROR entries
+      // so "did the brain see the message?" has the same grep-able
+      // answer regardless of brain type. Per-contact transcript writes
+      // are skipped — URL brains don't carry the slug-dir contract
+      // (they own their own tab/URL as "thread") so the per-contact
+      // dispatch shape doesn't fit. Caught by Codex review 2026-05-21:
+      // URL brains bypassed isolation/logging. Activity log is the
+      // common-denominator visibility.
+      const _urlActivity = join(EGPT_HOME, 'state', 'e-activity.log');
+      const _urlStart = Date.now();
+      try {
+        await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+        await appendFile(_urlActivity,
+          `${new Date().toISOString()}\tRECV\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${text.length}ch\t${brainType}\n`);
+      } catch (e) { console.error(`!! urlbrain activity RECV: ${e?.message ?? e}`); }
+
       let targetId = null;
       try {
         const tabs = await cdp.listTabs(brain.urlMatch);
@@ -4357,6 +4395,10 @@ function App() {
           targetId = await cdp.openTab(url);
         }
       } catch (e) {
+        try {
+          await appendFile(_urlActivity,
+            `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${Date.now() - _urlStart}ms\tcdp listTabs/openTab: ${(e?.message ?? '').slice(0, 200)}\n`);
+        } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
         return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
       }
       // Bring the brain's Chrome tab to the foreground so the
@@ -4378,11 +4420,19 @@ function App() {
         // /egpt list.
         const next = recordSession(readDefaultBrainState(), url, { type: brainType });
         await persistDefaultBrainState(next);
+        try {
+          await appendFile(_urlActivity,
+            `${new Date().toISOString()}\tREPLY\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${final.length}ch\t${Date.now() - _urlStart}ms\t${brainType}\n`);
+        } catch (e) { console.error(`!! urlbrain activity REPLY: ${e?.message ?? e}`); }
         // Empty successful reply → silence protocol marker. Was previously
-      // the verbose string '(no reply)' which the dispatcher would ship
-      // to chat as a real message. Now: empty == '...' == drop.
-      return final.trim() || '...';
+        // the verbose string '(no reply)' which the dispatcher would ship
+        // to chat as a real message. Now: empty == '...' == drop.
+        return final.trim() || '...';
       } catch (e) {
+        try {
+          await appendFile(_urlActivity,
+            `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${Date.now() - _urlStart}ms\t${(e?.message ?? '').slice(0, 200)}\n`);
+        } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
         return `!! @e: ${e.message}`;
       }
     }
@@ -6115,6 +6165,15 @@ function App() {
           );
           if (!r) {
             errOut(`!! @e: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            // Activity log: bridge.send failed. The earlier REPLY entry
+            // from runDefaultBrainTurn reflected brain completion, not
+            // delivery — append a SEND-FAIL so the grep-able timeline
+            // shows the truth. (Codex review 2026-05-21: REPLY landed
+            // before bridge confirmation, misleading on failure.)
+            try {
+              await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
+                `${new Date().toISOString()}\tSEND-FAIL\twa/${meta.waChatId}\twa bridge.send returned null\n`);
+            } catch (e) { console.error(`!! activity SEND-FAIL: ${e?.message ?? e}`); }
           }
         }
 

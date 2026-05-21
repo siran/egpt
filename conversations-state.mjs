@@ -573,7 +573,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   // Deep-clone the touched bucket so the original state is unchanged.
   const prevBucket = state.contacts?.[surface] ?? {};
   const nextBucket = { ...prevBucket };
-  const next = { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+  const next = { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
 
   // 1. JID already known (directly or as alias) → refresh pushedName on primary.
   const resolved = _resolveByJid(state, surface, jid);
@@ -647,13 +647,13 @@ export function patchContact(state, surface, jidOrSlug, patch) {
   const byJid = _resolveByJid(state, surface, jidOrSlug);
   if (byJid) {
     const nextBucket = { ...prevBucket, [byJid.primaryJid]: { ...byJid.entry, ...patch } };
-    return { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+    return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
   }
   // Fall back: slug lookup (back-compat with slug-passing callers).
   const bySlug = _findByslug(state, surface, jidOrSlug);
   if (bySlug) {
     const nextBucket = { ...prevBucket, [bySlug.primaryJid]: { ...bySlug.entry, ...patch } };
-    return { contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
+    return { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
   }
   return state;
 }
@@ -813,9 +813,18 @@ export async function readState(yamlPath) {
   }
 }
 
+// Atomic write: serialize → temp file → rename to final. Protects against
+// torn writes if the process is killed mid-write or if a concurrent reader
+// catches the file half-written. The rename is atomic at the fs level on
+// both POSIX and Windows NTFS (within the same volume). Codex review
+// 2026-05-21: parse failures returning emptyState made the next write
+// dangerous — atomicity removes the partial-write class of failures.
 export async function writeState(yamlPath, state) {
   await mkdir(dirname(yamlPath), { recursive: true });
-  await writeFile(yamlPath, serialize(state), 'utf8');
+  const body = serialize(state);
+  const tmp = yamlPath + '.tmp-' + process.pid + '-' + Date.now();
+  await writeFile(tmp, body, 'utf8');
+  await rename(tmp, yamlPath);
 }
 
 // ── Migration: conversations.json → conversations.yaml ────────────────────
