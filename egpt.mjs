@@ -4051,13 +4051,18 @@ function App() {
   function formatAutoDispatchLine({ senderName, body, ts, surface }) {
     const d = new Date(ts ?? Date.now());
     const pad = (n) => String(n).padStart(2, '0');
-    const tstr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    // UTC — operator (2026-05-21) wants all timestamps consistent. Reply
+    // envelope (in runDefaultBrainTurn) uses ISO/UTC; if this were local
+    // there'd be a TZ-offset mismatch in the transcript.
+    const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
     const sender = senderName ?? 'someone';
     return `[${sender}@${surface ?? 'wa'} (${tstr})]: ${body}`;
   }
 
   function formatPersonaPrompt(meta, body) {
-    const stamp = ts();
+    // UTC ISO 'YYYY-MM-DD HH:MM' — consistent with reply envelope in
+    // runDefaultBrainTurn. Operator (2026-05-21): no mixed local/UTC.
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
     if (meta.fromTelegram) {
       const user = meta.telegramUser ?? 'someone';
       const chat = meta.telegramChatId ?? 'unknown';
@@ -4609,6 +4614,23 @@ function App() {
       _upsertConversationEntry(_threadId, threadCtx);
     } catch (e) { console.error(`!! transcript (inbound) ${_fpath}: ${e?.message ?? e}`); }
 
+    // Structured activity log — one line per dispatch. Operator (2026-05-21)
+    // wants a grep-able / tail-f-able pipeline trace. Lives at
+    // ~/.egpt/state/e-activity.log, ISO UTC timestamps, tab-separated
+    // fields so it's both human-readable and machine-parseable.
+    //
+    // Format:
+    //   <ISO-utc> RECV   <surface>/<threadId> <chars>ch
+    //   <ISO-utc> REPLY  <surface>/<threadId> <chars>ch <durMs>ms
+    //   <ISO-utc> ERROR  <surface>/<threadId> <durMs>ms <msg>
+    const _activityLogPath = join(EGPT_HOME, 'state', 'e-activity.log');
+    const _recvAt = new Date().toISOString();
+    try {
+      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+      await appendFile(_activityLogPath,
+        `${_recvAt}\tRECV\t${threadCtx.surface ?? '?'}/${_threadId}\t${text.length}ch\n`);
+    } catch (e) { console.error(`!! activity-log RECV: ${e?.message ?? e}`); }
+
     try {
       const result = await _brainPromise;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
@@ -4650,12 +4672,26 @@ function App() {
         const next = recordSession(readDefaultBrainState(), newSessionId, { type: brainType });
         await persistDefaultBrainState(next);
       }
+      // Activity-log: REPLY line.
+      try {
+        const durMs = Date.now() - _feedStart;
+        await appendFile(_activityLogPath,
+          `${new Date().toISOString()}\tREPLY\t${threadCtx.surface ?? '?'}/${_threadId}\t${final.length}ch\t${durMs}ms\n`);
+      } catch (e) { console.error(`!! activity-log REPLY: ${e?.message ?? e}`); }
+
       // Empty successful reply → silence protocol marker. Was previously
       // the verbose string '(no reply)' which the dispatcher would ship
       // to chat as a real message. Now: empty == '...' == drop.
       return final.trim() || '...';
     } catch (e) {
       const msg = e?.message ?? '';
+
+      // Activity-log: ERROR line.
+      try {
+        const durMs = Date.now() - _feedStart;
+        await appendFile(_activityLogPath,
+          `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${_threadId}\t${durMs}ms\t${msg.slice(0, 200)}\n`);
+      } catch (e2) { console.error(`!! activity-log ERROR: ${e2?.message ?? e2}`); }
 
       // Log the failure into the same transcript so the operator can
       // grep the per-thread file and see WHAT errored on this turn
