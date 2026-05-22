@@ -1433,7 +1433,7 @@ export async function startWhatsAppBridge({
   //
   // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
   // with the existing text — no re-work.
-  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 3, strideSeconds = 2 }) {
+  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 6, strideSeconds = 3 }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
