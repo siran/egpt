@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync } from 'node:fs';
 import { PassThrough, Writable } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -6940,7 +6940,35 @@ if (HEADLESS) {
   // pollute the log AND trip VS Code's ambiguous-unicode warning.
   // Strip them on the way out + collapse the consecutive duplicate
   // lines Ink's churn produces. Operator (2026-05-21).
-  const rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  //
+  // Size-based rotation (operator 2026-05-22): when headless.log
+  // exceeds HEADLESS_LOG_MAX_BYTES, rotate to .log.1 (replacing any
+  // previous backup) and open a fresh .log. Check happens at startup
+  // AND periodically during runs (every Nth write). Keeps logs
+  // bounded without external logrotate.
+  const HEADLESS_LOG_MAX_BYTES = 50 * 1024 * 1024;   // 50 MB
+  const HEADLESS_LOG_BACKUP = EGPT_HEADLESS_LOG + '.1';
+  const ROTATE_CHECK_EVERY_WRITES = 500;
+  const _rotateIfBig = () => {
+    try {
+      const st = statSync(EGPT_HEADLESS_LOG);
+      if (st.size <= HEADLESS_LOG_MAX_BYTES) return false;
+      try { unlinkSync(HEADLESS_LOG_BACKUP); } catch (e) { /* no prior backup — fine */ }
+      renameSync(EGPT_HEADLESS_LOG, HEADLESS_LOG_BACKUP);
+      return true;
+    } catch (e) { return false; }
+  };
+  // Startup rotation: if log is already huge from a prior session.
+  _rotateIfBig();
+  let rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  let _writeCount = 0;
+  const _maybeRotateDuringRun = () => {
+    _writeCount++;
+    if (_writeCount % ROTATE_CHECK_EVERY_WRITES !== 0) return;
+    if (!_rotateIfBig()) return;
+    try { rawFile.end(); } catch (e) { /* swallow — about to replace */ }
+    rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
+  };
   // CSI sequences (\x1b[...letter), OSC (\x1b]...\x07 or \x1b\\), and
   // 2-char designation escapes (\x1b(B etc.).
   const ANSI_REGEX = /\x1b\[[\d;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z]/g;
@@ -6965,6 +6993,7 @@ if (HEADLESS) {
         out.push(line);
         if (line !== '') _lastNonEmptyLine = line;
       }
+      _maybeRotateDuringRun();
       rawFile.write(out.join('\n'), cb);
     },
     final(cb) {
