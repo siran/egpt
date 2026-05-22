@@ -5101,13 +5101,13 @@ function App() {
       handle.emitter?.on?.('chunk', onChunk);
 
       try {
-        const result = await handle.donePromise;
+        await handle.donePromise;
         handle.emitter?.off?.('chunk', onChunk);
-        const finalText = (result?.finalText ?? cumulativeTranscript).trim();
-        if (finalText) {
-          cumulativeTranscript = finalText;
-          await runBrainPass();
-        }
+        // No extra brain pass on done — the last window's pass IS the
+        // conclusion. Just drain any in-flight pass and finish. Operator
+        // 2026-05-22: "last reply takes super long, to receive the
+        // final '.'" — the prior code triggered another brain call here
+        // on the (large-model) final transcript, which doubled the wait.
         while (brainInFlight) {
           await new Promise(r => setTimeout(r, 100));
         }
