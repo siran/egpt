@@ -5030,19 +5030,12 @@ function App() {
       let pendingNewChunk = false;
       const _sep = '\n---\n';
 
-      // Sliding-window frame size (operator 2026-05-22: "alien was a
-      // fixed 9x9 canvas or so... for audio we need two-three words at
-      // a time, 4?"). The brain sees ONLY the last N words of the
-      // cumulative transcript on each pass — a frame that shifts as
-      // whisper produces more text. Not cumulative. Brain's session
-      // memory (resume) gives some continuity across frames; otherwise
-      // each pass is a fresh react-to-this-slice moment. Frame size
-      // is tunable; 4 words is the operator's pick to test.
-      const FRAME_WORDS = 4;
-      const _lastNWords = (text, n) => {
-        const words = String(text ?? '').trim().split(/\s+/).filter(Boolean);
-        return words.slice(-n).join(' ');
-      };
+      // Audio-side sliding windows (in bridges/whatsapp.mjs) give the
+      // brain a coherent 6-second phrase per pass — no need for a
+      // word-level sub-window on top. Each pass: brain receives the
+      // full transcript of the current audio window as a coherent input.
+      // Operator (2026-05-22): "let's feed the transcription model a
+      // sliding windows of audio... roughly 6 seconds."
 
       const runBrainPass = async () => {
         if (brainInFlight) {
@@ -5053,7 +5046,7 @@ function App() {
         try {
           while (true) {
             pendingNewChunk = false;
-            const snapshot = _lastNWords(cumulativeTranscript, FRAME_WORDS);
+            const snapshot = cumulativeTranscript;
             if (!snapshot) break;
             const personaPrompt = formatAutoDispatchLine({
               senderName: meta.waSenderName,
