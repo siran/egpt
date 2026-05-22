@@ -1,5 +1,5 @@
 ---
-allowed_tools: [Read, Grep, Glob]
+allowed_tools: [Read, Write, Edit, Grep, Glob]
 ---
 
 [    0.000000] eGPT kernel init
