@@ -5019,6 +5019,7 @@ function App() {
       };
 
       let cumulativeTranscript = '';
+      let cumulativeOffsetSec = 0;   // audio-internal timestamp of the latest window
       // Stack of completed brain replies — each pass appends here, and
       // the WA body shows them all joined by '---' (operator 2026-05-22:
       // "instead of replacing the whole answer of brain, we append
@@ -5029,6 +5030,20 @@ function App() {
       let brainInFlight = false;
       let pendingNewChunk = false;
       const _sep = '\n---\n';
+
+      // Audio-internal timestamp prefix on the brain's input — gives
+      // the model the sequence cue the alien animation had via fixed-
+      // canvas frame evolution. Operator (2026-05-22): "in the alien
+      // effect, e was receiving time indicators... audio transcript
+      // text chunks can be like '[0:06] Hola e', '[0:09] e, cómo
+      // estás? Yo'." The model sees windows positioned on a timeline,
+      // not just a sequence of disconnected phrases.
+      const _formatAudioTime = (sec) => {
+        const total = Math.max(0, Math.floor(sec));
+        const m = Math.floor(total / 60);
+        const s = String(total % 60).padStart(2, '0');
+        return `[${m}:${s}]`;
+      };
 
       // Audio-side sliding windows (in bridges/whatsapp.mjs) give the
       // brain a coherent 6-second phrase per pass — no need for a
@@ -5048,9 +5063,13 @@ function App() {
             pendingNewChunk = false;
             const snapshot = cumulativeTranscript;
             if (!snapshot) break;
+            // Prefix the brain's input with the audio-internal timestamp
+            // so the model has a sequence cue per window. Same role the
+            // /movie alien arc's canvas position played.
+            const audioStamp = _formatAudioTime(cumulativeOffsetSec);
             const personaPrompt = formatAutoDispatchLine({
               senderName: meta.waSenderName,
-              body: snapshot,
+              body: `${audioStamp} ${snapshot}`,
               ts: Date.now(),
               surface: buildWaSurfaceTag(meta.waChatId),
               chatType,
@@ -5094,8 +5113,31 @@ function App() {
       // rather than waiting for the large-model final pass. Operator
       // 2026-05-22: "no replies to basic 'are you there?' or it takes
       // too long, way more than before."
-      const onChunk = ({ cumulative }) => {
+      // Time-passes ticker (operator 2026-05-22: "more frequent updates
+      // of the same text with increased timer... like 'time passes and
+      // words flow with it'"). Even when no new audio chunk has produced
+      // fresh text, the audio clock keeps advancing. Tick every
+      // VOICE_TICK_MS — refresh the offset and try a brain pass. Brain
+      // coalesces (runBrainPass skips if one is in-flight), so we don't
+      // pile up calls; we just give the brain a steady sense of time
+      // moving while it listens.
+      const VOICE_TICK_MS = 1500;
+      const voiceStartMs = Date.now();
+      const _refreshOffset = (chunkEndSec) => {
+        const elapsed = (Date.now() - voiceStartMs) / 1000;
+        cumulativeOffsetSec = Math.max(cumulativeOffsetSec, elapsed,
+          typeof chunkEndSec === 'number' ? chunkEndSec : 0);
+      };
+      const tickTimer = setInterval(() => {
+        _refreshOffset();
+        if (cumulativeTranscript) {
+          runBrainPass().catch(e => console.error(`!! voice-stream tick: ${e?.message ?? e}`));
+        }
+      }, VOICE_TICK_MS);
+
+      const onChunk = ({ cumulative, endSeconds }) => {
         cumulativeTranscript = cumulative;
+        _refreshOffset(endSeconds);
         runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
       };
       handle.emitter?.on?.('chunk', onChunk);
@@ -5103,16 +5145,15 @@ function App() {
       try {
         await handle.donePromise;
         handle.emitter?.off?.('chunk', onChunk);
+        clearInterval(tickTimer);
         // No extra brain pass on done — the last window's pass IS the
-        // conclusion. Just drain any in-flight pass and finish. Operator
-        // 2026-05-22: "last reply takes super long, to receive the
-        // final '.'" — the prior code triggered another brain call here
-        // on the (large-model) final transcript, which doubled the wait.
+        // conclusion. Just drain any in-flight pass and finish.
         while (brainInFlight) {
           await new Promise(r => setTimeout(r, 100));
         }
       } catch (e) {
         handle.emitter?.off?.('chunk', onChunk);
+        clearInterval(tickTimer);
         errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
       }
 
