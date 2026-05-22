@@ -2039,13 +2039,36 @@ function App() {
         // a brain call (broadcast to local sessions). skipRoute tells
         // submitInner to post room-utterance and stop, without routing.
         let skipRoute = false;
+        let dispatchTgText = text;
+        // System-personality contacts (operator's own bot-DM with themselves,
+        // future operator-DMs) auto-dispatch plain text to @e, same as WA
+        // Self DM. Operator (2026-05-22): personality='system' is the
+        // canonical "operator talking to themselves" marker. Honor it on
+        // TG too — bypass the mirror policy gate, auto-prefix the message.
+        const tgChatIdStr = String(from.chatId ?? '');
+        const isSystemTgContact = (() => {
+          try {
+            const entry = _convStateCache?.contacts?.telegram?.[tgChatIdStr];
+            if (!entry) return false;
+            if (entry.aliasOf) {
+              const primary = _convStateCache.contacts.telegram[entry.aliasOf];
+              return primary?.personality === 'system';
+            }
+            return entry.personality === 'system';
+          } catch (e) { return false; }
+        })();
         if (!isCommand && parseInput(text.trim()).type === 'message') {
           const mirror = cfg.telegram?.mirror ?? 'none';
-          const canRoute = mirror === 'all' || (mirror === 'allowed' && from.authorized);
+          const canRoute = mirror === 'all' || (mirror === 'allowed' && from.authorized) || (isSystemTgContact && from.authorized);
           skipRoute = !canRoute;
+          const trimmed = text.trimStart();
+          const hasMention = /^@[\w-]+/.test(trimmed);
+          if (canRoute && !hasMention && isSystemTgContact) {
+            dispatchTgText = `@e ${text}`;
+          }
         }
 
-        if (submitRef.current) await submitRef.current(text, {
+        if (submitRef.current) await submitRef.current(dispatchTgText, {
           fromTelegram: true,
           telegramChatId: from.chatId,
           telegramUser: who,
@@ -2564,11 +2587,30 @@ function App() {
           const autoPaused = !!waCfg.auto_e_paused;
           const isAutoEChat = Array.isArray(waCfg.auto_e_chats)
             && waCfg.auto_e_chats.includes(from.chatId);
+          // Implicit auto-dispatch: any contact whose personality is
+          // 'system' (operator's own surfaces — Self DM lid form, Self
+          // DM phone-number form, etc.) gets the same plain-text
+          // auto-prefix as auto_e_chats members. Operator (2026-05-22):
+          // saw their s.whatsapp.net Self get silently observed-only
+          // because the lid form was the only one in auto_e_chats.
+          // personality='system' is the canonical "this is the operator
+          // talking to themselves" marker — honor it everywhere.
+          const isSystemContact = (() => {
+            try {
+              const entry = _convStateCache?.contacts?.whatsapp?.[from.chatId];
+              if (!entry) return false;
+              if (entry.aliasOf) {
+                const primary = _convStateCache.contacts.whatsapp[entry.aliasOf];
+                return primary?.personality === 'system';
+              }
+              return entry.personality === 'system';
+            } catch (e) { return false; }
+          })();
           const trimmed = String(text ?? '').trimStart();
           const hasMention = /^@[\w-]+/.test(trimmed);
           const isSlash    = trimmed.startsWith('/');
           let dispatchText = text;
-          if (!autoPaused && !hasMention && !isSlash && isAutoEChat) {
+          if (!autoPaused && !hasMention && !isSlash && (isAutoEChat || isSystemContact)) {
             dispatchText = `@e ${text}`;
           }
           if (submitRef.current) await submitRef.current(dispatchText, {
