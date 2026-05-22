@@ -4998,19 +4998,32 @@ function App() {
       };
 
       let cumulativeTranscript = '';
-      let lastReply = '';
+      // Stack of completed brain replies — each pass appends here, and
+      // the WA body shows them all joined by '---' (operator 2026-05-22:
+      // "instead of replacing the whole answer of brain, we append
+      // partial replies"). The recipient sees the model's stream of
+      // consciousness as it hears more, not a snapshot of its current
+      // best guess.
+      const replyStack = [];
       let brainInFlight = false;
       let pendingNewChunk = false;
+      let brainSaidDot = false;       // brain ended a reply with line '.' → "I'm done; don't ask again"
+      const _sep = '\n---\n';
+      // Detect the "I'm done" signal: a reply whose last non-empty line
+      // is just '.'. Per operator (2026-05-22): "model ends reply with
+      // a final line with only a . (that way we can know there is
+      // nothing more to say)".
+      const _endsInDot = (s) => {
+        const lines = String(s ?? '').trim().split(/\n+/).map(l => l.trim()).filter(Boolean);
+        return lines.length > 0 && lines[lines.length - 1] === '.';
+      };
 
       const runBrainPass = async () => {
         if (brainInFlight) {
-          // Coalesce: more chunks arrived while a previous brain pass is
-          // mid-flight. Set a flag so the loop re-fires with the latest
-          // cumulative transcript after the current pass settles. Avoids
-          // concurrent brain.stream() calls on the same chat/thread.
           pendingNewChunk = true;
           return;
         }
+        if (brainSaidDot) return;     // brain opted out for this voice note
         brainInFlight = true;
         try {
           while (true) {
@@ -5026,18 +5039,24 @@ function App() {
               chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
             });
             try {
+              const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
               const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
-                try { voiceStream?.update?.(`${waPrefix}${partial}`); }
+                try { voiceStream?.update?.(`${prefixBase}${partial}`); }
                 catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
               }, threadCtx);
               const trimmed = (reply ?? '').trim();
-              if (trimmed && trimmed !== '...' && trimmed !== '…') lastReply = trimmed;
+              if (trimmed && trimmed !== '...' && trimmed !== '…') {
+                replyStack.push(trimmed);
+                // Lock the new pass into the body before next loop iter.
+                try { voiceStream?.update?.(`${waPrefix}${replyStack.join(_sep)}`); }
+                catch (e) { console.error(`!! voice-stream pass-end update: ${e?.message ?? e}`); }
+                if (_endsInDot(trimmed)) brainSaidDot = true;
+              }
             } catch (e) {
               errOut(`!! voice-stream brain pass failed: ${e?.message ?? e}`);
             }
+            if (brainSaidDot) break;       // honor the brain's opt-out
             if (!pendingNewChunk) break;
-            // Loop: another chunk landed during the brain call; re-run with
-            // the now-larger cumulative transcript so the reply re-evolves.
           }
         } finally {
           brainInFlight = false;
@@ -5046,14 +5065,10 @@ function App() {
 
       const onChunk = ({ cumulative }) => {
         cumulativeTranscript = cumulative;
-        // Fire-and-forget; the runBrainPass function internally coalesces.
         runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
       };
       handle.emitter?.on?.('chunk', onChunk);
 
-      // Wait for whisper to finish (final pass = accurate large-model
-      // transcript), then run ONE more brain pass with that text. This
-      // is what gets persisted as the canonical reply.
       try {
         const result = await handle.donePromise;
         handle.emitter?.off?.('chunk', onChunk);
@@ -5062,7 +5077,6 @@ function App() {
           cumulativeTranscript = finalText;
           await runBrainPass();
         }
-        // Drain any pending pass before finishing.
         while (brainInFlight) {
           await new Promise(r => setTimeout(r, 100));
         }
@@ -5071,21 +5085,19 @@ function App() {
         errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
       }
 
-      const trimmedReply = lastReply.trim();
-      if (!trimmedReply || trimmedReply === '...' || trimmedReply === '…') {
-        // No usable reply produced — cancel the placeholder. Silence
-        // protocol or transcription failure both end here.
+      const finalBody = replyStack.join(_sep).trim();
+      if (!finalBody) {
         try { await (voiceStream?.cancel?.() ?? voiceStream?.finish?.(`${waPrefix}…`)); }
         catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
         return;
       }
-      try { await voiceStream?.finish?.(`${waPrefix}${trimmedReply}`); }
+      try { await voiceStream?.finish?.(`${waPrefix}${finalBody}`); }
       catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
       try {
         setItems(p => [...p, {
           id: Date.now() + Math.random(),
           author: `egpt@${SURFACE_TAG}`,
-          body: trimmedReply,
+          body: finalBody,
           _source: 'whatsapp',
           _sourceChatId: meta.waChatId,
         }]);
