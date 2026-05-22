@@ -305,13 +305,6 @@ export async function startWhatsAppBridge({
   }
 
   let stopped        = false;
-  // Forward-reference to the bridge's returned API object. The
-  // factory's return is at the bottom (lines ~2700+), but some
-  // internal functions need to call exposed methods (e.g. _saveMediaIfAny
-  // → startStreamMessage for voice-as-reply-transcript streaming).
-  // Assigned at the return site; null until then. Internals must
-  // null-check before calling through it.
-  let _bridgeApi     = null;
   let connectedAt    = 0;     // ms; set to Date.now() when WS reaches 'open'
   // Pre-connect backlog: messages older than connectedAt -
   // maxBacklogSeconds get parked here instead of dispatched. The host
@@ -1895,36 +1888,57 @@ export async function startWhatsAppBridge({
             // Final replacement at done() uses the cleaner deduped
             // finalText from the joined-windows pass.
             if (wantReplyStreaming && msg.key) {
-              const replyStream = _bridgeApi?.startStreamMessage?.('', {
-                chatId: chatJid,
-                quoted: { key: msg.key, message: msg.message ?? { conversation: '' } },
-              });
-              if (replyStream) {
-                const seen = [];   // raw window texts in arrival order — has overlap
-                voiceStream.emitter.on('chunk', (ev) => {
-                  if (!ev?.text) return;
-                  seen.push(ev.text);
-                  const display = seen.join(' ');
-                  if (display.trim()) {
-                    try { replyStream.update(`🎙 ${display}`); }
-                    catch (e) { log(`reply-stream update: ${e?.message ?? e}`); }
+              // Inline minimal edit-streaming: send first chunk as quoted
+              // reply, then edit on each subsequent chunk. Replaces with
+              // deduped finalText at done. Self-contained (no go-through
+              // startStreamMessage, which is a method on the returned
+              // bridge object and not in lexical scope here). The chunk
+              // cadence (~3s/window) is already humane-paced, so no
+              // additional edit debounce is needed.
+              let replyMsgKey = null;
+              let lastBody = '';
+              const _editReply = async (body) => {
+                if (body === lastBody) return;
+                try {
+                  if (!replyMsgKey) {
+                    const r = await _safeSend(
+                      chatJid,
+                      { text: body },
+                      { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+                    );
+                    replyMsgKey = r?.key ?? null;
+                    if (replyMsgKey) rememberSent(replyMsgKey.id);
+                  } else {
+                    const r = await _safeSend(chatJid, { edit: replyMsgKey, text: body });
+                    rememberSent(r?.key?.id);
                   }
-                });
-                voiceStream.donePromise.then((res) => {
-                  const final = res?.finalText?.trim() || seen.join(' ').trim();
-                  try {
-                    if (final) replyStream.finish(`🎙 ${final}`);
-                    else replyStream.cancel?.();
-                  } catch (e) { log(`reply-stream finish: ${e?.message ?? e}`); }
-                }).catch((e) => {
-                  log(`reply-stream done error: ${e?.message ?? e}`);
-                  try {
-                    const fallback = seen.join(' ').trim();
-                    if (fallback) replyStream.finish(`🎙 ${fallback}`);
-                    else replyStream.cancel?.();
-                  } catch {}
-                });
-              }
+                  lastBody = body;
+                } catch (e) {
+                  log(`reply-stream edit (${base}): ${e?.message ?? e}`);
+                }
+              };
+              const seen = [];   // raw window texts — has overlap
+              voiceStream.emitter.on('chunk', (ev) => {
+                if (!ev?.text) return;
+                seen.push(ev.text);
+                const display = seen.join(' ').trim();
+                if (display) _editReply(`🎙 ${display}`)
+                  .catch(e => log(`reply-stream chunk: ${e?.message ?? e}`));
+              });
+              voiceStream.donePromise.then((res) => {
+                const final = res?.finalText?.trim() || seen.join(' ').trim();
+                if (final) {
+                  _editReply(`🎙 ${final}`)
+                    .catch(e => log(`reply-stream final: ${e?.message ?? e}`));
+                } else if (replyMsgKey) {
+                  // Silence: revoke the reply so it doesn't sit as a
+                  // stranded 🎙 with no content.
+                  _safeSend(chatJid, { delete: replyMsgKey })
+                    .catch(e => log(`reply-stream revoke: ${e?.message ?? e}`));
+                }
+              }).catch((e) => {
+                log(`reply-stream done error (${base}): ${e?.message ?? e}`);
+              });
             }
           }
         }
@@ -2714,7 +2728,7 @@ export async function startWhatsAppBridge({
       .map(c => ({ jid: c.jid, name: c.name, isGroup: !!c.isGroup, egptPinned: c.egptPinned }));
   }
 
-  _bridgeApi = {
+  return {
     listChats,
     prefetchHistoryForTopChats,
     getChatName,
@@ -3439,7 +3453,6 @@ export async function startWhatsAppBridge({
       return n;
     },
   };
-  return _bridgeApi;
 }
 
 // ── helpers ──────────────────────────────────────────────────────
