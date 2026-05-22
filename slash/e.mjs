@@ -188,7 +188,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (!prompt) { sysOut('usage: /e butler <prompt>'); return true; }
     sysOut(`(butler-e working… haiku, no session memory, default all-tools)`);
     try {
-      const { runButler } = await import('../tools/butler.mjs');
+      const { runButler } = await import('../src/tools/butler.mjs');
       const r = await runButler({ prompt });
       const head = r.error ? `!! butler: ${r.error}` : `butler-e (${r.durationMs}ms):`;
       sysOut([head, '', r.text || '(no output)'].join('\n'));

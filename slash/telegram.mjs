@@ -67,7 +67,7 @@ export async function run({ arg, ctx }) {
     // Read ~/.egpt/config.json, update telegram.allowed_users, write back.
     // Prefer mutating the live tgCfgRef array in place so the running
     // bridge's closure sees the change without a restart.
-    const { readConfig, writeConfig } = await import('../tools/config-io.mjs');
+    const { readConfig, writeConfig } = await import('../src/tools/config-io.mjs');
     const cfg = await readConfig();
     if (!cfg.telegram || typeof cfg.telegram !== 'object') cfg.telegram = {};
     if (!Array.isArray(cfg.telegram.allowed_users)) cfg.telegram.allowed_users = [];
