@@ -55,12 +55,21 @@ async function makeRuntime(opts = {}) {
     brain,
     bridge,
     clock: opts.clock ?? fixedClock,
+    findThreadJsonl: opts.findThreadJsonl,
     fs: opts.fs,
+    getSelfDmConfig: opts.getSelfDmConfig,
     logger: { error: (msg) => errors.push(String(msg)) },
     migrations: opts.migrations,
+    notifyOperator: opts.notifyOperator,
     personaEmoji: opts.personaEmoji ?? '🐶',
     personaName: opts.personaName ?? 'egpt',
+    readPersonality: opts.readPersonality,
+    recordDefaultSession: opts.recordDefaultSession,
+    resolveBrain: opts.resolveBrain,
+    selfDmConfig: opts.selfDmConfig,
     stateDir,
+    sysLog: opts.sysLog,
+    systemCwd: opts.systemCwd,
   });
   return { brainCalls, bridge, errors, runtime, sends, stateDir };
 }
@@ -87,6 +96,141 @@ describe('dispatch runtime', () => {
     const activity = await readActivity(stateDir);
     expect(activity).toContain('\tRECV\twa/chat-a\t5ch');
     expect(activity).toContain('\tREPLY\twa/chat-a\t4ch\t0ms');
+  });
+
+  it('wraps the first turn for a new contact with the lineage prelude', async () => {
+    const { brainCalls, runtime } = await makeRuntime({
+      readPersonality: async () => 'PERSONALITY BODY',
+    });
+
+    await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: 'chat-a',
+      waChatName: 'Alice',
+      waSlug: 'alice',
+    });
+
+    expect(brainCalls).toHaveLength(1);
+    const wrappedText = brainCalls[0].payload.message;
+    expect(wrappedText).toContain('You are eGPT');
+    expect(wrappedText).toContain('The following profile describes your current operating mode');
+    expect(wrappedText).toContain('PERSONALITY BODY');
+    expect(wrappedText).toContain('Live message from the chat follows');
+    expect(wrappedText).toMatch(/hello\s*$/);
+  });
+
+  it('auto-elevates configured operator DMs to system personality', async () => {
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'wa-self': { slug: 'wa-self', personality: 'default', threadId: 'old-wa' },
+        },
+        telegram: {
+          'tg-self': { slug: 'tg-self', personality: 'default', threadId: 'old-tg' },
+        },
+      },
+    }), 'utf8');
+    const logs = [];
+    const { runtime } = await makeRuntime({
+      stateDir,
+      selfDmConfig: { whatsapp: 'wa-self', telegram: 'tg-self' },
+      sysLog: (msg) => logs.push(msg),
+    });
+
+    const state = await runtime.readState();
+
+    expect(state.contacts.whatsapp['wa-self'].personality).toBe('system');
+    expect(state.contacts.whatsapp['wa-self'].threadId).toBeNull();
+    expect(state.contacts.telegram['tg-self'].personality).toBe('system');
+    expect(state.contacts.telegram['tg-self'].threadId).toBeNull();
+    expect(logs.some(line => line.includes('auto-elevated whatsapp self-DM'))).toBe(true);
+    expect(logs.some(line => line.includes('auto-elevated telegram self-DM'))).toBe(true);
+  });
+
+  it('recovers a moved thread cwd and retries the brain turn', async () => {
+    const stateDir = await makeTempDir();
+    const oldCwd = join(stateDir, 'old-cwd');
+    const newCwd = join(stateDir, 'new-cwd');
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'chat-a': {
+            slug: 'alice',
+            personality: 'default',
+            threadId: 'thread-old',
+            threadCwd: oldCwd,
+          },
+        },
+      },
+    }), 'utf8');
+
+    let replyAttempts = 0;
+    let candidateCwds = null;
+    const { brainCalls, runtime, sends } = await makeRuntime({
+      stateDir,
+      findThreadJsonl: (threadId, candidates) => {
+        candidateCwds = candidates;
+        expect(threadId).toBe('thread-old');
+        return { cwd: newCwd };
+      },
+      reply: () => {
+        replyAttempts++;
+        if (replyAttempts === 1) throw new Error('resume failed');
+        return { text: 'recovered' };
+      },
+    });
+
+    await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: 'chat-a',
+      waChatName: 'Alice',
+      waSlug: 'alice',
+    });
+
+    expect(brainCalls).toHaveLength(2);
+    expect(brainCalls[0].sessionOpts.cwd).toBe(oldCwd);
+    expect(brainCalls[1].sessionOpts.cwd).toBe(newCwd);
+    expect(candidateCwds).toContain(join(stateDir, 'conversations', 'whatsapp', 'alice'));
+    expect(sends[0].body).toContain('recovered');
+    const state = await readConvState(stateDir);
+    expect(state.contacts.whatsapp['chat-a'].threadCwd).toBe(newCwd);
+  });
+
+  it('notifies the operator when a contact turn fails without recovery', async () => {
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'chat-a': {
+            slug: 'alice',
+            personality: 'default',
+            threadId: 'thread-old',
+            threadCwd: join(stateDir, 'old-cwd'),
+          },
+        },
+      },
+    }), 'utf8');
+    const notices = [];
+    const { runtime, sends } = await makeRuntime({
+      stateDir,
+      brainError: new Error('brain exploded'),
+      notifyOperator: async (message) => notices.push(message),
+    });
+
+    const result = await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: 'chat-a',
+      waChatName: 'Alice',
+      waSlug: 'alice',
+    });
+
+    expect(result.kind).toBe('silence');
+    expect(sends).toHaveLength(0);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('[egpt] contact "alice" turn failed.');
+    expect(notices[0]).toContain('threadId: thread-old');
+    expect(notices[0]).toContain('brain exploded');
   });
 
   it('preserves both contacts during concurrent two-chat arrivals', async () => {
