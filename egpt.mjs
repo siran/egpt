@@ -5086,22 +5086,16 @@ function App() {
         }
       };
 
-      // Buffer the first chunk before firing the brain (operator
-      // 2026-05-22: "e tends to complain at the beginning that the
-      // audio is garbled"). The first 5s of audio carry onset noise,
-      // an un-warmed speaker, and no context — whisper-base produces
-      // its weakest output there. Waiting until at least chunk 1 (i.e.,
-      // 10s of audio) gives the model a cleaner first impression. For
-      // very short voice notes (< 10s, single chunk), the brain still
-      // fires once at donePromise resolution with the full accurate
-      // transcript — no live preview, just the final pass.
-      const BUFFER_CHUNKS_BEFORE_FIRST_BRAIN = 2;
-      let observedChunkCount = 0;
-      const onChunk = ({ cumulative, idx }) => {
+      // Fire the brain on every chunk. Earlier we buffered 2 chunks to
+      // skip whisper's garbled first-5s with 1s chunks; with 6s windows
+      // the first window is already a coherent phrase, no need to wait.
+      // Crucial for short voices (~3s, single window): no buffer means
+      // the brain fires immediately on the only window we'll have,
+      // rather than waiting for the large-model final pass. Operator
+      // 2026-05-22: "no replies to basic 'are you there?' or it takes
+      // too long, way more than before."
+      const onChunk = ({ cumulative }) => {
         cumulativeTranscript = cumulative;
-        if (typeof idx === 'number') observedChunkCount = Math.max(observedChunkCount, idx + 1);
-        else observedChunkCount += 1;
-        if (observedChunkCount < BUFFER_CHUNKS_BEFORE_FIRST_BRAIN) return;
         runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
       };
       handle.emitter?.on?.('chunk', onChunk);

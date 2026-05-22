@@ -1573,12 +1573,15 @@ export async function startWhatsAppBridge({
         }
       }
 
-      // Final accurate pass with the large model — writes the canonical
-      // <base>.transcript.txt that the rest of the system consumes.
-      // This is what the brain sees as the "cumulative" on its final pass
-      // after donePromise resolves. Same noise-marker stripping applied.
+      // Final accurate pass with the large model. SKIPPED when audio is
+      // short enough that a single window already covered everything —
+      // the base-model's window text is the whole audio's transcript, and
+      // re-running the large model would just pay a ~20-30s cold start
+      // to refine a few seconds. Operator (2026-05-22): "no replies to
+      // basic 'are you there?' or it takes too long."
       let finalText = '';
-      if (finalModel) {
+      const _lastEmittedWindow = windowStarts.length === 1;
+      if (finalModel && !_lastEmittedWindow) {
         const finalArgs = ['-m', finalModel, '-f', wavPath, '--output-txt', '--no-prints'];
         if (language) { finalArgs.push('-l', language); }
         try {
@@ -1595,11 +1598,21 @@ export async function startWhatsAppBridge({
           log(`transcribe-stream: final whisper pass failed for ${base}: ${e?.message ?? e}`);
         }
       }
+      // Short-audio shortcut: there was exactly one window; use it as
+      // the canonical transcript. Write the file so /summarize and
+      // other consumers find it.
+      if (!finalText && _lastEmittedWindow) {
+        // Try to read back the live transcript's last [window …] line
+        // — that's the base model's full-audio output already noise-stripped.
+        try {
+          const liveBody = await fs.readFile(livePath, 'utf8');
+          const m = liveBody.match(/\[window \d+ @ [\d.]+-[\d.]+s\]\s+(.+)$/m);
+          if (m) finalText = m[1].trim();
+        } catch (e) { /* fall through */ }
+      }
       // If the final pass yielded nothing usable, fall back to writing an
       // empty transcript so the rest of the system can grep for the file.
-      if (!finalText) {
-        try { await fs.writeFile(finalTxt, '', 'utf8'); } catch (e) { console.error(`!! transcribe-stream empty final write: ${e?.message ?? e}`); }
-      }
+      try { await fs.writeFile(finalTxt, finalText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream final write: ${e?.message ?? e}`); }
 
       try { await fs.unlink(wavPath); } catch {}
       emitter.emit('done', finalText);
