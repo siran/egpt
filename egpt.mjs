@@ -5113,31 +5113,52 @@ function App() {
       // rather than waiting for the large-model final pass. Operator
       // 2026-05-22: "no replies to basic 'are you there?' or it takes
       // too long, way more than before."
-      // Time-passes ticker (operator 2026-05-22: "more frequent updates
-      // of the same text with increased timer... like 'time passes and
-      // words flow with it'"). Even when no new audio chunk has produced
-      // fresh text, the audio clock keeps advancing. Tick every
-      // VOICE_TICK_MS — refresh the offset and try a brain pass. Brain
-      // coalesces (runBrainPass skips if one is in-flight), so we don't
-      // pile up calls; we just give the brain a steady sense of time
-      // moving while it listens.
+      // Audio-time synchronized ticker (operator 2026-05-22:
+      // "synchronize the time ticker with a real passage of time, based
+      // on length of audio"). The ticker advances based on:
+      //   - the latest window's endSeconds (audio-internal position), and
+      //   - wall-clock elapsed since that window arrived (to interpolate
+      //     between chunks, so the timer keeps ticking even between
+      //     whisper completing windows).
+      // Always capped at the total audio duration so it can't run past
+      // the end. When no audio_duration known yet, just uses wall-clock
+      // since voice arrival.
       const VOICE_TICK_MS = 1500;
       const voiceStartMs = Date.now();
-      const _refreshOffset = (chunkEndSec) => {
-        const elapsed = (Date.now() - voiceStartMs) / 1000;
-        cumulativeOffsetSec = Math.max(cumulativeOffsetSec, elapsed,
-          typeof chunkEndSec === 'number' ? chunkEndSec : 0);
+      let lastChunkAudioEndSec = 0;
+      let lastChunkWallMs = voiceStartMs;
+      let audioDurationSec = null;
+      const _refreshOffset = () => {
+        const nowMs = Date.now();
+        const sinceChunkSec = (nowMs - lastChunkWallMs) / 1000;
+        let estimated = lastChunkAudioEndSec + sinceChunkSec;
+        if (audioDurationSec != null && estimated > audioDurationSec) {
+          estimated = audioDurationSec;
+        }
+        cumulativeOffsetSec = Math.max(cumulativeOffsetSec, estimated);
       };
       const tickTimer = setInterval(() => {
         _refreshOffset();
-        if (cumulativeTranscript) {
-          runBrainPass().catch(e => console.error(`!! voice-stream tick: ${e?.message ?? e}`));
-        }
+        // Tick fires brain even when no transcript yet (silence window).
+        // Brain sees `[0:03]      ` (whitespace) — perception of time
+        // passing while listening.
+        runBrainPass().catch(e => console.error(`!! voice-stream tick: ${e?.message ?? e}`));
       }, VOICE_TICK_MS);
 
-      const onChunk = ({ cumulative, endSeconds }) => {
-        cumulativeTranscript = cumulative;
-        _refreshOffset(endSeconds);
+      const onChunk = ({ cumulative, spacedCumulative, endSeconds, audioDuration }) => {
+        // Prefer the spaced representation — silence as whitespace gives
+        // the model a visual map of audio-time position within the window.
+        cumulativeTranscript = (typeof spacedCumulative === 'string' && spacedCumulative.length)
+          ? spacedCumulative
+          : cumulative;
+        if (typeof audioDuration === 'number' && audioDuration > 0) {
+          audioDurationSec = audioDuration;
+        }
+        if (typeof endSeconds === 'number') {
+          lastChunkAudioEndSec = endSeconds;
+          lastChunkWallMs = Date.now();
+        }
+        _refreshOffset();
         runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
       };
       handle.emitter?.on?.('chunk', onChunk);

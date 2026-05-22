@@ -1461,6 +1461,42 @@ export async function startWhatsAppBridge({
       .replace(/\s+/g, ' ')
       .trim();
 
+    // Build a SPACED representation of a window's transcript where silence
+    // becomes visible whitespace (operator 2026-05-22: "if the audio is
+    // silent, it goes to the prompt as '     '... i'd like e to read the
+    // latter — in a sliding window, with changing tickers"). The model
+    // gets a visual map of when speech happened within the window:
+    //   "      hola estoy     "   (3s silence + 3s speech)
+    // SCALE chars per second is a tunable; 4 keeps strings small but
+    // visible. A 6s window produces ~24 chars max.
+    const _buildSpacedWindow = (rawWhisperOutput, windowDurSec) => {
+      const SCALE = 4;
+      const totalChars = Math.max(1, Math.round(windowDurSec * SCALE));
+      const segRe = /^\s*\[(\d{2}):(\d{2}):(\d{2}\.\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.+)$/;
+      const segments = [];
+      for (const line of String(rawWhisperOutput ?? '').split(/\r?\n/)) {
+        const m = line.match(segRe);
+        if (!m) continue;
+        const startSec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
+        const endSec   = parseInt(m[4]) * 3600 + parseInt(m[5]) * 60 + parseFloat(m[6]);
+        const text     = _stripNoiseMarkers(m[7]);
+        if (!text) continue;
+        segments.push({ startSec, endSec, text });
+      }
+      if (segments.length === 0) return ' '.repeat(totalChars);
+      let result = '';
+      let cursorSec = 0;
+      for (const seg of segments) {
+        const gapSec = Math.max(0, seg.startSec - cursorSec);
+        result += ' '.repeat(Math.round(gapSec * SCALE));
+        result += seg.text;
+        cursorSec = seg.endSec;
+      }
+      const trailingSec = Math.max(0, windowDurSec - cursorSec);
+      result += ' '.repeat(Math.round(trailingSec * SCALE));
+      return result;
+    };
+
     // Idempotent shortcut.
     if (existsSync(finalTxt)) {
       let cached = '';
@@ -1538,9 +1574,9 @@ export async function startWhatsAppBridge({
 
         const args = ['-m', liveModel, '-f', winWav, '--no-prints'];
         if (language) { args.push('-l', language); }
-        let windowText = '';
+        let rawOutput = '';
         try {
-          windowText = await new Promise((resolve, reject) => {
+          rawOutput = await new Promise((resolve, reject) => {
             const child = _spawnChild(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
             let buf = '';
             let stderr = '';
@@ -1549,12 +1585,7 @@ export async function startWhatsAppBridge({
             child.on('error', reject);
             child.on('close', code => {
               if (code !== 0) return reject(new Error(`whisper window ${idx} exit ${code}: ${stderr.slice(0, 200)}`));
-              const text = buf.split(/\r?\n/)
-                .map(line => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim())
-                .filter(Boolean)
-                .join(' ')
-                .trim();
-              resolve(text);
+              resolve(buf);
             });
           });
         } catch (e) {
@@ -1563,16 +1594,37 @@ export async function startWhatsAppBridge({
           try { await fs.unlink(winWav); } catch {}
         }
 
-        const cleaned = _stripNoiseMarkers(windowText);
-        if (cleaned) {
-          liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned}\n`;
-          try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
-          allWindowTexts.push(cleaned);
-          // The brain sees this window's transcript as the latest cumulative
-          // view (replacing prior content). Continuity comes from the brain's
-          // session memory + the reply stack the dispatcher accumulates.
-          emitter.emit('chunk', { text: cleaned, idx, cumulative: cleaned, offsetSeconds: offset, endSeconds: offset + winLen });
-        }
+        // Two derived views of the window:
+        //   cleaned    = stripped of timestamps, noise markers, joined for
+        //                logging and downstream consumers
+        //   spaced     = silence preserved as whitespace, positioning text
+        //                in audio-time (the model's "visual map" per operator)
+        const joinedNoStamps = rawOutput.split(/\r?\n/)
+          .map(line => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim())
+          .filter(Boolean)
+          .join(' ')
+          .trim();
+        const cleaned = _stripNoiseMarkers(joinedNoStamps);
+        const spaced = _buildSpacedWindow(rawOutput, winLen);
+
+        // Always emit the window, even when speech-stripped to empty —
+        // the spaced version still carries the "this window was silence"
+        // signal (just whitespace), which is part of the model's
+        // perception of time passing. Operator (2026-05-22): "if the audio
+        // is silent, it goes to the prompt as '     '."
+        liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned || '(silence)'}\n`;
+        try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
+        if (cleaned) allWindowTexts.push(cleaned);
+        emitter.emit('chunk', {
+          text: cleaned,
+          spacedText: spaced,
+          idx,
+          cumulative: cleaned,
+          spacedCumulative: spaced,
+          offsetSeconds: offset,
+          endSeconds: offset + winLen,
+          audioDuration: duration,
+        });
       }
 
       // SKIPPED: the large-model final pass. Operator (2026-05-22):
