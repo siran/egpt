@@ -81,6 +81,29 @@ export function isSilenceMarker(text) {
   const trimmed = String(text).trim();
   return /^(\p{Extended_Pictographic}[\p{Extended_Pictographic}️‍]*\s*)?(\w{1,16}[:\s]\s*)?(\.{3}|…)\s*$/u.test(trimmed);
 }
+export function createOrderedCumulativeTranscriptEmitter(onEdit) {
+  const parts = [];
+  let next = 0;
+  let last = '';
+  return async function accept(index, text) {
+    if (!Number.isInteger(index) || index < 0) return;
+    parts[index] = String(text ?? '').trim();
+    while (Object.hasOwn(parts, next)) {
+      next++;
+      const cumulative = parts
+        .slice(0, next)
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cumulative && cumulative !== last) {
+        last = cumulative;
+        await onEdit?.(cumulative);
+      }
+    }
+  };
+}
+
 // Reconnect backoff. Initial wait, doubled on each consecutive
 // failure, capped. baileys often reports 'connection.update' close
 // → open → close in quick succession when WA's edge is flapping;
@@ -1341,6 +1364,79 @@ export async function startWhatsAppBridge({
     });
   }
 
+  async function _transcribeChunkedAudio({ inputPath, outputDir, base, cfg, onTranscriptEdit }) {
+    const whisperBin = cfg.command || 'whisper-cli';
+    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
+    const modelPath  = cfg.model_path;
+    const finalTxt = join(outputDir, `${base}.transcript.txt`);
+    const chunkSeconds = Math.max(1, Number(cfg.chunk_seconds ?? cfg.stream_chunk_seconds ?? 5) || 5);
+    const parallel = Math.max(1, Math.min(8, Number(cfg.chunk_parallel ?? cfg.parallel ?? 2) || 2));
+    const chunkPrefix = `${base}.chunk-`;
+    const chunkPattern = join(outputDir, `${chunkPrefix}%03d.wav`);
+
+    try {
+      await _runCmd(ffmpegBin, [
+        '-y', '-i', inputPath,
+        '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
+        '-f', 'segment',
+        '-segment_time', String(chunkSeconds),
+        '-reset_timestamps', '1',
+        chunkPattern,
+      ]);
+    } catch (e) {
+      log(`transcribe: ffmpeg chunking failed for ${base}: ${e.message}`);
+      return null;
+    }
+
+    let chunkFiles = [];
+    try {
+      chunkFiles = (await fs.readdir(outputDir))
+        .filter(name => name.startsWith(chunkPrefix) && name.endsWith('.wav'))
+        .sort();
+    } catch (e) {
+      log(`transcribe: chunk listing failed for ${base}: ${e.message}`);
+      return null;
+    }
+    if (!chunkFiles.length) return null;
+
+    const accept = createOrderedCumulativeTranscriptEmitter(onTranscriptEdit);
+    const texts = new Array(chunkFiles.length).fill('');
+    let cursor = 0;
+    async function runOne(i) {
+      const chunkName = chunkFiles[i];
+      const chunkPath = join(outputDir, chunkName);
+      const args = ['-m', modelPath, '-f', chunkPath, '--output-txt', '--no-prints'];
+      if (typeof cfg.language === 'string' && cfg.language.trim()) args.push('-l', cfg.language.trim());
+      try {
+        await _runCmd(whisperBin, args);
+        const txtPath = `${chunkPath}.txt`;
+        texts[i] = (await fs.readFile(txtPath, 'utf8')).trim();
+        await accept(i, texts[i]);
+        try { await fs.unlink(txtPath); } catch {}
+      } catch (e) {
+        log(`transcribe: whisper chunk ${i + 1}/${chunkFiles.length} failed for ${base}: ${e.message}`);
+        texts[i] = '';
+        await accept(i, '');
+      } finally {
+        try { await fs.unlink(chunkPath); } catch {}
+      }
+    }
+    const workers = Array.from({ length: Math.min(parallel, chunkFiles.length) }, async () => {
+      for (;;) {
+        const i = cursor++;
+        if (i >= chunkFiles.length) return;
+        await runOne(i);
+      }
+    });
+    await Promise.all(workers);
+
+    const text = texts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    try { await fs.writeFile(finalTxt, text, 'utf8'); }
+    catch (e) { log(`transcribe: final write failed for ${base}: ${e.message}`); }
+    return { path: finalTxt, text };
+  }
+
   // Audio transcription via whisper.cpp. Async / fire-and-forget per
   // call — voice note save returns immediately; transcript sidecar
   // (<base>.transcript.txt) lands alongside the audio when whisper
@@ -1355,7 +1451,7 @@ export async function startWhatsAppBridge({
   //          model_path: "<path-to-ggml-*.bin>", language?: "es" }
   //
   // Idempotent: skips if <base>.transcript.txt already exists.
-  async function _transcribeAudio({ inputPath, outputDir, base }) {
+  async function _transcribeAudio({ inputPath, outputDir, base, onTranscriptEdit = null }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
@@ -1367,6 +1463,12 @@ export async function startWhatsAppBridge({
     }
     const finalTxt = join(outputDir, `${base}.transcript.txt`);
     if (existsSync(finalTxt)) return null;     // already transcribed
+    const streamEdits = cfg.stream_edits !== false && typeof onTranscriptEdit === 'function';
+    if (streamEdits) {
+      const chunked = await _transcribeChunkedAudio({ inputPath, outputDir, base, cfg, onTranscriptEdit });
+      if (chunked) return chunked;
+      log(`transcribe: falling back to whole-file transcription for ${base}`);
+    }
     const wavPath = join(outputDir, `${base}.tmp.wav`);
     // ffmpeg: opus/m4a/mp3 → 16kHz mono PCM WAV
     try {
@@ -1398,6 +1500,9 @@ export async function startWhatsAppBridge({
     }
     try { await fs.unlink(wavPath); } catch {}
     if (text) {
+      if (streamEdits) {
+        try { await onTranscriptEdit(text); } catch (e) { log(`transcribe: transcript edit callback failed for ${base}: ${e.message}`); }
+      }
       const preview = text.length > 60 ? text.slice(0, 59) + '…' : text;
       log(`transcribed ${base}: "${preview}"`);
     }
@@ -1430,6 +1535,34 @@ export async function startWhatsAppBridge({
       return jpgPath;
     } catch (e) {
       log(`keyframe extract failed for ${base}: ${e.message}`);
+      return null;
+    }
+  }
+
+  function _shouldStreamAudioTranscriptEdits() {
+    const cfg = media.audio_transcribe ?? {};
+    return cfg.enabled === true && cfg.stream_edits !== false;
+  }
+
+  function _audioMessageNode(msg) {
+    const m = msg?.message ?? {};
+    return m.audioMessage
+      ?? m.ephemeralMessage?.message?.audioMessage
+      ?? m.viewOnceMessage?.message?.audioMessage
+      ?? m.viewOnceMessageV2?.message?.audioMessage
+      ?? null;
+  }
+
+  function _mediaEntryFor(msg) {
+    const chatJid = msg?.key?.remoteJid;
+    const msgId = msg?.key?.id;
+    if (!chatJid || !msgId) return null;
+    const dir = _mediaDirFor(chatJid);
+    try {
+      const idx = JSON.parse(readFileSync(join(dir, '.media-index.json'), 'utf8'));
+      const entry = idx[msgId] ?? null;
+      return entry ? { ...entry, dir } : null;
+    } catch {
       return null;
     }
   }
@@ -1543,7 +1676,8 @@ export async function startWhatsAppBridge({
       // is false (returns null fast).
       let transcript = null;
       let keyframePath = null;
-      if (hit.kind === 'audio' || hit.kind === 'video') {
+      const deferAudioTranscriptToDispatch = hit.kind === 'audio' && _shouldStreamAudioTranscriptEdits();
+      if ((hit.kind === 'audio' && !deferAudioTranscriptToDispatch) || hit.kind === 'video') {
         // Same _transcribeAudio for video — ffmpeg pulls the audio
         // track and ignores the video stream. Silent videos return null.
         transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
@@ -2014,7 +2148,7 @@ export async function startWhatsAppBridge({
       }
     }
 
-    await onIncoming?.(processed, {
+    const deliverIncoming = async (body) => onIncoming?.(body, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
       // msgKey enables proper WA-reply quoting later — e.g. when the
       // operator types '@m42 …' in shell, we send the reply via
@@ -2041,6 +2175,27 @@ export async function startWhatsAppBridge({
       // 'Mike: msg [HH:MM]\nJane: …' when piling messages.
       senderName: firstName ?? username ?? null,
     });
+
+    if (_audioMessageNode(msg) && _shouldStreamAudioTranscriptEdits()) {
+      const entry = _mediaEntryFor(msg);
+      if (entry?.path && entry?.base) {
+        let emitted = false;
+        const result = await _transcribeAudio({
+          inputPath: entry.path,
+          outputDir: entry.dir,
+          base: entry.base,
+          onTranscriptEdit: async (body) => {
+            const clean = String(body ?? '').trim();
+            if (!clean) return;
+            emitted = true;
+            await deliverIncoming(clean);
+          },
+        }).catch(e => { log(`transcribe stream failed (${entry.base}): ${e.message}`); return null; });
+        if (emitted || result?.text) return;
+      }
+    }
+
+    await deliverIncoming(processed);
   }
 
   // ── Start ─────────────────────────────────────────────────────
