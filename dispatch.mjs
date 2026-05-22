@@ -134,6 +134,110 @@ async function appendActivity({ fs, paths, clock, logger, type, surface, threadI
   }
 }
 
+// Per-chat transcript rolling-window archive (operator 2026-05-22:
+// "transcript.md as a rolling window of last 8 days, archive older to
+// memories/transcript-yyyy-mm-dd.md"). Track which date each transcript
+// file last received content on, so we know when to insert a new day
+// header and when to sweep for archiving.
+const TRANSCRIPT_KEEP_DAYS = 8;
+const _lastTranscriptDate = new Map();   // filePath → 'YYYY-MM-DD' (last write)
+
+// Split older sections out of transcript.md into memories/transcript-
+// YYYY-MM-DD.md. Idempotent — sections already archived (still labeled
+// `## YYYY-MM-DD` but absent from transcript.md after the rewrite) stay
+// in their memories files. Triggered when the date changes on append;
+// fast no-op when no archive needed.
+async function archiveOldTranscriptDays(fs, transcriptPath, todayIso) {
+  const today = todayIso.slice(0, 10);
+  const cutoff = new Date(today + 'T00:00:00.000Z');
+  cutoff.setUTCDate(cutoff.getUTCDate() - TRANSCRIPT_KEEP_DAYS);
+  const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+  let content;
+  try { content = await fs.readFile(transcriptPath, 'utf8'); }
+  catch (e) { return; }
+  if (!content) return;
+
+  // Parse `## YYYY-MM-DD` headers at line start. Capture everything
+  // before the first header as preamble (file's identity heading +
+  // pre-date entries).
+  const re = /^## (\d{4}-\d{2}-\d{2})\b/gm;
+  const matches = [];
+  let m;
+  while ((m = re.exec(content)) !== null) {
+    matches.push({ date: m[1], index: m.index });
+  }
+  if (matches.length === 0) return;
+
+  const preamble = content.slice(0, matches[0].index);
+  const sections = matches.map((mm, i) => {
+    const end = i + 1 < matches.length ? matches[i + 1].index : content.length;
+    return { date: mm.date, body: content.slice(mm.index, end) };
+  });
+
+  const keep = sections.filter(s => s.date >= cutoffStr);
+  const archive = sections.filter(s => s.date < cutoffStr);
+  if (archive.length === 0) return;
+
+  const memDir = join(dirname(transcriptPath), 'memories');
+  try { await fs.mkdir(memDir, { recursive: true }); }
+  catch (e) { return; }
+
+  // Group archived sections by date (multiple sections on the same date
+  // can happen across daemon restarts). Append each date's content to
+  // memories/transcript-YYYY-MM-DD.md.
+  const byDate = new Map();
+  for (const sec of archive) {
+    if (!byDate.has(sec.date)) byDate.set(sec.date, '');
+    byDate.set(sec.date, byDate.get(sec.date) + sec.body);
+  }
+  for (const [date, body] of byDate.entries()) {
+    const memPath = join(memDir, `transcript-${date}.md`);
+    try { await fs.appendFile(memPath, body, 'utf8'); }
+    catch (e) { /* best effort */ }
+  }
+
+  // Rewrite transcript.md with preamble + kept sections only. Atomic.
+  const newContent = preamble + keep.map(s => s.body).join('');
+  const tmp = transcriptPath + '.tmp-' + process.pid + '-' + Date.now();
+  try {
+    await fs.writeFile(tmp, newContent, 'utf8');
+    await fs.rename(tmp, transcriptPath);
+  } catch (e) { /* best effort; leave file alone if rename failed */ }
+}
+
+// Returns the date header to PREPEND to the next entry (so the new
+// day's section starts), or '' if same-day. Caches per-file so we only
+// re-archive on date changes. On the first write to a file in this
+// session, peeks at the file's last section header to seed the cache.
+async function maybePrefixDateHeader(fs, transcriptPath, clock) {
+  const todayIso = clockIso(clock);
+  const today = todayIso.slice(0, 10);
+  const cached = _lastTranscriptDate.get(transcriptPath);
+  if (cached === today) return '';
+
+  // Cache miss: check the file's last `## YYYY-MM-DD` if any.
+  if (cached == null) {
+    try {
+      const content = await fs.readFile(transcriptPath, 'utf8');
+      const matches = [...content.matchAll(/^## (\d{4}-\d{2}-\d{2})\b/gm)];
+      if (matches.length > 0) {
+        const lastDate = matches[matches.length - 1][1];
+        if (lastDate === today) {
+          _lastTranscriptDate.set(transcriptPath, today);
+          return '';
+        }
+      }
+    } catch (e) { /* file doesn't exist yet — that's fine */ }
+  }
+
+  // Date is different (or first time seeing this file with a today
+  // mismatch). Archive old sections, set the cache, return a header.
+  await archiveOldTranscriptDays(fs, transcriptPath, todayIso);
+  _lastTranscriptDate.set(transcriptPath, today);
+  return `## ${today}\n\n`;
+}
+
 // Size-based rotation for append-only logs. Checked every Nth call by
 // the caller (size-on-every-append is too costly). Operator (2026-05-22):
 // "noted a big e-activity that needs to be rotated."
@@ -688,14 +792,20 @@ export function createDispatchRuntime({
     // Daily archive for the heartbeat transcript only (other thread
     // types are per-chat or system-e and have their own lifecycle).
     // Archives at ~/.egpt/e-heartbeats/<base>-YYYY-MM-DD.md (plural).
+    let dateHeader = '';
     if (isHeartbeatThread) {
       await rotateDailyIfNeeded(fs, fpath, join(paths.root, 'e-heartbeats'), clock);
+    } else if (!isSystemThread) {
+      // Per-chat + system-e transcripts: 8-day rolling window. Insert a
+      // `## YYYY-MM-DD` section header when the date changes; archive
+      // sections older than TRANSCRIPT_KEEP_DAYS into memories/.
+      dateHeader = await maybePrefixDateHeader(fs, fpath, clock);
     }
     const inboundLogged = await appendTranscript({
       fs,
       logger,
       path: fpath,
-      body: header + text + '\n\n',
+      body: header + dateHeader + text + '\n\n',
       label: 'inbound',
     });
     if (inboundLogged) {
