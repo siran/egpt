@@ -1572,7 +1572,14 @@ export async function startWhatsAppBridge({
           continue;
         }
 
-        const args = ['-m', liveModel, '-f', winWav, '--no-prints'];
+        // --max-len forces whisper to break segments at ~N characters,
+        // exposing inter-word silence gaps that the model would
+        // otherwise smooth over into one continuous segment. Operator
+        // (2026-05-22): "silences are not being forwarded. at least
+        // not good." Without smaller segments, _buildSpacedWindow has
+        // no gaps to render as whitespace — the whole window collapses
+        // to one segment of speech with no visible silence inside.
+        const args = ['-m', liveModel, '-f', winWav, '--no-prints', '--max-len', '30'];
         if (language) { args.push('-l', language); }
         let rawOutput = '';
         try {
@@ -1612,7 +1619,11 @@ export async function startWhatsAppBridge({
         // signal (just whitespace), which is part of the model's
         // perception of time passing. Operator (2026-05-22): "if the audio
         // is silent, it goes to the prompt as '     '."
+        // Log BOTH the cleaned (joined) text and the spaced (with-
+        // whitespace) version — the latter is what the model actually
+        // sees, so the operator can inspect it directly here.
         liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned || '(silence)'}\n`;
+        liveAppendBuffer += `  spaced: "${spaced}"\n`;
         try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
         if (cleaned) allWindowTexts.push(cleaned);
         emitter.emit('chunk', {
