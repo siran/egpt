@@ -8,7 +8,7 @@ import {
   unlink as nodeUnlink,
   writeFile as nodeWriteFile,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 
 import { parseInput } from './interpreter.mjs';
 import { resolveRoute } from './room.mjs';
@@ -147,6 +147,35 @@ async function rotateIfBig(fs, path) {
     const backup = path + '.1';
     try { await fs.unlink(backup); } catch (e) { /* no prior backup — fine */ }
     await fs.rename(path, backup);
+  } catch (e) {
+    // best-effort; never blocks the main path
+  }
+}
+
+// Daily-archive rotation for append-only logs that grow forever
+// (operator 2026-05-22: "rotate hourly in daily files"). On the first
+// write of a new day, the current file is moved to <dirname>/<base>/
+// <base>-YYYY-MM-DD.md (the previous day's content) and the writer
+// starts a fresh file. Cheap: one stat per append; rename only when
+// the file's mtime date differs from today's. mtime is "last
+// modified" — for an append-only file that's effectively the date of
+// the last write, which is what we want for "this file is yesterday's."
+async function rotateDailyIfNeeded(fs, filePath, clock) {
+  try {
+    let st;
+    try { st = await fs.stat?.(filePath); }
+    catch (e) { return; }
+    if (!st) return;
+    const fileDate = new Date(st.mtime).toISOString().slice(0, 10);
+    const todayDate = clockIso(clock).slice(0, 10);
+    if (fileDate === todayDate) return;
+    const ext = extname(filePath);
+    const base = basename(filePath, ext);
+    const archiveDir = join(dirname(filePath), base);
+    await fs.mkdir(archiveDir, { recursive: true });
+    const archived = join(archiveDir, `${base}-${fileDate}${ext}`);
+    try { await fs.unlink(archived); } catch (e) { /* no clash — fine */ }
+    await fs.rename(filePath, archived);
   } catch (e) {
     // best-effort; never blocks the main path
   }
@@ -652,6 +681,14 @@ export function createDispatchRuntime({
           ? `# @e ${threadId} log\n\n`
           : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
       : '';
+    // Daily archive for the heartbeat transcript only (other thread
+    // types are per-chat or system-e and have their own lifecycle).
+    // Operator (2026-05-22): rotate hourly in daily files for the
+    // bg/system feeds. Heartbeat fits — append-only, debug-ish, never
+    // referenced for conversation memory.
+    if (isSystemThread && threadId === 'heartbeat') {
+      await rotateDailyIfNeeded(fs, fpath, clock);
+    }
     const inboundLogged = await appendTranscript({
       fs,
       logger,
@@ -712,6 +749,10 @@ export function createDispatchRuntime({
         label: 'reply',
       });
       try {
+        // Daily archive: on first write of a new day, move yesterday's
+        // e-feed.md into ~/.egpt/e-feed/e-feed-<yesterday>.md and start
+        // fresh. Cheap-ish; mtime check + maybe one rename.
+        await rotateDailyIfNeeded(fs, paths.eFeed, clock);
         const feedScene = isSystemThread
           ? `## ${nowStamp} — [${threadId}]`
           : `## ${nowStamp} — [${threadCtx.name || threadId}] (${threadId})`;
