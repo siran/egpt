@@ -5062,14 +5062,19 @@ function App() {
             pendingNewChunk = false;
             const snapshot = cumulativeTranscript;
             if (!snapshot) break;
-            // Bare ticker + sliding text frame, no envelope. Operator
-            // (2026-05-22): "do not notify e it's a voice message...
-            // e only receives a running 'millisecond time ticker' +
-            // text-window that disappears." Strip the standard
-            // [Sender@surface.chat (HH:MM)]: wrapper — just the time
-            // and the current frame.
+            // Minimal envelope per operator (2026-05-22): ticker +
+            // sender name + frame. Alien arc had only the canvas
+            // (no envelope), audio analog adds the sender so the
+            // brain knows whose words it's reading without inventing
+            // a chat/surface wrapper around them.
+            //   [0:05.177] An: hola
+            //   [0:06.234] An: hola e como
+            //   [0:08.321] An:    como estas espero
             const audioStamp = _formatAudioTime(cumulativeOffsetSec);
-            const personaPrompt = `${audioStamp} ${snapshot}`;
+            const sender = (typeof meta.waSenderName === 'string' && meta.waSenderName.trim())
+              ? meta.waSenderName.trim()
+              : 'An';
+            const personaPrompt = `${audioStamp} ${sender}: ${snapshot}`;
             try {
               const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
               const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
