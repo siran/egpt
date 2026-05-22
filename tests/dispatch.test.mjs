@@ -99,6 +99,40 @@ describe('dispatch runtime', () => {
     expect(activity).toContain('\tREPLY\twa/chat-a\t4ch\t0ms');
   });
 
+  it('starts the brain stream before transcript filesystem work', async () => {
+    const events = [];
+    const trackingFs = {
+      ...realFs,
+      existsSync: (path) => {
+        events.push(`exists:${String(path)}`);
+        return existsSync(path);
+      },
+      mkdir: async (path, opts) => {
+        events.push(`mkdir:${String(path)}`);
+        return realFs.mkdir(path, opts);
+      },
+      appendFile: async (path, body, enc) => {
+        events.push(`append:${String(path)}`);
+        return realFs.appendFile(path, body, enc);
+      },
+    };
+    const brain = {
+      stream: () => {
+        events.push('brain');
+        return { text: 'ok' };
+      },
+    };
+    const { runtime } = await makeRuntime({ brain, fs: trackingFs });
+
+    await runtime.runDefaultBrainTurn('hello', () => {}, {
+      threadId: 'shell',
+      surface: 'shell',
+    });
+
+    expect(events[0]).toBe('brain');
+    expect(events.findIndex(e => e.startsWith('append:'))).toBeGreaterThan(0);
+  });
+
   it('wraps the first turn for a new contact with the lineage prelude', async () => {
     const { brainCalls, runtime } = await makeRuntime({
       readPersonality: async () => 'PERSONALITY BODY',

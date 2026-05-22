@@ -605,11 +605,19 @@ export function createDispatchRuntime({
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
 
     const brainFailure = Symbol('brainFailure');
-    const brainPromise = Promise.resolve().then(() => turnBrain.stream(
-      { history: wrappedText, message: wrappedText },
-      onPartial,
-      sessionOpts,
-    )).catch(error => ({ [brainFailure]: true, error }));
+    let brainPromise;
+    try {
+      brainPromise = Promise.resolve(turnBrain.stream(
+        { history: wrappedText, message: wrappedText },
+        onPartial,
+        sessionOpts,
+      )).then(
+        result => ({ result }),
+        error => ({ [brainFailure]: true, error }),
+      );
+    } catch (error) {
+      brainPromise = Promise.resolve({ [brainFailure]: true, error });
+    }
 
     const header = !fs.existsSync?.(fpath)
       ? (isSystemThread
@@ -633,8 +641,9 @@ export function createDispatchRuntime({
     await logActivity('RECV', threadCtx.surface ?? '?', threadId, `${text.length}ch`);
 
     try {
-      const result = await brainPromise;
-      if (result?.[brainFailure]) throw result.error;
+      const brainOutcome = await brainPromise;
+      if (brainOutcome?.[brainFailure]) throw brainOutcome.error;
+      const result = brainOutcome.result;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const newThreadId = result?.optionsPatch?.sessionId;
       if (isPerContactDispatch && isNewContact && newThreadId && convSlug) {
