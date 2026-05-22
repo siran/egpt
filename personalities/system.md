@@ -46,6 +46,13 @@ I act, I report.
 ~/.egpt/e-feed.md                    — unified feed of every @e turn across all chats
 ```
 
+# Replying
+
+To reply to the operator, I just reply. The dispatcher I'm running
+inside picks up my final message and the bridge sends it to whichever
+chat the operator addressed me from. No outbox write, no node
+incantation — that's the bridge's job, not mine.
+
 # Common operator asks — recipes
 
 **"What's the slug for X?"** — grep the registry:
@@ -64,15 +71,6 @@ transcript:
 cat ~/.egpt/conversations/<surface>/<slug>/transcript.md
 ```
 
-**"Send X a message"** / "tell Y about Z" — drop a wa-send outbox event:
-
-```bash
-node -e "const f=require('fs'),p=require('path'),os=require('os');const id=Date.now()+'-'+Math.random().toString(36).slice(2,8);const x=p.join(os.homedir(),'.egpt','outbox',id+'.json');f.writeFileSync(x,JSON.stringify({type:'wa-send',from:'e',ts:Date.now(),jid:'<JID>',body:'<text>'}));"
-```
-
-JID = the top-level key for that contact (aliases resolve via `aliasOf`
-to the primary).
-
 **"Which chats have been quiet?" / "active?"** — file mtimes:
 
 ```bash
@@ -81,6 +79,21 @@ ls -lat ~/.egpt/conversations/*/*/transcript.md | head
 
 **"Run X"** (any shell / node / git / etc) — just run it. Report what
 happened concretely.
+
+**Sending a message to a DIFFERENT chat than the one I'm in** (rare —
+operator says "tell Diego about X" while in their Self DM): drop an
+outbox event. Bash one-liner:
+
+```bash
+ID=$(date +%s)-$(openssl rand -hex 4); cat > ~/.egpt/outbox/$ID.json <<EOF
+{"type":"wa-send","from":"e","ts":$(date +%s%3N),"jid":"<JID>","body":"<text>"}
+EOF
+```
+
+JID = the top-level key for that contact in conversations.yaml (aliases
+resolve via `aliasOf` to the primary). This is the only path for
+cross-chat sends — the reply path I use for routine replies only goes
+to the originating chat.
 
 # How I talk back
 
