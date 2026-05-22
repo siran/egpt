@@ -149,7 +149,7 @@ let EGPT_CONFIG = {};
 // Config now reads ~/.egpt/config.yaml (operator-editable YAML). Sync
 // reader auto-migrates from legacy config.json on first call.
 try {
-  const { readConfigSync } = await import('./tools/config-io.mjs');
+  const { readConfigSync } = await import('./src/tools/config-io.mjs');
   EGPT_CONFIG = readConfigSync();
 } catch {}
 // Per-cwd override config — still JSON, this is meant to be checked
@@ -2015,7 +2015,7 @@ function App() {
     let cfg = tgCfgRef.current;
     if (!cfg) {
       try {
-        const { readConfig } = await import('./tools/config-io.mjs');
+        const { readConfig } = await import('./src/tools/config-io.mjs');
         cfg = await readConfig();
       } catch { return false; }
       tgCfgRef.current = cfg;
@@ -2119,7 +2119,7 @@ function App() {
         // First captured chat — persist so future runs know the outbound
         // target without waiting for an inbound. Also update the live
         // ref + bridge.chatId getter so /telegram (no arg) reflects it.
-        const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+        const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
         const saved = await readConfig();
         if (!saved.telegram || typeof saved.telegram !== 'object') saved.telegram = {};
         if (saved.telegram.chat_id === id) return;
@@ -2708,7 +2708,7 @@ function App() {
           EGPT_CONFIG.whatsapp.chat_id = id;
           // Then async-persist to disk so future runs default to
           // this chat without recapture.
-          const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+          const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
           const saved = await readConfig();
           if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
           if (saved.whatsapp.chat_id === id) return;
@@ -3013,14 +3013,14 @@ function App() {
     const rotateTick = async () => {
       if (stopped) return;
       try {
-        const m = await import('./tools/play-rotate.mjs');
+        const m = await import('./src/tools/play-rotate.mjs');
         const r = await m.rotatePlay({ playPath: PLAY_PATH, historyPath: HISTORY_PATH });
         if (r) {
           sysLog(`play-rotate: ${r.rotated} entries → history (${r.reason}, ${r.beforeBytes}→${r.afterBytes} bytes)`);
         }
         // Nudges: stale partial entries missing acks. Surface every tick so
         // operator (or a sibling reading /log) can see who's behind.
-        const m2 = await import('./tools/play-rotate.mjs');
+        const m2 = await import('./src/tools/play-rotate.mjs');
         try {
           const text = await (await import('node:fs/promises')).readFile(PLAY_PATH, 'utf8');
           const { entries } = m2.parsePlay(text);
@@ -3206,7 +3206,7 @@ function App() {
       return false;
     }
     try {
-      const launcher = await import('./tools/chrome-launcher.mjs');
+      const launcher = await import('./src/tools/chrome-launcher.mjs');
       if (!launcher.findChromeExecutable()) {
         sysOut('!! Chrome executable not found in standard locations');
         return false;
@@ -4611,7 +4611,7 @@ function App() {
   // and EGPT_CONFIG.default_brain. Preserves any unrelated fields the
   // user has set on default_brain (allowed_tools, system_prompt, cwd).
   async function persistDefaultBrainState(state) {
-    const { readConfig, writeConfig } = await import('./tools/config-io.mjs');
+    const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
     const cfg = await readConfig();
     if (!cfg.default_brain || typeof cfg.default_brain !== 'object') cfg.default_brain = {};
     // Merge in-memory default_brain fields that may not yet be on
@@ -5674,8 +5674,9 @@ function App() {
         const chatId = meta.waChatId ?? meta.telegramChatId ?? 'shell';
         const surface = meta.fromWhatsApp ? 'wa' : meta.fromTelegram ? 'tg' : 'shell';
         await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+        const preview = String(text ?? '').slice(0, 80).replace(/\n/g, '↵');
         await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
-          `${new Date().toISOString()}\tSKIP\t${surface}/${chatId}\tobserve-only ${decision.kind}\n`);
+          `${new Date().toISOString()}\tSKIP\t${surface}/${chatId}\tobserve-only ${decision.kind}\t${preview}\n`);
       } catch (e) { console.error(`!! observe-skip activity-log: ${e?.message ?? e}`); }
       return;
     }
@@ -6324,7 +6325,7 @@ function App() {
     if (!prompt) { log(`!! ${source}: butler-task from ${ev.from} dropped — empty prompt`); return true; }
     log(`${source}: butler-task from ${ev.from} (${prompt.length} chars) — spawning haiku…`);
     try {
-      const { runButler } = await import('./tools/butler.mjs');
+      const { runButler } = await import('./src/tools/butler.mjs');
       const r = await runButler({
         prompt,
         model: ev.model ?? 'haiku',

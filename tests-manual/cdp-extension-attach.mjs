@@ -277,7 +277,7 @@ async function main() {
   let parityOk = false, parityDetail = '';
   let diskChatNames = [];
   try {
-    const { buildRecap } = await import('../tools/logon-summary.mjs');
+    const { buildRecap } = await import('../src/tools/logon-summary.mjs');
     const r = await buildRecap({ max: 30, includeDms: true });
     diskChatNames = (r?.chatList ?? []).map(c => c.name ?? c.jid).filter(Boolean);
     parityDetail = `node-side disk lists ${diskChatNames.length} chat${diskChatNames.length === 1 ? '' : 's'}` +
