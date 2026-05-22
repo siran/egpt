@@ -154,13 +154,11 @@ async function rotateIfBig(fs, path) {
 
 // Daily-archive rotation for append-only logs that grow forever
 // (operator 2026-05-22: "rotate hourly in daily files"). On the first
-// write of a new day, the current file is moved to <dirname>/<base>/
+// write of a new day, the current file is moved to archiveDir/
 // <base>-YYYY-MM-DD.md (the previous day's content) and the writer
 // starts a fresh file. Cheap: one stat per append; rename only when
-// the file's mtime date differs from today's. mtime is "last
-// modified" — for an append-only file that's effectively the date of
-// the last write, which is what we want for "this file is yesterday's."
-async function rotateDailyIfNeeded(fs, filePath, clock) {
+// the file's mtime date differs from today's.
+async function rotateDailyIfNeeded(fs, filePath, archiveDir, clock) {
   try {
     let st;
     try { st = await fs.stat?.(filePath); }
@@ -171,7 +169,6 @@ async function rotateDailyIfNeeded(fs, filePath, clock) {
     if (fileDate === todayDate) return;
     const ext = extname(filePath);
     const base = basename(filePath, ext);
-    const archiveDir = join(dirname(filePath), base);
     await fs.mkdir(archiveDir, { recursive: true });
     const archived = join(archiveDir, `${base}-${fileDate}${ext}`);
     try { await fs.unlink(archived); } catch (e) { /* no clash — fine */ }
@@ -657,6 +654,11 @@ export function createDispatchRuntime({
     const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
     const isSystemPersonality = convEntry?.personality === 'system';
     const logSlug = isSystemThread ? null : (convSlug ?? threadCtx.slug ?? null);
+    // Heartbeat transcript lives at ~/.egpt/e-heartbeat.md (operator
+    // 2026-05-22: "those logs should be on .egpt/{e-feed, e-heartbeat}").
+    // Other system threads (shell, etc.) still go to state/.
+    const isHeartbeatThread = isSystemThread && threadId === 'heartbeat';
+    const heartbeatTranscript = join(paths.root, 'e-heartbeat.md');
     const baseDir = isSystemThread
       ? paths.stateDir
       : isSystemPersonality
@@ -664,7 +666,9 @@ export function createDispatchRuntime({
       : logSlug && surface
       ? paths.slugDir(surface, logSlug)
       : join(paths.conversationsDir, '_unrouted');
-    const fpath = join(baseDir, isSystemThread ? `${sanitizeSlug(threadId)}.md` : 'transcript.md');
+    const fpath = isHeartbeatThread
+      ? heartbeatTranscript
+      : join(baseDir, isSystemThread ? `${sanitizeSlug(threadId)}.md` : 'transcript.md');
     const nowStamp = stamp(clock);
     const replyClock = nowStamp.slice(11, 16);
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
@@ -683,11 +687,9 @@ export function createDispatchRuntime({
       : '';
     // Daily archive for the heartbeat transcript only (other thread
     // types are per-chat or system-e and have their own lifecycle).
-    // Operator (2026-05-22): rotate hourly in daily files for the
-    // bg/system feeds. Heartbeat fits — append-only, debug-ish, never
-    // referenced for conversation memory.
-    if (isSystemThread && threadId === 'heartbeat') {
-      await rotateDailyIfNeeded(fs, fpath, clock);
+    // Archives at ~/.egpt/e-heartbeats/<base>-YYYY-MM-DD.md (plural).
+    if (isHeartbeatThread) {
+      await rotateDailyIfNeeded(fs, fpath, join(paths.root, 'e-heartbeats'), clock);
     }
     const inboundLogged = await appendTranscript({
       fs,
@@ -750,9 +752,10 @@ export function createDispatchRuntime({
       });
       try {
         // Daily archive: on first write of a new day, move yesterday's
-        // e-feed.md into ~/.egpt/e-feed/e-feed-<yesterday>.md and start
-        // fresh. Cheap-ish; mtime check + maybe one rename.
-        await rotateDailyIfNeeded(fs, paths.eFeed, clock);
+        // e-feed.md into ~/.egpt/e-feeds/e-feed-<yesterday>.md and start
+        // fresh. Cheap-ish; mtime check + maybe one rename. Operator
+        // 2026-05-22: archive folder is e-feeds/ (plural).
+        await rotateDailyIfNeeded(fs, paths.eFeed, join(stateDir, 'e-feeds'), clock);
         const feedScene = isSystemThread
           ? `## ${nowStamp} — [${threadId}]`
           : `## ${nowStamp} — [${threadCtx.name || threadId}] (${threadId})`;
