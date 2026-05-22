@@ -4965,6 +4965,13 @@ function App() {
     // sees one message that evolves: 🎙 listening → 🎙 <transcript> →
     // 🐶 e: <brain reply>. Modality-mirror of the /movie alien arc.
     if (meta.voiceStream && meta.fromWhatsApp) {
+      // Multi-call brain evolution (operator 2026-05-22): the WA message
+      // shows ONLY the brain's reply, never the transcript itself. The
+      // transcript stays internal — the brain re-fires on each new chunk
+      // with the cumulative transcript so far, and its reply streams
+      // into the SAME WA message, EVOLVING as more audio is heard.
+      // Recipient watches the model's understanding form in real time,
+      // not the model parroting their words back.
       const handle = meta.voiceStream;
       const personaName = 'e';
       const personaCfg = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
@@ -4972,86 +4979,108 @@ function App() {
       const waPrefix = `${personaEmoji} ${personaName}\n`;
       let voiceStream = null;
       try {
-        voiceStream = streamFactoryRef.current?.(`${waPrefix}🎙 listening…`, { chatId: meta.waChatId });
+        // Open with a quiet placeholder. Three dots = "listening / thinking"
+        // in the chat's vocabulary. We never show the transcript itself.
+        voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
       } catch (e) {
         console.error(`!! voice-stream open: ${e?.message ?? e}`);
       }
-      const onChunk = ({ cumulative }) => {
-        if (!voiceStream) return;
-        try { voiceStream.update(`${waPrefix}🎙 ${cumulative}`); }
-        catch (e) { console.error(`!! voice-stream chunk update: ${e?.message ?? e}`); }
-      };
-      handle.emitter?.on?.('chunk', onChunk);
-      let fullTranscript = '';
-      try {
-        const result = await handle.donePromise;
-        handle.emitter?.off?.('chunk', onChunk);
-        fullTranscript = (result?.finalText ?? '').trim();
-        if (!fullTranscript) {
-          // No transcript (rare — whisper failed or audio was silent).
-          try { await (voiceStream?.cancel?.() ?? voiceStream?.finish?.(`${waPrefix}…`)); }
-          catch (e) { console.error(`!! voice-stream empty-cancel: ${e?.message ?? e}`); }
-          return;
-        }
-      } catch (e) {
-        handle.emitter?.off?.('chunk', onChunk);
-        errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
-        try {
-          await (voiceStream?.finish?.(`${waPrefix}🎙 [transcription failed: ${String(e?.message ?? e).slice(0, 80)}]`));
-        } catch (e2) { console.error(`!! voice-stream error-finish: ${e2?.message ?? e2}`); }
-        return;
-      }
 
-      // Self-contained brain dispatch for voice. We bypass the normal
-      // submitInner fall-through (which would re-open a stream message)
-      // and run the brain directly, streaming partials into the SAME
-      // WA message that just showed the transcript. The result: one
-      // message that evolves listening → transcript → reply, the modality-
-      // mirror of the /movie alien arc.
       const idStr = String(meta.waChatId ?? '');
       const chatType = idStr.endsWith('@g.us')
         ? 'group'
         : idStr === 'status@broadcast' ? 'status' : 'private';
-      const personaPrompt = formatAutoDispatchLine({
-        senderName: meta.waSenderName,
-        body: fullTranscript,
-        ts: Date.now(),
-        surface: buildWaSurfaceTag(meta.waChatId),
-        chatType,
-        chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-      });
       const threadCtx = {
         threadId: meta.waChatId ?? 'wa-unknown',
         surface: meta.waClientLabel ?? 'wa',
         slug: waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? null,
         name: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
       };
-      let brainReply = '';
+
+      let cumulativeTranscript = '';
+      let lastReply = '';
+      let brainInFlight = false;
+      let pendingNewChunk = false;
+
+      const runBrainPass = async () => {
+        if (brainInFlight) {
+          // Coalesce: more chunks arrived while a previous brain pass is
+          // mid-flight. Set a flag so the loop re-fires with the latest
+          // cumulative transcript after the current pass settles. Avoids
+          // concurrent brain.stream() calls on the same chat/thread.
+          pendingNewChunk = true;
+          return;
+        }
+        brainInFlight = true;
+        try {
+          while (true) {
+            pendingNewChunk = false;
+            const snapshot = cumulativeTranscript;
+            if (!snapshot) break;
+            const personaPrompt = formatAutoDispatchLine({
+              senderName: meta.waSenderName,
+              body: snapshot,
+              ts: Date.now(),
+              surface: buildWaSurfaceTag(meta.waChatId),
+              chatType,
+              chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
+            });
+            try {
+              const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
+                try { voiceStream?.update?.(`${waPrefix}${partial}`); }
+                catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
+              }, threadCtx);
+              const trimmed = (reply ?? '').trim();
+              if (trimmed && trimmed !== '...' && trimmed !== '…') lastReply = trimmed;
+            } catch (e) {
+              errOut(`!! voice-stream brain pass failed: ${e?.message ?? e}`);
+            }
+            if (!pendingNewChunk) break;
+            // Loop: another chunk landed during the brain call; re-run with
+            // the now-larger cumulative transcript so the reply re-evolves.
+          }
+        } finally {
+          brainInFlight = false;
+        }
+      };
+
+      const onChunk = ({ cumulative }) => {
+        cumulativeTranscript = cumulative;
+        // Fire-and-forget; the runBrainPass function internally coalesces.
+        runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
+      };
+      handle.emitter?.on?.('chunk', onChunk);
+
+      // Wait for whisper to finish (final pass = accurate large-model
+      // transcript), then run ONE more brain pass with that text. This
+      // is what gets persisted as the canonical reply.
       try {
-        brainReply = await runDefaultBrainTurn(personaPrompt, (partial) => {
-          try { voiceStream?.update?.(`${waPrefix}${partial}`); }
-          catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
-        }, threadCtx);
+        const result = await handle.donePromise;
+        handle.emitter?.off?.('chunk', onChunk);
+        const finalText = (result?.finalText ?? cumulativeTranscript).trim();
+        if (finalText) {
+          cumulativeTranscript = finalText;
+          await runBrainPass();
+        }
+        // Drain any pending pass before finishing.
+        while (brainInFlight) {
+          await new Promise(r => setTimeout(r, 100));
+        }
       } catch (e) {
-        errOut(`!! voice-stream brain failed: ${e?.message ?? e}`);
-        try { await voiceStream?.finish?.(`${waPrefix}🎙 ${fullTranscript}\n\n!! brain error`); }
-        catch (e2) { console.error(`!! voice-stream brain-error finish: ${e2?.message ?? e2}`); }
-        return;
+        handle.emitter?.off?.('chunk', onChunk);
+        errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
       }
-      const trimmedReply = (brainReply ?? '').trim();
-      if (trimmedReply === '' || trimmedReply === '...' || trimmedReply === '…') {
-        // Silence protocol: nothing to add. Cancel the stream message
-        // (revokes the listening placeholder) so the chat is clean.
+
+      const trimmedReply = lastReply.trim();
+      if (!trimmedReply || trimmedReply === '...' || trimmedReply === '…') {
+        // No usable reply produced — cancel the placeholder. Silence
+        // protocol or transcription failure both end here.
         try { await (voiceStream?.cancel?.() ?? voiceStream?.finish?.(`${waPrefix}…`)); }
         catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
-        logOut(`@e: polite '...' for voice from ${meta.waChatId} (skipped — not sent)`);
         return;
       }
       try { await voiceStream?.finish?.(`${waPrefix}${trimmedReply}`); }
       catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
-      // Mirror to local items feed so the shell sees the turn (parallel
-      // to what dispatchPersonaTurn does for non-voice). Source-tagged
-      // so the items-mirror loop doesn't double-post back to WA.
       try {
         setItems(p => [...p, {
           id: Date.now() + Math.random(),
