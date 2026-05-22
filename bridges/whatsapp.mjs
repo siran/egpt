@@ -1433,7 +1433,7 @@ export async function startWhatsAppBridge({
   //
   // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
   // with the existing text — no re-work.
-  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 6, strideSeconds = 3 }) {
+  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 3, strideSeconds = 2 }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
@@ -1509,16 +1509,17 @@ export async function startWhatsAppBridge({
       // For non-overlapping windows: strideSeconds === windowSeconds.
       // For 50% overlap: stride = window / 2 (current default 3 / 6).
       const lastStart = Math.max(0, duration - windowSeconds);
-      // Generate window start offsets: 0, stride, 2*stride, ... up to lastStart.
+      // Generate window start offsets: 0, stride, 2*stride, ... up to
+      // and INCLUDING lastStart (so the final window covers the actual
+      // end of the audio, not whatever the stride aliasing gives us).
       const windowStarts = [];
-      for (let s = 0; s <= lastStart + 0.001; s += strideSeconds) windowStarts.push(s);
-      // Ensure we always include the final window if duration > windowSeconds
-      // and the last computed start doesn't quite reach lastStart due to
-      // float rounding (e.g., 6s stride on 19s audio: 0, 6, 12; we want 12 to cover [12,18] and ideally also catch the last second).
-      if (windowStarts.length === 0) windowStarts.push(0);
+      for (let s = 0; s + 0.001 < lastStart; s += strideSeconds) windowStarts.push(s);
+      windowStarts.push(lastStart);
+      // duration < windowSeconds: single window starting at 0, length = duration.
 
       let liveAppendBuffer = `# live transcript — ${base}  (windows ${windowSeconds}s, stride ${strideSeconds}s)\n\n`;
       try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live header: ${e?.message ?? e}`); }
+      const allWindowTexts = [];
 
       for (let idx = 0; idx < windowStarts.length; idx++) {
         const offset = windowStarts[idx];
@@ -1566,6 +1567,7 @@ export async function startWhatsAppBridge({
         if (cleaned) {
           liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned}\n`;
           try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
+          allWindowTexts.push(cleaned);
           // The brain sees this window's transcript as the latest cumulative
           // view (replacing prior content). Continuity comes from the brain's
           // session memory + the reply stack the dispatcher accumulates.
@@ -1573,45 +1575,18 @@ export async function startWhatsAppBridge({
         }
       }
 
-      // Final accurate pass with the large model. SKIPPED when audio is
-      // short enough that a single window already covered everything —
-      // the base-model's window text is the whole audio's transcript, and
-      // re-running the large model would just pay a ~20-30s cold start
-      // to refine a few seconds. Operator (2026-05-22): "no replies to
-      // basic 'are you there?' or it takes too long."
-      let finalText = '';
-      const _lastEmittedWindow = windowStarts.length === 1;
-      if (finalModel && !_lastEmittedWindow) {
-        const finalArgs = ['-m', finalModel, '-f', wavPath, '--output-txt', '--no-prints'];
-        if (language) { finalArgs.push('-l', language); }
-        try {
-          await _runCmd(whisperBin, finalArgs);
-          try {
-            const accurate = (await fs.readFile(`${wavPath}.txt`, 'utf8')).trim();
-            if (accurate) {
-              finalText = _stripNoiseMarkers(accurate);
-              await fs.writeFile(finalTxt, finalText, 'utf8');
-              try { await fs.unlink(`${wavPath}.txt`); } catch {}
-            }
-          } catch (e) { log(`transcribe-stream: final-pass read failed for ${base}: ${e?.message ?? e}`); }
-        } catch (e) {
-          log(`transcribe-stream: final whisper pass failed for ${base}: ${e?.message ?? e}`);
-        }
-      }
-      // Short-audio shortcut: there was exactly one window; use it as
-      // the canonical transcript. Write the file so /summarize and
-      // other consumers find it.
-      if (!finalText && _lastEmittedWindow) {
-        // Try to read back the live transcript's last [window …] line
-        // — that's the base model's full-audio output already noise-stripped.
-        try {
-          const liveBody = await fs.readFile(livePath, 'utf8');
-          const m = liveBody.match(/\[window \d+ @ [\d.]+-[\d.]+s\]\s+(.+)$/m);
-          if (m) finalText = m[1].trim();
-        } catch (e) { /* fall through */ }
-      }
-      // If the final pass yielded nothing usable, fall back to writing an
-      // empty transcript so the rest of the system can grep for the file.
+      // SKIPPED: the large-model final pass. Operator (2026-05-22):
+      // "last reply takes super long, to receive the final '.'." That
+      // wait was the sequential ~20-30s large-model re-transcription of
+      // the full audio AFTER all windows finished. The brain already
+      // saw every window during streaming; an additional final pass
+      // adds no information the brain hasn't already integrated.
+      //
+      // Canonical transcript: joined windows (with redundancy from the
+      // overlap — readable, not perfect). The rest of the system
+      // (/summarize etc) finds something useful at finalTxt; it's not
+      // verbatim accurate but it covers the audio.
+      const finalText = allWindowTexts.join(' ').replace(/\s+/g, ' ').trim();
       try { await fs.writeFile(finalTxt, finalText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream final write: ${e?.message ?? e}`); }
 
       try { await fs.unlink(wavPath); } catch {}
