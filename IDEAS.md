@@ -124,3 +124,126 @@ torn out in a later commit. The shape was:
   starts with the slash-echo chat name, not the chat the operator
   is staring at.
 - `project-egpt-movie-hi-pending` — pointer back to this file.
+
+---
+
+## Streaming voice perception — `/movie`-style audio frames (DEFERRED 2026-05-22)
+
+A WhatsApp voice note transcribed and fed to @e frame-by-frame as
+it's being "heard" — analog of the `/movie` alien arc but driven
+by audio chunks instead of pre-built canvas frames. The recipient
+watches a single reply message evolve as the model's understanding
+forms; the model receives a sliding text-window with a millisecond
+timer, like watching meaning arrive over time.
+
+**Why parked.** End-to-end implementation shipped (see commits
+`dd093f1` through `537daee` and the `/textmovie` slash). The
+mechanics worked — voice chunked at ffmpeg, transcribed in sliding
+windows by `whisper-base`, brain re-fired per window via the SDK,
+WA reply edited in place with replyStack accumulation, bridge
+appends a deterministic `.` when transcription completes. But the
+brain (haiku 4.5) consistently treated each frame as a discrete
+question rather than a continuation of one utterance — producing
+fragmented haiku-like replies that derailed conversation rather
+than enhancing it.
+
+**What was tried, in order:**
+
+1. Plain text chunks per second → too short for whisper to
+   transcribe coherently; "[Música]" noise placeholders flooded
+   the output.
+2. 6-second windows, 3-second stride → coherent transcripts but
+   brain coalescing dropped half the windows when brain calls
+   (~3s each) couldn't keep pace with chunk arrival (~3s stride).
+3. Audio-time [M:SS] prefix added → brain had sequence cue but
+   still treated each frame as a new question.
+4. Millisecond [M:SS.mmm] tickers + ticker also firing between
+   windows ("time passes" perception) → more granular but brain
+   still confused.
+5. Silence rendered as whitespace inside windows
+   (`_buildSpacedWindow` parses whisper segments, positions text
+   in audio-time) → visually meaningful but brain didn't read
+   the whitespace as silence-passing.
+6. Bare ticker-only format (`[0:05.177] hola estoy`) with no
+   sender / envelope → brain returned silence to all of them;
+   too contextless.
+7. Ticker + sender (`[0:05.177] An: hola`) → brain replied but
+   per-frame, no continuity across frames.
+
+Each iteration improved something but the brain's cognitive
+interpretation kept missing. **Root finding: without telling the
+model that these inputs are partial frames of one ongoing voice,
+it defaults to treating each WA-envelope-shaped dispatch as a
+separate user turn.** Session memory (resume across calls) helps
+but doesn't bridge the gap on its own — the model needs structural
+"this is a stream" knowledge.
+
+**Resolution.** Reverted to batch mode (single dispatch with the
+full accurate `whisper-large-v3` transcript per voice note).
+Gated by:
+
+  whatsapp.media.audio_transcribe.streaming: false   # in ~/.egpt/config.yaml
+
+Flipping to `true` re-engages the streaming path. All code is
+in place, no removals.
+
+### What's pending
+
+If we pick it back up, the unresolved question is "how does the
+brain know it's a stream?" Three paths worth exploring:
+
+1. **Minimal pre-prompting in `personalities/system.md`** — one
+   short paragraph telling the model that `[M:SS]` or `[M:SS.mmm]`
+   prefixed inputs are sliding-window frames of one voice in
+   progress, to thread continuity. Reverts the operator's
+   "no-prompting" rule but the experiment showed it's the
+   structural minimum the model needs.
+
+2. **SDK streaming-input mode** — `claude-agent-sdk`'s `query()`
+   accepts an `async iterable` as the prompt. Each window appends
+   to the SAME user turn rather than dispatching as a new turn.
+   The model genuinely sees one growing message and replies with
+   one growing assistant message. This is the architecturally
+   honest version of the alien effect: input streams as a single
+   turn, not N turns. Big refactor of the brain wrapper but the
+   modality matches what the operator was after.
+
+3. **Voice-channel paradigm** — for true real-time, switch from
+   voice-note delivery to a voice-channel join (Discord stage,
+   Telegram voice chat, custom WebRTC). The operator speaks live;
+   audio is streamed at native rates via WebRTC; whisper-stream
+   does true real-time transcription. Different UX entirely —
+   "talk to @e" via a phone-call-like channel rather than via
+   voice notes.
+
+### What stayed shipped (useful infrastructure beyond the voice
+experiment)
+
+- `~/.egpt/state/e-prompts.log` — every brain prompt + reply,
+  tail-friendly format. 5MB rotation.
+- `~/.egpt/state/e-activity.log` — RECV/REPLY/SKIP/ERROR/SEND-FAIL
+  audit, 5MB rotation.
+- `~/.egpt/headless.log` — 500KB rotation + spinner-line filter so
+  the Ink redraw churn doesn't bloat the file.
+- `/textmovie "<text>"` slash — feeds the brain a paragraph as
+  alien-style timestamped frames at a configurable cadence. Pure
+  test harness for brain real-time perception (no WA bridge); useful
+  for future experiments at this layer.
+- `_transcribeAudioStreaming` helper in `bridges/whatsapp.mjs`:
+  ffmpeg-chunks audio, runs whisper-base per window, exposes
+  EventEmitter + donePromise. Reusable as the audio side of any
+  future streaming-perception attempt.
+- Sliding-window + spaced-text helpers in `bridges/whatsapp.mjs`:
+  `_buildSpacedWindow(rawWhisperOutput, dur)` and
+  `_stripNoiseMarkers(s)`. Used by the streaming path; still
+  there for re-engagement.
+
+### Related memories
+
+- `project-egpt-movie-hi-pending` — sibling experiment with the
+  same modality at the visual layer.
+- Probe scripts: `tools/probe-whisper-stream.mjs`,
+  `tools/probe-whisper-srt.mjs`, `tools/README.md` — documented
+  the finding that whisper-cli is fundamentally batch (no
+  streaming stdout / no incremental SRT), which forced the
+  ffmpeg-chunk approach.
