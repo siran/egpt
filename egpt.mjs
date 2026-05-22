@@ -148,10 +148,51 @@ function clearPidfile() {
 let EGPT_CONFIG = {};
 // Config now reads ~/.egpt/config.yaml (operator-editable YAML). Sync
 // reader auto-migrates from legacy config.json on first call.
+//
+// Failure here is CRITICAL — without config, the bridge starts with
+// no auto_e_chats, no allowed_users, no chat_id; every operator
+// message becomes observe-only-SKIPped and outbound sends BLOCK. We
+// observed this exact bug on 2026-05-22 when a repo move broke the
+// dynamic import path (silent catch hid it for hours). The catch
+// below now SHOUTS and queues a Self DM alert.
 try {
   const { readConfigSync } = await import('./src/tools/config-io.mjs');
   EGPT_CONFIG = readConfigSync();
-} catch {}
+} catch (e) {
+  // eslint-disable-next-line no-console
+  console.error(`!! egpt boot: readConfigSync FAILED — ${e?.stack ?? e?.message ?? e}\n!! EGPT_CONFIG will be empty; auto_e_chats / allowed_users / chat_id undefined → every chat will observe-only-SKIP and every brain outbound send will BLOCK.`);
+  // Best-effort operator alert: write a wa-send event targeting the
+  // OPERATOR's hard-coded Self DM jid (we can't read it from config
+  // since config didn't load). Comm-handler picks this up the next
+  // time it sweeps the outbox; the operator sees a Self DM warning
+  // even if the bridge boots into a broken state.
+  try {
+    const _bootAlertJid = '34836563681438@lid';   // operator's WA Self DM lid form
+    const _id = Date.now() + '-bootfail';
+    writeFileSync(join(homedir(), '.egpt', 'outbox', `${_id}.json`), JSON.stringify({
+      type: 'wa-send', from: 'system', ts: Date.now(),
+      jid: _bootAlertJid,
+      body: `⚠ egpt boot warning: config load FAILED — ${(e?.message ?? String(e)).slice(0, 200)}. Bridge running with empty config; every chat is observe-only. Restart after fixing.`,
+    }));
+  } catch (e2) { console.error(`!! egpt boot: alert write failed — ${e2?.message ?? e2}`); }
+}
+// Post-load sanity check: even if readConfigSync didn't throw, the
+// resulting object might be missing critical keys (operator removed
+// them by accident, file got truncated, etc.). Surface explicitly.
+(() => {
+  const wa = EGPT_CONFIG?.whatsapp;
+  const missing = [];
+  if (!wa || typeof wa !== 'object') missing.push('whatsapp (whole section)');
+  else {
+    if (!wa.chat_id) missing.push('whatsapp.chat_id');
+    if (!Array.isArray(wa.allowed_users)) missing.push('whatsapp.allowed_users');
+    if (!Array.isArray(wa.auto_e_chats)) missing.push('whatsapp.auto_e_chats');
+  }
+  if (missing.length) {
+    // eslint-disable-next-line no-console
+    console.error(`!! egpt boot sanity: config loaded but missing required keys: ${missing.join(', ')}`);
+  }
+})();
 // Per-cwd override config — still JSON, this is meant to be checked
 // into the project repo by power users (e.g. for tests).
 const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
