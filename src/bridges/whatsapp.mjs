@@ -1821,7 +1821,13 @@ export async function startWhatsAppBridge({
       let keyframePath = null;
       let voiceStream = null;        // streaming-transcription handle, when enabled + audio
       if (hit.kind === 'audio' || hit.kind === 'video') {
-        const streamingEnabled = !!(media.audio_transcribe?.streaming);
+        // Either gate kicks off streaming transcription: the brain-feed
+        // gate (parked, default false) OR the reply-stream gate (new
+        // 2026-05-22 — bridge edits a WA reply as whisper chunks arrive).
+        // One transcription pass, two possible consumers downstream.
+        const streamingEnabled =
+          !!(media.audio_transcribe?.streaming) ||
+          !!(media.audio_transcribe?.post_as_reply_streaming);
         if (streamingEnabled && hit.kind === 'audio' && node.ptt) {
           // Voice notes (PTT only — not music attachments) use the streaming
           // path. The handle is forwarded through onMediaSaved so the host
@@ -1844,6 +1850,45 @@ export async function startWhatsAppBridge({
                 _transcriptByMsgId.set(msg.key.id, res.finalText);
               }
             }).catch(e => log(`transcribe-stream donePromise: ${e?.message ?? e}`));
+
+            // Voice-as-reply-transcript (streaming variant). Bridge opens
+            // a WA stream message as a native QUOTED reply to the voice,
+            // then edits the body as each whisper chunk arrives — the
+            // recipient watches the transcript "type out" in place.
+            // Final replacement at done() uses the cleaner deduped
+            // finalText from the joined-windows pass.
+            if (media.audio_transcribe?.post_as_reply_streaming && msg.key) {
+              const replyStream = startStreamMessage('', {
+                chatId: chatJid,
+                quoted: { key: msg.key, message: msg.message ?? { conversation: '' } },
+              });
+              if (replyStream) {
+                const seen = [];   // raw window texts in arrival order — has overlap
+                voiceStream.emitter.on('chunk', (ev) => {
+                  if (!ev?.text) return;
+                  seen.push(ev.text);
+                  const display = seen.join(' ');
+                  if (display.trim()) {
+                    try { replyStream.update(`🎙 ${display}`); }
+                    catch (e) { log(`reply-stream update: ${e?.message ?? e}`); }
+                  }
+                });
+                voiceStream.donePromise.then((res) => {
+                  const final = res?.finalText?.trim() || seen.join(' ').trim();
+                  try {
+                    if (final) replyStream.finish(`🎙 ${final}`);
+                    else replyStream.cancel?.();
+                  } catch (e) { log(`reply-stream finish: ${e?.message ?? e}`); }
+                }).catch((e) => {
+                  log(`reply-stream done error: ${e?.message ?? e}`);
+                  try {
+                    const fallback = seen.join(' ').trim();
+                    if (fallback) replyStream.finish(`🎙 ${fallback}`);
+                    else replyStream.cancel?.();
+                  } catch {}
+                });
+              }
+            }
           }
         }
         if (!voiceStream) {
@@ -3042,7 +3087,7 @@ export async function startWhatsAppBridge({
         .then(r => { rememberSent(r?.key?.id); return r; })
         .catch(e => { err(`replyTo: ${e.message}`); return null; });
     },
-    startStreamMessage(initialText, { chatId } = {}) {
+    startStreamMessage(initialText, { chatId, quoted: quotedOpt = null } = {}) {
       // Edit-based streaming, modeled on bridges/telegram.mjs:
       //   1. Send the initial message and capture its key.
       //   2. Each update() debounces an edit (2.5s — WA is more rate-
@@ -3104,7 +3149,12 @@ export async function startWhatsAppBridge({
         if (msgKey || initialDone) return;
         initialDone = true; // claim slot synchronously to avoid double-send
         try {
-          const r = await _timeBound(_safeSend(target, { text }), 'stream initial');
+          // quotedOpt is applied to the INITIAL send only — subsequent
+          // edits don't carry quoted (they replace the same message).
+          // Used by the voice-as-reply-transcript path so the streaming
+          // edit message starts as a native WA reply to the voice.
+          const opts = quotedOpt ? { quoted: quotedOpt } : undefined;
+          const r = await _timeBound(_safeSend(target, { text }, opts), 'stream initial');
           msgKey = r?.key ?? null;
           rememberSent(r?.key?.id);
           if (r?.key) { delivered = true; lastSent = text; }
