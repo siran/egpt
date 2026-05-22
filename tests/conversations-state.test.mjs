@@ -399,14 +399,25 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     expect(body).not.toContain('allowed_tools');
   });
 
-  it('DEFAULT_PERSONALITY_TOOLS is read-only (no Bash/Edit/Write)', () => {
-    // Regression guard: if someone widens the default, this test screams.
-    // Operator's security baseline is that an UNANNOUNCED personality
-    // CANNOT shell out, modify files, or invoke subagents.
-    const forbidden = ['Bash', 'Edit', 'Write', 'Agent', 'NotebookEdit'];
+  it('DEFAULT_PERSONALITY_TOOLS bans self-elevation primitives', () => {
+    // Regression guard: a personality without frontmatter MUST NOT get
+    // any tool that allows shelling out, spawning sub-agents, or
+    // executing notebook code. Read/Write/Edit on files inside the
+    // slug-dir are fine — additionalDirectories pins them.
+    //
+    // Operator (2026-05-22) refinement: conversation-e should be able
+    // to write text files (summaries, notes, scratch state) within its
+    // own slug-dir, so Write+Edit ARE allowed. Bash/Agent/NotebookEdit
+    // stay forbidden because they're the self-elevation primitives:
+    //   - Bash: chmod+exec arbitrary scripts; escapes additionalDirectories
+    //   - Agent: spawn sub-agents that may escape the scope
+    //   - NotebookEdit: executes notebook code blocks
+    const forbidden = ['Bash', 'Agent', 'NotebookEdit'];
     for (const t of forbidden) {
       expect(DEFAULT_PERSONALITY_TOOLS).not.toContain(t);
     }
+    expect(DEFAULT_PERSONALITY_TOOLS).toContain('Read');
+    expect(DEFAULT_PERSONALITY_TOOLS).toContain('Write');
   });
 
   // Cleanup

@@ -699,13 +699,20 @@ export function resolvePersonalityFile(name, opts = {}) {
 }
 
 // Safe-default tool allowlist for personalities that have no frontmatter
-// or no `allowed_tools` field. Read-only file ops within the contact's
-// sandboxed slug-dir; no Bash, no Edit, no Write, no Agent, no WebFetch.
-// A contact's brain can `cat ./transcript.md` but cannot shell out,
-// write to ~/.egpt/outbox, or invoke sub-agents. Operator (2026-05-22)
-// security review: "if any of my contacts convince the model to send
-// messages via node, that would be a major flaw."
-export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Grep', 'Glob'];
+// or no `allowed_tools` field. File ops (read + write + edit) scoped to
+// the contact's slug-dir via additionalDirectories; no Bash, no Agent,
+// no NotebookEdit, no WebFetch.
+//
+// Operator security trail (2026-05-22):
+//   - First pass: "if any of my contacts convince the model to send
+//     messages via node, that would be a major flaw." → restrict tools.
+//   - Refinement: "conversation-e should be able to write text files"
+//     (so it can maintain summaries, daily notes, scratch state in its
+//     own slug-dir). The additionalDirectories pin keeps writes
+//     contained; absence of Bash blocks self-elevation (no
+//     `chmod +x && ./malicious.sh` path), absence of Agent blocks
+//     spawning sub-agents that could escape the scope.
+export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob'];
 
 function _parseFrontmatter(raw) {
   if (typeof raw !== 'string') return { meta: {}, body: '' };
