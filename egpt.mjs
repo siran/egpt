@@ -2630,6 +2630,15 @@ function App() {
             replyPersonaFallback: from.replyPersonaFallback ?? false,
             waSenderName: from.senderName ?? null,
             autoDispatched: dispatchText !== text,
+            // Streaming-transcription handle for voice notes (when the
+            // operator opted into whatsapp.media.audio_transcribe.streaming).
+            // The voice-stream branch at the top of submitInner consumes
+            // this — it opens a WA stream message, subscribes to chunk
+            // events, and replaces the placeholder body with transcript
+            // then brain reply. Was being dropped silently here, which
+            // is why @e saw '[voice note: 21s]' placeholders and
+            // reported "cero transcripciones."
+            voiceStream: from.voiceStream ?? null,
           });
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
@@ -6946,9 +6955,9 @@ if (HEADLESS) {
   // previous backup) and open a fresh .log. Check happens at startup
   // AND periodically during runs (every Nth write). Keeps logs
   // bounded without external logrotate.
-  const HEADLESS_LOG_MAX_BYTES = 50 * 1024 * 1024;   // 50 MB
+  const HEADLESS_LOG_MAX_BYTES = 5 * 1024 * 1024;    // 5 MB (operator 2026-05-22: "headless shouldn't be more than 5k... why keep it so long")
   const HEADLESS_LOG_BACKUP = EGPT_HEADLESS_LOG + '.1';
-  const ROTATE_CHECK_EVERY_WRITES = 500;
+  const ROTATE_CHECK_EVERY_WRITES = 200;
   const _rotateIfBig = () => {
     try {
       const st = statSync(EGPT_HEADLESS_LOG);
@@ -6985,9 +6994,18 @@ if (HEADLESS) {
       if (!complete) { cb(); return; }
       const lines = complete.split('\n');
       const out = [];
+      // Spinner/progress lines from the Ink "thinking…" indicator —
+      // every animation frame is a unique line (rotating braille char +
+      // monotonically-advancing seconds), so the dedup below can't
+      // suppress them. These are pure UI noise; the headless.log
+      // shouldn't carry per-frame thinking ticks. Drop entirely.
+      // Operator 2026-05-22: "headless shouldn't be more than 5k...
+      // we only log final transcript and the final reply."
+      const SPINNER_RE = /[⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿]\s*thinking…\s*\d+(?:\.\d+)?s/;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         if (i === lines.length - 1 && line === '') { out.push(''); continue; }
+        if (line !== '' && SPINNER_RE.test(line)) continue;
         // Suppress consecutive identical non-empty lines (Ink redraw churn).
         if (line !== '' && line === _lastNonEmptyLine) continue;
         out.push(line);
