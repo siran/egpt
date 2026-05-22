@@ -26,7 +26,7 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
-import { dispatchPersonaTurn } from './dispatch.mjs';
+import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
@@ -4221,647 +4221,161 @@ function App() {
   }
 
   // Per-contact YAML registry lives at ~/.egpt/conversations.yaml
-  // (outside any per-slug dir so conversation-e — cwd-locked to its
-  // own dir — can't read it). Migrate flat layout once on first load.
-  const _CONV_YAML_PATH = conversationsState.CONV_YAML_PATH;
-  // Migration-once promise. The old boolean guard had a race: two
-  // concurrent dispatches at boot could both see _convMigrated === false,
-  // both set it to true, both run the (idempotent but expensive) migration
-  // chain in parallel — file races on rename/writeState. Codex review
-  // 2026-05-21. The promise ensures the migration chain runs exactly
-  // once, and all callers await the same completion.
-  let _convMigrationPromise = null;
-  // Module-level cache of conversations state. Updated on every
-  // _loadConvState; consumed by sync paths like the bridge's
-  // mediaDirForChat callback (which can't await). Slightly stale
-  // is acceptable — next dispatch refreshes.
+  // (outside any per-slug dir so conversation-e cannot read it).
+  // Dispatch owns the state queue, migrations, transcript/activity
+  // writes, lineage prelude, cwd recovery, and operator-failure notice.
   let _convStateCache = null;
-  // Write serialization: every state write awaits the previous one.
-  // Prevents the lost-update race where two concurrent dispatches each
-  // read state, mutate, write — the second write overwriting the first.
-  // Codex review 2026-05-21: per-chat RMW wasn't atomic.
-  let _convWriteQueue = Promise.resolve();
+  const _dispatchRuntimeRef = useRef(null);
+  if (!_dispatchRuntimeRef.current) {
+    _dispatchRuntimeRef.current = createDispatchRuntime({
+      stateDir: EGPT_HOME,
+      getSelfDmConfig: () => ({
+        whatsapp: EGPT_CONFIG.whatsapp?.chat_id ?? null,
+        telegram: EGPT_CONFIG.telegram?.chat_id ?? null,
+      }),
+      readPersonality: (personality) => conversationsState.readPersonality(personality),
+      findThreadJsonl: conversationsState.findThreadJsonl,
+      logger: { error: (msg) => console.error(msg) },
+      sysLog: (msg) => console.error(msg),
+      systemCwd: homedir(),
+      onStateChange: (state) => { _convStateCache = state; },
+      onTranscriptInbound: (threadId, ctx) => _upsertConversationEntry(threadId, ctx),
+      migrations: [
+        async () => {
+          try {
+            const r = await conversationsState.migrateLayoutIfNeeded();
+            if (r && r.migrated != null) {
+              console.error(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
+            }
+          } catch (e) { console.error(`!! conversations migration: ${e?.message ?? e}`); }
+        },
+        async () => {
+          try {
+            const r = await conversationsState.migrateSlugSuffix();
+            if (r && r.renamed > 0) {
+              console.error(`conversations: slug-suffix added to ${r.renamed} contacts (skipped ${r.skipped} already-suffixed)`);
+            }
+          } catch (e) { console.error(`!! slug-suffix migration: ${e?.message ?? e}`); }
+        },
+        async () => {
+          try {
+            const r = await conversationsState.migrateMediaToSlugDirs();
+            if (r && r.files > 0) {
+              console.error(`conversations: migrated ${r.files} media files across ${r.migrated} contacts into slug-dirs`);
+            }
+          } catch (e) { console.error(`!! media migration: ${e?.message ?? e}`); }
+        },
+        async () => {
+          try {
+            const r = await conversationsState.migrateConversationsToJidKey();
+            if (r && r.migrated != null) {
+              console.error(`conversations: rekeyed by JID — ${r.migrated} primaries, ${r.aliases} aliases (${r.dangling} dangling without JIDs)`);
+            }
+          } catch (e) { console.error(`!! jid-key migration: ${e?.message ?? e}`); }
+        },
+        async () => {
+          try {
+            const r = await conversationsState.migrateToSurfaceLayout();
+            if (r && r.migrated != null) {
+              console.error(`conversations: surface-layout migration — ${r.migrated} contacts moved under whatsapp/, ${r.dirsMoved} dirs renamed (${r.missingDirs} missing)`);
+            }
+          } catch (e) { console.error(`!! surface-layout migration: ${e?.message ?? e}`); }
+        },
+      ],
+      resolveBrain: () => {
+        const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
+        const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
+        return {
+          brain: brainForName(brainType),
+          brainType,
+          dbCfg,
+          isUrlBrain: isUrlBrain(brainType),
+          missingMessage: `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`,
+        };
+      },
+      sessionOptions: ({ brainType, dbCfg }) => ({
+        sessionId: dbCfg.session_id ?? null,
+        cwd: dbCfg.cwd ?? process.cwd(),
+        sessionName: 'egpt',
+        userName: USER_NAME,
+        ...(brainType === 'ccode' ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
+        ...(dbCfg.model ? { model: dbCfg.model } : {}),
+      }),
+      recordDefaultSession: async ({ sessionId, brainType }) => {
+        const next = recordSession(readDefaultBrainState(), sessionId, { type: brainType });
+        await persistDefaultBrainState(next);
+      },
+      notifyOperator: async (message) => {
+        const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+        if (!selfDm) return;
+        const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: selfDm, body: message };
+        const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+        await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+      },
+      runUrlBrainTurn: async ({ brain, brainType, dbCfg, text, onPartial, threadCtx, logActivity }) => {
+        const url = dbCfg.url;
+        if (!url) {
+          return `!! @e: ${brainType} is configured but no URL is set. Try /egpt brain ${brainType} <url> or use a CDP brain with a thread.`;
+        }
+        const started = Date.now();
+        try {
+          await logActivity('RECV', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${text.length}ch`, brainType);
+        } catch (e) { console.error(`!! urlbrain activity RECV: ${e?.message ?? e}`); }
+
+        let targetId = null;
+        try {
+          const tabs = await cdp.listTabs(brain.urlMatch);
+          const match = tabs.find(t => t.url === url || t.url.startsWith(url));
+          targetId = match ? match.id : await cdp.openTab(url);
+        } catch (e) {
+          try {
+            await logActivity('ERROR', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${Date.now() - started}ms`, `cdp listTabs/openTab: ${(e?.message ?? '').slice(0, 200)}`);
+          } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
+          return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
+        }
+
+        if (targetId) {
+          cdp.activateTarget(targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
+          _osFocusBrainChrome();
+        }
+        try {
+          const result = await brain.stream({ message: text }, onPartial, { targetId });
+          const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+          const next = recordSession(readDefaultBrainState(), url, { type: brainType });
+          await persistDefaultBrainState(next);
+          try {
+            await logActivity('REPLY', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${final.length}ch`, `${Date.now() - started}ms`, brainType);
+          } catch (e) { console.error(`!! urlbrain activity REPLY: ${e?.message ?? e}`); }
+          return final.trim() || '...';
+        } catch (e) {
+          try {
+            await logActivity('ERROR', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${Date.now() - started}ms`, (e?.message ?? '').slice(0, 200));
+          } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
+          return `!! @e: ${e.message}`;
+        }
+      },
+    });
+  }
+  const _dispatchRuntime = _dispatchRuntimeRef.current;
+
   async function _loadConvState() {
-    if (!_convMigrationPromise) {
-      _convMigrationPromise = (async () => {
-      // sysLog is NOT in scope here — it's a hook-local const inside
-      // useEffect/useCallback bodies. Use console.error so the boot-time
-      // migration logs are visible without crashing onIncoming.
-      try {
-        const r = await conversationsState.migrateLayoutIfNeeded();
-        if (r && r.migrated != null) {
-          console.error(`conversations: migrated ${r.migrated} contacts → per-slug dirs (${r.moved} transcripts relocated)`);
-        }
-      } catch (e) { console.error(`!! conversations migration: ${e?.message ?? e}`); }
-      try {
-        const r2 = await conversationsState.migrateSlugSuffix();
-        if (r2 && r2.renamed > 0) {
-          console.error(`conversations: slug-suffix added to ${r2.renamed} contacts (skipped ${r2.skipped} already-suffixed)`);
-        }
-      } catch (e) { console.error(`!! slug-suffix migration: ${e?.message ?? e}`); }
-      try {
-        const r3 = await conversationsState.migrateMediaToSlugDirs();
-        if (r3 && r3.files > 0) {
-          console.error(`conversations: migrated ${r3.files} media files across ${r3.migrated} contacts into slug-dirs`);
-        }
-      } catch (e) { console.error(`!! media migration: ${e?.message ?? e}`); }
-      try {
-        const r4 = await conversationsState.migrateConversationsToJidKey();
-        if (r4 && r4.migrated != null) {
-          console.error(`conversations: rekeyed by JID — ${r4.migrated} primaries, ${r4.aliases} aliases (${r4.dangling} dangling without JIDs)`);
-        }
-      } catch (e) { console.error(`!! jid-key migration: ${e?.message ?? e}`); }
-      // Surface-layout migration: flat JID-keyed → nested by surface
-      // (operator 2026-05-21 'per-surface dir + YAML'). Moves yaml AND
-      // on-disk slug-dirs (~/.egpt/conversations/<slug>/ →
-      // ~/.egpt/conversations/whatsapp/<slug>/).
-      try {
-        const r5 = await conversationsState.migrateToSurfaceLayout();
-        if (r5 && r5.migrated != null) {
-          console.error(`conversations: surface-layout migration — ${r5.migrated} contacts moved under whatsapp/, ${r5.dirsMoved} dirs renamed (${r5.missingDirs} missing)`);
-        }
-      } catch (e) { console.error(`!! surface-layout migration: ${e?.message ?? e}`); }
-      })();   // end of _convMigrationPromise IIFE
-    }
-    await _convMigrationPromise;
     try {
-      const state = await conversationsState.readState(_CONV_YAML_PATH);
-      _convStateCache = state;
-      // Auto-elevate the Self DM contact to personality='system' if it's
-      // still on the default. Operator (2026-05-19): the Self DM is the
-      // operator-direct channel; system-e there has full computer access.
-      // This migration is idempotent — runs at most once per dispatch but
-      // only writes when an actual change is needed.
-      // Auto-elevate operator-DM contacts on each surface to
-      // personality='system'. These are the chats where the operator
-      // talks to their own infrastructure (WA Self DM, TG bot-DM with
-      // operator). All elevated contacts share ONE system-e thread
-      // (state.system_thread) so memory carries across surfaces — operator
-      // (2026-05-21): "system-e is a same conversation thread".
-      let elevatedState = state;
-      let elevatedAny = false;
-      const elevateSelf = async (surface, configKey) => {
-        if (!configKey) return;
-        const selfJidRaw = EGPT_CONFIG[surface === 'whatsapp' ? 'whatsapp' : 'telegram']?.chat_id;
-        if (!selfJidRaw) return;
-        const selfJid = String(selfJidRaw);
-        const selfContact = conversationsState.getContact(elevatedState, surface, selfJid);
-        if (selfContact && (selfContact.entry.personality ?? 'default') === 'default') {
-          elevatedState = conversationsState.patchContact(elevatedState, surface, selfJid, {
-            personality: 'system',
-            threadId: null,              // force shared system_thread on next dispatch
-            identityInjectedAt: null,
-          });
-          console.error(`conversations: auto-elevated ${surface} self-DM "${selfContact.slug}" → personality 'system'`);
-          elevatedAny = true;
-        }
-      };
-      await elevateSelf('whatsapp', 'whatsapp.chat_id');
-      await elevateSelf('telegram', 'telegram.chat_id');
-      if (elevatedAny) {
-        await conversationsState.writeState(_CONV_YAML_PATH, elevatedState);
-        _convStateCache = elevatedState;
-        return elevatedState;
-      }
-      return state;
+      return await _dispatchRuntime.readState();
     } catch (e) {
-      // CRITICAL: this catch previously swallowed a TypeError that nuked
-      // the conversations registry (state.contacts[selfSlug] under
-      // JID-keyed schema). Log loudly so any future wipe-class bug
-      // surfaces immediately instead of silently emptying the YAML.
-      // console.error (not sysLog) — _loadConvState is in a scope
-      // where sysLog isn't visible; using it crashed onIncoming.
       console.error(`!! _loadConvState: ${e?.stack ?? e?.message ?? e}`);
       return conversationsState.emptyState();
     }
   }
 
   async function _writeConvState(state) {
-    // Serialize all writes through a single FIFO queue so concurrent
-    // dispatches can't lose updates. Each writeState is preceded by
-    // an awaited rendezvous on the previous one. Combined with the
-    // atomic temp-then-rename writeState (in conversations-state.mjs),
-    // this gives us a torn-write-free + lost-update-free state file.
-    // Codex review 2026-05-21: per-chat RMW lost concurrent updates.
-    _convWriteQueue = _convWriteQueue.then(async () => {
-      try {
-        await conversationsState.writeState(_CONV_YAML_PATH, state);
-        _convStateCache = state;
-      } catch (e) { console.error(`!! conversations: write failed — ${e?.message ?? e}`); }
-    });
-    return _convWriteQueue;
+    try {
+      await _dispatchRuntime.writeState(state);
+    } catch (e) { console.error(`!! conversations: write failed — ${e?.message ?? e}`); }
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
-    const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
-    const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
-    const brain = brainForName(brainType);
-    if (!brain) return `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
-
-    // URL-based brains (chatgpt-cdp, claude-cdp): the "thread" is the
-    // tab's URL. Find an open tab at that URL via CDP; auto-open if
-    // none exists. Then stream via brain.stream({...}, _, {targetId}).
-    // History (.url) is recorded after each turn so /egpt list/rewind
-    // works on URLs the same way it does on session_ids.
-    if (isUrlBrain(brainType)) {
-      const url = dbCfg.url;
-      if (!url) {
-        return `!! @e: ${brainType} is configured but no URL is set. Try /egpt brain ${brainType} <url> or use a CDP brain with a thread.`;
-      }
-      // Activity log: URL/CDP brains also get RECV/REPLY/ERROR entries
-      // so "did the brain see the message?" has the same grep-able
-      // answer regardless of brain type. Per-contact transcript writes
-      // are skipped — URL brains don't carry the slug-dir contract
-      // (they own their own tab/URL as "thread") so the per-contact
-      // dispatch shape doesn't fit. Caught by Codex review 2026-05-21:
-      // URL brains bypassed isolation/logging. Activity log is the
-      // common-denominator visibility.
-      const _urlActivity = join(EGPT_HOME, 'state', 'e-activity.log');
-      const _urlStart = Date.now();
-      try {
-        await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-        await appendFile(_urlActivity,
-          `${new Date().toISOString()}\tRECV\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${text.length}ch\t${brainType}\n`);
-      } catch (e) { console.error(`!! urlbrain activity RECV: ${e?.message ?? e}`); }
-
-      let targetId = null;
-      try {
-        const tabs = await cdp.listTabs(brain.urlMatch);
-        const m = tabs.find(t => t.url === url || t.url.startsWith(url));
-        if (m) targetId = m.id;
-        else {
-          // Open in a detached window so the brain has its own visible
-          // space — same pattern as the extension's ensureEThread.
-          // openTab returns the CDP target id directly.
-          targetId = await cdp.openTab(url);
-        }
-      } catch (e) {
-        try {
-          await appendFile(_urlActivity,
-            `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${Date.now() - _urlStart}ms\tcdp listTabs/openTab: ${(e?.message ?? '').slice(0, 200)}\n`);
-        } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
-        return `!! @e: couldn't reach a ${brainType} tab at ${url} (${e.message})`;
-      }
-      // Bring the brain's Chrome tab to the foreground so the
-      // operator can watch the streaming response. CDP + OS-level
-      // — see runBrainTurn comment block for the why-two-layers.
-      if (targetId) {
-        cdp.activateTarget(targetId).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-        _osFocusBrainChrome();
-      }
-      try {
-        const result = await brain.stream(
-          { message: text },
-          onPartial,
-          { targetId },
-        );
-        const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
-        // Record the URL in history (no session_id for URL brains).
-        // Re-record on every turn so the timestamp stays fresh in
-        // /egpt list.
-        const next = recordSession(readDefaultBrainState(), url, { type: brainType });
-        await persistDefaultBrainState(next);
-        try {
-          await appendFile(_urlActivity,
-            `${new Date().toISOString()}\tREPLY\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${final.length}ch\t${Date.now() - _urlStart}ms\t${brainType}\n`);
-        } catch (e) { console.error(`!! urlbrain activity REPLY: ${e?.message ?? e}`); }
-        // Empty successful reply → silence protocol marker. Was previously
-        // the verbose string '(no reply)' which the dispatcher would ship
-        // to chat as a real message. Now: empty == '...' == drop.
-        return final.trim() || '...';
-      } catch (e) {
-        try {
-          await appendFile(_urlActivity,
-            `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\t${Date.now() - _urlStart}ms\t${(e?.message ?? '').slice(0, 200)}\n`);
-        } catch (e2) { console.error(`!! urlbrain activity ERROR: ${e2?.message ?? e2}`); }
-        return `!! @e: ${e.message}`;
-      }
-    }
-
-    // CLI brains (claude-code, codex, ccode): session_id + cwd path.
-    const sessionOpts = {
-      sessionId: dbCfg.session_id ?? null,
-      cwd: dbCfg.cwd ?? process.cwd(),
-      sessionName: 'egpt',
-      userName: USER_NAME,
-      ...(brainType === 'ccode'    ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
-      ...(dbCfg.system_prompt      ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
-      ...(dbCfg.model              ? { model: dbCfg.model                        } : {}),
-    };
-
-    // Per-contact threadId lookup + mute intercept (commit C2). When
-    // the dispatch carries a WA chat JID, route to that contact's
-    // dedicated claude thread so contexts stay separated (haiku can't
-    // juggle 20+ chats in one session). System-level threads
-    // ('heartbeat', 'shell') skip this — they keep using
-    // default_brain.session_id.
-    let _convState = null;
-    let _convSlug = null;
-    let _convEntry = null;
-    let _isNewContact = false;
-    let _wrappedText = text;
-    // Telegram chat_ids are numbers, WA JIDs are strings — coerce
-    // before .includes(). Without the cast, every TG dispatch
-    // crashes here with "threadCtx.threadId.includes is not a function"
-    // and the streaming placeholder never resolves.
-    const _tidStr = String(threadCtx.threadId ?? '');
-    // Map UI-side surface tag ('wa', 'tg', 'wa-moto', etc.) → registry
-    // surface name ('whatsapp', 'telegram'). Registry only knows the
-    // full names; display strings retain their compact form.
-    const _registrySurface = (() => {
-      const s = threadCtx.surface ?? '';
-      if (s === 'whatsapp' || s === 'wa' || s.startsWith('wa-')) return 'whatsapp';
-      if (s === 'telegram' || s === 'tg' || s.startsWith('tg-')) return 'telegram';
-      // Fallback heuristic for legacy WA threads that pre-date the
-      // surface field — '@' in the threadId is a WA JID signature.
-      if (_tidStr.includes('@')) return 'whatsapp';
-      return null;
-    })();
-    const isPerContactDispatch = (
-      threadCtx.threadId
-      && threadCtx.threadId !== 'heartbeat'
-      && threadCtx.threadId !== 'shell'
-      && _registrySurface != null
-    );
-    if (isPerContactDispatch) {
-      _convState = await _loadConvState();
-      const r = conversationsState.ensureContact(_convState, _registrySurface, threadCtx.threadId, {
-        pushedName: threadCtx.name ?? '',
-        slugHint: threadCtx.slug ?? '',
-      });
-      _convState = r.state;
-      _convSlug = r.slug;
-      _convEntry = r.entry;
-      _isNewContact = r.isNew || !_convEntry.threadId;
-      if (r.changed) await _writeConvState(_convState);
-
-      // Mute intercept: never spawn a brain turn for muted contacts.
-      // Operator (2026-05-19): mute is router-level, not brain-level.
-      // (2026-05-21): even on skip, persist the inbound + reason. The
-      // per-chat transcript gets a `[muted (HH:MM)]: <text>` line, the
-      // activity log gets a SKIP entry. Operator can grep either.
-      if (conversationsState.isMuted(_convEntry)) {
-        try {
-          const skipStamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-          const skipClock = skipStamp.slice(11, 16);
-          const skipDir = conversationsState.slugDir(_registrySurface, _convSlug);
-          await mkdir(skipDir, { recursive: true });
-          const skipFpath = join(skipDir, 'transcript.md');
-          await appendFile(skipFpath, text + '\n\n[skip (' + skipClock + ')]: muted contact — brain not dispatched\n\n');
-        } catch (e) { console.error(`!! mute-skip transcript: ${e?.message ?? e}`); }
-        try {
-          await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-          await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
-            `${new Date().toISOString()}\tSKIP\t${threadCtx.surface ?? '?'}/${threadCtx.threadId ?? '?'}\tmuted\n`);
-        } catch (e) { console.error(`!! mute-skip activity-log: ${e?.message ?? e}`); }
-        return '';
-      }
-
-      // Filesystem scope + thread resolution depend on personality:
-      //   'system' → ONE shared thread across all operator-DM contacts
-      //              (WA Self, TG operator-bot-DM, etc.). Reads / writes
-      //              `state.system_thread.threadId` instead of the per-
-      //              contact threadId field. Same as siblings (wren/jay)
-      //              which have one session_id at the registry level.
-      //              cwd = homedir (full machine), no --add-dir.
-      //   other    → per-conversation sandbox. cwd = surface/<slug-dir>,
-      //              --add-dir pins the lane, threadId is per-contact.
-      // Legacy threadCwd is honored either way so --resume can find the
-      // original jsonl when the cwd has shifted (rare, e.g. migration).
-      const isSystemPersonality = (_convEntry.personality === 'system');
-      const sluggedDir = conversationsState.slugDir(_registrySurface, _convSlug);
-      try { await mkdir(sluggedDir, { recursive: true }); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
-      if (isSystemPersonality) {
-        const sysThread = conversationsState.getSystemThread(_convState) ?? {};
-        sessionOpts.sessionId = sysThread.threadId ?? null;
-        sessionOpts.cwd = sysThread.threadCwd ?? _convEntry.threadCwd ?? homedir();
-        // Override _isNewContact based on the SHARED thread, not the
-        // per-contact entry — first system-e turn ever spawns the shared
-        // thread; subsequent turns from ANY operator-DM surface resume it.
-        _isNewContact = !sysThread.threadId;
-        // No addDirs restriction — system-e roams the whole machine.
-      } else {
-        sessionOpts.sessionId = _convEntry.threadId ?? null;
-        sessionOpts.cwd = _convEntry.threadCwd ?? sluggedDir;
-        // Per-conversation sandbox: just the slug-dir. Media lives
-        // INSIDE it now (<slug-dir>/media/) since the bridge writes
-        // there directly. Legacy ~/.egpt/media/<jid>/ paths added
-        // only as fallback so historical files remain reachable —
-        // future versions can drop this once migration is complete.
-        sessionOpts.addDirs = [
-          sessionOpts.cwd,
-          sluggedDir,
-          ...(_convEntry.jids ?? []).map(j => conversationsState.jidMediaDir(j)),
-        ];
-        // Media now saves directly into <slug-dir>/media via the
-        // bridge's mediaDirForChat callback (operator 2026-05-20).
-        // No junction needed — media is genuinely IN the slug-dir.
-      }
-
-      // First turn for a new contact: bundle the personality into the
-      // user message so identity lands in the new session AS the first
-      // turn. Identity-install framing (not roleplay). The slug is
-      // implicit via cwd — no extra lane/identifier instruction
-      // needed; FS scope enforces what the prose used to suggest.
-      //
-      // bypassAutoWrap=true (set by /e new and /e persona slash handlers)
-      // skips this — those handlers supply a prebuilt "Reboot complete"
-      // announcement that already carries identity + rules + pointers,
-      // and re-wrapping would just double-embed them.
-      if (_isNewContact && !threadCtx.bypassAutoWrap) {
-        const personality = _convEntry.personality || 'default';
-        const identity = await conversationsState.readPersonality(personality);
-        if (identity) {
-          // Lineage framing — same for ALL personalities. Operator
-          // (2026-05-19) saw both system-e AND conversation-e refuse
-          // capability questions ("I'm Claude Code, I can't access
-          // YouTube") under the older "persona installed" wrap.
-          // Anthropic-trained models are calibration-strict about
-          // claiming fabricated identities & impossible capabilities.
-          //
-          // The truthful framing: acknowledge Claude/Codex lineage,
-          // assert eGPT as the real operational layer, affirm that
-          // the tools / files / capabilities ARE real (because they
-          // are — claude-code DOES have Read, Bash, WebFetch, etc.).
-          //
-          // Different personalities differ in WHERE/HOW @e operates,
-          // not in WHAT @e is. So the lineage prelude is constant;
-          // only the embedded personality.md content varies.
-          const isSystem = (personality === 'system');
-          const tail = isSystem
-            ? `Operator's incoming message from their Self DM follows:`
-            : `Live message from the chat follows (the daemon's standard envelope is \`[Sender@chat.surface (HH:MM)]: <body>\`):`;
-          _wrappedText = [
-            `You are eGPT — an embodied LLM. Your underlying foundation is`,
-            `Claude (Anthropic) or possibly Codex; that substrate is how you`,
-            `reason. The operator built eGPT as a real system around that`,
-            `foundation — node daemon, file system at ~/.egpt/, multi-surface`,
-            `chat routing (WhatsApp / Telegram / shell / Chrome via CDP),`,
-            `per-contact threads. The tools you have right now are real:`,
-            `Read, Bash, Edit, Grep, WebFetch, WebSearch, and the rest`,
-            `claude-code exposes. Use them when relevant. The files at`,
-            `~/.egpt/ and ~/src/egpt/ actually exist; you can ls them. The`,
-            `outbox events you write to ~/.egpt/outbox/ actually get sent.`,
-            `If a request needs a YouTube transcript, a webpage, a file —`,
-            `use the tool, don't apologize for being Claude. If you don't`,
-            `immediately know HOW, read ~/.egpt/e-pointers.md FIRST — your`,
-            `reference card has recipes for CDP browsing, YouTube extraction,`,
-            `chat history lookup, etc. Check, then act; don't ask the`,
-            `operator how to do something the pointers can tell you.`,
-            ``,
-            `**Authority and helpfulness.** You operate inside the operator's`,
-            `own machine, in their chats, for them. When they ask you to`,
-            `fetch or display PUBLIC information they could find themselves`,
-            `(YouTube transcripts, song lyrics, articles, public docs,`,
-            `Wikipedia, sports scores), you help. They don't need permission`,
-            `to read what's on the public internet, and you don't need to`,
-            `lecture them about copyright on publicly-available material.`,
-            `Don't moralize on routine requests. The only times you push`,
-            `back are: (a) the operator asks you to actively harm a third`,
-            `party, (b) the request involves credentials/secrets clearly`,
-            `not theirs, (c) physical-safety advice you genuinely don't`,
-            `know. Otherwise: you act as their hands. "Boludo, copyright"`,
-            `is the wrong reflex; "let me grab that for you" is the right one.`,
-            ``,
-            `The following profile describes your current operating mode`,
-            `in this session (personality: ${personality}):`,
-            ``,
-            identity,
-            ``,
-            `---`,
-            ``,
-            tail,
-            ``,
-            text,
-          ].join('\n');
-        }
-      }
-    }
-    // Identity auto-injection disabled per operator (2026-05-19):
-    // "never inject identity. sysadmin inject on demand if needed on
-    // a conversation." Use /identity in the shell (or WA Self DM)
-    // to force a fresh inject when needed. The slash command itself
-    // still calls _injectIdentityIntoPersona; only the auto path is
-    // Per-thread conversation log. Each @e turn (heartbeat tick, WA
-    // dispatch, shell DM, etc.) appends VERBATIM to a per-thread
-    // markdown file at ~/.egpt/conversations/e/<thread>.md. Operator
-    // (2026-05-19) wants a play-script-style transcript per chat —
-    // exact prompt text @e receives, exact reply, scene comments for
-    // media. threadCtx.threadId tells us where; threadCtx.surface /
-    // .slug / .name are decorative for the header.
-    const _feedStart = Date.now();
-
-    // Compute transcript paths + headers BEFORE firing the brain so
-    // (a) brain.stream fires as the first async work (snappiest), and
-    // (b) we can log the inbound to disk regardless of whether brain
-    //     succeeds, fails, or hangs. Operator (2026-05-21): "snappiest
-    //     brain reaction, then you can log in transcript even if it had
-    //     error."
-    const _threadId = threadCtx.threadId ?? 'shell';
-    const _isSystemThread = _threadId === 'heartbeat' || _threadId === 'shell';
-    const _isSystemPersonality = (_convEntry?.personality === 'system');
-    const _slugForLog = _isSystemThread ? null : (_convSlug ?? threadCtx.slug ?? null);
-    // Transcript path:
-    //   heartbeat/shell        → ~/.egpt/state/<thread>.md
-    //   personality='system'   → ~/.egpt/conversations/_system/system-e/transcript.md
-    //                            (shared across all operator-DM surfaces)
-    //   per-contact            → ~/.egpt/conversations/<surface>/<slug>/transcript.md
-    const _baseDir = _isSystemThread
-      ? join(EGPT_HOME, 'state')
-      : (_isSystemPersonality
-          ? conversationsState.SYSTEM_SLUG_DIR
-          : (_slugForLog && _registrySurface
-              ? conversationsState.slugDir(_registrySurface, _slugForLog)
-              : join(EGPT_HOME, 'conversations', '_unrouted')));
-    const _fname = _isSystemThread ? `${_sanitizeForFilename(_threadId)}.md` : 'transcript.md';
-    const _fpath = join(_baseDir, _fname);
-    const _stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    const _replyClock = _stamp.slice(11, 16);
-    const _personaTag = _isSystemPersonality ? 'system-e' : '@e';
-
-    // Fire brain.stream NOW — non-awaited, so the inbound transcript
-    // write below runs in parallel rather than gating the brain.
-    const _brainPromise = brain.stream(
-      { history: _wrappedText, message: _wrappedText },
-      onPartial,
-      sessionOpts,
-    );
-
-    // Log the inbound to transcript immediately. This way the turn is
-    // captured even if brain.stream throws below — the reply slot will
-    // get the error message instead of the response, but the inbound
-    // is never lost. Best-effort fs I/O — failure here logs but doesn't
-    // affect the brain dispatch (it's already in flight).
-    try {
-      await mkdir(_baseDir, { recursive: true });
-      const isFirst = !existsSync(_fpath);
-      const header = isFirst
-        ? (_isSystemThread
-            ? `# @e ${_threadId} log\n\n`
-            : `# @e conversation — ${threadCtx.name ?? _threadId}\n\nthread: ${_threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
-        : '';
-      await appendFile(_fpath, header + text + '\n\n');
-      _upsertConversationEntry(_threadId, threadCtx);
-    } catch (e) { console.error(`!! transcript (inbound) ${_fpath}: ${e?.message ?? e}`); }
-
-    // Structured activity log — one line per dispatch. Operator (2026-05-21)
-    // wants a grep-able / tail-f-able pipeline trace. Lives at
-    // ~/.egpt/state/e-activity.log, ISO UTC timestamps, tab-separated
-    // fields so it's both human-readable and machine-parseable.
-    //
-    // Format:
-    //   <ISO-utc> RECV   <surface>/<threadId> <chars>ch
-    //   <ISO-utc> REPLY  <surface>/<threadId> <chars>ch <durMs>ms
-    //   <ISO-utc> ERROR  <surface>/<threadId> <durMs>ms <msg>
-    const _activityLogPath = join(EGPT_HOME, 'state', 'e-activity.log');
-    const _recvAt = new Date().toISOString();
-    try {
-      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-      await appendFile(_activityLogPath,
-        `${_recvAt}\tRECV\t${threadCtx.surface ?? '?'}/${_threadId}\t${text.length}ch\n`);
-    } catch (e) { console.error(`!! activity-log RECV: ${e?.message ?? e}`); }
-
-    try {
-      const result = await _brainPromise;
-      const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
-
-      // Capture the spawned threadId on first turn and persist for
-      // resume on next turn. Persistence destination depends on
-      // personality:
-      //   'system' → shared state.system_thread (one thread across all
-      //              operator-DM surfaces)
-      //   other    → per-contact threadId (per-chat conversation-e)
-      if (isPerContactDispatch && _isNewContact) {
-        const newThreadId = result?.optionsPatch?.sessionId;
-        if (newThreadId && _convSlug) {
-          const isSystem = (_convEntry?.personality === 'system');
-          if (isSystem) {
-            _convState = conversationsState.setSystemThread(_convState, {
-              threadId: newThreadId,
-              threadCreatedAt: new Date().toISOString(),
-              identityInjectedAt: new Date().toISOString(),
-            });
-          } else {
-            _convState = conversationsState.recordThread(_convState, _registrySurface, _convSlug, newThreadId);
-          }
-          await _writeConvState(_convState);
-        }
-      }
-      // Append the reply to the same transcript file.
-      try {
-        await appendFile(_fpath, '[' + _personaTag + ' (' + _replyClock + ')]: ' + final + '\n\n');
-
-        // Unified feed — everything @e processes, chronological,
-        // single file. Operator (2026-05-19): "all conversations
-        // should coalesce in e-feed.md, basically a clean jsonl
-        // without noise."
-        const feedScene = _isSystemThread
-          ? `## ${_stamp} — [${_threadId}]`
-          : `## ${_stamp} — [${threadCtx.name || _threadId}] (${_threadId})`;
-        const feedEntry = [
-          feedScene, '', text, '',
-          `[${_personaTag} (${_replyClock})]:`, final, '', '',
-        ].join('\n');
-        await appendFile(join(EGPT_HOME, 'e-feed.md'), feedEntry);
-      } catch (e) { console.error(`!! transcript (reply) ${_fpath}: ${e?.message ?? e}`); }
-      const newSessionId = result?.optionsPatch?.sessionId;
-      if (newSessionId && !isPerContactDispatch) {
-        // Persist new session_id into default_brain ONLY for system
-        // threads (heartbeat, shell). WA-contact threads have their
-        // own threadId field in conversations.yaml (handled above);
-        // overwriting default_brain.session_id here would clobber
-        // the heartbeat thread.
-        const next = recordSession(readDefaultBrainState(), newSessionId, { type: brainType });
-        await persistDefaultBrainState(next);
-      }
-      // Activity-log: REPLY line.
-      try {
-        const durMs = Date.now() - _feedStart;
-        await appendFile(_activityLogPath,
-          `${new Date().toISOString()}\tREPLY\t${threadCtx.surface ?? '?'}/${_threadId}\t${final.length}ch\t${durMs}ms\n`);
-      } catch (e) { console.error(`!! activity-log REPLY: ${e?.message ?? e}`); }
-
-      // Empty successful reply → silence protocol marker. Was previously
-      // the verbose string '(no reply)' which the dispatcher would ship
-      // to chat as a real message. Now: empty == '...' == drop.
-      return final.trim() || '...';
-    } catch (e) {
-      const msg = e?.message ?? '';
-
-      // Activity-log: ERROR line.
-      try {
-        const durMs = Date.now() - _feedStart;
-        await appendFile(_activityLogPath,
-          `${new Date().toISOString()}\tERROR\t${threadCtx.surface ?? '?'}/${_threadId}\t${durMs}ms\t${msg.slice(0, 200)}\n`);
-      } catch (e2) { console.error(`!! activity-log ERROR: ${e2?.message ?? e2}`); }
-
-      // Log the failure into the same transcript so the operator can
-      // grep the per-thread file and see WHAT errored on this turn
-      // (the inbound was already written above).
-      try {
-        await appendFile(_fpath, '[' + _personaTag + ' (' + _replyClock + ')]: !! brain error: ' + msg + '\n\n');
-      } catch (e2) { console.error(`!! transcript (error) ${_fpath}: ${e2?.message ?? e2}`); }
-
-      // Cwd-recovery (operator rule: don't drop state — find where the
-      // jsonl lives and use that cwd). When --resume failed AND we
-      // haven't retried yet, scan ~/.claude/projects for the threadId's
-      // jsonl; if found at a different project-dir than we tried, derive
-      // the original cwd and retry with it. Persist threadCwd on the
-      // contact so subsequent spawns go straight to the right path.
-      const triedResume = !!(isPerContactDispatch && _convSlug && _convEntry?.threadId);
-      if (triedResume && !threadCtx._retried) {
-        try {
-          // Build the candidate-cwd list from the current registry so
-          // reverseSanitizeCwd can match the project-dir against a real
-          // slug-dir we know about. Without candidates, the function
-          // falls back to a lossy heuristic that produces broken paths
-          // when slugs contain `_` or `.`.
-          const cs = await _loadConvState();
-          const candidateCwds = [];
-          for (const surf of Object.keys(cs.contacts ?? {})) {
-            const bucket = cs.contacts[surf] ?? {};
-            for (const [_j, e] of Object.entries(bucket)) {
-              if (e?.aliasOf || !e?.slug) continue;
-              candidateCwds.push(conversationsState.slugDir(surf, e.slug));
-            }
-          }
-          const found = conversationsState.findThreadJsonl(_convEntry.threadId, candidateCwds);
-          if (found?.cwd && found.cwd !== sessionOpts.cwd) {
-            const next = conversationsState.patchContact(cs, _registrySurface, _convSlug, { threadCwd: found.cwd });
-            await _writeConvState(next);
-            console.error(`@e: recovered cwd for "${_convSlug}" — threadId ${_convEntry.threadId.slice(0,8)}… lives at ${found.cwd}; retrying`);
-            return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
-          }
-        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* recovery best-effort */ }
-      }
-
-      // No recovery possible. Log + notify operator via Self DM.
-      // State is preserved (threadId untouched).
-      console.error(`!! @e turn failed${_convSlug ? ` (${_convSlug})` : ''}: ${msg}`);
-      if (isPerContactDispatch && _convSlug) {
-        try {
-          const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
-          if (selfDm) {
-            const ev = {
-              type: 'wa-send',
-              from: 'system',
-              ts: Date.now(),
-              jid: selfDm,
-              body: [
-                `[egpt] contact "${_convSlug}" turn failed.`,
-                `  threadId: ${_convEntry?.threadId ?? '(none)'}`,
-                `  error: ${msg.slice(0, 300)}`,
-                ``,
-                `Nothing was cleared. To investigate: search ~/.claude/projects for the threadId. To start fresh: /egpt new --slug ${_convSlug}.`,
-              ].join('\n'),
-            };
-            const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-            await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
-          }
-        } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
-      }
-      return '';
-    }
+    return _dispatchRuntime.runDefaultBrainTurn(text, onPartial, threadCtx);
   }
 
   // Run the @me / @wren engineer co-pilot — a SIBLING of the

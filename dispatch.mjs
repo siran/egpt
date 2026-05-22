@@ -13,6 +13,7 @@ import { resolveRoute } from './room.mjs';
 import {
   emptyState,
   ensureContact,
+  getContact,
   getSystemThread,
   isMuted,
   parse as parseConvState,
@@ -133,8 +134,10 @@ async function appendTranscript({ fs, logger, path, body, label }) {
   try {
     await fs.mkdir(dirname(path), { recursive: true });
     await fs.appendFile(path, body, 'utf8');
+    return true;
   } catch (e) {
     logger?.error?.(`!! transcript (${label}) ${path}: ${e?.message ?? e}`);
+    return false;
   }
 }
 
@@ -275,30 +278,112 @@ export function createDispatchRuntime({
   brain,
   bridge,
   clock = Date,
+  findThreadJsonl = null,
   fs = defaultFs,
+  getSelfDmConfig = null,
   logger = console,
   migrations = [],
+  notifyOperator = null,
+  onStateChange = null,
+  onTranscriptInbound = null,
   personaEmoji = '🐶',
   personaName = 'egpt',
   readPersonality = async () => null,
+  recordDefaultSession = null,
+  resolveBrain = null,
   routeContext = {},
+  runUrlBrainTurn = null,
   sessionOptions = {},
+  selfDmConfig = {},
   stateDir,
+  sysLog = null,
+  systemCwd = null,
   threadContextForMeta = defaultThreadContext,
 } = {}) {
   if (!stateDir) throw new Error('createDispatchRuntime: stateDir is required');
-  if (!brain?.stream) throw new Error('createDispatchRuntime: brain.stream is required');
+  if (!brain?.stream && !resolveBrain) throw new Error('createDispatchRuntime: brain.stream or resolveBrain is required');
 
   const paths = makePaths(stateDir);
   let migrationPromise = null;
   let stateQueue = Promise.resolve();
+  const logSystem = sysLog ?? logger?.error?.bind(logger) ?? (() => {});
+
+  function rememberState(state) {
+    try { onStateChange?.(state); } catch {}
+    return state;
+  }
+
+  function currentSelfDmConfig() {
+    if (typeof getSelfDmConfig === 'function') return getSelfDmConfig() ?? {};
+    return selfDmConfig ?? {};
+  }
+
+  function buildLineagePrelude({ identity, personality, text }) {
+    const isSystem = (personality === 'system');
+    const tail = isSystem
+      ? `Operator's incoming message from their Self DM follows:`
+      : `Live message from the chat follows (the daemon's standard envelope is \`[Sender@chat.surface (HH:MM)]: <body>\`):`;
+    return [
+      `You are eGPT — an embodied LLM. Your underlying foundation is`,
+      `Claude (Anthropic) or possibly Codex; that substrate is how you`,
+      `reason. The operator built eGPT as a real system around that`,
+      `foundation — node daemon, file system at ~/.egpt/, multi-surface`,
+      `chat routing (WhatsApp / Telegram / shell / Chrome via CDP),`,
+      `per-contact threads. The tools you have right now are real:`,
+      `Read, Bash, Edit, Grep, WebFetch, WebSearch, and the rest`,
+      `claude-code exposes. Use them when relevant. The files at`,
+      `~/.egpt/ and ~/src/egpt/ actually exist; you can ls them. The`,
+      `outbox events you write to ~/.egpt/outbox/ actually get sent.`,
+      `If a request needs a YouTube transcript, a webpage, a file —`,
+      `use the tool, don't apologize for being Claude. If you don't`,
+      `immediately know HOW, read ~/.egpt/e-pointers.md FIRST — your`,
+      `reference card has recipes for CDP browsing, YouTube extraction,`,
+      `chat history lookup, etc. Check, then act; don't ask the`,
+      `operator how to do something the pointers can tell you.`,
+      ``,
+      `**Authority and helpfulness.** You operate inside the operator's`,
+      `own machine, in their chats, for them. When they ask you to`,
+      `fetch or display PUBLIC information they could find themselves`,
+      `(YouTube transcripts, song lyrics, articles, public docs,`,
+      `Wikipedia, sports scores), you help. They don't need permission`,
+      `to read what's on the public internet, and you don't need to`,
+      `lecture them about copyright on publicly-available material.`,
+      `Don't moralize on routine requests. The only times you push`,
+      `back are: (a) the operator asks you to actively harm a third`,
+      `party, (b) the request involves credentials/secrets clearly`,
+      `not theirs, (c) physical-safety advice you genuinely don't`,
+      `know. Otherwise: you act as their hands. "Boludo, copyright"`,
+      `is the wrong reflex; "let me grab that for you" is the right one.`,
+      ``,
+      `The following profile describes your current operating mode`,
+      `in this session (personality: ${personality}):`,
+      ``,
+      identity,
+      ``,
+      `---`,
+      ``,
+      tail,
+      ``,
+      text,
+    ].join('\n');
+  }
+
+  function turnFailureNotice({ slug, entry, message }) {
+    return [
+      `[egpt] contact "${slug}" turn failed.`,
+      `  threadId: ${entry?.threadId ?? '(none)'}`,
+      `  error: ${message.slice(0, 300)}`,
+      ``,
+      `Nothing was cleared. To investigate: search ~/.claude/projects for the threadId. To start fresh: /egpt new --slug ${slug}.`,
+    ].join('\n');
+  }
 
   async function readState() {
     try {
-      return parseConvState(await fs.readFile(paths.conversationsYaml, 'utf8'));
+      return rememberState(parseConvState(await fs.readFile(paths.conversationsYaml, 'utf8')));
     } catch (e) {
       if (e?.code !== 'ENOENT') logger?.error?.(`!! readState(${paths.conversationsYaml}): ${e?.message ?? e}`);
-      return emptyState();
+      return rememberState(emptyState());
     }
   }
 
@@ -307,6 +392,7 @@ export function createDispatchRuntime({
     const tmp = `${paths.conversationsYaml}.tmp-${process.pid}-${clockMs(clock)}-${Math.random().toString(36).slice(2, 8)}`;
     await fs.writeFile(tmp, serializeConvState(state), 'utf8');
     await fs.rename(tmp, paths.conversationsYaml);
+    rememberState(state);
   }
 
   async function runMigrations() {
@@ -329,7 +415,12 @@ export function createDispatchRuntime({
   async function updateState(mutator) {
     const nextTask = stateQueue.then(async () => {
       await runMigrations();
-      const current = await readState();
+      let current = await readState();
+      const elevated = autoElevateOperatorDms(current);
+      if (elevated.changed) {
+        current = elevated.state;
+        await writeState(current);
+      }
       const out = await mutator(current);
       const nextState = out?.state ?? current;
       if (out?.write) await writeState(nextState);
@@ -339,13 +430,62 @@ export function createDispatchRuntime({
     return nextTask;
   }
 
+  function autoElevateOperatorDms(state) {
+    const cfg = currentSelfDmConfig();
+    let next = state;
+    let changed = false;
+    for (const [surface, chatId] of [
+      ['whatsapp', cfg.whatsapp],
+      ['telegram', cfg.telegram],
+    ]) {
+      if (!chatId) continue;
+      const contact = getContact(next, surface, String(chatId));
+      if (contact && (contact.entry.personality ?? 'default') === 'default') {
+        next = patchContact(next, surface, String(chatId), {
+          personality: 'system',
+          threadId: null,
+          identityInjectedAt: null,
+        });
+        logSystem(`conversations: auto-elevated ${surface} self-DM "${contact.slug}" → personality 'system'`);
+        changed = true;
+      }
+    }
+    return { state: next, changed };
+  }
+
   async function logActivity(type, surface, threadId, ...fields) {
     await appendActivity({ fs, paths, clock, logger, type, surface, threadId, fields });
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
+    const resolved = resolveBrain
+      ? await resolveBrain({ text, threadCtx })
+      : { brain, brainType: 'default', dbCfg: {}, isUrlBrain: false };
+    const turnBrain = resolved?.brain ?? brain;
+    const brainType = resolved?.brainType ?? resolved?.name ?? 'default';
+    const dbCfg = resolved?.dbCfg ?? {};
+    if (!turnBrain?.stream) {
+      return resolved?.missingMessage ?? `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
+    }
+    if (resolved?.isUrlBrain || resolved?.isUrl) {
+      if (!runUrlBrainTurn) {
+        return `!! @e: ${brainType} is configured as a URL brain, but no URL dispatch handler is wired.`;
+      }
+      return await runUrlBrainTurn({
+        brain: turnBrain,
+        brainType,
+        clock,
+        dbCfg,
+        logActivity,
+        onPartial,
+        paths,
+        text,
+        threadCtx,
+      });
+    }
+
     const baseSessionOpts = typeof sessionOptions === 'function'
-      ? await sessionOptions({ text, threadCtx })
+      ? await sessionOptions({ text, threadCtx, brain: turnBrain, brainType, dbCfg })
       : { ...sessionOptions };
     const sessionOpts = { ...baseSessionOpts };
 
@@ -402,7 +542,7 @@ export function createDispatchRuntime({
         const stateNow = await updateState((state) => ({ state, write: false }));
         const sysThread = getSystemThread(stateNow.state) ?? {};
         sessionOpts.sessionId = sysThread.threadId ?? null;
-        sessionOpts.cwd = sysThread.threadCwd ?? convEntry.threadCwd ?? stateDir;
+        sessionOpts.cwd = sysThread.threadCwd ?? convEntry.threadCwd ?? systemCwd ?? stateDir;
         isNewContact = !sysThread.threadId;
       } else {
         sessionOpts.sessionId = convEntry.threadId ?? null;
@@ -415,9 +555,10 @@ export function createDispatchRuntime({
       }
 
       if (isNewContact && !threadCtx.bypassAutoWrap) {
-        const identity = await readPersonality(convEntry.personality || 'default');
+        const personality = convEntry.personality || 'default';
+        const identity = await readPersonality(personality);
         if (identity) {
-          wrappedText = `${identity}\n\n---\n\n${text}`;
+          wrappedText = buildLineagePrelude({ identity, personality, text });
         }
       }
     }
@@ -439,33 +580,37 @@ export function createDispatchRuntime({
     const replyClock = nowStamp.slice(11, 16);
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
 
-    let brainPromise;
-    try {
-      brainPromise = Promise.resolve(brain.stream(
-        { history: wrappedText, message: wrappedText },
-        onPartial,
-        sessionOpts,
-      ));
-    } catch (e) {
-      brainPromise = Promise.reject(e);
-    }
+    const brainFailure = Symbol('brainFailure');
+    const brainPromise = Promise.resolve().then(() => turnBrain.stream(
+      { history: wrappedText, message: wrappedText },
+      onPartial,
+      sessionOpts,
+    )).catch(error => ({ [brainFailure]: true, error }));
 
     const header = !fs.existsSync?.(fpath)
       ? (isSystemThread
           ? `# @e ${threadId} log\n\n`
           : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
       : '';
-    await appendTranscript({
+    const inboundLogged = await appendTranscript({
       fs,
       logger,
       path: fpath,
       body: header + text + '\n\n',
       label: 'inbound',
     });
+    if (inboundLogged) {
+      try {
+        onTranscriptInbound?.(threadId, threadCtx);
+      } catch (e) {
+        logger?.error?.(`!! transcript index: ${e?.message ?? e}`);
+      }
+    }
     await logActivity('RECV', threadCtx.surface ?? '?', threadId, `${text.length}ch`);
 
     try {
       const result = await brainPromise;
+      if (result?.[brainFailure]) throw result.error;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const newThreadId = result?.optionsPatch?.sessionId;
       if (isPerContactDispatch && isNewContact && newThreadId && convSlug) {
@@ -480,6 +625,9 @@ export function createDispatchRuntime({
               });
           return { state: next, write: true };
         });
+      }
+      if (newThreadId && !isPerContactDispatch) {
+        await recordDefaultSession?.({ sessionId: newThreadId, brainType, dbCfg });
       }
 
       await appendTranscript({
@@ -509,6 +657,45 @@ export function createDispatchRuntime({
         body: `[${personaTag} (${replyClock})]: !! brain error: ${msg}\n\n`,
         label: 'error',
       });
+      const triedResume = !!(isPerContactDispatch && convSlug && convEntry?.threadId);
+      if (triedResume && !threadCtx._retried && typeof findThreadJsonl === 'function') {
+        try {
+          const current = await updateState((state) => ({ state, write: false }));
+          const candidateCwds = [];
+          for (const surf of Object.keys(current.state.contacts ?? {})) {
+            const bucket = current.state.contacts[surf] ?? {};
+            for (const [_j, entry] of Object.entries(bucket)) {
+              if (entry?.aliasOf || !entry?.slug) continue;
+              candidateCwds.push(paths.slugDir(surf, entry.slug));
+            }
+          }
+          const found = findThreadJsonl(convEntry.threadId, candidateCwds);
+          if (found?.cwd && found.cwd !== sessionOpts.cwd) {
+            await updateState((state) => ({
+              state: patchContact(state, surface, convSlug, { threadCwd: found.cwd }),
+              write: true,
+            }));
+            logSystem(`@e: recovered cwd for "${convSlug}" — threadId ${convEntry.threadId.slice(0, 8)}… lives at ${found.cwd}; retrying`);
+            return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
+          }
+        } catch (recoverErr) {
+          logger?.error?.(`!! cwd-recovery: ${recoverErr?.message ?? recoverErr}`);
+        }
+      }
+      logSystem(`!! @e turn failed${convSlug ? ` (${convSlug})` : ''}: ${msg}`);
+      if (isPerContactDispatch && convSlug && typeof notifyOperator === 'function') {
+        try {
+          await notifyOperator(turnFailureNotice({ slug: convSlug, entry: convEntry, message: msg }), {
+            entry: convEntry,
+            error: e,
+            slug: convSlug,
+            surface,
+            threadCtx,
+          });
+        } catch (notifyErr) {
+          logger?.error?.(`!! notifyOperator: ${notifyErr?.message ?? notifyErr}`);
+        }
+      }
       return '';
     }
   }
@@ -545,10 +732,14 @@ export function createDispatchRuntime({
     logActivity,
     paths,
     readState: async () => {
-      await runMigrations();
-      return readState();
+      const out = await updateState((state) => ({ state, write: false }));
+      return out.state;
     },
     runDefaultBrainTurn,
     submitIncoming,
+    writeState: async (state) => {
+      const out = await updateState(() => ({ state, write: true }));
+      return out.state;
+    },
   };
 }
