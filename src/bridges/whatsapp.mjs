@@ -1851,6 +1851,23 @@ export async function startWhatsAppBridge({
               }
             }).catch(e => log(`transcribe-stream donePromise: ${e?.message ?? e}`));
 
+            // Brain still needs the transcript INLINE in its dispatch
+            // text (via _enrichAudioText, which reads _transcriptByMsgId
+            // populated above). If we don't await here, _saveMediaIfAny
+            // returns immediately, handleMessage runs with the placeholder
+            // `[voice note: Ns]`, and the brain replies "..." for lack
+            // of content. The streaming-reply UX still plays out during
+            // this await (the WA reply edits chunk-by-chunk while the
+            // recipient watches). When media.audio_transcribe.streaming
+            // is the original parked brain-streaming variant (defaults to
+            // false), we don't await — that path WANTS the dispatch to
+            // race transcription. Operator (2026-05-22) regression hit
+            // after beta-3 enabled post_as_reply_streaming.
+            const brainWantsStreaming = !!(media.audio_transcribe?.streaming);
+            if (!brainWantsStreaming) {
+              await voiceStream.donePromise.catch(() => {});
+            }
+
             // Voice-as-reply-transcript (streaming variant). Bridge opens
             // a WA stream message as a native QUOTED reply to the voice,
             // then edits the body as each whisper chunk arrives — the
