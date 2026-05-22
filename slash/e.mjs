@@ -240,8 +240,88 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // ── /e transcribe on|off|status [--streaming] [<jid>] ─────────────
+  // Per-chat (or global) voice-as-reply-transcript toggle. Bridge
+  // posts whisper output back as a quoted reply to each voice; with
+  // --streaming the reply edit-streams chunks as they arrive.
+  if (sub === 'transcribe') {
+    const tokens2 = arg.split(/\s+/).filter(Boolean);
+    const tAction = tokens2[1] ?? 'status';
+    const streamingFlag = tokens2.includes('--streaming');
+    const batchFlag = tokens2.includes('--batch');
+    const tJidArg = tokens2.find(
+      (t, i) => i > 0 && !t.startsWith('--') && !['on','off','status','global'].includes(t),
+    );
+    const cfg = EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+    const perChat = cfg.per_chat && typeof cfg.per_chat === 'object' ? { ...cfg.per_chat } : {};
+
+    if (tAction === 'status') {
+      const globalLine = `global: post_as_reply=${cfg.post_as_reply === true} post_as_reply_streaming=${cfg.post_as_reply_streaming === true}`;
+      const perChatLines = Object.entries(perChat).length
+        ? Object.entries(perChat).map(([j, mode]) => `  - ${j} → ${mode}`).join('\n')
+        : '  (none)';
+      sysOut(`transcribe ${globalLine}\nper-chat overrides:\n${perChatLines}`);
+      return true;
+    }
+
+    if (tAction === 'global') {
+      const onOff = tokens2[2];
+      if (!['on','off'].includes(onOff)) {
+        sysOut('usage: /e transcribe global on|off [--streaming]');
+        return true;
+      }
+      const saved = await readConfig();
+      if (!saved.whatsapp) saved.whatsapp = {};
+      if (!saved.whatsapp.media) saved.whatsapp.media = {};
+      if (!saved.whatsapp.media.audio_transcribe) saved.whatsapp.media.audio_transcribe = {};
+      saved.whatsapp.media.audio_transcribe.post_as_reply = onOff === 'on';
+      saved.whatsapp.media.audio_transcribe.post_as_reply_streaming = onOff === 'on' && streamingFlag;
+      await writeConfig(saved);
+      // Mirror to in-memory config so the running bridge picks it up
+      // without a restart (bridge reads via media.audio_transcribe.*).
+      EGPT_CONFIG.whatsapp ||= {};
+      EGPT_CONFIG.whatsapp.media ||= {};
+      EGPT_CONFIG.whatsapp.media.audio_transcribe ||= {};
+      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply = onOff === 'on';
+      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply_streaming = onOff === 'on' && streamingFlag;
+      sysOut(`/e transcribe global ${onOff}${streamingFlag ? ' --streaming' : ''}`);
+      return true;
+    }
+
+    const chatId = tJidArg ?? dispatchMeta?.waChatId ?? null;
+    if (!chatId) {
+      sysOut('/e transcribe: no chat context — pass a JID explicitly (e.g. `/e transcribe on 120363407494846096@g.us --streaming`)');
+      return true;
+    }
+    if (!['on','off'].includes(tAction)) {
+      sysOut('usage: /e transcribe on|off|status|global [--streaming|--batch] [<jid>]');
+      return true;
+    }
+
+    if (tAction === 'off') {
+      perChat[chatId] = 'off';
+    } else {
+      perChat[chatId] = streamingFlag ? 'streaming' : (batchFlag ? 'batch' : 'batch');
+    }
+
+    const saved = await readConfig();
+    if (!saved.whatsapp) saved.whatsapp = {};
+    if (!saved.whatsapp.media) saved.whatsapp.media = {};
+    if (!saved.whatsapp.media.audio_transcribe) saved.whatsapp.media.audio_transcribe = {};
+    saved.whatsapp.media.audio_transcribe.per_chat = perChat;
+    await writeConfig(saved);
+    // Mirror to in-memory immediately
+    EGPT_CONFIG.whatsapp ||= {};
+    EGPT_CONFIG.whatsapp.media ||= {};
+    EGPT_CONFIG.whatsapp.media.audio_transcribe ||= {};
+    EGPT_CONFIG.whatsapp.media.audio_transcribe.per_chat = perChat;
+
+    sysOut(`/e transcribe ${tAction}${streamingFlag ? ' --streaming' : ''}: ${chatId} → ${perChat[chatId]}`);
+    return true;
+  }
+
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min>');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming]');
     return true;
   }
 
