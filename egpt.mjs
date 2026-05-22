@@ -6955,7 +6955,7 @@ if (HEADLESS) {
   // previous backup) and open a fresh .log. Check happens at startup
   // AND periodically during runs (every Nth write). Keeps logs
   // bounded without external logrotate.
-  const HEADLESS_LOG_MAX_BYTES = 5 * 1024 * 1024;    // 5 MB (operator 2026-05-22: "headless shouldn't be more than 5k... why keep it so long")
+  const HEADLESS_LOG_MAX_BYTES = 500 * 1024;          // 500 KB (operator 2026-05-22: "shouldn't be more than 5k, at most... why keep it so long")
   const HEADLESS_LOG_BACKUP = EGPT_HEADLESS_LOG + '.1';
   const ROTATE_CHECK_EVERY_WRITES = 200;
   const _rotateIfBig = () => {
