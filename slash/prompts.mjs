@@ -2,7 +2,7 @@
 // and list the prompt templates that drive @-commands like /browse,
 // /send-file, /summarize, /inject, /codex-task.
 
-import { loadTemplate } from '../tools/template.mjs';
+import { loadTemplate } from '../src/tools/template.mjs';
 
 export const meta = {
   cmd: '/prompts',

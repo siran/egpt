@@ -4,7 +4,7 @@
 import { mkdir, readdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 const ROOMS_DIR = join(homedir(), '.egpt', 'rooms');
 

@@ -25,9 +25,12 @@ import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 
 const _here = dirname(fileURLToPath(import.meta.url));
-const PERSONALITIES_SHIPPED_DIR  = join(_here, 'personalities');
+const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
 const PERSONALITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'personalities');
-const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'heartbeats');
+// Heartbeats moved under state/ alongside other internals (operator
+// 2026-05-22 declutter). Legacy path migrated on first boot in
+// egpt.mjs alongside the other directory moves.
+const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'state', 'heartbeats');
 // Legacy heartbeat PROMPT location. Renamed to heartbeat-prompt.md
 // 2026-05-22 so e-heartbeat.md can hold the heartbeat transcript.
 // readHeartbeat below falls back to the old name for back-compat

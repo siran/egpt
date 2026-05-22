@@ -11,21 +11,21 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import * as ccode from './brains/claude-code.mjs';
-import * as claudeSdk from './brains/claude-sdk.mjs';
-import * as codex from './brains/codex.mjs';
-import * as chatgptCdp from './brains/chatgpt-cdp.mjs';
-import * as claudeCdp from './brains/claude-cdp.mjs';
-import * as cdp from './tools/cdp.mjs';
-import * as bus from './tools/bus.mjs';
-import { loadTemplate, buildCommandPrompt } from './tools/template.mjs';
-import { loadTheme, listThemes } from './tools/theme.mjs';
-import { startTelegramBridge } from './bridges/telegram.mjs';
+import * as ccode from './config/brains/claude-code.mjs';
+import * as claudeSdk from './config/brains/claude-sdk.mjs';
+import * as codex from './config/brains/codex.mjs';
+import * as chatgptCdp from './config/brains/chatgpt-cdp.mjs';
+import * as claudeCdp from './config/brains/claude-cdp.mjs';
+import * as cdp from './src/tools/cdp.mjs';
+import * as bus from './src/tools/bus.mjs';
+import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
+import { loadTheme, listThemes } from './src/tools/theme.mjs';
+import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // Baileys init goes through egpt-comm-handler.mjs — the keeper side
 // of the twin-soul split. Today it's a thin in-process wrapper; in
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
-import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
+import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
@@ -34,9 +34,9 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml } from './src/interpreter.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
-import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
-import { waListToStableCache as _waListToStableCache } from './tools/wa-bindings.mjs';
-import { summonGenie as _summonGenieFromBridge } from './tools/genie.mjs';
+import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/tools/logon-summary.mjs';
+import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bindings.mjs';
+import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
@@ -1203,7 +1203,20 @@ const fmtTs = (ms) => _stamp(new Date(ms));
 // One YAML file per room at ~/.egpt/rooms/<name>.yaml. Default room is
 // the lobby — never persisted, never has brains.
 
-const ROOMS_DIR = join(EGPT_HOME, 'rooms');
+// Rooms — shell-local channels analogous to WhatsApp groups, hence
+// nested under conversations/ (operator 2026-05-22: "a room is
+// basically same structure as a whatsapp group"). Migrate the legacy
+// ~/.egpt/rooms/ on first boot.
+const ROOMS_DIR = join(EGPT_HOME, 'conversations', '_rooms');
+(function _migrateRoomsDir() {
+  try {
+    const old = join(EGPT_HOME, 'rooms');
+    if (existsSync(old) && !existsSync(ROOMS_DIR)) {
+      mkdirSync(dirname(ROOMS_DIR), { recursive: true });
+      renameSync(old, ROOMS_DIR);
+    }
+  } catch (e) { /* best effort */ }
+})();
 
 // Normalise the on-disk session shape into the canonical nested form
 // used in-memory. /save-room writes brain-specific fields FLAT at the
@@ -1523,7 +1536,19 @@ function parseMessages(text) {
 // Writes are tiny so we don't bother debouncing. Concurrent shells
 // in the same room last-write-wins each other's submissions; that's
 // acceptable for the typical one-shell-per-room setup.
-const HISTORY_DIR = join(EGPT_HOME, 'history');
+// Shell input history per room (operator 2026-05-22 declutter — moved
+// into state/ since the operator never edits these directly). Migrate
+// the old root-level history/ on first boot.
+const HISTORY_DIR = join(EGPT_HOME, 'state', 'history');
+(function _migrateHistoryDir() {
+  try {
+    const old = join(EGPT_HOME, 'history');
+    if (existsSync(old) && !existsSync(HISTORY_DIR)) {
+      mkdirSync(dirname(HISTORY_DIR), { recursive: true });
+      renameSync(old, HISTORY_DIR);
+    }
+  } catch (e) { /* best effort */ }
+})();
 const HISTORY_CAP = 500;
 function _historyPath(roomName) {
   const safe = (roomName || 'default').replace(/[^A-Za-z0-9._-]/g, '_');

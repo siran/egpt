@@ -1,6 +1,6 @@
 // slash/sessions.mjs — list sessions and manage the default operator.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/sessions',

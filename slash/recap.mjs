@@ -21,8 +21,8 @@
 // here (their bodies are in the chat's recent[] ring regardless of
 // whether the brain was dispatched).
 
-import { buildRecap } from '../tools/logon-summary.mjs';
-import { waListToStableCache as _waListToStableCache } from '../tools/wa-bindings.mjs';
+import { buildRecap } from '../src/tools/logon-summary.mjs';
+import { waListToStableCache as _waListToStableCache } from '../src/tools/wa-bindings.mjs';
 
 export const meta = {
   cmd: '/recap',

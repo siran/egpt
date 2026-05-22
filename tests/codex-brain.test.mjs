@@ -3,7 +3,7 @@
 // correctly to codex's bypass-vs-sandbox flag.
 
 import { describe, it, expect } from 'vitest';
-import { codexTrustArgs } from '../brains/codex.mjs';
+import { codexTrustArgs } from '../config/brains/codex.mjs';
 
 describe('codexTrustArgs — per-personality tool scoping', () => {
   const BYPASS = '--dangerously-bypass-approvals-and-sandbox';

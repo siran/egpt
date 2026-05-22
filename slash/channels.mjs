@@ -15,8 +15,8 @@
 // waChannelsCacheRef.current so subsequent @waN tokens resolve back to
 // the same indices the user just saw.
 
-import * as cdp from '../tools/cdp.mjs';
-import { assignWaIndex, waListToStableCache } from '../tools/wa-bindings.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
+import { assignWaIndex, waListToStableCache } from '../src/tools/wa-bindings.mjs';
 
 export const meta = {
   cmd: '/channels',

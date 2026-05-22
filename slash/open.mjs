@@ -1,6 +1,6 @@
 // slash/open.mjs — open a new tab/subprocess and register a session.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/open',

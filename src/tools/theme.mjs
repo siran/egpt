@@ -13,7 +13,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const EGPT_HOME      = join(homedir(), '.egpt');
-export const THEMES_DIR      = join(dirname(fileURLToPath(import.meta.url)), '..', 'themes');
+export const THEMES_DIR      = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'config', 'themes');
 export const USER_THEMES_DIR = join(EGPT_HOME, 'themes');
 
 export const DEFAULTS = {
