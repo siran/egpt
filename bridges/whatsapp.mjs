@@ -1433,7 +1433,7 @@ export async function startWhatsAppBridge({
   //
   // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
   // with the existing text — no re-work.
-  async function _transcribeAudioStreaming({ inputPath, outputDir, base, chunkSeconds = 1 }) {
+  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 6, strideSeconds = 3 }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
@@ -1449,6 +1449,17 @@ export async function startWhatsAppBridge({
     const emitter     = new EventEmitter();
     const finalTxt    = join(outputDir, `${base}.transcript.txt`);
     const livePath    = join(outputDir, `${base}.live.transcript.md`);
+
+    // Strip whisper's bracketed non-speech markers (operator 2026-05-22:
+    // "the transcript read [Música] a lot... can these be disabled?").
+    // Whisper produces [Música], [Music], [Aplausos], [BLANK_AUDIO], etc.
+    // when it can't resolve audio as speech. These are noise from the
+    // brain's perspective — drop them.
+    const _stripNoiseMarkers = (s) => String(s ?? '')
+      .replace(/\[\s*(?:Música|Music|Aplausos|Applause|Risas|Laughter|BLANK_AUDIO|Silence|silencio|inaudible|Music playing|Ruido|Noise)[^\]]*\]/gi, '')
+      .replace(/\(\s*(?:Música|Music|Aplausos|Applause|Risas|Laughter)[^\)]*\)/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
 
     // Idempotent shortcut.
     if (existsSync(finalTxt)) {
@@ -1487,36 +1498,48 @@ export async function startWhatsAppBridge({
       } catch (e) {
         log(`transcribe-stream: ffprobe failed for ${base}: ${e?.message ?? e} — falling back to single-chunk transcription`);
       }
-      const chunkCount = duration > 0 ? Math.ceil(duration / chunkSeconds) : 1;
+      // Sliding-window transcription (operator 2026-05-22): each pass
+      // gives whisper ~windowSeconds of audio context for better quality,
+      // then advances by strideSeconds. Each window's transcript REPLACES
+      // (not appends to) the brain's current view — whisper's output for
+      // a window is a coherent phrase that stands on its own. The brain
+      // reacts to each window-frame independently; its own session
+      // memory threads continuity across passes.
+      //
+      // For non-overlapping windows: strideSeconds === windowSeconds.
+      // For 50% overlap: stride = window / 2 (current default 3 / 6).
+      const lastStart = Math.max(0, duration - windowSeconds);
+      // Generate window start offsets: 0, stride, 2*stride, ... up to lastStart.
+      const windowStarts = [];
+      for (let s = 0; s <= lastStart + 0.001; s += strideSeconds) windowStarts.push(s);
+      // Ensure we always include the final window if duration > windowSeconds
+      // and the last computed start doesn't quite reach lastStart due to
+      // float rounding (e.g., 6s stride on 19s audio: 0, 6, 12; we want 12 to cover [12,18] and ideally also catch the last second).
+      if (windowStarts.length === 0) windowStarts.push(0);
 
-      // Chunked transcription with the live model (fast, lower-accuracy).
-      // Each chunk: ffmpeg slice → whisper-cli with --no-prints → text.
-      // We emit incrementally and accumulate `liveText` for the final
-      // resolution. Chunks process sequentially to keep load predictable.
-      let liveText = '';
-      let liveAppendBuffer = `# live transcript — ${base}\n\n`;
+      let liveAppendBuffer = `# live transcript — ${base}  (windows ${windowSeconds}s, stride ${strideSeconds}s)\n\n`;
       try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live header: ${e?.message ?? e}`); }
 
-      for (let idx = 0; idx < chunkCount; idx++) {
-        const offset = idx * chunkSeconds;
-        const chunkWav = join(outputDir, `${base}.chunk-${String(idx).padStart(3, '0')}.tmp.wav`);
+      for (let idx = 0; idx < windowStarts.length; idx++) {
+        const offset = windowStarts[idx];
+        const winLen = Math.min(windowSeconds, Math.max(1, duration - offset));
+        const winWav = join(outputDir, `${base}.win-${String(idx).padStart(3, '0')}.tmp.wav`);
         try {
           await _runCmd(ffmpegBin, [
-            '-y', '-ss', String(offset), '-t', String(chunkSeconds),
-            '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', chunkWav,
+            '-y', '-ss', String(offset), '-t', String(winLen),
+            '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', winWav,
           ]);
         } catch (e) {
-          log(`transcribe-stream: ffmpeg chunk ${idx} failed for ${base}: ${e?.message ?? e}`);
-          try { await fs.unlink(chunkWav); } catch {}
+          log(`transcribe-stream: ffmpeg window ${idx} failed for ${base}: ${e?.message ?? e}`);
+          try { await fs.unlink(winWav); } catch {}
           continue;
         }
 
-        const args = ['-m', liveModel, '-f', chunkWav, '--no-prints'];
+        const args = ['-m', liveModel, '-f', winWav, '--no-prints'];
         if (language) { args.push('-l', language); }
-        // No --output-txt — we capture stdout for the transcript.
-        let chunkText = '';
+        let windowText = '';
         try {
-          chunkText = await new Promise((resolve, reject) => {
+          windowText = await new Promise((resolve, reject) => {
             const child = _spawnChild(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
             let buf = '';
             let stderr = '';
@@ -1524,8 +1547,7 @@ export async function startWhatsAppBridge({
             child.stderr.on('data', d => { stderr += d.toString(); });
             child.on('error', reject);
             child.on('close', code => {
-              if (code !== 0) return reject(new Error(`whisper chunk ${idx} exit ${code}: ${stderr.slice(0, 200)}`));
-              // Lines like "[HH:MM:SS.mmm --> HH:MM:SS.mmm]   <text>" — strip timestamps.
+              if (code !== 0) return reject(new Error(`whisper window ${idx} exit ${code}: ${stderr.slice(0, 200)}`));
               const text = buf.split(/\r?\n/)
                 .map(line => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim())
                 .filter(Boolean)
@@ -1535,25 +1557,28 @@ export async function startWhatsAppBridge({
             });
           });
         } catch (e) {
-          log(`transcribe-stream: whisper chunk ${idx} failed: ${e?.message ?? e}`);
+          log(`transcribe-stream: whisper window ${idx} failed: ${e?.message ?? e}`);
         } finally {
-          try { await fs.unlink(chunkWav); } catch {}
+          try { await fs.unlink(winWav); } catch {}
         }
 
-        if (chunkText) {
-          liveText = (liveText + ' ' + chunkText).trim();
-          liveAppendBuffer += `[chunk ${idx} @ ${offset}s] ${chunkText}\n`;
+        const cleaned = _stripNoiseMarkers(windowText);
+        if (cleaned) {
+          liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned}\n`;
           try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
-          emitter.emit('chunk', { text: chunkText, idx, cumulative: liveText, offsetSeconds: offset });
+          // The brain sees this window's transcript as the latest cumulative
+          // view (replacing prior content). Continuity comes from the brain's
+          // session memory + the reply stack the dispatcher accumulates.
+          emitter.emit('chunk', { text: cleaned, idx, cumulative: cleaned, offsetSeconds: offset, endSeconds: offset + winLen });
         }
       }
 
       // Final accurate pass with the large model — writes the canonical
       // <base>.transcript.txt that the rest of the system consumes.
-      // Falls through quietly if the live model and final model are the
-      // same (no benefit to re-running).
-      let finalText = liveText;
-      if (finalModel && finalModel !== liveModel) {
+      // This is what the brain sees as the "cumulative" on its final pass
+      // after donePromise resolves. Same noise-marker stripping applied.
+      let finalText = '';
+      if (finalModel) {
         const finalArgs = ['-m', finalModel, '-f', wavPath, '--output-txt', '--no-prints'];
         if (language) { finalArgs.push('-l', language); }
         try {
@@ -1561,24 +1586,24 @@ export async function startWhatsAppBridge({
           try {
             const accurate = (await fs.readFile(`${wavPath}.txt`, 'utf8')).trim();
             if (accurate) {
-              finalText = accurate;
-              await fs.rename(`${wavPath}.txt`, finalTxt);
+              finalText = _stripNoiseMarkers(accurate);
+              await fs.writeFile(finalTxt, finalText, 'utf8');
+              try { await fs.unlink(`${wavPath}.txt`); } catch {}
             }
           } catch (e) { log(`transcribe-stream: final-pass read failed for ${base}: ${e?.message ?? e}`); }
         } catch (e) {
-          log(`transcribe-stream: final whisper pass failed for ${base}: ${e?.message ?? e}; using live text as final`);
-          // Write the live text as the final fallback so downstream consumers
-          // (memory, /summarize, etc.) still see SOMETHING.
-          try { await fs.writeFile(finalTxt, liveText, 'utf8'); } catch (e2) { console.error(`!! transcribe-stream fallback final write: ${e2?.message ?? e2}`); }
+          log(`transcribe-stream: final whisper pass failed for ${base}: ${e?.message ?? e}`);
         }
-      } else {
-        // Single model — promote liveText to the canonical transcript file.
-        try { await fs.writeFile(finalTxt, liveText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream single-model write: ${e?.message ?? e}`); }
+      }
+      // If the final pass yielded nothing usable, fall back to writing an
+      // empty transcript so the rest of the system can grep for the file.
+      if (!finalText) {
+        try { await fs.writeFile(finalTxt, '', 'utf8'); } catch (e) { console.error(`!! transcribe-stream empty final write: ${e?.message ?? e}`); }
       }
 
       try { await fs.unlink(wavPath); } catch {}
       emitter.emit('done', finalText);
-      return { liveText, finalText, livePath, finalPath: finalTxt };
+      return { liveText: finalText, finalText, livePath, finalPath: finalTxt };
     })();
 
     return { emitter, donePromise, livePath, finalPath: finalTxt };
