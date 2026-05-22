@@ -4985,14 +4985,27 @@ function App() {
       const personaCfg = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
       const personaEmoji = personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI;
       const waPrefix = `${personaEmoji} ${personaName}\n`;
+      // Lazy stream open (operator 2026-05-22: "is it sending '...' as
+      // a final message?"). Previously we opened a WA stream message
+      // with '…' as the placeholder immediately on voice-note arrival,
+      // then sent partial updates as the brain streamed. Problem: if
+      // every brain pass returned silence (e.g. whisper transcribed
+      // noisy non-speech as '[Música]' placeholders), the partials
+      // still triggered the initial send → recipient saw '…' or the
+      // post-cancel 'deleted' placeholder. Now: only open the stream
+      // when the brain produces actual non-silence content worth
+      // showing. All-silence voice notes leave NO message in the chat.
       let voiceStream = null;
-      try {
-        // Open with a quiet placeholder. Three dots = "listening / thinking"
-        // in the chat's vocabulary. We never show the transcript itself.
-        voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
-      } catch (e) {
-        console.error(`!! voice-stream open: ${e?.message ?? e}`);
-      }
+      const _ensureStream = () => {
+        if (voiceStream) return;
+        try {
+          voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+        } catch (e) { console.error(`!! voice-stream lazy open: ${e?.message ?? e}`); }
+      };
+      const _isSilencePartial = (s) => {
+        const t = String(s ?? '').trim();
+        return !t || t === '...' || t === '…';
+      };
 
       const idStr = String(meta.waChatId ?? '');
       const chatType = idStr.endsWith('@g.us')
@@ -5053,12 +5066,20 @@ function App() {
             try {
               const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
               const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
+                // Gate partial updates on non-silence content so we don't
+                // open the WA stream just to flash an '…' or '...' that
+                // never settles into a real reply. Pure-silence outputs
+                // never trigger an initial send → all-silence voice notes
+                // leave NO message in the chat.
+                if (_isSilencePartial(partial)) return;
+                _ensureStream();
                 try { voiceStream?.update?.(`${prefixBase}${partial}`); }
                 catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
               }, threadCtx);
               const trimmed = (reply ?? '').trim();
               if (trimmed && trimmed !== '...' && trimmed !== '…') {
                 replyStack.push(trimmed);
+                _ensureStream();
                 try { voiceStream?.update?.(`${waPrefix}${replyStack.join(_sep)}`); }
                 catch (e) { console.error(`!! voice-stream pass-end update: ${e?.message ?? e}`); }
               }
@@ -5110,8 +5131,13 @@ function App() {
 
       const finalBody = replyStack.join(_sep).trim();
       if (!finalBody) {
-        try { await (voiceStream?.cancel?.() ?? voiceStream?.finish?.(`${waPrefix}…`)); }
-        catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
+        // All-silence voice note. With lazy open above, the WA stream
+        // never opened — nothing to send, nothing to revoke. If it
+        // somehow did open (race / edge), revoke it cleanly.
+        if (voiceStream) {
+          try { await voiceStream.cancel?.(); }
+          catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
+        }
         return;
       }
       // Deterministic end-of-processing marker (operator 2026-05-22):
