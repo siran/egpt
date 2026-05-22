@@ -8,7 +8,7 @@
 // clickable mention (notifies the user); on WhatsApp it's plain text
 // today — native mention notifications need mentionedJid wiring.
 
-import { helpText, helpHtml } from '../interpreter.mjs';
+import { helpText, helpHtml } from '../src/interpreter.mjs';
 
 const _escapeHtml = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

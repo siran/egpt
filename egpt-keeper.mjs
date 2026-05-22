@@ -46,7 +46,7 @@ import {
   startOutboxWatcher,
   isBaileysPaired,
   writeIpcEvent,
-} from './egpt-comm-handler.mjs';
+} from './src/egpt-comm-handler.mjs';
 
 const EGPT_HOME = join(homedir(), '.egpt');
 const KEEPER_PID_PATH  = join(EGPT_HOME, 'keeper.pid');

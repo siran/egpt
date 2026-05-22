@@ -10,7 +10,7 @@
 // Pure persona logic lives in persona-state.mjs (tested in
 // tests/persona-state.test.mjs); this handler is just I/O.
 
-import { startNew, rewind as rewindFn, listHistory, summarize, setBrain } from '../persona-state.mjs';
+import { startNew, rewind as rewindFn, listHistory, summarize, setBrain } from '../src/persona-state.mjs';
 import {
   CONV_YAML_PATH,
   readState as readConvState,

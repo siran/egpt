@@ -10,8 +10,8 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 
-import { parseInput } from './interpreter.mjs';
-import { resolveRoute } from './room.mjs';
+import { parseInput } from './src/interpreter.mjs';
+import { resolveRoute } from './src/room.mjs';
 import {
   emptyState,
   ensureContact,

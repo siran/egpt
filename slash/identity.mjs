@@ -9,7 +9,7 @@
 // brains.identity points at) so brains pick up the new content.
 
 import * as cdp from '../tools/cdp.mjs';
-import { isUrlBrain } from '../persona-state.mjs';
+import { isUrlBrain } from '../src/persona-state.mjs';
 
 export const meta = {
   cmd: '/identity',
