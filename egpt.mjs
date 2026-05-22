@@ -2356,9 +2356,17 @@ function App() {
             const cs = _convStateCache;
             if (!cs) return null;
             // WA bridge only — every JID this callback sees is a WA jid.
-            const slug = conversationsState.findContactByJid(cs, 'whatsapp', jid);
-            if (!slug) return null;
-            return join(conversationsState.slugDir('whatsapp', slug), 'media');
+            const r = conversationsState.getContact(cs, 'whatsapp', jid);
+            if (!r) return null;
+            // System-personality contacts share a single tree under
+            // _system/system-e/ so voice notes + their transcripts +
+            // brain dispatch records all live in one place. Operator
+            // (2026-05-22): "media in conversations/whatsapp/ but the
+            // transcript in system-e? all should live in _system/."
+            if (r.entry?.personality === 'system') {
+              return join(conversationsState.SYSTEM_SLUG_DIR, 'media');
+            }
+            return join(conversationsState.slugDir('whatsapp', r.slug), 'media');
           } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); return null; }
         },
         // Visible shell notice when a file is saved. Filters out
@@ -5063,8 +5071,22 @@ function App() {
         }
       };
 
-      const onChunk = ({ cumulative }) => {
+      // Buffer the first chunk before firing the brain (operator
+      // 2026-05-22: "e tends to complain at the beginning that the
+      // audio is garbled"). The first 5s of audio carry onset noise,
+      // an un-warmed speaker, and no context — whisper-base produces
+      // its weakest output there. Waiting until at least chunk 1 (i.e.,
+      // 10s of audio) gives the model a cleaner first impression. For
+      // very short voice notes (< 10s, single chunk), the brain still
+      // fires once at donePromise resolution with the full accurate
+      // transcript — no live preview, just the final pass.
+      const BUFFER_CHUNKS_BEFORE_FIRST_BRAIN = 2;
+      let observedChunkCount = 0;
+      const onChunk = ({ cumulative, idx }) => {
         cumulativeTranscript = cumulative;
+        if (typeof idx === 'number') observedChunkCount = Math.max(observedChunkCount, idx + 1);
+        else observedChunkCount += 1;
+        if (observedChunkCount < BUFFER_CHUNKS_BEFORE_FIRST_BRAIN) return;
         runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
       };
       handle.emitter?.on?.('chunk', onChunk);
