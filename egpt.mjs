@@ -2640,10 +2640,19 @@ function App() {
             } catch (e) { return false; }
           })();
           const trimmed = String(text ?? '').trimStart();
-          const hasMention = /^@[\w-]+/.test(trimmed);
+          // Skip auto-prefix when the mention is specifically to @e or
+          // @egpt (already a persona dispatch — would create `@e @e ...`).
+          // Mentions to OTHER names (other family members, e.g.
+          // `@daniel hola`) DON'T skip — the conversation-e for an
+          // auto_e_chats group should see EVERY message including ones
+          // addressed to other people. Operator (2026-05-22): "all
+          // messages in group, as you know, should route to
+          // conversation-e."
+          const _mention = trimmed.match(/^@([\w-]+)/);
+          const mentionsE = !!_mention && (_mention[1] === 'e' || _mention[1] === 'egpt');
           const isSlash    = trimmed.startsWith('/');
           let dispatchText = text;
-          if (!autoPaused && !hasMention && !isSlash && (isAutoEChat || isSystemContact)) {
+          if (!autoPaused && !mentionsE && !isSlash && (isAutoEChat || isSystemContact)) {
             dispatchText = `@e ${text}`;
           }
           if (submitRef.current) await submitRef.current(dispatchText, {
