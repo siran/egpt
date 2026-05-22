@@ -56,3 +56,29 @@ For a truly persistent (server-mode) whisper that avoids the
 1.3s cold-start, build/install `whisper-server.exe` from the
 whisper.cpp source. Deferred — base model is fast enough for the
 current live-edit demo.
+
+## Voice-stream — TODO: quoted-reply
+
+Operator (2026-05-22): "when e replies to a voice audio, is better
+if he does so as the reply to the actual voice message."
+
+WA reply-to-message uses baileys' `quoted: { key, message }` field
+on sendMessage. The voice-stream path needs to thread this through:
+
+  egpt.mjs voice branch
+    → streamFactoryRef.current(initialText, { chatId, quoted })
+        (today: only chatId is forwarded)
+    → egpt-comm-handler.makeStream(initialText, { chatId }, proxyOpts)
+        (today: chatId/proxyOpts only; needs to accept quoted)
+    → registry.open(...) → bridge.startStreamMessage(initialText, { chatId, quoted })
+        (today: startStreamMessage only takes { chatId })
+    → bridge _doInitialSend → _safeSend(target, { text }, { quoted })
+        (today: _safeSend takes opts arg; just needs callers to pass)
+
+Inbound meta has waMsgKey + waMsgRaw already. Wire those as
+`{ key: meta.waMsgKey, message: meta.waMsgRaw }` quoted at the
+streamFactory call site. Small but spans 4 files.
+
+Skipping for now — multi-pass evolution + `.` end signal landed
+without this; the message just sends fresh in the chat (not as a
+reply). Pick up next session.
