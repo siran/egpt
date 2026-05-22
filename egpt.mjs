@@ -5015,23 +5015,13 @@ function App() {
       const replyStack = [];
       let brainInFlight = false;
       let pendingNewChunk = false;
-      let brainSaidDot = false;       // brain ended a reply with line '.' → "I'm done; don't ask again"
       const _sep = '\n---\n';
-      // Detect the "I'm done" signal: a reply whose last non-empty line
-      // is just '.'. Per operator (2026-05-22): "model ends reply with
-      // a final line with only a . (that way we can know there is
-      // nothing more to say)".
-      const _endsInDot = (s) => {
-        const lines = String(s ?? '').trim().split(/\n+/).map(l => l.trim()).filter(Boolean);
-        return lines.length > 0 && lines[lines.length - 1] === '.';
-      };
 
       const runBrainPass = async () => {
         if (brainInFlight) {
           pendingNewChunk = true;
           return;
         }
-        if (brainSaidDot) return;     // brain opted out for this voice note
         brainInFlight = true;
         try {
           while (true) {
@@ -5055,15 +5045,12 @@ function App() {
               const trimmed = (reply ?? '').trim();
               if (trimmed && trimmed !== '...' && trimmed !== '…') {
                 replyStack.push(trimmed);
-                // Lock the new pass into the body before next loop iter.
                 try { voiceStream?.update?.(`${waPrefix}${replyStack.join(_sep)}`); }
                 catch (e) { console.error(`!! voice-stream pass-end update: ${e?.message ?? e}`); }
-                if (_endsInDot(trimmed)) brainSaidDot = true;
               }
             } catch (e) {
               errOut(`!! voice-stream brain pass failed: ${e?.message ?? e}`);
             }
-            if (brainSaidDot) break;       // honor the brain's opt-out
             if (!pendingNewChunk) break;
           }
         } finally {
@@ -5113,7 +5100,14 @@ function App() {
         catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
         return;
       }
-      try { await voiceStream?.finish?.(`${waPrefix}${finalBody}`); }
+      // Deterministic end-of-processing marker (operator 2026-05-22):
+      // "bridge based... when model ends the final response; this to
+      // know if model ended processing the transcript." A line with
+      // only '.' tells the recipient (and any downstream parser) that
+      // every chunk has been transcribed and the brain has done its
+      // final pass with the accurate large-model transcript. After
+      // this, the WA message body is locked.
+      try { await voiceStream?.finish?.(`${waPrefix}${finalBody}${_sep}.`); }
       catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
       try {
         setItems(p => [...p, {
