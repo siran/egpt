@@ -632,6 +632,19 @@ export function createDispatchRuntime({
     }
     await logActivity('RECV', threadCtx.surface ?? '?', threadId, `${text.length}ch`);
 
+    // Plain-text prompts log: every brain dispatch gets one record with
+    // the literal prompt the model received. Easier to tail than the
+    // JSONL session file. Operator (2026-05-22): "are we logging
+    // somewhere every prompt sent to e? jsonl is a pain to see."
+    try {
+      const promptsPath = join(paths.stateDir, 'e-prompts.log');
+      const header = `=== ${clockIso(clock)}  ${threadCtx.surface ?? '?'}/${threadId}${convEntry?.personality ? ' ('+convEntry.personality+')' : ''}  ${text.length}ch ===`;
+      await fs.mkdir(paths.stateDir, { recursive: true });
+      await fs.appendFile(promptsPath, `${header}\n${wrappedText}\n\n`, 'utf8');
+    } catch (e) {
+      logger?.error?.(`!! e-prompts.log: ${e?.message ?? e}`);
+    }
+
     try {
       const result = await brainPromise;
       if (result?.[brainFailure]) throw result.error;
