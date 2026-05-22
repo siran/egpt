@@ -56,6 +56,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -383,6 +384,13 @@ export async function startWhatsAppBridge({
   // making @e read the sidecar file. Unbounded — transcripts are
   // small (~1KB typical) and bounded by audio msg count.
   const _transcriptByMsgId = new Map();
+  // msgId → streaming-transcription handle ({emitter, donePromise, livePath,
+  // finalPath}). Populated when a voice note arrives in streaming mode;
+  // consumed by handleMessage when forwarding to onIncoming so the
+  // dispatcher can subscribe to chunk events. GC'd 30s after donePromise
+  // settles. Operator (2026-05-22): live voice transcription via base
+  // model, chunked via ffmpeg.
+  const _voiceStreamsByMsgId = new Map();
   // Load persisted cache on boot — survives bridge restarts so
   // reaction enrichment can resolve parents from any session in the
   // last ~4000 messages, not just this one.
@@ -1404,6 +1412,178 @@ export async function startWhatsAppBridge({
     return text ? { path: finalTxt, text } : null;
   }
 
+  // Streaming variant of _transcribeAudio (operator 2026-05-22):
+  // returns an EventEmitter + donePromise so the dispatcher can react
+  // to chunks of transcript as they're produced, rather than awaiting
+  // the full transcription. The recipient sees the WA message body
+  // evolve as the audio is "heard." This is the literal externalization
+  // of attention forming meaning over time — analog of the /movie
+  // alien-frames effect transposed onto a different modality.
+  //
+  // Architecture (probed in tools/probe-whisper-stream.mjs):
+  //   whisper-cli is BATCH (stdout + output-srt both buffered until exit)
+  //   → we ffmpeg-slice audio into N-second chunks
+  //   → loop whisper-cli over chunks with the FAST base model (~1.3s/chunk)
+  //   → emit 'chunk' (text, idx, cumulativeText) per chunk
+  //   → optional: final pass with large model for the persisted transcript
+  //
+  // The large model stays as the canonical transcript (`<base>.transcript.txt`)
+  // so the rest of the system (memory, /summarize, etc.) is unaffected.
+  // The base model's chunked output is purely the live-preview layer.
+  //
+  // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
+  // with the existing text — no re-work.
+  async function _transcribeAudioStreaming({ inputPath, outputDir, base, chunkSeconds = 3 }) {
+    const cfg = media.audio_transcribe ?? {};
+    if (!cfg.enabled) return null;
+    const whisperBin = cfg.command || 'whisper-cli';
+    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
+    const ffprobeBin = (whisperBin.includes('whisper-cli')) ? whisperBin.replace(/whisper-cli\.exe$/i, '').replace(/whisper-cli$/, '') + 'ffprobe' : 'ffprobe';
+    // Operator's setup has ffprobe alongside ffmpeg under C:\ffmpeg\bin\
+    // — sibling of whisper-cli per cfg.ffmpeg_command's dirname.
+    const ffprobeResolved = cfg.ffprobe_command
+      || (cfg.ffmpeg_command ? cfg.ffmpeg_command.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1') : 'ffprobe');
+    const liveModel   = cfg.live_model_path || cfg.model_path;  // base preferred for live; falls back to canonical
+    const finalModel  = cfg.model_path;
+    const language    = cfg.language;
+    const emitter     = new EventEmitter();
+    const finalTxt    = join(outputDir, `${base}.transcript.txt`);
+    const livePath    = join(outputDir, `${base}.live.transcript.md`);
+
+    // Idempotent shortcut.
+    if (existsSync(finalTxt)) {
+      let cached = '';
+      try { cached = (await fs.readFile(finalTxt, 'utf8')).trim(); } catch (e) { console.error(`!! transcribe-streaming idempotent read: ${e?.message ?? e}`); }
+      const donePromise = Promise.resolve({ liveText: cached, finalText: cached, livePath: null, finalPath: finalTxt });
+      // Emit a synthetic 'done' on the next tick so listeners attached after this call still see it.
+      setImmediate(() => emitter.emit('done', cached));
+      return { emitter, donePromise, livePath: finalTxt, finalPath: finalTxt };
+    }
+
+    const wavPath = join(outputDir, `${base}.tmp.wav`);
+    // Whole-audio WAV first — same conversion as the non-streaming path.
+    try {
+      await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
+    } catch (e) {
+      const err = new Error(`ffmpeg failed: ${e?.message ?? e}`);
+      setImmediate(() => emitter.emit('error', err));
+      return { emitter, donePromise: Promise.reject(err), livePath, finalPath: finalTxt };
+    }
+
+    const donePromise = (async () => {
+      // Get total audio duration so we know how many chunks.
+      let duration = 0;
+      try {
+        const out = await new Promise((resolve, reject) => {
+          const child = _spawnChild(ffprobeResolved, [
+            '-i', wavPath, '-show_entries', 'format=duration', '-v', 'quiet', '-of', 'csv=p=0',
+          ], { stdio: ['ignore', 'pipe', 'pipe'] });
+          let buf = '';
+          child.stdout.on('data', d => { buf += d.toString(); });
+          child.on('error', reject);
+          child.on('close', code => code === 0 ? resolve(buf.trim()) : reject(new Error(`ffprobe exit ${code}`)));
+        });
+        duration = parseFloat(out);
+      } catch (e) {
+        log(`transcribe-stream: ffprobe failed for ${base}: ${e?.message ?? e} — falling back to single-chunk transcription`);
+      }
+      const chunkCount = duration > 0 ? Math.ceil(duration / chunkSeconds) : 1;
+
+      // Chunked transcription with the live model (fast, lower-accuracy).
+      // Each chunk: ffmpeg slice → whisper-cli with --no-prints → text.
+      // We emit incrementally and accumulate `liveText` for the final
+      // resolution. Chunks process sequentially to keep load predictable.
+      let liveText = '';
+      let liveAppendBuffer = `# live transcript — ${base}\n\n`;
+      try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live header: ${e?.message ?? e}`); }
+
+      for (let idx = 0; idx < chunkCount; idx++) {
+        const offset = idx * chunkSeconds;
+        const chunkWav = join(outputDir, `${base}.chunk-${String(idx).padStart(3, '0')}.tmp.wav`);
+        try {
+          await _runCmd(ffmpegBin, [
+            '-y', '-ss', String(offset), '-t', String(chunkSeconds),
+            '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', chunkWav,
+          ]);
+        } catch (e) {
+          log(`transcribe-stream: ffmpeg chunk ${idx} failed for ${base}: ${e?.message ?? e}`);
+          try { await fs.unlink(chunkWav); } catch {}
+          continue;
+        }
+
+        const args = ['-m', liveModel, '-f', chunkWav, '--no-prints'];
+        if (language) { args.push('-l', language); }
+        // No --output-txt — we capture stdout for the transcript.
+        let chunkText = '';
+        try {
+          chunkText = await new Promise((resolve, reject) => {
+            const child = _spawnChild(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+            let buf = '';
+            let stderr = '';
+            child.stdout.on('data', d => { buf += d.toString(); });
+            child.stderr.on('data', d => { stderr += d.toString(); });
+            child.on('error', reject);
+            child.on('close', code => {
+              if (code !== 0) return reject(new Error(`whisper chunk ${idx} exit ${code}: ${stderr.slice(0, 200)}`));
+              // Lines like "[HH:MM:SS.mmm --> HH:MM:SS.mmm]   <text>" — strip timestamps.
+              const text = buf.split(/\r?\n/)
+                .map(line => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim())
+                .filter(Boolean)
+                .join(' ')
+                .trim();
+              resolve(text);
+            });
+          });
+        } catch (e) {
+          log(`transcribe-stream: whisper chunk ${idx} failed: ${e?.message ?? e}`);
+        } finally {
+          try { await fs.unlink(chunkWav); } catch {}
+        }
+
+        if (chunkText) {
+          liveText = (liveText + ' ' + chunkText).trim();
+          liveAppendBuffer += `[chunk ${idx} @ ${offset}s] ${chunkText}\n`;
+          try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
+          emitter.emit('chunk', { text: chunkText, idx, cumulative: liveText, offsetSeconds: offset });
+        }
+      }
+
+      // Final accurate pass with the large model — writes the canonical
+      // <base>.transcript.txt that the rest of the system consumes.
+      // Falls through quietly if the live model and final model are the
+      // same (no benefit to re-running).
+      let finalText = liveText;
+      if (finalModel && finalModel !== liveModel) {
+        const finalArgs = ['-m', finalModel, '-f', wavPath, '--output-txt', '--no-prints'];
+        if (language) { finalArgs.push('-l', language); }
+        try {
+          await _runCmd(whisperBin, finalArgs);
+          try {
+            const accurate = (await fs.readFile(`${wavPath}.txt`, 'utf8')).trim();
+            if (accurate) {
+              finalText = accurate;
+              await fs.rename(`${wavPath}.txt`, finalTxt);
+            }
+          } catch (e) { log(`transcribe-stream: final-pass read failed for ${base}: ${e?.message ?? e}`); }
+        } catch (e) {
+          log(`transcribe-stream: final whisper pass failed for ${base}: ${e?.message ?? e}; using live text as final`);
+          // Write the live text as the final fallback so downstream consumers
+          // (memory, /summarize, etc.) still see SOMETHING.
+          try { await fs.writeFile(finalTxt, liveText, 'utf8'); } catch (e2) { console.error(`!! transcribe-stream fallback final write: ${e2?.message ?? e2}`); }
+        }
+      } else {
+        // Single model — promote liveText to the canonical transcript file.
+        try { await fs.writeFile(finalTxt, liveText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream single-model write: ${e?.message ?? e}`); }
+      }
+
+      try { await fs.unlink(wavPath); } catch {}
+      emitter.emit('done', finalText);
+      return { liveText, finalText, livePath, finalPath: finalTxt };
+    })();
+
+    return { emitter, donePromise, livePath, finalPath: finalTxt };
+  }
+
   // Extract one representative keyframe from a video as a JPG sidecar.
   // ffmpeg's `thumbnail` filter picks the most visually-distinctive
   // frame from a sliding window — better than first-frame (often
@@ -1543,18 +1723,57 @@ export async function startWhatsAppBridge({
       // is false (returns null fast).
       let transcript = null;
       let keyframePath = null;
+      let voiceStream = null;        // streaming-transcription handle, when enabled + audio
       if (hit.kind === 'audio' || hit.kind === 'video') {
-        // Same _transcribeAudio for video — ffmpeg pulls the audio
-        // track and ignores the video stream. Silent videos return null.
-        transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
-          .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
-        if (transcript?.text && msg.key?.id) {
-          _transcriptByMsgId.set(msg.key.id, transcript.text);
+        const streamingEnabled = !!(media.audio_transcribe?.streaming);
+        if (streamingEnabled && hit.kind === 'audio' && node.ptt) {
+          // Voice notes (PTT only — not music attachments) use the streaming
+          // path. The handle is forwarded through onMediaSaved so the host
+          // can attach to chunk events from the dispatcher. Don't await:
+          // the bridge returns immediately so dispatch sees the inbound
+          // before transcription completes. Operator (2026-05-22): the
+          // recipient should see the WA message body evolve as the audio
+          // is "heard" — meta-awareness through visible attention.
+          try {
+            voiceStream = await _transcribeAudioStreaming({ inputPath: path, outputDir: dir, base });
+          } catch (e) {
+            log(`transcribe-stream init failed (${base}): ${e?.message ?? e} — falling back to batch`);
+            voiceStream = null;
+          }
+          if (voiceStream) {
+            // When streaming finishes, cache the final text in the same map
+            // batch mode uses so /summarize etc still work.
+            voiceStream.donePromise.then((res) => {
+              if (res?.finalText && msg.key?.id) {
+                _transcriptByMsgId.set(msg.key.id, res.finalText);
+              }
+            }).catch(e => log(`transcribe-stream donePromise: ${e?.message ?? e}`));
+          }
+        }
+        if (!voiceStream) {
+          // Same _transcribeAudio for video — ffmpeg pulls the audio
+          // track and ignores the video stream. Silent videos return null.
+          transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+            .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          if (transcript?.text && msg.key?.id) {
+            _transcriptByMsgId.set(msg.key.id, transcript.text);
+          }
         }
       }
       if (hit.kind === 'video') {
         keyframePath = await _extractVideoKeyframe({ inputPath: path, outputDir: dir, base })
           .catch(e => { log(`keyframe error (${base}): ${e.message}`); return null; });
+      }
+      // Stash the streaming handle so handleMessage can pick it up by msgId
+      // and forward through meta on onIncoming. (Can't just include it in
+      // onMediaSaved — that fires once and doesn't carry through to the
+      // brain dispatch path.)
+      if (voiceStream && msg.key?.id) {
+        _voiceStreamsByMsgId.set(msg.key.id, voiceStream);
+        // GC: when done resolves (success or error), drop the handle.
+        voiceStream.donePromise.finally(() => {
+          setTimeout(() => _voiceStreamsByMsgId.delete(msg.key.id), 30_000);
+        });
       }
       try { onMediaSaved?.({
         kind: notifyKind, chatJid, msgId, path, sizeBytes: buf.length,
@@ -1563,6 +1782,7 @@ export async function startWhatsAppBridge({
         transcriptPath: transcript?.path ?? null,
         transcript: transcript?.text ?? null,
         keyframePath,
+        voiceStream: voiceStream ?? null,
       }); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
       return path;
     } catch (e) {
@@ -2040,6 +2260,14 @@ export async function startWhatsAppBridge({
       // address book). Used by auto_e_chats queueing to render
       // 'Mike: msg [HH:MM]\nJane: …' when piling messages.
       senderName: firstName ?? username ?? null,
+      // Streaming-transcription handle for voice notes (operator
+      // 2026-05-22). When present, the dispatcher should open a WA
+      // stream message immediately and update its body as chunks
+      // arrive, before firing the brain. The full transcript is
+      // available via the handle's donePromise; the rest of the
+      // system still sees the canonical <base>.transcript.txt via
+      // _transcriptByMsgId on completion.
+      voiceStream: msg.key?.id ? (_voiceStreamsByMsgId.get(msg.key.id) ?? null) : null,
     });
   }
 
