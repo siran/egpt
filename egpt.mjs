@@ -5031,18 +5031,17 @@ function App() {
       let pendingNewChunk = false;
       const _sep = '\n---\n';
 
-      // Audio-internal timestamp prefix on the brain's input — gives
-      // the model the sequence cue the alien animation had via fixed-
-      // canvas frame evolution. Operator (2026-05-22): "in the alien
-      // effect, e was receiving time indicators... audio transcript
-      // text chunks can be like '[0:06] Hola e', '[0:09] e, cómo
-      // estás? Yo'." The model sees windows positioned on a timeline,
-      // not just a sequence of disconnected phrases.
+      // Millisecond-precision audio-internal time prefix (operator
+      // 2026-05-22: "running millisecond time ticker"). Format
+      // [M:SS.mmm]. The brain doesn't get told this is voice — it
+      // just sees a ticking clock + a sliding text frame that
+      // replaces with each pass.
       const _formatAudioTime = (sec) => {
-        const total = Math.max(0, Math.floor(sec));
+        const total = Math.max(0, sec);
         const m = Math.floor(total / 60);
-        const s = String(total % 60).padStart(2, '0');
-        return `[${m}:${s}]`;
+        const s = Math.floor(total % 60);
+        const ms = Math.floor((total - Math.floor(total)) * 1000);
+        return `[${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}]`;
       };
 
       // Audio-side sliding windows (in bridges/whatsapp.mjs) give the
@@ -5063,18 +5062,14 @@ function App() {
             pendingNewChunk = false;
             const snapshot = cumulativeTranscript;
             if (!snapshot) break;
-            // Prefix the brain's input with the audio-internal timestamp
-            // so the model has a sequence cue per window. Same role the
-            // /movie alien arc's canvas position played.
+            // Bare ticker + sliding text frame, no envelope. Operator
+            // (2026-05-22): "do not notify e it's a voice message...
+            // e only receives a running 'millisecond time ticker' +
+            // text-window that disappears." Strip the standard
+            // [Sender@surface.chat (HH:MM)]: wrapper — just the time
+            // and the current frame.
             const audioStamp = _formatAudioTime(cumulativeOffsetSec);
-            const personaPrompt = formatAutoDispatchLine({
-              senderName: meta.waSenderName,
-              body: `${audioStamp} ${snapshot}`,
-              ts: Date.now(),
-              surface: buildWaSurfaceTag(meta.waChatId),
-              chatType,
-              chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-            });
+            const personaPrompt = `${audioStamp} ${snapshot}`;
             try {
               const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
               const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
@@ -5123,7 +5118,14 @@ function App() {
       // Always capped at the total audio duration so it can't run past
       // the end. When no audio_duration known yet, just uses wall-clock
       // since voice arrival.
-      const VOICE_TICK_MS = 1500;
+      // Tick at ~/movie's animation frame rate (operator 2026-05-22:
+      // "alien was also ms? make same frequency"). 250ms = 4 fps —
+      // matches the cadence at which alien frames were edited into
+      // the WA message. Brain coalescing limits actual brain calls
+      // (~one per 3s on haiku); but the WA-side updates happen
+      // freely, so the recipient sees the ticker advancing at frame
+      // rate even when the brain hasn't re-fired yet.
+      const VOICE_TICK_MS = 250;
       const voiceStartMs = Date.now();
       let lastChunkAudioEndSec = 0;
       let lastChunkWallMs = voiceStartMs;
