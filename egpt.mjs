@@ -4522,6 +4522,17 @@ function App() {
   }
   const _dispatchRuntime = _dispatchRuntimeRef.current;
 
+  // Pre-warm _convStateCache at boot so the bridge's mediaDirForChat
+  // callback can resolve slug-dirs from the FIRST inbound media,
+  // not just after the first dispatch. Without this seeding, a voice
+  // note arriving before any text dispatch fell back to the legacy
+  // ~/.egpt/media/<jid-sanitized>/ tree — the conversation-e for that
+  // chat (sandboxed to its slug-dir) couldn't see its own transcript.
+  // Operator 2026-05-22.
+  _dispatchRuntime.readState()
+    .then((s) => { if (s && !_convStateCache) _convStateCache = s; })
+    .catch((e) => console.error(`!! boot: pre-warm conv state: ${e?.message ?? e}`));
+
   async function _loadConvState() {
     try {
       return await _dispatchRuntime.readState();
