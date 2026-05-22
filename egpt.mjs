@@ -2799,8 +2799,36 @@ function App() {
   // message by this path — actions happen via tool calls, not text.
   // Operator can disable by emptying the prompt file.
   useEffect(() => {
-    const HEARTBEAT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
+    // Heartbeat PROMPT file (operator-editable). Renamed from
+    // e-heartbeat.md → heartbeat-prompt.md (operator 2026-05-22) so
+    // e-heartbeat.md can hold the heartbeat TRANSCRIPT (matching
+    // e-feed.md's pattern). One-shot migration below moves an existing
+    // prompt file to the new name on first run.
+    const HEARTBEAT_PATH = join(EGPT_HOME, 'heartbeat-prompt.md');
+    const LEGACY_PROMPT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
+    const LEGACY_TRANSCRIPT_PATH = join(EGPT_HOME, 'state', 'heartbeat.md');
+    const NEW_TRANSCRIPT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
     const HEARTBEAT_MS = 5 * 60 * 1000;
+    // One-shot migration:
+    //   1. If the legacy prompt file exists at ~/.egpt/e-heartbeat.md
+    //      AND its content looks like a prompt (no transcript-format
+    //      lines like '[@e (HH:MM)]:'), rename it to heartbeat-prompt.md.
+    //   2. If the legacy transcript at ~/.egpt/state/heartbeat.md exists
+    //      AND the new path doesn't (or step 1 cleared it), move it.
+    try {
+      if (existsSync(LEGACY_PROMPT_PATH) && !existsSync(HEARTBEAT_PATH)) {
+        const content = readFileSync(LEGACY_PROMPT_PATH, 'utf8');
+        const looksLikeTranscript = /\n\[(?:@e|system-e|heartbeat) /.test(content);
+        if (!looksLikeTranscript) {
+          renameSync(LEGACY_PROMPT_PATH, HEARTBEAT_PATH);
+        }
+      }
+    } catch (e) { console.error(`!! heartbeat migrate prompt: ${e?.message ?? e}`); }
+    try {
+      if (existsSync(LEGACY_TRANSCRIPT_PATH) && !existsSync(NEW_TRANSCRIPT_PATH)) {
+        renameSync(LEGACY_TRANSCRIPT_PATH, NEW_TRANSCRIPT_PATH);
+      }
+    } catch (e) { console.error(`!! heartbeat migrate transcript: ${e?.message ?? e}`); }
     const DEFAULT_PROMPT = [
       '# @e heartbeat',
       '',
