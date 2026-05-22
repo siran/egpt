@@ -289,6 +289,12 @@ export function createDispatchRuntime({
   personaEmoji = '🐶',
   personaName = 'egpt',
   readPersonality = async () => null,
+  // Per-personality allowed_tools resolver. Defaults to `null` =
+  // "don't override what sessionOptions returned". Inject the
+  // conversations-state.readPersonalityMeta when you want security
+  // scoping: each contact gets the tool subset its personality
+  // declares (system → 'all', default → read-only, etc.).
+  readPersonalityMeta = null,
   recordDefaultSession = null,
   resolveBrain = null,
   routeContext = {},
@@ -559,6 +565,24 @@ export function createDispatchRuntime({
         const identity = await readPersonality(personality);
         if (identity) {
           wrappedText = buildLineagePrelude({ identity, personality, text });
+        }
+      }
+
+      // Per-personality tool scoping. Overrides whatever sessionOptions
+      // returned (which defaults to default_brain.allowed_tools — usually
+      // 'all'). Without this override, EVERY per-contact dispatch would
+      // get the brain's full tool set, meaning a contact could potentially
+      // talk the model into shelling out, writing outbox events that
+      // masquerade as the operator, etc. The personality file's
+      // `allowed_tools` frontmatter is the canonical per-contact scope.
+      if (typeof readPersonalityMeta === 'function') {
+        try {
+          const meta = await readPersonalityMeta(convEntry?.personality || 'default');
+          if (meta && meta.allowed_tools !== undefined) {
+            sessionOpts.allowedTools = meta.allowed_tools;
+          }
+        } catch (e) {
+          logger?.error?.(`!! personality meta lookup: ${e?.message ?? e}`);
         }
       }
     }
