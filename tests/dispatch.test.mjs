@@ -64,6 +64,7 @@ async function makeRuntime(opts = {}) {
     personaEmoji: opts.personaEmoji ?? '🐶',
     personaName: opts.personaName ?? 'egpt',
     readPersonality: opts.readPersonality,
+    readPersonalityMeta: opts.readPersonalityMeta,
     recordDefaultSession: opts.recordDefaultSession,
     resolveBrain: opts.resolveBrain,
     selfDmConfig: opts.selfDmConfig,
@@ -401,5 +402,48 @@ describe('dispatch runtime', () => {
     expect(sends).toHaveLength(0);
     const activity = await readActivity(stateDir);
     expect(activity).toContain('\tSKIP\twa/chat-observed\tobserve-only empty');
+  });
+
+  // Security: per-personality tool allowlist (task #25). Without this,
+  // every conversation-e inherited the brain's full tool set, meaning
+  // a contact could in principle talk the model into shelling out
+  // (running outbox-write commands, etc.).
+  it('per-personality allowed_tools scopes sessionOpts.allowedTools', async () => {
+    // Default personality on a fresh contact → restrictive tool set.
+    const { brainCalls: defCalls, runtime: defRt } = await makeRuntime({
+      reply: 'ok',
+      readPersonalityMeta: async (name) => ({
+        allowed_tools: name === 'system' ? 'all' : ['Read', 'Grep', 'Glob'],
+      }),
+    });
+    await defRt.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: 'chat-default',
+      waSlug: 'def',
+    });
+    expect(defCalls[0].sessionOpts.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
+
+    // System personality (via pre-seeded contact) → 'all' tools.
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'chat-sys': { slug: 'sys-chat', personality: 'system' },
+        },
+      },
+    }), 'utf8');
+    const { brainCalls: sysCalls, runtime: sysRt } = await makeRuntime({
+      stateDir,
+      reply: 'ok',
+      readPersonalityMeta: async (name) => ({
+        allowed_tools: name === 'system' ? 'all' : ['Read', 'Grep', 'Glob'],
+      }),
+    });
+    await sysRt.submitIncoming('@e hola', {
+      fromWhatsApp: true,
+      waChatId: 'chat-sys',
+      waSlug: 'sys-chat',
+    });
+    expect(sysCalls[0].sessionOpts.allowedTools).toBe('all');
   });
 });

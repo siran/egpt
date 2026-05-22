@@ -4276,6 +4276,7 @@ function App() {
         telegram: EGPT_CONFIG.telegram?.chat_id ?? null,
       }),
       readPersonality: (personality) => conversationsState.readPersonality(personality),
+      readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
       sysLog: (msg) => console.error(msg),

@@ -3,6 +3,9 @@
 // upsert + migration all run in-memory.
 
 import { describe, it, expect } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   emptyState,
   sanitizeSlug,
@@ -19,6 +22,9 @@ import {
   nowIsoString,
   isoFromMs,
   KNOWN_SURFACES,
+  DEFAULT_PERSONALITY_TOOLS,
+  readPersonality,
+  readPersonalityMeta,
 } from '../conversations-state.mjs';
 
 const WA = 'whatsapp';
@@ -340,6 +346,73 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   it('returns null for non-object input', () => {
     expect(migrateJsonToYaml(null)).toBe(null);
     expect(migrateJsonToYaml('garbage')).toBe(null);
+  });
+});
+
+describe('personality frontmatter / allowed_tools (security scoping)', () => {
+  const tmpDirs = [];
+  async function makeOpDir(files) {
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-personalities-'));
+    tmpDirs.push(dir);
+    for (const [name, body] of Object.entries(files)) {
+      await writeFile(join(dir, name), body, 'utf8');
+    }
+    return dir;
+  }
+
+  it('readPersonalityMeta returns frontmatter allowed_tools when present', async () => {
+    const operatorDir = await makeOpDir({
+      'system.md': `---\nallowed_tools: all\n---\n\n# Who I am\nI'm system-e.\n`,
+    });
+    const meta = await readPersonalityMeta('system', { operatorDir, shippedDir: operatorDir });
+    expect(meta.allowed_tools).toBe('all');
+  });
+
+  it('readPersonalityMeta supports array of tools', async () => {
+    const operatorDir = await makeOpDir({
+      'restricted.md': `---\nallowed_tools: [Read, Grep]\n---\n\n# body\n`,
+    });
+    const meta = await readPersonalityMeta('restricted', { operatorDir, shippedDir: operatorDir });
+    expect(meta.allowed_tools).toEqual(['Read', 'Grep']);
+  });
+
+  it('readPersonalityMeta falls back to DEFAULT_PERSONALITY_TOOLS when frontmatter omitted', async () => {
+    const operatorDir = await makeOpDir({
+      'nofm.md': `# Just a body, no frontmatter.\n`,
+    });
+    const meta = await readPersonalityMeta('nofm', { operatorDir, shippedDir: operatorDir });
+    expect(meta.allowed_tools).toEqual(DEFAULT_PERSONALITY_TOOLS);
+  });
+
+  it('readPersonalityMeta falls back to safe default when file missing', async () => {
+    const operatorDir = await makeOpDir({});
+    const meta = await readPersonalityMeta('does-not-exist', { operatorDir, shippedDir: operatorDir });
+    expect(meta.allowed_tools).toEqual(DEFAULT_PERSONALITY_TOOLS);
+  });
+
+  it('readPersonality strips the frontmatter from the body', async () => {
+    const operatorDir = await makeOpDir({
+      'p.md': `---\nallowed_tools: []\n---\n\n# Body starts here.\n`,
+    });
+    const body = await readPersonality('p', { operatorDir, shippedDir: operatorDir });
+    expect(body).toBe('\n# Body starts here.\n');
+    expect(body).not.toContain('allowed_tools');
+  });
+
+  it('DEFAULT_PERSONALITY_TOOLS is read-only (no Bash/Edit/Write)', () => {
+    // Regression guard: if someone widens the default, this test screams.
+    // Operator's security baseline is that an UNANNOUNCED personality
+    // CANNOT shell out, modify files, or invoke subagents.
+    const forbidden = ['Bash', 'Edit', 'Write', 'Agent', 'NotebookEdit'];
+    for (const t of forbidden) {
+      expect(DEFAULT_PERSONALITY_TOOLS).not.toContain(t);
+    }
+  });
+
+  // Cleanup
+  it('temp dirs cleaned up', async () => {
+    await Promise.all(tmpDirs.splice(0).map(d => rm(d, { recursive: true, force: true })));
+    expect(true).toBe(true);
   });
 });
 

@@ -698,11 +698,57 @@ export function resolvePersonalityFile(name, opts = {}) {
   return null;
 }
 
+// Safe-default tool allowlist for personalities that have no frontmatter
+// or no `allowed_tools` field. Read-only file ops within the contact's
+// sandboxed slug-dir; no Bash, no Edit, no Write, no Agent, no WebFetch.
+// A contact's brain can `cat ./transcript.md` but cannot shell out,
+// write to ~/.egpt/outbox, or invoke sub-agents. Operator (2026-05-22)
+// security review: "if any of my contacts convince the model to send
+// messages via node, that would be a major flaw."
+export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Grep', 'Glob'];
+
+function _parseFrontmatter(raw) {
+  if (typeof raw !== 'string') return { meta: {}, body: '' };
+  const m = raw.match(/^---\r?\n([\s\S]+?)\r?\n---\r?\n([\s\S]*)$/);
+  if (!m) return { meta: {}, body: raw };
+  try {
+    const meta = YAML.parse(m[1]);
+    return { meta: (meta && typeof meta === 'object') ? meta : {}, body: m[2] };
+  } catch (e) {
+    console.error(`!! personality frontmatter parse: ${e?.message ?? e}`);
+    return { meta: {}, body: m[2] };
+  }
+}
+
 export async function readPersonality(name, opts = {}) {
   const p = resolvePersonalityFile(name, opts);
   if (!p) return null;
-  try { return await readFile(p, 'utf8'); }
-  catch { return null; }
+  try {
+    const raw = await readFile(p, 'utf8');
+    // Strip YAML frontmatter from the body that goes into the prompt;
+    // the meta lives separately (see readPersonalityMeta below).
+    return _parseFrontmatter(raw).body;
+  }
+  catch (e) { console.error(`!! readPersonality(${name}): ${e?.message ?? e}`); return null; }
+}
+
+// Read the personality's YAML frontmatter (allowed_tools, etc.) without
+// the body. Returns { allowed_tools, ... } or a safe default when the
+// file is missing or has no frontmatter.
+export async function readPersonalityMeta(name, opts = {}) {
+  const p = resolvePersonalityFile(name, opts);
+  if (!p) return { allowed_tools: DEFAULT_PERSONALITY_TOOLS };
+  try {
+    const raw = await readFile(p, 'utf8');
+    const { meta } = _parseFrontmatter(raw);
+    if (meta.allowed_tools === undefined) {
+      meta.allowed_tools = DEFAULT_PERSONALITY_TOOLS;
+    }
+    return meta;
+  } catch (e) {
+    console.error(`!! readPersonalityMeta(${name}): ${e?.message ?? e}`);
+    return { allowed_tools: DEFAULT_PERSONALITY_TOOLS };
+  }
 }
 
 // Operator-editable rules + pointers files. These live in ~/.egpt/ but

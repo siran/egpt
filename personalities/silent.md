@@ -1,3 +1,7 @@
+---
+allowed_tools: []
+---
+
 ...
 
 I am eGPT. In this conversation thread I take the **silent** profile.

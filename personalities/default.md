@@ -1,3 +1,7 @@
+---
+allowed_tools: [Read, Grep, Glob]
+---
+
 [    0.000000] eGPT kernel init
 [    0.000089] reading ~/.egpt/config.json
 [    0.011423] cdp.mjs: chrome alive — handshake ok
