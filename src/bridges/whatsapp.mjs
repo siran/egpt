@@ -305,6 +305,13 @@ export async function startWhatsAppBridge({
   }
 
   let stopped        = false;
+  // Forward-reference to the bridge's returned API object. The
+  // factory's return is at the bottom (lines ~2700+), but some
+  // internal functions need to call exposed methods (e.g. _saveMediaIfAny
+  // → startStreamMessage for voice-as-reply-transcript streaming).
+  // Assigned at the return site; null until then. Internals must
+  // null-check before calling through it.
+  let _bridgeApi     = null;
   let connectedAt    = 0;     // ms; set to Date.now() when WS reaches 'open'
   // Pre-connect backlog: messages older than connectedAt -
   // maxBacklogSeconds get parked here instead of dispatched. The host
@@ -1821,13 +1828,26 @@ export async function startWhatsAppBridge({
       let keyframePath = null;
       let voiceStream = null;        // streaming-transcription handle, when enabled + audio
       if (hit.kind === 'audio' || hit.kind === 'video') {
+        // Resolve transcribe mode for this chat: per-chat override wins,
+        // global config is fallback. Modes: 'off' | 'batch' | 'streaming'.
+        // Slash command `/e transcribe on|off|streaming [--streaming]
+        // [<jid>]` populates whatsapp.media.audio_transcribe.per_chat.
+        const _cfg = media.audio_transcribe ?? {};
+        const _perChat = (_cfg.per_chat && typeof _cfg.per_chat === 'object') ? _cfg.per_chat : {};
+        const _override = _perChat[chatJid];
+        const _modeForThisChat = _override
+          ? _override
+          : (_cfg.post_as_reply_streaming === true ? 'streaming'
+             : _cfg.post_as_reply === true ? 'batch' : 'off');
+        const wantReplyStreaming = _modeForThisChat === 'streaming';
+        const wantReplyBatch     = _modeForThisChat === 'batch';
         // Either gate kicks off streaming transcription: the brain-feed
         // gate (parked, default false) OR the reply-stream gate (new
         // 2026-05-22 — bridge edits a WA reply as whisper chunks arrive).
         // One transcription pass, two possible consumers downstream.
         const streamingEnabled =
           !!(media.audio_transcribe?.streaming) ||
-          !!(media.audio_transcribe?.post_as_reply_streaming);
+          wantReplyStreaming;
         if (streamingEnabled && hit.kind === 'audio' && node.ptt) {
           // Voice notes (PTT only — not music attachments) use the streaming
           // path. The handle is forwarded through onMediaSaved so the host
@@ -1874,8 +1894,8 @@ export async function startWhatsAppBridge({
             // recipient watches the transcript "type out" in place.
             // Final replacement at done() uses the cleaner deduped
             // finalText from the joined-windows pass.
-            if (media.audio_transcribe?.post_as_reply_streaming && msg.key) {
-              const replyStream = startStreamMessage('', {
+            if (wantReplyStreaming && msg.key) {
+              const replyStream = _bridgeApi?.startStreamMessage?.('', {
                 chatId: chatJid,
                 quoted: { key: msg.key, message: msg.message ?? { conversation: '' } },
               });
@@ -1925,7 +1945,7 @@ export async function startWhatsAppBridge({
           if (
             transcript?.text &&
             msg.key &&
-            media.audio_transcribe?.post_as_reply === true
+            wantReplyBatch
           ) {
             try {
               const body = `🎙 ${transcript.text}`;
@@ -2694,7 +2714,7 @@ export async function startWhatsAppBridge({
       .map(c => ({ jid: c.jid, name: c.name, isGroup: !!c.isGroup, egptPinned: c.egptPinned }));
   }
 
-  return {
+  _bridgeApi = {
     listChats,
     prefetchHistoryForTopChats,
     getChatName,
@@ -3419,6 +3439,7 @@ export async function startWhatsAppBridge({
       return n;
     },
   };
+  return _bridgeApi;
 }
 
 // ── helpers ──────────────────────────────────────────────────────
