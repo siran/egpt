@@ -294,6 +294,29 @@ async function buildCodexPrompt({ history, message }, options) {
   ].join('\n');
 }
 
+// Per-personality tool scoping for codex (task #25, 2026-05-22).
+//
+// Codex's tool model is bypass-or-sandbox, not per-tool-name like Claude.
+// We map sessionOpts.allowedTools (set by dispatch.mjs from the contact's
+// personality frontmatter) to codex's trust flag:
+//   allowedTools === 'all' / '*' / undefined  → --dangerously-bypass-approvals-and-sandbox
+//   anything else (array, even empty)         → no bypass (sandboxed)
+//
+// Net: system-personality contacts run codex with full exec/write power;
+// default-personality contacts run codex sandboxed (writes / shell-exec
+// require approvals that headless mode can't grant — effectively read-
+// only, the analog of allowedTools=[Read,Grep,Glob] for Claude brains).
+// The env override EGPT_CODEX_TRUST=0 still forces sandbox regardless.
+//
+// Exported so brain unit tests can assert the mapping without spawning
+// the codex CLI.
+export function codexTrustArgs(allowedTools, envTrust) {
+  const wantBypass = (allowedTools === undefined || allowedTools === 'all' || allowedTools === '*');
+  if (!wantBypass) return [];
+  if (envTrust === '0') return [];
+  return ['--dangerously-bypass-approvals-and-sandbox'];
+}
+
 async function runCodex(turn, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
@@ -308,9 +331,7 @@ async function runCodex(turn, onUpdate, options) {
   const timeoutMs = parsePositiveInt(process.env.EGPT_CODEX_TIMEOUT_MS, DEFAULT_CODEX_TIMEOUT_MS);
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
-  const trustArgs = process.env.EGPT_CODEX_TRUST === '0'
-    ? []
-    : ['--dangerously-bypass-approvals-and-sandbox'];
+  const trustArgs = codexTrustArgs(options.allowedTools, process.env.EGPT_CODEX_TRUST);
   const configArgs = ['-c', `model_reasoning_effort="${effort}"`];
   const modelArgs = codexModelArgs(options);
   const args = options.sessionId
