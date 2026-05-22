@@ -39,7 +39,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync, renameSync } from 'node:fs';
 import { createWriteStream } from 'node:fs';
 import {
   startBaileysBridge,
@@ -50,7 +50,18 @@ import {
 
 const EGPT_HOME = join(homedir(), '.egpt');
 const KEEPER_PID_PATH  = join(EGPT_HOME, 'keeper.pid');
-const KEEPER_LOG_PATH  = join(EGPT_HOME, 'keeper.log');
+// Keeper log under state/ (operator 2026-05-22 declutter). Migrate
+// any pre-rename file on first load.
+const KEEPER_LOG_PATH  = join(EGPT_HOME, 'state', 'keeper.log');
+(function _migrateKeeperLog() {
+  const oldPath = join(EGPT_HOME, 'keeper.log');
+  try {
+    if (existsSync(oldPath) && !existsSync(KEEPER_LOG_PATH)) {
+      mkdirSync(join(EGPT_HOME, 'state'), { recursive: true });
+      renameSync(oldPath, KEEPER_LOG_PATH);
+    }
+  } catch (e) { /* best effort; logger isn't up yet at this point */ }
+})();
 const KEEPER_INBOX_DIR = join(EGPT_HOME, 'inbox');
 const KEEPER_OUTBOX_DIR = join(EGPT_HOME, 'outbox');
 const KEEPER_AUTH_DIR   = join(EGPT_HOME, 'wa-auth');

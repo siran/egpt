@@ -31,15 +31,31 @@
 // After rendering, the caller resets the counters and stamps a fresh
 // last-logon timestamp; the next cycle starts at zero.
 
-import { promises as fs, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { promises as fs, existsSync, writeFileSync, readFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { assignWaIndex, waListToStableCache } from './wa-bindings.mjs';
 
 const HOME = join(homedir(), '.egpt');
-const CHATS_PATH       = join(HOME, 'wa-chats.json');
-const REACTIONS_PATH   = join(HOME, 'reaction-counts.json');
-const LAST_LOGON_PATH  = join(HOME, 'last-logon.json');
+// Bridge state lives under state/bridge/ (operator 2026-05-22 declutter).
+// Defensive migrations here too — this tool can be run independently
+// of the daemon, so the move shouldn't depend on the bridge having
+// migrated first.
+const BRIDGE_STATE_DIR = join(HOME, 'state', 'bridge');
+function _migratePathOnce(oldPath, newPath) {
+  try {
+    if (existsSync(oldPath) && !existsSync(newPath)) {
+      mkdirSync(dirname(newPath), { recursive: true });
+      renameSync(oldPath, newPath);
+    }
+  } catch (e) { /* best effort */ }
+}
+const CHATS_PATH       = join(BRIDGE_STATE_DIR, 'wa-chats.json');
+const REACTIONS_PATH   = join(BRIDGE_STATE_DIR, 'reaction-counts.json');
+const LAST_LOGON_PATH  = join(BRIDGE_STATE_DIR, 'last-logon.json');
+_migratePathOnce(join(HOME, 'wa-chats.json'), CHATS_PATH);
+_migratePathOnce(join(HOME, 'reaction-counts.json'), REACTIONS_PATH);
+_migratePathOnce(join(HOME, 'last-logon.json'), LAST_LOGON_PATH);
 const MEDIA_DIR        = join(HOME, 'media');
 
 // Previews per chat, default — /recap N now means "N previews per
