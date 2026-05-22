@@ -4,6 +4,8 @@ import {
   mkdir as nodeMkdir,
   readFile as nodeReadFile,
   rename as nodeRename,
+  stat as nodeStat,
+  unlink as nodeUnlink,
   writeFile as nodeWriteFile,
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -29,6 +31,8 @@ const defaultFs = {
   mkdir: nodeMkdir,
   readFile: nodeReadFile,
   rename: nodeRename,
+  stat: nodeStat,
+  unlink: nodeUnlink,
   writeFile: nodeWriteFile,
 };
 
@@ -127,6 +131,24 @@ async function appendActivity({ fs, paths, clock, logger, type, surface, threadI
     );
   } catch (e) {
     logger?.error?.(`!! activity-log ${type}: ${e?.message ?? e}`);
+  }
+}
+
+// Size-based rotation for append-only logs. Checked every Nth call by
+// the caller (size-on-every-append is too costly). Operator (2026-05-22):
+// "noted a big e-activity that needs to be rotated."
+const LOG_ROTATE_MAX_BYTES = 5 * 1024 * 1024;   // 5 MB
+async function rotateIfBig(fs, path) {
+  try {
+    let st;
+    try { st = await fs.stat?.(path); }
+    catch (e) { return; }
+    if (!st || st.size <= LOG_ROTATE_MAX_BYTES) return;
+    const backup = path + '.1';
+    try { await fs.unlink(backup); } catch (e) { /* no prior backup — fine */ }
+    await fs.rename(path, backup);
+  } catch (e) {
+    // best-effort; never blocks the main path
   }
 }
 
@@ -459,8 +481,22 @@ export function createDispatchRuntime({
     return { state: next, changed };
   }
 
+  let _activityWriteCount = 0;
   async function logActivity(type, surface, threadId, ...fields) {
     await appendActivity({ fs, paths, clock, logger, type, surface, threadId, fields });
+    // Periodic size-check rotation so a runaway voice-stream session
+    // can't grow e-activity.log unbounded. Operator (2026-05-22):
+    // "noted a big e-activity that needs to be rotated."
+    _activityWriteCount++;
+    if (_activityWriteCount % 200 === 0) {
+      await rotateIfBig(fs, paths.activityLog);
+    }
+  }
+  // e-prompts.log rotation: triggered before each append (lighter
+  // volume than activity, but each entry can be sizable — full
+  // wrappedText including any lineage prelude).
+  async function rotatePromptsLogIfBig() {
+    await rotateIfBig(fs, join(paths.stateDir, 'e-prompts.log'));
   }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
@@ -638,6 +674,7 @@ export function createDispatchRuntime({
     // somewhere every prompt sent to e? jsonl is a pain to see."
     try {
       const promptsPath = join(paths.stateDir, 'e-prompts.log');
+      await rotatePromptsLogIfBig();
       const header = `=== ${clockIso(clock)}  ${threadCtx.surface ?? '?'}/${threadId}${convEntry?.personality ? ' ('+convEntry.personality+')' : ''}  ${text.length}ch ===`;
       await fs.mkdir(paths.stateDir, { recursive: true });
       await fs.appendFile(promptsPath, `${header}\n${wrappedText}\n\n`, 'utf8');
@@ -683,6 +720,15 @@ export function createDispatchRuntime({
         logger?.error?.(`!! transcript (feed) ${paths.eFeed}: ${e?.message ?? e}`);
       }
       await logActivity('REPLY', threadCtx.surface ?? '?', threadId, `${String(final).length}ch`, `${clockMs(clock) - startMs}ms`);
+      // Append the reply to e-prompts.log so the full prompt→reply pair
+      // is captured in one tail-friendly stream.
+      try {
+        const promptsPath = join(paths.stateDir, 'e-prompts.log');
+        const replyHeader = `--- ${clockIso(clock)}  ${threadCtx.surface ?? '?'}/${threadId} reply  ${String(final).length}ch  ${clockMs(clock) - startMs}ms ---`;
+        await fs.appendFile(promptsPath, `${replyHeader}\n${final}\n\n`, 'utf8');
+      } catch (e) {
+        logger?.error?.(`!! e-prompts.log reply: ${e?.message ?? e}`);
+      }
       return String(final).trim() || '...';
     } catch (e) {
       const msg = e?.message ?? '';
