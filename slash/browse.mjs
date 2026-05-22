@@ -10,7 +10,7 @@
 //
 // /browse [via=<op>] [<url>] ["<instruction>"] [@<session>] [--max <N>] [--keep]
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/browse',

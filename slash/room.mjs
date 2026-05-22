@@ -4,7 +4,7 @@
 // own /use recipients (active sessions are per-room). Joining a room
 // can optionally eager-attach saved CDP sessions; see EGPT_CONFIG.room.on_join.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/room',

@@ -166,7 +166,7 @@ describe('bridge-surface integrity', () => {
   }
 
   it('WA bridge exposes every method accessed by slash files', () => {
-    const src = readFileSync(join(ROOT, 'bridges/whatsapp.mjs'), 'utf8');
+    const src = readFileSync(join(ROOT, 'src/bridges/whatsapp.mjs'), 'utf8');
     const ret = _extractReturnObject(src, /export\s+async\s+function\s+startWhatsAppBridge\b/);
     expect(ret, 'could not extract bridge return object — has the factory shape changed?').toBeTruthy();
     const exposed = _exportedNames(ret);
@@ -179,7 +179,7 @@ describe('bridge-surface integrity', () => {
   });
 
   it('TG bridge exposes every method accessed by slash files', () => {
-    const src = readFileSync(join(ROOT, 'bridges/telegram.mjs'), 'utf8');
+    const src = readFileSync(join(ROOT, 'src/bridges/telegram.mjs'), 'utf8');
     const ret = _extractReturnObject(src, /export\s+function\s+startTelegramBridge\b/);
     expect(ret, 'could not extract bridge return object — has the factory shape changed?').toBeTruthy();
     const exposed = _exportedNames(ret);

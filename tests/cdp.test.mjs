@@ -15,8 +15,8 @@
 // pollute each other's state.
 
 import { describe, it, beforeEach, expect } from 'vitest';
-import * as cdp from '../tools/cdp.mjs';
-import * as bus from '../tools/bus.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
+import * as bus from '../src/tools/bus.mjs';
 
 describe('cdpHost()', () => {
   beforeEach(() => {

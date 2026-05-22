@@ -23,7 +23,7 @@
 //   self-DM jid: 16468217865@s.whatsapp.net (precomputed by bridge)
 
 import { describe, it, expect } from 'vitest';
-import { classifyWhatsAppChat } from '../bridges/whatsapp-classify.mjs';
+import { classifyWhatsAppChat } from '../src/bridges/whatsapp-classify.mjs';
 
 const BRIDGE = {
   myJid:       '16468217865:42@s.whatsapp.net',

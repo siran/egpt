@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { loadOrCreateBusKey } from '../tools/bus.mjs';
+import { loadOrCreateBusKey } from '../src/tools/bus.mjs';
 
 let tmpDir;
 let keyPath;

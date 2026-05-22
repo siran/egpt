@@ -9,8 +9,8 @@
 
 import { spawn } from 'node:child_process';
 import { readFile, writeFile } from 'node:fs/promises';
-import * as cdp from '../tools/cdp.mjs';
-import { buildCommandPrompt } from '../tools/template.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
+import { buildCommandPrompt } from '../src/tools/template.mjs';
 
 export const meta = [
   { cmd: '/summarize',          section: 'BRAINS', surface: 'shell',

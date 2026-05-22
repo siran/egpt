@@ -1,6 +1,6 @@
 // slash/tabs.mjs — list pages in the brain Chrome.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/tabs',

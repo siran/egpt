@@ -39,7 +39,7 @@ import {
   buildRebootAnnouncement,
   resolvePersonalityFile,
 } from '../conversations-state.mjs';
-import { readConfig, writeConfig } from '../tools/config-io.mjs';
+import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { homedir } from 'node:os';
 
 export const meta = {

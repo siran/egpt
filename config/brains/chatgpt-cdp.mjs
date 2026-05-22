@@ -1,5 +1,5 @@
 // brains/chatgpt-cdp.mjs — drives chatgpt.com via CDP
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../../src/tools/cdp.mjs';
 
 export const name = 'chatgpt-cdp';
 export const description = 'ChatGPT.com via Chrome DevTools Protocol. Tab keeps its own history.';

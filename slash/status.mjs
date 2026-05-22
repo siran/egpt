@@ -1,6 +1,6 @@
 // slash/status.mjs — room snapshot: file, interfaces, participants.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/status',

@@ -24,8 +24,8 @@
 //
 // Reports a one-line PASS/FAIL summary + per-check detail.
 
-import { spawnChrome, waitForChromeReady, findChromeExecutable } from '../tools/chrome-launcher.mjs';
-import * as cdp from '../tools/cdp.mjs';
+import { spawnChrome, waitForChromeReady, findChromeExecutable } from '../src/tools/chrome-launcher.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';

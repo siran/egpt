@@ -8,7 +8,7 @@
 // flag — useful after editing e_identity.md (or whatever
 // brains.identity points at) so brains pick up the new content.
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 import { isUrlBrain } from '../src/persona-state.mjs';
 
 export const meta = {

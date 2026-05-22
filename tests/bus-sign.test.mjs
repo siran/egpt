@@ -6,7 +6,7 @@ import {
   canonicalize, canonicalString,
   generateKey, keyFromString, keyToString,
   signEvent, verifyEvent,
-} from '../tools/bus-sign.mjs';
+} from '../src/tools/bus-sign.mjs';
 
 describe('canonicalize', () => {
   it('passes through primitives + null', () => {

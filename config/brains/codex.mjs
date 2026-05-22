@@ -9,7 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { buildCommandPrompt } from '../tools/template.mjs';
+import { buildCommandPrompt } from '../../src/tools/template.mjs';
 
 export const name = 'codex';
 export const description = 'Local Codex CLI; `exec:` runs shell commands with persistent cwd.';

@@ -26,8 +26,8 @@
 
 import { describe, it, beforeAll, beforeEach, afterAll, expect } from 'vitest';
 import { createServer } from 'node:http';
-import { setCdpHostGetter } from '../tools/cdp.mjs';
-import * as bus from '../tools/bus.mjs';
+import { setCdpHostGetter } from '../src/tools/cdp.mjs';
+import * as bus from '../src/tools/bus.mjs';
 import { WebSocketServer } from 'ws';
 
 // ── mock CDP server ─────────────────────────────────────────────

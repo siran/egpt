@@ -11,7 +11,7 @@
 //   /attach <brain>                  attach all CDP tabs or create a local session
 //   /attach <brain> <name> [tabSpec] explicit attach to one specific tab
 
-import * as cdp from '../tools/cdp.mjs';
+import * as cdp from '../src/tools/cdp.mjs';
 
 export const meta = {
   cmd: '/attach',

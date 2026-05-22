@@ -1,6 +1,6 @@
 // slash/theme.mjs — switch terminal color theme.
 
-import { listThemes } from '../tools/theme.mjs';
+import { listThemes } from '../src/tools/theme.mjs';
 
 export const meta = [
   {

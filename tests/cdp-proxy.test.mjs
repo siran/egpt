@@ -20,7 +20,7 @@
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { createServer } from 'node:http';
 import { createConnection } from 'node:net';
-import { startCdpProxy } from '../tools/cdp-proxy.mjs';
+import { startCdpProxy } from '../src/tools/cdp-proxy.mjs';
 
 // ── mock chrome ──────────────────────────────────────────────────
 //

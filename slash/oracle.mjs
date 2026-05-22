@@ -6,7 +6,7 @@
 // slash command (operator-side trigger). This file is just the
 // argument parser + access gate.
 
-import { summonGenie } from '../tools/genie.mjs';
+import { summonGenie } from '../src/tools/genie.mjs';
 
 export const meta = {
   cmd: '/oracle',
