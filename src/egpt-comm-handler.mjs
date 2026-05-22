@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { mkdirSync, watch as fsWatch, existsSync } from 'node:fs';
 import { readFile, readdir, unlink, writeFile, rename, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { startWhatsAppBridge } from './bridges/whatsapp.mjs';
+import { startWhatsAppBridge } from '../bridges/whatsapp.mjs';
 
 /**
  * Phase 1 wrapper around startWhatsAppBridge — establishes the

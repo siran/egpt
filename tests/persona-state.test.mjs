@@ -20,7 +20,7 @@ import {
   listHistory,
   summarize,
   HISTORY_CAP,
-} from '../persona-state.mjs';
+} from '../src/persona-state.mjs';
 
 describe('persona-state — recordSession (history populates from @egpt turns)', () => {
   it('emptyState has no active session and no history', () => {
@@ -210,7 +210,7 @@ describe('persona-state — summarize (the /egpt status subcommand)', () => {
 
 describe('persona-state — URL-based brains (chatgpt-cdp, claude-cdp)', () => {
   it('isUrlBrain identifies URL-keyed brain types', async () => {
-    const { isUrlBrain } = await import('../persona-state.mjs');
+    const { isUrlBrain } = await import('../src/persona-state.mjs');
     expect(isUrlBrain('chatgpt-cdp')).toBe(true);
     expect(isUrlBrain('claude-cdp')).toBe(true);
     expect(isUrlBrain('claude-code')).toBe(false);
@@ -268,7 +268,7 @@ describe('persona-state — URL-based brains (chatgpt-cdp, claude-cdp)', () => {
 
 describe('persona-state — setBrain', () => {
   it('switches brain type without a ref, clears active, preserves history', async () => {
-    const { setBrain } = await import('../persona-state.mjs');
+    const { setBrain } = await import('../src/persona-state.mjs');
     let s = recordSession(emptyState(), 'sess-1');
     expect(s.session_id).toBe('sess-1');
     s = setBrain(s, 'chatgpt-cdp');
@@ -279,7 +279,7 @@ describe('persona-state — setBrain', () => {
   });
 
   it('switches brain type WITH a ref records it as url for URL brains', async () => {
-    const { setBrain } = await import('../persona-state.mjs');
+    const { setBrain } = await import('../src/persona-state.mjs');
     let s = emptyState();
     s = setBrain(s, 'chatgpt-cdp', 'https://chatgpt.com/c/abc');
     expect(s.type).toBe('chatgpt-cdp');
@@ -289,7 +289,7 @@ describe('persona-state — setBrain', () => {
   });
 
   it('switches brain type WITH a ref records it as session_id for CLI brains', async () => {
-    const { setBrain } = await import('../persona-state.mjs');
+    const { setBrain } = await import('../src/persona-state.mjs');
     let s = emptyState();
     s = setBrain(s, 'ccode', 'session-abc');
     expect(s.type).toBe('ccode');
@@ -298,7 +298,7 @@ describe('persona-state — setBrain', () => {
   });
 
   it('no-op when type is empty', async () => {
-    const { setBrain } = await import('../persona-state.mjs');
+    const { setBrain } = await import('../src/persona-state.mjs');
     const before = recordSession(emptyState(), 'sess-1');
     const after = setBrain(before, null);
     expect(after).toEqual(before);

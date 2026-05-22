@@ -9,8 +9,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { COMMANDS } from '../interpreter.mjs';
-import { CONFIG_SCHEMA } from '../config-schema.mjs';
+import { COMMANDS } from '../src/interpreter.mjs';
+import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHELL_SRC = readFileSync(join(ROOT, 'egpt.mjs'), 'utf8');

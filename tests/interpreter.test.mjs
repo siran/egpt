@@ -12,7 +12,7 @@ import {
   commandSetFor,
   helpText,
   helpHtml,
-} from '../interpreter.mjs';
+} from '../src/interpreter.mjs';
 
 describe('parseInput', () => {
   it('routes "/save name" as a command with cmd and rest', () => {

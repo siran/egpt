@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { CONFIG_SCHEMA } from '../config-schema.mjs';
+import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 
 export const meta = {
   cmd: '/config',

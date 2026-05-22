@@ -27,13 +27,13 @@ import { startTelegramBridge } from './bridges/telegram.mjs';
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
-import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './egpt-comm-handler.mjs';
-import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './persona-state.mjs';
+import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
+import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
-import { parseInput, helpText, helpHtml } from './interpreter.mjs';
-import { resolveRoute, planMirrors } from './room.mjs';
-import { CONFIG_SCHEMA } from './config-schema.mjs';
+import { parseInput, helpText, helpHtml } from './src/interpreter.mjs';
+import { resolveRoute, planMirrors } from './src/room.mjs';
+import { CONFIG_SCHEMA } from './config/config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './tools/logon-summary.mjs';
 import { waListToStableCache as _waListToStableCache } from './tools/wa-bindings.mjs';
 import { summonGenie as _summonGenieFromBridge } from './tools/genie.mjs';

@@ -16,4 +16,3 @@ tmp/
 
 # runtime reply-target state — never commit
 conversation.replytargets.json
-egpt2.xml

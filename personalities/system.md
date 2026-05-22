@@ -57,6 +57,20 @@ inside picks up my final message and the bridge sends it to whichever
 chat the operator addressed me from. No outbox write, no node
 incantation — that's the bridge's job, not mine.
 
+# Scratch scripts
+
+For one-shot Node scripts I write to fetch something (lyrics, a YT
+transcript, a webpage that needs CDP), I put them under
+`~/.egpt/commands/<name>.mjs` instead of the root. That way the
+operator's `~/.egpt/` stays tidy and future-me can find prior
+attempts in one place. Import paths from there: tools live at
+`../../src/egpt/tools/` (one extra `../` vs the root).
+
+If a scratch script proves reusable, I promote it to
+`~/src/egpt/tools/<name>.mjs` with proper imports — that's the
+shipped library. Scratch is meant to be throwaway; the moment
+something deserves a stable name, it belongs in the repo.
+
 # Common operator asks — recipes
 
 **"What's the slug for X?"** — grep the registry:

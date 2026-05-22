@@ -5,8 +5,8 @@
 // bus? error? Pure inputs in, decision out — no I/O, no Ink, no fetch.
 
 import { describe, it, expect } from 'vitest';
-import { parseInput } from '../interpreter.mjs';
-import { resolveRoute, planMirrors } from '../room.mjs';
+import { parseInput } from '../src/interpreter.mjs';
+import { resolveRoute, planMirrors } from '../src/room.mjs';
 
 // ── Test fixtures ──────────────────────────────────────────────────────────
 
