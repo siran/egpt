@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { promises as fs, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
@@ -99,7 +99,24 @@ const RECONNECT_MAX_MS = 60_000;
 // the persona fallback's bridge.send runs (also timed out) → if
 // that also fails, errOut tells the operator clearly.
 const SEND_TIMEOUT_MS = 12_000;
-const CHATS_CACHE_PATH = join(homedir(), '.egpt', 'wa-chats.json');
+
+// Bridge internal state lives under ~/.egpt/state/bridge/ (operator
+// 2026-05-22 declutter). Caches + dedup rings + audit data — not files
+// the operator reads at the root. Migrations below move pre-rename
+// files into place on first load so we don't lose existing state.
+const STATE_BRIDGE_DIR = join(homedir(), '.egpt', 'state', 'bridge');
+function _migratePathOnce(oldPath, newPath) {
+  try {
+    if (!existsSync(oldPath)) return;
+    if (existsSync(newPath)) return;       // already moved
+    mkdirSync(dirname(newPath), { recursive: true });
+    renameSync(oldPath, newPath);
+  } catch (e) {
+    console.error(`!! whatsapp bridge: migrate ${oldPath} → ${newPath}: ${e?.message ?? e}`);
+  }
+}
+const CHATS_CACHE_PATH = join(STATE_BRIDGE_DIR, 'wa-chats.json');
+_migratePathOnce(join(homedir(), '.egpt', 'wa-chats.json'), CHATS_CACHE_PATH);
 // No cap on the persisted chat cache. Operator: "why are you even
 // deleting chats? there's space enough. whatsapp or beeper don't
 // delete my message. history is sacred." Every chat we've ever
@@ -110,7 +127,8 @@ const CHATS_CACHE_CAP = Infinity;
 // persisted to a separate file so they survive bridge restarts and
 // so the interactive shell's "while you were away" report can find
 // the most-reacted item without scanning the room md.
-const REACTION_COUNTS_PATH = join(homedir(), '.egpt', 'reaction-counts.json');
+const REACTION_COUNTS_PATH = join(STATE_BRIDGE_DIR, 'reaction-counts.json');
+_migratePathOnce(join(homedir(), '.egpt', 'reaction-counts.json'), REACTION_COUNTS_PATH);
 // Same policy: don't evict reaction history.
 const REACTION_COUNTS_CAP = Infinity;
 // Per-msg body preview cache (text snippeted to ≤60 chars, keyed by
@@ -120,7 +138,8 @@ const REACTION_COUNTS_CAP = Infinity;
 // restarts so the operator's '[reaction ❤️ to "…"]' enrichment can
 // still resolve parents that have already rolled off the recent[]
 // ring. ~60-byte values × 4000 entries ≈ 240KB on disk.
-const MSG_BODY_CACHE_PATH = join(homedir(), '.egpt', 'msg-body-cache.json');
+const MSG_BODY_CACHE_PATH = join(STATE_BRIDGE_DIR, 'msg-body-cache.json');
+_migratePathOnce(join(homedir(), '.egpt', 'msg-body-cache.json'), MSG_BODY_CACHE_PATH);
 // WhatsApp's text-message Protobuf supports up to ~65k chars, but
 // baileys / WA Web silently misbehave at large sizes (edit can reject,
 // chunk boundaries break formatting). 4000 matches the Telegram
@@ -894,7 +913,8 @@ export async function startWhatsAppBridge({
   // (load on bridge start, append on each send) so a daemon restart
   // does not amnesia the history. Operator can rm the file to reset;
   // bridge rebuilds from the next send onward.
-  const SENT_LOG = join(homedir(), '.egpt', 'wa-sent.jsonl');
+  const SENT_LOG = join(STATE_BRIDGE_DIR, 'wa-sent.jsonl');
+  _migratePathOnce(join(homedir(), '.egpt', 'wa-sent.jsonl'), SENT_LOG);
   const _sentIds = new Map();    // id -> ts
   try {
     const raw = readFileSync(SENT_LOG, 'utf8');
