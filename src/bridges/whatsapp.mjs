@@ -1854,6 +1854,28 @@ export async function startWhatsAppBridge({
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
+          // Post-as-reply: when whatsapp.media.audio_transcribe.post_as_reply
+          // is true, send the transcript text back to the chat as a native
+          // WA quoted reply to the voice message itself. Pure bridge-level
+          // service — no brain involved. Useful for people-with-headphones-
+          // off readability. Operator (2026-05-22): "every voice can be
+          // streaming transcribed in reply to the voice."
+          if (
+            transcript?.text &&
+            msg.key &&
+            media.audio_transcribe?.post_as_reply === true
+          ) {
+            try {
+              const body = `🎙 ${transcript.text}`;
+              await _safeSend(
+                chatJid,
+                { text: body },
+                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+              );
+            } catch (e) {
+              log(`transcribe post-as-reply failed (${base}): ${e?.message ?? e}`);
+            }
+          }
         }
       }
       if (hit.kind === 'video') {
