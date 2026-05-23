@@ -247,26 +247,35 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       // The tasks are boot-triggered + S4U ("run whether or not
       // logged on") so they survive Windows reboots without a login.
       // Creating a boot-triggered task needs ADMIN (UAC) — S4U means
-      // no stored password, just the elevation. We launch the
-      // self-elevating setup/install-tasks.ps1 DETACHED with stdio
-      // ignored (a synchronous schtasks /Create here would just hit
-      // "Access is denied" since the daemon isn't elevated; a
-      // detached self-elevating script raises UAC in its own process
-      // without touching the TUI's console — the earlier crash came
-      // from a fragile nested -Verb RunAs spawn, avoided here).
+      // no stored password, just the elevation.
+      //
+      // The UAC prompt must reach the interactive desktop. We do the
+      // -Verb RunAs DIRECTLY here (not via the script self-elevating —
+      // that left the detached parent with no desktop context and UAC
+      // never surfaced; operator 2026-05-23 "no UAC prompt"). NOT
+      // windowsHide (the elevation UI needs the desktop). The launcher
+      // powershell is brief; -Verb RunAs spawns the elevated installer
+      // which does the actual work in its own window.
       const { spawn } = await import('node:child_process');
       const ps1 = join(setupDir, 'install-tasks.ps1');
+      // Build the elevation command. Single-quote the inner args for
+      // PowerShell; the file path is wrapped so spaces survive.
+      const elevate =
+        `Start-Process powershell -Verb RunAs -ArgumentList ` +
+        `'-NoProfile','-ExecutionPolicy','Bypass','-File','${ps1.replace(/'/g, "''")}'`;
       try {
-        const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
-          detached: true, stdio: 'ignore', windowsHide: true,
+        const child = spawn('powershell', ['-NoProfile', '-Command', elevate], {
+          detached: true, stdio: 'ignore',   // NOT windowsHide — UAC needs the desktop
         });
         child.unref();
         sysOut(
-          'supervisor install: launched self-elevating installer.\n' +
-          '  → Approve the UAC prompt on your screen.\n' +
+          'supervisor install: requesting elevation.\n' +
+          '  → A UAC prompt should appear — approve it.\n' +
           '  → An elevated window creates both tasks (boot + logon, S4U =\n' +
           '    runs whether or not you are logged on), then closes in ~6s.\n' +
-          '  → Then run /e supervisor status to confirm.',
+          '  → Then run /e supervisor status to confirm.\n' +
+          `  → If no UAC appears, run this in an admin PowerShell yourself:\n` +
+          `      powershell -ExecutionPolicy Bypass -File "${ps1}"`,
         );
       } catch (e) {
         sysOut(`!! supervisor install: ${e?.message ?? e}\n` +
