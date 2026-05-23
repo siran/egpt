@@ -501,26 +501,15 @@ export async function startWhatsAppBridge({
     try { transcript = readFileSync(txtPath, 'utf8').trim(); }
     catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); return rawText; }
     if (!transcript) return rawText;
-    // Build brain-dispatch body in operator-spec format (2026-05-23):
-    //   👂 <pushedName> <NN>s @ <hh:mm>: <transcript>
-    // The envelope ([Sender@surface (HH:MM)]: …) is added later by
-    // the host's onIncoming → wrapping; this is the BODY the brain
-    // sees inside that envelope. Replaces the leading
-    // '[voice note: NNs]' placeholder; preserves a ↳ quoted-preview
-    // prefix from textOf if present.
-    const pushedName = (typeof msg.pushName === 'string' && msg.pushName.trim()) ? msg.pushName.trim() : null;
-    const fromMe = !!msg.key?.fromMe;
-    const speakerLabel = pushedName ?? (fromMe ? 'You' : null);
-    const dur = Number(inner.seconds) || 0;
-    const tsMs = (Number(msg.messageTimestamp) || 0) * 1000;
-    const pad = (n) => String(n).padStart(2, '0');
-    const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
-    const dispatchBody = speakerLabel
-      ? `👂 ${speakerLabel} ${dur}s @ ${hhmm}: ${transcript}`
-      : `👂 ${dur}s @ ${hhmm}: ${transcript}`;
-    // Replace the leading placeholder; keep any ↳ quoted-preview prefix
-    // that textOf glued on (matches '[voice note: Xs]' OR '[audio: Xs]').
-    return rawText.replace(/\[(?:voice note|audio):\s*\d+s?\]/i, dispatchBody);
+    // Brain dispatch body: JUST the transcript text. The "(transcript
+    // from voice note)" annotation gets added by formatPersonaPrompt
+    // via meta.isTranscript flag (set by handleMessage when it
+    // detects audioMessage). The sugar — animated 👂 message,
+    // pushName, duration, timestamp — is for chat members visible in
+    // WA, not for the brain. Operator 2026-05-23: "this '👂 Daniel
+    // 12s @ 14:35:' and the animation is sugar for members."
+    // Replace the leading placeholder; keep any ↳ quoted-preview prefix.
+    return rawText.replace(/\[(?:voice note|audio):\s*\d+s?\]/i, transcript);
   }
 
   // Append the saved file path to image placeholders so @e can use
@@ -1572,126 +1561,6 @@ export async function startWhatsAppBridge({
   //     parallel:
   //       chunk_seconds: 4            # window length
   //       max_concurrent: 2           # cap on simultaneous whisper-cli procs
-  async function _transcribeAudioParallel({ inputPath, outputDir, base }) {
-    const cfg = media.audio_transcribe ?? {};
-    if (!cfg.enabled) return null;
-    const whisperBin = cfg.command || 'whisper-cli';
-    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
-    const modelPath  = cfg.model_path;
-    if (!modelPath) { log(`parallel-transcribe: no model_path`); return null; }
-    const language   = (typeof cfg.language === 'string' && cfg.language.trim()) ? cfg.language.trim() : null;
-    const chunkSec   = Number(cfg.parallel?.chunk_seconds)  > 0 ? Number(cfg.parallel.chunk_seconds)  : 4;
-    const maxConc    = Number(cfg.parallel?.max_concurrent) > 0 ? Number(cfg.parallel.max_concurrent) : 2;
-
-    const finalTxt = join(outputDir, `${base}.transcript.txt`);
-    if (existsSync(finalTxt)) return null;
-
-    const wavPath = join(outputDir, `${base}.tmp.wav`);
-    try {
-      await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
-    } catch (e) {
-      log(`parallel-transcribe: ffmpeg full-wav failed: ${e?.message ?? e}`);
-      return null;
-    }
-
-    // Resolve ffprobe binary (sibling of ffmpeg).
-    const ffprobeBin = cfg.ffprobe_command
-      || (cfg.ffmpeg_command ? cfg.ffmpeg_command.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1') : 'ffprobe');
-
-    // Duration via ffprobe stdout.
-    let duration = 0;
-    try {
-      duration = await new Promise((resolve, reject) => {
-        const child = _spawnChild(ffprobeBin, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wavPath], { stdio: ['ignore', 'pipe', 'pipe'] });
-        let buf = '';
-        child.stdout.on('data', d => buf += d.toString());
-        child.on('error', reject);
-        child.on('close', () => resolve(parseFloat(buf.trim()) || 0));
-      });
-    } catch (e) { /* falls through to 0 */ }
-    if (!Number.isFinite(duration) || duration <= 0) {
-      log(`parallel-transcribe: bad duration; falling back to batch`);
-      try { await fs.unlink(wavPath); } catch {}
-      return null;
-    }
-
-    // Window plan: non-overlapping, last window may be shorter.
-    const windows = [];
-    for (let s = 0; s < duration; s += chunkSec) {
-      windows.push({ idx: windows.length, offset: s, length: Math.min(chunkSec, duration - s) });
-    }
-
-    // Slice all windows in parallel via ffmpeg (fast, I/O-bound).
-    const slices = await Promise.all(windows.map(async (w) => {
-      const winWav = join(outputDir, `${base}.win-${String(w.idx).padStart(3, '0')}.tmp.wav`);
-      try {
-        await _runCmd(ffmpegBin, [
-          '-y', '-ss', String(w.offset), '-t', String(w.length),
-          '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', winWav,
-        ]);
-        return { ...w, winWav };
-      } catch (e) {
-        log(`parallel-transcribe: ffmpeg slice ${w.idx} failed: ${e?.message ?? e}`);
-        return { ...w, winWav: null };
-      }
-    }));
-
-    // Worker pool: maxConcurrent workers grab the next available
-    // window index and run whisper-cli on it. Each cli call pays
-    // model-load + encoder cost. Texts collected by index so the
-    // final join preserves audio-time order regardless of completion
-    // order. Logs per-window timing so the operator can see
-    // throughput.
-    const texts = new Array(windows.length).fill('');
-    let nextIdx = 0;
-    const t0 = Date.now();
-    async function workerLoop(workerId) {
-      while (true) {
-        const myIdx = nextIdx++;
-        if (myIdx >= slices.length) return;
-        const w = slices[myIdx];
-        if (!w.winWav) continue;
-        const wt0 = Date.now();
-        const args = ['-m', modelPath, '-f', w.winWav, '--output-txt', '--no-prints'];
-        if (language) args.push('-l', language);
-        if (cfg.no_context === true)  args.push('--no-context');
-        if (cfg.no_fallback === true) args.push('--no-fallback');
-        if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
-        if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
-        if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
-        if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
-        if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
-        if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
-        try {
-          await _runCmd(whisperBin, args);
-          const t = (await fs.readFile(`${w.winWav}.txt`, 'utf8')).trim();
-          texts[w.idx] = t;
-          log(`parallel-transcribe w${w.idx} done in ${Date.now() - wt0}ms by worker#${workerId}: ${t.slice(0, 40)}${t.length > 40 ? '…' : ''}`);
-        } catch (e) {
-          log(`parallel-transcribe w${w.idx} whisper failed: ${e?.message ?? e}`);
-        } finally {
-          try { await fs.unlink(w.winWav); } catch {}
-          try { await fs.unlink(`${w.winWav}.txt`); } catch {}
-        }
-      }
-    }
-    const workers = Array.from({ length: maxConc }, (_, i) => workerLoop(i));
-    await Promise.all(workers);
-
-    try { await fs.unlink(wavPath); } catch {}
-
-    const finalText = texts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
-    if (!finalText) {
-      log(`parallel-transcribe: all windows empty; no transcript written`);
-      return null;
-    }
-    try { await fs.writeFile(finalTxt, finalText, 'utf8'); }
-    catch (e) { log(`parallel-transcribe: write final failed: ${e?.message ?? e}`); }
-    log(`parallel-transcribe ${base} total=${Date.now() - t0}ms windows=${windows.length} maxConc=${maxConc}`);
-    return { path: finalTxt, text: finalText };
-  }
-
-  // Idempotent: skips if <base>.transcript.txt already exists.
   async function _transcribeAudio({ inputPath, outputDir, base }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
@@ -1804,330 +1673,6 @@ export async function startWhatsAppBridge({
   //
   // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
   // with the existing text — no re-work.
-  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 4, strideSeconds = 4 }) {
-    // Non-overlapping windows by default (operator 2026-05-22:
-    // observed `[Música]` repeated chunks and "cinco, cinco, cinco"
-    // duplication when stride < window. Non-overlap eliminates the
-    // duplication; the brain-context win from overlap was for the
-    // parked brain-streaming experiment and isn't relevant for the
-    // reply-stream consumer that's now in production).
-    const cfg = media.audio_transcribe ?? {};
-    if (!cfg.enabled) return null;
-    const whisperBin = cfg.command || 'whisper-cli';
-    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
-    const ffprobeBin = (whisperBin.includes('whisper-cli')) ? whisperBin.replace(/whisper-cli\.exe$/i, '').replace(/whisper-cli$/, '') + 'ffprobe' : 'ffprobe';
-    // Operator's setup has ffprobe alongside ffmpeg under C:\ffmpeg\bin\
-    // — sibling of whisper-cli per cfg.ffmpeg_command's dirname.
-    const ffprobeResolved = cfg.ffprobe_command
-      || (cfg.ffmpeg_command ? cfg.ffmpeg_command.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1') : 'ffprobe');
-    const liveModel   = cfg.live_model_path || cfg.model_path;  // base preferred for live; falls back to canonical
-    const finalModel  = cfg.model_path;
-    const language    = cfg.language;
-    const emitter     = new EventEmitter();
-    const finalTxt    = join(outputDir, `${base}.transcript.txt`);
-    const livePath    = join(outputDir, `${base}.live.transcript.md`);
-
-    // Process whisper's bracketed non-speech markers (operator
-    // 2026-05-22 revised): preserve them in the transcript — they
-    // carry signal (background music tells a listener something
-    // different from pure silence). Only SILENCE markers get
-    // converted to whitespace, calibrated 4 chars per second of
-    // silence duration. Without per-segment duration we use a fixed
-    // 4-space placeholder; the segment-aware paths (_buildSpaced-
-    // Window and the streaming join) override this with the real
-    // duration where they have it.
-    const _SILENCE_RE = /\[\s*(?:BLANK_AUDIO|silence|silencio|inaudible|sin sonido|sin audio)\s*\]/gi;
-    const _stripNoiseMarkers = (s) => String(s ?? '')
-      .replace(_SILENCE_RE, '    ')             // 4 spaces per silence stub
-      // NOTE: deliberately not collapsing whitespace — the silence
-      // spaces ARE the signal (preserved so [silence] reads as " ").
-      // Trim leading/trailing only.
-      .replace(/^\s+|\s+$/g, '');
-    // Segment-aware silence-to-spaces: pass startSec/endSec to get
-    // duration-calibrated spacing. SCALE chars per second.
-    const _segmentSilenceSpaces = (text, startSec, endSec) => {
-      if (!_SILENCE_RE.test(text)) return text;
-      _SILENCE_RE.lastIndex = 0;
-      const dur = Math.max(0, (endSec ?? 0) - (startSec ?? 0));
-      const N = Math.max(1, Math.round(4 * dur));
-      return text.replace(_SILENCE_RE, ' '.repeat(N));
-    };
-
-    // Build a SPACED representation of a window's transcript where silence
-    // becomes visible whitespace (operator 2026-05-22: "if the audio is
-    // silent, it goes to the prompt as '     '... i'd like e to read the
-    // latter — in a sliding window, with changing tickers"). The model
-    // gets a visual map of when speech happened within the window:
-    //   "      hola estoy     "   (3s silence + 3s speech)
-    // SCALE chars per second is a tunable; 4 keeps strings small but
-    // visible. A 6s window produces ~24 chars max.
-    const _buildSpacedWindow = (rawWhisperOutput, windowDurSec) => {
-      const SCALE = 4;
-      const totalChars = Math.max(1, Math.round(windowDurSec * SCALE));
-      const segRe = /^\s*\[(\d{2}):(\d{2}):(\d{2}\.\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.+)$/;
-      const segments = [];
-      for (const line of String(rawWhisperOutput ?? '').split(/\r?\n/)) {
-        const m = line.match(segRe);
-        if (!m) continue;
-        const startSec = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
-        const endSec   = parseInt(m[4]) * 3600 + parseInt(m[5]) * 60 + parseFloat(m[6]);
-        const text     = _stripNoiseMarkers(m[7]);
-        if (!text) continue;
-        segments.push({ startSec, endSec, text });
-      }
-      if (segments.length === 0) return ' '.repeat(totalChars);
-      let result = '';
-      let cursorSec = 0;
-      for (const seg of segments) {
-        const gapSec = Math.max(0, seg.startSec - cursorSec);
-        result += ' '.repeat(Math.round(gapSec * SCALE));
-        result += seg.text;
-        cursorSec = seg.endSec;
-      }
-      const trailingSec = Math.max(0, windowDurSec - cursorSec);
-      result += ' '.repeat(Math.round(trailingSec * SCALE));
-      return result;
-    };
-
-    // Idempotent shortcut.
-    if (existsSync(finalTxt)) {
-      let cached = '';
-      try { cached = (await fs.readFile(finalTxt, 'utf8')).trim(); } catch (e) { console.error(`!! transcribe-streaming idempotent read: ${e?.message ?? e}`); }
-      const donePromise = Promise.resolve({ liveText: cached, finalText: cached, livePath: null, finalPath: finalTxt });
-      // Emit a synthetic 'done' on the next tick so listeners attached after this call still see it.
-      setImmediate(() => emitter.emit('done', cached));
-      return { emitter, donePromise, livePath: finalTxt, finalPath: finalTxt };
-    }
-
-    const wavPath = join(outputDir, `${base}.tmp.wav`);
-    // Whole-audio WAV first — same conversion as the non-streaming path.
-    try {
-      await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
-    } catch (e) {
-      const err = new Error(`ffmpeg failed: ${e?.message ?? e}`);
-      setImmediate(() => emitter.emit('error', err));
-      return { emitter, donePromise: Promise.reject(err), livePath, finalPath: finalTxt };
-    }
-
-    const donePromise = (async () => {
-      // Get total audio duration so we know how many chunks.
-      let duration = 0;
-      try {
-        const out = await new Promise((resolve, reject) => {
-          const child = _spawnChild(ffprobeResolved, [
-            '-i', wavPath, '-show_entries', 'format=duration', '-v', 'quiet', '-of', 'csv=p=0',
-          ], { stdio: ['ignore', 'pipe', 'pipe'] });
-          let buf = '';
-          child.stdout.on('data', d => { buf += d.toString(); });
-          child.on('error', reject);
-          child.on('close', code => code === 0 ? resolve(buf.trim()) : reject(new Error(`ffprobe exit ${code}`)));
-        });
-        duration = parseFloat(out);
-      } catch (e) {
-        log(`transcribe-stream: ffprobe failed for ${base}: ${e?.message ?? e} — falling back to single-chunk transcription`);
-      }
-      // Sliding-window transcription (operator 2026-05-22): each pass
-      // gives whisper ~windowSeconds of audio context for better quality,
-      // then advances by strideSeconds. Each window's transcript REPLACES
-      // (not appends to) the brain's current view — whisper's output for
-      // a window is a coherent phrase that stands on its own. The brain
-      // reacts to each window-frame independently; its own session
-      // memory threads continuity across passes.
-      //
-      // For non-overlapping windows: strideSeconds === windowSeconds.
-      // For 50% overlap: stride = window / 2 (current default 3 / 6).
-      const lastStart = Math.max(0, duration - windowSeconds);
-      // Generate window start offsets: 0, stride, 2*stride, ... up to
-      // and INCLUDING lastStart (so the final window covers the actual
-      // end of the audio, not whatever the stride aliasing gives us).
-      const windowStarts = [];
-      for (let s = 0; s + 0.001 < lastStart; s += strideSeconds) windowStarts.push(s);
-      windowStarts.push(lastStart);
-      // duration < windowSeconds: single window starting at 0, length = duration.
-
-      let liveAppendBuffer = `# live transcript — ${base}  (windows ${windowSeconds}s, stride ${strideSeconds}s)\n\n`;
-      try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live header: ${e?.message ?? e}`); }
-      const allWindowTexts = [];
-
-      // Pre-slice ALL windows in parallel via ffmpeg (operator
-      // 2026-05-22 pipeline design: "as soon as audio is received,
-      // divide in chunks"). ffmpeg slicing is I/O-bound and runs
-      // concurrently with negligible CPU; doing them upfront removes
-      // ~100ms × N latency between successive whisper calls. Whisper
-      // itself stays sequential (single warm server, one inference
-      // at a time) — but it's now the ONLY thing on the critical
-      // path. Typewriter consumes emitted chunks in parallel via
-      // setInterval, so by the time whisper window N-1 emits, the
-      // typewriter is still draining N-2 and whisper window N's wav
-      // is already on disk waiting.
-      const slicePromises = windowStarts.map(async (offset, idx) => {
-        const winLen = Math.min(windowSeconds, Math.max(1, duration - offset));
-        const winWav = join(outputDir, `${base}.win-${String(idx).padStart(3, '0')}.tmp.wav`);
-        try {
-          await _runCmd(ffmpegBin, [
-            '-y', '-ss', String(offset), '-t', String(winLen),
-            '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', winWav,
-          ]);
-          return { idx, offset, winLen, winWav, error: null };
-        } catch (e) {
-          log(`transcribe-stream: ffmpeg window ${idx} failed for ${base}: ${e?.message ?? e}`);
-          try { await fs.unlink(winWav); } catch {}
-          return { idx, offset, winLen, winWav: null, error: e };
-        }
-      });
-      // Don't wait for ALL slices — race condition: window 0 is usually
-      // done first since ffmpeg launches them all concurrently, but
-      // we should start whisper on whichever window finishes first that
-      // matches our sequential consumption order. Simplest correct
-      // shape: just await Promise.all upfront. Total slice time = max
-      // single slice time (~100-300ms), not N × that.
-      const slices = await Promise.all(slicePromises);
-
-      for (let idx = 0; idx < slices.length; idx++) {
-        const slice = slices[idx];
-        if (slice.error || !slice.winWav) continue;
-        const { offset, winLen, winWav } = slice;
-
-        // --max-len forces whisper to break segments at ~N characters,
-        // exposing inter-word silence gaps that the model would
-        // otherwise smooth over into one continuous segment. Operator
-        // (2026-05-22): "silences are not being forwarded. at least
-        // not good." Without smaller segments, _buildSpacedWindow has
-        // no gaps to render as whitespace — the whole window collapses
-        // to one segment of speech with no visible silence inside.
-        const args = ['-m', liveModel, '-f', winWav, '--no-prints', '--max-len', '30'];
-        if (language) { args.push('-l', language); }
-        // Same tunable knobs as batch path. See _transcribeAudio for
-        // the doc block on each. Streaming benefits from --no-context
-        // most: each 4s window is independent and re-using context
-        // from a prior window is what causes the "Música, Música, …"
-        // hallucination cascade across silence stretches.
-        if (cfg.no_context === true)  args.push('--no-context');
-    if (cfg.no_fallback === true) args.push('--no-fallback');
-        if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
-        if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
-        if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
-        if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
-        if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
-        if (cfg.suppress_blank === true)              args.push('--suppress-blank');
-        if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
-        let rawOutput = '';
-        // Prefer the warm whisper-server for this window (no per-call
-        // model-init overhead). Per-call cost drops from ~20s to ~1-3s
-        // for a 4s window once the encoder is warm. Fall back to
-        // per-call whisper-cli if the server isn't ready / failed.
-        const winSrv = await _transcribeViaServer({ wavPath: winWav, language });
-        if (winSrv?.text) {
-          // The server returns plain text without segment timestamps.
-          // Wrap it in a single synthetic segment spanning the whole
-          // window so downstream segment-aware processing (silence
-          // calibration, spaced view) still gets a uniform shape.
-          const synthStart = '00:00:00.000';
-          const winEndSec = winLen.toFixed(3).padStart(6, '0');
-          const synthEnd = `00:00:${winEndSec}`;
-          rawOutput = `[${synthStart} --> ${synthEnd}]   ${winSrv.text}`;
-        } else try {
-          rawOutput = await new Promise((resolve, reject) => {
-            const child = _spawnChild(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-            let buf = '';
-            let stderr = '';
-            child.stdout.on('data', d => { buf += d.toString(); });
-            child.stderr.on('data', d => { stderr += d.toString(); });
-            child.on('error', reject);
-            child.on('close', code => {
-              if (code !== 0) return reject(new Error(`whisper window ${idx} exit ${code}: ${stderr.slice(0, 200)}`));
-              resolve(buf);
-            });
-          });
-        } catch (e) {
-          log(`transcribe-stream: whisper window ${idx} failed: ${e?.message ?? e}`);
-        } finally {
-          try { await fs.unlink(winWav); } catch {}
-        }
-
-        // Two derived views of the window:
-        //   cleaned    = stripped of timestamps, noise markers, joined for
-        //                logging and downstream consumers
-        //   spaced     = silence preserved as whitespace, positioning text
-        //                in audio-time (the model's "visual map" per operator)
-        // Build per-segment text with duration-calibrated silence
-        // spacing (operator 2026-05-22: "if [silence], add 4 spaces
-        // per second"). Process segments individually so we have
-        // start/end timestamps; the segment-aware
-        // _segmentSilenceSpaces substitutes silence markers with
-        // ' '.repeat(4*durSec). Other noise markers (Música, Aplausos,
-        // Risas, etc.) pass through unchanged.
-        const _segRe = /^\s*\[(\d{2}):(\d{2}):(\d{2}\.\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.+)$/;
-        const _windowParts = [];
-        for (const line of rawOutput.split(/\r?\n/)) {
-          const m = line.match(_segRe);
-          if (!m) continue;
-          const segStart = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
-          const segEnd   = parseInt(m[4]) * 3600 + parseInt(m[5]) * 60 + parseFloat(m[6]);
-          const segText  = m[7].trim();
-          _windowParts.push(_segmentSilenceSpaces(segText, segStart, segEnd));
-        }
-        const cleaned = _windowParts.join(' ').replace(/^\s+|\s+$/g, '');
-        const spaced = _buildSpacedWindow(rawOutput, winLen);
-
-        // Always emit the window, even when speech-stripped to empty —
-        // the spaced version still carries the "this window was silence"
-        // signal (just whitespace), which is part of the model's
-        // perception of time passing. Operator (2026-05-22): "if the audio
-        // is silent, it goes to the prompt as '     '."
-        // Log BOTH the cleaned (joined) text and the spaced (with-
-        // whitespace) version — the latter is what the model actually
-        // sees, so the operator can inspect it directly here.
-        liveAppendBuffer += `[window ${idx} @ ${offset.toFixed(1)}-${(offset + winLen).toFixed(1)}s] ${cleaned || '(silence)'}\n`;
-        liveAppendBuffer += `  spaced: "${spaced}"\n`;
-        try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live append: ${e?.message ?? e}`); }
-        if (cleaned) allWindowTexts.push(cleaned);
-        emitter.emit('chunk', {
-          text: cleaned,
-          spacedText: spaced,
-          idx,
-          cumulative: cleaned,
-          spacedCumulative: spaced,
-          offsetSeconds: offset,
-          endSeconds: offset + winLen,
-          audioDuration: duration,
-        });
-      }
-
-      // SKIPPED: the large-model final pass. Operator (2026-05-22):
-      // "last reply takes super long, to receive the final '.'." That
-      // wait was the sequential ~20-30s large-model re-transcription of
-      // the full audio AFTER all windows finished. The brain already
-      // saw every window during streaming; an additional final pass
-      // adds no information the brain hasn't already integrated.
-      //
-      // Canonical transcript: joined windows (with redundancy from the
-      // overlap — readable, not perfect). The rest of the system
-      // (/summarize etc) finds something useful at finalTxt; it's not
-      // verbatim accurate but it covers the audio.
-      // Join windows preserving the silence-as-spaces signal. Don't
-      // collapse multiple spaces — they're calibrated whitespace from
-      // _stripNoiseMarkers' silence-marker substitution.
-      const finalText = allWindowTexts.join(' ').replace(/^\s+|\s+$/g, '');
-      try { await fs.writeFile(finalTxt, finalText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream final write: ${e?.message ?? e}`); }
-
-      try { await fs.unlink(wavPath); } catch {}
-      emitter.emit('done', finalText);
-      return { liveText: finalText, finalText, livePath, finalPath: finalTxt };
-    })();
-
-    return { emitter, donePromise, livePath, finalPath: finalTxt };
-  }
-
-  // Extract one representative keyframe from a video as a JPG sidecar.
-  // ffmpeg's `thumbnail` filter picks the most visually-distinctive
-  // frame from a sliding window — better than first-frame (often
-  // black) or fixed-offset (misses motion). Scaled to 640px wide
-  // for smaller files. Saved next to the video as <base>.keyframe.jpg.
-  //
-  // Gated by media.audio_transcribe.enabled (same ffmpeg dep). If
-  // operator wants to disable keyframes specifically, add a
-  // future media.video_keyframe.enabled toggle.
   async function _extractVideoKeyframe({ inputPath, outputDir, base }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
@@ -3066,8 +2611,22 @@ export async function startWhatsAppBridge({
       }
     }
 
+    // Detect voice/audio source so the host's envelope can annotate
+    // the brain prompt ("(transcript from voice note)") without
+    // burying the actual content. Operator 2026-05-23: the brain
+    // should receive just the transcript text + an envelope hint,
+    // NOT the chat-visible sugar (animation + 👂 + pushName +
+    // duration). Peel ephemeral / viewOnce envelopes.
+    const _audioInner = msg.message?.audioMessage
+      ?? msg.message?.ephemeralMessage?.message?.audioMessage
+      ?? msg.message?.viewOnceMessage?.message?.audioMessage
+      ?? msg.message?.viewOnceMessageV2?.message?.audioMessage
+      ?? null;
+    const isTranscriptFromVoice = !!_audioInner;
+
     await onIncoming?.(processed, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
+      isTranscriptFromVoice,
       // msgKey enables proper WA-reply quoting later — e.g. when the
       // operator types '@m42 …' in shell, we send the reply via
       // baileys with quoted: { key, message } pointing at this msg.
