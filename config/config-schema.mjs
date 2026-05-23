@@ -19,6 +19,7 @@ export const CONFIG_SCHEMA = {
   tz_label:     'short timezone label shown next to timestamps (e.g. NYC, MAD, BEI; default = system short tz)',
   user_name:    'handle for the human typing here, shown in cross-surface mirroring as <user_name>@<surface>. Default: "egptbot". Override via this config key, EGPT_USER_NAME env var, or per-bridge node_name in telegram/whatsapp blocks.',
   node_name:    'name this node uses on the bus (e.g. home, chr1); takes effect on next shell restart',
+  heartbeat:    'supervisor liveness config: { interval_ms (default 60000 — how often the daemon writes a tic/toc beat to state/alive.txt), stale_seconds (default 90 — the watchdog kills + respawns the daemon if the newest beat is older than this; should be a few × interval_ms/1000 for margin) }',
   telegram:     'telegram bridge config: { bot_token, allowed_users, chat_id, mirror, node_name, client_name (default "tg", appears in handle@client tags), max_backlog_seconds (default 5 — grace window in seconds; messages with Telegram-side timestamps older than N seconds before bridge connect are HELD instead of auto-dispatched and reviewed via /tg-pending. 0 = strict (hold ANYTHING pre-connect). -1 = disable hold entirely (legacy behavior; not recommended — daemon restart auto-executes brain on every queued message)) }',
   // whatsapp: nested object with keys { enabled, allowed_users, chat_id }.
   // The bridge starts when this block is present (and not enabled:false).
