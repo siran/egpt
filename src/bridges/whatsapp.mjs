@@ -1790,8 +1790,18 @@ export async function startWhatsAppBridge({
       try { await fs.writeFile(livePath, liveAppendBuffer, 'utf8'); } catch (e) { console.error(`!! transcribe-stream live header: ${e?.message ?? e}`); }
       const allWindowTexts = [];
 
-      for (let idx = 0; idx < windowStarts.length; idx++) {
-        const offset = windowStarts[idx];
+      // Pre-slice ALL windows in parallel via ffmpeg (operator
+      // 2026-05-22 pipeline design: "as soon as audio is received,
+      // divide in chunks"). ffmpeg slicing is I/O-bound and runs
+      // concurrently with negligible CPU; doing them upfront removes
+      // ~100ms × N latency between successive whisper calls. Whisper
+      // itself stays sequential (single warm server, one inference
+      // at a time) — but it's now the ONLY thing on the critical
+      // path. Typewriter consumes emitted chunks in parallel via
+      // setInterval, so by the time whisper window N-1 emits, the
+      // typewriter is still draining N-2 and whisper window N's wav
+      // is already on disk waiting.
+      const slicePromises = windowStarts.map(async (offset, idx) => {
         const winLen = Math.min(windowSeconds, Math.max(1, duration - offset));
         const winWav = join(outputDir, `${base}.win-${String(idx).padStart(3, '0')}.tmp.wav`);
         try {
@@ -1799,11 +1809,25 @@ export async function startWhatsAppBridge({
             '-y', '-ss', String(offset), '-t', String(winLen),
             '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', winWav,
           ]);
+          return { idx, offset, winLen, winWav, error: null };
         } catch (e) {
           log(`transcribe-stream: ffmpeg window ${idx} failed for ${base}: ${e?.message ?? e}`);
           try { await fs.unlink(winWav); } catch {}
-          continue;
+          return { idx, offset, winLen, winWav: null, error: e };
         }
+      });
+      // Don't wait for ALL slices — race condition: window 0 is usually
+      // done first since ffmpeg launches them all concurrently, but
+      // we should start whisper on whichever window finishes first that
+      // matches our sequential consumption order. Simplest correct
+      // shape: just await Promise.all upfront. Total slice time = max
+      // single slice time (~100-300ms), not N × that.
+      const slices = await Promise.all(slicePromises);
+
+      for (let idx = 0; idx < slices.length; idx++) {
+        const slice = slices[idx];
+        if (slice.error || !slice.winWav) continue;
+        const { offset, winLen, winWav } = slice;
 
         // --max-len forces whisper to break segments at ~N characters,
         // exposing inter-word silence gaps that the model would
