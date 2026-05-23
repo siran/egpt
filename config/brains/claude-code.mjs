@@ -203,6 +203,11 @@ export function stream({ history, message }, onUpdate, options = {}) {
     let acc = '';
     let finalText = null;
     let stderrBuf = '';
+    // Non-JSON stdout lines (e.g. the CLI's "invalid model" / usage text
+    // when it dies before emitting stream-json). Without this they're
+    // dropped at the JSON.parse guard below, so a nonzero exit reports
+    // "no stderr" with nothing to debug. Capped — we only need the tail.
+    let rawTail = '';
     // Captured from claude's stream-json events. The CLI emits a
     // 'system'/'init' event at start with session_id; we surface it
     // back to the host via optionsPatch so subsequent calls can pass
@@ -220,7 +225,10 @@ export function stream({ history, message }, onUpdate, options = {}) {
         const t = line.trim();
         if (!t) continue;
         let ev;
-        try { ev = JSON.parse(t); } catch { continue; }
+        try { ev = JSON.parse(t); } catch {
+          rawTail = (rawTail + '\n' + t).slice(-1000);
+          continue;
+        }
 
         // Capture session_id from any event that carries it (the
         // system/init event is typical, but be liberal). First-wins
@@ -273,7 +281,12 @@ export function stream({ history, message }, onUpdate, options = {}) {
     proc.on('close', code => {
       const dur = Date.now() - startedAt;
       try { onLog(`claude-code: pid ${proc.pid} exit ${code} after ${dur}ms (acc=${acc.length}ch, final=${finalText ? finalText.length+'ch' : 'null'})`); } catch {}
-      if (code !== 0) return wrapReject(new Error(`claude exit ${code}: ${stderrBuf.trim() || 'no stderr'}`));
+      if (code !== 0) {
+        const diag = stderrBuf.trim()
+          || rawTail.trim()
+          || `no stderr/stdout (model=${options.model ?? 'default'}, resume=${options.sessionId ?? 'none'})`;
+        return wrapReject(new Error(`claude exit ${code}: ${diag}`));
+      }
       const text = finalText ?? acc;
       // Object return form: runBrainTurn / runDefaultBrainTurn both
       // recognize { text, optionsPatch } and persist optionsPatch

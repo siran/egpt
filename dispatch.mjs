@@ -732,6 +732,13 @@ export function createDispatchRuntime({
           sluggedDir,
           ...((convEntry.jids ?? []).map(j => paths.jidMediaDir(j))),
         ];
+        // Confine conversation-e's file tools to its own dirs. A restricted
+        // allowed_tools list (no Bash) is NOT enough — listing Read there
+        // pre-approves reads of ANY absolute path, so a contact could read
+        // ~/.egpt/config.yaml. The claude-sdk brain turns confineToDirs into
+        // a PreToolUse hook that denies out-of-sandbox paths. system-e (the
+        // branch above) deliberately omits this — it is unrestricted.
+        sessionOpts.confineToDirs = sessionOpts.addDirs;
       }
 
       if (isNewContact && !threadCtx.bypassAutoWrap) {
