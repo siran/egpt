@@ -89,49 +89,84 @@ const EGPT_HEADLESS_LOG = join(EGPT_HOME, 'headless.log');
 // entries). Uses `process.kill(pid, 0)` — the POSIX "are you there"
 // probe that throws ESRCH for dead PIDs. On Windows, Node maps this
 // to OpenProcess + check; same semantics.
-function _readLivePid() {
+// Returns { pid, mode } of the live incumbent, or null. mode is
+// 'interactive' | 'headless' | 'unknown' (legacy bare-number pidfile).
+// Clears the pidfile when the recorded pid is dead.
+function _readLiveIncumbent() {
   try {
     const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
-    const pid = Number(raw);
+    let pid, mode;
+    if (raw.startsWith('{')) {
+      const o = JSON.parse(raw);
+      pid = Number(o.pid); mode = o.mode ?? 'unknown';
+    } else {
+      pid = Number(raw); mode = 'unknown';   // legacy format
+    }
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return null;
-    try { process.kill(pid, 0); return pid; }
+    try { process.kill(pid, 0); return { pid, mode }; }
     catch { try { unlinkSync(EGPT_PID_PATH); } catch {} return null; }
   } catch { return null; }
 }
 
-async function takeoverIfRunning() {
-  const pid = _readLivePid();
-  if (!pid) return false;
-  try { process.kill(pid, 'SIGTERM'); } catch {}
-  // Poll up to 10s for the old process to release the pairing. 200ms
-  // ticks; on a clean exit, baileys.logout takes ~1-2s. If the old
-  // process is wedged, we proceed anyway with a warning — baileys
-  // will simply knock it off the WA server on its own connect.
+// Cooperative takeover (operator 2026-05-23: "the two supervisors
+// should see each other... if the other is in control, perhaps a
+// Hi!"). Instead of always SIGTERM-warring the incumbent, we honor
+// roles:
+//   - interactive newcomer: takes the helm (the operator wants the
+//     shell). SIGTERMs the incumbent, waits for release.
+//   - headless newcomer + interactive incumbent: DEFERS. Logs a
+//     greeting and enters a quiet standby poll — stays alive (so the
+//     supervisor doesn't respawn-loop) until the interactive shell
+//     exits, then takes over. This is what stops the two-supervisor
+//     war: the background daemon never fights the active shell.
+//   - headless newcomer + headless incumbent: takes over (a fresh
+//     headless replaces a stale one — normal restart).
+//   - unknown (legacy) incumbent: takes over (back-compat).
+async function _waitForRelease(pid) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try { process.kill(pid, 0); }
-    catch {
-      try { unlinkSync(EGPT_PID_PATH); } catch {}
-      return true;
-    }
+    catch { try { unlinkSync(EGPT_PID_PATH); } catch {} return true; }
     await new Promise(r => setTimeout(r, 200));
   }
-  // eslint-disable-next-line no-console
   console.error(`egpt: previous instance (pid ${pid}) did not exit within 10s; continuing anyway`);
   return true;
 }
+async function takeoverIfRunning(myMode = 'interactive') {
+  let greeted = false;
+  while (true) {
+    const inc = _readLiveIncumbent();
+    if (!inc) return false;   // helm is free
 
-function writePidfile() {
+    if (myMode === 'headless' && inc.mode === 'interactive') {
+      // Defer to the active shell. Greet once, then poll quietly.
+      if (!greeted) {
+        console.error(`👋 egpt headless: Hi — interactive shell (pid ${inc.pid}) has the helm; standing by. Will take over when it exits.`);
+        greeted = true;
+      }
+      await new Promise(r => setTimeout(r, 10_000));
+      continue;   // re-check; loop exits when inc becomes null
+    }
+
+    // interactive newcomer, OR headless-replacing-headless, OR legacy.
+    console.error(`egpt ${myMode}: taking the helm from ${inc.mode} (pid ${inc.pid})`);
+    try { process.kill(inc.pid, 'SIGTERM'); } catch {}
+    return await _waitForRelease(inc.pid);
+  }
+}
+
+function writePidfile(mode = 'interactive') {
   try {
     mkdirSync(EGPT_HOME, { recursive: true });
-    writeFileSync(EGPT_PID_PATH, String(process.pid), { mode: 0o600 });
+    writeFileSync(EGPT_PID_PATH, JSON.stringify({ pid: process.pid, mode }), { mode: 0o600 });
   } catch {}
 }
 
 function clearPidfile() {
   try {
     const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
-    if (Number(raw) === process.pid) unlinkSync(EGPT_PID_PATH);
+    const pid = raw.startsWith('{') ? Number(JSON.parse(raw).pid) : Number(raw);
+    if (pid === process.pid) unlinkSync(EGPT_PID_PATH);
   } catch {}
 }
 
@@ -7245,8 +7280,9 @@ process.on('SIGTERM', () => { _exitClean(0); });
 // Same code path for interactive AND headless mode — both honor the
 // single-writer invariant. Symmetric: a headless process started while
 // an interactive shell is up will also take over (rare but valid).
-await takeoverIfRunning();
-writePidfile();
+const _egptMode = HEADLESS ? 'headless' : 'interactive';
+await takeoverIfRunning(_egptMode);
+writePidfile(_egptMode);
 startAliveHeartbeat();
 
 // "while you were away" summary moved into the App mount effect (see
