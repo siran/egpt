@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
@@ -350,16 +350,15 @@ export async function startWhatsAppBridge({
   // catch around connect() funnel through it.
   let reconnectAttempts = 0;
 
-  // Bridge heartbeat. Same tic/toc shape as state/alive.txt, but the
-  // detail identifies the WA account so "connected" is operationally
-  // meaningful, not just a display name.
-  // Format while connected: "<tic|toc> <iso> name=<...> jid=<...> lid=<...>".
-  // Transitional states use: "<state> <iso> <detail>".
-  const WA_STATE_PATH = join(homedir(), '.egpt', 'state', 'whatsapp-alive');
+  // Bridge heartbeat. Same prefix as state/alive.txt:
+  // "<tic|toc> <iso> <pid> ...". Details after the pid identify
+  // which WA account is connected. Keep .txt so double-click opens.
+  const WA_STATE_PATH = join(homedir(), '.egpt', 'state', 'whatsapp-alive.txt');
+  const WA_STATE_LEGACY_PATH = join(homedir(), '.egpt', 'state', 'whatsapp-alive');
   function _waAliveDetail() {
-    const display = sock?.user?.name ?? myNumber ?? '?';
+    const pushname = sock?.user?.name ?? myNumber ?? '?';
     return [
-      `name=${JSON.stringify(display)}`,
+      `pushname=${JSON.stringify(pushname)}`,
       `jid=${myJid ?? '?'}`,
       ...(myLid ? [`lid=${myLid}`] : []),
     ].join(' ');
@@ -367,13 +366,13 @@ export async function startWhatsAppBridge({
   function _writeWaState(state, detail = '') {
     try {
       mkdirSync(dirname(WA_STATE_PATH), { recursive: true });
-      writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${detail}\n`.trim() + '\n', { mode: 0o600 });
+      writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${process.pid} ${detail}\n`.trim() + '\n', { mode: 0o600 });
     } catch (e) { /* best effort */ }
   }
   function _writeWaAliveNow() {
     try {
       const now = new Date().toISOString();
-      const beat = (label) => `${label} ${now} ${_waAliveDetail()}\n`;
+      const beat = (label) => `${label} ${now} ${process.pid} ${_waAliveDetail()}\n`;
       let content = '';
       try { content = readFileSync(WA_STATE_PATH, 'utf8'); } catch {}
       if (/^toc /m.test(content)) writeFileSync(WA_STATE_PATH, beat('tic'), { mode: 0o600 });
@@ -381,6 +380,7 @@ export async function startWhatsAppBridge({
     } catch (e) { /* best effort */ }
   }
   function _startWaAlive() {
+    try { unlinkSync(WA_STATE_LEGACY_PATH); } catch {}
     _writeWaAliveNow();
     if (waAliveTimer) clearInterval(waAliveTimer);
     waAliveTimer = setInterval(_writeWaAliveNow, BRIDGE_ALIVE_INTERVAL_MS);
