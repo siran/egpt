@@ -135,6 +135,41 @@ function clearPidfile() {
   } catch {}
 }
 
+// Heartbeat-to-file aliveness pattern (operator 2026-05-23):
+//   - daemon writes ~/.egpt/state/alive every 15s with epoch ms + pid
+//   - external watchdog (setup/watchdog.ps1, runs via TS every minute)
+//     checks the file's mtime; if stale > 90s, kills the pid so the
+//     wrapper's respawn loop fires.
+//   - protects against wedged-but-alive states (process exists, event
+//     loop blocked or hung) that the wrapper's `& node …; respawn`
+//     pattern can't detect by itself.
+const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive');
+const ALIVE_INTERVAL_MS = 15_000;
+let _aliveTimer = null;
+function _writeAliveNow() {
+  try {
+    // Atomic-ish: write tmp then rename. The watchdog reads mtime and
+    // tolerates a brief gap; this just avoids a partial-write race.
+    const tmp = ALIVE_PATH + '.tmp';
+    writeFileSync(tmp, `${Date.now()}\n${process.pid}\n`, { mode: 0o600 });
+    renameSync(tmp, ALIVE_PATH);
+  } catch (e) {
+    // Best effort; missing state dir creates on next pass.
+    try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
+  }
+}
+function startAliveHeartbeat() {
+  try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
+  _writeAliveNow();
+  if (_aliveTimer) clearInterval(_aliveTimer);
+  _aliveTimer = setInterval(_writeAliveNow, ALIVE_INTERVAL_MS);
+  _aliveTimer.unref?.();
+}
+function stopAliveHeartbeat() {
+  if (_aliveTimer) { clearInterval(_aliveTimer); _aliveTimer = null; }
+  try { unlinkSync(ALIVE_PATH); } catch {}
+}
+
 // Load config: global (~/.egpt/config.json) then local (.egpt/config.json).
 // Local keys override global ones. Both files are optional.
 //
@@ -7211,6 +7246,7 @@ process.on('SIGTERM', () => { _exitClean(0); });
 // an interactive shell is up will also take over (rare but valid).
 await takeoverIfRunning();
 writePidfile();
+startAliveHeartbeat();
 
 // "while you were away" summary moved into the App mount effect (see
 // _welcomeBackEffect below). The previous pre-mount console.log path
@@ -7318,4 +7354,4 @@ if (HEADLESS) {
   console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
   render(h(App), { exitOnCtrlC: false });
 }
-process.on('exit', () => { _globalBridge?.stop(); _globalWaBridge?.stop(); clearPidfile(); });
+process.on('exit', () => { _globalBridge?.stop(); _globalWaBridge?.stop(); clearPidfile(); stopAliveHeartbeat(); });
