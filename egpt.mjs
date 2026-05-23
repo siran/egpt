@@ -178,8 +178,10 @@ function clearPidfile() {
 //   - protects against wedged-but-alive states (process exists, event
 //     loop blocked or hung) that the wrapper's `& node …; respawn`
 //     pattern can't detect by itself.
-const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive');
-const ALIVE_INTERVAL_MS = 60_000;   // operator 2026-05-23: 15s was excessive disk I/O; 60s is fine for wedge detection
+const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive.txt');   // .txt so it opens cleanly in Explorer / anywhere
+const ALIVE_INTERVAL_MS = Number(EGPT_CONFIG?.heartbeat?.interval_ms) > 0
+  ? Number(EGPT_CONFIG.heartbeat.interval_ms)
+  : 60_000;   // operator 2026-05-23: configurable; default 60s (15s was excessive disk I/O)
 let _aliveTimer = null;
 // tic/toc heartbeat (operator 2026-05-23). The file holds at most two
 // lines; the daemon alternates:
@@ -205,8 +207,13 @@ function _writeAliveNow() {
       appendFileSync(ALIVE_PATH, `toc ${now}\n`, { mode: 0o600 });
     }
   } catch (e) {
-    // Best effort; missing state dir creates on next pass.
+    // A heartbeat write failure is real signal (disk full, perms,
+    // path gone) — log it so it's not silently lost. The watchdog
+    // will see the stale file and respawn; crash.log records WHY.
+    // Operator 2026-05-23: "crash logger also captures tictoc
+    // failures?" — yes.
     try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
+    try { _logCrash('heartbeat-write', e); } catch {}
   }
 }
 function startAliveHeartbeat() {
