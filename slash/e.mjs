@@ -255,7 +255,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       // without touching the TUI's console — the earlier crash came
       // from a fragile nested -Verb RunAs spawn, avoided here).
       const { spawn } = await import('node:child_process');
-      const ps1 = join(APP_DIR, 'setup', 'install-tasks.ps1');
+      const ps1 = join(setupDir, 'install-tasks.ps1');
       try {
         const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
           detached: true, stdio: 'ignore', windowsHide: true,

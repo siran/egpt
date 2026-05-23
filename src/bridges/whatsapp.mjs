@@ -1369,7 +1369,10 @@ export async function startWhatsAppBridge({
     return new Promise((resolve, reject) => {
       let proc;
       try {
-        proc = _spawnChild(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+        // windowsHide: don't flash a console window for ffmpeg /
+        // whisper-cli on each call (operator 2026-05-23: "terminal
+        // flashing every now and then").
+        proc = _spawnChild(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...opts });
       } catch (e) { return reject(e); }
       let stderr = '';
       proc.stderr?.on('data', d => { stderr += d.toString(); });
@@ -1465,7 +1468,7 @@ export async function startWhatsAppBridge({
     _whisperServerUrl = `http://${host}:${port}`;
     log(`whisper-server: starting ${serverBin} on ${_whisperServerUrl} (model ${modelPath.split(/[\\/]/).pop()})`);
     try {
-      _whisperServerProc = _spawnChild(serverBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      _whisperServerProc = _spawnChild(serverBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     } catch (e) {
       log(`whisper-server: spawn failed: ${e?.message ?? e}`);
       _whisperServerProc = null;
