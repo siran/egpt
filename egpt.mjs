@@ -179,9 +179,13 @@ function clearPidfile() {
 //     loop blocked or hung) that the wrapper's `& node …; respawn`
 //     pattern can't detect by itself.
 const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive.txt');   // .txt so it opens cleanly in Explorer / anywhere
-const ALIVE_INTERVAL_MS = Number(EGPT_CONFIG?.heartbeat?.interval_ms) > 0
-  ? Number(EGPT_CONFIG.heartbeat.interval_ms)
-  : 60_000;   // operator 2026-05-23: configurable; default 60s (15s was excessive disk I/O)
+// Resolved lazily inside startAliveHeartbeat() — NOT at module-eval
+// time, because EGPT_CONFIG is declared ~65 lines below this and a
+// const referencing it here threw "Cannot access 'EGPT_CONFIG'
+// before initialization" (TDZ) on EVERY startup → instant crash-loop,
+// daemon never reached the heartbeat. Operator 2026-05-23: that
+// crash-loop is what masqueraded as a "dead/wedged" daemon.
+const ALIVE_INTERVAL_DEFAULT_MS = 60_000;   // 15s was excessive disk I/O
 let _aliveTimer = null;
 // tic/toc heartbeat (operator 2026-05-23). The file holds at most two
 // lines; the daemon alternates:
@@ -223,10 +227,15 @@ function _writeAliveNow() {
   }
 }
 function startAliveHeartbeat() {
+  // Config read here (runtime), not at module-eval — EGPT_CONFIG is
+  // loaded by the time this is called from the startup sequence.
+  const intervalMs = Number(EGPT_CONFIG?.heartbeat?.interval_ms) > 0
+    ? Number(EGPT_CONFIG.heartbeat.interval_ms)
+    : ALIVE_INTERVAL_DEFAULT_MS;
   try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
   _writeAliveNow();
   if (_aliveTimer) clearInterval(_aliveTimer);
-  _aliveTimer = setInterval(_writeAliveNow, ALIVE_INTERVAL_MS);
+  _aliveTimer = setInterval(_writeAliveNow, intervalMs);
   _aliveTimer.unref?.();
 }
 function stopAliveHeartbeat() {
