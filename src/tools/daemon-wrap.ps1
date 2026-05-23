@@ -1,11 +1,11 @@
-# tools/daemon-wrap.ps1 — keep the egpt headless daemon alive across
+# tools/daemon-wrap.ps1 -- keep the egpt headless daemon alive across
 # clean exits AND crashes. The Task Scheduler XML points at THIS
 # script instead of `node egpt-daemon.mjs` directly, so when the
 # daemon exits for any reason we respawn instead of leaving the
 # TS task in Ready/not-running.
 #
 # Backoff: starts at 2s. If the daemon exited in < 30s of start,
-# double the backoff up to 60s — protects against fast-crash loops
+# double the backoff up to 60s -- protects against fast-crash loops
 # on deterministic source bugs. Otherwise reset backoff to 2s.
 #
 # Logs respawn events to ~/.egpt/wrap.log so we don't collide with

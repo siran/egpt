@@ -197,14 +197,20 @@ let _aliveTimer = null;
 function _writeAliveNow() {
   try {
     const now = new Date().toISOString();
+    // Each line carries the pid so the watchdog has a kill target
+    // straight from alive.txt — no dependency on a separate egpt.pid
+    // (which can go missing, as it did 2026-05-23 after testing left
+    // elevated zombies with no pidfile, leaving the watchdog unable
+    // to act). Format: "<tic|toc> <iso> <pid>".
+    const beat = (label) => `${label} ${now} ${process.pid}\n`;
     let content = '';
     try { content = readFileSync(ALIVE_PATH, 'utf8'); } catch {}
     if (/^toc /m.test(content)) {
       // toc present → write tic, truncating (erases the rest).
-      writeFileSync(ALIVE_PATH, `tic ${now}\n`, { mode: 0o600 });
+      writeFileSync(ALIVE_PATH, beat('tic'), { mode: 0o600 });
     } else {
       // no toc → append it.
-      appendFileSync(ALIVE_PATH, `toc ${now}\n`, { mode: 0o600 });
+      appendFileSync(ALIVE_PATH, beat('toc'), { mode: 0o600 });
     }
   } catch (e) {
     // A heartbeat write failure is real signal (disk full, perms,
