@@ -90,6 +90,7 @@ export function isSilenceMarker(text) {
 // connect() threw → setTimeout never re-armed → bridge dead.
 const RECONNECT_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
+const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -342,24 +343,52 @@ export async function startWhatsAppBridge({
   let myLidNumber    = null;     // bare number portion of myLid (for self-DM detection)
   let sock           = null;
   let reconnectTimer = null;
+  let waAliveTimer   = null;
   // Exponential backoff state. Reset to 0 when 'connection: open'
   // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
   // is the single retry path — both the close handler and the
   // catch around connect() funnel through it.
   let reconnectAttempts = 0;
 
-  // Bridge-connection state file (operator 2026-05-23: "we need a
-  // bridge heartbeat or check... someone needs to be connected
-  // always"). Written on every connection.update so the WA link's
-  // health is observable independent of the daemon's event-loop
-  // heartbeat (alive.txt proves the loop runs; THIS proves WA is
-  // actually connected). Format: "<state> <iso> <detail>".
+  // Bridge heartbeat. Same tic/toc shape as state/alive.txt, but the
+  // detail identifies the WA account so "connected" is operationally
+  // meaningful, not just a display name.
+  // Format while connected: "<tic|toc> <iso> name=<...> jid=<...> lid=<...>".
+  // Transitional states use: "<state> <iso> <detail>".
   const WA_STATE_PATH = join(homedir(), '.egpt', 'state', 'whatsapp-alive');
+  function _waAliveDetail() {
+    const display = sock?.user?.name ?? myNumber ?? '?';
+    return [
+      `name=${JSON.stringify(display)}`,
+      `jid=${myJid ?? '?'}`,
+      ...(myLid ? [`lid=${myLid}`] : []),
+    ].join(' ');
+  }
   function _writeWaState(state, detail = '') {
     try {
       mkdirSync(dirname(WA_STATE_PATH), { recursive: true });
       writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${detail}\n`.trim() + '\n', { mode: 0o600 });
     } catch (e) { /* best effort */ }
+  }
+  function _writeWaAliveNow() {
+    try {
+      const now = new Date().toISOString();
+      const beat = (label) => `${label} ${now} ${_waAliveDetail()}\n`;
+      let content = '';
+      try { content = readFileSync(WA_STATE_PATH, 'utf8'); } catch {}
+      if (/^toc /m.test(content)) writeFileSync(WA_STATE_PATH, beat('tic'), { mode: 0o600 });
+      else appendFileSync(WA_STATE_PATH, beat('toc'), { mode: 0o600 });
+    } catch (e) { /* best effort */ }
+  }
+  function _startWaAlive() {
+    _writeWaAliveNow();
+    if (waAliveTimer) clearInterval(waAliveTimer);
+    waAliveTimer = setInterval(_writeWaAliveNow, BRIDGE_ALIVE_INTERVAL_MS);
+    waAliveTimer.unref?.();
+  }
+  function _stopWaAlive(state, detail = '') {
+    if (waAliveTimer) { clearInterval(waAliveTimer); waAliveTimer = null; }
+    if (state) _writeWaState(state, detail);
   }
   function _scheduleReconnect(reason) {
     if (stopped) return;
@@ -367,7 +396,7 @@ export async function startWhatsAppBridge({
     const delay = Math.min(RECONNECT_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
     reconnectAttempts++;
     err(`whatsapp: ${reason}; reconnect attempt ${reconnectAttempts} in ${Math.round(delay / 1000)}s`);
-    _writeWaState('reconnecting', reason);
+    _stopWaAlive('reconnecting', reason);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       try { connect(); }
@@ -1035,7 +1064,7 @@ export async function startWhatsAppBridge({
         reconnectAttempts = 0;
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
-        _writeWaState('connected', `${display}`);
+        _startWaAlive();
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
         // a group's cached label could end up as a person's name
@@ -1050,7 +1079,7 @@ export async function startWhatsAppBridge({
         const reason = lastDisconnect?.error?.output?.statusCode;
         if (reason === DisconnectReason.loggedOut) {
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
-          _writeWaState('logged_out', `reason ${reason}`);
+          _stopWaAlive('logged_out', `reason ${reason}`);
           stopped = true;
           return;
         }
@@ -1065,11 +1094,11 @@ export async function startWhatsAppBridge({
           err('whatsapp: connection replaced by another session (reason 440). ' +
               'A stale WS from a prior process is still on WA\'s server. ' +
               'Wait ~30s then run /whatsapp start. Auto-reconnect disabled to avoid a fight loop.');
-          _writeWaState('connection_replaced', `reason ${reason}`);
+          _stopWaAlive('connection_replaced', `reason ${reason}`);
           stopped = true;
           return;
         }
-        _writeWaState('closed', `reason ${reason ?? '?'}`);
+        _stopWaAlive('closed', `reason ${reason ?? '?'}`);
         // Other close reasons: funnel through _scheduleReconnect —
         // backoff retry, operator-visible errOut, and recovery from
         // a connect() that throws synchronously.
@@ -3572,7 +3601,7 @@ export async function startWhatsAppBridge({
     },
     stop() {
       stopped = true;
-      _writeWaState('stopped');
+      _stopWaAlive('stopped');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       _stopWhisperServer();
       // Phase 2: synchronously flush any pending debounced writes so
