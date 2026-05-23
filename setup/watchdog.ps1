@@ -15,10 +15,23 @@
 # Log: ~/.egpt/state/watchdog.log
 
 $ErrorActionPreference = 'Continue'
-$alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive'
+$alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive.txt'
 $pidPath   = Join-Path $env:USERPROFILE '.egpt\egpt.pid'
 $logPath   = Join-Path $env:USERPROFILE '.egpt\state\watchdog.log'
-$StaleSeconds = 210
+
+# Threshold is configurable via ~/.egpt/config.yaml:
+#   heartbeat:
+#     stale_seconds: 90
+# Crude line-grep (avoids a YAML parser dependency in PowerShell).
+# Falls back to 90 if the file / key is absent or unparseable.
+$StaleSeconds = 90
+try {
+  $cfgPath = Join-Path $env:USERPROFILE '.egpt\config.yaml'
+  if (Test-Path $cfgPath) {
+    $m = Select-String -Path $cfgPath -Pattern '^\s*stale_seconds:\s*(\d+)' | Select-Object -First 1
+    if ($m) { $StaleSeconds = [int]$m.Matches[0].Groups[1].Value }
+  }
+} catch { }
 
 function Log($m) {
   try { Add-Content -Path $logPath -Value "[watchdog $(Get-Date -Format o)] $m" } catch {}
