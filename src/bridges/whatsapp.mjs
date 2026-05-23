@@ -1407,6 +1407,35 @@ export async function startWhatsAppBridge({
     if (typeof cfg.language === 'string' && cfg.language.trim()) {
       args.push('-l', cfg.language.trim());
     }
+    // Tunable whisper-cli flags via config (operator 2026-05-22 after
+    // observing silence misclassified as [Música]). See whisper.cpp's
+    // README for all flags. Common knobs:
+    //   no_context: true            → --no-context  (each segment
+    //                                  independent — prevents "carry-over"
+    //                                  hallucinations like repeated music
+    //                                  markers from one silent stretch).
+    //   no_speech_threshold: 0.6    → --no-speech-thold N  (probability
+    //                                  threshold above which the segment
+    //                                  is marked as silence. Raise to
+    //                                  reduce false silence; lower to
+    //                                  catch more silence).
+    //   logprob_threshold: -1.0     → --logprob-thold N  (drop low-
+    //                                  confidence guesses — catches some
+    //                                  hallucinated music/applause).
+    //   temperature: 0              → -tp N  (sampling temperature; 0 is
+    //                                  most deterministic).
+    //   beam_size: 5                → -bs N  (beam search width).
+    //   suppress_blank: true        → --suppress-blank  (don't emit
+    //                                  "blank" tokens at start of segment).
+    //   extra_args: ['--vad']       → spread literally (catch-all).
+    if (cfg.no_context === true) args.push('--no-context');
+    if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
+    if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
+    if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
+    if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
+    if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
+    if (cfg.suppress_blank === true)              args.push('--suppress-blank');
+    if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
     try {
       await _runCmd(whisperBin, args);
     } catch (e) {
@@ -1622,6 +1651,19 @@ export async function startWhatsAppBridge({
         // to one segment of speech with no visible silence inside.
         const args = ['-m', liveModel, '-f', winWav, '--no-prints', '--max-len', '30'];
         if (language) { args.push('-l', language); }
+        // Same tunable knobs as batch path. See _transcribeAudio for
+        // the doc block on each. Streaming benefits from --no-context
+        // most: each 4s window is independent and re-using context
+        // from a prior window is what causes the "Música, Música, …"
+        // hallucination cascade across silence stretches.
+        if (cfg.no_context === true) args.push('--no-context');
+        if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
+        if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
+        if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
+        if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
+        if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
+        if (cfg.suppress_blank === true)              args.push('--suppress-blank');
+        if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
         let rawOutput = '';
         try {
           rawOutput = await new Promise((resolve, reject) => {
@@ -1924,17 +1966,23 @@ export async function startWhatsAppBridge({
             // Final replacement at done() uses the cleaner deduped
             // finalText from the joined-windows pass.
             if (wantReplyStreaming && msg.key) {
-              // Inline minimal edit-streaming: send first chunk as quoted
-              // reply, then edit on each subsequent chunk. Replaces with
-              // deduped finalText at done. Self-contained (no go-through
-              // startStreamMessage, which is a method on the returned
-              // bridge object and not in lexical scope here). The chunk
-              // cadence (~3s/window) is already humane-paced, so no
-              // additional edit debounce is needed.
+              // Typewriter-paced reply stream (operator 2026-05-22 design
+              // spec): "you have the transcript of those 4 seconds, say
+              // 'hola como estás tú', then you have to play those 17
+              // characters in 4 seconds." Each window's text gets queued
+              // and "typed out" over the window's duration via batched
+              // edits, so the recipient sees the text appear at audio-
+              // pace rather than landing in chunky 4s clumps.
+              //
+              // Implementation: each chunk pushes text into `displayed`
+              // incrementally on a timer. Edit cadence is ~600ms (safe
+              // for WA edit rate) so a 4s window becomes ~6 batched
+              // edits, each ~16% of the window's text. Final replacement
+              // at done() reconciles with the deduped finalText.
               let replyMsgKey = null;
-              let lastBody = '';
+              let lastSentBody = '';
               const _editReply = async (body) => {
-                if (body === lastBody) return;
+                if (body === lastSentBody) return;
                 try {
                   if (!replyMsgKey) {
                     const r = await _safeSend(
@@ -1948,30 +1996,81 @@ export async function startWhatsAppBridge({
                     const r = await _safeSend(chatJid, { edit: replyMsgKey, text: body });
                     rememberSent(r?.key?.id);
                   }
-                  lastBody = body;
+                  lastSentBody = body;
                 } catch (e) {
                   log(`reply-stream edit (${base}): ${e?.message ?? e}`);
                 }
               };
-              const seen = [];   // raw window texts — has overlap
+
+              const EDIT_CADENCE_MS = 600;
+              let displayedText = '';   // chars already shown to recipient
+              let pendingQueue  = '';   // chars buffered, not yet shown
+              let typeTimer     = null;
+              let doneSignal    = false;
+
+              const _scheduleType = (windowDurationMs) => {
+                if (typeTimer) return;   // already typing
+                // Compute chars-per-tick from queue length spread over
+                // this window's duration. We re-derive at every tick so
+                // late-arriving chunks reflow gracefully.
+                const tick = () => {
+                  if (!pendingQueue) {
+                    clearInterval(typeTimer);
+                    typeTimer = null;
+                    return;
+                  }
+                  // Distribute remaining chars across remaining ticks of
+                  // THIS window. Ticks per window = ceil(dur/cadence).
+                  // Recompute every tick so newly-arriving chunks
+                  // accelerate without overrunning the queue.
+                  const ticksLeft = Math.max(1, Math.ceil(windowDurationMs / EDIT_CADENCE_MS));
+                  const charsPerTick = Math.max(1, Math.ceil(pendingQueue.length / ticksLeft));
+                  const slice = pendingQueue.slice(0, charsPerTick);
+                  pendingQueue = pendingQueue.slice(charsPerTick);
+                  displayedText += slice;
+                  _editReply(`🎙 ${displayedText}`)
+                    .catch(e => log(`reply-stream typewriter: ${e?.message ?? e}`));
+                  if (!pendingQueue && doneSignal) {
+                    clearInterval(typeTimer);
+                    typeTimer = null;
+                  }
+                };
+                typeTimer = setInterval(tick, EDIT_CADENCE_MS);
+                tick();   // first char(s) immediately
+              };
+
               voiceStream.emitter.on('chunk', (ev) => {
                 if (!ev?.text) return;
-                seen.push(ev.text);
-                const display = seen.join(' ').trim();
-                if (display) _editReply(`🎙 ${display}`)
-                  .catch(e => log(`reply-stream chunk: ${e?.message ?? e}`));
+                const sep = (displayedText || pendingQueue) ? ' ' : '';
+                pendingQueue += sep + ev.text;
+                // Window duration from the chunk's offset metadata; falls
+                // back to 4s (matches the default windowSeconds).
+                const winDurSec = Math.max(0.5,
+                  (ev.endSeconds ?? 0) - (ev.offsetSeconds ?? 0)) || 4;
+                _scheduleType(winDurSec * 1000);
               });
+
               voiceStream.donePromise.then((res) => {
-                const final = res?.finalText?.trim() || seen.join(' ').trim();
-                if (final) {
+                doneSignal = true;
+                const final = res?.finalText?.trim() || (displayedText + pendingQueue).trim();
+                if (!final) {
+                  // Pure silence (no chars ever queued). Revoke if anything sent.
+                  if (replyMsgKey) {
+                    _safeSend(chatJid, { delete: replyMsgKey })
+                      .catch(e => log(`reply-stream revoke: ${e?.message ?? e}`));
+                  }
+                  return;
+                }
+                // Let any pending queue drain (best-effort short wait),
+                // then replace with the canonical deduped final text. The
+                // typewriter shows the per-window joined text; the final
+                // is the cleaner joined-windows version which we want as
+                // the persistent reply body.
+                setTimeout(() => {
+                  if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
                   _editReply(`🎙 ${final}`)
                     .catch(e => log(`reply-stream final: ${e?.message ?? e}`));
-                } else if (replyMsgKey) {
-                  // Silence: revoke the reply so it doesn't sit as a
-                  // stranded 🎙 with no content.
-                  _safeSend(chatJid, { delete: replyMsgKey })
-                    .catch(e => log(`reply-stream revoke: ${e?.message ?? e}`));
-                }
+                }, 800);
               }).catch((e) => {
                 log(`reply-stream done error (${base}): ${e?.message ?? e}`);
               });
