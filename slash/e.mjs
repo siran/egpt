@@ -274,17 +274,21 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       if (!saved.whatsapp) saved.whatsapp = {};
       if (!saved.whatsapp.media) saved.whatsapp.media = {};
       if (!saved.whatsapp.media.audio_transcribe) saved.whatsapp.media.audio_transcribe = {};
-      saved.whatsapp.media.audio_transcribe.post_as_reply = onOff === 'on';
-      saved.whatsapp.media.audio_transcribe.post_as_reply_streaming = onOff === 'on' && streamingFlag;
+      // Streaming is default; --batch picks the slower whisper-large
+      // single-reply variant. operator 2026-05-22.
+      const wantStreaming = onOff === 'on' && !batchFlag;
+      const wantBatch     = onOff === 'on' && batchFlag;
+      saved.whatsapp.media.audio_transcribe.post_as_reply = wantBatch;
+      saved.whatsapp.media.audio_transcribe.post_as_reply_streaming = wantStreaming;
       await writeConfig(saved);
       // Mirror to in-memory config so the running bridge picks it up
       // without a restart (bridge reads via media.audio_transcribe.*).
       EGPT_CONFIG.whatsapp ||= {};
       EGPT_CONFIG.whatsapp.media ||= {};
       EGPT_CONFIG.whatsapp.media.audio_transcribe ||= {};
-      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply = onOff === 'on';
-      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply_streaming = onOff === 'on' && streamingFlag;
-      sysOut(`/e transcribe global ${onOff}${streamingFlag ? ' --streaming' : ''}`);
+      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply = wantBatch;
+      EGPT_CONFIG.whatsapp.media.audio_transcribe.post_as_reply_streaming = wantStreaming;
+      sysOut(`/e transcribe global ${onOff}${batchFlag ? ' --batch' : (onOff === 'on' ? ' --streaming (default)' : '')}`);
       return true;
     }
 
@@ -301,7 +305,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (tAction === 'off') {
       perChat[chatId] = 'off';
     } else {
-      perChat[chatId] = streamingFlag ? 'streaming' : (batchFlag ? 'batch' : 'batch');
+      // Streaming is now the default (operator 2026-05-22: "make
+      // --batch the option, so that streaming is the default").
+      perChat[chatId] = batchFlag ? 'batch' : 'streaming';
     }
 
     const saved = await readConfig();

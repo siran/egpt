@@ -1470,16 +1470,31 @@ export async function startWhatsAppBridge({
     const finalTxt    = join(outputDir, `${base}.transcript.txt`);
     const livePath    = join(outputDir, `${base}.live.transcript.md`);
 
-    // Strip whisper's bracketed non-speech markers (operator 2026-05-22:
-    // "the transcript read [Música] a lot... can these be disabled?").
-    // Whisper produces [Música], [Music], [Aplausos], [BLANK_AUDIO], etc.
-    // when it can't resolve audio as speech. These are noise from the
-    // brain's perspective — drop them.
+    // Process whisper's bracketed non-speech markers (operator
+    // 2026-05-22 revised): preserve them in the transcript — they
+    // carry signal (background music tells a listener something
+    // different from pure silence). Only SILENCE markers get
+    // converted to whitespace, calibrated 4 chars per second of
+    // silence duration. Without per-segment duration we use a fixed
+    // 4-space placeholder; the segment-aware paths (_buildSpaced-
+    // Window and the streaming join) override this with the real
+    // duration where they have it.
+    const _SILENCE_RE = /\[\s*(?:BLANK_AUDIO|silence|silencio|inaudible|sin sonido|sin audio)\s*\]/gi;
     const _stripNoiseMarkers = (s) => String(s ?? '')
-      .replace(/\[\s*(?:Música|Music|Aplausos|Applause|Risas|Laughter|BLANK_AUDIO|Silence|silencio|inaudible|Music playing|Ruido|Noise)[^\]]*\]/gi, '')
-      .replace(/\(\s*(?:Música|Music|Aplausos|Applause|Risas|Laughter)[^\)]*\)/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
+      .replace(_SILENCE_RE, '    ')             // 4 spaces per silence stub
+      // NOTE: deliberately not collapsing whitespace — the silence
+      // spaces ARE the signal (preserved so [silence] reads as " ").
+      // Trim leading/trailing only.
+      .replace(/^\s+|\s+$/g, '');
+    // Segment-aware silence-to-spaces: pass startSec/endSec to get
+    // duration-calibrated spacing. SCALE chars per second.
+    const _segmentSilenceSpaces = (text, startSec, endSec) => {
+      if (!_SILENCE_RE.test(text)) return text;
+      _SILENCE_RE.lastIndex = 0;
+      const dur = Math.max(0, (endSec ?? 0) - (startSec ?? 0));
+      const N = Math.max(1, Math.round(4 * dur));
+      return text.replace(_SILENCE_RE, ' '.repeat(N));
+    };
 
     // Build a SPACED representation of a window's transcript where silence
     // becomes visible whitespace (operator 2026-05-22: "if the audio is
@@ -1669,7 +1684,10 @@ export async function startWhatsAppBridge({
       // overlap — readable, not perfect). The rest of the system
       // (/summarize etc) finds something useful at finalTxt; it's not
       // verbatim accurate but it covers the audio.
-      const finalText = allWindowTexts.join(' ').replace(/\s+/g, ' ').trim();
+      // Join windows preserving the silence-as-spaces signal. Don't
+      // collapse multiple spaces — they're calibrated whitespace from
+      // _stripNoiseMarkers' silence-marker substitution.
+      const finalText = allWindowTexts.join(' ').replace(/^\s+|\s+$/g, '');
       try { await fs.writeFile(finalTxt, finalText, 'utf8'); } catch (e) { console.error(`!! transcribe-stream final write: ${e?.message ?? e}`); }
 
       try { await fs.unlink(wavPath); } catch {}
