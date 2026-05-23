@@ -1532,6 +1532,149 @@ export async function startWhatsAppBridge({
     }
   }
 
+  // ── Parallel-CLI transcribe ─────────────────────────────────────
+  //
+  // Operator (2026-05-23): "we can however chop the 20s into 5 4s,
+  // and transcribe those separately... maybe less concurrent so it
+  // doesn't crash my machine."
+  //
+  // Splits audio into N-second windows, spawns up to maxConcurrent
+  // whisper-cli processes simultaneously. Each spawn pays its own
+  // ~5s model-load + ~16s encoder cost. With max_concurrent=2 and
+  // 5 chunks of 4s: 3 rounds × ~21s = ~63s wall-clock for a 20s
+  // audio (vs ~88s for sequential warm-server chunks, vs ~20s for
+  // single batch). The win is selectable parallelism — more workers
+  // = closer to batch time, capped by RAM (each whisper-cli loads
+  // ~3GB).
+  //
+  // Output: single concatenated transcript.txt, no per-window files.
+  // No streaming UI; all chunks resolve before we post.
+  //
+  // Config:
+  //   audio_transcribe:
+  //     method: parallel_cli          # 'batch' (default) | 'parallel_cli' | 'remote'
+  //     parallel:
+  //       chunk_seconds: 4            # window length
+  //       max_concurrent: 2           # cap on simultaneous whisper-cli procs
+  async function _transcribeAudioParallel({ inputPath, outputDir, base }) {
+    const cfg = media.audio_transcribe ?? {};
+    if (!cfg.enabled) return null;
+    const whisperBin = cfg.command || 'whisper-cli';
+    const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
+    const modelPath  = cfg.model_path;
+    if (!modelPath) { log(`parallel-transcribe: no model_path`); return null; }
+    const language   = (typeof cfg.language === 'string' && cfg.language.trim()) ? cfg.language.trim() : null;
+    const chunkSec   = Number(cfg.parallel?.chunk_seconds)  > 0 ? Number(cfg.parallel.chunk_seconds)  : 4;
+    const maxConc    = Number(cfg.parallel?.max_concurrent) > 0 ? Number(cfg.parallel.max_concurrent) : 2;
+
+    const finalTxt = join(outputDir, `${base}.transcript.txt`);
+    if (existsSync(finalTxt)) return null;
+
+    const wavPath = join(outputDir, `${base}.tmp.wav`);
+    try {
+      await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
+    } catch (e) {
+      log(`parallel-transcribe: ffmpeg full-wav failed: ${e?.message ?? e}`);
+      return null;
+    }
+
+    // Resolve ffprobe binary (sibling of ffmpeg).
+    const ffprobeBin = cfg.ffprobe_command
+      || (cfg.ffmpeg_command ? cfg.ffmpeg_command.replace(/ffmpeg(\.exe)?$/i, 'ffprobe$1') : 'ffprobe');
+
+    // Duration via ffprobe stdout.
+    let duration = 0;
+    try {
+      duration = await new Promise((resolve, reject) => {
+        const child = _spawnChild(ffprobeBin, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wavPath], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let buf = '';
+        child.stdout.on('data', d => buf += d.toString());
+        child.on('error', reject);
+        child.on('close', () => resolve(parseFloat(buf.trim()) || 0));
+      });
+    } catch (e) { /* falls through to 0 */ }
+    if (!Number.isFinite(duration) || duration <= 0) {
+      log(`parallel-transcribe: bad duration; falling back to batch`);
+      try { await fs.unlink(wavPath); } catch {}
+      return null;
+    }
+
+    // Window plan: non-overlapping, last window may be shorter.
+    const windows = [];
+    for (let s = 0; s < duration; s += chunkSec) {
+      windows.push({ idx: windows.length, offset: s, length: Math.min(chunkSec, duration - s) });
+    }
+
+    // Slice all windows in parallel via ffmpeg (fast, I/O-bound).
+    const slices = await Promise.all(windows.map(async (w) => {
+      const winWav = join(outputDir, `${base}.win-${String(w.idx).padStart(3, '0')}.tmp.wav`);
+      try {
+        await _runCmd(ffmpegBin, [
+          '-y', '-ss', String(w.offset), '-t', String(w.length),
+          '-i', wavPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', winWav,
+        ]);
+        return { ...w, winWav };
+      } catch (e) {
+        log(`parallel-transcribe: ffmpeg slice ${w.idx} failed: ${e?.message ?? e}`);
+        return { ...w, winWav: null };
+      }
+    }));
+
+    // Worker pool: maxConcurrent workers grab the next available
+    // window index and run whisper-cli on it. Each cli call pays
+    // model-load + encoder cost. Texts collected by index so the
+    // final join preserves audio-time order regardless of completion
+    // order. Logs per-window timing so the operator can see
+    // throughput.
+    const texts = new Array(windows.length).fill('');
+    let nextIdx = 0;
+    const t0 = Date.now();
+    async function workerLoop(workerId) {
+      while (true) {
+        const myIdx = nextIdx++;
+        if (myIdx >= slices.length) return;
+        const w = slices[myIdx];
+        if (!w.winWav) continue;
+        const wt0 = Date.now();
+        const args = ['-m', modelPath, '-f', w.winWav, '--output-txt', '--no-prints'];
+        if (language) args.push('-l', language);
+        if (cfg.no_context === true)  args.push('--no-context');
+        if (cfg.no_fallback === true) args.push('--no-fallback');
+        if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
+        if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
+        if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
+        if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
+        if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
+        if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
+        try {
+          await _runCmd(whisperBin, args);
+          const t = (await fs.readFile(`${w.winWav}.txt`, 'utf8')).trim();
+          texts[w.idx] = t;
+          log(`parallel-transcribe w${w.idx} done in ${Date.now() - wt0}ms by worker#${workerId}: ${t.slice(0, 40)}${t.length > 40 ? '…' : ''}`);
+        } catch (e) {
+          log(`parallel-transcribe w${w.idx} whisper failed: ${e?.message ?? e}`);
+        } finally {
+          try { await fs.unlink(w.winWav); } catch {}
+          try { await fs.unlink(`${w.winWav}.txt`); } catch {}
+        }
+      }
+    }
+    const workers = Array.from({ length: maxConc }, (_, i) => workerLoop(i));
+    await Promise.all(workers);
+
+    try { await fs.unlink(wavPath); } catch {}
+
+    const finalText = texts.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (!finalText) {
+      log(`parallel-transcribe: all windows empty; no transcript written`);
+      return null;
+    }
+    try { await fs.writeFile(finalTxt, finalText, 'utf8'); }
+    catch (e) { log(`parallel-transcribe: write final failed: ${e?.message ?? e}`); }
+    log(`parallel-transcribe ${base} total=${Date.now() - t0}ms windows=${windows.length} maxConc=${maxConc}`);
+    return { path: finalTxt, text: finalText };
+  }
+
   // Idempotent: skips if <base>.transcript.txt already exists.
   async function _transcribeAudio({ inputPath, outputDir, base }) {
     const cfg = media.audio_transcribe ?? {};
@@ -2336,10 +2479,33 @@ export async function startWhatsAppBridge({
           }
         }
         if (!voiceStream) {
-          // Same _transcribeAudio for video — ffmpeg pulls the audio
-          // track and ignores the video stream. Silent videos return null.
-          transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
-            .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          // Transcription method selector. Operator 2026-05-23:
+          //   'batch'        — single whisper-server inference (default;
+          //                    fastest on CPU for short audio)
+          //   'parallel_cli' — chop into chunks, spawn N whisper-cli
+          //                    workers concurrently (wall-clock win when
+          //                    you have RAM + cores; ~3-4× faster than
+          //                    sequential server-warm chunks)
+          //   'remote'       — placeholder for forwarding to a GPU node
+          //                    (2nd laptop); not implemented yet, falls
+          //                    back to batch with a log line so the
+          //                    operator notices when the protocol exists
+          //                    and they want to flip the switch.
+          const method = media.audio_transcribe?.method || 'batch';
+          if (method === 'parallel_cli') {
+            transcript = await _transcribeAudioParallel({ inputPath: path, outputDir: dir, base })
+              .catch(e => { log(`parallel-transcribe error (${base}): ${e.message}`); return null; });
+          } else if (method === 'remote') {
+            log(`transcribe method=remote not yet implemented; falling back to batch for ${base}`);
+            transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+              .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          } else {
+            // Batch (default). Same _transcribeAudio for video — ffmpeg
+            // pulls the audio track and ignores the video stream.
+            // Silent videos return null.
+            transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+              .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          }
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
