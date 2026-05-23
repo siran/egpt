@@ -1382,6 +1382,156 @@ export async function startWhatsAppBridge({
   //        { enabled: true, command: "<path-to-whisper-cli-or-main.exe>",
   //          model_path: "<path-to-ggml-*.bin>", language?: "es" }
   //
+  // ── whisper-server lifecycle ────────────────────────────────────
+  //
+  // Operator (2026-05-22) measured cold-start vs warm: per-call
+  // whisper-cli pays ~15s of fixed encoder/init overhead even when
+  // the model file is in OS page cache. The fix is to keep ONE
+  // whisper-server.exe process alive — model loaded once, encoder
+  // path JIT'd once, subsequent /inference calls only pay the per-
+  // audio decoder cost (~1s per audio-second on CPU, vs cli's
+  // ~15-20s flat overhead per spawn).
+  //
+  // Auto-discovered: same dir as media.audio_transcribe.command,
+  // s/whisper-cli/whisper-server/. Spawned lazily on first
+  // transcribe call. Killed on bridge stop().
+  //
+  // Config:
+  //   media.audio_transcribe.server_enabled: true|false  (default true
+  //     when server binary is found alongside whisper-cli)
+  //   media.audio_transcribe.server_port: 8765           (default)
+  //   media.audio_transcribe.server_host: 127.0.0.1      (default; localhost only)
+  let _whisperServerProc = null;
+  let _whisperServerReady = null;   // resolved when server's HTTP is up
+  let _whisperServerUrl  = null;
+  let _whisperServerStarting = false;
+
+  function _whisperServerBinPath() {
+    const cfg = media.audio_transcribe ?? {};
+    const cliPath = cfg.command || 'whisper-cli';
+    // Replace last segment 'whisper-cli[.exe]' → 'whisper-server[.exe]'.
+    return cliPath.replace(/whisper-cli(\.exe)?$/i, (_m, ext) => `whisper-server${ext || ''}`);
+  }
+
+  async function _ensureWhisperServer() {
+    const cfg = media.audio_transcribe ?? {};
+    if (cfg.server_enabled === false) return null;
+    if (_whisperServerProc) return _whisperServerReady;
+    if (_whisperServerStarting) return _whisperServerReady;
+    _whisperServerStarting = true;
+
+    const serverBin = _whisperServerBinPath();
+    if (!existsSync(serverBin)) {
+      log(`whisper-server: binary not found at ${serverBin} — falling back to per-call whisper-cli`);
+      _whisperServerStarting = false;
+      return null;
+    }
+    const port = Number(cfg.server_port) || 8765;
+    const host = cfg.server_host || '127.0.0.1';
+    const modelPath = cfg.model_path;
+    const language  = (typeof cfg.language === 'string' && cfg.language.trim()) ? cfg.language.trim() : null;
+    if (!modelPath) {
+      log(`whisper-server: no model_path; cannot start`);
+      _whisperServerStarting = false;
+      return null;
+    }
+    const args = [
+      '-m', modelPath,
+      '--host', host,
+      '--port', String(port),
+    ];
+    if (language) args.push('-l', language);
+    // Apply the same tunables that whisper-cli accepts.
+    if (cfg.no_context === true)  args.push('--no-context');
+    if (cfg.no_fallback === true) args.push('--no-fallback');
+    if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
+    if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
+    if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
+    if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
+    if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
+
+    _whisperServerUrl = `http://${host}:${port}`;
+    log(`whisper-server: starting ${serverBin} on ${_whisperServerUrl} (model ${modelPath.split(/[\\/]/).pop()})`);
+    try {
+      _whisperServerProc = _spawnChild(serverBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      log(`whisper-server: spawn failed: ${e?.message ?? e}`);
+      _whisperServerProc = null;
+      _whisperServerStarting = false;
+      return null;
+    }
+    _whisperServerProc.stderr?.on('data', d => {
+      const s = d.toString();
+      // The server writes init progress + per-call decode lines to
+      // stderr. Surface only the init errors / "ready" line; the
+      // decode chatter is too noisy for headless.log.
+      if (/error|fail|warning/i.test(s) || /starting server/i.test(s)) log(`whisper-server: ${s.trim()}`);
+    });
+    _whisperServerProc.on('exit', (code) => {
+      log(`whisper-server: exited code=${code}; will respawn on next call`);
+      _whisperServerProc = null;
+      _whisperServerReady = null;
+      _whisperServerStarting = false;
+    });
+
+    // Poll /inference (HEAD or GET to root) until it responds. The
+    // server emits "starting server at <host>:<port>" to stderr when
+    // ready, but stderr ordering across model-load steps is fiddly;
+    // a simple TCP poll is more robust.
+    _whisperServerReady = (async () => {
+      const deadline = Date.now() + 60_000;
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch(`${_whisperServerUrl}/`, { method: 'GET' });
+          if (r.status < 500) {
+            log(`whisper-server: ready (${Date.now() - (deadline - 60_000)}ms to boot)`);
+            return true;
+          }
+        } catch (_) { /* not up yet */ }
+        await new Promise(res => setTimeout(res, 250));
+      }
+      log(`whisper-server: failed to come up within 60s`);
+      try { _whisperServerProc?.kill(); } catch {}
+      _whisperServerProc = null;
+      return false;
+    })();
+    _whisperServerStarting = false;
+    return _whisperServerReady;
+  }
+
+  // POST a WAV file to the warm whisper-server and return parsed text.
+  // Returns null on failure so the caller can fall back to spawning
+  // whisper-cli for that single call.
+  async function _transcribeViaServer({ wavPath, language }) {
+    const ready = await _ensureWhisperServer();
+    if (!ready || !_whisperServerUrl) return null;
+    try {
+      const buf = await fs.readFile(wavPath);
+      const form = new FormData();
+      form.append('file', new Blob([buf], { type: 'audio/wav' }), 'audio.wav');
+      if (language) form.append('language', language);
+      form.append('response_format', 'json');
+      const r = await fetch(`${_whisperServerUrl}/inference`, { method: 'POST', body: form });
+      if (!r.ok) {
+        log(`whisper-server: HTTP ${r.status} for ${wavPath.split(/[\\/]/).pop()}`);
+        return null;
+      }
+      const j = await r.json();
+      return { text: (j.text || '').trim() };
+    } catch (e) {
+      log(`whisper-server: POST failed: ${e?.message ?? e}`);
+      return null;
+    }
+  }
+
+  function _stopWhisperServer() {
+    if (_whisperServerProc) {
+      try { _whisperServerProc.kill(); } catch {}
+      _whisperServerProc = null;
+      _whisperServerReady = null;
+    }
+  }
+
   // Idempotent: skips if <base>.transcript.txt already exists.
   async function _transcribeAudio({ inputPath, outputDir, base }) {
     const cfg = media.audio_transcribe ?? {};
@@ -1437,24 +1587,36 @@ export async function startWhatsAppBridge({
     if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
     if (cfg.suppress_blank === true)              args.push('--suppress-blank');
     if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
-    try {
-      await _runCmd(whisperBin, args);
-    } catch (e) {
-      log(`transcribe: whisper failed for ${base}: ${e.message}`);
-      try { await fs.unlink(wavPath); } catch {}
-      return null;
-    }
-    // whisper.cpp writes <wavPath>.txt — move next to the audio
-    // with a stable suffix the host / @e can grep for.
-    const txtSrc = `${wavPath}.txt`;
+
+    // Try the warm whisper-server first (no per-call cold-start
+    // overhead). Falls back to per-call whisper-cli if the server
+    // isn't available, hasn't started, or HTTP-failed this call.
     let text = null;
-    try {
-      text = (await fs.readFile(txtSrc, 'utf8')).trim();
-      await fs.rename(txtSrc, finalTxt);
-    } catch (e) {
-      log(`transcribe: read/move failed for ${base}: ${e.message}`);
+    const serverResult = await _transcribeViaServer({ wavPath, language: cfg.language });
+    if (serverResult?.text) {
+      text = serverResult.text;
+      try { await fs.writeFile(finalTxt, text, 'utf8'); }
+      catch (e) { log(`transcribe: write finalTxt failed: ${e?.message ?? e}`); }
+      try { await fs.unlink(wavPath); } catch {}
+    } else {
+      try {
+        await _runCmd(whisperBin, args);
+      } catch (e) {
+        log(`transcribe: whisper failed for ${base}: ${e.message}`);
+        try { await fs.unlink(wavPath); } catch {}
+        return null;
+      }
+      // whisper.cpp writes <wavPath>.txt — move next to the audio
+      // with a stable suffix the host / @e can grep for.
+      const txtSrc = `${wavPath}.txt`;
+      try {
+        text = (await fs.readFile(txtSrc, 'utf8')).trim();
+        await fs.rename(txtSrc, finalTxt);
+      } catch (e) {
+        log(`transcribe: read/move failed for ${base}: ${e.message}`);
+      }
+      try { await fs.unlink(wavPath); } catch {}
     }
-    try { await fs.unlink(wavPath); } catch {}
     if (text) {
       const preview = text.length > 60 ? text.slice(0, 59) + '…' : text;
       log(`transcribed ${base}: "${preview}"`);
@@ -1667,7 +1829,21 @@ export async function startWhatsAppBridge({
         if (cfg.suppress_blank === true)              args.push('--suppress-blank');
         if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
         let rawOutput = '';
-        try {
+        // Prefer the warm whisper-server for this window (no per-call
+        // model-init overhead). Per-call cost drops from ~20s to ~1-3s
+        // for a 4s window once the encoder is warm. Fall back to
+        // per-call whisper-cli if the server isn't ready / failed.
+        const winSrv = await _transcribeViaServer({ wavPath: winWav, language });
+        if (winSrv?.text) {
+          // The server returns plain text without segment timestamps.
+          // Wrap it in a single synthetic segment spanning the whole
+          // window so downstream segment-aware processing (silence
+          // calibration, spaced view) still gets a uniform shape.
+          const synthStart = '00:00:00.000';
+          const winEndSec = winLen.toFixed(3).padStart(6, '0');
+          const synthEnd = `00:00:${winEndSec}`;
+          rawOutput = `[${synthStart} --> ${synthEnd}]   ${winSrv.text}`;
+        } else try {
           rawOutput = await new Promise((resolve, reject) => {
             const child = _spawnChild(whisperBin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
             let buf = '';
@@ -3494,6 +3670,7 @@ export async function startWhatsAppBridge({
     stop() {
       stopped = true;
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      _stopWhisperServer();
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
       // the last burst of counters that the 2s timer hadn't fired yet.
