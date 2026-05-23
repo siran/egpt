@@ -4,7 +4,7 @@ import React from 'react';
 import { render, Box, Text, Static, useInput, useApp } from 'ink';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
 import { PassThrough, Writable } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -7356,3 +7356,22 @@ if (HEADLESS) {
   render(h(App), { exitOnCtrlC: false });
 }
 process.on('exit', () => { _globalBridge?.stop(); _globalWaBridge?.stop(); clearPidfile(); stopAliveHeartbeat(); });
+
+// Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
+// lost to the inherited TTY). Persist the stack to ~/.egpt/state/
+// crash.log so post-mortem is possible. Per operator's "errors must
+// bubble and be logged" rule. unhandledRejection: log + SWALLOW (most
+// stray rejections aren't fatal; swallowing stops the disruptive
+// crash-restart loop while we diagnose). uncaughtException: log +
+// exit (process state may be corrupt; let the supervisor restart).
+function _logCrash(kind, err) {
+  const stack = err?.stack ?? String(err);
+  try {
+    mkdirSync(join(EGPT_HOME, 'state'), { recursive: true });
+    appendFileSync(join(EGPT_HOME, 'state', 'crash.log'),
+      `[${new Date().toISOString()}] ${kind} (pid ${process.pid}):\n${stack}\n\n`);
+  } catch {}
+  try { console.error(`!! ${kind}: ${stack}`); } catch {}
+}
+process.on('unhandledRejection', (reason) => { _logCrash('unhandledRejection', reason); });
+process.on('uncaughtException',  (err)    => { _logCrash('uncaughtException', err); process.exit(1); });
