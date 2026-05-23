@@ -2704,6 +2704,12 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
+            // Operator 2026-05-23: when this message body is a voice
+            // transcript, mark it so formatPersonaPrompt can add a
+            // "(transcript from voice note)" hint to the envelope —
+            // brain sees plain transcript text + an unambiguous source
+            // tag, not the WA-visible 👂 sugar.
+            isTranscriptFromVoice: !!from.isTranscriptFromVoice,
             // Threaded from bridge (cf77999 detection): the persona
             // slug if this WA message is a long-press-reply to one
             // of our outbound messages, else null. Used by the
@@ -4247,7 +4253,12 @@ function App() {
         const name = waBridgeRef.current?.getChatName?.(chat);
         if (name) where = `"${name}" (${chat})`;
       } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
-      return `[${stamp}, in ${kind} ${where}, ${user} said:]\n${body}`;
+      // Operator 2026-05-23: annotate voice-transcript inputs so the
+      // brain knows the source. The body itself is the bare transcript
+      // (sugar lives in the WA-visible ack message, not in the brain
+      // prompt).
+      const transcriptHint = meta.isTranscriptFromVoice ? ' (transcript from voice note)' : '';
+      return `[${stamp}, in ${kind} ${where}, ${user} said${transcriptHint}:]\n${body}`;
     }
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
