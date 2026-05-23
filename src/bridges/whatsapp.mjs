@@ -2179,34 +2179,48 @@ export async function startWhatsAppBridge({
               // at done() reconciles with the deduped finalText.
               let replyMsgKey = null;
               let lastSentBody = '';
-              const _editReply = async (body) => {
-                if (body === lastSentBody) return;
-                try {
-                  if (!replyMsgKey) {
-                    const r = await _safeSend(
-                      chatJid,
-                      { text: body },
-                      { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-                    );
-                    replyMsgKey = r?.key ?? null;
-                    if (replyMsgKey) rememberSent(replyMsgKey.id);
-                  } else {
-                    const r = await _safeSend(chatJid, { edit: replyMsgKey, text: body });
-                    rememberSent(r?.key?.id);
+              // Serialize WA sends — concurrent _editReply calls at fast
+              // cadence (60ms) raced: tick #2 read replyMsgKey=null
+              // before tick #1's initial send had returned, fired a
+              // SECOND initial send → recipient saw multiple message
+              // bodies instead of one being edited. Operator (2026-05-22)
+              // reported this: "it dispatched different messages
+              // instead of editing one." Chain via single in-flight
+              // promise so each call waits for prior completion before
+              // reading replyMsgKey.
+              let _editChain = Promise.resolve();
+              const _editReply = (body) => {
+                _editChain = _editChain.then(async () => {
+                  if (body === lastSentBody) return;
+                  try {
+                    if (!replyMsgKey) {
+                      const r = await _safeSend(
+                        chatJid,
+                        { text: body },
+                        { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+                      );
+                      replyMsgKey = r?.key ?? null;
+                      if (replyMsgKey) rememberSent(replyMsgKey.id);
+                    } else {
+                      const r = await _safeSend(chatJid, { edit: replyMsgKey, text: body });
+                      rememberSent(r?.key?.id);
+                    }
+                    lastSentBody = body;
+                  } catch (e) {
+                    log(`reply-stream edit (${base}): ${e?.message ?? e}`);
                   }
-                  lastSentBody = body;
-                } catch (e) {
-                  log(`reply-stream edit (${base}): ${e?.message ?? e}`);
-                }
+                });
+                return _editChain;
               };
 
-              // Operator (2026-05-22): "type the transcript 10x faster" —
-              // dropped from 600 → 60ms. WA's edit-rate tolerance is
-              // uncertain at this cadence; if baileys / WA Web start
-              // throttling, headless.log will show `reply-stream edit
-              // (...)` lines piling up. If that happens, back off to
-              // 100-150ms.
-              const EDIT_CADENCE_MS = 60;
+              // Operator 2026-05-22 sequence: 600ms → 60ms (10x faster
+              // ask) → 60ms caused WA throttling AND raced the initial-
+              // send → settled at 150ms. Combined with the serialized
+              // _editChain above, the effective max edit rate is whatever
+              // WA's _safeSend can sustain (~1-3 edits/sec under load),
+              // so a 150ms tick that consistently HITS a 300-500ms send
+              // round-trip is fine — the chain just queues naturally.
+              const EDIT_CADENCE_MS = 150;
               let displayedText = '';   // chars already shown to recipient
               let pendingQueue  = '';   // chars buffered, not yet shown
               let typeTimer     = null;
