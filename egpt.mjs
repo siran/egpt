@@ -409,6 +409,15 @@ const BRAINS = {
   [claudeCdp.name]:  claudeCdp,
 };
 
+const DEFAULT_PERSONA_BRAIN = { type: 'codex', model: 'gpt-5.4-mini' };
+
+function defaultPersonaBrainConfig(cfg) {
+  const out = cfg && typeof cfg === 'object' ? { ...cfg } : { ...DEFAULT_PERSONA_BRAIN };
+  out.type ??= DEFAULT_PERSONA_BRAIN.type;
+  if (canonicalBrainName(out.type) === 'codex') out.model ??= DEFAULT_PERSONA_BRAIN.model;
+  return out;
+}
+
 const BRAIN_ALIASES = Object.fromEntries(
   Object.values(BRAINS).flatMap(brain => (brain.legacyNames ?? []).map(alias => [alias, brain.name])),
 );
@@ -3801,7 +3810,7 @@ function App() {
       },
       { key: 'model', when: (d) => ['codex','ccode'].includes(d.type),
         ask: (d) => `Model (Enter = default for ${d.type}):`,
-        hint: (d) => d.type === 'codex' ? 'gpt-4o · o4-mini · gpt-5' : 'leave blank to use ccode default',
+        hint: (d) => d.type === 'codex' ? 'gpt-5.4-mini · gpt-5.4 · gpt-5.5' : 'leave blank to use ccode default',
         optional: true,
       },
       { key: 'effort', when: (d) => d.type === 'codex',
@@ -4566,14 +4575,14 @@ function App() {
         },
       ],
       resolveBrain: () => {
-        const dbCfg = EGPT_CONFIG.default_brain ?? { type: 'claude-code' };
-        const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
+        const dbCfg = defaultPersonaBrainConfig(EGPT_CONFIG.default_brain);
+        const brainType = canonicalBrainName(dbCfg.type ?? DEFAULT_PERSONA_BRAIN.type);
         return {
           brain: brainForName(brainType),
           brainType,
           dbCfg,
           isUrlBrain: isUrlBrain(brainType),
-          missingMessage: `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`,
+          missingMessage: `!! default brain "${brainType}" not found. /config default_brain {"type":"codex","model":"gpt-5.4-mini"}`,
         };
       },
       sessionOptions: ({ brainType, dbCfg }) => ({
@@ -4772,7 +4781,7 @@ function App() {
   function readDefaultBrainState() {
     const cfg = EGPT_CONFIG.default_brain ?? {};
     return {
-      type:       cfg.type        ?? 'claude-code',
+      type:       cfg.type        ?? DEFAULT_PERSONA_BRAIN.type,
       session_id: cfg.session_id  ?? null,
       url:        cfg.url         ?? null,
       history:    Array.isArray(cfg.history) ? cfg.history : [],
@@ -4862,11 +4871,11 @@ function App() {
       // would spawn YET ANOTHER fresh session and lose the identity we
       // just installed.
       const newSessionId = r?.optionsPatch?.sessionId;
-      if (newSessionId && dbCfg && !isUrlBrain(canonicalBrainName(dbCfg.type ?? 'claude-code'))) {
+      if (newSessionId && dbCfg && !isUrlBrain(canonicalBrainName(dbCfg.type ?? DEFAULT_PERSONA_BRAIN.type))) {
         try {
           const cur = readDefaultBrainState();
           if (cur.session_id !== newSessionId) {
-            const next = recordSession(cur, newSessionId, { type: dbCfg.type ?? 'claude-code' });
+            const next = recordSession(cur, newSessionId, { type: dbCfg.type ?? DEFAULT_PERSONA_BRAIN.type });
             await persistDefaultBrainState(next);
           }
         } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* best-effort persist */ }

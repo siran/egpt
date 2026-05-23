@@ -24,7 +24,7 @@ export const HISTORY_CAP = 20;
 const URL_BRAIN_TYPES = new Set(['chatgpt-cdp', 'claude-cdp']);
 export function isUrlBrain(type) { return URL_BRAIN_TYPES.has(String(type)); }
 
-export function emptyState({ type = 'claude-code' } = {}) {
+export function emptyState({ type = 'codex' } = {}) {
   return { type, session_id: null, url: null, history: [] };
 }
 

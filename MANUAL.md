@@ -78,7 +78,7 @@ hello everyone                                # sent to active sessions from /us
 # Example:
 #   name: alex
 #   type: codex                               # codex | code | cdp_chat | cdp_claude
-#   model: gpt-5.5
+#   model: gpt-5.4-mini
 #   effort: low
 #   cwd: C:\Users\an\src\egpt
 #   summary: alex                             # inject ~/.egpt/summaries/alex.md on attach
@@ -263,7 +263,7 @@ Minimal Codex profile:
 ```yaml
 name: alex
 type: codex
-model: gpt-5.5
+model: gpt-5.4-mini
 effort: low
 cwd: C:\Users\an\src\egpt
 summary: alex

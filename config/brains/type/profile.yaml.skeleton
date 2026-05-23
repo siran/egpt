@@ -14,8 +14,8 @@ type: codex
 # ── OPERATOR FIELDS (codex / ccode) ──────────────────────────────────────────
 
 # Model name passed to the CLI (codex only; ccode uses its own model settings).
-# Examples: gpt-4o  o4-mini  gpt-5
-model: gpt-4o
+# Examples: gpt-5.4-mini  gpt-5.4  gpt-5.5
+model: gpt-5.4-mini
 
 # Reasoning effort (codex only): low | medium | high
 effort: medium
