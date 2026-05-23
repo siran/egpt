@@ -2114,13 +2114,23 @@ export async function startWhatsAppBridge({
              : _cfg.post_as_reply === true ? 'batch' : 'off');
         const wantReplyStreaming = _modeForThisChat === 'streaming';
         const wantReplyBatch     = _modeForThisChat === 'batch';
-        // Either gate kicks off streaming transcription: the brain-feed
-        // gate (parked, default false) OR the reply-stream gate (new
-        // 2026-05-22 — bridge edits a WA reply as whisper chunks arrive).
-        // One transcription pass, two possible consumers downstream.
-        const streamingEnabled =
-          !!(media.audio_transcribe?.streaming) ||
-          wantReplyStreaming;
+        // Operator (2026-05-22, "star wins"): the per-window streaming
+        // architecture is fundamentally wrong on CPU with whisper-large.
+        // Measured: 4s window = 17.5s wall-clock; 20s as one batch =
+        // 20.6s. Encoder pass is a ~16.5s fixed cost per inference, so
+        // splitting a 20s audio into 5 windows costs 5 × 17.5s = 87s vs
+        // 20.6s for one batch. Chunking is 4× slower.
+        //
+        // Both 'streaming' AND 'batch' per_chat modes now route through
+        // the single _transcribeAudio batch call. The reply (still
+        // operator-preferred fresh message, not quoted) lands when
+        // batch completes. The brain dispatch awaits the same batch.
+        //
+        // Old _transcribeAudioStreaming function stays in code but is
+        // unreachable from this path. If someone gets a GPU and per-
+        // window encoder cost drops to ~1s, flip this gate back to
+        // wantReplyStreaming and the chunked typewriter works again.
+        const streamingEnabled = false;
         if (streamingEnabled && hit.kind === 'audio' && node.ptt) {
           // Voice notes (PTT only — not music attachments) use the streaming
           // path. The handle is forwarded through onMediaSaved so the host
@@ -2333,24 +2343,19 @@ export async function startWhatsAppBridge({
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
-          // Post-as-reply: when whatsapp.media.audio_transcribe.post_as_reply
-          // is true, send the transcript text back to the chat as a native
-          // WA quoted reply to the voice message itself. Pure bridge-level
-          // service — no brain involved. Useful for people-with-headphones-
-          // off readability. Operator (2026-05-22): "every voice can be
-          // streaming transcribed in reply to the voice."
+          // Post the transcript as a fresh chat message (operator
+          // 2026-05-22 preferred fresh over quoted reply: "let's try
+          // sending a new message instead of replying"). Fires for
+          // both 'batch' and 'streaming' per_chat modes — the
+          // streaming variant collapsed into batch in this commit
+          // ("star wins": per-window encoder cost on CPU is 4× worse
+          // than single-batch).
           if (
             transcript?.text &&
-            msg.key &&
-            wantReplyBatch
+            (wantReplyBatch || wantReplyStreaming)
           ) {
             try {
-              const body = `🎙 ${transcript.text}`;
-              await _safeSend(
-                chatJid,
-                { text: body },
-                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-              );
+              await _safeSend(chatJid, { text: `🎙 ${transcript.text}` });
             } catch (e) {
               log(`transcribe post-as-reply failed (${base}): ${e?.message ?? e}`);
             }
