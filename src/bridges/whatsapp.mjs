@@ -2135,6 +2135,7 @@ export async function startWhatsAppBridge({
           // of awaiting full done. Logged as TIMING lines in headless
           // + activity log so we can grep across multiple voices.
           const _t0 = Date.now();   // voice received → starting transcribe
+          log(`reply-stream PATH entered ${base} | chat=${chatJid} | wantStream=${wantReplyStreaming} | wantBatch=${wantReplyBatch}`);
           let _tFirstChunk = null;
           let _tDone = null;
           try {
