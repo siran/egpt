@@ -179,7 +179,7 @@ function clearPidfile() {
 //     loop blocked or hung) that the wrapper's `& node …; respawn`
 //     pattern can't detect by itself.
 const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive');
-const ALIVE_INTERVAL_MS = 15_000;
+const ALIVE_INTERVAL_MS = 60_000;   // operator 2026-05-23: 15s was excessive disk I/O; 60s is fine for wedge detection
 let _aliveTimer = null;
 function _writeAliveNow() {
   try {
