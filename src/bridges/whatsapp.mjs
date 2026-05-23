@@ -2355,7 +2355,19 @@ export async function startWhatsAppBridge({
             (wantReplyBatch || wantReplyStreaming)
           ) {
             try {
-              await _safeSend(chatJid, { text: `🎙 ${transcript.text}` });
+              // Prefix with sender's pushName so the transcript reads
+              // like a labeled quote — "Carlos: ..." — without using a
+              // WA-native @ mention (which would notify Carlos and be
+              // noisy in a group). Operator (2026-05-22): "mention-not-
+              // mention". For operator's own voices (fromMe), still
+              // label so groups see attribution consistently.
+              // pushName policy per memory: pushName/notify only —
+              // NEVER the operator's private contact-book labels.
+              const labelName = pushedName ?? (fromMe ? 'You' : null);
+              const body = labelName
+                ? `🎙 ${labelName}: ${transcript.text}`
+                : `🎙 ${transcript.text}`;
+              await _safeSend(chatJid, { text: body });
             } catch (e) {
               log(`transcribe post-as-reply failed (${base}): ${e?.message ?? e}`);
             }
