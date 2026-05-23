@@ -501,10 +501,26 @@ export async function startWhatsAppBridge({
     try { transcript = readFileSync(txtPath, 'utf8').trim(); }
     catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); return rawText; }
     if (!transcript) return rawText;
-    // Append after the placeholder; preserve quoted-preview (↳) prefix
-    // if textOf already glued one on. Pattern in rawText is either
-    // '[voice note: Xs]' / '[audio: Xs]' at start, or '↳ … (from …)\n[voice note: Xs]'.
-    return `${rawText} ${transcript}`;
+    // Build brain-dispatch body in operator-spec format (2026-05-23):
+    //   👂 <pushedName> <NN>s @ <hh:mm>: <transcript>
+    // The envelope ([Sender@surface (HH:MM)]: …) is added later by
+    // the host's onIncoming → wrapping; this is the BODY the brain
+    // sees inside that envelope. Replaces the leading
+    // '[voice note: NNs]' placeholder; preserves a ↳ quoted-preview
+    // prefix from textOf if present.
+    const pushedName = (typeof msg.pushName === 'string' && msg.pushName.trim()) ? msg.pushName.trim() : null;
+    const fromMe = !!msg.key?.fromMe;
+    const speakerLabel = pushedName ?? (fromMe ? 'You' : null);
+    const dur = Number(inner.seconds) || 0;
+    const tsMs = (Number(msg.messageTimestamp) || 0) * 1000;
+    const pad = (n) => String(n).padStart(2, '0');
+    const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
+    const dispatchBody = speakerLabel
+      ? `👂 ${speakerLabel} ${dur}s @ ${hhmm}: ${transcript}`
+      : `👂 ${dur}s @ ${hhmm}: ${transcript}`;
+    // Replace the leading placeholder; keep any ↳ quoted-preview prefix
+    // that textOf glued on (matches '[voice note: Xs]' OR '[audio: Xs]').
+    return rawText.replace(/\[(?:voice note|audio):\s*\d+s?\]/i, dispatchBody);
   }
 
   // Append the saved file path to image placeholders so @e can use
@@ -2244,19 +2260,38 @@ export async function startWhatsAppBridge({
       let keyframePath = null;
       let voiceStream = null;        // streaming-transcription handle, when enabled + audio
       if (hit.kind === 'audio' || hit.kind === 'video') {
-        // Resolve transcribe mode for this chat: per-chat override wins,
-        // global config is fallback. Modes: 'off' | 'batch' | 'streaming'.
-        // Slash command `/e transcribe on|off|streaming [--streaming]
-        // [<jid>]` populates whatsapp.media.audio_transcribe.per_chat.
+        // Voice flow (operator 2026-05-23 redesign — "let's keep it
+        // easy, remove all other ways, restart clean"):
+        //
+        // 1. Post acknowledgment reply IMMEDIATELY:
+        //      "👂 PushName's NNs @ HH:MM ⏳"
+        //    Quoted to the original voice. Brief looped emoji
+        //    animation (dots cycling) while transcription runs, so
+        //    chat sees activity not silence.
+        //
+        // 2. Run whisper transcription (single batch call via the
+        //    warm whisper-server). One inference, one HTTP POST,
+        //    no chunking, no parallel pool, no streaming windows.
+        //
+        // 3. When transcription completes: EDIT the acknowledgment
+        //    message body to "👂 PushName's NNs @ HH:MM: <transcript>"
+        //    Final state visible to everyone in chat.
+        //
+        // 4. Brain dispatch: handleMessage continues, _enrichAudioText
+        //    formats the body as "👂 PushName Ns @ HH:MM: <transcript>"
+        //    in operator's spec, brain replies in context.
+        //
+        // Per-chat opt-out: per_chat[jid] === 'off' skips the WA
+        // acknowledgment+edit. Brain still gets the transcript inline.
         const _cfg = media.audio_transcribe ?? {};
         const _perChat = (_cfg.per_chat && typeof _cfg.per_chat === 'object') ? _cfg.per_chat : {};
         const _override = _perChat[chatJid];
-        const _modeForThisChat = _override
-          ? _override
-          : (_cfg.post_as_reply_streaming === true ? 'streaming'
-             : _cfg.post_as_reply === true ? 'batch' : 'off');
-        const wantReplyStreaming = _modeForThisChat === 'streaming';
-        const wantReplyBatch     = _modeForThisChat === 'batch';
+        const wantPostAck = _override !== 'off';
+        // Legacy variables kept temporarily so downstream references
+        // (the "if (!voiceStream)" gate below) still compile; voiceStream
+        // is always null now since the streaming path was retired.
+        const wantReplyBatch = false;
+        const wantReplyStreaming = false;
         // Operator (2026-05-22, "star wins"): the per-window streaming
         // architecture is fundamentally wrong on CPU with whisper-large.
         // Measured: 4s window = 17.5s wall-clock; 20s as one batch =
@@ -2479,63 +2514,80 @@ export async function startWhatsAppBridge({
           }
         }
         if (!voiceStream) {
-          // Transcription method selector. Operator 2026-05-23:
-          //   'batch'        — single whisper-server inference (default;
-          //                    fastest on CPU for short audio)
-          //   'parallel_cli' — chop into chunks, spawn N whisper-cli
-          //                    workers concurrently (wall-clock win when
-          //                    you have RAM + cores; ~3-4× faster than
-          //                    sequential server-warm chunks)
-          //   'remote'       — placeholder for forwarding to a GPU node
-          //                    (2nd laptop); not implemented yet, falls
-          //                    back to batch with a log line so the
-          //                    operator notices when the protocol exists
-          //                    and they want to flip the switch.
-          const method = media.audio_transcribe?.method || 'batch';
-          if (method === 'parallel_cli') {
-            transcript = await _transcribeAudioParallel({ inputPath: path, outputDir: dir, base })
-              .catch(e => { log(`parallel-transcribe error (${base}): ${e.message}`); return null; });
-          } else if (method === 'remote') {
-            log(`transcribe method=remote not yet implemented; falling back to batch for ${base}`);
-            transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
-              .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
-          } else {
-            // Batch (default). Same _transcribeAudio for video — ffmpeg
-            // pulls the audio track and ignores the video stream.
-            // Silent videos return null.
-            transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
-              .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          // Single-path voice flow (operator 2026-05-23 "keep it easy,
+          // remove all other ways, restart clean"):
+          //   1. If audio + wantPostAck: post acknowledgment reply
+          //      "👂 <speaker>'s NNs @ HH:MM ⏳"
+          //      with simple looped emoji animation while we transcribe.
+          //   2. Run _transcribeAudio (single whisper-server batch
+          //      inference). Same for video — ffmpeg pulls the audio
+          //      track.
+          //   3. On done: edit the ack message to
+          //      "👂 <speaker>'s NNs @ HH:MM: <transcript>"
+          //   4. _transcriptByMsgId set so brain dispatch gets the
+          //      transcript inline via _enrichAudioText.
+          const isAudioForAck = hit.kind === 'audio' && wantPostAck && msg.key;
+          const dur = Number(node?.seconds) || 0;
+          const tsMs = (Number(msg.messageTimestamp) || 0) * 1000;
+          const pad = (n) => String(n).padStart(2, '0');
+          const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
+          const speaker = pushedName ?? (fromMe ? 'You' : 'someone');
+
+          // (1) Post acknowledgment immediately (quoted to the voice).
+          let ackKey = null;
+          let animTimer = null;
+          if (isAudioForAck) {
+            const initialBody = `👂 ${speaker}'s ${dur}s @ ${hhmm} ⏳`;
+            try {
+              const r = await _safeSend(
+                chatJid,
+                { text: initialBody },
+                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+              );
+              ackKey = r?.key ?? null;
+              if (ackKey) rememberSent(ackKey.id);
+            } catch (e) {
+              log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
+            }
+
+            // Simple looped animation while transcription runs: cycle
+            // the trailing emoji through a few states so chat sees
+            // movement, not a static "⏳" sitting for 20s. Edit cadence
+            // is gentle (1.2s) to stay well inside WA's rate-limit.
+            if (ackKey) {
+              const frames = ['⏳', '🔊', '🎧', '🦻'];
+              let frameIdx = 0;
+              animTimer = setInterval(async () => {
+                try {
+                  frameIdx = (frameIdx + 1) % frames.length;
+                  const body = `👂 ${speaker}'s ${dur}s @ ${hhmm} ${frames[frameIdx]}`;
+                  await _safeSend(chatJid, { edit: ackKey, text: body });
+                } catch (e) {
+                  // Soft-fail; rate-limit or network blip shouldn't
+                  // cascade. Don't log every tick — just keep going.
+                }
+              }, 1200);
+            }
           }
+
+          // (2) Transcribe (single batch). Same _transcribeAudio for
+          // video — ffmpeg pulls the audio track. Silent → null.
+          transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+            .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
-          // Post the transcript as a fresh chat message (operator
-          // 2026-05-22 preferred fresh over quoted reply: "let's try
-          // sending a new message instead of replying"). Fires for
-          // both 'batch' and 'streaming' per_chat modes — the
-          // streaming variant collapsed into batch in this commit
-          // ("star wins": per-window encoder cost on CPU is 4× worse
-          // than single-batch).
-          if (
-            transcript?.text &&
-            (wantReplyBatch || wantReplyStreaming)
-          ) {
+
+          // (3) Finalize ack message with transcript.
+          if (animTimer) { clearInterval(animTimer); animTimer = null; }
+          if (isAudioForAck && ackKey) {
             try {
-              // Prefix with sender's pushName so the transcript reads
-              // like a labeled quote — "Carlos: ..." — without using a
-              // WA-native @ mention (which would notify Carlos and be
-              // noisy in a group). Operator (2026-05-22): "mention-not-
-              // mention". For operator's own voices (fromMe), still
-              // label so groups see attribution consistently.
-              // pushName policy per memory: pushName/notify only —
-              // NEVER the operator's private contact-book labels.
-              const labelName = pushedName ?? (fromMe ? 'You' : null);
-              const body = labelName
-                ? `🎙 ${labelName}: ${transcript.text}`
-                : `🎙 ${transcript.text}`;
-              await _safeSend(chatJid, { text: body });
+              const finalBody = transcript?.text
+                ? `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}`
+                : `👂 ${speaker}'s ${dur}s @ ${hhmm}: (no transcript)`;
+              await _safeSend(chatJid, { edit: ackKey, text: finalBody });
             } catch (e) {
-              log(`transcribe post-as-reply failed (${base}): ${e?.message ?? e}`);
+              log(`voice-ack final edit failed (${base}): ${e?.message ?? e}`);
             }
           }
         }
