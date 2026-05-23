@@ -2194,11 +2194,13 @@ export async function startWhatsAppBridge({
                   if (body === lastSentBody) return;
                   try {
                     if (!replyMsgKey) {
-                      const r = await _safeSend(
-                        chatJid,
-                        { text: body },
-                        { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-                      );
+                      // Operator (2026-05-22): "let's try sending a new
+                      // message instead of replying to old one." Dropped
+                      // the `quoted` wrap so the transcript posts as a
+                      // fresh chat message. The recipient still has
+                      // visual proximity (it lands right after the voice)
+                      // but it's not threaded as a reply.
+                      const r = await _safeSend(chatJid, { text: body });
                       replyMsgKey = r?.key ?? null;
                       if (replyMsgKey) rememberSent(replyMsgKey.id);
                     } else {
