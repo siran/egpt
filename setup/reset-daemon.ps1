@@ -31,7 +31,23 @@ Write-Host "=== 1. stopping task instances ==="
 schtasks /End /TN egpt-daemon-headless 2>&1 | Out-Host
 schtasks /End /TN egpt-watchdog        2>&1 | Out-Host
 
-Write-Host "=== 2. killing all node.exe ==="
+# Kill the daemon-wrap.ps1 WRAPPERS first. These are powershell.exe
+# (not node), so a node-only kill leaves them looping -> they respawn
+# fresh daemons -> duplicates survive the reset. Match by command line
+# containing 'daemon-wrap.ps1', EXCLUDING this very process (and its
+# parent shell) so the reset doesn't suicide.
+Write-Host "=== 2a. killing daemon-wrap.ps1 wrappers ==="
+$selfPid = $PID
+try {
+  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -match 'daemon-wrap\.ps1' -and $_.ProcessId -ne $selfPid } |
+    ForEach-Object {
+      Write-Host ("  kill wrapper pid " + $_.ProcessId)
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+} catch { Write-Host ("  wrapper scan error: " + $_) }
+
+Write-Host "=== 2b. killing all node.exe ==="
 Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
   Write-Host ("  kill pid " + $_.Id)
   Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -44,8 +60,11 @@ else       { Write-Host "  all node procs cleared" }
 # Clear the stale heartbeat so the first fresh beat is unambiguous.
 Remove-Item $alivePath -Force -ErrorAction SilentlyContinue
 
-Write-Host "=== 3. starting daemon task (fresh elevated tree) ==="
+Write-Host "=== 3. starting daemon + watchdog tasks (fresh elevated) ==="
 schtasks /Run /TN egpt-daemon-headless 2>&1 | Out-Host
+# The watchdog's TimeTrigger re-fires within a minute anyway, but
+# /Run it now so it's active immediately (we /End'd it above).
+schtasks /Run /TN egpt-watchdog 2>&1 | Out-Host
 
 Write-Host "=== 4. waiting 10s for boot + heartbeat ==="
 Start-Sleep -Seconds 10
