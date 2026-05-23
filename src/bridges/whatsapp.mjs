@@ -347,12 +347,27 @@ export async function startWhatsAppBridge({
   // is the single retry path — both the close handler and the
   // catch around connect() funnel through it.
   let reconnectAttempts = 0;
+
+  // Bridge-connection state file (operator 2026-05-23: "we need a
+  // bridge heartbeat or check... someone needs to be connected
+  // always"). Written on every connection.update so the WA link's
+  // health is observable independent of the daemon's event-loop
+  // heartbeat (alive.txt proves the loop runs; THIS proves WA is
+  // actually connected). Format: "<state> <iso> <detail>".
+  const WA_STATE_PATH = join(homedir(), '.egpt', 'state', 'whatsapp-alive');
+  function _writeWaState(state, detail = '') {
+    try {
+      mkdirSync(dirname(WA_STATE_PATH), { recursive: true });
+      writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${detail}\n`.trim() + '\n', { mode: 0o600 });
+    } catch (e) { /* best effort */ }
+  }
   function _scheduleReconnect(reason) {
     if (stopped) return;
     if (reconnectTimer) return;            // already armed
     const delay = Math.min(RECONNECT_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
     reconnectAttempts++;
     err(`whatsapp: ${reason}; reconnect attempt ${reconnectAttempts} in ${Math.round(delay / 1000)}s`);
+    _writeWaState('reconnecting', reason);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       try { connect(); }
@@ -991,6 +1006,7 @@ export async function startWhatsAppBridge({
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
+        _writeWaState('pairing', 'qr');
         // Render QR to a string so Ink can print it cleanly,
         // instead of qrcode-terminal writing directly to stdout (which
         // tangles with Ink's render). Route to onQR when provided so
@@ -1019,6 +1035,7 @@ export async function startWhatsAppBridge({
         reconnectAttempts = 0;
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
+        _writeWaState('connected', `${display}`);
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
         // a group's cached label could end up as a person's name
@@ -1033,6 +1050,7 @@ export async function startWhatsAppBridge({
         const reason = lastDisconnect?.error?.output?.statusCode;
         if (reason === DisconnectReason.loggedOut) {
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
+          _writeWaState('logged_out', `reason ${reason}`);
           stopped = true;
           return;
         }
@@ -1047,9 +1065,11 @@ export async function startWhatsAppBridge({
           err('whatsapp: connection replaced by another session (reason 440). ' +
               'A stale WS from a prior process is still on WA\'s server. ' +
               'Wait ~30s then run /whatsapp start. Auto-reconnect disabled to avoid a fight loop.');
+          _writeWaState('connection_replaced', `reason ${reason}`);
           stopped = true;
           return;
         }
+        _writeWaState('closed', `reason ${reason ?? '?'}`);
         // Other close reasons: funnel through _scheduleReconnect —
         // backoff retry, operator-visible errOut, and recovery from
         // a connect() that throws synchronously.
@@ -3552,6 +3572,7 @@ export async function startWhatsAppBridge({
     },
     stop() {
       stopped = true;
+      _writeWaState('stopped');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       _stopWhisperServer();
       // Phase 2: synchronously flush any pending debounced writes so
