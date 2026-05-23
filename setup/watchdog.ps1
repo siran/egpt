@@ -1,11 +1,11 @@
-# setup/watchdog.ps1 — wedged-daemon detection + kill.
+# setup/watchdog.ps1 -- wedged-daemon detection + kill.
 #
 # Runs every minute via the egpt-watchdog scheduled task (see
 # setup/egpt-watchdog.xml). The daemon writes ~/.egpt/state/alive
 # every 15s as proof of liveness. If the file is stale (mtime older
 # than $StaleSeconds), the daemon is wedged-but-alive (event loop
-# blocked, deadlock, etc.) and the wrapper's `& node …; respawn`
-# loop can't detect it — `&` is blocked too. Watchdog kills the
+# blocked, deadlock, etc.) and the wrapper's `& node ...; respawn`
+# loop can't detect it -- `&` is blocked too. Watchdog kills the
 # daemon pid; wrapper's loop respawns immediately.
 #
 # Operator (2026-05-23): "a heartbeat-to-file pattern so an external
@@ -67,26 +67,29 @@ try {
 }
 
 if ($ageSec -lt $StaleSeconds) {
-  # Fresh — daemon is alive.
+  # Fresh -- daemon is alive.
   exit 0
 }
 
-Log ("alive file is stale: age={0:N1}s threshold={1}s — killing daemon" -f $ageSec, $StaleSeconds)
+Log ("alive file is stale: age={0:N1}s threshold={1}s -- killing daemon" -f $ageSec, $StaleSeconds)
 
-if (-not (Test-Path $pidPath)) {
-  Log "no pid file at $pidPath; nothing to kill"
-  exit 0
-}
-
+# Kill target: prefer the pid embedded in the newest alive.txt beat
+# ("<tic|toc> <iso> <pid>") -- self-contained, no egpt.pid dependency.
+# Fall back to egpt.pid for back-compat with older daemons.
+$procPid = $null
 try {
-  $procPid = (Get-Content -Path $pidPath -Raw).Trim()
-} catch {
-  Log "could not read pid file: $_"
-  exit 0
+  $beat = [regex]::Matches($content, '(?m)^(?:tic|toc)\s+\S+\s+(\d+)\s*$')
+  if ($beat.Count -gt 0) { $procPid = $beat[$beat.Count - 1].Groups[1].Value }
+} catch {}
+if (-not $procPid -and (Test-Path $pidPath)) {
+  try {
+    $raw = (Get-Content -Path $pidPath -Raw).Trim()
+    if ($raw -match '"pid"\s*:\s*(\d+)') { $procPid = $Matches[1] }
+    elseif ($raw -match '^\d+') { $procPid = ($raw -split '\s+')[0] }
+  } catch {}
 }
-
 if (-not $procPid) {
-  Log "pid file is empty"
+  Log "no kill target (no pid in alive.txt or egpt.pid); nothing to kill"
   exit 0
 }
 

@@ -1,17 +1,17 @@
-# setup/install-tasks.ps1 — (re)install the egpt supervisor scheduled
+# setup/install-tasks.ps1 -- (re)install the egpt supervisor scheduled
 # tasks. Self-elevating: if not already admin, relaunches itself with
 # -Verb RunAs (raises the UAC prompt). Creating a boot-triggered task
 # needs admin; S4U principal means NO stored password is required.
 #
 # /e supervisor install spawns this (non-elevated, detached). The
-# script detects it's not admin and re-launches elevated → UAC → the
+# script detects it's not admin and re-launches elevated ? UAC ? the
 # elevated instance creates both tasks. Keeps the slash command's
 # spawn dead simple (no nested -Verb RunAs quoting in JS that risked
 # the TUI).
 #
 # Tasks (both "run whether or not logged on" via S4U):
-#   egpt-daemon-headless — boot/logon → daemon-wrap.ps1 → daemon
-#   egpt-watchdog        — every 1 min → kills wedged daemon
+#   egpt-daemon-headless -- boot/logon ? daemon-wrap.ps1 ? daemon
+#   egpt-watchdog        -- every 1 min ? kills wedged daemon
 
 $ErrorActionPreference = 'Stop'
 
