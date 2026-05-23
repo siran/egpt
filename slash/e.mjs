@@ -244,30 +244,55 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     }
 
     if (action === 'install') {
-      const lines = [];
-      for (const t of tasks) {
-        const r = spawnSync('schtasks', ['/Create', '/XML', t.xml, '/TN', t.name, '/F'], { stdio: 'pipe' });
-        const out = (r.stdout?.toString() ?? '') + (r.stderr?.toString() ?? '');
-        if (r.status === 0 && /SUCCESS/i.test(out)) {
-          lines.push(`  ✓ ${t.name} installed`);
-        } else if (/Access is denied/i.test(out)) {
-          lines.push(`  ✗ ${t.name}: access denied — an OLD admin-owned task exists. Delete it once, elevated:\n      (run as admin) schtasks /Delete /TN ${t.name} /F\n    then re-run /e supervisor install`);
-        } else {
-          lines.push(`  ✗ ${t.name}: ${out.trim().split('\n')[0] || 'unknown error'}`);
-        }
+      // The tasks are boot-triggered + S4U ("run whether or not
+      // logged on") so they survive Windows reboots without a login.
+      // Creating a boot-triggered task needs ADMIN (UAC) — S4U means
+      // no stored password, just the elevation. We launch the
+      // self-elevating setup/install-tasks.ps1 DETACHED with stdio
+      // ignored (a synchronous schtasks /Create here would just hit
+      // "Access is denied" since the daemon isn't elevated; a
+      // detached self-elevating script raises UAC in its own process
+      // without touching the TUI's console — the earlier crash came
+      // from a fragile nested -Verb RunAs spawn, avoided here).
+      const { spawn } = await import('node:child_process');
+      const ps1 = join(APP_DIR, 'setup', 'install-tasks.ps1');
+      try {
+        const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1], {
+          detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.unref();
+        sysOut(
+          'supervisor install: launched self-elevating installer.\n' +
+          '  → Approve the UAC prompt on your screen.\n' +
+          '  → An elevated window creates both tasks (boot + logon, S4U =\n' +
+          '    runs whether or not you are logged on), then closes in ~6s.\n' +
+          '  → Then run /e supervisor status to confirm.',
+        );
+      } catch (e) {
+        sysOut(`!! supervisor install: ${e?.message ?? e}\n` +
+          `Fallback — run elevated yourself:\n  powershell -ExecutionPolicy Bypass -File "${ps1}"`);
       }
-      sysOut(['supervisor install:', ...lines].join('\n'));
       return true;
     }
 
     if (action === 'uninstall') {
-      const lines = [];
-      for (const t of tasks) {
-        const r = spawnSync('schtasks', ['/Delete', '/TN', t.name, '/F'], { stdio: 'pipe' });
-        const out = (r.stdout?.toString() ?? '') + (r.stderr?.toString() ?? '');
-        lines.push(r.status === 0 ? `  ✓ ${t.name} removed` : `  ✗ ${t.name}: ${out.trim().split('\n')[0] || 'not found'}`);
+      // Deleting tasks also needs admin (they were created elevated).
+      // Self-elevating one-liner via the same detached pattern.
+      const { spawn } = await import('node:child_process');
+      const inner = tasks.map(t => `schtasks /Delete /TN ${t.name} /F`).join('; ');
+      const selfElev =
+        `$me=[Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent();` +
+        `if(-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){` +
+        `Start-Process powershell -Verb RunAs -ArgumentList @('-NoProfile','-Command','${inner}'); exit}; ${inner}`;
+      try {
+        const child = spawn('powershell', ['-NoProfile', '-Command', selfElev], {
+          detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.unref();
+        sysOut('supervisor uninstall: launched elevated removal. Approve UAC, then /e supervisor status.');
+      } catch (e) {
+        sysOut(`!! supervisor uninstall: ${e?.message ?? e}`);
       }
-      sysOut(['supervisor uninstall:', ...lines].join('\n'));
       return true;
     }
 
