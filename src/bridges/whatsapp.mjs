@@ -1527,7 +1527,15 @@ export async function startWhatsAppBridge({
         return null;
       }
       const j = await r.json();
-      return { text: (j.text || '').trim() };
+      // whisper-server returns segments joined by '\n' inside the
+      // "text" field. When a word straddles a segment boundary
+      // (whisper splits on max-len or silence) the result is e.g.
+      // "rein\nicie" instead of "reinicie". Collapse all whitespace
+      // (newlines + tabs + multi-spaces) to single space so the
+      // transcript reads as one sentence. Operator 2026-05-23
+      // noticed this in andrés gonzález chat.
+      const text = (j.text || '').replace(/\s+/g, ' ').trim();
+      return { text };
     } catch (e) {
       log(`whisper-server: POST failed: ${e?.message ?? e}`);
       return null;
