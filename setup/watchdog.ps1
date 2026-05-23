@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Continue'
 $alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive'
 $pidPath   = Join-Path $env:USERPROFILE '.egpt\egpt.pid'
 $logPath   = Join-Path $env:USERPROFILE '.egpt\state\watchdog.log'
-$StaleSeconds = 90
+$StaleSeconds = 210
 
 function Log($m) {
   try { Add-Content -Path $logPath -Value "[watchdog $(Get-Date -Format o)] $m" } catch {}
