@@ -1435,6 +1435,12 @@ async function loadAllRooms() {
   return out;
 }
 
+function configAddDirs(cfg) {
+  return Array.isArray(cfg?.addDirs) ? cfg.addDirs
+    : Array.isArray(cfg?.add_dirs) ? cfg.add_dirs
+    : undefined;
+}
+
 async function saveRoomToDisk(name, sessionsMap) {
   if (name === 'default') return;
   await mkdir(ROOMS_DIR, { recursive: true });
@@ -4598,7 +4604,8 @@ function App() {
         cwd: dbCfg.cwd ?? process.cwd(),
         sessionName: 'egpt',
         userName: USER_NAME,
-        ...(brainType === 'ccode' ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(configAddDirs(dbCfg) ? { addDirs: configAddDirs(dbCfg) } : {}),
         ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
         ...(dbCfg.model ? { model: dbCfg.model } : {}),
       }),
@@ -4768,7 +4775,8 @@ function App() {
       cwd: mbCfg.cwd ?? process.cwd(),
       sessionName: name,
       userName: USER_NAME,
-      ...(brainType === 'ccode'    ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
+      ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
+      ...(configAddDirs(mbCfg)     ? { addDirs: configAddDirs(mbCfg) } : {}),
       ...(mbCfg.system_prompt      ? { appendSystemPrompt: mbCfg.system_prompt   } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
     };

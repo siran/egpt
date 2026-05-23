@@ -317,6 +317,21 @@ export function codexTrustArgs(allowedTools, envTrust) {
   return ['--dangerously-bypass-approvals-and-sandbox'];
 }
 
+function codexAddDirArgs(addDirs) {
+  if (!Array.isArray(addDirs)) return [];
+  const args = [];
+  for (const d of addDirs) {
+    if (d && typeof d === 'string') args.push('--add-dir', d);
+  }
+  return args;
+}
+
+export function codexPermissionArgs({ allowedTools, addDirs } = {}, envTrust) {
+  const trustArgs = codexTrustArgs(allowedTools, envTrust);
+  if (trustArgs.length) return trustArgs;
+  return ['--sandbox', 'workspace-write', ...codexAddDirArgs(addDirs)];
+}
+
 async function runCodex(turn, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
@@ -331,18 +346,19 @@ async function runCodex(turn, onUpdate, options) {
   const timeoutMs = parsePositiveInt(process.env.EGPT_CODEX_TIMEOUT_MS, DEFAULT_CODEX_TIMEOUT_MS);
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
-  const trustArgs = codexTrustArgs(options.allowedTools, process.env.EGPT_CODEX_TRUST);
+  const permissionArgs = codexPermissionArgs(options, process.env.EGPT_CODEX_TRUST);
   const configArgs = ['-c', `model_reasoning_effort="${effort}"`];
   const modelArgs = codexModelArgs(options);
   const args = options.sessionId
     ? [
-        'exec', 'resume',
+        'exec',
         '--json',
         ...modelArgs,
         ...configArgs,
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
-        ...trustArgs,
+        ...permissionArgs,
+        'resume',
         options.sessionId,
         '-',
       ]
@@ -354,7 +370,7 @@ async function runCodex(turn, onUpdate, options) {
         '--cd', cwd,
         '--skip-git-repo-check',
         '--output-last-message', lastMessagePath,
-        ...trustArgs,
+        ...permissionArgs,
         '-',
       ];
   const cmd = codexSpawn(args);
