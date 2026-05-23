@@ -2436,13 +2436,14 @@ function App() {
         sendTimeoutMs:     cfg.send_timeout_ms,
         chunkChars:        cfg.chunk_chars,
         debug:             cfg.debug === true,
-        // Default to the bridge's own default (5) instead of falling
-        // through to 0 — '|| 0' was a latent bug that disabled the
-        // hold whenever max_backlog_seconds wasn't explicitly
-        // configured. cfg-side value still wins when present.
+        // STRICT default 0 (operator 2026-05-23): "nothing that
+        // happened pre-online is ever autodelivered." Any message
+        // older than connectedAt is held → /wa-pending. cfg-side
+        // value still wins when present (e.g. set to -1 to disable
+        // the hold entirely, or a positive N for a grace window).
         maxBacklogSeconds: cfg.max_backlog_seconds != null
           ? Number(cfg.max_backlog_seconds)
-          : 5,
+          : 0,
         // Pass through whatsapp.media to the bridge. Defaults (set
         // inside the bridge) are { download: 'all', max_size_mb: 25 }
         // — every image / video / voice note / document / sticker is

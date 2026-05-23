@@ -200,14 +200,16 @@ export async function startWhatsAppBridge({
   //   N == -1  disable the hold entirely (legacy behavior; not
   //            recommended — daemon restart will auto-execute brain
   //            on every queued bridge message)
-  // Default 60 (operator 2026-05-23): on reconnect, baileys delivers
-  // ALL backlogged messages at once — bombards the brain with N
-  // dispatches if not held. The shell's welcomeBack pattern shows
-  // a digest instead of N individual messages; the WA bridge should
-  // do the same. Until burst-digest is built, the most-strict hold
-  // works: anything older than 60s at connect time goes to
-  // _heldMessages, operator reviews via /wa-pending.
-  maxBacklogSeconds = 60,
+  // Default 0 = STRICT (operator 2026-05-23): "nothing that happened
+  // pre-online is ever autodelivered." Any message with a timestamp
+  // before connectedAt is held in _heldMessages → /wa-pending; the
+  // brain only ever sees messages that arrive LIVE (timestamp >=
+  // connectedAt). No grace window — a 60s grace still let the last
+  // minute of pre-connect backlog slip through, which violated the
+  // rule. The interpreter nucleus never bursts pre-online traffic;
+  // only an unrefined bridge would, so the bridge enforces the rule
+  // at the gate.
+  maxBacklogSeconds = 0,
   // Media download/save config. From host: { download, max_size_mb }.
   //   download:    'all' (default) — save images / videos / audio /
   //                voice notes / documents / stickers
