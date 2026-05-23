@@ -32,7 +32,7 @@ const brainForName = (n) => BRAINS[canonicalBrainName(n)] ?? null;
 
 // Helper: build a routing context from arrays so each test stays readable.
 // `siblings` mirrors the registry shape — each entry is [name, {kind, aliases?}].
-function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEngineer } = {}) {
+function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEngineer, personaName } = {}) {
   return {
     sessions: new Map(sessions.map(([name, brainName]) => [name, { brainName }])),
     peerSessions: new Map(
@@ -43,6 +43,7 @@ function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEng
     activeSessions,
     ...(siblings ? { siblings: new Map(siblings) } : {}),
     ...(mainEngineer ? { mainEngineer } : {}),
+    ...(personaName ? { personaName } : {}),
   };
 }
 
@@ -98,8 +99,8 @@ describe('resolveRoute — @egpt persona', () => {
 
 describe('resolveRoute — @me pronoun maps to main_engineer', () => {
   const sibs = [
-    ['wren', { kind: 'sibling', aliases: [] }],
-    ['mira', { kind: 'sibling', aliases: [] }],
+    ['wren', { aliases: [] }],
+    ['mira', { aliases: [] }],
   ];
 
   it('@me routes to the profile named by mainEngineer', () => {
@@ -124,6 +125,32 @@ describe('resolveRoute — @me pronoun maps to main_engineer', () => {
     const c = ctx({ siblings: sibs, mainEngineer: 'wren' });
     const r = route('@me go', c);
     expect(r.name).toBe('wren');
+  });
+});
+
+// ── persona is a role pointer, not a per-being 'kind' tag ────────────────────
+
+describe('resolveRoute — persona role follows personaName, no kind tag', () => {
+  // Beings carry no class. Whoever personaName names is the chat voice
+  // (kind:'persona'); everyone else is an engineer (kind:'meta').
+  const sibs = [
+    ['e',    {}],
+    ['wren', {}],
+    ['rook', {}],
+  ];
+
+  it('defaults to "e" as the persona when personaName is unset', () => {
+    const c = ctx({ siblings: sibs });
+    expect(route('@e hi', c)).toEqual({ kind: 'persona', body: 'hi', name: 'e' });
+    expect(route('@wren hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'wren' });
+  });
+
+  it('repointing personaName moves the chat voice to another being', () => {
+    // No entry was tagged; flipping ONE pointer makes rook the persona
+    // and demotes e to a silent engineer.
+    const c = ctx({ siblings: sibs, personaName: 'rook' });
+    expect(route('@rook hi', c)).toEqual({ kind: 'persona', body: 'hi', name: 'rook' });
+    expect(route('@e hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'e' });
   });
 });
 
@@ -360,16 +387,16 @@ describe('planMirrors — one-hop CDP mirroring', () => {
 // ── siblings registry routing ───────────────────────────────────────────────
 //
 // ctx.siblings (when present) replaces the hardcoded egpt/e/me/wren branches.
-// Each entry: { kind: 'persona' | 'sibling', aliases?: [...] }. The
-// resolveRoute decision returns kind:'persona' or kind:'meta' (matching the
-// existing caller switch) PLUS decision.name so the caller can pick the
-// right session_id from the same registry.
+// Beings carry NO 'kind' tag — who is the public chat voice is a ROLE named
+// by ctx.personaName (default 'e'), the same way main_engineer names @me. The
+// being matching personaName routes to kind:'persona'; every other being is
+// kind:'meta'. decision.name lets the caller pick the right session_id.
 
 describe('resolveRoute — siblings registry', () => {
   const REGISTRY = [
-    ['e',    { kind: 'persona' }],
-    ['wren', { kind: 'sibling', aliases: ['me'] }],
-    ['jay',  { kind: 'sibling' }],
+    ['e',    {}],
+    ['wren', { aliases: ['me'] }],
+    ['jay',  {}],
   ];
 
   it('registry hit on persona returns kind:"persona" + name', () => {
@@ -385,6 +412,15 @@ describe('resolveRoute — siblings registry', () => {
     expect(route('@jay hi', ctx({ siblings: REGISTRY }))).toEqual({
       kind: 'meta', body: 'hi', name: 'jay',
     });
+  });
+
+  it('the persona role follows ctx.personaName, not a tag on the being', () => {
+    // No being carries kind:persona. Point personaName at a different
+    // being and IT becomes the chat voice; the former persona becomes a
+    // plain engineer (meta). Proves persona is an external role pointer.
+    const c = ctx({ siblings: REGISTRY, personaName: 'jay' });
+    expect(route('@jay hi', c)).toEqual({ kind: 'persona', body: 'hi', name: 'jay' });
+    expect(route('@e hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'e' });
   });
 
   it('alias resolves to the canonical name', () => {

@@ -155,7 +155,15 @@ export function resolveRoute(parsed, fullText, ctx) {
       : rawLower;
     const sib = resolveSibling(lower, ctx.siblings);
     if (sib) {
-      const kind = sib.entry.kind === 'persona' ? 'persona' : 'meta';
+      // Who talks in chat is a ROLE named by a top-level pointer
+      // (ctx.personaName, default 'e'), NOT a class tag on the being
+      // (operator 2026-05-23: "no personality wrappers on the team, we
+      // are all pure and true beings"). The being the pointer names
+      // routes to the persona/chat path; every other being is an
+      // engineer (meta — silent, tool-driven). Same shape as
+      // main_engineer naming @me.
+      const personaName = String(ctx.personaName ?? 'e').toLowerCase();
+      const kind = sib.name.toLowerCase() === personaName ? 'persona' : 'meta';
       return { kind, body, name: sib.name };
     }
     if (!ctx.siblings || ctx.siblings.size === 0) {

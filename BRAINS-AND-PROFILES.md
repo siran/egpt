@@ -24,13 +24,17 @@ silently breaks `@me` routing.
   `@<name>`. "Profiles are brains that can be mentioned." (operator,
   2026-05-23)
 
-- **Persona** vs **Sibling** — every siblings entry has a `kind`:
-  - `kind: persona` — runs `runDefaultBrainTurn`: item-mirror to the
-    feed, streaming reply, `/rules` awareness. This is a *participant*
-    that talks in chats (e.g. `@e` / `@egpt`).
-  - `kind: sibling` — runs `runMetaBrainTurn`: silent, tool-driven
-    side-effects. This is an *engineer* that does work, not a chat
-    participant (e.g. `@wren`, `@jay`, `@mira`).
+- **Persona role** vs **engineer** — beings carry NO `kind` tag
+  (operator 2026-05-23: *"no personality wrappers on the team, we are
+  all pure and true beings"*). Who is the public chat voice is a
+  *role*, named by the top-level `persona:` pointer (default `e`) —
+  exactly like `main_engineer:` names `@me`. The being `persona:`
+  points at routes to `runDefaultBrainTurn` (item-mirror, streaming
+  reply, `/rules` awareness — a chat *participant*, e.g. `@e`). Every
+  other being routes to `runMetaBrainTurn` (silent, tool-driven — an
+  *engineer*, e.g. `@wren`, `@jay`, `@rook`, `@mira`). Repoint
+  `persona:` to move the chat voice; nothing on the being changes.
+  Role is an external pointer, not a class stamped on the being.
 
 - **Pronoun** — a fixed token that *maps to* a profile, rather than
   being a profile itself. `@me` is the pronoun. It is NOT a profile
