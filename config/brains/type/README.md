@@ -9,7 +9,7 @@ Example:
 ```yaml
 name: alex
 type: codex
-model: gpt-5.5
+model: gpt-5.4-mini
 effort: low
 cwd: C:\Users\an\src\egpt
 summary: alex

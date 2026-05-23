@@ -25,6 +25,7 @@ import {
 describe('persona-state — recordSession (history populates from @egpt turns)', () => {
   it('emptyState has no active session and no history', () => {
     const s = emptyState();
+    expect(s.type).toBe('codex');
     expect(s.session_id).toBe(null);
     expect(s.history).toEqual([]);
   });

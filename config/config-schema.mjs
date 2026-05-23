@@ -29,7 +29,7 @@ export const CONFIG_SCHEMA = {
   // default_brain: the persona that responds to @egpt mentions. Lives
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
-  default_brain: 'default brain (the @egpt persona — same machinery as /attach, just node-global): { type: "claude-code"|"codex", session_id: "<auto>", cwd?: "...", allowed_tools?: "all" | "<space-sep>" (claude-code only; default "all" auto-answers \'yes\' to permission prompts), system_prompt?: "..." (opt-in; absent = brain default), model?: "haiku"|"sonnet"|"opus"|"<full-model-id>" (claude-code only; passed as --model; absent = claude\'s configured default; "haiku" is ~2-3x faster first-token than sonnet — good for short @e turns) }',
+  default_brain: 'default brain (the @egpt persona — same machinery as /attach, just node-global): { type: "codex"|"claude-code" (default "codex"), session_id: "<auto>", cwd?: "...", allowed_tools?: "all" | "<space-sep>" (claude-code only; default "all" auto-answers \'yes\' to permission prompts), system_prompt?: "..." (opt-in; absent = brain default), model?: "gpt-5.4-mini"|"<full-model-id>" (default "gpt-5.4-mini" for codex; passed to the selected CLI when supported) }',
   // meta_brain: the @me / @wren engineer co-pilot. A SIBLING of the operator's
   // main Claude Code design conversation (egpt0-branch), created via Claude
   // Code's /branch slash command and resumed from any surface. Same shape as
