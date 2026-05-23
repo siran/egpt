@@ -198,6 +198,83 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // ── /e supervisor [status|install|uninstall] ────────────────────
+  // Manage the Windows scheduled tasks that keep egpt alive:
+  //   egpt-daemon-headless — logon trigger → daemon-wrap.ps1 → daemon
+  //   egpt-watchdog        — every 1 min → kills wedged daemon
+  // LogonTrigger (not BootTrigger) means NO admin elevation needed —
+  // a user can create a task that runs as themselves on logon. So
+  // this runs schtasks synchronously, captured stdio, no UAC dance,
+  // no detached spawn (the detached Start-Process -Verb RunAs in the
+  // old standalone /supervisor crashed the Ink TUI — operator
+  // 2026-05-23). Windows-only; no-op elsewhere.
+  if (sub === 'supervisor') {
+    const { spawnSync } = await import('node:child_process');
+    const { join } = await import('node:path');
+    const { homedir } = await import('node:os');
+    if (process.platform !== 'win32') {
+      sysOut('/e supervisor: Windows-only (Task Scheduler). No-op on this platform.');
+      return true;
+    }
+    const action = (arg ?? '').trim().split(/\s+/)[1] || 'status';
+    const setupDir = join(homedir(), 'src', 'egpt', 'setup');
+    const tasks = [
+      { name: 'egpt-daemon-headless', xml: join(setupDir, 'egpt-daemon-headless.xml') },
+      { name: 'egpt-watchdog',        xml: join(setupDir, 'egpt-watchdog.xml') },
+    ];
+    const q = (name) => {
+      const r = spawnSync('schtasks', ['/Query', '/TN', name, '/FO', 'LIST'], { stdio: 'pipe' });
+      const out = r.stdout?.toString() ?? '';
+      if (r.status !== 0 || /ERROR/i.test(out)) return null;
+      return {
+        status: out.match(/^Status:\s*(.+)$/mi)?.[1]?.trim() ?? '?',
+        next:   out.match(/^Next Run Time:\s*(.+)$/mi)?.[1]?.trim() ?? '?',
+      };
+    };
+
+    if (action === 'status') {
+      const lines = ['supervisor tasks:'];
+      for (const t of tasks) {
+        const r = q(t.name);
+        lines.push(r ? `  ✓ ${t.name} — status=${r.status} next=${r.next}`
+                     : `  ✗ ${t.name} — NOT INSTALLED`);
+      }
+      sysOut(lines.join('\n'));
+      return true;
+    }
+
+    if (action === 'install') {
+      const lines = [];
+      for (const t of tasks) {
+        const r = spawnSync('schtasks', ['/Create', '/XML', t.xml, '/TN', t.name, '/F'], { stdio: 'pipe' });
+        const out = (r.stdout?.toString() ?? '') + (r.stderr?.toString() ?? '');
+        if (r.status === 0 && /SUCCESS/i.test(out)) {
+          lines.push(`  ✓ ${t.name} installed`);
+        } else if (/Access is denied/i.test(out)) {
+          lines.push(`  ✗ ${t.name}: access denied — an OLD admin-owned task exists. Delete it once, elevated:\n      (run as admin) schtasks /Delete /TN ${t.name} /F\n    then re-run /e supervisor install`);
+        } else {
+          lines.push(`  ✗ ${t.name}: ${out.trim().split('\n')[0] || 'unknown error'}`);
+        }
+      }
+      sysOut(['supervisor install:', ...lines].join('\n'));
+      return true;
+    }
+
+    if (action === 'uninstall') {
+      const lines = [];
+      for (const t of tasks) {
+        const r = spawnSync('schtasks', ['/Delete', '/TN', t.name, '/F'], { stdio: 'pipe' });
+        const out = (r.stdout?.toString() ?? '') + (r.stderr?.toString() ?? '');
+        lines.push(r.status === 0 ? `  ✓ ${t.name} removed` : `  ✗ ${t.name}: ${out.trim().split('\n')[0] || 'not found'}`);
+      }
+      sysOut(['supervisor uninstall:', ...lines].join('\n'));
+      return true;
+    }
+
+    sysOut('usage: /e supervisor [status|install|uninstall]');
+    return true;
+  }
+
   // ── /e heartbeat on|off | interval <min> [--slug | --jid] ────────
   if (sub === 'heartbeat') {
     const tokens2 = arg.split(/\s+/).filter(Boolean);
