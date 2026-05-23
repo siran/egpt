@@ -5870,6 +5870,12 @@ function App() {
       sessions: sessionsView, peerSessions: peerSessionsView,
       brainForName, canonicalBrainName, activeSessions,
       siblings: siblingsView,
+      // @me is a PRONOUN that maps to a profile name (operator
+      // 2026-05-23: "it should be me: name1 ... profiles are brains
+      // that can be mentioned"). main_engineer names that profile.
+      // Resolved in resolveRoute, NOT via a per-sibling aliases:[me]
+      // (which collides if two profiles both claim "me").
+      mainEngineer: EGPT_CONFIG.main_engineer ?? null,
     });
 
     // Observed chats: egpt only acts on @<persona> wake-words. Any

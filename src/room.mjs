@@ -143,7 +143,16 @@ export function resolveRoute(parsed, fullText, ctx) {
     // Legacy fallback (ctx.siblings absent or empty): the historical
     // hardcoded list — egpt / e → persona, me / wren → meta — keeps
     // existing tests + pre-registry installs working unchanged.
-    const lower = token.toLowerCase();
+    const rawLower = token.toLowerCase();
+    // @me is a PRONOUN, not a profile. It maps to whatever profile
+    // ctx.mainEngineer names (operator 2026-05-23: "me: name1 ...
+    // profiles are brains that can be mentioned"). Resolve the pronoun
+    // to its target BEFORE the registry lookup, so the canonical
+    // sibling answers. This replaces the old per-sibling aliases:[me]
+    // pattern, which collided when two profiles both claimed "me".
+    const lower = (rawLower === 'me' && ctx.mainEngineer)
+      ? String(ctx.mainEngineer).toLowerCase()
+      : rawLower;
     const sib = resolveSibling(lower, ctx.siblings);
     if (sib) {
       const kind = sib.entry.kind === 'persona' ? 'persona' : 'meta';

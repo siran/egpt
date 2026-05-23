@@ -32,7 +32,7 @@ const brainForName = (n) => BRAINS[canonicalBrainName(n)] ?? null;
 
 // Helper: build a routing context from arrays so each test stays readable.
 // `siblings` mirrors the registry shape — each entry is [name, {kind, aliases?}].
-function ctx({ sessions = [], peers = [], activeSessions = [], siblings } = {}) {
+function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEngineer } = {}) {
   return {
     sessions: new Map(sessions.map(([name, brainName]) => [name, { brainName }])),
     peerSessions: new Map(
@@ -42,6 +42,7 @@ function ctx({ sessions = [], peers = [], activeSessions = [], siblings } = {}) 
     canonicalBrainName,
     activeSessions,
     ...(siblings ? { siblings: new Map(siblings) } : {}),
+    ...(mainEngineer ? { mainEngineer } : {}),
   };
 }
 
@@ -90,6 +91,39 @@ describe('resolveRoute — @egpt persona', () => {
   it("persona alias '@e' takes precedence over a session named 'e'", () => {
     const c = ctx({ sessions: [['e', 'codex']] });
     expect(route('@e hi', c)).toEqual({ kind: 'persona', body: 'hi' });
+  });
+});
+
+// ── @me pronoun → main_engineer ─────────────────────────────────────────────
+
+describe('resolveRoute — @me pronoun maps to main_engineer', () => {
+  const sibs = [
+    ['wren', { kind: 'sibling', aliases: [] }],
+    ['mira', { kind: 'sibling', aliases: [] }],
+  ];
+
+  it('@me routes to the profile named by mainEngineer', () => {
+    const c = ctx({ siblings: sibs, mainEngineer: 'wren' });
+    expect(route('@me ship it', c)).toEqual({ kind: 'meta', body: 'ship it', name: 'wren' });
+  });
+
+  it('changing mainEngineer redirects @me without touching any aliases', () => {
+    const c = ctx({ siblings: sibs, mainEngineer: 'mira' });
+    expect(route('@me status', c)).toEqual({ kind: 'meta', body: 'status', name: 'mira' });
+  });
+
+  it('the target profile is still reachable by its own @name', () => {
+    const c = ctx({ siblings: sibs, mainEngineer: 'wren' });
+    expect(route('@wren hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'wren' });
+    expect(route('@mira hi', c)).toEqual({ kind: 'meta', body: 'hi', name: 'mira' });
+  });
+
+  it('does NOT require any sibling to claim aliases:[me] (no collision risk)', () => {
+    // Neither wren nor mira has "me" in aliases; @me still resolves
+    // purely via mainEngineer. This is the design fix.
+    const c = ctx({ siblings: sibs, mainEngineer: 'wren' });
+    const r = route('@me go', c);
+    expect(r.name).toBe('wren');
   });
 });
 
