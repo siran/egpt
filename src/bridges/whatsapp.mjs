@@ -2105,6 +2105,14 @@ export async function startWhatsAppBridge({
           // before transcription completes. Operator (2026-05-22): the
           // recipient should see the WA message body evolve as the audio
           // is "heard" — meta-awareness through visible attention.
+          // TIMING (operator 2026-05-22): measure transcription vs
+          // dispatch latency so we can quantify how much earlier the
+          // brain could dispatch if it consumed first chunk instead
+          // of awaiting full done. Logged as TIMING lines in headless
+          // + activity log so we can grep across multiple voices.
+          const _t0 = Date.now();   // voice received → starting transcribe
+          let _tFirstChunk = null;
+          let _tDone = null;
           try {
             voiceStream = await _transcribeAudioStreaming({ inputPath: path, outputDir: dir, base });
           } catch (e) {
@@ -2112,6 +2120,11 @@ export async function startWhatsAppBridge({
             voiceStream = null;
           }
           if (voiceStream) {
+            // Capture first-chunk arrival timestamp for the headroom
+            // measurement (independent of the typewriter listener).
+            voiceStream.emitter.once('chunk', () => {
+              _tFirstChunk = Date.now();
+            });
             // When streaming finishes, cache the final text in the same map
             // batch mode uses so /summarize etc still work.
             voiceStream.donePromise.then((res) => {
@@ -2257,7 +2270,20 @@ export async function startWhatsAppBridge({
             const brainWantsStreaming = !!(media.audio_transcribe?.streaming);
             if (!brainWantsStreaming) {
               await voiceStream.donePromise.catch(() => {});
+              _tDone = Date.now();
             }
+            // Headroom report: how many ms could brain dispatch have
+            // started EARLIER if it consumed first-chunk instead of
+            // awaiting done? Positive = first chunk arrived before we
+            // finished waiting; that's the saved latency.
+            const audioDurSec = (() => {
+              const s = Number(node?.seconds);
+              return Number.isFinite(s) ? s : null;
+            })();
+            const totalMs   = (_tDone ?? Date.now()) - _t0;
+            const firstMs   = _tFirstChunk ? (_tFirstChunk - _t0) : null;
+            const headroom  = (firstMs != null && _tDone != null) ? (_tDone - _tFirstChunk) : null;
+            log(`TIMING voice ${base} audio=${audioDurSec ?? '?'}s | t0→first=${firstMs ?? '?'}ms | t0→done=${totalMs}ms | headroom=${headroom ?? '?'}ms | model=${(media.audio_transcribe?.model_path ?? '').split(/[\\/]/).pop()}`);
           }
         }
         if (!voiceStream) {
