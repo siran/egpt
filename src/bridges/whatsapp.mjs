@@ -1428,7 +1428,8 @@ export async function startWhatsAppBridge({
     //   suppress_blank: true        → --suppress-blank  (don't emit
     //                                  "blank" tokens at start of segment).
     //   extra_args: ['--vad']       → spread literally (catch-all).
-    if (cfg.no_context === true) args.push('--no-context');
+    if (cfg.no_context === true)  args.push('--no-context');
+    if (cfg.no_fallback === true) args.push('--no-fallback');
     if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
     if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
     if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
@@ -1656,7 +1657,8 @@ export async function startWhatsAppBridge({
         // most: each 4s window is independent and re-using context
         // from a prior window is what causes the "Música, Música, …"
         // hallucination cascade across silence stretches.
-        if (cfg.no_context === true) args.push('--no-context');
+        if (cfg.no_context === true)  args.push('--no-context');
+    if (cfg.no_fallback === true) args.push('--no-fallback');
         if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
         if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
         if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
