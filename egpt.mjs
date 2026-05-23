@@ -5859,9 +5859,10 @@ function App() {
     );
     // Sibling registry (EGPT_CONFIG.siblings) — when present, becomes the
     // source of truth for @<name> routing in room.mjs. Each entry is
-    // { kind: 'persona'|'sibling', session_id, cwd?, model?, emoji?,
-    //   body_emoji?, aliases?[] }. Absent / empty → legacy hardcoded
-    // routing applies (egpt/e/me/wren) for backwards compat.
+    // { session_id, cwd?, model?, emoji?, body_emoji?, aliases?[], type? } —
+    // NO 'kind' tag; who is the chat persona is the top-level EGPT_CONFIG.
+    // persona role pointer (default 'e'), resolved by name in room.mjs.
+    // Absent / empty registry → legacy hardcoded routing (egpt/e/me/wren).
     const sibCfg = EGPT_CONFIG.siblings;
     const siblingsView = (sibCfg && typeof sibCfg === 'object')
       ? new Map(Object.entries(sibCfg).filter(([, v]) => v && typeof v === 'object'))
@@ -5876,6 +5877,10 @@ function App() {
       // Resolved in resolveRoute, NOT via a per-sibling aliases:[me]
       // (which collides if two profiles both claim "me").
       mainEngineer: EGPT_CONFIG.main_engineer ?? null,
+      // persona names which being is the public chat voice (routes to
+      // the persona path). A top-level role pointer, not a per-being
+      // 'kind' tag. Default 'e'.
+      personaName: EGPT_CONFIG.persona ?? 'e',
     });
 
     // Observed chats: egpt only acts on @<persona> wake-words. Any
