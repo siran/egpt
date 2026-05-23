@@ -7,6 +7,46 @@ re-deriving the whole thing.
 
 ---
 
+## Live mic capture into eGPT (DEFERRED 2026-05-23)
+
+Operator: "for eGPT it would be supercool to connect a mic to the
+PC, so note it down in ideas."
+
+Shape: a new bridge / input source that captures audio from the
+operator's local microphone (any OS), feeds it through whisper-
+stream (which exists in their build and IS designed for live capture
+via -c device-id), and dispatches the transcript as if the operator
+typed it. Wake-word or push-to-talk gating so we don't transcribe
+the whole day.
+
+Path considered:
+  - whisper-stream.exe handles the audio device + sliding-window
+    transcription natively (--step, --length, --keep, --vad-thold
+    flags). It's the right tool for live mic.
+  - egpt would spawn whisper-stream as a managed child (similar to
+    whisper-server lifecycle), parse its stdout for finalized
+    segments, dispatch them as messages.
+  - Routing: which "chat" does the mic transcript go into?
+    Options: (a) configured default chat, (b) the chat the operator
+    is currently "joined" to via /use, (c) a dedicated 'mic' room.
+    Probably (b) — operator says "@e XYZ" out loud, it lands in the
+    active chat. /use switches the target.
+  - Wake gating: VAD threshold + a wake word ("egpt", "e") would
+    keep the bridge from transcribing every ambient sound. Without
+    a wake word, the mic captures everything.
+
+Pending:
+  - mic-bridge skeleton (parallel to wa/tg bridges)
+  - device selection UX (`/mic devices` to list, `/mic on <id>` to start)
+  - wake word detection (use whisper for it too — coarse model on the
+    first few words of each utterance — OR a dedicated keyword-spotter)
+  - integration with /use so transcripts land in the active chat
+
+This would close the loop on egpt as an ambient assistant: voice
+in (mic), voice out (TTS — already deferred separately).
+
+---
+
 ## Read-receipt-driven personalization for `/movie` (DEFERRED 2026-05-16)
 
 A WhatsApp message that animates *per viewer* via WA read receipts.
