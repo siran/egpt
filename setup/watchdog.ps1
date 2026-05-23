@@ -32,10 +32,24 @@ if (-not (Test-Path $alivePath)) {
   exit 0
 }
 
+# tic/toc parse: the file holds up to two lines, "tic <iso>" and/or
+# "toc <iso>". Freshness = the most recent of those timestamps. Fall
+# back to file mtime if the content can't be parsed (mid-write race,
+# legacy format).
 try {
-  $ageSec = ((Get-Date) - (Get-Item $alivePath).LastWriteTime).TotalSeconds
+  $content = Get-Content -Path $alivePath -Raw -ErrorAction Stop
+  $stamps = [regex]::Matches($content, '(?m)^(?:tic|toc)\s+(\S+)') |
+    ForEach-Object {
+      try { ([datetime]::Parse($_.Groups[1].Value)).ToUniversalTime() } catch {}
+    }
+  if ($stamps) {
+    $latest = ($stamps | Sort-Object -Descending)[0]
+  } else {
+    $latest = (Get-Item $alivePath).LastWriteTimeUtc
+  }
+  $ageSec = ((Get-Date).ToUniversalTime() - $latest).TotalSeconds
 } catch {
-  Log "could not stat alive file: $_"
+  Log "could not read alive file: $_"
   exit 0
 }
 
