@@ -274,12 +274,16 @@ export async function run({ arg, meta, ctx }) {
       const brainType = canonicalBrainName(dbCfg.type ?? 'claude-code');
       const brain = brainForName(brainType);
       if (!brain) { sysOut(`!! /egpt new: brain "${brainType}" not found`); return true; }
+      const addDirs = Array.isArray(dbCfg.addDirs) ? dbCfg.addDirs
+        : Array.isArray(dbCfg.add_dirs) ? dbCfg.add_dirs
+        : undefined;
       const sessionOpts = {
         sessionId: null,
         cwd:       dbCfg.cwd ?? process.cwd(),
         sessionName: 'egpt',
         userName:    USER_NAME,
-        ...(brainType === 'ccode'   ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(addDirs                 ? { addDirs } : {}),
         ...(dbCfg.system_prompt     ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
         ...(dbCfg.model             ? { model: dbCfg.model                        } : {}),
       };

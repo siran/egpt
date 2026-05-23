@@ -3,11 +3,11 @@
 // correctly to codex's bypass-vs-sandbox flag.
 
 import { describe, it, expect } from 'vitest';
-import { codexTrustArgs } from '../config/brains/codex.mjs';
+import { codexPermissionArgs, codexTrustArgs } from '../config/brains/codex.mjs';
+
+const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
 
 describe('codexTrustArgs — per-personality tool scoping', () => {
-  const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
-
   it("returns bypass flag for allowedTools='all'", () => {
     expect(codexTrustArgs('all', undefined)).toEqual([BYPASS]);
   });
@@ -32,5 +32,29 @@ describe('codexTrustArgs — per-personality tool scoping', () => {
     expect(codexTrustArgs('all', '1')).toEqual([BYPASS]);
     expect(codexTrustArgs('all', undefined)).toEqual([BYPASS]);
     expect(codexTrustArgs('all', '')).toEqual([BYPASS]);
+  });
+});
+
+describe('codexPermissionArgs - workspace-write scope', () => {
+  it("uses bypass for allowedTools='all'", () => {
+    expect(codexPermissionArgs({ allowedTools: 'all', addDirs: ['C:\\work'] }, undefined)).toEqual([BYPASS]);
+  });
+
+  it('uses workspace-write plus add-dir roots for restricted tools', () => {
+    expect(codexPermissionArgs({
+      allowedTools: ['Read', 'Grep', 'Glob'],
+      addDirs: ['C:\\work', 'C:\\media'],
+    }, undefined)).toEqual([
+      '--sandbox', 'workspace-write',
+      '--add-dir', 'C:\\work',
+      '--add-dir', 'C:\\media',
+    ]);
+  });
+
+  it("EGPT_CODEX_TRUST='0' forces workspace-write even for all tools", () => {
+    expect(codexPermissionArgs({ allowedTools: 'all', addDirs: ['C:\\work'] }, '0')).toEqual([
+      '--sandbox', 'workspace-write',
+      '--add-dir', 'C:\\work',
+    ]);
   });
 });

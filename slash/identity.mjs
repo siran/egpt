@@ -115,12 +115,16 @@ export async function run({ arg, meta, ctx }) {
         } catch {}
         sessionOpts = { targetId };
       } else {
+        const addDirs = Array.isArray(dbCfg.addDirs) ? dbCfg.addDirs
+          : Array.isArray(dbCfg.add_dirs) ? dbCfg.add_dirs
+          : undefined;
         sessionOpts = {
           sessionId: dbCfg.session_id ?? null,
           cwd:       dbCfg.cwd ?? process.cwd(),
           sessionName: 'egpt',
           userName:    USER_NAME,
-          ...(brainType === 'ccode'   ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+          ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+          ...(addDirs                 ? { addDirs } : {}),
           ...(dbCfg.system_prompt     ? { appendSystemPrompt: dbCfg.system_prompt   } : {}),
         };
       }
