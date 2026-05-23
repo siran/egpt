@@ -1453,7 +1453,13 @@ export async function startWhatsAppBridge({
   //
   // Idempotent: if `<base>.transcript.txt` exists, returns a done-emitter
   // with the existing text — no re-work.
-  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 6, strideSeconds = 3 }) {
+  async function _transcribeAudioStreaming({ inputPath, outputDir, base, windowSeconds = 4, strideSeconds = 4 }) {
+    // Non-overlapping windows by default (operator 2026-05-22:
+    // observed `[Música]` repeated chunks and "cinco, cinco, cinco"
+    // duplication when stride < window. Non-overlap eliminates the
+    // duplication; the brain-context win from overlap was for the
+    // parked brain-streaming experiment and isn't relevant for the
+    // reply-stream consumer that's now in production).
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
     const whisperBin = cfg.command || 'whisper-cli';
@@ -1641,12 +1647,24 @@ export async function startWhatsAppBridge({
         //                logging and downstream consumers
         //   spaced     = silence preserved as whitespace, positioning text
         //                in audio-time (the model's "visual map" per operator)
-        const joinedNoStamps = rawOutput.split(/\r?\n/)
-          .map(line => line.replace(/^\s*\[\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\]\s*/, '').trim())
-          .filter(Boolean)
-          .join(' ')
-          .trim();
-        const cleaned = _stripNoiseMarkers(joinedNoStamps);
+        // Build per-segment text with duration-calibrated silence
+        // spacing (operator 2026-05-22: "if [silence], add 4 spaces
+        // per second"). Process segments individually so we have
+        // start/end timestamps; the segment-aware
+        // _segmentSilenceSpaces substitutes silence markers with
+        // ' '.repeat(4*durSec). Other noise markers (Música, Aplausos,
+        // Risas, etc.) pass through unchanged.
+        const _segRe = /^\s*\[(\d{2}):(\d{2}):(\d{2}\.\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}\.\d{3})\]\s*(.+)$/;
+        const _windowParts = [];
+        for (const line of rawOutput.split(/\r?\n/)) {
+          const m = line.match(_segRe);
+          if (!m) continue;
+          const segStart = parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseFloat(m[3]);
+          const segEnd   = parseInt(m[4]) * 3600 + parseInt(m[5]) * 60 + parseFloat(m[6]);
+          const segText  = m[7].trim();
+          _windowParts.push(_segmentSilenceSpaces(segText, segStart, segEnd));
+        }
+        const cleaned = _windowParts.join(' ').replace(/^\s+|\s+$/g, '');
         const spaced = _buildSpacedWindow(rawOutput, winLen);
 
         // Always emit the window, even when speech-stripped to empty —
