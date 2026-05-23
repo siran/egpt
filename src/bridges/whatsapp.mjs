@@ -200,9 +200,14 @@ export async function startWhatsAppBridge({
   //   N == -1  disable the hold entirely (legacy behavior; not
   //            recommended — daemon restart will auto-execute brain
   //            on every queued bridge message)
-  // Default 5 catches only network-latency stragglers as live; any
-  // genuinely-queued backlog gets reviewed first.
-  maxBacklogSeconds = 5,
+  // Default 60 (operator 2026-05-23): on reconnect, baileys delivers
+  // ALL backlogged messages at once — bombards the brain with N
+  // dispatches if not held. The shell's welcomeBack pattern shows
+  // a digest instead of N individual messages; the WA bridge should
+  // do the same. Until burst-digest is built, the most-strict hold
+  // works: anything older than 60s at connect time goes to
+  // _heldMessages, operator reviews via /wa-pending.
+  maxBacklogSeconds = 60,
   // Media download/save config. From host: { download, max_size_mb }.
   //   download:    'all' (default) — save images / videos / audio /
   //                voice notes / documents / stickers
@@ -2111,7 +2116,7 @@ export async function startWhatsAppBridge({
                   // Soft-fail; rate-limit or network blip shouldn't
                   // cascade. Don't log every tick — just keep going.
                 }
-              }, 1200);
+              }, 4800);   // operator 2026-05-23: "can do 4x slower"
             }
           }
 
@@ -2330,27 +2335,28 @@ export async function startWhatsAppBridge({
     if (maxBacklogSeconds >= 0 && connectedAt > 0) {
       const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
       if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
-        // Skip clearly bot-side echoes (fromMe, our own sentIds) and
-        // protocol noise — only hold genuine inbound that WOULD have
-        // dispatched.
-        if (!msg.key?.fromMe) {
-          const text = textOf(msg.message);
-          if (text) {
-            _heldMessages.push({
-              jid: msg.key?.remoteJid,
-              author: typeof msg.pushName === 'string' && msg.pushName.trim()
-                ? msg.pushName.trim()
-                : null,
-              text,
-              ts: msgTsMs,
-              key: msg.key?.id ? { id: msg.key.id, fromMe: false } : null,
-              raw: msg,    // kept so the operator can re-dispatch through
-                           // the same handleMessage path on /wa-pending
-                           // dispatch — single source of truth for awareness
-                           // + wake-word + brain routing.
-            });
-            log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
-          }
+        // Hold ALL backlog including fromMe (operator 2026-05-23: on
+        // reconnect, the operator's own queued sends also pile up — if
+        // we let fromMe through, the brain still gets bombarded with
+        // 20 dispatches from "while we were offline" sends). Hold
+        // means: don't auto-dispatch to brain. Media still saves to
+        // disk via onMediaSaved (independent of the hold gate).
+        const text = textOf(msg.message);
+        if (text) {
+          _heldMessages.push({
+            jid: msg.key?.remoteJid,
+            author: typeof msg.pushName === 'string' && msg.pushName.trim()
+              ? msg.pushName.trim()
+              : null,
+            text,
+            ts: msgTsMs,
+            key: msg.key?.id ? { id: msg.key.id, fromMe: !!msg.key.fromMe } : null,
+            raw: msg,    // kept so the operator can re-dispatch through
+                         // the same handleMessage path on /wa-pending
+                         // dispatch — single source of truth for awareness
+                         // + wake-word + brain routing.
+          });
+          log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
         }
         return;
       }

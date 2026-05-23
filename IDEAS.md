@@ -7,6 +7,51 @@ re-deriving the whole thing.
 
 ---
 
+## WA reconnect burst-digest (DEFERRED 2026-05-23)
+
+Operator: "since baileys deliver all the msgs on first connection,
+this can't be delivered all to bridge ... this has been resolved for
+the shell ... shell is another UI of the essence of eGPT."
+
+Current state: bridge holds backlog messages (older than
+maxBacklogSeconds, now defaults to 60) in _heldMessages. Operator
+reviews via /wa-pending. But there's no DIGEST sent to the brain —
+the operator sees the held list, dispatches each manually.
+
+Shell's pattern (buildWelcomeBack in src/tools/logon-summary.mjs):
+when the shell mounts, it digests recent WA activity into a single
+formatted summary and shows it to the operator. Brain is NOT bombarded
+with N individual dispatches. That's the "essence" the operator
+referenced — the interpreter nucleus doesn't bombard, only the
+unrefined bridge does.
+
+Proper fix:
+
+  - At connect time, accumulate backlog into a single brain-facing
+    "digest dispatch":
+      [2026-05-23 15:00 UTC, on reconnect, while egpt was offline
+       these arrived:]
+      - Daniel (familia_palma): "voice 12s: …"
+      - Carolina (familia_palma): "hola e"
+      - Joyce (DM): "traducción 5"
+      ...
+  - Brain gets ONE dispatch, can react with one digest reply, or
+    iterate per chat if it chooses.
+  - Operator still has /wa-pending to manually dispatch individual
+    held items if they want a deeper turn on any one.
+
+Path:
+  - Reuse buildRecap (already exists in logon-summary.mjs) as the
+    digest formatter
+  - New "dispatch to brain on burst-end" trigger: after N seconds
+    of no new messages following connectedAt, fire the digest
+  - Threshold: maybe 5s of quiet to declare "burst over"
+
+Until built: maxBacklogSeconds=60 is the brute-force protection.
+fromMe messages also get held (extended in same commit).
+
+---
+
 ## Live mic capture into eGPT (DEFERRED 2026-05-23)
 
 Operator: "for eGPT it would be supercool to connect a mic to the
