@@ -181,13 +181,29 @@ function clearPidfile() {
 const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive');
 const ALIVE_INTERVAL_MS = 60_000;   // operator 2026-05-23: 15s was excessive disk I/O; 60s is fine for wedge detection
 let _aliveTimer = null;
+// tic/toc heartbeat (operator 2026-05-23). The file holds at most two
+// lines; the daemon alternates:
+//   - if a `toc` line is present → write `tic <iso>` truncating the
+//     file (erases the old toc)
+//   - else → append `toc <iso>`
+// So the file cycles:  "toc T1"  →  "tic T2"  →  "tic T2\ntoc T3"  → …
+// Freshness = the most recent of whatever tic/toc timestamps are
+// present. The alternation proves RHYTHM (two recent beats ~one
+// interval apart), not just that a single write happened; and the
+// two lines record the last-two-beats so the watchdog (and a human
+// `cat`) can read both "is it alive" and "time of last beat / death".
 function _writeAliveNow() {
   try {
-    // Atomic-ish: write tmp then rename. The watchdog reads mtime and
-    // tolerates a brief gap; this just avoids a partial-write race.
-    const tmp = ALIVE_PATH + '.tmp';
-    writeFileSync(tmp, `${Date.now()}\n${process.pid}\n`, { mode: 0o600 });
-    renameSync(tmp, ALIVE_PATH);
+    const now = new Date().toISOString();
+    let content = '';
+    try { content = readFileSync(ALIVE_PATH, 'utf8'); } catch {}
+    if (/^toc /m.test(content)) {
+      // toc present → write tic, truncating (erases the rest).
+      writeFileSync(ALIVE_PATH, `tic ${now}\n`, { mode: 0o600 });
+    } else {
+      // no toc → append it.
+      appendFileSync(ALIVE_PATH, `toc ${now}\n`, { mode: 0o600 });
+    }
   } catch (e) {
     // Best effort; missing state dir creates on next pass.
     try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
