@@ -2189,27 +2189,25 @@ export async function startWhatsAppBridge({
               // promise so each call waits for prior completion before
               // reading replyMsgKey.
               let _editChain = Promise.resolve();
+              let _editCount = 0;
               const _editReply = (body) => {
                 _editChain = _editChain.then(async () => {
                   if (body === lastSentBody) return;
                   try {
                     if (!replyMsgKey) {
-                      // Operator (2026-05-22): "let's try sending a new
-                      // message instead of replying to old one." Dropped
-                      // the `quoted` wrap so the transcript posts as a
-                      // fresh chat message. The recipient still has
-                      // visual proximity (it lands right after the voice)
-                      // but it's not threaded as a reply.
                       const r = await _safeSend(chatJid, { text: body });
                       replyMsgKey = r?.key ?? null;
                       if (replyMsgKey) rememberSent(replyMsgKey.id);
+                      log(`reply-stream INITIAL ${base} → ${chatJid} (${body.length}ch, ${Date.now() - _t0}ms after voice)`);
                     } else {
+                      _editCount++;
                       const r = await _safeSend(chatJid, { edit: replyMsgKey, text: body });
                       rememberSent(r?.key?.id);
+                      log(`reply-stream EDIT#${_editCount} ${base} → ${chatJid} (${body.length}ch, ${Date.now() - _t0}ms after voice)`);
                     }
                     lastSentBody = body;
                   } catch (e) {
-                    log(`reply-stream edit (${base}): ${e?.message ?? e}`);
+                    log(`reply-stream edit FAILED (${base}): ${e?.message ?? e}`);
                   }
                 });
                 return _editChain;
