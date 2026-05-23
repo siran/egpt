@@ -2163,7 +2163,13 @@ export async function startWhatsAppBridge({
                 }
               };
 
-              const EDIT_CADENCE_MS = 600;
+              // Operator (2026-05-22): "type the transcript 10x faster" —
+              // dropped from 600 → 60ms. WA's edit-rate tolerance is
+              // uncertain at this cadence; if baileys / WA Web start
+              // throttling, headless.log will show `reply-stream edit
+              // (...)` lines piling up. If that happens, back off to
+              // 100-150ms.
+              const EDIT_CADENCE_MS = 60;
               let displayedText = '';   // chars already shown to recipient
               let pendingQueue  = '';   // chars buffered, not yet shown
               let typeTimer     = null;
