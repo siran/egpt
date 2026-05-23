@@ -198,6 +198,66 @@ describe('dispatch runtime', () => {
     expect(state.contacts.whatsapp['chat-a'].threadCwd).toBe(newCwd);
   });
 
+  it('clears a stale per-contact resume thread and retries fresh', async () => {
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          '12345@lid': {
+            slug: 'alice',
+            personality: 'default',
+            threadId: 'stale-thread',
+          },
+        },
+      },
+    }), 'utf8');
+
+    let attempts = 0;
+    const logs = [];
+    const sends = [];
+    const brainCalls = [];
+    const runtime = createDispatchRuntime({
+      stateDir,
+      sysLog: (msg) => logs.push(msg),
+      clock: fixedClock,
+      logger: { error: () => {} },
+      bridge: {
+        send: async (body, opts) => {
+          sends.push({ body, opts });
+          return { ok: true };
+        },
+      },
+      brain: {
+        stream: async (payload, onPartial, sessionOpts) => {
+          brainCalls.push({ payload, sessionOpts });
+          attempts++;
+          if (attempts === 1) {
+            return {
+              text: 'thread/resume failed: no rollout found for thread id stale-thread',
+              optionsPatch: { sessionId: 'stale-thread' },
+            };
+          }
+          return { text: 'fresh ok', optionsPatch: { sessionId: 'fresh-thread' } };
+        },
+      },
+    });
+
+    await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: '12345@lid',
+      waChatName: 'Alice',
+      waSlug: 'alice',
+    });
+
+    expect(brainCalls).toHaveLength(2);
+    expect(brainCalls[0].sessionOpts.sessionId).toBe('stale-thread');
+    expect(brainCalls[1].sessionOpts.sessionId).toBe(null);
+    expect(sends[0].body).toContain('fresh ok');
+    expect(logs.some(line => line.includes('could not be resumed'))).toBe(true);
+    const state = await readConvState(stateDir);
+    expect(state.contacts.whatsapp['12345@lid'].threadId).toBe('fresh-thread');
+  });
+
   it('notifies the operator when a contact turn fails without recovery', async () => {
     const stateDir = await makeTempDir();
     await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({

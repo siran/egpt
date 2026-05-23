@@ -418,6 +418,14 @@ function defaultPersonaBrainConfig(cfg) {
   return out;
 }
 
+function isMissingResumeErrorText(text) {
+  const msg = String(text ?? '');
+  return /thread\/resume failed/i.test(msg)
+    || /no rollout found for thread id/i.test(msg)
+    || /no rollout found/i.test(msg)
+    || /resume failed/i.test(msg);
+}
+
 const BRAIN_ALIASES = Object.fromEntries(
   Object.values(BRAINS).flatMap(brain => (brain.legacyNames ?? []).map(alias => [alias, brain.name])),
 );
@@ -4681,24 +4689,13 @@ function App() {
     return _dispatchRuntime.runDefaultBrainTurn(text, onPartial, threadCtx);
   }
 
-  // Run the @me / @wren engineer co-pilot — a SIBLING of the
-  // operator's main Claude Code design conversation (egpt0-branch).
-  // EGPT_CONFIG.meta_brain.session_id is pinned to that conversation
-  // via Claude Code's /branch slash command run from the operator's
-  // shell. From any surface (WA/TG/extension/another shell), this
-  // routes through `claude --resume <session-id>` so every @me turn
-  // lands in the same thread with full inherited context.
-  //
-  // Distinct from runDefaultBrainTurn: no session-id persistence
-  // (the session was created out-of-band by /branch; we just resume,
-  // never mutate the config-stored id from claude's init events).
-  // No identity-install loop (the inherited transcript already
-  // carries the framing forward). Sessions aren't recorded into
-  // a history list because there's only ever the one pinned thread.
+  // Run @me / @wren / sibling engineer turns. Claude siblings may use
+  // pinned /branch session ids; Codex siblings can start fresh and then
+  // persist the Codex thread id back into config for later resumes.
   //
   // See project-egpt-at-me-identity + project-egpt-design-relationship
   // in memory for the role this fills.
-  async function runMetaBrainTurn(text, onPartial = () => {}, name = 'wren') {
+  async function runMetaBrainTurn(text, onPartial = () => {}, name = 'wren', opts = {}) {
     // Resolution order: EGPT_CONFIG.siblings[name] first (the registry
     // shape — supports @jay / @wren / future siblings as distinct
     // sessions). Falls back to EGPT_CONFIG.meta_brain only when no
@@ -4737,11 +4734,37 @@ function App() {
     const brainType = canonicalBrainName(mbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
     if (!brain) return `!! @${name}: brain "${brainType}" not found.`;
-    if (!mbCfg.session_id) {
+    const selectedName = name;
+    async function persistSiblingSession(sessionId) {
+      try {
+        if (source.startsWith('siblings.')) {
+          if (!EGPT_CONFIG.siblings || typeof EGPT_CONFIG.siblings !== 'object') EGPT_CONFIG.siblings = {};
+          if (!EGPT_CONFIG.siblings[selectedName] || typeof EGPT_CONFIG.siblings[selectedName] !== 'object') EGPT_CONFIG.siblings[selectedName] = {};
+          EGPT_CONFIG.siblings[selectedName].session_id = sessionId ?? null;
+        } else {
+          if (!EGPT_CONFIG.meta_brain || typeof EGPT_CONFIG.meta_brain !== 'object') EGPT_CONFIG.meta_brain = {};
+          EGPT_CONFIG.meta_brain.session_id = sessionId ?? null;
+        }
+        const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
+        const cfg = await readConfig();
+        if (source.startsWith('siblings.')) {
+          if (!cfg.siblings || typeof cfg.siblings !== 'object') cfg.siblings = {};
+          if (!cfg.siblings[selectedName] || typeof cfg.siblings[selectedName] !== 'object') cfg.siblings[selectedName] = {};
+          cfg.siblings[selectedName].session_id = sessionId ?? null;
+        } else {
+          if (!cfg.meta_brain || typeof cfg.meta_brain !== 'object') cfg.meta_brain = {};
+          cfg.meta_brain.session_id = sessionId ?? null;
+        }
+        await writeConfig(cfg);
+      } catch (e) {
+        sysOut(`!! @${selectedName}: couldn't persist session_id: ${e.message}`);
+      }
+    }
+    if (!mbCfg.session_id && brainType !== 'codex') {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     const sessionOpts = {
-      sessionId: mbCfg.session_id,
+      sessionId: mbCfg.session_id ?? null,
       cwd: mbCfg.cwd ?? process.cwd(),
       sessionName: name,
       userName: USER_NAME,
@@ -4756,6 +4779,17 @@ function App() {
         sessionOpts,
       );
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+      if (mbCfg.session_id && !opts._retried && isMissingResumeErrorText(final)) {
+        await persistSiblingSession(null);
+        mbCfg.session_id = null;
+        sysOut(`@${selectedName}: stored thread could not be resumed; cleared it and retrying fresh.`);
+        return runMetaBrainTurn(text, onPartial, selectedName, { ...opts, _retried: true });
+      }
+      const newSessionId = result?.optionsPatch?.sessionId;
+      if (brainType === 'codex' && newSessionId && newSessionId !== mbCfg.session_id) {
+        mbCfg.session_id = newSessionId;
+        await persistSiblingSession(newSessionId);
+      }
       // Empty successful reply → silence protocol marker. Was previously
       // the verbose string '(no reply)' which the dispatcher would ship
       // to chat as a real message. Now: empty == '...' == drop.

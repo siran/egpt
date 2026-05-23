@@ -57,6 +57,14 @@ function stamp(clock) {
   return clockIso(clock).replace('T', ' ').slice(0, 19);
 }
 
+function isMissingResumeError(text) {
+  const msg = String(text ?? '');
+  return /thread\/resume failed/i.test(msg)
+    || /no rollout found for thread id/i.test(msg)
+    || /no rollout found/i.test(msg)
+    || /resume failed/i.test(msg);
+}
+
 function registrySurface(threadCtx = {}) {
   const tid = String(threadCtx.threadId ?? '');
   const s = threadCtx.surface ?? '';
@@ -836,6 +844,21 @@ export function createDispatchRuntime({
       if (result?.[brainFailure]) throw result.error;
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const newThreadId = result?.optionsPatch?.sessionId;
+      const triedResume = !!(isPerContactDispatch && convSlug && convEntry?.threadId);
+      if (triedResume && !threadCtx._retried && isMissingResumeError(final)) {
+        await updateState((state) => {
+          const next = isSystemPersonality
+            ? setSystemThread(state, { threadId: null, threadCreatedAt: null, identityInjectedAt: null })
+            : patchContact(state, surface, convSlug, {
+                threadId: null,
+                threadCreatedAt: null,
+                identityInjectedAt: null,
+              });
+          return { state: next, write: true };
+        });
+        logSystem(`@e: stored thread for "${convSlug}" could not be resumed; cleared it and retrying fresh`);
+        return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
+      }
       if (isPerContactDispatch && isNewContact && newThreadId && convSlug) {
         await updateState((state) => {
           const now = clockIso(clock);
