@@ -16,6 +16,7 @@ import * as claudeSdk from './config/brains/claude-sdk.mjs';
 import * as codex from './config/brains/codex.mjs';
 import * as chatgptCdp from './config/brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './config/brains/claude-cdp.mjs';
+import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
@@ -407,6 +408,7 @@ const BRAINS = {
   [codex.name]: codex,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
+  [llama.name]:      llama,
 };
 
 const DEFAULT_PERSONA_BRAIN = { type: 'codex', model: 'gpt-5.4-mini' };
@@ -438,6 +440,7 @@ const BRAIN_PREFIX = {
   'ccode':       'ccode',
   'claude-sdk':  'csdk',
   'codex':       'codex',
+  'llama':       'l',
 };
 
 function canonicalBrainName(name) {
@@ -4767,7 +4770,10 @@ function App() {
         sysOut(`!! @${selectedName}: couldn't persist session_id: ${e.message}`);
       }
     }
-    if (!mbCfg.session_id && brainType !== 'codex') {
+    // Sessionless brains (e.g. llama — local llama.cpp) have no --resume:
+    // the host must not gate them on a session_id. codex is also exempt
+    // (it auto-creates + persists its own thread on first turn).
+    if (!mbCfg.session_id && brainType !== 'codex' && !brain.sessionless) {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     const sessionOpts = {
@@ -4779,6 +4785,7 @@ function App() {
       ...(configAddDirs(mbCfg)     ? { addDirs: configAddDirs(mbCfg) } : {}),
       ...(mbCfg.system_prompt      ? { appendSystemPrompt: mbCfg.system_prompt   } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
+      ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
     };
     try {
       const result = await brain.stream(
