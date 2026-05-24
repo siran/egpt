@@ -305,7 +305,42 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
 
-    sysOut('usage: /e supervisor [status|install|uninstall]');
+    if (action === 'restart' || action === 'update') {
+      // Restart the daemon to load new code — triggerable from WhatsApp,
+      // NO UAC. The daemon runs elevated (S4U / HighestAvailable), so a
+      // child it spawns inherits elevation and can kill + re-run the task
+      // without a prompt. (Operator 2026-05-24: a tool-launched
+      // self-elevating script's UAC never surfaced to the desktop; this
+      // dodges UAC entirely.) Detached + unref'd so the cleaner SURVIVES
+      // the daemon it's about to kill — the no-self-SIGHUP rule: never
+      // Stop your own task mid-call, hand it to a detached child.
+      const { spawn } = await import('node:child_process');
+      const cleaner =
+        `schtasks /End /TN egpt-daemon-headless;` +
+        `schtasks /End /TN egpt-watchdog;` +
+        `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ` +
+        `Where-Object { $_.CommandLine -match 'daemon-wrap' } | ` +
+        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };` +
+        `Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;` +
+        `Start-Sleep -Seconds 3;` +
+        `schtasks /Run /TN egpt-daemon-headless;` +
+        `schtasks /Run /TN egpt-watchdog`;
+      try {
+        const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', cleaner], {
+          detached: true, stdio: 'ignore', windowsHide: true,
+        });
+        child.unref();
+        sysOut('supervisor restart: detached cleaner launched (no UAC — daemon is already elevated).\n'
+          + '  → daemon dies + respawns on current code in ~5s; this surface drops then reconnects.\n'
+          + '  → ONLY works once the running daemon already has this code; for the FIRST load run\n'
+          + '    reset-daemon.ps1 from your own terminal (UAC surfaces there).');
+      } catch (e) {
+        sysOut(`!! supervisor restart: ${e?.message ?? e}`);
+      }
+      return true;
+    }
+
+    sysOut('usage: /e supervisor [status|install|uninstall|restart]');
     return true;
   }
 
