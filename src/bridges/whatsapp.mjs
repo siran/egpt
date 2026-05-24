@@ -2655,6 +2655,18 @@ export async function startWhatsAppBridge({
       processed = `@e ${processed}`;
     }
 
+    // Reply context for ANY quoted message. Operator 2026-05-24: replying
+    // to a voice note or another user's message must give the brain the
+    // quoted content — previously only replies to OUR OWN messages carried
+    // it (via replyPersona above), so @e was "out of context" on
+    // user-to-user / voice-note replies ("porfa guarda esta info" → "no veo
+    // la info"). _quotedPreview reads stored bodies incl. voice transcripts.
+    // Skip if replyPersona already appended it.
+    if (!replyPersona && ctxInfo?.quotedMessage) {
+      const _q = _quotedPreview(ctxInfo);
+      if (_q) processed = `${processed}\n\n${_q}`;
+    }
+
     // In groups, awareness 'mentions' (default) requires the message to
     // address us — either via @<our-number> or by replying to one of
     // ours. 'all' lets every group message through. Strip the
