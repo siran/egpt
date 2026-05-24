@@ -2855,6 +2855,11 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
+            // The operator's whitelisted spaces (auto_e_chats + self).
+            // An explicit @<being> mention here is deliberate intent and
+            // must bypass the observe-only meta suppression (otherwise
+            // @l/@jay/@wren in an auto_e group get SKIP'd). 2026-05-24.
+            waWhitelisted: isAutoEChat || isSystemContact,
             // Operator 2026-05-23: when this message body is a voice
             // transcript, mark it so formatPersonaPrompt can add a
             // "(transcript from voice note)" hint to the envelope —
@@ -5921,7 +5926,14 @@ function App() {
     // observe-only UNTIL added to auto_e_chats, but the command to
     // add it is filtered out by the same observe-only gate).
     const isOperatorCommand = decision.kind === 'command' && meta.fromWhatsApp;
-    if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand) {
+    // An explicit @<being> mention (meta dispatch) inside the operator's
+    // whitelisted spaces (auto_e_chats / self) is deliberate intent —
+    // bypass observe-only suppression, same as operator commands. Without
+    // this, "@l hola" in an auto_e group is SKIP'd as "observe-only meta".
+    // (Observed/non-whitelisted chats still suppress meta, so random
+    // members can't trigger @jay etc. there.) 2026-05-24.
+    const isOperatorBeingMention = decision.kind === 'meta' && meta.fromWhatsApp && !!meta.waWhitelisted;
+    if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand && !isOperatorBeingMention) {
       // Observed chat, no @e mention, not an operator command → no
       // dispatch. Log to activity log so "did @e see my message?" has
       // a grep-able answer: the message arrived, was observed, not
