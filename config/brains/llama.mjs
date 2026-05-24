@@ -1,0 +1,110 @@
+// brains/llama.mjs — local llama.cpp via llama-server's OpenAI-compatible
+// HTTP endpoint. Mirrors the warm-server pattern egpt already uses for
+// whisper-server: a model kept resident in a local process, POSTed per
+// turn. STATELESS — there is no session/resume; the whole conversation is
+// sent as the prompt each call (same as the non-resume path of the claude
+// brains). @l is a CHATTER: no tools, no filesystem — it reasons/replies.
+//
+// Start the server (operator, CPU-first):
+//   llama-server -m <model.gguf> -c 4096 --port 8080
+//   (add `-ngl 99` to offload layers to GPU when available)
+//
+// Interface matches the other brains:
+//   stream({ history, message }, onUpdate, options) -> Promise<{ text, optionsPatch }>
+
+export const name = 'llama';
+export const legacyNames = ['local', 'llamacpp', 'llama-cpp'];
+export const description = 'Local llama.cpp model via llama-server (OpenAI-compatible HTTP). Chat only — no tools.';
+export const requires = [];
+// No --resume: the host must NOT gate this brain on a session_id, and must
+// pass the full conversation as `history` each turn.
+export const sessionless = true;
+
+const DEFAULT_URL = 'http://127.0.0.1:8080';
+
+export function stream({ history, message }, onUpdate, options = {}) {
+  return new Promise(async (resolve, reject) => {
+    const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
+    const base = String(options.url || options.baseUrl || DEFAULT_URL).replace(/\/+$/, '');
+    const prompt = String(history ?? message ?? '');
+
+    const messages = [];
+    if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
+      messages.push({ role: 'system', content: options.appendSystemPrompt.trim() });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    const body = {
+      messages,
+      stream: true,
+      ...(options.model ? { model: options.model } : {}),
+      ...(Number.isFinite(options.temperature) ? { temperature: options.temperature } : {}),
+      ...(Number.isFinite(options.maxTokens) ? { max_tokens: options.maxTokens } : {}),
+    };
+
+    const HARD_MS = options.hardTimeoutMs ?? 600_000;
+    const STALL_MS = options.stallTimeoutMs ?? 120_000;
+    const ac = new AbortController();
+    let settled = false;
+    let lastProgress = Date.now();
+    const startedAt = Date.now();
+    const wd = setInterval(() => {
+      const idle = Date.now() - lastProgress;
+      const total = Date.now() - startedAt;
+      if (idle < STALL_MS && total < HARD_MS) return;
+      const why = total >= HARD_MS ? `hard timeout ${HARD_MS}ms` : `stalled ${idle}ms`;
+      onLog(`llama: aborting — ${why}`);
+      try { ac.abort(); } catch {}
+    }, 5000);
+    const done = (fn, v) => { if (!settled) { settled = true; clearInterval(wd); fn(v); } };
+
+    onLog(`llama: POST ${base}/v1/chat/completions model=${options.model ?? '(server default)'}`);
+    let acc = '';
+    try {
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => '');
+        return done(reject, new Error(`llama-server HTTP ${res.status}: ${t.slice(0, 300) || res.statusText}`));
+      }
+      if (!res.body) return done(reject, new Error('llama-server: streaming response had no body'));
+
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done: rdone } = await reader.read();
+        if (rdone) break;
+        lastProgress = Date.now();
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          const l = line.trim();
+          if (!l.startsWith('data:')) continue;
+          const payload = l.slice(5).trim();
+          if (payload === '[DONE]') continue;
+          let ev;
+          try { ev = JSON.parse(payload); } catch { continue; }
+          const delta = ev?.choices?.[0]?.delta?.content;
+          if (typeof delta === 'string' && delta) {
+            acc += delta;
+            try { onUpdate(acc); } catch (e) { onLog(`llama: onUpdate threw: ${e?.message ?? e}`); }
+          }
+        }
+      }
+      onLog(`llama: settled in ${Date.now() - startedAt}ms (${acc.length}ch)`);
+      done(resolve, { text: acc, optionsPatch: null });
+    } catch (e) {
+      if (e?.name === 'AbortError') return done(reject, new Error('llama: aborted (timeout)'));
+      const hint = /ECONNREFUSED|fetch failed/i.test(String(e?.message ?? ''))
+        ? ` — is llama-server running at ${base}? (llama-server -m <model.gguf> --port 8080)`
+        : '';
+      done(reject, new Error(`llama: ${e?.message ?? e}${hint}`));
+    }
+  });
+}
