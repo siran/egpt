@@ -45,7 +45,29 @@ foreach ($t in $tasks) {
   if ($LASTEXITCODE -eq 0) { Log "created $($t.Name)" }
   else { Log "FAILED $($t.Name): $out" }
 }
-Log "done"
+Log "done creating tasks"
+
+# Apply immediately: kill the running daemon (which may still be the OLD
+# elevated/HighestAvailable one) + its wrappers, then re-run the freshly
+# registered task so the new RunLevel takes effect now, not at next boot.
+# We are elevated here (the one UAC), so we CAN kill the old high-integrity
+# daemon. This is the elevated->least-privilege transition; after it, the
+# daemon runs at medium integrity and reset-daemon.ps1 restarts it with
+# ZERO UAC. (operator 2026-05-24: de-elevate to stop UAC secure-desktop
+# transitions from crashing the machine.)
+Log "stopping running daemon + wrappers, re-running fresh task..."
+& schtasks /End /TN egpt-daemon-headless 2>$null
+& schtasks /End /TN egpt-watchdog        2>$null
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -and $_.CommandLine -match 'daemon-wrap\.ps1' -and $_.ProcessId -ne $PID } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 3
+& schtasks /Run /TN egpt-daemon-headless 2>$null
+& schtasks /Run /TN egpt-watchdog        2>$null
+Log "fresh least-privilege daemon + watchdog started"
 Write-Host ""
-Write-Host "egpt supervisor tasks installed. This window closes in 6s..."
+Write-Host "egpt supervisor re-registered at LEAST-PRIVILEGE + restarted."
+Write-Host "From now on, restarts need NO UAC (reset-daemon.ps1 / /restart)."
+Write-Host "This window closes in 6s..."
 Start-Sleep -Seconds 6
