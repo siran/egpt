@@ -2905,10 +2905,12 @@ function App() {
           // (observe-only / wake-word handling downstream).
           if (submitRef.current) {
             if (!isSlash && !autoPaused && (isAutoEChat || isSystemContact)) {
-              // Watcher: mirror the raw incoming message ONCE (msg 1). The
-              // per-being prompt + reply (msgs 2-5) are mirrored at the
-              // dispatch taps in the persona / meta handlers.
-              confirmMirrorRef.current?.(from.chatId, '📥 in', text);
+              // Watcher mirroring happens at the per-being dispatch taps
+              // (persona + meta handlers): "→ <being>" = the exact string
+              // that being is fed (envelope for session brains, raw words for
+              // sessionless @l), "<being> →" = its reply. No separate raw
+              // "incoming" line — the operator debugging wants exactly what
+              // each brain SEES, nothing else.
               const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
                 ? EGPT_CONFIG.whatsapp.residents
                 : [_personaBeing];
