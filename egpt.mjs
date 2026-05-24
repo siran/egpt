@@ -4419,6 +4419,50 @@ function App() {
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
 
+  // Sessionless siblings (e.g. @l / llama) keep no server-side history —
+  // each turn is contextless. Feed them a rolling window of the chat's
+  // recent turns from transcript.md so they actually follow the
+  // conversation. Operator 2026-05-24: "let it have context." Capped
+  // (sibling.context_turns, default 12) so CPU prompt-eval stays bounded.
+  async function buildRecentContext(meta, maxTurns = 12) {
+    try {
+      const cs = _convStateCache;
+      if (!cs) return '';
+      let dir = null;
+      if (meta.fromWhatsApp && meta.waChatId) {
+        const c = conversationsState.getContact(cs, 'whatsapp', meta.waChatId);
+        if (c?.personality === 'system') dir = conversationsState.SYSTEM_SLUG_DIR;
+        else if (c?.slug) dir = conversationsState.slugDir('whatsapp', c.slug);
+      } else if (meta.fromTelegram && meta.telegramChatId != null) {
+        const c = conversationsState.getContact(cs, 'telegram', String(meta.telegramChatId));
+        if (c?.personality === 'system') dir = conversationsState.SYSTEM_SLUG_DIR;
+        else if (c?.slug) dir = conversationsState.slugDir('telegram', c.slug);
+      }
+      if (!dir) return '';
+      const raw = await readFile(join(dir, 'transcript.md'), 'utf8').catch(() => '');
+      if (!raw) return '';
+      // Parse `[<speaker>@chat (HH:MM)]: <body>` entries; body runs until
+      // the next entry or EOF. Strip the @chat + (time) from the speaker.
+      const re = /\[([^\]]+)\]:[ \t]*([\s\S]*?)(?=\n\[[^\]]+\]:|\s*$)/g;
+      const turns = [];
+      let m;
+      while ((m = re.exec(raw)) !== null) {
+        // Speaker is "Name@chat.wa (HH:MM)" or "@e (HH:MM)". Drop the
+        // "(time)"; strip the "@chat" suffix only when a name precedes it
+        // (so "Name@chat" → "Name") but KEEP a leading "@e"/"@l" persona.
+        let who = m[1].replace(/\s*\([^)]*\)\s*$/, '').trim();
+        const at = who.indexOf('@');
+        if (at > 0) who = who.slice(0, at).trim();
+        const body = m[2].trim();
+        if (!who || !body || body === '…' || body === '...') continue;
+        turns.push(`${who}: ${body}`);
+      }
+      if (!turns.length) return '';
+      const recent = turns.slice(-Math.max(1, maxTurns));
+      return `[Contexto — mensajes recientes de este chat (más antiguo arriba):]\n${recent.join('\n')}\n[Fin del contexto. Responde solo al último mensaje:]\n`;
+    } catch (e) { return ''; }
+  }
+
   // Run the node-global "@egpt" persona — same brain machinery as a
   // /attach-ed session, just lives outside any room (omnipresent
   // butler giving continuity across rooms / bridges).
@@ -6298,7 +6342,15 @@ function App() {
         const sibsCfg = EGPT_CONFIG.siblings ?? {};
         const sibEntry = sibsCfg[sibName] ?? {};
         const sibEmoji = sibEntry.body_emoji ?? sibEntry.emoji ?? '🐦';
-        const personaPrompt = formatPersonaPrompt(meta, decision.body);
+        let personaPrompt = formatPersonaPrompt(meta, decision.body);
+        // Sessionless siblings (@l) get a rolling history window prepended
+        // so they follow the conversation; brains with their own session
+        // (claude/codex) already remember and skip this.
+        const _sibBrain = brainForName(canonicalBrainName(sibEntry.type ?? 'claude-code'));
+        if (_sibBrain?.sessionless) {
+          const _ctx = await buildRecentContext(meta, Number(sibEntry.context_turns) || 12);
+          if (_ctx) personaPrompt = _ctx + personaPrompt;
+        }
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
         const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
