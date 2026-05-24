@@ -127,6 +127,21 @@ export function resolveRoute(parsed, fullText, ctx) {
     return { kind: 'command', cmd: parsed.cmd, rest: parsed.rest ?? '' };
   }
 
+  // forceTarget — dispatch the RAW message directly to a named being by
+  // config, with NO @-text injection. Operator 2026-05-24 ("no faking
+  // anymore"): auto_e chats broadcast every message to each resident
+  // brain via forceTarget; each being self-selects whether to answer
+  // (a '…' reply is dropped). The brain sees the full text — including
+  // any "@<name>" in it — so it can tell whether it was addressed.
+  if (ctx?.forceTarget) {
+    const t = String(ctx.forceTarget).toLowerCase();
+    const personaName = String(ctx.personaName ?? 'e').toLowerCase();
+    const body = fullText || '?';
+    return t === personaName
+      ? { kind: 'persona', body }
+      : { kind: 'meta', name: ctx.forceTarget, body };
+  }
+
   if (parsed.type === 'mention') {
     const token = parsed.target;
     const body = parsed.body || '?';

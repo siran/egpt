@@ -2824,38 +2824,9 @@ function App() {
             } catch (e) { return false; }
           })();
           const trimmed = String(text ?? '').trimStart();
-          // Skip auto-prefix when the mention is specifically to @e or
-          // @egpt (already a persona dispatch — would create `@e @e ...`).
-          // Mentions to OTHER names (other family members, e.g.
-          // `@daniel hola`) DON'T skip — the conversation-e for an
-          // auto_e_chats group should see EVERY message including ones
-          // addressed to other people. Operator (2026-05-22): "all
-          // messages in group, as you know, should route to
-          // conversation-e."
-          const _mention = trimmed.match(/^@([\w-]+)/);
-          const _mentionName = _mention ? _mention[1].toLowerCase() : null;
-          // A leading @<known being> must route to THAT being, NOT be
-          // wrapped in @e. Covers @e/@egpt, @me (→ main_engineer), and any
-          // sibling registry name or alias (e.g. @l/@local, @jay, @wren,
-          // @mira). Operator 2026-05-24: "@l hola" in an auto_e/self chat
-          // was rewritten to "@e @l hola" and swallowed by the persona —
-          // siblings were unreachable from WhatsApp. Mentions of
-          // NON-registered names (human participants like @daniel) still
-          // get the @e prefix so conversation-e sees every group message.
-          const _sibs = (EGPT_CONFIG.siblings && typeof EGPT_CONFIG.siblings === 'object')
-            ? EGPT_CONFIG.siblings : {};
-          const _isKnownBeing = !!_mentionName && (
-            _mentionName === 'e' || _mentionName === 'egpt' || _mentionName === 'me' ||
-            Object.keys(_sibs).some(n => n.toLowerCase() === _mentionName) ||
-            Object.values(_sibs).some(en => Array.isArray(en?.aliases)
-              && en.aliases.some(a => String(a).toLowerCase() === _mentionName))
-          );
-          const isSlash    = trimmed.startsWith('/');
-          let dispatchText = text;
-          if (!autoPaused && !_isKnownBeing && !isSlash && (isAutoEChat || isSystemContact)) {
-            dispatchText = `@e ${text}`;
-          }
-          if (submitRef.current) await submitRef.current(dispatchText, {
+          const isSlash = trimmed.startsWith('/');
+          const _personaBeing = EGPT_CONFIG.persona ?? 'e';
+          const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
@@ -2863,36 +2834,46 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
-            // The operator's whitelisted spaces (auto_e_chats + self).
-            // An explicit @<being> mention here is deliberate intent and
-            // must bypass the observe-only meta suppression (otherwise
-            // @l/@jay/@wren in an auto_e group get SKIP'd). 2026-05-24.
+            // Operator's whitelisted spaces (auto_e_chats + self) — lets the
+            // resident-broadcast meta dispatches (e.g. @l) bypass observe-only
+            // suppression.
             waWhitelisted: isAutoEChat || isSystemContact,
-            // Operator 2026-05-23: when this message body is a voice
-            // transcript, mark it so formatPersonaPrompt can add a
-            // "(transcript from voice note)" hint to the envelope —
-            // brain sees plain transcript text + an unambiguous source
-            // tag, not the WA-visible 👂 sugar.
+            // Voice transcript marker → envelope hint "(transcript from voice
+            // note)". Every resident reads the transcript.
             isTranscriptFromVoice: !!from.isTranscriptFromVoice,
-            // Threaded from bridge (cf77999 detection): the persona
-            // slug if this WA message is a long-press-reply to one
-            // of our outbound messages, else null. Used by the
-            // persona dispatch to enable streaming/typing only on
-            // direct replies (not on auto_e_chats arrivals).
             replyPersona: from.replyPersona ?? null,
             replyPersonaFallback: from.replyPersonaFallback ?? false,
             waSenderName: from.senderName ?? null,
-            autoDispatched: dispatchText !== text,
-            // Streaming-transcription handle for voice notes (when the
-            // operator opted into whatsapp.media.audio_transcribe.streaming).
-            // The voice-stream branch at the top of submitInner consumes
-            // this — it opens a WA stream message, subscribes to chunk
-            // events, and replaces the placeholder body with transcript
-            // then brain reply. Was being dropped silently here, which
-            // is why @e saw '[voice note: 21s]' placeholders and
-            // reported "cero transcripciones."
             voiceStream: from.voiceStream ?? null,
-          });
+          };
+          // RESIDENT BROADCAST — operator 2026-05-24 ("no faking anymore").
+          // In auto_e_chats / self, every non-command message is sent RAW to
+          // each resident brain (no "@e " text injection). Each being self-
+          // selects whether to answer (a '…' reply is dropped), so @e AND @l
+          // (and any future resident) both SEE every message — including
+          // voice transcripts and image/video placeholders — and reply only
+          // when they should. An explicit "@l ..." is just content the brains
+          // read: @l answers, @e sees it and stays quiet via /rules. Slash
+          // commands + non-resident chats fall through to one normal dispatch
+          // (observe-only / wake-word handling downstream).
+          if (submitRef.current) {
+            if (!isSlash && !autoPaused && (isAutoEChat || isSystemContact)) {
+              const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
+                ? EGPT_CONFIG.whatsapp.residents
+                : [_personaBeing];
+              for (const being of residents) {
+                await submitRef.current(text, {
+                  ...baseMeta,
+                  forceTarget: being,
+                  // Only the persona resident uses the per-chat concurrency
+                  // queue; sessionless siblings (@l) run direct.
+                  autoDispatched: String(being).toLowerCase() === String(_personaBeing).toLowerCase(),
+                });
+              }
+            } else {
+              await submitRef.current(text, { ...baseMeta, autoDispatched: false });
+            }
+          }
         },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => errOut(`!! whatsapp: ${msg}`),
@@ -5933,6 +5914,10 @@ function App() {
       // the persona path). A top-level role pointer, not a per-being
       // 'kind' tag. Default 'e'.
       personaName: EGPT_CONFIG.persona ?? 'e',
+      // forceTarget — broadcast dispatch: route this raw message to the
+      // named being regardless of any @-mention in the text. Set by the
+      // auto_e bridge broadcast (one submit per resident). 2026-05-24.
+      forceTarget: meta.forceTarget ?? null,
     });
 
     // Observed chats: egpt only acts on @<persona> wake-words. Any
@@ -6334,11 +6319,21 @@ function App() {
           : formatPersonaPrompt(meta, decision.body);
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
-        const tgStream = (meta.fromTelegram && bridgeRef.current?.startStreamMessage)
+        // A resident being can self-select OUT of a message by replying with
+        // '…' (or empty) — we then post nothing. Operator 2026-05-24: "can
+        // an unreasoning @l be quiet?" Yes — its profile instructs it to
+        // answer '…' when not addressed/relevant, and this drops it.
+        const _silentReply = (r) => { const t = String(r ?? '').trim(); return t === '' || /^(\.{3,}|…+)$/.test(t); };
+        // Sessionless residents (@l) don't stream a "thinking…" placeholder —
+        // we can't know they'll stay quiet until the reply is in, and a
+        // placeholder we'd have to delete is ugly. Collect, then send only if
+        // non-silent (below). Session siblings (claude/codex) keep streaming.
+        const _streaming = !_sibBrain?.sessionless;
+        const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage)
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
-        const waStream = (meta.fromWhatsApp && streamFactoryRef.current)
+        const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current)
           ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
@@ -6376,7 +6371,7 @@ function App() {
         }, sibName);
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
-        } else if (meta.fromTelegram && bridgeRef.current) {
+        } else if (meta.fromTelegram && bridgeRef.current && !_silentReply(reply)) {
           bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
         }
@@ -6404,7 +6399,7 @@ function App() {
               errOut(`!! @${sibName}: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
             }
           }
-        } else if (meta.fromWhatsApp && waBridgeRef.current) {
+        } else if (meta.fromWhatsApp && waBridgeRef.current && !_silentReply(reply)) {
           const r = await waBridgeRef.current.send(
             `${waPrefix}${reply}`,
             { chatId: meta.waChatId },
