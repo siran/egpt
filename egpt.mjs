@@ -2825,10 +2825,26 @@ function App() {
           // messages in group, as you know, should route to
           // conversation-e."
           const _mention = trimmed.match(/^@([\w-]+)/);
-          const mentionsE = !!_mention && (_mention[1] === 'e' || _mention[1] === 'egpt');
+          const _mentionName = _mention ? _mention[1].toLowerCase() : null;
+          // A leading @<known being> must route to THAT being, NOT be
+          // wrapped in @e. Covers @e/@egpt, @me (→ main_engineer), and any
+          // sibling registry name or alias (e.g. @l/@local, @jay, @wren,
+          // @mira). Operator 2026-05-24: "@l hola" in an auto_e/self chat
+          // was rewritten to "@e @l hola" and swallowed by the persona —
+          // siblings were unreachable from WhatsApp. Mentions of
+          // NON-registered names (human participants like @daniel) still
+          // get the @e prefix so conversation-e sees every group message.
+          const _sibs = (EGPT_CONFIG.siblings && typeof EGPT_CONFIG.siblings === 'object')
+            ? EGPT_CONFIG.siblings : {};
+          const _isKnownBeing = !!_mentionName && (
+            _mentionName === 'e' || _mentionName === 'egpt' || _mentionName === 'me' ||
+            Object.keys(_sibs).some(n => n.toLowerCase() === _mentionName) ||
+            Object.values(_sibs).some(en => Array.isArray(en?.aliases)
+              && en.aliases.some(a => String(a).toLowerCase() === _mentionName))
+          );
           const isSlash    = trimmed.startsWith('/');
           let dispatchText = text;
-          if (!autoPaused && !mentionsE && !isSlash && (isAutoEChat || isSystemContact)) {
+          if (!autoPaused && !_isKnownBeing && !isSlash && (isAutoEChat || isSystemContact)) {
             dispatchText = `@e ${text}`;
           }
           if (submitRef.current) await submitRef.current(dispatchText, {
