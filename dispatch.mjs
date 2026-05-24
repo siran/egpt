@@ -415,7 +415,7 @@ export async function dispatchPersonaTurn({
   if (isSilence(reply)) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
     logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
-    return { kind: 'silence', reply, threadCtx };
+    return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
 
   const delivery = await deliverBridgeReply({
@@ -431,7 +431,7 @@ export async function dispatchPersonaTurn({
     reply,
     stateDir,
   });
-  return { kind: 'reply', reply, threadCtx, delivery };
+  return { kind: 'reply', reply, threadCtx, delivery, personaPrompt };
 }
 
 export function createDispatchRuntime({

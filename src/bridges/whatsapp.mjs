@@ -267,7 +267,6 @@ export async function startWhatsAppBridge({
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
   onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
   onSummonMovie, // called when '@movie <preset> [args]' token detected; host builds frames and calls playFrames with existingKey so the trigger message becomes the movie
-  onOutbound,    // called (chatId, text) for every outbound text body the bridge writes (send + stream finish); host uses it for the /e confirm watcher. Text-only (no edits/reacts), best-effort, never awaited
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -3347,7 +3346,6 @@ export async function startWhatsAppBridge({
         log(`send: dropping silence-marker "${String(text).trim().slice(0, 40)}" → ${target}`);
         return { silenced: true };
       }
-      try { onOutbound?.(target, text); } catch (e) { err(`onOutbound (send): ${e.message}`); }
       // Chunk long bodies so WA's per-message limit (or any
       // intermediate baileys quirk at large sizes) doesn't silently
       // truncate the reply. First chunk's send result is what the
@@ -3527,7 +3525,6 @@ export async function startWhatsAppBridge({
           if (isSilenceMarker(text)) {
             return this.cancel();
           }
-          try { onOutbound?.(target, text); } catch (e) { err(`onOutbound (finish): ${e.message}`); }
           finished = true;
           pending = text;
           if (editTimer) { clearTimeout(editTimer); editTimer = null; }

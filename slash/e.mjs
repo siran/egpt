@@ -28,10 +28,11 @@
 //                                    session memory, default all-tools)
 //
 //   /e confirm [<jid>] on|off|status [self|shell|egptbot|all]
-//                                  — watcher/wiretap: mirror VERBATIM both
-//                                    the prompt egpt sends to the brains and
-//                                    the text it writes back into <jid>, to
-//                                    the chosen destination(s). 'on' default
+//                                  — watcher/wiretap on <jid>: mirror VERBATIM
+//                                    + per-being the raw exchange — incoming
+//                                    msg, the exact prompt each resident brain
+//                                    is handed, and each brain's raw reply —
+//                                    to the chosen destination(s). 'on' default
 //                                    dest is self; 'all' = self+shell+egptbot.
 //                                    bare 'off' (or 'off all') stops watching.
 
