@@ -2552,18 +2552,20 @@ function App() {
       // wa.send, which rememberSent's them, so they never loop back into
       // dispatch even though the self-DM is itself an auto_e chat. Exposed via
       // confirmMirrorRef so the per-being dispatch taps can reach it.
-      confirmMirrorRef.current = async (jid, content) => {
+      confirmMirrorRef.current = async (jid, header, content) => {
         try {
           if (!jid) return;
           const watch = EGPT_CONFIG.whatsapp?.confirm_chats;
           const dests = watch && Array.isArray(watch[jid]) ? watch[jid] : null;
           if (!dests || !dests.length) return;
-          // Operator wants EXACTLY the string prompted to the model, nothing
-          // else — no "👁 chat · → being" header. The envelope itself
-          // ([Sender@chat (HH:MM)]: body) is self-identifying.
+          // Directional debug header that traces the flow — "Debug: ->E"
+          // (human prompted E), "Debug: <-E" (reply received from E),
+          // "Debug: E->L" (E's reply re-circulated as L's prompt) — followed
+          // by the exact envelope as fenced content.
           const body = String(content ?? '');
-          const waBody = `\`\`\`\n${body}\n\`\`\``;   // ``` = WhatsApp monospace
-          const shellBody = body;                      // shell is already monospace
+          const hdr = header ? `Debug: ${header}` : null;
+          const waBody = hdr ? `${hdr}\n\`\`\`\n${body}\n\`\`\`` : `\`\`\`\n${body}\n\`\`\``;
+          const shellBody = hdr ? `${hdr}\n${body}` : body;
           const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
           for (const dest of dests) {
             if (dest === 'shell') {
@@ -4552,14 +4554,16 @@ function App() {
         ? EGPT_CONFIG.whatsapp.residents
         : [EGPT_CONFIG.persona ?? 'e'];
       if (!residents.some(r => lc(r) === lc(being))) return;
+      // "Debug: <-E" — reply received from this resident, in envelope form.
+      // (Forwarding it to the other residents below fires their dispatch
+      // tap as "Debug: E->L", so the same reply also shows as the next
+      // brain's prompt.)
+      const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
+      confirmMirrorRef.current?.(meta.waChatId, `<-${String(being).toUpperCase()}`, env);
       const others = residents.filter(r => lc(r) !== lc(being));
       const depth = Number(meta._chainDepth) || 0;
       const cap = Number(EGPT_CONFIG.whatsapp?.resident_chain_cap ?? 10);
-      if (depth >= cap || others.length === 0) {
-        const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
-        confirmMirrorRef.current?.(meta.waChatId, env);   // terminal: echo to Self, don't re-feed
-        return;
-      }
+      if (depth >= cap || others.length === 0) return;   // terminal: received, not forwarded
       const persona = EGPT_CONFIG.persona ?? 'e';
       for (const other of others) {
         submitRef.current?.(body, {
@@ -6363,10 +6367,16 @@ function App() {
           runDefaultBrainTurn,
           stateDir: EGPT_HOME,
         });
-        // Watcher: the exact string @e was fed. Brains converse: feed @e's
-        // reply (even '…') to the other residents — done before the silence
-        // early-return so a quiet @e still reaches @l (which may react).
-        confirmMirrorRef.current?.(meta.waChatId, turn.personaPrompt);
+        // Watcher: "->E" (human prompt) or "S->E" (resident S's reply
+        // re-circulated); content = the exact envelope fed to @e. Then feed
+        // @e's reply (even '…') onward — before the silence early-return so a
+        // quiet @e still reaches @l (which may react).
+        {
+          const _t = String(personaName).toUpperCase();
+          const _arrow = (Number(meta._chainDepth) || 0) >= 1
+            ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
+          confirmMirrorRef.current?.(meta.waChatId, _arrow, turn.personaPrompt);
+        }
         _recirculateResidentReply({ being: personaName, reply: turn.reply, meta });
         if (turn.kind === 'silence') return;
         const reply = turn.reply;
@@ -6541,8 +6551,14 @@ function App() {
         };
         let waAnswerStream = null;   // message 2 (the final answer)
         let waSplit = false;
-        // Watcher: the exact string this being is fed.
-        confirmMirrorRef.current?.(meta.waChatId, personaPrompt);
+        // Watcher: "->L" (human prompt) or "S->L" (resident S's reply
+        // re-circulated); content = the exact envelope fed to this being.
+        {
+          const _t = String(sibName).toUpperCase();
+          const _arrow = (Number(meta._chainDepth) || 0) >= 1
+            ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
+          confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
+        }
         const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) {
