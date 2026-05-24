@@ -26,6 +26,14 @@
 //                                    (minutes; default 30)
 //   /e butler <prompt>             — ephemeral haiku sub-agent (no
 //                                    session memory, default all-tools)
+//
+//   /e confirm [<jid>] on|off|status [self|shell|egptbot|all]
+//                                  — watcher/wiretap: mirror VERBATIM both
+//                                    the prompt egpt sends to the brains and
+//                                    the text it writes back into <jid>, to
+//                                    the chosen destination(s). 'on' default
+//                                    dest is self; 'all' = self+shell+egptbot.
+//                                    bare 'off' (or 'off all') stops watching.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -46,8 +54,8 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid]',
-  desc: 'reboot conversation-e in this chat; control auto-dispatch and heartbeats',
+  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all]',
+  desc: 'reboot conversation-e in this chat; control auto-dispatch, heartbeats, and the confirm watcher',
 };
 
 // Legacy stub kept only because other call paths may import it. The
@@ -472,8 +480,82 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // ── /e confirm [<jid>] [status|on|off] [self|shell|egptbot|all] ──
+  // Watcher / wiretap: for a jid, egpt mirrors VERBATIM both the prompt
+  // it sends to the brains (inbound) and the text it writes back into the
+  // chat (outbound) to the named destination(s). Tokens are parsed
+  // position-independently (jid carries '@', action ∈ status|on|off, dest ∈
+  // self|shell|egptbot|all) so the operator can type them in any order.
+  if (sub === 'confirm') {
+    const rest = tokens.slice(1);
+    const ACTIONS = new Set(['status', 'on', 'off']);
+    const DESTS   = new Set(['self', 'shell', 'egptbot', 'all']);
+    let cJid = null, cAction = null;
+    const destTokens = [];
+    for (const t of rest) {
+      const lt = t.toLowerCase();
+      if (t.includes('@')) cJid = t;
+      else if (ACTIONS.has(lt)) cAction = lt;
+      else if (DESTS.has(lt)) destTokens.push(lt);
+    }
+    const expand = (ds) => ds.includes('all') ? ['self', 'shell', 'egptbot'] : [...new Set(ds)];
+
+    if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
+    const wa2 = EGPT_CONFIG.whatsapp;
+    if (!wa2.confirm_chats || typeof wa2.confirm_chats !== 'object') wa2.confirm_chats = {};
+
+    // Default action: bare `/e confirm` → status.
+    if (!cAction) cAction = 'status';
+
+    if (cAction === 'status') {
+      const entries = Object.entries(wa2.confirm_chats);
+      const list = entries.length
+        ? entries.map(([j, ds]) => `  - ${j} → ${(Array.isArray(ds) ? ds : []).join(', ') || '(none)'}`).join('\n')
+        : '  (none)';
+      sysOut(`/e confirm (watched chats):\n${list}`);
+      return true;
+    }
+
+    const chatId = cJid ?? dispatchMeta?.waChatId ?? null;
+    const isSelfOrShell = !chatId || chatId === EGPT_CONFIG.whatsapp?.chat_id;
+    if (!cJid && isSelfOrShell) {
+      sysOut("/e confirm on|off: here you must name a <jid> (the current-chat default only autofills inside a channel). "
+        + "e.g. `/e confirm 120363...@g.us on self shell`");
+      return true;
+    }
+
+    if (cAction === 'on') {
+      const want = expand(destTokens.length ? destTokens : ['self']);  // default dest = self
+      const prev = Array.isArray(wa2.confirm_chats[chatId]) ? wa2.confirm_chats[chatId] : [];
+      wa2.confirm_chats[chatId] = [...new Set([...prev, ...want])];
+    } else { // off
+      const remove = expand(destTokens);
+      if (!destTokens.length || destTokens.includes('all')) {
+        delete wa2.confirm_chats[chatId];                 // stop watching entirely
+      } else {
+        const prev = Array.isArray(wa2.confirm_chats[chatId]) ? wa2.confirm_chats[chatId] : [];
+        const next = prev.filter(d => !remove.includes(d));
+        if (next.length) wa2.confirm_chats[chatId] = next;
+        else delete wa2.confirm_chats[chatId];
+      }
+    }
+
+    try {
+      const saved = await readConfig();
+      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
+      saved.whatsapp.confirm_chats = wa2.confirm_chats;
+      await writeConfig(saved);
+    } catch (e) {
+      sysOut(`!! /e confirm: persist failed: ${e.message}`);
+      return true;
+    }
+    const now = wa2.confirm_chats[chatId];
+    sysOut(`/e confirm ${cAction}: ${chatId} → ${now ? now.join(', ') : '(not watched)'}`);
+    return true;
+  }
+
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all]');
     return true;
   }
 

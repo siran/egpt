@@ -2519,8 +2519,58 @@ function App() {
             ])
           )]
         : undefined;  // bridge default applies
+      // /e confirm watcher — for any jid in whatsapp.confirm_chats, mirror
+      // VERBATIM both the prompt egpt sends to the brains (dir='in') and the
+      // text egpt writes back into the chat (dir='out') to the configured
+      // destinations. confirm_chats: { "<jid>": ["self","shell","egptbot"] }.
+      // Mirror copies carry a 👁 sentinel header so onOutbound never mirrors
+      // a mirror (no loop); copies sent to self go via the outbox → wa.send,
+      // which rememberSent's them so they're filtered from re-dispatch even
+      // though the self-DM is itself an auto_e chat.
+      const confirmMirror = async (jid, dir, text) => {
+        try {
+          if (!jid || !text) return;
+          if (String(text).startsWith('👁 ')) return;        // don't mirror a mirror
+          const watch = EGPT_CONFIG.whatsapp?.confirm_chats;
+          const dests = watch && Array.isArray(watch[jid]) ? watch[jid] : null;
+          if (!dests || !dests.length) return;
+          // Friendly chat label (falls back to the raw jid).
+          let label = jid;
+          try {
+            const r = _convStateCache && conversationsState.getContact(_convStateCache, 'whatsapp', jid);
+            label = r?.entry?.pushedName || r?.slug || jid;
+          } catch { /* keep jid */ }
+          const arrow = dir === 'out' ? '▸ OUT' : '◂ IN';
+          const framed = `👁 ${label} ${arrow}\n${String(text)}`;
+          const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
+          for (const dest of dests) {
+            if (dest === 'shell') {
+              setItems(p => [...p, {
+                id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: framed,
+              }]);
+            } else if (dest === 'self' || dest === 'egptbot') {
+              const targetJid = dest === 'self' ? selfDm : (EGPT_CONFIG.whatsapp?.egptbot_jid ?? null);
+              if (!targetJid) {
+                if (dest === 'egptbot') setItems(p => [...p, {
+                  id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+                  body: `!! /e confirm: dest "egptbot" needs whatsapp.egptbot_jid configured (no bot account yet) — skipped`,
+                }]);
+                continue;
+              }
+              if (dir === 'out' && targetJid === jid) continue;  // don't echo a chat's own outbound back into itself
+              const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+              const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: framed };
+              await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+            }
+          }
+        } catch (e) { console.error(`!! confirmMirror: ${e?.message ?? e}`); }
+      };
+
       const bridge = await startBaileysBridge({
         allowedUsers:      cfg.allowed_users ?? [],
+        // Watcher: bridge calls this for every outbound text it writes
+        // (send + stream finish). Host filters by confirm_chats.
+        onOutbound:        (targetJid, outText) => { confirmMirror(targetJid, 'out', outText); },
         awareness:         cfg.awareness ?? {},
         ...(personaNames ? { personaNames } : {}),
         // Default true: mid-body @e/@egpt routes to @e instead of
@@ -2858,6 +2908,9 @@ function App() {
           // (observe-only / wake-word handling downstream).
           if (submitRef.current) {
             if (!isSlash && !autoPaused && (isAutoEChat || isSystemContact)) {
+              // Watcher: mirror the prompt the brains receive ONCE (not per
+              // resident) before fan-out. This is the verbatim "to brains" copy.
+              confirmMirror(from.chatId, 'in', text);
               const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
                 ? EGPT_CONFIG.whatsapp.residents
                 : [_personaBeing];
