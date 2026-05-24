@@ -2933,6 +2933,12 @@ function App() {
               const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
                 ? EGPT_CONFIG.whatsapp.residents
                 : [_personaBeing];
+              // Record the human message ONCE in the sessionless-resident
+              // transcript (not per resident) so @l sees it as memory.
+              _appendResidentHistory(from.chatId, formatAutoDispatchLine({
+                senderName: baseMeta.waSenderName, body: text, ts: Date.now(),
+                surface: buildWaSurfaceTag(from.chatId),
+              }));
               for (const being of residents) {
                 await submitRef.current(text, {
                   ...baseMeta,
@@ -4532,6 +4538,27 @@ function App() {
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
 
+  // Per-chat rolling transcript for SESSIONLESS residents (e.g. @l), which —
+  // unlike @e's claude session — keep no server-side memory. We accumulate
+  // the chat's envelope lines (human messages + every brain reply) and feed
+  // the joined transcript as `history` each turn, so the stateless brain sees
+  // the whole conversation (its own past turns, the human, the other brains)
+  // just like @e does via its session. Bounded by whatsapp.resident_history_chars
+  // (default 30000) so it stays within llama's context window; oldest lines
+  // roll off. The /confirm watcher still shows only the per-turn envelope (the
+  // delta) — this buffer is invisible memory, the analogue of @e's session.
+  const _residentHistRef = useRef(new Map());   // chatId -> string[]
+  const _appendResidentHistory = (chatId, line) => {
+    if (!chatId || !line) return;
+    const cap = Number(EGPT_CONFIG.whatsapp?.resident_history_chars ?? 30000);
+    const arr = _residentHistRef.current.get(chatId) ?? [];
+    arr.push(String(line));
+    let total = arr.reduce((n, s) => n + s.length + 1, 0);
+    while (arr.length > 1 && total > cap) total -= (arr.shift().length + 1);
+    _residentHistRef.current.set(chatId, arr);
+  };
+  const _residentHistory = (chatId) => (_residentHistRef.current.get(chatId) ?? []).join('\n');
+
   // Resident brains converse. After a resident (a being in
   // whatsapp.residents) replies in an auto_e broadcast turn, feed that reply
   // — even '…' — to every OTHER resident as a fresh turn, framed as the
@@ -4560,6 +4587,7 @@ function App() {
       // brain's prompt.)
       const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
       confirmMirrorRef.current?.(meta.waChatId, `<-${String(being).toUpperCase()}`, env);
+      _appendResidentHistory(meta.waChatId, env);   // sessionless residents' memory
       const others = residents.filter(r => lc(r) !== lc(being));
       const depth = Number(meta._chainDepth) || 0;
       const cap = Number(EGPT_CONFIG.whatsapp?.resident_chain_cap ?? 10);
@@ -4989,7 +5017,11 @@ function App() {
     };
     try {
       const result = await brain.stream(
-        { history: text, message: text },
+        // Sessionless brains (e.g. llama @l) have no server-side thread, so
+        // the host supplies the conversation as opts.history — the per-chat
+        // rolling transcript that mimics @e's session memory. Falls back to
+        // the single turn when no history is supplied (engineer turns, etc.).
+        { history: opts.history ?? text, message: text },
         onPartial,
         sessionOpts,
       );
@@ -6574,7 +6606,9 @@ function App() {
               if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
             }
           }
-        }, sibName);
+        }, sibName, (_sibBrain?.sessionless && _isResident)
+          ? { history: _residentHistory(meta.waChatId) }   // stateless resident: feed the rolling transcript
+          : {});
         // Brains converse: feed this resident's reply (even '…') to the
         // other residents. The recipient's dispatch tap mirrors it to Self as
         // their next prompt, so the reply is echoed there as the formatted
