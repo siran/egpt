@@ -2956,6 +2956,57 @@ function App() {
     return () => stopWaBridge();
   }, [startWaBridge, stopWaBridge]);
 
+  // ── Local LLM (@l) supervisor ────────────────────────────────────
+  // Operator 2026-05-24: @l kept failing "fetch failed" because
+  // llama-server isn't auto-managed (dies on crash, never relaunched).
+  // The DAEMON spawns it at startup and respawns on exit (same proven
+  // node-spawn as whisper-server). The daemon's own boot-trigger covers
+  // reboots → llama returns whenever the daemon does. Only the headless
+  // daemon supervises (interactive shells must not spawn a duplicate that
+  // would fight for the port). Config: EGPT_CONFIG.local_llm
+  // { enabled, bin, cwd?, model_path, port, threads, extra_args }.
+  useEffect(() => {
+    if (!HEADLESS) return;
+    const cfg = EGPT_CONFIG.local_llm;
+    if (!cfg || cfg.enabled === false) return;
+    const bin = cfg.bin;
+    const model = cfg.model_path;
+    const cwd = cfg.cwd || (bin ? dirname(bin) : undefined);
+    if (!bin || !existsSync(bin) || !model || !existsSync(model)) {
+      errOut(`!! local_llm: bin/model missing (bin=${bin}, model=${model}) — @l won't auto-start`);
+      return;
+    }
+    const port = Number(cfg.port) || 11434;
+    const threads = Number(cfg.threads) || 8;
+    const args = ['-m', model, '--port', String(port), '-t', String(threads),
+      ...(Array.isArray(cfg.extra_args) ? cfg.extra_args.map(String) : [])];
+    let proc = null, stopped = false, backoff = 2000, stableTimer = null;
+    const spawnIt = () => {
+      if (stopped) return;
+      logOut(`local_llm: starting llama-server :${port} (${String(model).split(/[\\/]/).pop()})`);
+      try {
+        proc = spawn(bin, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      } catch (e) {
+        errOut(`!! local_llm spawn: ${e?.message ?? e}; retry in ${backoff}ms`);
+        setTimeout(spawnIt, backoff); backoff = Math.min(backoff * 2, 30000); return;
+      }
+      proc.stderr?.on('data', (d) => {
+        const s = d.toString();
+        if (/error|fail|listening|model loaded|couldn't bind/i.test(s)) logOut(`local_llm: ${s.trim().slice(0, 160)}`);
+      });
+      proc.on('exit', (code) => {
+        proc = null;
+        if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
+        if (stopped) return;
+        errOut(`local_llm: llama-server exited code=${code}; respawning in ${backoff}ms`);
+        setTimeout(spawnIt, backoff); backoff = Math.min(backoff * 2, 30000);
+      });
+      stableTimer = setTimeout(() => { if (proc && !stopped) backoff = 2000; }, 60000);
+    };
+    spawnIt();
+    return () => { stopped = true; if (stableTimer) clearTimeout(stableTimer); try { proc?.kill(); } catch {} };
+  }, []);
+
   // Outbox watcher — extracted to ./egpt-comm-handler.mjs as the first
   // step of the twin-soul split (see projects/egpt/play.md). Still
   // in-process this commit; future phases move it to its own process
@@ -6324,6 +6375,11 @@ function App() {
         // an unreasoning @l be quiet?" Yes — its profile instructs it to
         // answer '…' when not addressed/relevant, and this drops it.
         const _silentReply = (r) => { const t = String(r ?? '').trim(); return t === '' || /^(\.{3,}|…+)$/.test(t); };
+        // For sessionless residents (@l), an infra error ("!! @l: llama:
+        // fetch failed…") is NOT a chat reply — it's already logged to the
+        // shell; don't ALSO dump it into the group. Operator 2026-05-24.
+        const _dropResident = (r) => _silentReply(r)
+          || (_sibBrain?.sessionless && /^!!\s*@/.test(String(r ?? '').trimStart()));
         // Sessionless residents (@l) don't stream a "thinking…" placeholder —
         // we can't know they'll stay quiet until the reply is in, and a
         // placeholder we'd have to delete is ugly. Collect, then send only if
@@ -6371,7 +6427,7 @@ function App() {
         }, sibName);
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
-        } else if (meta.fromTelegram && bridgeRef.current && !_silentReply(reply)) {
+        } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
           bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
         }
@@ -6399,7 +6455,7 @@ function App() {
               errOut(`!! @${sibName}: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
             }
           }
-        } else if (meta.fromWhatsApp && waBridgeRef.current && !_silentReply(reply)) {
+        } else if (meta.fromWhatsApp && waBridgeRef.current && !_dropResident(reply)) {
           const r = await waBridgeRef.current.send(
             `${waPrefix}${reply}`,
             { chatId: meta.waChatId },

@@ -1,29 +1,24 @@
 # setup/reset-daemon.ps1 -- hard-reset the egpt daemon to ONE clean
-# elevated instance. Self-elevating (relaunches with UAC if not admin)
-# because killing high-integrity node procs + running the S4U task
-# both need admin.
+# instance. NO elevation: the daemon now runs at LeastPrivilege (operator
+# 2026-05-24 — de-elevated to stop UAC secure-desktop transitions, which
+# were crashing the machine). At medium integrity we can kill the daemon's
+# node procs + re-run the task without admin and WITHOUT a UAC prompt.
+#
+# (One-time exception: flipping the tasks elevated->least-privilege needs a
+# single UAC — that's install-tasks.ps1, not this. After that, this script
+# never prompts.)
 #
 # What it does:
 #   1. Stop both scheduled-task instances (egpt-daemon-headless, egpt-watchdog)
-#   2. Kill ALL node.exe (clears leftover/duplicate daemon generations)
-#   3. Re-run the daemon task (fresh single elevated tree on current code)
+#   2. Kill the daemon-wrap wrappers + node procs (clears duplicates)
+#   3. Re-run the daemon task (fresh single tree on current code)
 #   4. Wait + report: node procs, alive.txt freshness, watchdog status
 #
-# Run from any PowerShell:
+# Run from any PowerShell (no admin needed):
 #   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\src\egpt\setup\reset-daemon.ps1"
 # or just:  .\src\egpt\setup\reset-daemon.ps1
 
 $ErrorActionPreference = 'Continue'
-
-# --- self-elevate ---
-$me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Host "not admin -- relaunching elevated (approve UAC)..."
-  Start-Process powershell -Verb RunAs -ArgumentList @(
-    '-NoProfile','-ExecutionPolicy','Bypass','-File',"`"$PSCommandPath`""
-  )
-  exit
-}
 
 $alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive.txt'
 
