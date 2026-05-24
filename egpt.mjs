@@ -4805,6 +4805,22 @@ function App() {
     if (!mbCfg.session_id && brainType !== 'codex' && !brain.sessionless) {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
+    // Prompt profile: `system_prompt_file` points to a standalone file
+    // (path absolute or relative to ~/.egpt) holding the sibling's prompt.
+    // Read FRESH every turn so editing the profile is live — no daemon
+    // restart needed. Falls back to the inline `system_prompt` string.
+    let _sysPrompt = mbCfg.system_prompt ?? null;
+    if (mbCfg.system_prompt_file) {
+      try {
+        const _pf = isAbsolute(mbCfg.system_prompt_file)
+          ? mbCfg.system_prompt_file
+          : join(EGPT_HOME, mbCfg.system_prompt_file);
+        const _txt = await readFile(_pf, 'utf8');
+        if (_txt.trim()) _sysPrompt = _txt;
+      } catch (e) {
+        sysOut(`!! @${name}: system_prompt_file (${mbCfg.system_prompt_file}) read failed: ${e.message}`);
+      }
+    }
     const sessionOpts = {
       sessionId: mbCfg.session_id ?? null,
       cwd: mbCfg.cwd ?? process.cwd(),
@@ -4812,7 +4828,7 @@ function App() {
       userName: USER_NAME,
       ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
       ...(configAddDirs(mbCfg)     ? { addDirs: configAddDirs(mbCfg) } : {}),
-      ...(mbCfg.system_prompt      ? { appendSystemPrompt: mbCfg.system_prompt   } : {}),
+      ...(_sysPrompt               ? { appendSystemPrompt: _sysPrompt } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
     };
