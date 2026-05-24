@@ -6309,9 +6309,37 @@ function App() {
           ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
+        // WA two-message split for thinking models (@l). Operator
+        // 2026-05-24: "the thinking response should reply once, after
+        // </think> another reply with the last message." While the brain
+        // is still inside <think>…</think>, stream into message 1; the
+        // moment </think> appears, freeze msg1 and stream the final answer
+        // into a SEPARATE message 2. Brains that emit no </think> (the
+        // Claude engineers) never split → single message, as before.
+        const THINK_END = /<\/think\s*>/i;
+        const splitThink = (full) => {
+          const m = THINK_END.exec(full);
+          if (!m) return { think: full, answer: null };
+          const cut = m.index + m[0].length;
+          return { think: full.slice(0, cut), answer: full.slice(cut).replace(/^\s+/, '') };
+        };
+        let waAnswerStream = null;   // message 2 (the final answer)
+        let waSplit = false;
         const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
-          if (waStream) waStream.update(`${waPrefix}${partial}`);
+          if (waStream) {
+            const { think, answer } = splitThink(partial);
+            if (answer === null) {
+              waStream.update(`${waPrefix}${think}`);
+            } else {
+              if (!waSplit) {
+                waSplit = true;
+                waStream.finish(`${waPrefix}${think}`);     // freeze the thinking message
+                waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+              }
+              if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
+            }
+          }
         }, sibName);
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
@@ -6320,24 +6348,36 @@ function App() {
             { chatId: meta.telegramChatId });
         }
         if (waStream) {
-          await waStream.finish(`${waPrefix}${reply}`);
-          if (!waStream.delivered && meta.fromWhatsApp && waBridgeRef.current) {
+          const { think, answer } = splitThink(reply);
+          let primaryStream = waStream;
+          if (answer !== null) {
+            if (!waSplit) {
+              waSplit = true;
+              await waStream.finish(`${waPrefix}${think}`);
+              waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+            }
+            if (waAnswerStream) { await waAnswerStream.finish(`${waPrefix}${answer || '…'}`); primaryStream = waAnswerStream; }
+          } else {
+            await waStream.finish(`${waPrefix}${reply}`);
+          }
+          if (!primaryStream?.delivered && meta.fromWhatsApp && waBridgeRef.current) {
+            const fallbackText = answer !== null ? (answer || reply) : reply;
             const r = await waBridgeRef.current.send(
-              `🐦 wren: ${reply}`,
+              `${waPrefix}${fallbackText}`,
               { chatId: meta.waChatId },
             );
             if (!r) {
-              const errSuffix = waStream.lastError ? `  (stream: ${waStream.lastError})` : '';
-              errOut(`!! @me: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+              const errSuffix = primaryStream?.lastError ? `  (stream: ${primaryStream.lastError})` : '';
+              errOut(`!! @${sibName}: WA reply did NOT deliver to ${meta.waChatId}${errSuffix}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
             }
           }
         } else if (meta.fromWhatsApp && waBridgeRef.current) {
           const r = await waBridgeRef.current.send(
-            `🐦 wren: ${reply}`,
+            `${waPrefix}${reply}`,
             { chatId: meta.waChatId },
           );
           if (!r) {
-            errOut(`!! @me: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
+            errOut(`!! @${sibName}: WA reply did NOT deliver to ${meta.waChatId}\nreply was: ${reply.length > 200 ? reply.slice(0, 199) + '…' : reply}`);
           }
         }
         if (meta.observeOnly) {
