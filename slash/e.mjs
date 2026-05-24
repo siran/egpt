@@ -29,12 +29,12 @@
 //
 //   /e confirm [<jid>] on|off|status [self|shell|egptbot|all]
 //                                  — watcher/wiretap on <jid>: mirror VERBATIM
-//                                    + per-being the raw exchange — incoming
-//                                    msg, the exact prompt each resident brain
-//                                    is handed, and each brain's raw reply —
-//                                    to the chosen destination(s). 'on' default
-//                                    dest is self; 'all' = self+shell+egptbot.
-//                                    bare 'off' (or 'off all') stops watching.
+//                                    + per-being exactly what each resident
+//                                    brain is FED (→ <being>) and its raw reply
+//                                    (<being> →), in a ``` fence, to the chosen
+//                                    destination(s). 'on' default dest is self;
+//                                    'all' = self+shell+egptbot. bare 'off'
+//                                    (or 'off all') stops watching.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
