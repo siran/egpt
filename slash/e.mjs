@@ -16,7 +16,7 @@
 //                                    announcement frame, threadId
 //                                    preserved.
 //
-//   /e auto on|off [<jid>]         — toggle auto_e_chats membership
+//   /e auto on|off [<jid>|all]         — toggle auto_e_chats membership
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
 //
@@ -46,7 +46,7 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid]',
+  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid]',
   desc: 'reboot conversation-e in this chat; control auto-dispatch and heartbeats',
 };
 
@@ -438,7 +438,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming]');
     return true;
   }
 
@@ -468,18 +468,39 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   } else if (action === 'resume') {
     wa.auto_e_paused = false;
   } else if (action === 'on' || action === 'off') {
-    const chatId = resolveChatId();
-    if (!chatId) {
-      sysOut('/e auto on|off: no chat context — pass a JID explicitly (e.g. `/e auto on 120363407494846096@g.us`)');
-      return true;
-    }
-    if (action === 'on') {
-      if (!wa.auto_e_chats.includes(chatId)) wa.auto_e_chats.push(chatId);
+    const target = jidArg ? String(jidArg).trim() : null;
+    if (target && target.toLowerCase() === 'all') {
+      // Global kill switch (operator 2026-05-24): "/e auto off all" pauses
+      // ALL brain dispatch in auto_e chats; "/e auto on all" resumes.
+      // Non-destructive — keeps the auto_e_chats list (same flag as
+      // pause/resume). The broadcast in egpt.mjs is gated on
+      // !auto_e_paused, so this stops @e AND @l everywhere instantly.
+      wa.auto_e_paused = (action === 'off');
     } else {
-      wa.auto_e_chats = wa.auto_e_chats.filter(j => j !== chatId);
+      let chatId = target;
+      if (!chatId) {
+        // Autofill the CURRENT channel's jid — but NOT in Self (self-DM)
+        // or the shell, where there's no channel to target. There you must
+        // name a <jid> or 'all', so a bare "/e auto off" in Self can't
+        // silently toggle the wrong thing (operator 2026-05-24).
+        const here = dispatchMeta?.waChatId ?? null;
+        const isSelfOrShell = !here || here === EGPT_CONFIG.whatsapp?.chat_id;
+        if (isSelfOrShell) {
+          sysOut("/e auto on|off: here you must name a target — a <jid> or 'all' "
+            + "(e.g. `/e auto off all` to kill every chat, `/e auto off <jid>` for one). "
+            + "The current-chat default only autofills inside a channel.");
+          return true;
+        }
+        chatId = here;
+      }
+      if (action === 'on') {
+        if (!wa.auto_e_chats.includes(chatId)) wa.auto_e_chats.push(chatId);
+      } else {
+        wa.auto_e_chats = wa.auto_e_chats.filter(j => j !== chatId);
+      }
     }
   } else {
-    sysOut('usage: /e auto on|off [<jid>] | pause | resume | status');
+    sysOut('usage: /e auto on|off [<jid>|all] | pause | resume | status');
     return true;
   }
 
@@ -496,8 +517,10 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (action === 'on' || action === 'off') {
-    const chatId = resolveChatId();
-    sysOut(`/e auto ${action}: ${chatId}`);
+    const tgt = (jidArg && String(jidArg).toLowerCase() === 'all')
+      ? `all → ${wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active (resumed)'}`
+      : (jidArg ?? dispatchMeta?.waChatId ?? '?');
+    sysOut(`/e auto ${action}: ${tgt}`);
   } else {
     sysOut(`/e auto ${action}`);
   }
