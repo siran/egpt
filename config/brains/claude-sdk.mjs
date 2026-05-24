@@ -17,8 +17,6 @@
 //   parseConversation(text, principal, brainName) → turns[]
 //   (Same .md parser; /summarize and similar features walk turns identically.)
 
-import { isAbsolute, join } from 'node:path';
-
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { parseConversation } from './claude-code.mjs';
 
@@ -36,26 +34,82 @@ function normalizeCwd(p) {
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
 
-// Canonical form for path comparison: msys-translate, forward slashes,
-// no trailing slash, lowercased (Windows FS is case-insensitive).
-export function canonPath(p) {
-  return normalizeCwd(String(p ?? '')).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-}
+// Build the static (non-runtime) SDK options from a brain `options` block.
+// Pure + exported so the permission/confinement wiring is unit-testable.
+// Field mapping mirrors claude-code.mjs CLI flags:
+//   addDirs        → additionalDirectories
+//   sessionId      → resume
+//   model          → model
+//   allowedTools   → bypass (trusted) | allowedTools list (restricted)
+//   appendSystemPrompt → systemPrompt preset
+//
+// CONFINEMENT (operator 2026-05-23): a contact-facing turn passes
+// confineToDirs. The leak was that the SDK loaded ~/.claude/settings.json,
+// which has defaultMode:bypassPermissions + a blanket Read/Write allow —
+// so a contact could read ~/.egpt/config.yaml. Fix is claude-native, not
+// hand-rolled path parsing: settingSources:[] makes the SDK load NO
+// settings files (no inherited bypass), and permissionMode:'default' with
+// additionalDirectories scoped to ONLY this contact's dir lets the SDK's
+// own permission engine refuse every other path — other contacts' dirs
+// included (cross-conversation isolation). Verified live: inside=allowed,
+// cross-contact=denied, ~/.egpt/config.yaml=denied.
+export function buildSdkOptions(options = {}) {
+  const sdkOpts = {};
 
-// Is `target` inside one of `roots`? Relative targets resolve against
-// baseCwd. Used to confine a sandboxed conversation's file tools to its
-// own directory — the guard that stops a contact reading ~/.egpt/config.yaml.
-// The `rr + '/'` check prevents a sibling-prefix escape (e.g. /a/.egpt
-// must NOT match /a/.egpt-evil).
-export function isPathInsideRoots(target, roots, baseCwd) {
-  if (!target) return true;   // tools with no path arg are not path-confined here
-  const t = String(target);
-  const abs = isAbsolute(t) ? t : (baseCwd ? join(baseCwd, t) : t);
-  const n = canonPath(abs);
-  return (roots ?? []).some((r) => {
-    const rr = canonPath(r);
-    return rr !== '' && (n === rr || n.startsWith(rr + '/'));
-  });
+  const cwd = normalizeCwd(options.cwd);
+  if (cwd) sdkOpts.cwd = cwd;
+
+  const addDirs = Array.isArray(options.addDirs)
+    ? options.addDirs.filter((d) => d && typeof d === 'string')
+    : [];
+  if (addDirs.length) sdkOpts.additionalDirectories = addDirs;
+
+  if (options.sessionId) sdkOpts.resume = options.sessionId;
+  if (typeof options.model === 'string' && options.model.trim()) {
+    sdkOpts.model = options.model.trim();
+  }
+
+  const confineRoots = Array.isArray(options.confineToDirs)
+    ? options.confineToDirs.filter((d) => d && typeof d === 'string')
+    : null;
+
+  if (options.allowedTools) {
+    const at = options.allowedTools;
+    if (at === 'all' || at === '*') {
+      // Trusted (system-e, engineers): full access; inherit normal config.
+      sdkOpts.permissionMode = 'bypassPermissions';
+      sdkOpts.allowDangerouslySkipPermissions = true;
+    } else {
+      const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
+      if (confineRoots && confineRoots.length) {
+        sdkOpts.settingSources = [];          // do NOT inherit ~/.claude bypass
+        sdkOpts.permissionMode = 'default';   // NOT bypass — engine enforces
+        sdkOpts.additionalDirectories = [
+          ...new Set([...(sdkOpts.additionalDirectories ?? []), ...confineRoots]),
+        ];
+        // Pre-approve ONLY non-file tools (e.g. WebFetch). File tools are
+        // deliberately NOT pre-approved: an allowedTools entry bypasses the
+        // permission engine for ANY path — that is exactly how Read leaked
+        // even with settingSources cleared. Left un-pre-approved, file tools
+        // are path-confined to additionalDirectories by the engine, while
+        // Bash and anything else off the list stay denied (no approver).
+        const FILE_TOOLS = new Set(['read', 'write', 'edit', 'multiedit', 'notebookedit', 'glob', 'grep']);
+        const preApprove = list.filter((t) => !FILE_TOOLS.has(t.toLowerCase()));
+        if (preApprove.length) sdkOpts.allowedTools = preApprove;
+      } else if (list.length) {
+        sdkOpts.allowedTools = list;
+      }
+    }
+  }
+
+  if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
+    sdkOpts.systemPrompt = {
+      type: 'preset',
+      preset: 'claude_code',
+      append: options.appendSystemPrompt.trim(),
+    };
+  }
+  return sdkOpts;
 }
 
 export function stream({ history, message }, onUpdate, options = {}) {
@@ -68,87 +122,10 @@ export function stream({ history, message }, onUpdate, options = {}) {
     const isResume = !!options.sessionId;
     const prompt = isResume ? (message ?? '') : (history ?? '');
 
-    // Build the SDK options block. The fields mirror what claude-code.mjs
-    // passes as CLI flags:
-    //   --add-dir <dir>            → additionalDirectories: [dir, ...]
-    //   --resume <id>              → resume: id
-    //   --model <name>             → model: name
-    //   --allowedTools "all" / "*" → permissionMode: 'bypassPermissions' + allow flag
-    //   --allowedTools "<list>"    → allowedTools: [tool1, tool2, ...]
-    //   --append-system-prompt "X" → systemPrompt: { preset: 'claude_code', append: X }
-    const sdkOpts = {};
-
-    const cwd = normalizeCwd(options.cwd);
-    if (cwd) sdkOpts.cwd = cwd;
-
-    if (Array.isArray(options.addDirs) && options.addDirs.length) {
-      sdkOpts.additionalDirectories = options.addDirs.filter(d => d && typeof d === 'string');
-    }
-    if (isResume) sdkOpts.resume = options.sessionId;
-    if (typeof options.model === 'string' && options.model.trim()) {
-      sdkOpts.model = options.model.trim();
-    }
-
-    // Tool permission model — same belt+suspenders the CLI brain uses.
-    const confineRoots = Array.isArray(options.confineToDirs)
-      ? options.confineToDirs.filter((d) => d && typeof d === 'string')
-      : null;
-    if (options.allowedTools) {
-      const at = options.allowedTools;
-      if (at === 'all' || at === '*') {
-        sdkOpts.permissionMode = 'bypassPermissions';
-        sdkOpts.allowDangerouslySkipPermissions = true;
-      } else {
-        const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
-        if (confineRoots && confineRoots.length) {
-          // SANDBOX. A PreToolUse hook — NOT canUseTool — is the gate.
-          // canUseTool is skipped for read-only tools the SDK auto-approves
-          // (that is exactly how Read escaped: a contact read
-          // ~/.egpt/config.yaml). PreToolUse fires for EVERY tool call
-          // regardless of permission mode, so it can deny out-of-sandbox
-          // paths and any tool outside the permitted list.
-          sdkOpts.allowedTools = list;   // pre-approve the toolset; the hook still bounds paths
-          const permitted = new Set(list.map((s) => s.toLowerCase()));
-          const baseCwd = cwd;
-          const deny = (reason) => ({
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse',
-              permissionDecision: 'deny',
-              permissionDecisionReason: reason,
-            },
-          });
-          sdkOpts.hooks = {
-            PreToolUse: [{
-              hooks: [async (input) => {
-                const toolName = input?.tool_name ?? '';
-                const ti = (input && typeof input.tool_input === 'object') ? input.tool_input : {};
-                if (!permitted.has(String(toolName).toLowerCase())) {
-                  return deny(`tool ${toolName} not permitted in this conversation`);
-                }
-                const pathArg = ti.file_path ?? ti.path ?? ti.notebook_path ?? null;
-                if (pathArg && !isPathInsideRoots(pathArg, confineRoots, baseCwd)) {
-                  return deny(`path outside conversation sandbox: ${pathArg}`);
-                }
-                return { continue: true };
-              }],
-            }],
-          };
-          onLog(`claude-sdk: sandbox confine=[${confineRoots.join(', ')}] tools=[${list.join(',')}]`);
-        } else if (list.length) {
-          sdkOpts.allowedTools = list;
-        }
-      }
-    }
-
-    // Append-system-prompt: SDK supports the same as --append-system-prompt
-    // via the preset form. The 'claude_code' preset uses the CLI's default
-    // system prompt as the base, then appends our text.
-    if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
-      sdkOpts.systemPrompt = {
-        type: 'preset',
-        preset: 'claude_code',
-        append: options.appendSystemPrompt.trim(),
-      };
+    const sdkOpts = buildSdkOptions(options);
+    const cwd = sdkOpts.cwd;
+    if (sdkOpts.settingSources && sdkOpts.permissionMode === 'default') {
+      onLog(`claude-sdk: confined=[${(sdkOpts.additionalDirectories ?? []).join(', ')}] settingSources=[] (native sandbox)`);
     }
 
     // Abort/timeout: same shape as the CLI brain's watchdog. Stall = no
@@ -193,6 +170,7 @@ export function stream({ history, message }, onUpdate, options = {}) {
         permissionMode: sdkOpts.permissionMode ?? null,
         addDirs: sdkOpts.additionalDirectories ?? null,
         allowedTools: sdkOpts.allowedTools ?? null,
+        settingSources: sdkOpts.settingSources ?? null,
         appendSP: !!sdkOpts.systemPrompt,
       };
       onLog(`claude-sdk: query ${JSON.stringify(summary)}`);
