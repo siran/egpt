@@ -2712,12 +2712,20 @@ function App() {
           logOut(`(whatsapp message from ${who}) -> ${text}`);
           const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
           if (isCommand && !from.authorized) {
-            // Silently drop. The bridge used to post a 'not authorized'
-            // reply back into the originating chat, which leaked the
-            // bot's existence to the unauthorized sender (and to
-            // everyone else in a group). The arrival note in the
-            // shell is enough audit trail for the operator.
-            return;
+            // Non-authorized sender. Slash commands are operator-only —
+            // always drop (no /restart etc. from randos). But @-mentions
+            // are ALLOWED from anyone inside an auto_e_chat (operator
+            // 2026-05-24: members should be able to mention @l / @e, and
+            // @e should see @-addressed group chatter). Outside auto_e
+            // chats, @-mentions are still dropped so observed chats can't
+            // trigger the bot. Silent drop either way — never reply to an
+            // unauthorized sender (would leak the bot's existence).
+            const _t = text.trimStart();
+            const _isSlash = _t.startsWith('/');
+            const _waCfg0 = EGPT_CONFIG.whatsapp ?? {};
+            const _isAutoE0 = Array.isArray(_waCfg0.auto_e_chats)
+              && _waCfg0.auto_e_chats.includes(from.chatId);
+            if (_isSlash || !_isAutoE0) return;
           }
           // Lifecycle commands restricted to 1:1 chats, same as Telegram.
           const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
