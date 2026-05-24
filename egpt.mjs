@@ -2552,21 +2552,18 @@ function App() {
       // wa.send, which rememberSent's them, so they never loop back into
       // dispatch even though the self-DM is itself an auto_e chat. Exposed via
       // confirmMirrorRef so the per-being dispatch taps can reach it.
-      confirmMirrorRef.current = async (jid, tag, content) => {
+      confirmMirrorRef.current = async (jid, content) => {
         try {
           if (!jid) return;
           const watch = EGPT_CONFIG.whatsapp?.confirm_chats;
           const dests = watch && Array.isArray(watch[jid]) ? watch[jid] : null;
           if (!dests || !dests.length) return;
-          let label = jid;
-          try {
-            const r = _convStateCache && conversationsState.getContact(_convStateCache, 'whatsapp', jid);
-            label = r?.entry?.pushedName || r?.slug || jid;
-          } catch { /* keep jid */ }
+          // Operator wants EXACTLY the string prompted to the model, nothing
+          // else — no "👁 chat · → being" header. The envelope itself
+          // ([Sender@chat (HH:MM)]: body) is self-identifying.
           const body = String(content ?? '');
-          const header = `👁 ${label} · ${tag}`;
-          const waBody = `${header}\n\`\`\`\n${body}\n\`\`\``;   // ``` = WhatsApp monospace
-          const shellBody = `${header}\n${body}`;               // shell is already monospace
+          const waBody = `\`\`\`\n${body}\n\`\`\``;   // ``` = WhatsApp monospace
+          const shellBody = body;                      // shell is already monospace
           const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
           for (const dest of dests) {
             if (dest === 'shell') {
@@ -2926,12 +2923,11 @@ function App() {
           // (observe-only / wake-word handling downstream).
           if (submitRef.current) {
             if (!isSlash && !autoPaused && (isAutoEChat || isSystemContact)) {
-              // Watcher mirroring happens at the per-being dispatch taps
-              // (persona + meta handlers): "→ <being>" = the exact string
-              // that being is fed (envelope for session brains, raw words for
-              // sessionless @l), "<being> →" = its reply. No separate raw
-              // "incoming" line — the operator debugging wants exactly what
-              // each brain SEES, nothing else.
+              // Each resident is fed the canonical [Sender@chat (HH:MM)]: body
+              // envelope (built in the dispatch handlers) and that exact string
+              // is mirrored to Self by the watcher tap. _chainDepth:0 marks
+              // these as broadcast turns — replies re-circulate to the other
+              // residents (see _recirculateResidentReply) up to the cap.
               const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
                 ? EGPT_CONFIG.whatsapp.residents
                 : [_personaBeing];
@@ -2939,6 +2935,7 @@ function App() {
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
+                  _chainDepth: 0,
                   // Only the persona resident uses the per-chat concurrency
                   // queue; sessionless siblings (@l) run direct.
                   autoDispatched: String(being).toLowerCase() === String(_personaBeing).toLowerCase(),
@@ -4532,6 +4529,54 @@ function App() {
     }
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
+
+  // Resident brains converse. After a resident (a being in
+  // whatsapp.residents) replies in an auto_e broadcast turn, feed that reply
+  // — even '…' — to every OTHER resident as a fresh turn, framed as the
+  // canonical [being@chat (HH:MM)]: body envelope, so the brains see each
+  // other and can answer ("why silent?"). Bounded by
+  // whatsapp.resident_chain_cap (default 10) on meta._chainDepth so two
+  // brains can't ping-pong forever. ONLY broadcast-originated turns carry
+  // _chainDepth, so operator / engineer turns never re-circulate; and only a
+  // reply from a being that is itself a resident converses. A reply that
+  // can't be re-fed (cap hit, or no other residents) is still mirrored to
+  // Self so the /confirm transcript stays complete.
+  const _recirculateResidentReply = ({ being, reply, meta }) => {
+    try {
+      if (meta?._chainDepth == null) return;
+      if (!meta.fromWhatsApp || !meta.waChatId) return;
+      const body = String(reply ?? '');
+      if (!body) return;
+      const lc = (s) => String(s).toLowerCase();
+      const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
+        ? EGPT_CONFIG.whatsapp.residents
+        : [EGPT_CONFIG.persona ?? 'e'];
+      if (!residents.some(r => lc(r) === lc(being))) return;
+      const others = residents.filter(r => lc(r) !== lc(being));
+      const depth = Number(meta._chainDepth) || 0;
+      const cap = Number(EGPT_CONFIG.whatsapp?.resident_chain_cap ?? 10);
+      if (depth >= cap || others.length === 0) {
+        const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
+        confirmMirrorRef.current?.(meta.waChatId, env);   // terminal: echo to Self, don't re-feed
+        return;
+      }
+      const persona = EGPT_CONFIG.persona ?? 'e';
+      for (const other of others) {
+        submitRef.current?.(body, {
+          fromWhatsApp: true,
+          waChatId: meta.waChatId,
+          waUser: meta.waUser,
+          waClientLabel: meta.waClientLabel,
+          waSenderName: being,                 // envelope speaker = the replying brain
+          observeOnly: meta.observeOnly,
+          waWhitelisted: meta.waWhitelisted,
+          autoDispatched: lc(other) === lc(persona),
+          forceTarget: other,
+          _chainDepth: depth + 1,
+        })?.catch?.(e => errOut(`!! resident re-circulate ${being}→${other}: ${e?.message ?? e}`));
+      }
+    } catch (e) { errOut(`!! _recirculateResidentReply: ${e?.message ?? e}`); }
+  };
 
   // Run the node-global "@egpt" persona — same brain machinery as a
   // /attach-ed session, just lives outside any room (omnipresent
@@ -6318,10 +6363,11 @@ function App() {
           runDefaultBrainTurn,
           stateDir: EGPT_HOME,
         });
-        // Watcher: mirror the verbatim prompt @e was handed + its raw reply
-        // (before the silence early-return, so a '…' from @e still shows).
-        confirmMirrorRef.current?.(meta.waChatId, `→ ${personaName}`, turn.personaPrompt);
-        confirmMirrorRef.current?.(meta.waChatId, `${personaName} →`, turn.reply);
+        // Watcher: the exact string @e was fed. Brains converse: feed @e's
+        // reply (even '…') to the other residents — done before the silence
+        // early-return so a quiet @e still reaches @l (which may react).
+        confirmMirrorRef.current?.(meta.waChatId, turn.personaPrompt);
+        _recirculateResidentReply({ being: personaName, reply: turn.reply, meta });
         if (turn.kind === 'silence') return;
         const reply = turn.reply;
 
@@ -6443,8 +6489,16 @@ function App() {
         // Brains with their own session (claude/codex) keep the full
         // envelope so they know who/where/when.
         const _sibBrain = brainForName(canonicalBrainName(sibEntry.type ?? 'claude-code'));
-        const personaPrompt = _sibBrain?.sessionless
-          ? decision.body
+        // Envelope for every RESIDENT, including sessionless @l (operator
+        // 2026-05-24: "envelope for everyone" — now that residents converse,
+        // @l needs the [speaker@chat]: tag to know who is talking, vs the
+        // old raw-words-only feed). WA residents get the canonical one-line
+        // [Sender@surface (HH:MM)]: body form (same as @e); engineers /
+        // non-residents keep the verbose persona prompt.
+        const _isResident = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) ? EGPT_CONFIG.whatsapp.residents : [])
+          .some(r => String(r).toLowerCase() === String(sibName).toLowerCase());
+        const personaPrompt = (meta.fromWhatsApp && _isResident)
+          ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) })
           : formatPersonaPrompt(meta, decision.body);
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
@@ -6487,9 +6541,8 @@ function App() {
         };
         let waAnswerStream = null;   // message 2 (the final answer)
         let waSplit = false;
-        // Watcher: mirror the verbatim prompt this being is handed (raw body
-        // for sessionless @l; full envelope for session siblings).
-        confirmMirrorRef.current?.(meta.waChatId, `→ ${sibName}`, personaPrompt);
+        // Watcher: the exact string this being is fed.
+        confirmMirrorRef.current?.(meta.waChatId, personaPrompt);
         const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) {
@@ -6506,8 +6559,11 @@ function App() {
             }
           }
         }, sibName);
-        // Watcher: mirror this being's raw reply (verbatim, even '…').
-        confirmMirrorRef.current?.(meta.waChatId, `${sibName} →`, reply);
+        // Brains converse: feed this resident's reply (even '…') to the
+        // other residents. The recipient's dispatch tap mirrors it to Self as
+        // their next prompt, so the reply is echoed there as the formatted
+        // string it is prompted to them with.
+        _recirculateResidentReply({ being: sibName, reply, meta });
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
         } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
