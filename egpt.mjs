@@ -302,6 +302,27 @@ try {
     console.error(`!! egpt boot sanity: config loaded but missing required keys: ${missing.join(', ')}`);
   }
 })();
+// /restart back-online announcement. If the previous process exited via
+// /restart it left state/restart-announce.json (target chat + the commit it
+// respawned on). Drop a "back online" wa-send into the outbox — delivered
+// once the bridge reconnects — so the operator sees the restart completed in
+// Self, with the exact running version. Delete the sidecar so a plain
+// boot/crash (no /restart) never re-announces. Best-effort; never blocks boot.
+(() => {
+  try {
+    const _sidecar = join(homedir(), '.egpt', 'state', 'restart-announce.json');
+    if (!existsSync(_sidecar)) return;
+    const _info = JSON.parse(readFileSync(_sidecar, 'utf8'));
+    if (_info?.jid) {
+      const _down = _info.at ? Math.max(0, Math.round((Date.now() - _info.at) / 1000)) : null;
+      writeFileSync(join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`), JSON.stringify({
+        type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
+        body: `🧠 eGPT · ✅ back online — ${_info.sha ?? '?'}${_info.subj ? ` "${_info.subj}"` : ''}${_down != null ? ` (${_down}s down)` : ''}`,
+      }));
+    }
+    unlinkSync(_sidecar);
+  } catch (e) { console.error(`!! egpt boot: restart-announce failed — ${e?.message ?? e}`); }
+})();
 // Per-cwd override config — still JSON, this is meant to be checked
 // into the project repo by power users (e.g. for tests).
 const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');

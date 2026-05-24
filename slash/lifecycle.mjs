@@ -43,16 +43,49 @@ export const meta = [
   },
 ];
 
-export async function run({ cmd, arg, ctx }) {
+export async function run({ cmd, arg, meta = {}, ctx }) {
   // ctx keys consumed:
   //   sysOut(text)       — print a system line
   //   exitClean(code)    — _exitClean from egpt.mjs; stops bridges,
   //                        clears pidfile, then process.exit(code).
   //   APP_DIR            — egpt repo root (for /rewind's git ref-verify)
   //   EGPT_HOME          — ~/.egpt (for /rewind's sidecar file)
+  //   EGPT_CONFIG        — for the operator's Self-DM jid (restart announce)
   const { sysOut, exitClean, APP_DIR, EGPT_HOME } = ctx;
 
   if (cmd === '/restart') {
+    // Before/after confirmation in Self. The "exiting…" sysOut only reaches
+    // the shell — the dying process tears the bridge down before any mirror
+    // flushes, so it never lands in Self. Instead: drop a "going down" line
+    // in the outbox + a sidecar capturing the commit, then the RESPAWNED
+    // daemon (which sweeps the persistent outbox once the bridge reconnects)
+    // delivers that breadcrumb AND announces "back online" with the running
+    // commit — so the operator sees the full cycle, and the exact version it
+    // refreshed to, in Self. /restart respawns from current disk state with
+    // no checkout, so HEAD is unchanged across the bounce: capturing it here
+    // is accurate for what the new process runs.
+    try {
+      const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
+      let sha = '?', subj = '';
+      try {
+        const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
+        if (r.status === 0) {
+          const [h, s] = (r.stdout?.toString() ?? '').trim().split('\t');
+          sha = h || '?'; subj = s || '';
+        }
+      } catch { /* git optional — sha stays '?' */ }
+      if (selfJid) {
+        await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
+        await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
+          type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid,
+          body: `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…`,
+        }));
+        await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+        await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({
+          jid: selfJid, sha, subj, at: Date.now(),
+        }));
+      }
+    } catch (e) { sysOut(`!! /restart: announce write failed — ${e.message}`); }
     sysOut('exiting with code 43 — egpt-daemon (if running) will respawn the shell');
     setTimeout(() => exitClean(43), 100);
     return true;
