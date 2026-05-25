@@ -4587,23 +4587,24 @@ function App() {
       if (!meta.fromWhatsApp || !meta.waChatId) return;
       const body = String(reply ?? '');
       if (!body) return;
-      // Infra errors ("!! @l: llama: fetch failed …") are NOT a brain reply —
-      // they're a host-side breadcrumb. Don't re-circulate them to the other
-      // residents or surface them in the /confirm debug; that was flooding the
-      // chain when llama-server was down. (The chat send already drops them via
-      // _dropResident; this is the matching guard for the converse path.)
-      if (/^!!\s*@/.test(body.trim())) return;
       const lc = (s) => String(s).toLowerCase();
       const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
         ? EGPT_CONFIG.whatsapp.residents
         : [EGPT_CONFIG.persona ?? 'e'];
       if (!residents.some(r => lc(r) === lc(being))) return;
-      // "Debug: <-E" — reply received from this resident, in envelope form.
-      // (Forwarding it to the other residents below fires their dispatch
-      // tap as "Debug: E->L", so the same reply also shows as the next
-      // brain's prompt.)
+      // "Debug: <-E" — reply received from this resident, in envelope form,
+      // mirrored to the Self/egptbot debug watcher. Forwarding it below (when
+      // not an infra error / 2nd-layer silence) fires the recipient's tap as
+      // "Debug: E->L", echoing the same reply as the next brain's prompt.
       const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
       confirmMirrorRef.current?.(meta.waChatId, `<-${String(being).toUpperCase()}`, env);
+      // Infra errors ("!! @l: llama: fetch failed …") MUST be visible in the
+      // debug (operator 2026-05-25) — so they are mirrored above — but they are
+      // NOT a brain reply: don't store them in @l's memory and don't
+      // re-circulate them to the other residents. (The chat send drops them via
+      // _dropResident, so humans in the group never see them — only the
+      // operator's Self/egptbot debug does.)
+      if (/^!!\s*@/.test(body.trim())) return;
       _appendResidentHistory(meta.waChatId, env);   // sessionless residents' memory
       const others = residents.filter(r => lc(r) !== lc(being));
       const depth = Number(meta._chainDepth) || 0;
