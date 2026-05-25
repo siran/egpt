@@ -2936,6 +2936,14 @@ function App() {
               const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
                 ? EGPT_CONFIG.whatsapp.residents
                 : [_personaBeing];
+              // Debug-mirror telemetry (the /e confirm "Debug: …" lines that
+              // deliverEcho posts into the Self DM) must be SEEN by the Self
+              // residents but must NOT drive the residents-converse engine —
+              // otherwise the high-volume debug stream + re-circulation form a
+              // self-sustaining loop in the Self chat (operator 2026-05-25:
+              // "keeps recircling in telegram"). Omit _chainDepth for them, so
+              // replies to debug never re-circulate.
+              const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // Record the human message ONCE in the sessionless-resident
               // transcript (not per resident) so @l sees it as memory.
               _appendResidentHistory(from.chatId, formatAutoDispatchLine({
@@ -2946,7 +2954,7 @@ function App() {
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
-                  _chainDepth: 0,
+                  ...(isDebugMirror ? {} : { _chainDepth: 0 }),
                   // Only the persona resident uses the per-chat concurrency
                   // queue; sessionless siblings (@l) run direct.
                   autoDispatched: String(being).toLowerCase() === String(_personaBeing).toLowerCase(),
