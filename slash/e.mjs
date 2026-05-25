@@ -726,7 +726,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 
@@ -737,9 +737,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   if (!Array.isArray(wa.auto_e_chats)) wa.auto_e_chats = [];
 
   if (!wa.auto_e_modes || typeof wa.auto_e_modes !== 'object') wa.auto_e_modes = {};
-  // Modes the command exposes — accum is excluded until its heartbeat flush
-  // exists (so you can't set a mode that isn't fully wired).
-  const MODES = AUTO_MODES.filter(m => m !== 'accum');
+  const MODES = AUTO_MODES;   // on, accum, mute, mention-direct, mention, off
 
   if (action === 'status') {
     // Merge legacy auto_e_chats (→ 'on') with explicit auto_e_modes.
