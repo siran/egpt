@@ -3018,12 +3018,13 @@ function App() {
               // (whatsapp.residents_per_chat[jid]) wins, else the global
               // residents list, else the persona alone. Lets a chat run @l-only
               // (drop @e there to spare the Claude plan's 5h window) or @e-only.
-              const _perChatResidents = EGPT_CONFIG.whatsapp?.residents_per_chat?.[from.chatId];
-              const residents = (Array.isArray(_perChatResidents) && _perChatResidents.length)
-                ? _perChatResidents
-                : (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
-                  ? EGPT_CONFIG.whatsapp.residents
-                  : [_personaBeing];
+              // residents accepts a plain list (["e","l"]), a list of toggles
+              // ([{e:true},{l:false}]), or an enable-map ({e:true,l:false}) —
+              // normalizeResidents flattens any of them to the enabled names.
+              const _perChatResidents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[from.chatId]);
+              const _globalResidents  = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
+              const residents = _perChatResidents.length ? _perChatResidents
+                : (_globalResidents.length ? _globalResidents : [_personaBeing]);
               // Debug-mirror telemetry (the /e confirm "Debug: …" lines that
               // deliverEcho posts into the Self DM) must be SEEN by the Self
               // residents but must NOT drive the residents-converse engine —

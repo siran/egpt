@@ -44,6 +44,7 @@ import {
   writeState as writeConvState,
   findContactByJid,
   resolveChatTarget,
+  normalizeResidents,
   patchContact,
   installPersonaIntoSlugDir,
   buildRebootAnnouncement,
@@ -630,6 +631,29 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // Enable/disable the local llama-server (@l's backend). Persists
+  // local_llm.enabled; takes effect on the next /restart (the supervisor reads
+  // enabled at boot). whisper-server has the parallel toggle via /e transcribe.
+  if (sub === 'llama' || sub === 'local') {
+    if (!EGPT_CONFIG.local_llm || typeof EGPT_CONFIG.local_llm !== 'object') EGPT_CONFIG.local_llm = {};
+    const ll = EGPT_CONFIG.local_llm;
+    const a = String(action ?? '').toLowerCase();
+    if (a === 'on' || a === 'off') {
+      ll.enabled = (a === 'on');
+      try {
+        const saved = await readConfig();
+        if (!saved.local_llm || typeof saved.local_llm !== 'object') saved.local_llm = {};
+        saved.local_llm.enabled = ll.enabled;
+        await writeConfig(saved);
+      } catch (e) { sysOut(`!! /e llama: persist failed: ${e.message}`); return true; }
+      sysOut(`/e llama ${a}: local_llm.enabled = ${ll.enabled} (takes effect on /restart)`);
+    } else {
+      const state = ll.enabled === false ? 'off' : 'on';
+      sysOut(`/e llama: ${state} — port ${ll.port ?? 11434}, model ${String(ll.model_path ?? '?').split(/[\\/]/).pop()}. Usage: /e llama on|off`);
+    }
+    return true;
+  }
+
   // Per-chat resident selection. The global whatsapp.residents list applies
   // everywhere by default; a per-chat override (whatsapp.residents_per_chat)
   // lets one chat run a subset — e.g. @l-only to spare the Claude plan's 5h
@@ -640,14 +664,15 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (!wa.residents_per_chat || typeof wa.residents_per_chat !== 'object') wa.residents_per_chat = {};
 
     if (!action || action === 'status') {
-      const glob = (Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : '(persona only)';
+      const g = normalizeResidents(wa.residents);
+      const glob = g.length ? g.join(', ') : '(persona only)';
       const ents = Object.entries(wa.residents_per_chat);
       let lines = '  (none — every chat uses the global list)';
       if (ents.length) {
         const rows = await Promise.all(ents.map(async ([j, r]) => {
           const { name } = await _resolveChatTarget(j);
           const label = name ? `«${name}» ${j}` : j;
-          return `  - ${label}: ${Array.isArray(r) ? r.join(', ') : r}`;
+          return `  - ${label}: ${normalizeResidents(r).join(', ')}`;
         }));
         lines = rows.join('\n');
       }
@@ -675,7 +700,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
 
     if (['off', 'clear', 'reset'].includes(String(action).toLowerCase())) {
       delete wa.residents_per_chat[chatId];
-      sysOut(`/e residents: ${label} → cleared (uses global: ${(Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : 'persona'})`);
+      sysOut(`/e residents: ${label} → cleared (uses global: ${normalizeResidents(wa.residents).join(', ') || 'persona'})`);
     } else {
       const known = new Set(Object.keys(EGPT_CONFIG.siblings ?? {}).map(s => s.toLowerCase()));
       const list = String(action).toLowerCase().split(/[,\s]+/).filter(Boolean);
@@ -700,7 +725,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<jid>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 
