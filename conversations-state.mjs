@@ -607,6 +607,30 @@ export async function resolveChatTarget(term, { waBridge = null, surface = 'what
   return { jid: arr[0][0], name: arr[0][1] };
 }
 
+// Normalize a `residents` config value to a flat list of ENABLED being-names.
+// Accepts any of:
+//   ["e","l"]              — plain list of names
+//   [{e:true},{l:false}]   — list of {name: enabled} toggles
+//   {e:true, l:false}      — a {name: enabled} map
+// Falsy toggles are dropped. So the operator can write residents as a list OR
+// as an enable-map (which reads naturally: `e: true`, `l: false`).
+export function normalizeResidents(val) {
+  if (Array.isArray(val)) {
+    const out = [];
+    for (const item of val) {
+      if (typeof item === 'string') { if (item.trim()) out.push(item.trim()); }
+      else if (item && typeof item === 'object') {
+        for (const [k, v] of Object.entries(item)) if (v) out.push(k);
+      }
+    }
+    return out;
+  }
+  if (val && typeof val === 'object') {
+    return Object.entries(val).filter(([, v]) => v).map(([k]) => k);
+  }
+  return [];
+}
+
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
 // Idempotent. Schema is surface-nested + JID-keyed. Multi-JID humans
