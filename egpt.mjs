@@ -4549,26 +4549,56 @@ function App() {
     return `[${stamp}, from shell (${USER_NAME}@${SURFACE_TAG}):]\n${body}`;
   }
 
-  // Per-chat rolling transcript for SESSIONLESS residents (e.g. @l), which —
-  // unlike @e's claude session — keep no server-side memory. We accumulate
-  // the chat's envelope lines (human messages + every brain reply) and feed
-  // the joined transcript as `history` each turn, so the stateless brain sees
-  // the whole conversation (its own past turns, the human, the other brains)
-  // just like @e does via its session. Bounded by whatsapp.resident_history_chars
-  // (default 30000) so it stays within llama's context window; oldest lines
-  // roll off. The /confirm watcher still shows only the per-turn envelope (the
-  // delta) — this buffer is invisible memory, the analogue of @e's session.
-  const _residentHistRef = useRef(new Map());   // chatId -> string[]
+  // Durable per-chat conversation state for SESSIONLESS residents (e.g. @l),
+  // giving them PARITY with conversation-E. Each chat has its own conversation-L
+  // (system-L for the Self DM): the identity (l.md) is captured ONCE at the
+  // start as the seed, then the chat's envelope lines accumulate after it.
+  // Persisted to ~/.egpt/agent/l/<chat>.json so a /restart RESUMES instead of
+  // amnesia (the gap vs @e's session-on-disk). Bounded by
+  // whatsapp.resident_history_chars (default 30000) to fit llama's context;
+  // oldest lines roll off. The /confirm watcher shows only the per-turn delta —
+  // this is the invisible, durable memory.
+  const _residentDir = join(EGPT_HOME, 'agent', 'l');
+  const _residentMem = useRef(new Map());   // chatId -> { identity, lines }
+  const _residentSan = (id) => String(id).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+  const _residentPath = (chatId) => join(_residentDir, `${_residentSan(chatId)}.json`);
+  const _residentState = (chatId) => {
+    let st = _residentMem.current.get(chatId);
+    if (st) return st;
+    try {
+      const j = JSON.parse(readFileSync(_residentPath(chatId), 'utf8'));   // resume from disk
+      st = { identity: typeof j.identity === 'string' ? j.identity : null, lines: Array.isArray(j.lines) ? j.lines : [] };
+    } catch { st = { identity: null, lines: [] }; }
+    _residentMem.current.set(chatId, st);
+    return st;
+  };
+  const _residentPersist = (chatId, st) => {
+    try { mkdirSync(_residentDir, { recursive: true }); writeFileSync(_residentPath(chatId), JSON.stringify(st)); }
+    catch (e) { errOut(`!! resident persist ${chatId}: ${e?.message ?? e}`); }
+  };
+  // Capture the identity (l.md) ONCE per conversation; later l.md edits apply
+  // only to a fresh/reset conversation (mirrors @e installing a persona once).
+  const _residentIdentity = (chatId, seed) => {
+    const st = _residentState(chatId);
+    if (!st.identity && seed) { st.identity = String(seed); _residentPersist(chatId, st); }
+    return st.identity ?? seed ?? null;
+  };
   const _appendResidentHistory = (chatId, line) => {
     if (!chatId || !line) return;
     const cap = Number(EGPT_CONFIG.whatsapp?.resident_history_chars ?? 30000);
-    const arr = _residentHistRef.current.get(chatId) ?? [];
-    arr.push(String(line));
-    let total = arr.reduce((n, s) => n + s.length + 1, 0);
-    while (arr.length > 1 && total > cap) total -= (arr.shift().length + 1);
-    _residentHistRef.current.set(chatId, arr);
+    const st = _residentState(chatId);
+    st.lines.push(String(line));
+    let total = st.lines.reduce((n, s) => n + s.length + 1, 0);
+    while (st.lines.length > 1 && total > cap) total -= (st.lines.shift().length + 1);
+    _residentPersist(chatId, st);
   };
-  const _residentHistory = (chatId) => (_residentHistRef.current.get(chatId) ?? []).join('\n');
+  const _residentHistory = (chatId) => _residentState(chatId).lines.join('\n');
+  // Reset a chat's conversation-L: clear history + re-capture identity on the
+  // next turn (the way to apply an edited l.md). Used by the reset command.
+  const _residentReset = (chatId) => {
+    _residentMem.current.set(chatId, { identity: null, lines: [] });
+    try { unlinkSync(_residentPath(chatId)); } catch (e) { /* not yet persisted */ }
+  };
 
   // Resident brains converse. After a resident (a being in
   // whatsapp.residents) replies in an auto_e broadcast turn, feed that reply
@@ -5030,6 +5060,13 @@ function App() {
       } catch (e) {
         sysOut(`!! @${name}: system_prompt_file (${mbCfg.system_prompt_file}) read failed: ${e.message}`);
       }
+    }
+    // Sessionless residents (@l) keep a durable per-chat conversation: capture
+    // the identity ONCE (the first turn's l.md becomes this conversation-L's
+    // seed) instead of re-reading it every turn. opts.chatId is supplied only
+    // for resident broadcast turns; edits to l.md apply after a reset.
+    if (brain.sessionless && opts.chatId) {
+      _sysPrompt = _residentIdentity(opts.chatId, _sysPrompt);
     }
     const sessionOpts = {
       sessionId: mbCfg.session_id ?? null,
@@ -6682,7 +6719,7 @@ function App() {
             }
           }
         }, sibName, (_sibBrain?.sessionless && _isResident)
-          ? { history: _residentHistory(meta.waChatId) }   // stateless resident: feed the rolling transcript
+          ? { history: _residentHistory(meta.waChatId), chatId: meta.waChatId }   // durable conversation-L: transcript + identity-once
           : {});
         // Brains converse: feed this resident's reply (even '…') to the
         // other residents. The recipient's dispatch tap mirrors it to Self as
