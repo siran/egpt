@@ -2864,19 +2864,23 @@ function App() {
           const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
           if (isCommand && !from.authorized) {
             // Non-authorized sender. Slash commands are operator-only —
-            // always drop (no /restart etc. from randos). But @-mentions
-            // are ALLOWED from anyone inside an auto_e_chat (operator
-            // 2026-05-24: members should be able to mention @l / @e, and
-            // @e should see @-addressed group chatter). Outside auto_e
-            // chats, @-mentions are still dropped so observed chats can't
-            // trigger the bot. Silent drop either way — never reply to an
-            // unauthorized sender (would leak the bot's existence).
+            // always drop (no /restart etc. from randos). A DIRECT @e/@egpt
+            // wake-word is an explicit summon, so it ALWAYS reaches the persona
+            // (operator 2026-05-25: "a mention to @e in a group should go to
+            // conversation e") — this also covers the case where the operator's
+            // own group message arrives without a clean fromMe (e.g. via
+            // Beeper) and so reads as unauthorized. Other @-mentions (@someone,
+            // @l, …) are allowed inside an auto_e_chat but dropped in merely
+            // observed chats, so a random chat can't trigger the bot. Silent
+            // drop either way — never reply to an unauthorized sender.
             const _t = text.trimStart();
             const _isSlash = _t.startsWith('/');
+            const _isPersonaWake = /@(?:egpt|e)\b/i.test(_t);
             const _waCfg0 = EGPT_CONFIG.whatsapp ?? {};
             const _isAutoE0 = Array.isArray(_waCfg0.auto_e_chats)
               && _waCfg0.auto_e_chats.includes(from.chatId);
-            if (_isSlash || !_isAutoE0) return;
+            if (_isSlash) return;
+            if (!_isAutoE0 && !_isPersonaWake) return;
           }
           // Lifecycle commands restricted to 1:1 chats, same as Telegram.
           const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
