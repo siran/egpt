@@ -315,9 +315,20 @@ try {
     const _info = JSON.parse(readFileSync(_sidecar, 'utf8'));
     if (_info?.jid) {
       const _down = _info.at ? Math.max(0, Math.round((Date.now() - _info.at) / 1000)) : null;
+      // Re-read HEAD: /upgrade changes the commit across the bounce, so the
+      // sidecar's pre-bounce sha would be stale. Report the ACTUALLY running
+      // commit; fall back to the sidecar values if git is unavailable.
+      let _sha = _info.sha ?? '?', _subj = _info.subj ?? '';
+      try {
+        const _r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
+        if (_r.status === 0) {
+          const [_h, _s] = (_r.stdout?.toString() ?? '').trim().split('\t');
+          if (_h) { _sha = _h; _subj = _s ?? _subj; }
+        }
+      } catch { /* git optional */ }
       writeFileSync(join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`), JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
-        body: `🧠 eGPT · ✅ back online — ${_info.sha ?? '?'}${_info.subj ? ` "${_info.subj}"` : ''}${_down != null ? ` (${_down}s down)` : ''}`,
+        body: `🧠 eGPT · ✅ back online — ${_sha}${_subj ? ` "${_subj}"` : ''}${_down != null ? ` (${_down}s down)` : ''}`,
       }));
     }
     unlinkSync(_sidecar);

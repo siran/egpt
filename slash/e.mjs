@@ -68,28 +68,8 @@ async function _persistWaConfig() {
   return { saved };
 }
 
-// Resolve a target token to { jid, name } or { error }. Accepts a real @-jid
-// (looks up its registered name for the echo) OR a fuzzy name-search term
-// matched against registered contacts (pushedName + slug). So the operator can
-// target a chat by name and ALWAYS sees WHICH chat was picked — a bare jid in
-// the echo is unverifiable ([[feedback-verify-wa-chat-name]]).
-async function _resolveChatTarget(term, surface = 'whatsapp') {
-  if (!term) return {};
-  const cs = await readConvState(CONV_YAML_PATH);
-  if (String(term).includes('@')) {
-    return { jid: term, name: findContactByJid(cs, surface, term) ?? null };
-  }
-  const matches = findContactsByName(cs, term, surface);
-  if (!matches.length) {
-    return { error: `no chat matches "${term}" — send a message in that chat first so it registers, or pass the @-jid` };
-  }
-  if (matches.length > 1) {
-    const names = matches.map(m => m.pushedName || m.slug || m.jid).slice(0, 8).join(', ');
-    return { error: `"${term}" matches ${matches.length}: ${names} — be more specific or pass the @-jid` };
-  }
-  const [hit] = matches;
-  return { jid: hit.jid, name: hit.pushedName || hit.slug || null };
-}
+// _resolveChatTarget is defined as a closure inside run() so it can reach the
+// live WA bridge (real group subjects) via ctx.waBridgeRef — see there.
 
 // Shared kickoff used by /e new (resetThread=true) and /e persona (false).
 // Both fire the same "Reboot complete" announcement frame; the difference
@@ -179,9 +159,48 @@ export async function _runReboot({ resetThread, personaName, targetJid, sysOut, 
 }
 
 export async function run({ arg, meta: dispatchMeta, ctx }) {
-  const { sysOut, EGPT_CONFIG, EGPT_HOME } = ctx;
+  const { sysOut, EGPT_CONFIG, EGPT_HOME, waBridgeRef } = ctx;
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
+
+  // Resolve a target token to { jid, name } or { error }. An @-jid resolves to
+  // its LIVE name (the bridge's group subject — cheap/cached); a bare term is a
+  // fuzzy search over the bridge's actual chat names (the registered conv-state
+  // slugs are auto-generated, e.g. "egpt_an-2605241622", so a human name like
+  // "hector" only matches the live WA subjects). Always names the picked chat
+  // so a bare jid echo is never the only feedback ([[feedback-verify-wa-chat-name]]).
+  const _resolveChatTarget = async (term, surface = 'whatsapp') => {
+    if (!term) return {};
+    const wa = waBridgeRef?.current ?? null;
+    if (String(term).includes('@')) {
+      const live = wa?.getChatName?.(term) ?? null;
+      if (live) return { jid: term, name: live };
+      const cs = await readConvState(CONV_YAML_PATH);
+      return { jid: term, name: findContactByJid(cs, surface, term) ?? null };
+    }
+    const needle = term.trim().toLowerCase();
+    const hits = new Map();   // jid -> name
+    try {
+      const chats = await wa?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false }) ?? [];
+      for (const c of chats) {
+        const nm = String(c.name ?? '');
+        if (nm && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);
+      }
+    } catch { /* bridge optional */ }
+    try {
+      const cs = await readConvState(CONV_YAML_PATH);
+      for (const m of findContactsByName(cs, term, surface)) {
+        if (!hits.has(m.jid)) hits.set(m.jid, m.pushedName || m.slug || m.jid);
+      }
+    } catch { /* conv-state optional */ }
+    const arr = [...hits.entries()];
+    if (!arr.length) return { error: `no chat matches "${term}" — try /channels to see exact names, or pass the @-jid` };
+    if (arr.length > 1) {
+      const names = arr.slice(0, 8).map(([, n]) => n).join(', ');
+      return { error: `"${term}" matches ${arr.length}: ${names} — be more specific or pass the @-jid` };
+    }
+    return { jid: arr[0][0], name: arr[0][1] };
+  };
 
   // ── /e new [<persona>] ──────────────────────────────────────────
   // Reboot the conversation-e thread in the current chat. Clears
