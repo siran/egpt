@@ -555,8 +555,45 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // ── /e tool allow|deny|ask [all|<toolname>] | status ────────────
+  // Per-tool permission for the agentic loop (the @l local operator and any
+  // future tool-using brain). Modes: allow (runs freely), ask (confirm via
+  // the operator Self DM before running), deny (blocked). 'all' sets the
+  // DEFAULT applied to any tool not explicitly listed — so `/e tool deny all`
+  // then `/e tool allow read_file` is whitelist mode. SAFETY: an unleashed
+  // local model won't self-refuse a destructive tool call, so the HOST gates
+  // here — this is the operator's control surface over what @l may do.
+  if (sub === 'tool') {
+    const rest = tokens.slice(1);
+    const MODES = new Set(['allow', 'deny', 'ask']);
+    const mode = rest.map(t => t.toLowerCase()).find(t => MODES.has(t)) ?? null;
+    const target = rest.find(t => !MODES.has(t.toLowerCase())) ?? null;   // 'all' | tool name
+    if (!EGPT_CONFIG.tools || typeof EGPT_CONFIG.tools !== 'object') EGPT_CONFIG.tools = {};
+    const t = EGPT_CONFIG.tools;
+
+    if (!mode) {
+      const def = t.default ?? 'ask';
+      const lines = Object.entries(t).filter(([k]) => k !== 'default').map(([k, v]) => `  - ${k}: ${v}`);
+      sysOut(`/e tool (default: ${def}):\n${lines.length ? lines.join('\n') : '  (no per-tool overrides)'}`);
+      return true;
+    }
+    if (!target) {
+      sysOut("usage: /e tool allow|deny|ask <toolname>|all   (e.g. `/e tool deny all`, then `/e tool allow read_file`)");
+      return true;
+    }
+    if (target.toLowerCase() === 'all') t.default = mode;
+    else t[target] = mode;
+    try {
+      const saved = await readConfig();
+      saved.tools = t;
+      await writeConfig(saved);
+    } catch (e) { sysOut(`!! /e tool: persist failed: ${e.message}`); return true; }
+    sysOut(`/e tool ${mode}: ${target.toLowerCase() === 'all' ? `default → ${mode}` : target}`);
+    return true;
+  }
+
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 
