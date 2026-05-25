@@ -754,7 +754,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       list = rows.join('\n');
     }
     const paused = wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active';
-    sysOut(`auto: ${paused}  (default mode: ${DEFAULT_AUTO_MODE})\nper-chat modes:\n${list}`);
+    const def = wa.auto_e_default_mode || DEFAULT_AUTO_MODE;
+    sysOut(`auto: ${paused}  (default mode: ${def})\nper-chat modes:\n${list}`);
     return true;
   }
 
@@ -766,14 +767,13 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   } else if (MODES.includes(action)) {
     const target = jidArg ? String(jidArg).trim() : null;
     if (target && target.toLowerCase() === 'all') {
-      // 'all' keeps the global-kill shorthand, but only for on/off.
-      if (action === 'on' || action === 'off') {
-        wa.auto_e_paused = (action === 'off');
-        autoLabel = `all → ${wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active (resumed)'}`;
-      } else {
-        sysOut(`/e auto ${action} all: "all" only supports on|off (global kill). Name a chat for ${action}.`);
-        return true;
-      }
+      // 'all' makes EVERY chat this mode: set the global default + clear all
+      // per-chat overrides so nothing deviates. (Use /e auto pause for a
+      // temporary global kill that preserves per-chat config.)
+      wa.auto_e_default_mode = action;
+      wa.auto_e_modes = {};
+      wa.auto_e_chats = [];
+      autoLabel = `all chats → ${action} (global default; per-chat overrides cleared)`;
     } else {
       let chatId = null, resolvedName = null;
       if (target) {
@@ -808,6 +808,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     saved.whatsapp.auto_e_modes = wa.auto_e_modes;
     saved.whatsapp.auto_e_chats = wa.auto_e_chats;     // kept as legacy fallback
     saved.whatsapp.auto_e_paused = !!wa.auto_e_paused;
+    if (wa.auto_e_default_mode) saved.whatsapp.auto_e_default_mode = wa.auto_e_default_mode;
     await writeConfig(saved);
   } catch (e) {
     sysOut(`!! /e auto: persist failed: ${e.message}`);
