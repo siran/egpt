@@ -19,6 +19,30 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+// Drop the Self-DM breadcrumbs a lifecycle bounce needs: a "going down" line in
+// the outbox + a state/restart-announce.json sidecar the NEXT process reads to
+// post "back online". Used by BOTH /restart and /upgrade so each reports the
+// cycle in Self — the "exiting…" sysOut only reaches the shell, and the dying
+// process tears the bridge down before any mirror flushes. HEAD captured here
+// is pre-bounce; the boot-announce re-reads HEAD, so /upgrade shows the NEW
+// commit it pulled to.
+async function announceBounce({ ctx, meta, preBody }) {
+  const { APP_DIR, EGPT_HOME } = ctx;
+  const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
+  if (!selfJid) return;
+  let sha = '?', subj = '';
+  try {
+    const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
+    if (r.status === 0) { const [h, s] = (r.stdout?.toString() ?? '').trim().split('\t'); sha = h || '?'; subj = s || ''; }
+  } catch { /* git optional */ }
+  await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
+  await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
+    type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid, body: preBody(sha),
+  }));
+  await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+  await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
+}
+
 export const meta = [
   {
     cmd: '/restart',
@@ -65,26 +89,7 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
     // no checkout, so HEAD is unchanged across the bounce: capturing it here
     // is accurate for what the new process runs.
     try {
-      const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
-      let sha = '?', subj = '';
-      try {
-        const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
-        if (r.status === 0) {
-          const [h, s] = (r.stdout?.toString() ?? '').trim().split('\t');
-          sha = h || '?'; subj = s || '';
-        }
-      } catch { /* git optional — sha stays '?' */ }
-      if (selfJid) {
-        await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
-        await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
-          type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid,
-          body: `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…`,
-        }));
-        await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-        await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({
-          jid: selfJid, sha, subj, at: Date.now(),
-        }));
-      }
+      await announceBounce({ ctx, meta, preBody: (sha) => `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…` });
     } catch (e) { sysOut(`!! /restart: announce write failed — ${e.message}`); }
     sysOut('exiting with code 43 — egpt-daemon (if running) will respawn the shell');
     setTimeout(() => exitClean(43), 100);
@@ -92,6 +97,11 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
   }
 
   if (cmd === '/upgrade') {
+    // Same Self breadcrumb as /restart so the operator sees the cycle — without
+    // it, /upgrade from Self showed nothing (the "exiting…" sysOut is shell-only).
+    try {
+      await announceBounce({ ctx, meta, preBody: (sha) => `🧠 eGPT · ⬆ /upgrade (exit 42) — pull + rebuild from ${sha}…` });
+    } catch (e) { sysOut(`!! /upgrade: announce write failed — ${e.message}`); }
     sysOut('exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart');
     setTimeout(() => exitClean(42), 100);
     return true;
