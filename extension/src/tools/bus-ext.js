@@ -24,7 +24,7 @@
 // background.js is the relay between the bus tab port and any UI
 // tabs that connect as 'egpt-bus-subscriber'.
 
-import { signEvent, verifyEvent, keyFromString, keyToString } from '../../../tools/bus-sign.mjs';
+import { signEvent, verifyEvent, keyFromString, keyToString } from '../../../src/tools/bus-sign.mjs';
 
 export const BUS_PATH = '/bus.html';
 

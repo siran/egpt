@@ -1,18 +1,18 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
-import { startTelegramBridge } from '../../../bridges/telegram.mjs';
+import { startTelegramBridge } from '../../../src/bridges/telegram.mjs';
 import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
 import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa-routing.js';
 import * as waCommands from '../commands/wa-commands.js';
 import * as sessionCommands from '../commands/session-commands.js';
 import * as miscCommands from '../commands/misc-commands.js';
-import { generateKey as generateBusKey } from '../../../tools/bus-sign.mjs';
-import * as chatgptCdp from '../../../brains/chatgpt-cdp.mjs';
-import * as claudeCdp from '../../../brains/claude-cdp.mjs';
-import { listTabs } from '../../../tools/cdp.mjs';
-import * as bus from '../../../tools/bus.mjs';
-import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../interpreter.mjs';
-import { resolveRoute, planMirrors } from '../../../room.mjs';
+import { generateKey as generateBusKey } from '../../../src/tools/bus-sign.mjs';
+import * as chatgptCdp from '../../../config/brains/chatgpt-cdp.mjs';
+import * as claudeCdp from '../../../config/brains/claude-cdp.mjs';
+import { listTabs } from '../../../src/tools/cdp.mjs';
+import * as bus from '../../../src/tools/bus.mjs';
+import { parseInput, helpText, COMMAND_SET, commandSetFor } from '../../../src/interpreter.mjs';
+import { resolveRoute, planMirrors } from '../../../src/room.mjs';
 
 // Identifier this extension instance uses on the bus. Default is
 // chrome-XXXX (random); user can set chrome.storage.sync.node_name to

@@ -19,7 +19,7 @@ export {
   listTabs, findTab, isRunning,
   openTab, closeTab, browseTab,
   setCdpHostGetter, cdpHost,
-} from '../../../tools/cdp.mjs';
+} from '../../../src/tools/cdp.mjs';
 
 function rpc(message, { onUpdate } = {}) {
   return new Promise((resolve, reject) => {

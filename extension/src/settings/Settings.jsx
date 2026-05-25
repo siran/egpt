@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { generateKey as generateBusKey } from '../../../tools/bus-sign.mjs';
+import { generateKey as generateBusKey } from '../../../src/tools/bus-sign.mjs';
 
 const THEMES = [
   'catppuccin', 'default', 'dracula', 'ember',

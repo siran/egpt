@@ -121,14 +121,14 @@ for (const [src, dst] of staticAssets) {
 // host its own bus tab (chrome-extension://<id>/bus.html) without
 // depending on the proxy serving it from :9222. The script is in a
 // separate file because MV3 CSP disallows inline <script> blocks.
-// Source of truth stays at tools/{bus.html,bus.js} — same files used
+// Source of truth stays at src/tools/{bus.html,bus.js} — same files used
 // by cdp-proxy.mjs for shell-only setups.
 copyFileSync(
-  resolve(__dirname, '../tools/bus.html'),
+  resolve(__dirname, '../src/tools/bus.html'),
   resolve(chromeDist, 'bus.html'),
 );
 copyFileSync(
-  resolve(__dirname, '../tools/bus.js'),
+  resolve(__dirname, '../src/tools/bus.js'),
   resolve(chromeDist, 'bus.js'),
 );
 copyFileSync(
