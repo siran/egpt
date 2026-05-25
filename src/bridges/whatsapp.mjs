@@ -2026,6 +2026,28 @@ export async function startWhatsAppBridge({
               let pendingQueue  = '';   // chars buffered, not yet shown
               let typeTimer     = null;
               let doneSignal    = false;
+              // Animation style (operator 2026-05-25). 'bar' (default) renders a
+              // determinate progress bar — driven by whisper's processed-audio
+              // position (chunk.endSeconds) over the clip duration — ABOVE the
+              // partial transcript that types out below it, so the recipient
+              // sees BOTH the progress and the words appearing. 'typewriter'
+              // keeps the legacy transcript-only stream. The bar is dropped on
+              // done(), leaving just the clean final transcript.
+              const _animStyle = media.audio_transcribe?.animation ?? 'bar';
+              const _totalSec  = Number(node?.seconds) || 0;
+              let _lastEndSec  = 0;
+              const _bar = (pct) => {
+                const w = 10, f = Math.max(0, Math.min(w, Math.round(pct / 100 * w)));
+                return '▰'.repeat(f) + '▱'.repeat(w - f);
+              };
+              const _renderBody = () => {
+                if (_animStyle === 'bar' && _totalSec > 0) {
+                  const pct = Math.min(100, Math.round((_lastEndSec / _totalSec) * 100));
+                  const head = `🎙 ${_bar(pct)} ${pct}%`;
+                  return displayedText ? `${head}\n${displayedText}` : head;
+                }
+                return `🎙 ${displayedText}`;
+              };
 
               const _scheduleType = (windowDurationMs) => {
                 if (typeTimer) return;   // already typing
@@ -2047,7 +2069,7 @@ export async function startWhatsAppBridge({
                   const slice = pendingQueue.slice(0, charsPerTick);
                   pendingQueue = pendingQueue.slice(charsPerTick);
                   displayedText += slice;
-                  _editReply(`🎙 ${displayedText}`)
+                  _editReply(_renderBody())
                     .catch(e => log(`reply-stream typewriter: ${e?.message ?? e}`));
                   if (!pendingQueue && doneSignal) {
                     clearInterval(typeTimer);
@@ -2059,6 +2081,9 @@ export async function startWhatsAppBridge({
               };
 
               voiceStream.emitter.on('chunk', (ev) => {
+                // Advance the progress bar even for silent windows (no text),
+                // so the bar tracks audio position, not just spoken chunks.
+                if (ev?.endSeconds != null) _lastEndSec = Math.max(_lastEndSec, ev.endSeconds);
                 if (!ev?.text) return;
                 const sep = (displayedText || pendingQueue) ? ' ' : '';
                 pendingQueue += sep + ev.text;
