@@ -43,6 +43,7 @@ import {
   readState as readConvState,
   writeState as writeConvState,
   findContactByJid,
+  findContactsByName,
   patchContact,
   installPersonaIntoSlugDir,
   buildRebootAnnouncement,
@@ -65,6 +66,29 @@ async function _persistWaConfig() {
   const saved = await readConfig();
   if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
   return { saved };
+}
+
+// Resolve a target token to { jid, name } or { error }. Accepts a real @-jid
+// (looks up its registered name for the echo) OR a fuzzy name-search term
+// matched against registered contacts (pushedName + slug). So the operator can
+// target a chat by name and ALWAYS sees WHICH chat was picked — a bare jid in
+// the echo is unverifiable ([[feedback-verify-wa-chat-name]]).
+async function _resolveChatTarget(term, surface = 'whatsapp') {
+  if (!term) return {};
+  const cs = await readConvState(CONV_YAML_PATH);
+  if (String(term).includes('@')) {
+    return { jid: term, name: findContactByJid(cs, surface, term) ?? null };
+  }
+  const matches = findContactsByName(cs, term, surface);
+  if (!matches.length) {
+    return { error: `no chat matches "${term}" — send a message in that chat first so it registers, or pass the @-jid` };
+  }
+  if (matches.length > 1) {
+    const names = matches.map(m => m.pushedName || m.slug || m.jid).slice(0, 8).join(', ');
+    return { error: `"${term}" matches ${matches.length}: ${names} — be more specific or pass the @-jid` };
+  }
+  const [hit] = matches;
+  return { jid: hit.jid, name: hit.pushedName || hit.slug || null };
 }
 
 // Shared kickoff used by /e new (resetThread=true) and /e persona (false).
@@ -491,13 +515,14 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     const rest = tokens.slice(1);
     const ACTIONS = new Set(['status', 'on', 'off']);
     const DESTS   = new Set(['self', 'shell', 'egptbot', 'all']);
-    let cJid = null, cAction = null;
+    let cJid = null, cAction = null, nameTerm = null;
     const destTokens = [];
     for (const t of rest) {
       const lt = t.toLowerCase();
       if (t.includes('@')) cJid = t;
       else if (ACTIONS.has(lt)) cAction = lt;
       else if (DESTS.has(lt)) destTokens.push(lt);
+      else nameTerm = nameTerm ? `${nameTerm} ${t}` : t;   // fuzzy chat-name search
     }
     const expand = (ds) => ds.includes('all') ? ['self', 'shell', 'egptbot'] : [...new Set(ds)];
 
@@ -505,10 +530,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     const wa2 = EGPT_CONFIG.whatsapp;
     if (!wa2.confirm_chats || typeof wa2.confirm_chats !== 'object') wa2.confirm_chats = {};
 
-    // Default action: bare `/e confirm` → status.
-    if (!cAction) cAction = 'status';
-
-    if (cAction === 'status') {
+    // Bare `/e confirm` (no chat named, no action) → the global watched list.
+    if (!cAction && !cJid && !nameTerm) {
       const entries = Object.entries(wa2.confirm_chats);
       const list = entries.length
         ? entries.map(([j, ds]) => `  - ${j} → ${(Array.isArray(ds) ? ds : []).join(', ') || '(none)'}`).join('\n')
@@ -517,11 +540,34 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
 
-    const chatId = cJid ?? dispatchMeta?.waChatId ?? null;
+    // Resolve the target chat — by @-jid or by fuzzy name — so the echo NAMES
+    // the group it picked (a bare jid is unverifiable).
+    let chatId = cJid, resolvedName = null;
+    if (!chatId && nameTerm) {
+      const r = await _resolveChatTarget(nameTerm);
+      if (r.error) { sysOut(`/e confirm: ${r.error}`); return true; }
+      chatId = r.jid; resolvedName = r.name;
+    }
+    if (!chatId) chatId = dispatchMeta?.waChatId ?? null;
     const isSelfOrShell = !chatId || chatId === EGPT_CONFIG.whatsapp?.chat_id;
-    if (!cJid && isSelfOrShell) {
-      sysOut("/e confirm on|off: here you must name a <jid> (the current-chat default only autofills inside a channel). "
-        + "e.g. `/e confirm 120363...@g.us on self shell`");
+    if (!cJid && !nameTerm && isSelfOrShell) {
+      sysOut('/e confirm: name a chat — a <jid>, a fuzzy name (e.g. `/e confirm hector on`), or run it inside the target channel.');
+      return true;
+    }
+    // Name jid / current-chat targets too, so every echo identifies the group.
+    if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
+    const label = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
+
+    // Named a chat but no on/off → show THAT chat's current watch state.
+    if (!cAction) {
+      const ds = wa2.confirm_chats[chatId];
+      sysOut(`/e confirm: ${label} → ${Array.isArray(ds) && ds.length ? ds.join(', ') : '(not watched)'}`);
+      return true;
+    }
+
+    if (cAction === 'status') {
+      const ds = wa2.confirm_chats[chatId];
+      sysOut(`/e confirm: ${label} → ${Array.isArray(ds) && ds.length ? ds.join(', ') : '(not watched)'}`);
       return true;
     }
 
@@ -551,7 +597,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
     const now = wa2.confirm_chats[chatId];
-    sysOut(`/e confirm ${cAction}: ${chatId} → ${now ? now.join(', ') : '(not watched)'}`);
+    sysOut(`/e confirm ${cAction}: ${label} → ${now ? now.join(', ') : '(not watched)'}`);
     return true;
   }
 
@@ -611,20 +657,27 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
 
-    let chatId = jidArg ? String(jidArg).trim() : null;
+    let chatId = null, resolvedName = null;
+    if (jidArg) {
+      const r = await _resolveChatTarget(jidArg);     // @-jid or fuzzy name
+      if (r.error) { sysOut(`/e residents: ${r.error}`); return true; }
+      chatId = r.jid; resolvedName = r.name;
+    }
     if (!chatId) {
       const here = dispatchMeta?.waChatId ?? null;
       const isSelfOrShell = !here || here === EGPT_CONFIG.whatsapp?.chat_id;
       if (isSelfOrShell) {
-        sysOut('/e residents: name a <jid> here (current-chat autofill only works inside a channel). e.g. `/e residents l <jid>`');
+        sysOut('/e residents: name a chat — a <jid>, a fuzzy name, or run inside the channel. e.g. `/e residents l hector`');
         return true;
       }
       chatId = here;
     }
+    if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
+    const label = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
 
     if (['off', 'clear', 'reset'].includes(String(action).toLowerCase())) {
       delete wa.residents_per_chat[chatId];
-      sysOut(`/e residents: ${chatId} → cleared (uses global: ${(Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : 'persona'})`);
+      sysOut(`/e residents: ${label} → cleared (uses global: ${(Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : 'persona'})`);
     } else {
       const known = new Set(Object.keys(EGPT_CONFIG.siblings ?? {}).map(s => s.toLowerCase()));
       const list = String(action).toLowerCase().split(/[,\s]+/).filter(Boolean);
@@ -634,7 +687,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         return true;
       }
       wa.residents_per_chat[chatId] = list;
-      sysOut(`/e residents: ${chatId} → ${list.join(', ')} only`);
+      sysOut(`/e residents: ${label} → ${list.join(', ')} only`);
     }
 
     try {
