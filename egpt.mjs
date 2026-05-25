@@ -4587,6 +4587,12 @@ function App() {
       if (!meta.fromWhatsApp || !meta.waChatId) return;
       const body = String(reply ?? '');
       if (!body) return;
+      // Infra errors ("!! @l: llama: fetch failed …") are NOT a brain reply —
+      // they're a host-side breadcrumb. Don't re-circulate them to the other
+      // residents or surface them in the /confirm debug; that was flooding the
+      // chain when llama-server was down. (The chat send already drops them via
+      // _dropResident; this is the matching guard for the converse path.)
+      if (/^!!\s*@/.test(body.trim())) return;
       const lc = (s) => String(s).toLowerCase();
       const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
         ? EGPT_CONFIG.whatsapp.residents
