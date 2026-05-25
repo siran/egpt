@@ -592,8 +592,64 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // Per-chat resident selection. The global whatsapp.residents list applies
+  // everywhere by default; a per-chat override (whatsapp.residents_per_chat)
+  // lets one chat run a subset — e.g. @l-only to spare the Claude plan's 5h
+  // window (@l is local/free; @e is haiku on your subscription).
+  if (sub === 'residents') {
+    if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
+    const wa = EGPT_CONFIG.whatsapp;
+    if (!wa.residents_per_chat || typeof wa.residents_per_chat !== 'object') wa.residents_per_chat = {};
+
+    if (!action || action === 'status') {
+      const glob = (Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : '(persona only)';
+      const ents = Object.entries(wa.residents_per_chat);
+      const lines = ents.length
+        ? ents.map(([j, r]) => `  - ${j}: ${Array.isArray(r) ? r.join(', ') : r}`).join('\n')
+        : '  (none — every chat uses the global list)';
+      sysOut(`residents (global): ${glob}\nper-chat overrides:\n${lines}`);
+      return true;
+    }
+
+    let chatId = jidArg ? String(jidArg).trim() : null;
+    if (!chatId) {
+      const here = dispatchMeta?.waChatId ?? null;
+      const isSelfOrShell = !here || here === EGPT_CONFIG.whatsapp?.chat_id;
+      if (isSelfOrShell) {
+        sysOut('/e residents: name a <jid> here (current-chat autofill only works inside a channel). e.g. `/e residents l <jid>`');
+        return true;
+      }
+      chatId = here;
+    }
+
+    if (['off', 'clear', 'reset'].includes(String(action).toLowerCase())) {
+      delete wa.residents_per_chat[chatId];
+      sysOut(`/e residents: ${chatId} → cleared (uses global: ${(Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : 'persona'})`);
+    } else {
+      const known = new Set(Object.keys(EGPT_CONFIG.siblings ?? {}).map(s => s.toLowerCase()));
+      const list = String(action).toLowerCase().split(/[,\s]+/).filter(Boolean);
+      const bad = list.filter(r => !known.has(r));
+      if (!list.length || bad.length) {
+        sysOut(`/e residents: unknown resident(s): ${bad.join(', ') || '(none)'}. Known: ${[...known].join(', ') || '(none)'}. Usage: /e residents <e,l|e|l|off> [<jid>]`);
+        return true;
+      }
+      wa.residents_per_chat[chatId] = list;
+      sysOut(`/e residents: ${chatId} → ${list.join(', ')} only`);
+    }
+
+    try {
+      const saved = await readConfig();
+      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
+      saved.whatsapp.residents_per_chat = wa.residents_per_chat;
+      await writeConfig(saved);
+    } catch (e) {
+      sysOut(`!! /e residents: persist failed: ${e.message}`);
+    }
+    return true;
+  }
+
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<jid>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 

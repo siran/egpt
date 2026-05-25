@@ -3003,9 +3003,16 @@ function App() {
               // is mirrored to Self by the watcher tap. _chainDepth:0 marks
               // these as broadcast turns — replies re-circulate to the other
               // residents (see _recirculateResidentReply) up to the cap.
-              const residents = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
-                ? EGPT_CONFIG.whatsapp.residents
-                : [_personaBeing];
+              // Resident list for THIS chat: a per-chat override
+              // (whatsapp.residents_per_chat[jid]) wins, else the global
+              // residents list, else the persona alone. Lets a chat run @l-only
+              // (drop @e there to spare the Claude plan's 5h window) or @e-only.
+              const _perChatResidents = EGPT_CONFIG.whatsapp?.residents_per_chat?.[from.chatId];
+              const residents = (Array.isArray(_perChatResidents) && _perChatResidents.length)
+                ? _perChatResidents
+                : (Array.isArray(EGPT_CONFIG.whatsapp?.residents) && EGPT_CONFIG.whatsapp.residents.length)
+                  ? EGPT_CONFIG.whatsapp.residents
+                  : [_personaBeing];
               // Debug-mirror telemetry (the /e confirm "Debug: …" lines that
               // deliverEcho posts into the Self DM) must be SEEN by the Self
               // residents but must NOT drive the residents-converse engine —
