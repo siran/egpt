@@ -19,7 +19,7 @@ import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
-import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives } from './src/auto-mode.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -3030,12 +3030,14 @@ function App() {
           const isSlash = trimmed.startsWith('/');
           const _personaBeing = EGPT_CONFIG.persona ?? 'e';
           // Per-chat auto mode. The operator's own surfaces (system contact)
-          // are always 'on'. A configured mode wins; legacy auto_e_chats
-          // membership maps to 'on'; everything else is the default ('mention').
+          // are always 'on'. A per-chat mode wins; then legacy auto_e_chats
+          // membership (→ 'on'); then the global default (auto_e_default_mode,
+          // set by `/e auto <mode> all`); then the built-in default ('mention').
           const _autoMode = isSystemContact ? 'on' : (() => {
             const modes = waCfg.auto_e_modes;
             if (modes && typeof modes === 'object' && modes[from.chatId]) return modes[from.chatId];
             if (isAutoEChat) return 'on';
+            if (autoIsMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
             return DEFAULT_AUTO_MODE;
           })();
           // replyAllowed: does this message's mention-status permit a reply
