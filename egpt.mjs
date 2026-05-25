@@ -5132,6 +5132,15 @@ function App() {
     if (brain.sessionless && opts.chatId) {
       _sysPrompt = _residentIdentity(opts.chatId, _sysPrompt);
     }
+    // Suppress Qwen3 thinking at the MODEL level. llama-server's --reasoning
+    // flag only controls how reasoning is PARSED, not whether the model emits
+    // <think>…</think> — so @l kept reasoning (slow on CPU, and noise). Qwen3
+    // honors a literal /no_think switch in the prompt; append it to the system
+    // prompt. Toggle with local_llm.no_think:false. (operator 2026-05-25:
+    // "best is that there is no thinking and a response.")
+    if (brain.sessionless && EGPT_CONFIG.local_llm?.no_think !== false) {
+      _sysPrompt = `${_sysPrompt ? _sysPrompt + '\n\n' : ''}/no_think`;
+    }
     const sessionOpts = {
       sessionId: mbCfg.session_id ?? null,
       cwd: mbCfg.cwd ?? process.cwd(),
@@ -5142,6 +5151,12 @@ function App() {
       ...(_sysPrompt               ? { appendSystemPrompt: _sysPrompt } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
+      // Local CPU brain (@l): a cold prompt-eval of a big conversation-L can be
+      // silent for a while; give the stall watchdog room (configurable).
+      ...(brain.sessionless ? {
+        stallTimeoutMs: Number(EGPT_CONFIG.local_llm?.stall_timeout_ms) || 300_000,
+        hardTimeoutMs:  Number(EGPT_CONFIG.local_llm?.hard_timeout_ms)  || 600_000,
+      } : {}),
     };
     try {
       // Agentic @l (opt-in via local_llm.agentic): a sessionless local brain

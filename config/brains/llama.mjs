@@ -43,7 +43,14 @@ export function stream({ history, message }, onUpdate, options = {}) {
     };
 
     const HARD_MS = options.hardTimeoutMs ?? 600_000;
-    const STALL_MS = options.stallTimeoutMs ?? 120_000;
+    // Stall = no NEW token for this long. The trap on a CPU model: while
+    // llama-server is PROMPT-EVALUATING a large context (cold cache, e.g. a
+    // big conversation-L), the SSE stream sends NOTHING until the first
+    // generated token — so a long-but-healthy prompt eval looks like a stall.
+    // 120s was too tight (it aborted @l mid-prompt-eval as "aborted (timeout)"
+    // before it ever spoke). 300s gives cold eval room; generation streaming
+    // resets the clock per token, so a truly hung generation is still caught.
+    const STALL_MS = options.stallTimeoutMs ?? 300_000;
     const ac = new AbortController();
     let settled = false;
     let lastProgress = Date.now();
