@@ -268,6 +268,7 @@ if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'))
   const otherPid = liveDaemonPid(aliveContent);
   if (otherPid) {
     log(`another egpt daemon is already alive (egpt.mjs pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
+    log(`to open an interactive shell instead, run \`node egpt.mjs\` (the app, not this supervisor) — it takes over the running daemon via the pidfile handshake and hands WA back when you /exit.`);
     process.exit(0);
   }
 }
