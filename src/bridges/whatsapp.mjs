@@ -567,8 +567,11 @@ export async function startWhatsAppBridge({
     // pushName, duration, timestamp — is for chat members visible in
     // WA, not for the brain. Operator 2026-05-23: "this '👂 Daniel
     // 12s @ 14:35:' and the animation is sugar for members."
-    // Replace the leading placeholder; keep any ↳ quoted-preview prefix.
-    return rawText.replace(/\[(?:voice note|audio):\s*\d+s?\]/i, transcript);
+    // Replace the placeholder with an explicit transcript tag + the text, so a
+    // text-only brain (@l) knows the words ARE a voice transcript and how long
+    // the note was (operator 2026-05-25). Keeps any ↳ quoted-preview prefix.
+    return rawText.replace(/\[(?:voice note|audio):\s*(\d+)\s*s?\]/i,
+      (_m, secs) => `[voice note transcript, total duration: ${secs}s] ${transcript}`);
   }
 
   // Append the saved file path to image placeholders so @e can use

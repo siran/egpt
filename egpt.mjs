@@ -2067,55 +2067,66 @@ function App() {
   // @l is no longer sessionless (conversation-L is injected each turn), so it
   // belongs on the same backpressure as @e. Keyed `${being}\0${chatId}` so
   // each resident has an independent queue per chat.
-  const _residentChatQueues = useRef(new Map());
-  const _residentQueueKey = (being, chatId) => `${String(being).toLowerCase()} ${chatId}`;
-  // Claim the turn for (being, chat). Returns the queueState to proceed with
-  // (caller drains it in finally), 'piled' if a turn is already in flight (the
-  // message was queued — caller must return), or null when not auto-dispatched
-  // (no gating).
-  const _claimResidentTurn = (being, meta, body) => {
-    if (!meta.autoDispatched || !meta.waChatId || !being) return null;
-    const key = _residentQueueKey(being, meta.waChatId);
-    let qs = _residentChatQueues.current.get(key);
-    if (!qs) { qs = { inFlight: false, queue: [] }; _residentChatQueues.current.set(key, qs); }
-    if (qs.inFlight) {
-      qs.queue.push({ body, senderName: meta.waSenderName ?? 'someone', ts: Date.now() });
-      logOut(`resident-queue: piling ${being}@${meta.waChatId} (q=${qs.queue.length})`);
-      return 'piled';
-    }
-    qs.inFlight = true;
-    return qs;
+  // @l runs on ONE local server with ONE inference slot, so every @l turn is
+  // serialized GLOBALLY (one at a time, across every chat). Each chat keeps its
+  // own pile of messages that arrived while @l was busy; when @l frees it ships
+  // the OLDEST-waiting chat's WHOLE pile as one combined, STATELESS turn. @l
+  // carries no history: a turn is persona + that pile only. Voice notes are
+  // transcribed upstream before a message reaches a pile, so a pile never holds
+  // a raw [voice note].
+  const _llamaBusy  = useRef(false);            // is an @l inference in flight?
+  const _llamaPiles = useRef(new Map());        // chatId -> [{body, senderName, ts}]
+  const _isLlamaBeing = (being) => {
+    const t = String((EGPT_CONFIG.siblings ?? {})[String(being).toLowerCase()]?.type ?? '').toLowerCase();
+    return t === 'llama' || t === 'llamacpp' || t === 'llama-cpp' || t === 'local';
   };
-  // Drain the pile (if any) as one combined turn, re-dispatched to the same
-  // being via forceTarget + _personaBodyOverride (verbatim combined prompt, so
-  // the meta branch doesn't re-wrap it). Fire-and-forget so the finally returns
-  // promptly; cascades naturally if more piled while this turn ran.
-  const _drainResidentTurn = (being, meta, queueState) => {
-    if (!queueState) return;
-    const drained = queueState.queue.splice(0);
-    queueState.inFlight = false;
-    if (!drained.length || !submitRef.current) return;
-    const surface = buildWaSurfaceTag(meta.waChatId);
-    const idStr = String(meta.waChatId ?? '');
+  // Gate an @l turn. Returns true if the message was PILED (caller must return),
+  // false to run it now. Only @l (the single local slot) is gated; other meta
+  // beings (engineers) run inline. Piling is per-chat, so each chat coalesces
+  // its own burst.
+  const _llamaGate = (being, meta, body) => {
+    if (!_isLlamaBeing(being) || !meta.waChatId) return false;
+    if (_llamaBusy.current) {
+      const pile = _llamaPiles.current.get(meta.waChatId) ?? [];
+      pile.push({ body, senderName: meta.waSenderName ?? 'someone', ts: Date.now() });
+      _llamaPiles.current.set(meta.waChatId, pile);
+      logOut(`@l: server busy, piling ${meta.waChatId} (pile=${pile.length})`);
+      return true;
+    }
+    _llamaBusy.current = true;                   // claim the slot (sync, no await before this)
+    return false;
+  };
+  // Free the slot and ship the next chat's whole pile (oldest pending message
+  // first, so no chat starves) as ONE combined, stateless turn via forceTarget
+  // + _personaBodyOverride. Fire-and-forget; cascades as each turn ends until
+  // all piles drain.
+  const _llamaReleaseAndDrain = (being, meta) => {
+    if (!_isLlamaBeing(being)) return;           // engineer turn never claimed the slot
+    _llamaBusy.current = false;
+    let nextChat = null, oldest = Infinity;
+    for (const [cid, pile] of _llamaPiles.current) {
+      if (pile.length && pile[0].ts < oldest) { oldest = pile[0].ts; nextChat = cid; }
+    }
+    if (nextChat === null) return;               // nothing waiting
+    const pile = _llamaPiles.current.get(nextChat);
+    _llamaPiles.current.delete(nextChat);
+    if (!submitRef.current) return;
+    const surface = buildWaSurfaceTag(nextChat);
+    const idStr = String(nextChat);
     const chatType = idStr.endsWith('@g.us') ? 'group'
       : idStr === 'status@broadcast' ? 'status' : 'private';
-    const chatName = waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null;
-    const fullPrompt = drained.map(it => formatAutoDispatchLine({
+    const chatName = waBridgeRef.current?.getChatName?.(nextChat) ?? null;
+    const fullPrompt = pile.map(it => formatAutoDispatchLine({
       senderName: it.senderName, body: it.body, ts: it.ts, surface, chatType, chatName,
     })).join('\n');
-    submitRef.current(`@${being} (drained pile)`, {
-      fromWhatsApp: meta.fromWhatsApp,
-      waChatId: meta.waChatId,
-      waUser: meta.waUser,
-      waClientLabel: meta.waClientLabel,
-      waMsgKey: null, waMsgRaw: null,
-      observeOnly: meta.observeOnly,
-      replyPersona: null,
+    submitRef.current(`@${being} (pile)`, {
+      fromWhatsApp: true,
+      waChatId: nextChat,
       waSenderName: 'multiple',
       autoDispatched: true,
       forceTarget: being,
       _personaBodyOverride: fullPrompt,
-    }).catch(e => errOut(`!! resident-queue drain failed (${being}): ${e.message}`));
+    }).catch(e => errOut(`!! @l pile drain failed (${nextChat}): ${e.message}`));
   };
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
@@ -3003,12 +3014,7 @@ function App() {
               // "keeps recircling in telegram"). Omit _chainDepth for them, so
               // replies to debug never re-circulate.
               const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
-              // Record the human message ONCE in the sessionless-resident
-              // transcript (not per resident) so @l sees it as memory.
-              _appendResidentHistory(from.chatId, formatAutoDispatchLine({
-                senderName: baseMeta.waSenderName, body: text, ts: Date.now(),
-                surface: buildWaSurfaceTag(from.chatId),
-              }));
+              // (@l is stateless — no conversation-L transcript is recorded.)
               for (const being of residents) {
                 await submitRef.current(text, {
                   ...baseMeta,
@@ -4699,7 +4705,6 @@ function App() {
       // _dropResident, so humans in the group never see them — only the
       // operator's Self/egptbot debug does.)
       if (/^!!\s*@/.test(body.trim())) return;
-      _appendResidentHistory(meta.waChatId, env);   // sessionless residents' memory
       const others = residents.filter(r => lc(r) !== lc(being));
       const depth = Number(meta._chainDepth) || 0;
       const cap = Number(EGPT_CONFIG.whatsapp?.resident_chain_cap ?? 10);
@@ -6708,14 +6713,12 @@ function App() {
       // Each entry in EGPT_CONFIG.siblings can carry its own
       // body_emoji + emoji for the outbound tag prefix; falls back
       // to 🐦 for backwards compat with the wren-only era.
-      // Coalescing gate (auto-dispatched residents like @l): if a turn for
-      // this being+chat is already running, pile this message and bail — the
-      // running turn drains the pile as one combined turn. Keeps the slow
-      // local @l from stacking one inference per group message.
+      // Global @l gate: @l has one server/one slot, so only one @l turn runs
+      // at a time across all chats. If the slot is busy, this message piles in
+      // its chat's pile and we bail; the running turn drains the next pile when
+      // it finishes. Non-@l beings (engineers) run inline.
       const _qBeing = meta.forceTarget ?? (decision.name ?? 'wren');
-      const _qClaim = _claimResidentTurn(_qBeing, meta, decision.body);
-      if (_qClaim === 'piled') return;
-      const _qState = _qClaim;   // queueState (claimed) or null (not gated)
+      if (_llamaGate(_qBeing, meta, decision.body)) return;   // @l busy → piled
       setBusy(true);
       try {
         const sibName = decision.name ?? 'wren';
@@ -6807,9 +6810,7 @@ function App() {
               if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
             }
           }
-        }, sibName, (_sibBrain?.sessionless && _isResident)
-          ? { history: _residentHistory(meta.waChatId), chatId: meta.waChatId }   // durable conversation-L: transcript + identity-once
-          : {});
+        }, sibName, {});   // @l is STATELESS: no history, no per-chat conversation — the prompt IS the turn (persona + this pile)
         // Route <think>…</think> reasoning to the Self DM only (operator
         // 2026-05-25: "if it can't be turned off, send to Self"). Strip it so
         // the chat / memory / re-circulation get JUST the answer; post the
@@ -6911,7 +6912,7 @@ function App() {
         }
       } finally {
         setBusy(false);
-        _drainResidentTurn(_qBeing, meta, _qState);
+        _llamaReleaseAndDrain(_qBeing, meta);
       }
       return;
     }
