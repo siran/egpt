@@ -3145,7 +3145,11 @@ function App() {
   useEffect(() => {
     if (!HEADLESS) return;
     const cfg = EGPT_CONFIG.local_llm;
-    if (!cfg || cfg.enabled === false) return;
+    // OPT-IN: the local llama-server only starts when local_llm.enabled is
+    // explicitly true (default off — most installs have no local model, and a
+    // missing/wrong model_path would just spam respawn errors). Toggle with
+    // /e llama on (persists enabled:true). whatsapp, by contrast, defaults on.
+    if (!cfg || cfg.enabled !== true) return;
     const bin = cfg.bin;
     const model = cfg.model_path;
     const cwd = cfg.cwd || (bin ? dirname(bin) : undefined);
