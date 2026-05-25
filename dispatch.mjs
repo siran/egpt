@@ -417,6 +417,14 @@ export async function dispatchPersonaTurn({
     logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
+  // Per-chat auto-mode reply gate: the brain RAN (so E has the message in
+  // context), but this chat's mode + the message's mention-status don't permit
+  // a reply right now — so don't send it. (e.g. 'mute', or 'mention' with no @e.)
+  if (meta.replyAllowed === false) {
+    const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+    logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent)`);
+    return { kind: 'suppressed', reply, threadCtx, personaPrompt };
+  }
 
   const delivery = await deliverBridgeReply({
     bridge,
