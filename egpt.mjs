@@ -2058,6 +2058,65 @@ function App() {
   // dispatch formatted "<name>: <body> [HH:MM]" per line, so e can issue
   // a joint reply. See [[project-egpt-auto-e-chats]] semantics.
   const _personaChatQueues = useRef(new Map());
+  // Per (being, chat) coalescing queue for the META dispatch path (@l and any
+  // other resident sibling). Mirrors the persona queue above, but @l is the
+  // one that actually needs it: it's slow (local CPU inference, one slot), so
+  // firing one inference per group message buries it under a backlog. While @l
+  // is mid-turn for a chat, further arrivals pile here and drain as ONE
+  // combined turn — the model processes the whole burst in its next run.
+  // @l is no longer sessionless (conversation-L is injected each turn), so it
+  // belongs on the same backpressure as @e. Keyed `${being}\0${chatId}` so
+  // each resident has an independent queue per chat.
+  const _residentChatQueues = useRef(new Map());
+  const _residentQueueKey = (being, chatId) => `${String(being).toLowerCase()} ${chatId}`;
+  // Claim the turn for (being, chat). Returns the queueState to proceed with
+  // (caller drains it in finally), 'piled' if a turn is already in flight (the
+  // message was queued — caller must return), or null when not auto-dispatched
+  // (no gating).
+  const _claimResidentTurn = (being, meta, body) => {
+    if (!meta.autoDispatched || !meta.waChatId || !being) return null;
+    const key = _residentQueueKey(being, meta.waChatId);
+    let qs = _residentChatQueues.current.get(key);
+    if (!qs) { qs = { inFlight: false, queue: [] }; _residentChatQueues.current.set(key, qs); }
+    if (qs.inFlight) {
+      qs.queue.push({ body, senderName: meta.waSenderName ?? 'someone', ts: Date.now() });
+      logOut(`resident-queue: piling ${being}@${meta.waChatId} (q=${qs.queue.length})`);
+      return 'piled';
+    }
+    qs.inFlight = true;
+    return qs;
+  };
+  // Drain the pile (if any) as one combined turn, re-dispatched to the same
+  // being via forceTarget + _personaBodyOverride (verbatim combined prompt, so
+  // the meta branch doesn't re-wrap it). Fire-and-forget so the finally returns
+  // promptly; cascades naturally if more piled while this turn ran.
+  const _drainResidentTurn = (being, meta, queueState) => {
+    if (!queueState) return;
+    const drained = queueState.queue.splice(0);
+    queueState.inFlight = false;
+    if (!drained.length || !submitRef.current) return;
+    const surface = buildWaSurfaceTag(meta.waChatId);
+    const idStr = String(meta.waChatId ?? '');
+    const chatType = idStr.endsWith('@g.us') ? 'group'
+      : idStr === 'status@broadcast' ? 'status' : 'private';
+    const chatName = waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null;
+    const fullPrompt = drained.map(it => formatAutoDispatchLine({
+      senderName: it.senderName, body: it.body, ts: it.ts, surface, chatType, chatName,
+    })).join('\n');
+    submitRef.current(`@${being} (drained pile)`, {
+      fromWhatsApp: meta.fromWhatsApp,
+      waChatId: meta.waChatId,
+      waUser: meta.waUser,
+      waClientLabel: meta.waClientLabel,
+      waMsgKey: null, waMsgRaw: null,
+      observeOnly: meta.observeOnly,
+      replyPersona: null,
+      waSenderName: 'multiple',
+      autoDispatched: true,
+      forceTarget: being,
+      _personaBodyOverride: fullPrompt,
+    }).catch(e => errOut(`!! resident-queue drain failed (${being}): ${e.message}`));
+  };
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -2955,9 +3014,12 @@ function App() {
                   ...baseMeta,
                   forceTarget: being,
                   ...(isDebugMirror ? {} : { _chainDepth: 0 }),
-                  // Only the persona resident uses the per-chat concurrency
-                  // queue; sessionless siblings (@l) run direct.
-                  autoDispatched: String(being).toLowerCase() === String(_personaBeing).toLowerCase(),
+                  // Every resident gets per-chat coalescing backpressure now:
+                  // @e via the persona queue, @l (and other siblings) via the
+                  // resident queue in the meta branch. A burst of group
+                  // messages drains as one combined turn instead of one
+                  // inference per message (which buried the slow local @l).
+                  autoDispatched: true,
                 });
               }
             } else {
@@ -6631,6 +6693,14 @@ function App() {
       // Each entry in EGPT_CONFIG.siblings can carry its own
       // body_emoji + emoji for the outbound tag prefix; falls back
       // to 🐦 for backwards compat with the wren-only era.
+      // Coalescing gate (auto-dispatched residents like @l): if a turn for
+      // this being+chat is already running, pile this message and bail — the
+      // running turn drains the pile as one combined turn. Keeps the slow
+      // local @l from stacking one inference per group message.
+      const _qBeing = meta.forceTarget ?? (decision.name ?? 'wren');
+      const _qClaim = _claimResidentTurn(_qBeing, meta, decision.body);
+      if (_qClaim === 'piled') return;
+      const _qState = _qClaim;   // queueState (claimed) or null (not gated)
       setBusy(true);
       try {
         const sibName = decision.name ?? 'wren';
@@ -6652,9 +6722,11 @@ function App() {
         // non-residents keep the verbose persona prompt.
         const _isResident = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) ? EGPT_CONFIG.whatsapp.residents : [])
           .some(r => String(r).toLowerCase() === String(sibName).toLowerCase());
-        const personaPrompt = (meta.fromWhatsApp && _isResident)
-          ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) })
-          : formatPersonaPrompt(meta, decision.body);
+        const personaPrompt = meta._personaBodyOverride
+          ? meta._personaBodyOverride                         // drained pile — verbatim combined prompt
+          : (meta.fromWhatsApp && _isResident)
+            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) })
+            : formatPersonaPrompt(meta, decision.body);
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
         // A resident being can self-select OUT of a message by replying with
@@ -6824,6 +6896,7 @@ function App() {
         }
       } finally {
         setBusy(false);
+        _drainResidentTurn(_qBeing, meta, _qState);
       }
       return;
     }
