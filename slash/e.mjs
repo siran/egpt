@@ -43,7 +43,7 @@ import {
   readState as readConvState,
   writeState as writeConvState,
   findContactByJid,
-  findContactsByName,
+  resolveChatTarget,
   patchContact,
   installPersonaIntoSlugDir,
   buildRebootAnnouncement,
@@ -163,44 +163,10 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
 
-  // Resolve a target token to { jid, name } or { error }. An @-jid resolves to
-  // its LIVE name (the bridge's group subject — cheap/cached); a bare term is a
-  // fuzzy search over the bridge's actual chat names (the registered conv-state
-  // slugs are auto-generated, e.g. "egpt_an-2605241622", so a human name like
-  // "hector" only matches the live WA subjects). Always names the picked chat
-  // so a bare jid echo is never the only feedback ([[feedback-verify-wa-chat-name]]).
-  const _resolveChatTarget = async (term, surface = 'whatsapp') => {
-    if (!term) return {};
-    const wa = waBridgeRef?.current ?? null;
-    if (String(term).includes('@')) {
-      const live = wa?.getChatName?.(term) ?? null;
-      if (live) return { jid: term, name: live };
-      const cs = await readConvState(CONV_YAML_PATH);
-      return { jid: term, name: findContactByJid(cs, surface, term) ?? null };
-    }
-    const needle = term.trim().toLowerCase();
-    const hits = new Map();   // jid -> name
-    try {
-      const chats = await wa?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false }) ?? [];
-      for (const c of chats) {
-        const nm = String(c.name ?? '');
-        if (nm && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);
-      }
-    } catch { /* bridge optional */ }
-    try {
-      const cs = await readConvState(CONV_YAML_PATH);
-      for (const m of findContactsByName(cs, term, surface)) {
-        if (!hits.has(m.jid)) hits.set(m.jid, m.pushedName || m.slug || m.jid);
-      }
-    } catch { /* conv-state optional */ }
-    const arr = [...hits.entries()];
-    if (!arr.length) return { error: `no chat matches "${term}" — try /channels to see exact names, or pass the @-jid` };
-    if (arr.length > 1) {
-      const names = arr.slice(0, 8).map(([, n]) => n).join(', ');
-      return { error: `"${term}" matches ${arr.length}: ${names} — be more specific or pass the @-jid` };
-    }
-    return { jid: arr[0][0], name: arr[0][1] };
-  };
+  // Thin wrapper over the shared resolveChatTarget (conversations-state.mjs),
+  // binding this run's live WA bridge. Used by every jid-taking /e subcommand.
+  const _resolveChatTarget = (term, surface = 'whatsapp') =>
+    resolveChatTarget(term, { waBridge: waBridgeRef?.current ?? null, surface });
 
   // ── /e new [<persona>] ──────────────────────────────────────────
   // Reboot the conversation-e thread in the current chat. Clears
@@ -751,14 +717,20 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   };
 
   if (action === 'status') {
-    const list = wa.auto_e_chats.length
-      ? wa.auto_e_chats.map(j => `  - ${j}`).join('\n')
-      : '  (none)';
+    let list = '  (none)';
+    if (wa.auto_e_chats.length) {
+      const rows = await Promise.all(wa.auto_e_chats.map(async (j) => {
+        const { name } = await _resolveChatTarget(j);
+        return `  - ${name ? `«${name}» ${j}` : j}`;
+      }));
+      list = rows.join('\n');
+    }
     const paused = wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active';
     sysOut(`auto_e_chats: ${paused}\n${list}`);
     return true;
   }
 
+  let autoLabel = null;   // «name» jid of the single chat toggled (for the echo)
   if (action === 'pause') {
     wa.auto_e_paused = true;
   } else if (action === 'resume') {
@@ -773,22 +745,29 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       // !auto_e_paused, so this stops @e AND @l everywhere instantly.
       wa.auto_e_paused = (action === 'off');
     } else {
-      let chatId = target;
+      let chatId = null, resolvedName = null;
+      if (target) {
+        const r = await _resolveChatTarget(target);   // @-jid or fuzzy name
+        if (r.error) { sysOut(`/e auto: ${r.error}`); return true; }
+        chatId = r.jid; resolvedName = r.name;
+      }
       if (!chatId) {
         // Autofill the CURRENT channel's jid — but NOT in Self (self-DM)
         // or the shell, where there's no channel to target. There you must
-        // name a <jid> or 'all', so a bare "/e auto off" in Self can't
-        // silently toggle the wrong thing (operator 2026-05-24).
+        // name a target, so a bare "/e auto off" in Self can't silently
+        // toggle the wrong thing (operator 2026-05-24).
         const here = dispatchMeta?.waChatId ?? null;
         const isSelfOrShell = !here || here === EGPT_CONFIG.whatsapp?.chat_id;
         if (isSelfOrShell) {
-          sysOut("/e auto on|off: here you must name a target — a <jid> or 'all' "
-            + "(e.g. `/e auto off all` to kill every chat, `/e auto off <jid>` for one). "
+          sysOut("/e auto on|off: here you must name a target — a <jid>, a fuzzy name, or 'all' "
+            + "(e.g. `/e auto off all` to kill every chat, `/e auto on hector` for one). "
             + "The current-chat default only autofills inside a channel.");
           return true;
         }
         chatId = here;
       }
+      if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
+      autoLabel = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
       if (action === 'on') {
         if (!wa.auto_e_chats.includes(chatId)) wa.auto_e_chats.push(chatId);
       } else {
@@ -815,7 +794,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   if (action === 'on' || action === 'off') {
     const tgt = (jidArg && String(jidArg).toLowerCase() === 'all')
       ? `all → ${wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active (resumed)'}`
-      : (jidArg ?? dispatchMeta?.waChatId ?? '?');
+      : (autoLabel ?? dispatchMeta?.waChatId ?? '?');
     sysOut(`/e auto ${action}: ${tgt}`);
   } else {
     sysOut(`/e auto ${action}`);
