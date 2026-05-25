@@ -6703,7 +6703,7 @@ function App() {
             ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
           confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
         }
-        const reply = await runMetaBrainTurn(personaPrompt, (partial) => {
+        let reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
           if (waStream) {
             const { think, answer } = splitThink(partial);
@@ -6721,6 +6721,25 @@ function App() {
         }, sibName, (_sibBrain?.sessionless && _isResident)
           ? { history: _residentHistory(meta.waChatId), chatId: meta.waChatId }   // durable conversation-L: transcript + identity-once
           : {});
+        // Route <think>…</think> reasoning to the Self DM only (operator
+        // 2026-05-25: "if it can't be turned off, send to Self"). Strip it so
+        // the chat / memory / re-circulation get JUST the answer; post the
+        // thinking to Self for the operator. (No-think at the model level is
+        // still the goal — this keeps the conversation clean meanwhile.)
+        {
+          const _tm = reply.match(/<think>([\s\S]*?)<\/think>/i);
+          if (_tm) {
+            const _think = _tm[1].trim();
+            reply = reply.slice(_tm.index + _tm[0].length).replace(/^\s+/, '');   // answer only ('' → treated as silence)
+            const _selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+            if (_think && _selfDm) {
+              const _id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+              writeFile(join(EGPT_HOME, 'outbox', _id + '.json'),
+                JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid: _selfDm, body: `🦙 ${sibName} 💭\n${_think}` }))
+                .catch(() => {});
+            }
+          }
+        }
         // Brains converse: feed this resident's reply (even '…') to the
         // other residents. The recipient's dispatch tap mirrors it to Self as
         // their next prompt, so the reply is echoed there as the formatted
