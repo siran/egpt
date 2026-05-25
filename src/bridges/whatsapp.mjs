@@ -58,6 +58,7 @@ import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
+import { makeSerialByKey } from '../serial-by-key.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -461,6 +462,13 @@ export async function startWhatsAppBridge({
   // settles. Operator (2026-05-22): live voice transcription via base
   // model, chunked via ffmpeg.
   const _voiceStreamsByMsgId = new Map();
+  // Per-chat transcription serializer. Voice notes in a batch are saved via
+  // Promise.all (parallel), and separate upsert events overlap too — so
+  // several whisper /inference calls for one chat could run at once, fighting
+  // the single whisper slot and scrambling transcript order. This chains them
+  // per chat so a chat's voice notes transcribe one at a time, in arrival
+  // order (operator 2026-05-25). See src/serial-by-key.mjs.
+  const _serializeTranscription = makeSerialByKey();
   // Load persisted cache on boot — survives bridge restarts so
   // reaction enrichment can resolve parents from any session in the
   // last ~4000 messages, not just this one.
@@ -2243,7 +2251,10 @@ export async function startWhatsAppBridge({
 
           // (2) Transcribe (single batch). Same _transcribeAudio for
           // video — ffmpeg pulls the audio track. Silent → null.
-          transcript = await _transcribeAudio({ inputPath: path, outputDir: dir, base })
+          // Serialized per chat so a chat's voice notes don't transcribe in
+          // parallel (one whisper slot; preserves arrival order). The ack
+          // animation keeps cycling while this one waits its turn.
+          transcript = await _serializeTranscription(chatJid, () => _transcribeAudio({ inputPath: path, outputDir: dir, base }))
             .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
