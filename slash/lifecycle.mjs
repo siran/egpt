@@ -77,33 +77,29 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
   //   EGPT_CONFIG        — for the operator's Self-DM jid (restart announce)
   const { sysOut, exitClean, APP_DIR, EGPT_HOME } = ctx;
 
-  if (cmd === '/restart') {
-    // Before/after confirmation in Self. The "exiting…" sysOut only reaches
-    // the shell — the dying process tears the bridge down before any mirror
-    // flushes, so it never lands in Self. Instead: drop a "going down" line
-    // in the outbox + a sidecar capturing the commit, then the RESPAWNED
-    // daemon (which sweeps the persistent outbox once the bridge reconnects)
-    // delivers that breadcrumb AND announces "back online" with the running
-    // commit — so the operator sees the full cycle, and the exact version it
-    // refreshed to, in Self. /restart respawns from current disk state with
-    // no checkout, so HEAD is unchanged across the bounce: capturing it here
-    // is accurate for what the new process runs.
+  // /restart and /upgrade are ONE slash-side flow: announce the bounce in Self
+  // (the "exiting…" sysOut only reaches the shell, and the dying process tears
+  // the bridge down before any mirror flushes — so announceBounce leaves a
+  // breadcrumb the respawned daemon delivers + a "back online" sidecar). The
+  // ONLY difference is the exit code the wrapper reads:
+  //   43 /restart — respawn from current disk (HEAD unchanged across the bounce)
+  //   42 /upgrade — git pull + npm install + build:ext, THEN respawn (HEAD may
+  //                 change; the boot-announce re-reads HEAD so it reports the
+  //                 commit actually running).
+  // Table-driven so the two never drift into copy-paste.
+  const BOUNCE = {
+    '/restart': { code: 43, pre: (sha) => `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…`,
+                  exitMsg: 'exiting with code 43 — egpt-daemon (if running) will respawn the shell' },
+    '/upgrade': { code: 42, pre: (sha) => `🧠 eGPT · ⬆ /upgrade (exit 42) — pull + rebuild from ${sha}…`,
+                  exitMsg: 'exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart' },
+  };
+  if (BOUNCE[cmd]) {
+    const b = BOUNCE[cmd];
     try {
-      await announceBounce({ ctx, meta, preBody: (sha) => `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…` });
-    } catch (e) { sysOut(`!! /restart: announce write failed — ${e.message}`); }
-    sysOut('exiting with code 43 — egpt-daemon (if running) will respawn the shell');
-    setTimeout(() => exitClean(43), 100);
-    return true;
-  }
-
-  if (cmd === '/upgrade') {
-    // Same Self breadcrumb as /restart so the operator sees the cycle — without
-    // it, /upgrade from Self showed nothing (the "exiting…" sysOut is shell-only).
-    try {
-      await announceBounce({ ctx, meta, preBody: (sha) => `🧠 eGPT · ⬆ /upgrade (exit 42) — pull + rebuild from ${sha}…` });
-    } catch (e) { sysOut(`!! /upgrade: announce write failed — ${e.message}`); }
-    sysOut('exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart');
-    setTimeout(() => exitClean(42), 100);
+      await announceBounce({ ctx, meta, preBody: b.pre });
+    } catch (e) { sysOut(`!! ${cmd}: announce write failed — ${e.message}`); }
+    sysOut(b.exitMsg);
+    setTimeout(() => exitClean(b.code), 100);
     return true;
   }
 
