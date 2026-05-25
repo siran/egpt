@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -84,6 +85,25 @@ function collectFileRefs(manifest) {
   // implicitly. The HTML test above catches if those siblings drift.
   return refs;
 }
+
+// The build must actually RUN — not just leave well-formed artifacts. The
+// checks above validate whatever dist is on disk, so they pass green against a
+// STALE dist even when the build is broken (exactly the f2bce8f reorg bug: the
+// extension imports + build.mjs asset copies pointed at old root paths, so
+// `npm run build:ext` failed with "Could not resolve" / ENOENT on every
+// upgrade, while the frozen pre-reorg dist still satisfied the structure
+// tests). This runs the real build and asserts it succeeds — a broken import
+// path or a missing copied asset fails here instead of rotting until /upgrade.
+describe('extension build runs clean', () => {
+  it('npm run build:ext succeeds (no unresolved imports, no missing assets)', () => {
+    const r = spawnSync(process.execPath, ['extension/build.mjs'], {
+      cwd: ROOT, encoding: 'utf8', timeout: 120000,
+    });
+    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    expect(out, out).not.toMatch(/Could not resolve/);
+    expect(r.status, `build exited ${r.status}:\n${out}`).toBe(0);
+  }, 120000);
+});
 
 checkDist('dist',         'chrome');
 checkDist('dist-firefox', 'firefox');
