@@ -28,9 +28,11 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { liveDaemonPid } from './src/daemon-singleton.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const REWIND_SIDECAR = join(homedir(), '.egpt', 'rewind-target.txt');
+const ALIVE_PATH = join(homedir(), '.egpt', 'state', 'alive.txt');
 const RESTART_MIN_MS = 2_000;       // baseline crash-restart delay
 const RESTART_MAX_MS = 60_000;      // cap on backoff
 const UPGRADE_EXIT_CODE = 42;
@@ -218,6 +220,21 @@ function shutdown(sig) {
 process.on('SIGINT',  () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'));
+
+// Singleton guard: refuse to start a second daemon while one is already
+// alive (e.g. a manual `node egpt-daemon.mjs` launched alongside the
+// scheduled task). Two daemons fight over WhatsApp and kill the bridge.
+// Checked once at boot — NOT in spawnShell, so /restart's respawn (whose
+// just-exited child's beat may still be on disk) is never blocked.
+{
+  let aliveContent = '';
+  try { aliveContent = readFileSync(ALIVE_PATH, 'utf8'); } catch {}
+  const otherPid = liveDaemonPid(aliveContent);
+  if (otherPid) {
+    log(`another egpt daemon is already alive (egpt.mjs pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
+    process.exit(0);
+  }
+}
 
 {
   const v = gitVersion();
