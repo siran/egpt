@@ -1899,17 +1899,28 @@ export async function startWhatsAppBridge({
         const _perChat = (_cfg.per_chat && typeof _cfg.per_chat === 'object') ? _cfg.per_chat : {};
         const _override = _perChat[chatJid];
         const wantPostAck = _override !== 'off';
+        // Legacy variables kept temporarily so downstream references
+        // (the "if (!voiceStream)" gate below) still compile; voiceStream
+        // is always null now since the streaming path was retired.
         const wantReplyBatch = false;
-        // Live streaming progress (operator 2026-05-25, "b — streaming
-        // progress"): re-enabled. The recipient watches a progress bar +
-        // partial transcript evolve as the audio is transcribed window-by-
-        // window. COST: per-window inference re-pays whisper's encoder pass,
-        // so this is ~4× slower wall-clock than one batch (operator 2026-05-22
-        // measured 20s clip = 87s chunked vs 20.6s batch). The operator chose
-        // the live experience over speed. Opt back into the fast single-batch
-        // pass with whatsapp.media.audio_transcribe.animation: 'batch'.
-        const streamingEnabled = (media.audio_transcribe?.animation ?? 'bar') !== 'batch';
-        const wantReplyStreaming = streamingEnabled;
+        const wantReplyStreaming = false;
+        // Operator (2026-05-22, "star wins"): the per-window streaming
+        // architecture is fundamentally wrong on CPU with whisper-large.
+        // Measured: 4s window = 17.5s wall-clock; 20s as one batch =
+        // 20.6s. Encoder pass is a ~16.5s fixed cost per inference, so
+        // splitting a 20s audio into 5 windows costs 5 × 17.5s = 87s vs
+        // 20.6s for one batch. Chunking is 4× slower.
+        //
+        // Both 'streaming' AND 'batch' per_chat modes now route through
+        // the single _transcribeAudio batch call. The reply (still
+        // operator-preferred fresh message, not quoted) lands when
+        // batch completes. The brain dispatch awaits the same batch.
+        //
+        // Old _transcribeAudioStreaming function stays in code but is
+        // unreachable from this path. If someone gets a GPU and per-
+        // window encoder cost drops to ~1s, flip this gate back to
+        // wantReplyStreaming and the chunked typewriter works again.
+        const streamingEnabled = false;
         if (streamingEnabled && hit.kind === 'audio' && node.ptt) {
           // Voice notes (PTT only — not music attachments) use the streaming
           // path. The handle is forwarded through onMediaSaved so the host
@@ -1954,20 +1965,30 @@ export async function startWhatsAppBridge({
             // Final replacement at done() uses the cleaner deduped
             // finalText from the joined-windows pass.
             if (wantReplyStreaming && msg.key) {
-              // Live streaming reply (operator 2026-05-25, "b — streaming
-              // progress"): a progress bar refreshed ~every 1s, with WHATEVER
-              // transcript has accumulated so far rendered beneath it. No
-              // char-pacing typewriter — each tick just re-renders bar +
-              // current partial text, and identical bodies are skipped so the
-              // edit only actually fires when a new window lands. Bar % =
-              // whisper processed-audio position (chunk.endSeconds) over the
-              // clip duration. On done() the bar is dropped, leaving the clean
-              // final transcript. animation:'typewriter' = text only (no bar).
+              // Typewriter-paced reply stream (operator 2026-05-22 design
+              // spec): "you have the transcript of those 4 seconds, say
+              // 'hola como estás tú', then you have to play those 17
+              // characters in 4 seconds." Each window's text gets queued
+              // and "typed out" over the window's duration via batched
+              // edits, so the recipient sees the text appear at audio-
+              // pace rather than landing in chunky 4s clumps.
+              //
+              // Implementation: each chunk pushes text into `displayed`
+              // incrementally on a timer. Edit cadence is ~600ms (safe
+              // for WA edit rate) so a 4s window becomes ~6 batched
+              // edits, each ~16% of the window's text. Final replacement
+              // at done() reconciles with the deduped finalText.
               let replyMsgKey = null;
               let lastSentBody = '';
-              // Serialize WA sends — concurrent edits raced a second initial-
-              // send (operator 2026-05-22: "it dispatched different messages
-              // instead of editing one"). Single in-flight chain.
+              // Serialize WA sends — concurrent _editReply calls at fast
+              // cadence (60ms) raced: tick #2 read replyMsgKey=null
+              // before tick #1's initial send had returned, fired a
+              // SECOND initial send → recipient saw multiple message
+              // bodies instead of one being edited. Operator (2026-05-22)
+              // reported this: "it dispatched different messages
+              // instead of editing one." Chain via single in-flight
+              // promise so each call waits for prior completion before
+              // reading replyMsgKey.
               let _editChain = Promise.resolve();
               let _editCount = 0;
               const _editReply = (body) => {
@@ -1993,57 +2014,107 @@ export async function startWhatsAppBridge({
                 return _editChain;
               };
 
+              // Operator 2026-05-22 sequence: 600ms → 60ms (10x faster
+              // ask) → 60ms caused WA throttling AND raced the initial-
+              // send → settled at 150ms. Combined with the serialized
+              // _editChain above, the effective max edit rate is whatever
+              // WA's _safeSend can sustain (~1-3 edits/sec under load),
+              // so a 150ms tick that consistently HITS a 300-500ms send
+              // round-trip is fine — the chain just queues naturally.
+              const EDIT_CADENCE_MS = 150;
+              let displayedText = '';   // chars already shown to recipient
+              let pendingQueue  = '';   // chars buffered, not yet shown
+              let typeTimer     = null;
+              let doneSignal    = false;
+              // Animation style (operator 2026-05-25). 'bar' (default) renders a
+              // determinate progress bar — driven by whisper's processed-audio
+              // position (chunk.endSeconds) over the clip duration — ABOVE the
+              // partial transcript that types out below it, so the recipient
+              // sees BOTH the progress and the words appearing. 'typewriter'
+              // keeps the legacy transcript-only stream. The bar is dropped on
+              // done(), leaving just the clean final transcript.
               const _animStyle = media.audio_transcribe?.animation ?? 'bar';
               const _totalSec  = Number(node?.seconds) || 0;
               let _lastEndSec  = 0;
-              let _fullText    = '';   // transcript accumulated so far
               const _bar = (pct) => {
                 const w = 10, f = Math.max(0, Math.min(w, Math.round(pct / 100 * w)));
                 return '▰'.repeat(f) + '▱'.repeat(w - f);
               };
               const _renderBody = () => {
-                const txt = _fullText.trim();
                 if (_animStyle === 'bar' && _totalSec > 0) {
                   const pct = Math.min(100, Math.round((_lastEndSec / _totalSec) * 100));
                   const head = `🎙 ${_bar(pct)} ${pct}%`;
-                  return txt ? `${head}\n${txt}` : head;
+                  return displayedText ? `${head}\n${displayedText}` : head;
                 }
-                return `🎙 ${txt}`;
+                return `🎙 ${displayedText}`;
               };
 
-              // ~1s refresh: re-render bar + current partial transcript.
-              // Started on the first chunk so a pure-silence clip never posts
-              // a placeholder (revoked on done if it somehow did).
-              let refreshTimer = null;
-              const startRefresh = () => {
-                if (refreshTimer) return;
-                const tick = () => _editReply(_renderBody())
-                  .catch(e => log(`reply-stream refresh: ${e?.message ?? e}`));
-                refreshTimer = setInterval(tick, 1000);
-                tick();   // render immediately on first chunk
+              const _scheduleType = (windowDurationMs) => {
+                if (typeTimer) return;   // already typing
+                // Compute chars-per-tick from queue length spread over
+                // this window's duration. We re-derive at every tick so
+                // late-arriving chunks reflow gracefully.
+                const tick = () => {
+                  if (!pendingQueue) {
+                    clearInterval(typeTimer);
+                    typeTimer = null;
+                    return;
+                  }
+                  // Distribute remaining chars across remaining ticks of
+                  // THIS window. Ticks per window = ceil(dur/cadence).
+                  // Recompute every tick so newly-arriving chunks
+                  // accelerate without overrunning the queue.
+                  const ticksLeft = Math.max(1, Math.ceil(windowDurationMs / EDIT_CADENCE_MS));
+                  const charsPerTick = Math.max(1, Math.ceil(pendingQueue.length / ticksLeft));
+                  const slice = pendingQueue.slice(0, charsPerTick);
+                  pendingQueue = pendingQueue.slice(charsPerTick);
+                  displayedText += slice;
+                  _editReply(_renderBody())
+                    .catch(e => log(`reply-stream typewriter: ${e?.message ?? e}`));
+                  if (!pendingQueue && doneSignal) {
+                    clearInterval(typeTimer);
+                    typeTimer = null;
+                  }
+                };
+                typeTimer = setInterval(tick, EDIT_CADENCE_MS);
+                tick();   // first char(s) immediately
               };
 
               voiceStream.emitter.on('chunk', (ev) => {
+                // Advance the progress bar even for silent windows (no text),
+                // so the bar tracks audio position, not just spoken chunks.
                 if (ev?.endSeconds != null) _lastEndSec = Math.max(_lastEndSec, ev.endSeconds);
-                if (ev?.text) _fullText += (_fullText ? ' ' : '') + ev.text;
-                if (!refreshTimer) startRefresh();
+                if (!ev?.text) return;
+                const sep = (displayedText || pendingQueue) ? ' ' : '';
+                pendingQueue += sep + ev.text;
+                // Window duration from the chunk's offset metadata; falls
+                // back to 4s (matches the default windowSeconds).
+                const winDurSec = Math.max(0.5,
+                  (ev.endSeconds ?? 0) - (ev.offsetSeconds ?? 0)) || 4;
+                _scheduleType(winDurSec * 1000);
               });
 
               voiceStream.donePromise.then((res) => {
-                if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-                const final = res?.finalText?.trim() || _fullText.trim();
+                doneSignal = true;
+                const final = res?.finalText?.trim() || (displayedText + pendingQueue).trim();
                 if (!final) {
-                  // Pure silence (no text ever). Revoke if anything was sent.
+                  // Pure silence (no chars ever queued). Revoke if anything sent.
                   if (replyMsgKey) {
                     _safeSend(chatJid, { delete: replyMsgKey })
                       .catch(e => log(`reply-stream revoke: ${e?.message ?? e}`));
                   }
                   return;
                 }
-                // Drop the bar, replace with the canonical deduped final text
-                // (cleaner than the per-window joined partials).
-                _editReply(`🎙 ${final}`)
-                  .catch(e => log(`reply-stream final: ${e?.message ?? e}`));
+                // Let any pending queue drain (best-effort short wait),
+                // then replace with the canonical deduped final text. The
+                // typewriter shows the per-window joined text; the final
+                // is the cleaner joined-windows version which we want as
+                // the persistent reply body.
+                setTimeout(() => {
+                  if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
+                  _editReply(`🎙 ${final}`)
+                    .catch(e => log(`reply-stream final: ${e?.message ?? e}`));
+                }, 800);
               }).catch((e) => {
                 log(`reply-stream done error (${base}): ${e?.message ?? e}`);
               });
