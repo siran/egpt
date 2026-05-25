@@ -2579,7 +2579,10 @@ function App() {
               }
               if (targetJid === jid) continue;  // don't echo a watched chat into itself
               const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-              const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: waBody };
+              // deliverEcho: the debug mirror is a normal Self message — let it
+              // reach the Self residents (system-e / system-l) instead of being
+              // dropped as a self-echo. They see it and may react.
+              const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: waBody, deliverEcho: true };
               await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
             }
           }
@@ -6852,7 +6855,10 @@ function App() {
       body = `${emoji} ${ev.from}: ${body}`;
     }
     try {
-      wa.send(body, { chatId: ev.jid });
+      // deliverEcho (set by the /e confirm watcher's self-sends): don't
+      // rememberSent, so the message flows back through onIncoming and the
+      // Self residents see it as a normal chat message.
+      wa.send(body, { chatId: ev.jid, deliverEcho: ev.deliverEcho === true });
       log(`${source}: wa-send → ${ev.jid} for ${ev.from} (${(body || '').slice(0, 40)}${body.length > 40 ? '…' : ''})`);
       return true;
     } catch (e) {
