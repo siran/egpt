@@ -530,12 +530,19 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     const wa2 = EGPT_CONFIG.whatsapp;
     if (!wa2.confirm_chats || typeof wa2.confirm_chats !== 'object') wa2.confirm_chats = {};
 
-    // Bare `/e confirm` (no chat named, no action) → the global watched list.
+    // Bare `/e confirm` (no chat named, no action) → the global watched list,
+    // each jid resolved to its group name so the list is readable.
     if (!cAction && !cJid && !nameTerm) {
       const entries = Object.entries(wa2.confirm_chats);
-      const list = entries.length
-        ? entries.map(([j, ds]) => `  - ${j} → ${(Array.isArray(ds) ? ds : []).join(', ') || '(none)'}`).join('\n')
-        : '  (none)';
+      let list = '  (none)';
+      if (entries.length) {
+        const rows = await Promise.all(entries.map(async ([j, ds]) => {
+          const { name } = await _resolveChatTarget(j);
+          const label = name ? `«${name}» ${j}` : j;
+          return `  - ${label} → ${(Array.isArray(ds) ? ds : []).join(', ') || '(none)'}`;
+        }));
+        list = rows.join('\n');
+      }
       sysOut(`/e confirm (watched chats):\n${list}`);
       return true;
     }
@@ -650,9 +657,15 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (!action || action === 'status') {
       const glob = (Array.isArray(wa.residents) && wa.residents.length) ? wa.residents.join(', ') : '(persona only)';
       const ents = Object.entries(wa.residents_per_chat);
-      const lines = ents.length
-        ? ents.map(([j, r]) => `  - ${j}: ${Array.isArray(r) ? r.join(', ') : r}`).join('\n')
-        : '  (none — every chat uses the global list)';
+      let lines = '  (none — every chat uses the global list)';
+      if (ents.length) {
+        const rows = await Promise.all(ents.map(async ([j, r]) => {
+          const { name } = await _resolveChatTarget(j);
+          const label = name ? `«${name}» ${j}` : j;
+          return `  - ${label}: ${Array.isArray(r) ? r.join(', ') : r}`;
+        }));
+        lines = rows.join('\n');
+      }
       sysOut(`residents (global): ${glob}\nper-chat overrides:\n${lines}`);
       return true;
     }
