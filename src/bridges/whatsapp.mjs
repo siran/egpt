@@ -3338,7 +3338,7 @@ export async function startWhatsAppBridge({
       }
       return { key: msgKey, deleted: autoDelete };
     },
-    async send(text, { chatId, deliverEcho = false } = {}) {
+    async send(text, { chatId } = {}) {
       const target = chatId ?? lastChat;
       if (!target || !sock) return null;
       // Defense-in-depth silence filter — see isSilenceMarker docs.
@@ -3346,11 +3346,6 @@ export async function startWhatsAppBridge({
         log(`send: dropping silence-marker "${String(text).trim().slice(0, 40)}" → ${target}`);
         return { silenced: true };
       }
-      // deliverEcho: skip rememberSent so this outbound is NOT filtered as a
-      // self-echo when it comes back fromMe — it flows through onIncoming and
-      // (in an auto_e chat) broadcasts to the chat's resident brains. Used by
-      // the /e confirm watcher so the Self-DM residents (system-e / system-l)
-      // see the debug mirror as normal chat messages they can react to.
       // Chunk long bodies so WA's per-message limit (or any
       // intermediate baileys quirk at large sizes) doesn't silently
       // truncate the reply. First chunk's send result is what the
@@ -3362,7 +3357,7 @@ export async function startWhatsAppBridge({
       for (let i = 0; i < chunks.length; i++) {
         try {
           const r = await _timeBound(_safeSend(target, { text: chunks[i] }), 'send');
-          if (!deliverEcho) rememberSent(r?.key?.id);
+          rememberSent(r?.key?.id);
           if (i === 0) firstResult = r;
         } catch (e) {
           err(`send${chunks.length > 1 ? ` (chunk ${i + 1}/${chunks.length})` : ''}: ${e.message}`);
