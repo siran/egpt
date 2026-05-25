@@ -566,6 +566,47 @@ export function findContactsByName(state, term, surface = null) {
   return out;
 }
 
+// Shared chat-target resolver for ANY slash command that takes a jid. Accepts:
+//   - a real @-jid          → resolved to its LIVE name (bridge group subject)
+//   - a fuzzy name term     → matched against the bridge's live chat names
+//                             first (the real WA subjects), then registered
+//                             contacts (pushedName + slug) as a fallback.
+// Returns { jid, name } on a unique hit, { error } on none/ambiguous, or {} for
+// an empty term (caller falls back to the current chat). `waBridge` is the live
+// WA bridge (ctx.waBridgeRef.current) or null; this module stays bridge-free —
+// the bridge is passed in. Always names the picked chat so a bare-jid echo is
+// never the only feedback ([[feedback-verify-wa-chat-name]]).
+export async function resolveChatTarget(term, { waBridge = null, surface = 'whatsapp', statePath = CONV_YAML_PATH } = {}) {
+  if (!term) return {};
+  if (String(term).includes('@')) {
+    const live = waBridge?.getChatName?.(term) ?? null;
+    if (live) return { jid: term, name: live };
+    const cs = await readState(statePath);
+    return { jid: term, name: findContactByJid(cs, surface, term) ?? null };
+  }
+  const needle = String(term).trim().toLowerCase();
+  const hits = new Map();   // jid -> name
+  try {
+    const chats = await waBridge?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false }) ?? [];
+    for (const c of chats) {
+      const nm = String(c.name ?? '');
+      if (nm && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);
+    }
+  } catch { /* bridge optional */ }
+  try {
+    const cs = await readState(statePath);
+    for (const m of findContactsByName(cs, term, surface)) {
+      if (!hits.has(m.jid)) hits.set(m.jid, m.pushedName || m.slug || m.jid);
+    }
+  } catch { /* conv-state optional */ }
+  const arr = [...hits.entries()];
+  if (!arr.length) return { error: `no chat matches "${term}" — try /channels to see exact names, or pass the @-jid` };
+  if (arr.length > 1) {
+    return { error: `"${term}" matches ${arr.length}: ${arr.slice(0, 8).map(([, n]) => n).join(', ')} — be more specific or pass the @-jid` };
+  }
+  return { jid: arr[0][0], name: arr[0][1] };
+}
+
 // ── Upsert ─────────────────────────────────────────────────────────────────
 
 // Idempotent. Schema is surface-nested + JID-keyed. Multi-JID humans
