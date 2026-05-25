@@ -2140,6 +2140,53 @@ function App() {
       _personaBodyOverride: fullPrompt,
     }).catch(e => errOut(`!! @l pile drain failed (${nextChat}): ${e.message}`));
   };
+  // 'accum' mode: instead of invoking E per burst, buffer a chat's messages and
+  // flush them as ONE combined turn on the heartbeat. Cheaper than 'mention'
+  // (≤1 invocation per chat per heartbeat). Reply only if the batch was
+  // mentioned (mention semantics), carrying the accumulated context.
+  const _accumBuffers = useRef(new Map());   // chatId -> { msgs:[{body,senderName,ts}], mentioned, meta }
+  const _accumPush = (chatId, msg, status, baseMeta) => {
+    let b = _accumBuffers.current.get(chatId);
+    if (!b) { b = { msgs: [], mentioned: false, meta: null }; _accumBuffers.current.set(chatId, b); }
+    b.msgs.push(msg);
+    b.mentioned = b.mentioned || !!status.atEAnywhere || !!status.replyToBot;
+    b.meta = baseMeta;   // last sample — enough for the flush dispatch (waChatId etc.)
+    logOut(`@e accum: buffered ${chatId} (n=${b.msgs.length}${b.mentioned ? ', mentioned' : ''})`);
+  };
+  // Flush all accum buffers (called by the heartbeat). One combined turn per
+  // chat with pending messages; replyAllowed = whether the batch was mentioned.
+  const _accumFlush = () => {
+    if (!submitRef.current) return;
+    for (const [chatId, b] of [..._accumBuffers.current.entries()]) {
+      if (!b.msgs.length) continue;
+      _accumBuffers.current.delete(chatId);
+      const surface = buildWaSurfaceTag(chatId);
+      const idStr = String(chatId);
+      const chatType = idStr.endsWith('@g.us') ? 'group'
+        : idStr === 'status@broadcast' ? 'status' : 'private';
+      const chatName = waBridgeRef.current?.getChatName?.(chatId) ?? null;
+      const fullPrompt = b.msgs.map(it => formatAutoDispatchLine({
+        senderName: it.senderName, body: it.body, ts: it.ts, surface, chatType, chatName,
+      })).join('\n');
+      const residents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[chatId]);
+      const globalRes = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
+      const beings = residents.length ? residents : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
+      for (const being of beings) {
+        submitRef.current(`@${being} (accum flush)`, {
+          fromWhatsApp: true,
+          waChatId: chatId,
+          waUser: b.meta?.waUser,
+          waClientLabel: b.meta?.waClientLabel,
+          waSenderName: 'multiple',
+          replyAllowed: b.mentioned,        // mention semantics over the batch
+          autoDispatched: true,
+          forceTarget: being,
+          _chainDepth: 0,
+          _personaBodyOverride: fullPrompt,
+        }).catch(e => errOut(`!! @e accum flush failed (${chatId}): ${e.message}`));
+      }
+    }
+  };
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -2993,9 +3040,8 @@ function App() {
           })();
           // replyAllowed: does this message's mention-status permit a reply
           // under the chat's mode? (E may still be invoked for context when
-          // false.) accum's heartbeat flush isn't built yet, so an accum chat
-          // is treated as 'mention' per-burst meanwhile.
-          const _replyAllowed = autoReplyAllowed(_autoMode === 'accum' ? 'mention' : _autoMode, {
+          // false.) Unused for accum (buffered + flushed on the heartbeat).
+          const _replyAllowed = autoReplyAllowed(_autoMode, {
             atEStart:    !!from.atEStart,
             atEAnywhere: !!from.atEAnywhere,
             replyToBot:  !!from.replyToBot,
@@ -3038,7 +3084,14 @@ function App() {
             // E (haiku) reads the chat. The per-message `replyAllowed` (in
             // baseMeta) gates whether each reply is actually sent. 'off' falls
             // through to the slash-only else branch (E never sees it).
-            if (!isSlash && !autoPaused && autoReceives(_autoMode)) {
+            if (!isSlash && !autoPaused && _autoMode === 'accum') {
+              // accum: buffer this message; the heartbeat flushes the batch as
+              // one combined turn (reply only if the batch was mentioned).
+              _accumPush(from.chatId,
+                { body: text, senderName: from.senderName ?? 'someone', ts: Date.now() },
+                { atEAnywhere: !!from.atEAnywhere, replyToBot: !!from.replyToBot },
+                baseMeta);
+            } else if (!isSlash && !autoPaused && autoReceives(_autoMode)) {
               // Each resident is fed the canonical [Sender@chat (HH:MM)]: body
               // envelope (built in the dispatch handlers) and that exact string
               // is mirrored to Self by the watcher tap. _chainDepth:0 marks
@@ -3359,6 +3412,9 @@ function App() {
 
     const tick = async () => {
       if (stopped) return;
+      // Flush 'accum'-mode chats every heartbeat (independent of the @e
+      // heartbeat prompt below, so it still runs when a prompt tick is busy).
+      try { _accumFlush(); } catch (e) { sysLog(`!! accum flush: ${e?.message ?? e}`); }
       if (heartbeatBusyRef.current) {
         sysLog(`heartbeat: skipped — previous tick still running`);
         return;
