@@ -19,6 +19,7 @@ import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2981,6 +2982,24 @@ function App() {
           const trimmed = String(text ?? '').trimStart();
           const isSlash = trimmed.startsWith('/');
           const _personaBeing = EGPT_CONFIG.persona ?? 'e';
+          // Per-chat auto mode. The operator's own surfaces (system contact)
+          // are always 'on'. A configured mode wins; legacy auto_e_chats
+          // membership maps to 'on'; everything else is the default ('mention').
+          const _autoMode = isSystemContact ? 'on' : (() => {
+            const modes = waCfg.auto_e_modes;
+            if (modes && typeof modes === 'object' && modes[from.chatId]) return modes[from.chatId];
+            if (isAutoEChat) return 'on';
+            return DEFAULT_AUTO_MODE;
+          })();
+          // replyAllowed: does this message's mention-status permit a reply
+          // under the chat's mode? (E may still be invoked for context when
+          // false.) accum's heartbeat flush isn't built yet, so an accum chat
+          // is treated as 'mention' per-burst meanwhile.
+          const _replyAllowed = autoReplyAllowed(_autoMode === 'accum' ? 'mention' : _autoMode, {
+            atEStart:    !!from.atEStart,
+            atEAnywhere: !!from.atEAnywhere,
+            replyToBot:  !!from.replyToBot,
+          });
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -2989,6 +3008,9 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
+            // Per-chat auto-mode reply gate: when false, residents still RUN
+            // (E reads for context) but their reply is NOT sent to the chat.
+            replyAllowed: _replyAllowed,
             // Operator's whitelisted spaces (auto_e_chats + self) — lets the
             // resident-broadcast meta dispatches (e.g. @l) bypass observe-only
             // suppression.
@@ -3012,7 +3034,11 @@ function App() {
           // commands + non-resident chats fall through to one normal dispatch
           // (observe-only / wake-word handling downstream).
           if (submitRef.current) {
-            if (!isSlash && !autoPaused && (isAutoEChat || isSystemContact)) {
+            // Reception: every mode except 'off' broadcasts to the residents so
+            // E (haiku) reads the chat. The per-message `replyAllowed` (in
+            // baseMeta) gates whether each reply is actually sent. 'off' falls
+            // through to the slash-only else branch (E never sees it).
+            if (!isSlash && !autoPaused && autoReceives(_autoMode)) {
               // Each resident is fed the canonical [Sender@chat (HH:MM)]: body
               // envelope (built in the dispatch handlers) and that exact string
               // is mirrored to Self by the watcher tap. _chainDepth:0 marks
@@ -6632,7 +6658,10 @@ function App() {
           confirmMirrorRef.current?.(meta.waChatId, _arrow, turn.personaPrompt);
         }
         _recirculateResidentReply({ being: meta.forceTarget ?? personaName, reply: turn.reply, meta });
-        if (turn.kind === 'silence') return;
+        // 'silence' = @e chose '…'; 'suppressed' = mode gate withheld the reply
+        // (E read it for context but this chat/mode doesn't permit replying now).
+        // Either way: nothing renders or sends to the chat.
+        if (turn.kind === 'silence' || turn.kind === 'suppressed') return;
         const reply = turn.reply;
 
         if (meta.observeOnly) {
@@ -6783,6 +6812,7 @@ function App() {
         // fetch failed…") is NOT a chat reply — it's already logged to the
         // shell; don't ALSO dump it into the group. Operator 2026-05-24.
         const _dropResident = (r) => _silentReply(r)
+          || meta.replyAllowed === false   // per-chat auto-mode gate withheld the reply
           || (_sibBrain?.sessionless && /^!!\s*@/.test(String(r ?? '').trimStart()));
         // Sessionless residents (@l) don't stream a "thinking…" placeholder —
         // we can't know they'll stay quiet until the reply is in, and a
