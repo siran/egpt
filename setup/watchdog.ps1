@@ -66,12 +66,45 @@ try {
   exit 0
 }
 
-if ($ageSec -lt $StaleSeconds) {
-  # Fresh -- daemon is alive.
-  exit 0
+# Decide whether to restart: the daemon is wedged (alive.txt stale), OR the
+# daemon is alive but the WhatsApp BRIDGE is dead (whatsapp-alive.txt stale).
+# The bridge writes its own tic/toc beat and stops the timer on disconnect, so
+# a stuck reconnect leaves whatsapp-alive.txt stale. The bridge's own
+# _scheduleReconnect handles transient drops; this is the BACKSTOP for a stuck
+# one — a daemon respawn re-inits the bridge. (Operator 2026-05-25: the tic/toc
+# timing tells if it's alive — so check the WA beat the same way.)
+$reason = $null
+if ($ageSec -ge $StaleSeconds) {
+  $reason = ("alive file is stale: age={0:N1}s threshold={1}s" -f $ageSec, $StaleSeconds)
+} else {
+  # Daemon is alive — is the WA bridge? More lenient threshold (default 180s):
+  # bridge reconnects can legitimately take longer than a daemon beat, so only
+  # a genuinely stuck bridge trips it. Configurable via wa_stale_seconds.
+  $waPath = Join-Path $env:USERPROFILE '.egpt\state\whatsapp-alive.txt'
+  if (Test-Path $waPath) {
+    $WaStaleSeconds = 180
+    try {
+      if ($cfgPath -and (Test-Path $cfgPath)) {
+        $mw = Select-String -Path $cfgPath -Pattern '^\s*wa_stale_seconds:\s*(\d+)' | Select-Object -First 1
+        if ($mw) { $WaStaleSeconds = [int]$mw.Matches[0].Groups[1].Value }
+      }
+    } catch {}
+    try {
+      $waContent = Get-Content -Path $waPath -Raw -ErrorAction Stop
+      $waStamps = [regex]::Matches($waContent, '(?m)^(?:tic|toc)\s+(\S+)') |
+        ForEach-Object { try { ([datetime]::Parse($_.Groups[1].Value)).ToUniversalTime() } catch {} }
+      if ($waStamps) { $waLatest = ($waStamps | Sort-Object -Descending)[0] }
+      else { $waLatest = (Get-Item $waPath).LastWriteTimeUtc }
+      $waAge = ((Get-Date).ToUniversalTime() - $waLatest).TotalSeconds
+      if ($waAge -ge $WaStaleSeconds) {
+        $reason = ("WA bridge whatsapp-alive.txt stale: age={0:N1}s threshold={1}s (daemon alive) -- restarting to re-init the bridge" -f $waAge, $WaStaleSeconds)
+      }
+    } catch { Log "could not read whatsapp-alive.txt: $_" }
+  }
 }
 
-Log ("alive file is stale: age={0:N1}s threshold={1}s -- killing daemon" -f $ageSec, $StaleSeconds)
+if (-not $reason) { exit 0 }   # daemon + bridge both healthy
+Log ("$reason -- killing daemon")
 
 # Kill target: prefer the pid embedded in the newest alive.txt beat
 # ("<tic|toc> <iso> <pid>") -- self-contained, no egpt.pid dependency.
