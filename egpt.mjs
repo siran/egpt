@@ -4595,6 +4595,14 @@ function App() {
       const depth = Number(meta._chainDepth) || 0;
       const cap = Number(EGPT_CONFIG.whatsapp?.resident_chain_cap ?? 10);
       if (depth >= cap || others.length === 0) return;   // terminal: received, not forwarded
+      // Silence chain breaker (operator 2026-05-25): forward the INITIAL '…'
+      // (a being staying quiet about real content — the other may get curious
+      // and ask), but do NOT forward a '…' that is itself answering a '…'
+      // (meta._silenceForward). Two brains mutually shrugging otherwise burns
+      // the whole chain on empty turns. Content replies always forward (a
+      // curious "why silent?" keeps the conversation alive) and reset the flag.
+      const _isSilence = /^(?:\.{3,}|…+)$/.test(body.trim());
+      if (_isSilence && meta._silenceForward) return;    // second-layer silence: received, not forwarded
       const persona = EGPT_CONFIG.persona ?? 'e';
       for (const other of others) {
         submitRef.current?.(body, {
@@ -4608,6 +4616,7 @@ function App() {
           autoDispatched: lc(other) === lc(persona),
           forceTarget: other,
           _chainDepth: depth + 1,
+          _silenceForward: _isSilence,         // recipient is being prompted with a '…'
         })?.catch?.(e => errOut(`!! resident re-circulate ${being}→${other}: ${e?.message ?? e}`));
       }
     } catch (e) { errOut(`!! _recirculateResidentReply: ${e?.message ?? e}`); }
