@@ -51,6 +51,7 @@ import {
   resolvePersonalityFile,
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
+import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
 import { homedir } from 'node:os';
 
 export const meta = {
@@ -725,7 +726,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 
@@ -735,40 +736,46 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const wa = EGPT_CONFIG.whatsapp;
   if (!Array.isArray(wa.auto_e_chats)) wa.auto_e_chats = [];
 
-  const resolveChatId = () => {
-    if (jidArg) return jidArg;
-    if (dispatchMeta?.waChatId) return dispatchMeta.waChatId;
-    return null;
-  };
+  if (!wa.auto_e_modes || typeof wa.auto_e_modes !== 'object') wa.auto_e_modes = {};
+  // Modes the command exposes — accum is excluded until its heartbeat flush
+  // exists (so you can't set a mode that isn't fully wired).
+  const MODES = AUTO_MODES.filter(m => m !== 'accum');
 
   if (action === 'status') {
-    let list = '  (none)';
-    if (wa.auto_e_chats.length) {
-      const rows = await Promise.all(wa.auto_e_chats.map(async (j) => {
+    // Merge legacy auto_e_chats (→ 'on') with explicit auto_e_modes.
+    const merged = {};
+    for (const j of (Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : [])) merged[j] = 'on';
+    for (const [j, m] of Object.entries(wa.auto_e_modes)) merged[j] = m;
+    const ents = Object.entries(merged);
+    let list = `  (none set — every chat defaults to "${DEFAULT_AUTO_MODE}")`;
+    if (ents.length) {
+      const rows = await Promise.all(ents.map(async ([j, m]) => {
         const { name } = await _resolveChatTarget(j);
-        return `  - ${name ? `«${name}» ${j}` : j}`;
+        return `  - ${name ? `«${name}» ${j}` : j}: ${m}`;
       }));
       list = rows.join('\n');
     }
     const paused = wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active';
-    sysOut(`auto_e_chats: ${paused}\n${list}`);
+    sysOut(`auto: ${paused}  (default mode: ${DEFAULT_AUTO_MODE})\nper-chat modes:\n${list}`);
     return true;
   }
 
-  let autoLabel = null;   // «name» jid of the single chat toggled (for the echo)
+  let autoLabel = null;   // what the echo reports
   if (action === 'pause') {
-    wa.auto_e_paused = true;
+    wa.auto_e_paused = true; autoLabel = 'PAUSED (global kill on)';
   } else if (action === 'resume') {
-    wa.auto_e_paused = false;
-  } else if (action === 'on' || action === 'off') {
+    wa.auto_e_paused = false; autoLabel = 'active (resumed)';
+  } else if (MODES.includes(action)) {
     const target = jidArg ? String(jidArg).trim() : null;
     if (target && target.toLowerCase() === 'all') {
-      // Global kill switch (operator 2026-05-24): "/e auto off all" pauses
-      // ALL brain dispatch in auto_e chats; "/e auto on all" resumes.
-      // Non-destructive — keeps the auto_e_chats list (same flag as
-      // pause/resume). The broadcast in egpt.mjs is gated on
-      // !auto_e_paused, so this stops @e AND @l everywhere instantly.
-      wa.auto_e_paused = (action === 'off');
+      // 'all' keeps the global-kill shorthand, but only for on/off.
+      if (action === 'on' || action === 'off') {
+        wa.auto_e_paused = (action === 'off');
+        autoLabel = `all → ${wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active (resumed)'}`;
+      } else {
+        sysOut(`/e auto ${action} all: "all" only supports on|off (global kill). Name a chat for ${action}.`);
+        return true;
+      }
     } else {
       let chatId = null, resolvedName = null;
       if (target) {
@@ -777,30 +784,22 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         chatId = r.jid; resolvedName = r.name;
       }
       if (!chatId) {
-        // Autofill the CURRENT channel's jid — but NOT in Self (self-DM)
-        // or the shell, where there's no channel to target. There you must
-        // name a target, so a bare "/e auto off" in Self can't silently
-        // toggle the wrong thing (operator 2026-05-24).
         const here = dispatchMeta?.waChatId ?? null;
         const isSelfOrShell = !here || here === EGPT_CONFIG.whatsapp?.chat_id;
         if (isSelfOrShell) {
-          sysOut("/e auto on|off: here you must name a target — a <jid>, a fuzzy name, or 'all' "
-            + "(e.g. `/e auto off all` to kill every chat, `/e auto on hector` for one). "
-            + "The current-chat default only autofills inside a channel.");
+          sysOut(`/e auto <mode>: name a target — a <jid>, a fuzzy name, or 'all' (on|off only). e.g. \`/e auto mute hector\`. The current-chat default only autofills inside a channel.`);
           return true;
         }
         chatId = here;
       }
       if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
-      autoLabel = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
-      if (action === 'on') {
-        if (!wa.auto_e_chats.includes(chatId)) wa.auto_e_chats.push(chatId);
-      } else {
-        wa.auto_e_chats = wa.auto_e_chats.filter(j => j !== chatId);
-      }
+      wa.auto_e_modes[chatId] = action;
+      // Drop the jid from the legacy list so auto_e_modes is authoritative.
+      if (Array.isArray(wa.auto_e_chats)) wa.auto_e_chats = wa.auto_e_chats.filter(j => j !== chatId);
+      autoLabel = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId} → ${action}`;
     }
   } else {
-    sysOut('usage: /e auto on|off [<jid>|all] | pause | resume | status');
+    sysOut(`usage: /e auto <${MODES.join('|')}> [<name|jid>|all] | pause | resume | status`);
     return true;
   }
 
@@ -808,7 +807,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   try {
     const saved = await readConfig();
     if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-    saved.whatsapp.auto_e_chats = wa.auto_e_chats;
+    saved.whatsapp.auto_e_modes = wa.auto_e_modes;
+    saved.whatsapp.auto_e_chats = wa.auto_e_chats;     // kept as legacy fallback
     saved.whatsapp.auto_e_paused = !!wa.auto_e_paused;
     await writeConfig(saved);
   } catch (e) {
@@ -816,13 +816,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
-  if (action === 'on' || action === 'off') {
-    const tgt = (jidArg && String(jidArg).toLowerCase() === 'all')
-      ? `all → ${wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active (resumed)'}`
-      : (autoLabel ?? dispatchMeta?.waChatId ?? '?');
-    sysOut(`/e auto ${action}: ${tgt}`);
-  } else {
-    sysOut(`/e auto ${action}`);
-  }
+  sysOut(`/e auto ${action}: ${autoLabel ?? action}`);
   return true;
 }
