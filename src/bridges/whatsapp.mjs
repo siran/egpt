@@ -59,6 +59,7 @@ import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
+import { mentionStatus } from '../auto-mode.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -2622,7 +2623,9 @@ export async function startWhatsAppBridge({
       replyPersona = 'e';
       replyPersonaFallback = true;
     }
-    const isWakeWord = (!!text && /@(?:egpt|e)\b/i.test(text)) || isReplyToUs;
+    // Standalone @e/@egpt token (not glued inside a word/email like me@e.com)
+    // OR a reply to one of our messages. mentionStatus does the token check.
+    const isWakeWord = (!!text && mentionStatus(text).atEAnywhere) || isReplyToUs;
 
     // Awareness rules — decide whether this message reaches onIncoming.
     //   self_chat:   chat-with-yourself (your phone-typed self-DMs and
@@ -2717,7 +2720,7 @@ export async function startWhatsAppBridge({
         ? `@${replyPersona} ${replyOnly}\n\n${quoted}`
         : `@${replyPersona} ${replyOnly}`;
     } else if (atEAnywhere && !/^@\S/.test(processed)
-               && /@(?:egpt|e)\b/i.test(processed)) {
+               && mentionStatus(processed).atEAnywhere) {
       // Mid-body @e expansion. isWakeWord above detects @e / @egpt
       // anywhere so the awareness gate bypasses, but parseInput is
       // anchored at start — without this synthesis, "hello @e are
@@ -2777,9 +2780,16 @@ export async function startWhatsAppBridge({
       ?? null;
     const isTranscriptFromVoice = !!_audioInner;
 
+    // Mention status of THIS message, for the host's per-chat auto-mode reply
+    // gate: standalone @e at start / anywhere, and whether it replies to one of
+    // our messages. Computed on the final `processed` text.
+    const _ms = mentionStatus(processed);
     await onIncoming?.(processed, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
       isTranscriptFromVoice,
+      atEStart: _ms.atEStart,
+      atEAnywhere: _ms.atEAnywhere,
+      replyToBot: isReplyToUs,
       // msgKey enables proper WA-reply quoting later — e.g. when the
       // operator types '@m42 …' in shell, we send the reply via
       // baileys with quoted: { key, message } pointing at this msg.
