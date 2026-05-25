@@ -1469,6 +1469,14 @@ export async function startWhatsAppBridge({
   let _whisperServerReady = null;   // resolved when server's HTTP is up
   let _whisperServerUrl  = null;
   let _whisperServerStarting = false;
+  // Live decode progress (0-100), parsed from whisper-server's stderr
+  // `progress = N%` callback. -1 = idle / no signal yet. The server's TEXT
+  // (stdout / HTTP body) is buffered until the call returns, but the PROGRESS
+  // callback streams to stderr as it decodes — so a determinate transcription
+  // bar reads this. Server processes serially, so the live value belongs to
+  // the in-flight transcription (operator 2026-05-25: "didn't we talk about
+  // reading stderr?").
+  let _whisperProgress = -1;
 
   function _whisperServerBinPath() {
     const cfg = media.audio_transcribe ?? {};
@@ -1513,6 +1521,7 @@ export async function startWhatsAppBridge({
     if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
     if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
     if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
+    args.push('--print-progress');   // emit `progress = N%` to stderr for the live bar
 
     _whisperServerUrl = `http://${host}:${port}`;
     log(`whisper-server: starting ${serverBin} on ${_whisperServerUrl} (model ${modelPath.split(/[\\/]/).pop()})`);
@@ -1526,6 +1535,10 @@ export async function startWhatsAppBridge({
     }
     _whisperServerProc.stderr?.on('data', d => {
       const s = d.toString();
+      // Parse the decode progress callback (`progress = N%`) for the live
+      // transcription bar. The line repeats as it climbs 0→100.
+      const m = s.match(/progress\s*=\s*(\d+)\s*%/);
+      if (m) _whisperProgress = Math.max(0, Math.min(100, parseInt(m[1], 10)));
       // The server writes init progress + per-call decode lines to
       // stderr. Surface only the init errors / "ready" line; the
       // decode chatter is too noisy for headless.log.
@@ -2174,11 +2187,40 @@ export async function startWhatsAppBridge({
           let ackKey = null;
           let animTimer = null;
           if (isAudioForAck) {
-            const initialBody = `👂 ${speaker}'s ${dur}s @ ${hhmm} ⏳`;
+            // Animation style. 'bar' (default): a DETERMINATE transcription bar
+            // driven by whisper-server's stderr `progress = N%` callback — a
+            // filled window SLIDES (indeterminate) until the first progress
+            // line arrives, then shows the real %. 'emoji': legacy ⏳🔊🎧🦻
+            // cycle. Drops to the transcript on done either way.
+            const _animStyle = media.audio_transcribe?.animation ?? 'bar';
+            _whisperProgress = -1;   // reset; this note's decode hasn't reported yet
+            const W = 12, WIN = 3;
+            const _pos = [];
+            for (let p = 0; p <= W - WIN; p++) _pos.push(p);          // slide right
+            for (let p = W - WIN - 1; p > 0; p--) _pos.push(p);       // bounce back
+            const _slide = (i) => {
+              const p = _pos[i % _pos.length];
+              return '▱'.repeat(p) + '▰'.repeat(WIN) + '▱'.repeat(W - WIN - p);
+            };
+            const _barFill = (pct) => {
+              const f = Math.max(0, Math.min(W, Math.round(pct / 100 * W)));
+              return '▰'.repeat(f) + '▱'.repeat(W - f);
+            };
+            const _emoji = ['⏳', '🔊', '🎧', '🦻'];
+            const _frame = (i) => {
+              if (_animStyle === 'emoji') return `👂 ${speaker}'s ${dur}s @ ${hhmm} ${_emoji[i % _emoji.length]}`;
+              // Determinate once whisper reports; indeterminate slide before.
+              if (_whisperProgress >= 0) {
+                const pct = Math.min(100, _whisperProgress);
+                return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
+              }
+              return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_slide(i)}`;
+            };
+
             try {
               const r = await _safeSend(
                 chatJid,
-                { text: initialBody },
+                { text: _frame(0) },
                 { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
               );
               ackKey = r?.key ?? null;
@@ -2187,23 +2229,22 @@ export async function startWhatsAppBridge({
               log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
             }
 
-            // Simple looped animation while transcription runs: cycle
-            // the trailing emoji through a few states so chat sees
-            // movement, not a static "⏳" sitting for 20s. Edit cadence
-            // is gentle (1.2s) to stay well inside WA's rate-limit.
+            // Loop the animation while transcription runs. Soft-fail on WA
+            // edit throttle (skip a frame — the motion self-paces). Bar moves
+            // faster (1.5s) than the gentle emoji (4.8s); override via
+            // media.audio_transcribe.animation_ms.
             if (ackKey) {
-              const frames = ['⏳', '🔊', '🎧', '🦻'];
               let frameIdx = 0;
+              const _animMs = Number(media.audio_transcribe?.animation_ms)
+                || (_animStyle === 'emoji' ? 4800 : 1500);
               animTimer = setInterval(async () => {
                 try {
-                  frameIdx = (frameIdx + 1) % frames.length;
-                  const body = `👂 ${speaker}'s ${dur}s @ ${hhmm} ${frames[frameIdx]}`;
-                  await _safeSend(chatJid, { edit: ackKey, text: body });
+                  frameIdx++;
+                  await _safeSend(chatJid, { edit: ackKey, text: _frame(frameIdx) });
                 } catch (e) {
-                  // Soft-fail; rate-limit or network blip shouldn't
-                  // cascade. Don't log every tick — just keep going.
+                  // Soft-fail; rate-limit / blip shouldn't cascade.
                 }
-              }, 4800);   // operator 2026-05-23: "can do 4x slower"
+              }, _animMs);
             }
           }
 
