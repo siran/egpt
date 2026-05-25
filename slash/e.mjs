@@ -37,7 +37,9 @@
 //                                    (or 'off all') stops watching.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, isAbsolute, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import {
   CONV_YAML_PATH,
   readState as readConvState,
@@ -632,6 +634,55 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
+  // /e source [path] — which checkout the daemon runs the app from. No arg:
+  // report the running source (dir + branch + commit) and the persisted
+  // setting. With a path (relative to ~/src/, or absolute, fwd or back slash):
+  // validate it has egpt.mjs, persist it to ~/.egpt/source-root.txt, and
+  // restart — the wrapper launches egpt.mjs from there. The wrapper itself
+  // stays stable; only the app follows. Default (no source file) = stable.
+  if (sub === 'source') {
+    const SRC_FILE = join(EGPT_HOME, 'source-root.txt');
+    const running = ctx.APP_DIR ?? process.cwd();
+    const gitAt = (dir) => {
+      try {
+        const br = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).toString().trim();
+        const sh = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: dir }).toString().trim();
+        return `${br} @ ${sh}`;
+      } catch { return '?'; }
+    };
+    const pathArg = tokens.slice(1).join(' ').trim();
+    if (!pathArg) {
+      let persisted = '(none → stable default)';
+      try { const p = readFileSync(SRC_FILE, 'utf8').trim(); if (p) persisted = p; } catch {}
+      sysOut(`/e source: running ${running} (${gitAt(running)})\n  persisted: ${persisted}`);
+      return true;
+    }
+    // Resolve: ~ → home; relative (no drive, not absolute) → ~/src/<path>.
+    let p = pathArg.replace(/[\\/]+$/, '');
+    if (p.startsWith('~')) p = join(homedir(), p.slice(1).replace(/^[\\/]+/, ''));
+    else if (!isAbsolute(p) && !/^[A-Za-z]:[\\/]/.test(p)) p = join(homedir(), 'src', p);
+    p = resolve(p);
+    if (!existsSync(join(p, 'egpt.mjs'))) {
+      sysOut(`/e source: no egpt.mjs at ${p} — not a valid egpt checkout. (relative paths resolve under ~/src/)`);
+      return true;
+    }
+    try {
+      mkdirSync(EGPT_HOME, { recursive: true });
+      writeFileSync(SRC_FILE, p + '\n');
+      // back-online announce: the respawned daemon (running from p) re-reads
+      // HEAD, so it reports p's branch/commit when it comes up.
+      const selfJid = dispatchMeta?.waChatId || EGPT_CONFIG.whatsapp?.chat_id || null;
+      if (selfJid) {
+        mkdirSync(join(EGPT_HOME, 'state'), { recursive: true });
+        writeFileSync(join(EGPT_HOME, 'state', 'restart-announce.json'),
+          JSON.stringify({ jid: selfJid, at: Date.now() }));
+      }
+    } catch (e) { sysOut(`!! /e source: ${e.message}`); return true; }
+    sysOut(`/e source → ${p} (${gitAt(p)}) — restarting to run it (wrapper restart needed first time)`);
+    if (typeof ctx.exitClean === 'function') setTimeout(() => ctx.exitClean(43), 150);
+    return true;
+  }
+
   // Enable/disable the local llama-server (@l's backend). Persists
   // local_llm.enabled; takes effect on the next /restart (the supervisor reads
   // enabled at boot). whisper-server has the parallel toggle via /e transcribe.
@@ -726,7 +777,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 

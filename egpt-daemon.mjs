@@ -24,7 +24,7 @@
 // `node /path/to/egpt-daemon.mjs`. See README for details.
 
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, unlinkSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,6 +33,19 @@ import { liveDaemonPid } from './src/daemon-singleton.mjs';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const REWIND_SIDECAR = join(homedir(), '.egpt', 'rewind-target.txt');
 const ALIVE_PATH = join(homedir(), '.egpt', 'state', 'alive.txt');
+// Which checkout the daemon runs the APP (egpt.mjs) from. Default: this
+// wrapper's own dir (the stable worktree). `/e source <path>` writes an
+// absolute path here so the daemon can run a dev worktree without a second
+// daemon (they share ~/.egpt). The WRAPPER itself always stays stable — only
+// the spawned egpt.mjs and its git/build ops follow the source.
+const SOURCE_FILE = join(homedir(), '.egpt', 'source-root.txt');
+function activeRoot() {
+  try {
+    const p = readFileSync(SOURCE_FILE, 'utf8').trim();
+    if (p && existsSync(join(p, 'egpt.mjs'))) return p;
+  } catch { /* missing/unreadable → stable */ }
+  return ROOT;
+}
 const RESTART_MIN_MS = 2_000;       // baseline crash-restart delay
 const RESTART_MAX_MS = 60_000;      // cap on backoff
 const UPGRADE_EXIT_CODE = 42;
@@ -59,15 +72,17 @@ const SHELL_ARGS = DAEMON_ARGS.filter(a => a !== '--headless');
 let stopping = false;
 let backoff = RESTART_MIN_MS;
 let child = null;
+let srcCrashes = 0;   // consecutive boot-crashes of a non-stable source
+let spawnAt = 0;      // ms when the current child was spawned (crash-loop window)
 
 function log(msg) {
   process.stdout.write(`[egpt-daemon ${new Date().toISOString()}] ${msg}\n`);
 }
 
-function gitVersion() {
-  const sha = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
-  const tag = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd: ROOT, stdio: 'pipe' });
-  const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, stdio: 'pipe' });
+function gitVersion(cwd = ROOT) {
+  const sha = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd, stdio: 'pipe' });
+  const tag = spawnSync('git', ['describe', '--tags', '--abbrev=0'], { cwd, stdio: 'pipe' });
+  const branch = spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, stdio: 'pipe' });
   return {
     sha:    (sha.stdout?.toString() ?? '').trim() || '???',
     tag:    (tag.stdout?.toString() ?? '').trim() || '(no tag)',
@@ -82,10 +97,10 @@ function gitVersion() {
 // so the import itself drives the build and resolves when done.
 // Cache-bust with a query string so repeated /upgrade re-imports the
 // freshly-pulled source instead of the cached module.
-async function buildExtension() {
+async function buildExtension(root = ROOT) {
   log('building extension dist (in-process import)');
   try {
-    const url = pathToFileURL(join(ROOT, 'extension', 'build.mjs')).href + `?t=${Date.now()}`;
+    const url = pathToFileURL(join(root, 'extension', 'build.mjs')).href + `?t=${Date.now()}`;
     await import(url);
     return true;
   } catch (e) {
@@ -95,14 +110,15 @@ async function buildExtension() {
 }
 
 async function runUpgrade() {
-  const before = gitVersion().sha;
-  log(`upgrade requested — git pull (currently ${before})`);
-  const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: ROOT, stdio: 'inherit' });
+  const root = activeRoot();   // upgrade the source the daemon actually runs
+  const before = gitVersion(root).sha;
+  log(`upgrade requested — git pull (currently ${before})${root !== ROOT ? `  [source: ${root}]` : ''}`);
+  const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: root, stdio: 'inherit' });
   if (pull.status !== 0) {
     log('git pull failed; continuing with current code');
     return false;
   }
-  const after = gitVersion();
+  const after = gitVersion(root);
   // Always rebuild the extension dist on /upgrade. Skipping when git
   // shows 'Already up to date' looked tidy, but it broke the case
   // where the user's checkout is already at the latest sha and they
@@ -111,7 +127,7 @@ async function runUpgrade() {
   // the sha actually changed (it's the heavier step).
   if (after.sha !== before) {
     log(`pulled ${before} -> ${after.sha} — running npm install`);
-    const r = spawnSync('npm install', { cwd: ROOT, stdio: 'inherit', shell: true });
+    const r = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
       log(`npm install exited ${r.status}${r.error ? `: ${r.error.message}` : ''}; continuing with current deps`);
       // Fall through and still attempt the build — esbuild's already
@@ -120,7 +136,7 @@ async function runUpgrade() {
   } else {
     log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
   }
-  await buildExtension();
+  await buildExtension(root);
   log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
   return true;
 }
@@ -138,28 +154,34 @@ async function runRewind() {
     log('rewind sidecar empty; restarting anyway');
     return false;
   }
-  log(`rewind requested → git checkout ${ref} && npm install && build:ext`);
+  const root = activeRoot();
+  log(`rewind requested → git checkout ${ref} && npm install && build:ext${root !== ROOT ? `  [source: ${root}]` : ''}`);
   for (const cmdline of ['git checkout ' + ref, 'npm install']) {
-    const r = spawnSync(cmdline, { cwd: ROOT, stdio: 'inherit', shell: true });
+    const r = spawnSync(cmdline, { cwd: root, stdio: 'inherit', shell: true });
     if (r.status !== 0) {
       log(`rewind step failed (${cmdline})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
   }
-  await buildExtension();
+  await buildExtension(root);
   log(`rewind to ${ref} complete`);
   return true;
 }
 
 function spawnShell() {
   if (stopping) return;
-  const args = ['egpt.mjs', ...SHELL_ARGS, ...(HEADLESS ? ['--headless'] : [])];
-  log(`starting node ${args.join(' ')}`);
+  // Run egpt.mjs from the active source (default: this wrapper's own dir).
+  // The wrapper stays put; only the app it launches follows `/e source`.
+  const root = activeRoot();
+  const appPath = join(root, 'egpt.mjs');
+  const args = [appPath, ...SHELL_ARGS, ...(HEADLESS ? ['--headless'] : [])];
+  log(`starting node egpt.mjs${root !== ROOT ? `  [source: ${root}]` : ''}`);
+  spawnAt = Date.now();
   // In headless mode we don't inherit stdio — there's no tty to inherit
   // to under Task Scheduler's "Run whether user is logged on or not".
   // Pipe to /dev/null equivalents; egpt.mjs writes its own headless.log.
   child = spawn('node', args, {
-    cwd: ROOT,
+    cwd: root,
     stdio: HEADLESS ? 'ignore' : 'inherit',
   });
 
@@ -172,6 +194,7 @@ function spawnShell() {
       log('clean exit — egpt-daemon stopping (user wanted out)');
       process.exit(0);
     }
+    srcCrashes = 0;   // any intentional exit (upgrade/restart/rewind) clears the crash-loop guard
 
     if (code === UPGRADE_EXIT_CODE) {
       await runUpgrade();
@@ -194,7 +217,20 @@ function spawnShell() {
       return;
     }
 
-    // Crash — back off and retry.
+    // Crash. If a NON-stable source crash-loops on boot (crashes within 60s,
+    // 3× running), revert to stable so a broken dev branch can't brick the
+    // daemon (you couldn't type `/e source main` if it never boots).
+    const ranMs = Date.now() - spawnAt;
+    if (root !== ROOT && ranMs < 60_000) {
+      srcCrashes += 1;
+      if (srcCrashes >= 3) {
+        log(`source ${root} crash-looped ${srcCrashes}× on boot — reverting to stable (${ROOT})`);
+        try { unlinkSync(SOURCE_FILE); } catch {}
+        srcCrashes = 0;
+      }
+    } else {
+      srcCrashes = 0;   // ran a while before crashing → not a boot-loop
+    }
     log(`crash — restarting in ${backoff}ms`);
     setTimeout(() => {
       backoff = Math.min(backoff * 2, RESTART_MAX_MS);
@@ -237,8 +273,9 @@ if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'))
 }
 
 {
-  const v = gitVersion();
-  log(`egpt-daemon up — keeping node egpt.mjs alive in ${ROOT}`);
+  const root = activeRoot();
+  const v = gitVersion(root);
+  log(`egpt-daemon up — wrapper in ${ROOT}; running app from ${root}`);
   log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
 }
 spawnShell();
