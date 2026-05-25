@@ -3076,6 +3076,7 @@ function App() {
       logOut(`local_llm: starting llama-server :${port} (${String(model).split(/[\\/]/).pop()})`);
       try {
         proc = spawn(bin, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        _globalLlamaProc = proc;   // so _exitClean can kill it — see /restart
       } catch (e) {
         errOut(`!! local_llm spawn: ${e?.message ?? e}; retry in ${backoff}ms`);
         setTimeout(spawnIt, backoff); backoff = Math.min(backoff * 2, 30000); return;
@@ -3085,6 +3086,7 @@ function App() {
         if (/error|fail|listening|model loaded|couldn't bind/i.test(s)) logOut(`local_llm: ${s.trim().slice(0, 160)}`);
       });
       proc.on('exit', (code) => {
+        if (_globalLlamaProc === proc) _globalLlamaProc = null;
         proc = null;
         if (stableTimer) { clearTimeout(stableTimer); stableTimer = null; }
         if (stopped) return;
@@ -3094,7 +3096,7 @@ function App() {
       stableTimer = setTimeout(() => { if (proc && !stopped) backoff = 2000; }, 60000);
     };
     spawnIt();
-    return () => { stopped = true; if (stableTimer) clearTimeout(stableTimer); try { proc?.kill(); } catch {} };
+    return () => { stopped = true; if (stableTimer) clearTimeout(stableTimer); try { proc?.kill(); } catch {} _globalLlamaProc = null; };
   }, []);
 
   // Outbox watcher — extracted to ./egpt-comm-handler.mjs as the first
@@ -7832,6 +7834,13 @@ function App() {
 // signal handler, so this is the seam.
 let _globalBridge = null;       // telegram bridge
 let _globalWaBridge = null;     // whatsapp bridge — owns the logon-summary counters
+// llama-server child (the @l supervisor's proc). Lifted to module scope so
+// _exitClean / process.on('exit') can kill it: it's a child process and
+// Windows doesn't kill children with the parent, so a hard process.exit(43)
+// (from /restart) would otherwise ORPHAN it and the respawned egpt.mjs
+// couldn't rebind the port — leaving the stale llama (and its backlog) alive.
+// Killing it here makes /restart a full restart: fresh egpt + fresh llama.
+let _globalLlamaProc = null;    // llama-server (@l) — killed on exit so /restart cycles it
 // On clean exit from the interactive shell, stamp last-logon so the
 // NEXT interactive shell's summary covers the window between then and
 // its takeover. Headless processes don't stamp — they're the
@@ -7844,6 +7853,16 @@ const _exitClean = async (code = 0) => {
   // before clearing the pidfile (otherwise a racing successor could
   // re-enter takeover before we're done writing).
   _globalWaBridge?.stop();
+  // Kill the llama-server child on RESTART-family exits (non-zero: /restart=43,
+  // /upgrade=42, /rewind=44, crash) so the respawned egpt.mjs gets a fresh
+  // llama on a freed port instead of orphaning the old one. On code 0
+  // (interactive takeover / clean stop) we deliberately LEAVE it: takeover
+  // hands the port to the new shell, which doesn't run the supervisor, so a
+  // surviving llama is what keeps @l alive across the handoff.
+  if (code !== 0) {
+    try { _globalLlamaProc?.kill(); } catch (e) { console.error(`!! egpt.mjs: kill llama: ${e?.message ?? e}`); }
+    _globalLlamaProc = null;
+  }
   // Let baileys' WebSocket close handshake reach WA's server before
   // process.exit. Without this, the close packet may not have left
   // the kernel buffer when the process dies — WA's server still
@@ -7979,7 +7998,7 @@ if (HEADLESS) {
   console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
   render(h(App), { exitOnCtrlC: false });
 }
-process.on('exit', () => { _globalBridge?.stop(); _globalWaBridge?.stop(); clearPidfile(); stopAliveHeartbeat(); });
+process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
 // lost to the inherited TTY). Persist the stack to ~/.egpt/state/
