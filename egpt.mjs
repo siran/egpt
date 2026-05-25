@@ -6407,12 +6407,17 @@ function App() {
         // @e's reply (even '…') onward — before the silence early-return so a
         // quiet @e still reaches @l (which may react).
         {
-          const _t = String(personaName).toUpperCase();
+          // Use the resident name the broadcast TARGETED (forceTarget — always
+          // a residents[] entry like 'e'/'l'), not decision.name, which for the
+          // persona resolves to an alias ('egpt') that doesn't match residents
+          // and made re-circulation bail. Falls back to personaName off-broadcast.
+          const _being = meta.forceTarget ?? personaName;
+          const _t = String(_being).toUpperCase();
           const _arrow = (Number(meta._chainDepth) || 0) >= 1
             ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
           confirmMirrorRef.current?.(meta.waChatId, _arrow, turn.personaPrompt);
         }
-        _recirculateResidentReply({ being: personaName, reply: turn.reply, meta });
+        _recirculateResidentReply({ being: meta.forceTarget ?? personaName, reply: turn.reply, meta });
         if (turn.kind === 'silence') return;
         const reply = turn.reply;
 
@@ -6589,7 +6594,8 @@ function App() {
         // Watcher: "->L" (human prompt) or "S->L" (resident S's reply
         // re-circulated); content = the exact envelope fed to this being.
         {
-          const _t = String(sibName).toUpperCase();
+          const _being = meta.forceTarget ?? sibName;   // resident name the broadcast targeted
+          const _t = String(_being).toUpperCase();
           const _arrow = (Number(meta._chainDepth) || 0) >= 1
             ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
           confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
@@ -6616,7 +6622,7 @@ function App() {
         // other residents. The recipient's dispatch tap mirrors it to Self as
         // their next prompt, so the reply is echoed there as the formatted
         // string it is prompted to them with.
-        _recirculateResidentReply({ being: sibName, reply, meta });
+        _recirculateResidentReply({ being: meta.forceTarget ?? sibName, reply, meta });
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
         } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
