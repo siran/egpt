@@ -5042,6 +5042,48 @@ function App() {
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
     };
     try {
+      // Agentic @l (opt-in via local_llm.agentic): a sessionless local brain
+      // with tools runs the ReAct loop instead of a plain chat turn — it can
+      // call the permission-gated agent tools (read_file, web_fetch, …) to
+      // actually DO things. OFF by default; @l stays a pure chatter until the
+      // operator sets local_llm.agentic:true and grants tools via /e tool.
+      if (brain.sessionless && EGPT_CONFIG.local_llm?.agentic === true) {
+        const { runAgentLoop } = await import('./src/tools/agent-loop.mjs');
+        const _sbCfg = EGPT_CONFIG.tools?.sandbox;
+        const sandboxRoot = _sbCfg
+          ? (isAbsolute(_sbCfg) ? _sbCfg : join(EGPT_HOME, _sbCfg))
+          : join(EGPT_HOME, 'agent-sandbox');
+        try { mkdirSync(sandboxRoot, { recursive: true }); } catch (e) { errOut(`!! agent sandbox mkdir: ${e?.message ?? e}`); }
+        const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
+        const _outboxSend = async (jid, body, from) => {
+          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          await writeFile(join(EGPT_HOME, 'outbox', id + '.json'),
+            JSON.stringify({ type: 'wa-send', from, ts: Date.now(), jid, body: String(body) }));
+        };
+        const final = await runAgentLoop({
+          systemPrompt: _sysPrompt,
+          userText: text,
+          toolsCfg: EGPT_CONFIG.tools,
+          sandboxRoot,
+          url: mbCfg.url,
+          model: mbCfg.model,
+          maxIters: Number(EGPT_CONFIG.local_llm?.agentic_max_iters) || 8,
+          sendMessage: (jid, body) => _outboxSend(jid, body, name),
+          // Phase-1 'ask' gate: notify the operator + DEFER (don't run). They
+          // promote the tool with `/e tool allow <name>` to permit. Interactive
+          // in-chat y/n is a later refinement; the hook is here for the swap.
+          confirm: async (toolName, toolArgs) => {
+            if (selfDm) {
+              await _outboxSend(selfDm,
+                `🔧 @${name} wants \`${toolName}\` ${JSON.stringify(toolArgs).slice(0, 200)} — it's set to "ask". Run \`/e tool allow ${toolName}\` to permit.`,
+                'system').catch(() => {});
+            }
+            return false;
+          },
+          onLog: (m) => logOut(`agent[@${name}]: ${m}`),
+        });
+        return String(final ?? '').trim() || '...';
+      }
       const result = await brain.stream(
         // Sessionless brains (e.g. llama @l) have no server-side thread, so
         // the host supplies the conversation as opts.history — the per-chat

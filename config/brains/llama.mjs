@@ -108,3 +108,44 @@ export function stream({ history, message }, onUpdate, options = {}) {
     }
   });
 }
+
+// Non-streaming chat turn WITH tool support, for the agentic loop. Tool calls
+// can't be cleanly reassembled from SSE deltas, so this uses a buffered
+// (stream:false) request and returns the assistant message verbatim:
+//   { content, toolCalls } — toolCalls is the OpenAI tool_calls array (each
+//   { id, function: { name, arguments(JSON string) } }), [] when none.
+// `messages` is the full OpenAI-format conversation (system/user/assistant/
+// tool). `tools` is the schema array (omit/empty = a plain completion).
+export async function chatWithTools({ messages, tools }, options = {}) {
+  const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
+  const base = String(options.url || options.baseUrl || DEFAULT_URL).replace(/\/+$/, '');
+  const body = {
+    messages,
+    stream: false,
+    ...(Array.isArray(tools) && tools.length ? { tools, tool_choice: 'auto' } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    ...(Number.isFinite(options.temperature) ? { temperature: options.temperature } : {}),
+    ...(Number.isFinite(options.maxTokens) ? { max_tokens: options.maxTokens } : {}),
+  };
+  onLog(`llama: tool-turn POST ${base}/v1/chat/completions (${messages.length} msgs, ${tools?.length ?? 0} tools)`);
+  let res;
+  try {
+    res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(options.hardTimeoutMs ?? 600_000),
+    });
+  } catch (e) {
+    const hint = /ECONNREFUSED|fetch failed/i.test(String(e?.message ?? ''))
+      ? ` — is llama-server running at ${base}?` : '';
+    throw new Error(`llama: ${e?.message ?? e}${hint}`);
+  }
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`llama-server HTTP ${res.status}: ${t.slice(0, 300) || res.statusText}`);
+  }
+  const j = await res.json();
+  const msg = j?.choices?.[0]?.message ?? {};
+  return { content: String(msg.content ?? ''), toolCalls: Array.isArray(msg.tool_calls) ? msg.tool_calls : [] };
+}
