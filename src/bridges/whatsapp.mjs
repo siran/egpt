@@ -2188,20 +2188,14 @@ export async function startWhatsAppBridge({
           let animTimer = null;
           if (isAudioForAck) {
             // Animation style. 'bar' (default): a DETERMINATE transcription bar
-            // driven by whisper-server's stderr `progress = N%` callback — a
-            // filled window SLIDES (indeterminate) until the first progress
-            // line arrives, then shows the real %. 'emoji': legacy ⏳🔊🎧🦻
-            // cycle. Drops to the transcript on done either way.
+            // driven by whisper-server's stderr `progress = N%` callback — the
+            // ACTUAL decode percent, no simulation. It sits at 0% until whisper
+            // emits its first reading (ffmpeg-convert + encode warm-up, ~1-2s),
+            // then fills to the real %. 'emoji': legacy ⏳🔊🎧🦻 cycle. Drops to
+            // the transcript on done either way.
             const _animStyle = media.audio_transcribe?.animation ?? 'bar';
             _whisperProgress = -1;   // reset; this note's decode hasn't reported yet
-            const W = 12, WIN = 3;
-            const _pos = [];
-            for (let p = 0; p <= W - WIN; p++) _pos.push(p);          // slide right
-            for (let p = W - WIN - 1; p > 0; p--) _pos.push(p);       // bounce back
-            const _slide = (i) => {
-              const p = _pos[i % _pos.length];
-              return '▱'.repeat(p) + '▰'.repeat(WIN) + '▱'.repeat(W - WIN - p);
-            };
+            const W = 12;
             const _barFill = (pct) => {
               const f = Math.max(0, Math.min(W, Math.round(pct / 100 * W)));
               return '▰'.repeat(f) + '▱'.repeat(W - f);
@@ -2209,18 +2203,15 @@ export async function startWhatsAppBridge({
             const _emoji = ['⏳', '🔊', '🎧', '🦻'];
             const _frame = (i) => {
               if (_animStyle === 'emoji') return `👂 ${speaker}'s ${dur}s @ ${hhmm} ${_emoji[i % _emoji.length]}`;
-              // Determinate once whisper reports; indeterminate slide before.
-              if (_whisperProgress >= 0) {
-                const pct = Math.min(100, _whisperProgress);
-                return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
-              }
-              return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_slide(i)}`;
+              const pct = _whisperProgress >= 0 ? Math.min(100, _whisperProgress) : 0;
+              return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
             };
 
+            let _lastBody = _frame(0);
             try {
               const r = await _safeSend(
                 chatJid,
-                { text: _frame(0) },
+                { text: _lastBody },
                 { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
               );
               ackKey = r?.key ?? null;
@@ -2229,18 +2220,20 @@ export async function startWhatsAppBridge({
               log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
             }
 
-            // Loop the animation while transcription runs. Soft-fail on WA
-            // edit throttle (skip a frame — the motion self-paces). Bar moves
-            // faster (1.5s) than the gentle emoji (4.8s); override via
-            // media.audio_transcribe.animation_ms.
+            // Refresh while transcription runs. The bar re-edits ONLY when the
+            // real % actually changes (dedup) — no wasted edits, no fake
+            // motion. The emoji style cycles each tick. Soft-fail on WA throttle.
             if (ackKey) {
               let frameIdx = 0;
               const _animMs = Number(media.audio_transcribe?.animation_ms)
-                || (_animStyle === 'emoji' ? 4800 : 1500);
+                || (_animStyle === 'emoji' ? 4800 : 1000);
               animTimer = setInterval(async () => {
+                frameIdx++;
+                const body = _frame(frameIdx);
+                if (body === _lastBody) return;   // bar: % hasn't moved → skip
+                _lastBody = body;
                 try {
-                  frameIdx++;
-                  await _safeSend(chatJid, { edit: ackKey, text: _frame(frameIdx) });
+                  await _safeSend(chatJid, { edit: ackKey, text: body });
                 } catch (e) {
                   // Soft-fail; rate-limit / blip shouldn't cascade.
                 }
