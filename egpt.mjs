@@ -6675,7 +6675,13 @@ function App() {
           const where = meta.waChatId ?? meta.telegramChatId ?? '?';
           const preview = reply.length > 200 ? reply.slice(0, 200) + '…' : reply;
           logOut(`(observed @me in ${where}): ${preview}`);
-        } else {
+        } else if (!_dropResident(reply)) {
+          // Same drop rule as the chat send above: a '…' (or a sessionless
+          // infra error) is NOT a real reply — keep it out of the shell items,
+          // the cross-surface mirror (this was leaking @l's '…' to Telegram
+          // even though WA dropped it), and the bus. Silence still re-circulates
+          // (initial) + shows in the /confirm debug; it just doesn't surface
+          // as a chat message anywhere.
           const replyAuthor = `wren@${SURFACE_TAG}`;
           const replySource = meta.fromTelegram ? 'telegram'
             : meta.fromWhatsApp ? 'whatsapp'
