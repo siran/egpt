@@ -2254,27 +2254,22 @@ function App() {
     return false;
   };
 
-  // Editable note injected into @e's prompt when a chat is reply-gated
-  // (mention / mention-direct): tells E its replies are forwarded + logged but
-  // NOT surfaced to the group unless @mentioned — so E knows what becomes of
-  // them (operator 2026-05-25). Lives in ~/.egpt/mention-mode-note.md (seeded
-  // once, edit freely; empty disables). mtime-cached so edits are live without
-  // a per-message read.
-  const _MENTION_NOTE_PATH = join(EGPT_HOME, 'mention-mode-note.md');
-  const _MENTION_NOTE_DEFAULT = "(you're currently being forwarded all the messages in this group; your replies are logged and NOT sent back to the group; feel free to reply — the operator may see your replies; only when @mentioned will your reply surface to the group.)";
-  const _mentionNoteCache = useRef({ mtime: -1, text: '' });
-  const _mentionNote = () => {
-    try {
-      if (!existsSync(_MENTION_NOTE_PATH)) {
-        try { writeFileSync(_MENTION_NOTE_PATH, _MENTION_NOTE_DEFAULT + '\n', { mode: 0o600 }); } catch (e) { /* best effort */ }
-      }
-      const mtime = statSync(_MENTION_NOTE_PATH).mtimeMs;
-      if (_mentionNoteCache.current.mtime !== mtime) {
-        _mentionNoteCache.current = { mtime, text: readFileSync(_MENTION_NOTE_PATH, 'utf8').trim() };
-      }
-      return _mentionNoteCache.current.text;
-    } catch { return ''; }
+  // Mode note: a ONE-LINE statement of the chat's current reply mode, told to
+  // @e ONCE per change (operator 2026-05-26: "you don't have to repeat the same
+  // instructions every prompt — E remembers; just say it per change of mode").
+  // We track the last mode announced per chat; the note is injected only when
+  // it differs (or on the first dispatch to that chat). Covers every mode, not
+  // just the gated ones, so E always knows its current engagement contract.
+  const _MODE_NOTES = {
+    on:               '(Chat reply mode: all. You can reply at will, and your replies are surfaced to the chat.)',
+    accum:            '(Chat reply mode: accum. Messages are batched and shown to you together; you reply only when @mentioned, and that reply carries the batch.)',
+    mute:             '(Chat reply mode: mute. You receive messages for context, but your replies are never surfaced.)',
+    'mention-direct': '(Chat reply mode: mention-direct. You can reply at will, but a reply is only surfaced when @e starts a message or someone replies to you.)',
+    mention:          '(Chat reply mode: mention. You can reply at will, but a reply is only surfaced when you are @mentioned.)',
+    off:              '(Chat reply mode: off.)',
   };
+  const _modeNote = (mode) => _MODE_NOTES[mode] ?? _MODE_NOTES.mention;
+  const _announcedMode = useRef(new Map());   // chatId -> last auto-mode announced to @e
 
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
@@ -3148,6 +3143,10 @@ function App() {
             atEAnywhere: !!from.atEAnywhere,
             replyToBot:  !!from.replyToBot,
           });
+          // Announce the reply mode to @e only when it CHANGED (or first contact
+          // this run) — E remembers; no need to repeat it every turn.
+          const _modeChanged = _announcedMode.current.get(from.chatId) !== _autoMode;
+          if (_modeChanged) _announcedMode.current.set(from.chatId, _autoMode);
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -3159,10 +3158,10 @@ function App() {
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
-            // In reply-gated modes, tell @e (in its prompt) that its replies
-            // are logged-not-surfaced unless @mentioned — so it knows. Editable
-            // note in ~/.egpt/mention-mode-note.md.
-            modeNote: (_autoMode === 'mention' || _autoMode === 'mention-direct') ? _mentionNote() : null,
+            // One-line statement of the chat's reply mode — injected only when
+            // the mode changed (see _modeChanged), so E learns its engagement
+            // contract once per change instead of every turn.
+            modeNote: _modeChanged ? _modeNote(_autoMode) : null,
             // Operator's whitelisted spaces (auto_e_chats + self) — lets the
             // resident-broadcast meta dispatches (e.g. @l) bypass observe-only
             // suppression.
