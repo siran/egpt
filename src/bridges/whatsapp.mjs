@@ -1896,7 +1896,17 @@ export async function startWhatsAppBridge({
       let transcript = null;
       let keyframePath = null;
       let voiceStream = null;        // streaming-transcription handle, when enabled + audio
-      if (hit.kind === 'audio' || hit.kind === 'video') {
+      // Pre-connect backlog: baileys re-delivers offline messages on reconnect
+      // (e.g. after a crash/restart). The media is SAVED above (logged), but
+      // transcription + the 👂 ack are PROCESSING — skip them, same posture as
+      // the dispatch hold (max_backlog_seconds → /wa-pending). Otherwise a
+      // restart triggers a whisper storm over every old voice note. Operator,
+      // repeatedly: "these bursts must be logged but not processed." Live
+      // messages transcribe as normal.
+      if (preConnect && (hit.kind === 'audio' || hit.kind === 'video')) {
+        log(`media saved, transcription skipped (pre-connect backlog): ${notifyKind} → ${path}`);
+      }
+      if ((hit.kind === 'audio' || hit.kind === 'video') && !preConnect) {
         // Voice flow (operator 2026-05-23 redesign — "let's keep it
         // easy, remove all other ways, restart clean"):
         //
