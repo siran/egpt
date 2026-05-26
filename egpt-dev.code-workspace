@@ -1,0 +1,18 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.eol": "\n",
+		"emeraldwalk.runonsave": {
+			"commands": [
+				{
+					"match": ".*[\\\\/]extension[\\\\/](src[\\\\/].*\\.(?:js|mjs|jsx|css|html)|manifest\\.(?:chrome|firefox)\\.json|build\\.mjs)$",
+					"cmd": "Set-Location -LiteralPath '${workspaceFolder}'; npm.cmd run build:ext"
+				}
+			]
+		}
+	}
+}
