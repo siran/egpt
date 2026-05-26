@@ -78,7 +78,7 @@ function fmtMembers(room) {
   return ms.map(m => `  ${KIND_ICON[m.kind] ?? '?'} ${STATE_ICON[m.state] ?? ''} ${m.id}`).join('\n');
 }
 
-export async function run({ arg, ctx }) {
+export async function run({ arg, ctx, meta = {} }) {
   const { sysOut } = ctx;
   const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
   let state = await loadRooms();
@@ -120,8 +120,15 @@ export async function run({ arg, ctx }) {
   }
 
   if (action === 'join') {
-    const m = await resolveMember(parts[2], ctx);
-    if (m.error) { sysOut(`!! /room ${name} join: ${m.error}`); return true; }
+    // No member token + invoked from inside a WA chat → join THIS chat.
+    let m;
+    if (!parts[2] && meta?.waChatId) {
+      const id = meta.waChatId;
+      m = { kind: 'wa-group', id, label: ctx.waBridgeRef?.current?.getChatName?.(id) ?? id };
+    } else {
+      m = await resolveMember(parts[2], ctx);
+    }
+    if (m.error) { sysOut(`!! /room ${name} join: ${m.error}  (or just \`/room ${name} join\` from inside a WA chat to add it)`); return true; }
     // Groups join 'muted' (lurk — reception always on, contribute nothing).
     // Brains/operators join 'mention' = BLIND: they do NOT see general chatter
     // (cost), only messages that @mention them; their replies always mirror in.
