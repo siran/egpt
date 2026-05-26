@@ -35,6 +35,8 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
+import { loadRooms } from './src/rooms.mjs';
+import { planFanout, roomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/tools/logon-summary.mjs';
@@ -2271,6 +2273,40 @@ function App() {
   const _modeNote = (mode) => _MODE_NOTES[mode] ?? _MODE_NOTES.mention;
   const _announcedMode = useRef(new Map());   // chatId -> last auto-mode announced to @e
 
+  // Room fan-out (operator 2026-05-26). When a chat is a member of a room and
+  // its state lets it contribute (active, or mention + an @mention), fan the
+  // message to the room's OTHER members + the shared transcript. All surfaces
+  // are first-class. SAFETY: gated behind rooms.routing_enabled (default OFF) —
+  // a loop bug here would spam real groups, so live fan-out stays dark until
+  // the operator enables it on a test room. Loop-safe: bridge sends are
+  // rememberSent, so the fanned copy echoes back fromMe and is filtered, never
+  // re-routed. Brain-as-room-member dispatch is deferred to the next pass.
+  const _maybeRouteToRooms = async ({ memberId, senderLabel, body, atEAnywhere, surface }) => {
+    if (!EGPT_CONFIG.rooms?.routing_enabled) return;
+    if (!body || !memberId) return;
+    let state;
+    try { state = await loadRooms(); } catch { return; }
+    const plans = planFanout(state, memberId, { atEAnywhere: !!atEAnywhere });
+    if (!plans.length) return;
+    for (const plan of plans) {
+      const env = roomEnvelope({ room: plan.room, senderLabel, body });
+      try {
+        const dir = join(EGPT_HOME, 'rooms', plan.room);
+        await mkdir(dir, { recursive: true });
+        await appendFile(join(dir, 'transcript.md'), `[${new Date().toISOString()}] ${env}\n`, 'utf8');
+      } catch (e) { logOut(`!! room transcript ${plan.room}: ${e?.message ?? e}`); }
+      for (const t of plan.targets) {
+        try {
+          if (t.kind === 'wa-group')        waBridgeRef.current?.send(env, { chatId: t.id });
+          else if (t.kind === 'tg-group')   bridgeRef.current?.send(env, { chatId: t.id });
+          else if (t.kind === 'shell' || t.kind === 'extension')
+            setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${plan.room}`, body: env }]);
+          // brain targets: deferred (loop-prone; next pass).
+        } catch (e) { logOut(`!! room fan ${plan.room}→${t.id}: ${e?.message ?? e}`); }
+      }
+    }
+  };
+
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -3147,6 +3183,10 @@ function App() {
           // this run) — E remembers; no need to repeat it every turn.
           const _modeChanged = _announcedMode.current.get(from.chatId) !== _autoMode;
           if (_modeChanged) _announcedMode.current.set(from.chatId, _autoMode);
+          // Room fan-out (independent of the per-chat auto-mode dispatch below).
+          // Gated + loop-safe; no-op unless this chat is a contributing room member.
+          _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text, atEAnywhere: from.atEAnywhere, surface: 'whatsapp' })
+            .catch(e => errOut(`!! _maybeRouteToRooms: ${e?.message ?? e}`));
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
