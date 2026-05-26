@@ -2273,37 +2273,62 @@ function App() {
   const _modeNote = (mode) => _MODE_NOTES[mode] ?? _MODE_NOTES.mention;
   const _announcedMode = useRef(new Map());   // chatId -> last auto-mode announced to @e
 
-  // Room fan-out (operator 2026-05-26). When a chat is a member of a room and
-  // its state lets it contribute (active, or mention + an @mention), fan the
-  // message to the room's OTHER members + the shared transcript. All surfaces
-  // are first-class. SAFETY: gated behind rooms.routing_enabled (default OFF) —
-  // a loop bug here would spam real groups, so live fan-out stays dark until
-  // the operator enables it on a test room. Loop-safe: bridge sends are
-  // rememberSent, so the fanned copy echoes back fromMe and is filtered, never
-  // re-routed. Brain-as-room-member dispatch is deferred to the next pass.
-  const _maybeRouteToRooms = async ({ memberId, senderLabel, body, atEAnywhere, surface }) => {
+  // Room fan-out (operator 2026-05-26). SAFETY: gated behind
+  // rooms.routing_enabled (default OFF) — a loop bug here would spam real
+  // groups, so live fan-out stays dark until the operator enables it on a test
+  // room. All surfaces are first-class peers.
+  const _ROOM_CHAIN_CAP = 4;
+  // Does the body @mention a brain by name (@e/@egpt for 'e', else @<id>)?
+  const _bodyMentionsBrain = (body, id) => {
+    const alts = (id === 'e' || id === 'egpt') ? ['e', 'egpt'] : [String(id)];
+    const esc = alts.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
+  };
+  // Deliver one message into a room: append to the shared transcript + fan to
+  // members. Groups/shell receive unconditionally; a brain receives only when
+  // @mentioned (blind) or marked 'active', and its reply re-circulates into the
+  // room (chain-capped). `depth` guards brain↔brain loops; bridge sends are
+  // rememberSent so a fanned copy echoes back fromMe and is never re-routed.
+  const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0 }) => {
+    let state; try { state = await loadRooms(); } catch { return; }
+    const room = state.rooms?.[roomName];
+    if (!room) return;
+    const env = roomEnvelope({ room: roomName, senderLabel, body });
+    try {
+      const dir = join(EGPT_HOME, 'rooms', roomName);
+      await mkdir(dir, { recursive: true });
+      await appendFile(join(dir, 'transcript.md'), `[${new Date().toISOString()}] ${env}\n`, 'utf8');
+    } catch (e) { logOut(`!! room transcript ${roomName}: ${e?.message ?? e}`); }
+    for (const m of (room.members ?? [])) {
+      if (m.id === fromId) continue;
+      try {
+        if (m.kind === 'wa-group')      waBridgeRef.current?.send(env, { chatId: m.id });
+        else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
+        else if (m.kind === 'shell' || m.kind === 'extension')
+          setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
+        else if (m.kind === 'brain') {
+          // Blind by default: a brain sees a room message only when it @mentions
+          // it (or it's 'active'). Its reply ALWAYS mirrors back so all read it.
+          if (!(m.state === 'active' || _bodyMentionsBrain(body, m.id))) continue;
+          if (depth >= _ROOM_CHAIN_CAP) { logOut(`room ${roomName}: chain cap (${_ROOM_CHAIN_CAP}) — not dispatching @${m.id}`); continue; }
+          if (m.id !== 'e' && m.id !== 'egpt') { logOut(`room ${roomName}: brain @${m.id} room-dispatch not wired yet (only @e)`); continue; }
+          const reply = await runDefaultBrainTurn(env, () => {}, { threadId: `room:${roomName}`, surface: 'system', name: `room:${roomName}` });
+          const txt = String(reply ?? '').trim();
+          if (txt && txt !== '...' && txt !== '…') {
+            await _deliverToRoom(roomName, { fromId: m.id, senderLabel: `🧠 ${m.id}`, body: txt, depth: depth + 1 });
+          }
+        }
+      } catch (e) { logOut(`!! room deliver ${roomName}→${m.id}: ${e?.message ?? e}`); }
+    }
+  };
+  // Entry: a contributing member's inbound message (active, or mention + an
+  // @mention) seeds the room. planFanout is the contribution gate.
+  const _maybeRouteToRooms = async ({ memberId, senderLabel, body, atEAnywhere }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
-    let state;
-    try { state = await loadRooms(); } catch { return; }
-    const plans = planFanout(state, memberId, { atEAnywhere: !!atEAnywhere });
-    if (!plans.length) return;
-    for (const plan of plans) {
-      const env = roomEnvelope({ room: plan.room, senderLabel, body });
-      try {
-        const dir = join(EGPT_HOME, 'rooms', plan.room);
-        await mkdir(dir, { recursive: true });
-        await appendFile(join(dir, 'transcript.md'), `[${new Date().toISOString()}] ${env}\n`, 'utf8');
-      } catch (e) { logOut(`!! room transcript ${plan.room}: ${e?.message ?? e}`); }
-      for (const t of plan.targets) {
-        try {
-          if (t.kind === 'wa-group')        waBridgeRef.current?.send(env, { chatId: t.id });
-          else if (t.kind === 'tg-group')   bridgeRef.current?.send(env, { chatId: t.id });
-          else if (t.kind === 'shell' || t.kind === 'extension')
-            setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${plan.room}`, body: env }]);
-          // brain targets: deferred (loop-prone; next pass).
-        } catch (e) { logOut(`!! room fan ${plan.room}→${t.id}: ${e?.message ?? e}`); }
-      }
+    let state; try { state = await loadRooms(); } catch { return; }
+    for (const plan of planFanout(state, memberId, { atEAnywhere: !!atEAnywhere })) {
+      await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
     }
   };
 
