@@ -838,6 +838,14 @@ export async function startWhatsAppBridge({
             let loadedName = c.jid === 'status@broadcast'
               ? '(WA status updates)'
               : (typeof c.name === 'string' ? c.name : null);
+            // Privacy (operator 2026-05-26): a DM's persisted name may be the
+            // operator's address-book label, contaminated via a contacts /
+            // history sync for saved @lid contacts ("Diego Pérez (Koma)").
+            // Drop every non-group, non-status DM name on load — leave only the
+            // id. A live message's pushName refills it from then on.
+            if (loadedName && c.jid !== 'status@broadcast' && !c.jid?.endsWith?.('@g.us')) {
+              loadedName = null;
+            }
             if (c.jid?.endsWith?.('@g.us') && loadedName && loadedName.length <= 2) {
               loadedName = null;
             }
@@ -1334,7 +1342,10 @@ export async function startWhatsAppBridge({
           const isGroup = chat.id.endsWith('@g.us');
           const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
           const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
-          if (ts > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity' });
+          // Only groups get a name from the sync (the group SUBJECT). For DMs
+          // baileys' chat.name is the operator's address-book label — never
+          // store it; DM names come exclusively from message pushNames.
+          if (ts > 0) _recordChat({ jid: chat.id, isGroup, name: isGroup ? name : null, ts, kind: 'activity' });
         }
       }
       if (Array.isArray(messages)) {
@@ -1371,7 +1382,8 @@ export async function startWhatsAppBridge({
         const ts = (Number(chat.conversationTimestamp) || 0) * 1000;
         const name = typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim() : null;
         const pinned = Number(chat.pin) || 0;
-        if (ts > 0 || pinned > 0) _recordChat({ jid: chat.id, isGroup, name, ts, kind: 'activity', pinned });
+        // Groups → subject; DMs → never the address-book chat.name (see above).
+        if (ts > 0 || pinned > 0) _recordChat({ jid: chat.id, isGroup, name: isGroup ? name : null, ts, kind: 'activity', pinned });
       }
     });
     sock.ev.on('chats.update', (updates) => {
