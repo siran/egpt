@@ -2245,6 +2245,9 @@ function App() {
       const r = helpStep(menu, hm.state, t);
       if (r.exit) { _helpMode.current.delete(chatKey); _helpReply(surface, chatId, '(help closed)'); return true; }
       hm.state = r.state; hm.ts = Date.now();
+      // `Nx`/`xN` example: send only the bare command in its own message, so
+      // it's trivial to copy-paste on a phone. Nav state is unchanged.
+      if (r.example != null) { _helpReply(surface, chatId, r.example); return true; }
       _helpReply(surface, chatId, helpRenderText(r.view));
       return true;
     }

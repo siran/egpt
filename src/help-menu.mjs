@@ -39,9 +39,9 @@ export function buildMenu(commands = [], configEntries = [], { surface = 'shell'
     // are searchable in their own right.
     const subs = Array.isArray(c.subs) ? c.subs.map(s => ({
       kind: 'command', id: `${c.cmd} ${s.name}`, label: `${c.cmd} ${s.name}`,
-      section: sec, usage: s.usage ?? `${c.cmd} ${s.name}`, desc: s.desc ?? '', parentId: c.cmd,
+      section: sec, usage: s.usage ?? `${c.cmd} ${s.name}`, desc: s.desc ?? '', example: s.example, parentId: c.cmd,
     })) : [];
-    entries.push({ kind: 'command', id: c.cmd, label: c.cmd, section: sec, usage: c.usage ?? c.cmd, desc: c.desc ?? '', subs });
+    entries.push({ kind: 'command', id: c.cmd, label: c.cmd, section: sec, usage: c.usage ?? c.cmd, desc: c.desc ?? '', example: c.example, subs });
   }
   for (const e of configEntries) {
     if (!e?.key) continue;
@@ -58,6 +58,17 @@ export function buildMenu(commands = [], configEntries = [], { surface = 'shell'
 
 export const initState = () => ({ stack: [{ mode: 'top' }] });
 const cur = (state) => state.stack[state.stack.length - 1] ?? { mode: 'top' };
+
+// A copy-pasteable example for an entry. Explicit `example` wins (string or
+// array of lines); otherwise fall back to the first usage form (before a `|`),
+// which is a usable template. Sections have no example.
+export function exampleFor(entry) {
+  if (!entry || entry._section) return null;
+  if (Array.isArray(entry.example)) return entry.example.join('\n');
+  if (entry.example) return String(entry.example);
+  const u = String(entry.usage ?? entry.label ?? '').split('|')[0].trim();
+  return u || null;
+}
 
 function matches(model, term) {
   const n = term.toLowerCase();
@@ -81,7 +92,7 @@ export function view(model, state) {
   const atTop = state.stack.length <= 1;
   const footer = atTop
     ? 'reply a number · type to search · q to quit'
-    : 'number · type to search · 0 back · q quit';
+    : 'number · Nx for an example · type to search · 0 back · q quit';
   if (c.mode === 'detail') {
     const e = model.index?.get(c.id) ?? model.entries.find(x => x.id === c.id);
     return { kind: 'detail', title: e?.label ?? c.id, detail: e ?? null, footer };
@@ -133,6 +144,17 @@ export function step(model, state, input) {
     const stack = state.stack.length > 1 ? state.stack.slice(0, -1) : state.stack;
     const ns = { stack };
     return { state: ns, view: view(model, ns) };
+  }
+  // `Nx` / `xN` — emit a copy-pasteable example for option N in the current
+  // view, WITHOUT changing navigation (state unchanged). The caller sends the
+  // example as its own message so it's easy to copy on a phone.
+  const ex = /^(?:x\s*(\d+)|(\d+)\s*x)$/i.exec(t);
+  if (ex) {
+    const idx = parseInt(ex[1] ?? ex[2], 10);
+    const v = view(model, state);
+    const sel = v.lines?.[idx - 1];
+    if (!sel || !sel._entry) return { state, view: { ...v, note: `no example for ${idx}` } };
+    return { state, view: v, example: exampleFor(sel._entry) ?? sel._entry.label };
   }
   if (/^\d+$/.test(t)) {
     const v = view(model, state);

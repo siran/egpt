@@ -10,7 +10,7 @@ const CMDS = [
   { cmd: '/channels', surface: 'both',    usage: '/channels [N]', desc: 'list WA chats. Pinned float.' },
   { section: 'PERSONA' },
   { cmd: '/e', surface: 'both', usage: '/e ...', desc: 'conversation-e controls', subs: [
-    { name: 'source', usage: '/e source [<path>]', desc: 'which checkout the daemon runs' },
+    { name: 'source', usage: '/e source [<path>]', desc: 'which checkout the daemon runs', example: '/e source egpt-dev' },
     { name: 'auto',   usage: '/e auto <mode>',     desc: 'per-chat reply mode' },
   ] },
   { section: 'MISC' },
@@ -93,6 +93,36 @@ describe('subcommands', () => {
   it('search reaches into subcommands', () => {
     const v = searchView(m, 'checkout');     // only in /e source desc
     expect(v.lines.map(l => l.label)).toContain('/e source');
+  });
+});
+
+describe('examples (Nx / xN)', () => {
+  const m = buildMenu(CMDS, CFG, { surface: 'shell' });
+  it('Nx and xN return a copy-pasteable example, leaving nav state put', () => {
+    let r = step(m, initState(), '1');          // ROOM section
+    const before = r.state;
+    let ex = step(m, r.state, '1x');            // example for /rules (no explicit → usage)
+    expect(ex.example).toBe('/rules');
+    expect(ex.state).toEqual(before);           // unchanged
+    ex = step(m, r.state, 'x1');                // same via xN
+    expect(ex.example).toBe('/rules');
+  });
+  it('uses an explicit example field when present', () => {
+    let r = step(m, initState(), '2');          // PERSONA
+    r = step(m, r.state, '1');                  // /e → subs
+    const ex = step(m, r.state, '1x');          // /e source has example
+    expect(ex.example).toBe('/e source egpt-dev');
+  });
+  it('falls back to the first usage form when no example', () => {
+    let r = step(m, initState(), '2');
+    r = step(m, r.state, '1');                  // /e subs
+    const ex = step(m, r.state, '2x');          // /e auto (no example)
+    expect(ex.example).toBe('/e auto <mode>');
+  });
+  it('a section row (top) has no example', () => {
+    const r = step(m, initState(), '1x');       // top: option 1 is a section
+    expect(r.example).toBeUndefined();
+    expect(r.view.note).toMatch(/no example for 1/);
   });
 });
 
