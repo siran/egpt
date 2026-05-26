@@ -399,6 +399,11 @@ export async function dispatchPersonaTurn({
   if (meta.replyPersonaFallback) {
     personaPrompt = `[reply-fallback: recipient inferred as @e — quoted body had no persona tag]\n${personaPrompt}`;
   }
+  // Reply-gated chat (mention / mention-direct): prepend the editable mode note
+  // so @e knows its replies are logged-not-surfaced unless @mentioned.
+  if (meta.modeNote) {
+    personaPrompt = `${meta.modeNote}\n\n${personaPrompt}`;
+  }
 
   const threadCtx = meta.fromWhatsApp
     ? {

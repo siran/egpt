@@ -2233,6 +2233,28 @@ function App() {
     return false;
   };
 
+  // Editable note injected into @e's prompt when a chat is reply-gated
+  // (mention / mention-direct): tells E its replies are forwarded + logged but
+  // NOT surfaced to the group unless @mentioned — so E knows what becomes of
+  // them (operator 2026-05-25). Lives in ~/.egpt/mention-mode-note.md (seeded
+  // once, edit freely; empty disables). mtime-cached so edits are live without
+  // a per-message read.
+  const _MENTION_NOTE_PATH = join(EGPT_HOME, 'mention-mode-note.md');
+  const _MENTION_NOTE_DEFAULT = "(you're currently being forwarded all the messages in this group; your replies are logged and NOT sent back to the group; feel free to reply — the operator may see your replies; only when @mentioned will your reply surface to the group.)";
+  const _mentionNoteCache = useRef({ mtime: -1, text: '' });
+  const _mentionNote = () => {
+    try {
+      if (!existsSync(_MENTION_NOTE_PATH)) {
+        try { writeFileSync(_MENTION_NOTE_PATH, _MENTION_NOTE_DEFAULT + '\n', { mode: 0o600 }); } catch (e) { /* best effort */ }
+      }
+      const mtime = statSync(_MENTION_NOTE_PATH).mtimeMs;
+      if (_mentionNoteCache.current.mtime !== mtime) {
+        _mentionNoteCache.current = { mtime, text: readFileSync(_MENTION_NOTE_PATH, 'utf8').trim() };
+      }
+      return _mentionNoteCache.current.text;
+    } catch { return ''; }
+  };
+
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -3116,6 +3138,10 @@ function App() {
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
+            // In reply-gated modes, tell @e (in its prompt) that its replies
+            // are logged-not-surfaced unless @mentioned — so it knows. Editable
+            // note in ~/.egpt/mention-mode-note.md.
+            modeNote: (_autoMode === 'mention' || _autoMode === 'mention-direct') ? _mentionNote() : null,
             // Operator's whitelisted spaces (auto_e_chats + self) — lets the
             // resident-broadcast meta dispatches (e.g. @l) bypass observe-only
             // suppression.
