@@ -2322,12 +2322,15 @@ function App() {
     }
   };
   // Entry: a contributing member's inbound message (active, or mention + an
-  // @mention) seeds the room. planFanout is the contribution gate.
-  const _maybeRouteToRooms = async ({ memberId, senderLabel, body, atEAnywhere }) => {
+  // @mention of any room participant) seeds the room. planFanout is the
+  // contribution gate. Surface-agnostic: the mention flag is any "@word" in the
+  // body (not @e-specific), so WA and TG route identically.
+  const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
+    const mentionsSomeone = /(^|\s)@[\w-]+/.test(String(body));
     let state; try { state = await loadRooms(); } catch { return; }
-    for (const plan of planFanout(state, memberId, { atEAnywhere: !!atEAnywhere })) {
+    for (const plan of planFanout(state, memberId, { atEAnywhere: mentionsSomeone })) {
       await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
     }
   };
@@ -2532,6 +2535,12 @@ function App() {
         if (_maybeHandleHelp(text, { surface: 'telegram', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
           return;
         }
+
+        // Room fan-out (gated + loop-safe; no-op unless this TG chat is a
+        // contributing room member). tg-group members are keyed by the bare
+        // chat id (joined as `tg:<id>`), matching String(from.chatId) here.
+        _maybeRouteToRooms({ memberId: String(from.chatId ?? ''), senderLabel: who, body: text })
+          .catch(e => errOut(`!! _maybeRouteToRooms(tg): ${e?.message ?? e}`));
 
         // Replication is unconditional: every Telegram message in the
         // room is part of the room. The legacy `mirror` policy now only
@@ -3210,8 +3219,8 @@ function App() {
           if (_modeChanged) _announcedMode.current.set(from.chatId, _autoMode);
           // Room fan-out (independent of the per-chat auto-mode dispatch below).
           // Gated + loop-safe; no-op unless this chat is a contributing room member.
-          _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text, atEAnywhere: from.atEAnywhere, surface: 'whatsapp' })
-            .catch(e => errOut(`!! _maybeRouteToRooms: ${e?.message ?? e}`));
+          _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text })
+            .catch(e => errOut(`!! _maybeRouteToRooms(wa): ${e?.message ?? e}`));
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,

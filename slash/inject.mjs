@@ -71,6 +71,18 @@ export async function run({ arg, ctx }) {
     sysOut(`/inject ${basename(path)} → ${label ?? jid}${inline ? ' (inline)' : ''}`);
   };
 
+  const deliverToTg = async (chatId, label) => {
+    const tg = bridgeRef?.current ?? null;
+    if (inline || !tg?.sendMedia) {
+      const text = await readText();
+      if (text == null) { sysOut(`!! /inject: ${basename(path)} isn't text (TG needs sendMedia for binaries)`); return; }
+      tg?.send(text, { chatId });
+    } else {
+      await tg.sendMedia(chatId, { path });
+    }
+    sysOut(`/inject ${basename(path)} → ${label ?? `tg:${chatId}`}${inline ? ' (inline)' : ''}`);
+  };
+
   const deliverToBrain = async (id) => {
     const text = await readText();
     const body = text != null
@@ -88,7 +100,7 @@ export async function run({ arg, ctx }) {
     const room = getRoom(rooms, roomName);
     for (const m of (room.members ?? [])) {
       if (m.kind === 'wa-group') await deliverToWa(m.id, m.id);
-      else if (m.kind === 'tg-group') { const text = await readText(); if (text != null) bridgeRef?.current?.send(text, { chatId: m.id }); }
+      else if (m.kind === 'tg-group') await deliverToTg(m.id);
       else if (m.kind === 'brain') await deliverToBrain(m.id);
       else if (m.kind === 'shell' || m.kind === 'extension')
         setItems(p => [...p, { id: Date.now() + Math.random(), author: `inject@${roomName}`, body: `📎 ${basename(path)} (${path})` }]);
@@ -107,6 +119,8 @@ export async function run({ arg, ctx }) {
   }
   // Raw WA jid.
   if (/@(g\.us|s\.whatsapp\.net|lid)$/i.test(target)) { await deliverToWa(target, target); return true; }
+  // Telegram chat.
+  if (target.toLowerCase().startsWith('tg:')) { await deliverToTg(target.slice(3), target); return true; }
   // Otherwise a brain (@e / @l / <name>).
   await deliverToBrain(target.replace(/^@/, '').toLowerCase());
   return true;
