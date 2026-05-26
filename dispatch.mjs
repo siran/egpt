@@ -493,6 +493,10 @@ export function createDispatchRuntime({
   onTranscriptInbound = null,
   personaEmoji = '🐶',
   personaName = 'egpt',
+  // Egpt-wide manifest (e_identity.md) content. Prepended to a NEW contact's
+  // first-turn prelude so per-contact conversation-e gets the manifest (powers,
+  // /react, conventions) — historically it reached only the node-global @e.
+  loadManifest = async () => '',
   readPersonality = async () => null,
   // Per-personality allowed_tools resolver. Defaults to `null` =
   // "don't override what sessionOptions returned". Inject the
@@ -788,9 +792,14 @@ export function createDispatchRuntime({
 
       if (isNewContact && !threadCtx.bypassAutoWrap) {
         const personality = convEntry.personality || 'default';
-        const identity = await readPersonality(personality);
-        if (identity) {
-          wrappedText = buildLineagePrelude({ identity, personality, text });
+        const identity = (await readPersonality(personality)) ?? '';
+        let manifest = '';
+        try { manifest = (await loadManifest()) ?? ''; } catch (e) { logger?.error?.(`!! loadManifest: ${e?.message ?? e}`); }
+        // Feed when there's a manifest OR a personality (an empty default.md is
+        // valid — the manifest then carries the whole identity).
+        if (manifest.trim() || identity.trim()) {
+          const prelude = buildLineagePrelude({ identity, personality, text });
+          wrappedText = manifest.trim() ? `${manifest.trim()}\n\n---\n\n${prelude}` : prelude;
         }
       }
 
