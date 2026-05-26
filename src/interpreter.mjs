@@ -112,7 +112,7 @@ export const COMMANDS = [
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
   { cmd: '/theme',          surface: 'shell',     usage: '/theme <name|next|prev>',                        desc: 'switch color theme (live)' },
   { cmd: '/bus-key',        surface: 'extension', usage: '/bus-key [gen|set <key>|clear]',                 desc: 'manage bus signing key (HMAC); empty prints current, gen makes a new one, paste into shell EGPT_BUS_KEY' },
-  { cmd: '/help',           surface: 'both',      usage: '/help',                                          desc: 'show this list' },
+  { cmd: '/help',           surface: 'both',      usage: '/help [<term>|all]',                             desc: 'interactive help/config menu (aliases /h, /?). No arg opens the numbered menu (reply numbers/text to navigate, q to quit); <term> fuzzy-lists matching commands + config keys; "all" prints the full flat list.' },
   { cmd: '/log',            surface: 'shell',     usage: '/log [N=30]',                                    desc: 'show last N log entries (telemetry, hints, debug)' },
   { cmd: '/logs',           surface: 'shell',     usage: '/logs [N=30]',                                   desc: 'alias for /log' },
   { cmd: '/egpt',           surface: 'shell',     usage: '/egpt [status|new|list|brain <type> [<ref>]|rewind [<n>|<ref-prefix>]]', desc: 'manage @egpt persona: status (default), new (fresh thread), list (history), brain (switch to another brain ± ref), rewind (resume a past thread)' },

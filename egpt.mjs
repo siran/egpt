@@ -33,7 +33,8 @@ import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProces
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
-import { parseInput, helpText, helpHtml } from './src/interpreter.mjs';
+import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
+import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/tools/logon-summary.mjs';
@@ -2187,6 +2188,51 @@ function App() {
       }
     }
   };
+  // ── Interactive help/config menu (/h · /? · /help) ──────────────────────
+  // Surface-agnostic: src/help-menu.mjs holds the model + nav + render. Here we
+  // arm a per-chat menu (operator-only) and feed the owner's numbers/text into
+  // it, replying on the originating surface. `/h <term>` is a one-shot fuzzy
+  // list (no arm); `/help all` prints the legacy full wall.
+  const _helpMenuRef = useRef(null);
+  const _helpMode = useRef(new Map());   // chatKey -> { state, ts }
+  const _HELP_TTL_MS = 3 * 60 * 1000;
+  const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
+    COMMANDS,
+    Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
+    { surface: 'shell' },   // shell + WA/TG run host commands; hides extension-only
+  ));
+  const _helpReply = (surface, chatId, body) => {
+    if (surface === 'whatsapp' && chatId && waBridgeRef.current) waBridgeRef.current.send(body, { chatId });
+    else if (surface === 'telegram' && chatId && bridgeRef.current) bridgeRef.current.send(body, { chatId });
+    else sysOut(body);
+  };
+  // Returns true if the message was consumed by the menu (caller stops).
+  // Only the account OWNER (isOperator) drives it — others' messages pass through.
+  const _maybeHandleHelp = (text, { surface, chatKey, isOperator, chatId }) => {
+    if (!isOperator) return false;
+    const t = String(text ?? '').trim();
+    const menu = _getHelpMenu();
+    const m = /^\/(?:h|\?|help)(?:\s+([\s\S]*))?$/i.exec(t);
+    if (m) {
+      const term = (m[1] ?? '').trim();
+      if (term.toLowerCase() === 'all') { _helpReply(surface, chatId, helpText(surface === 'extension' ? 'extension' : 'shell')); return true; }
+      if (term) { _helpReply(surface, chatId, helpRenderText(helpSearchView(menu, term))); return true; }   // one-shot, no arm
+      _helpMode.current.set(chatKey, { state: initState(), ts: Date.now() });
+      _helpReply(surface, chatId, helpRenderText(helpView(menu, initState())));
+      return true;
+    }
+    const hm = _helpMode.current.get(chatKey);
+    if (hm && !t.startsWith('/')) {
+      if (Date.now() - hm.ts > _HELP_TTL_MS) { _helpMode.current.delete(chatKey); return false; }
+      const r = helpStep(menu, hm.state, t);
+      if (r.exit) { _helpMode.current.delete(chatKey); _helpReply(surface, chatId, '(help closed)'); return true; }
+      hm.state = r.state; hm.ts = Date.now();
+      _helpReply(surface, chatId, helpRenderText(r.view));
+      return true;
+    }
+    return false;
+  };
+
   // When a view command (/last, etc.) wants its echo + sysOut output
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
@@ -2380,6 +2426,11 @@ function App() {
         if (LIFECYCLE.has(firstTok) && from.chatType && from.chatType !== 'private') {
           bridge.send(`${firstTok} only works in a 1:1 chat with this bot — DM me and try again`,
             { chatId: from.chatId });
+          return;
+        }
+
+        // Interactive help menu — owner-only, consumes their numbers/text.
+        if (_maybeHandleHelp(text, { surface: 'telegram', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
           return;
         }
 
@@ -2936,6 +2987,12 @@ function App() {
           if (LIFECYCLE.has(firstTok) && from.chatType !== 'private') {
             bridge.send(`${firstTok} only works in a 1:1 chat — DM me and try again`,
               { chatId: from.chatId });
+            return;
+          }
+          // Interactive help menu — only the account owner (authorized) drives
+          // it, in whichever chat /help was invoked. Consumes the owner's
+          // numbers/text before the auto-mode broadcast; others pass through.
+          if (_maybeHandleHelp(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
             return;
           }
           // Egpt-chat vs observed-chat distinction lives in
@@ -5769,6 +5826,13 @@ function App() {
   const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
+
+    // Shell user input (bare meta — not a bridge arrival or a broadcast
+    // re-dispatch) goes through the interactive help menu first.
+    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched
+        && _maybeHandleHelp(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
+      return;
+    }
 
     // Tell sysOut where this submit's output should go. fromTelegram means
     // the user issued the command from Telegram and the response should
