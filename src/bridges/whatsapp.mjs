@@ -470,6 +470,53 @@ export async function startWhatsAppBridge({
   // per chat so a chat's voice notes transcribe one at a time, in arrival
   // order (operator 2026-05-25). See src/serial-by-key.mjs.
   const _serializeTranscription = makeSerialByKey();
+  // ── @lid name-leak diagnostic (operator 2026-05-26) ───────────────
+  // For SAVED @lid contacts, WhatsApp substitutes the operator's address-book
+  // label into the field baileys hands us as msg.pushName (confirmed: Diego
+  // arrived as "Diego Pérez (Koma)"). UNSAVED contacts keep their real
+  // pushName ("le moi"). To find a clean discriminator we keep a contacts map
+  // (name=address book, notify=their pushName, verifiedName=business) fed by
+  // baileys contacts.* events, and dump per-@lid-message how each field
+  // compares. Lets us confirm `.notify` (or absence of `.name`) as the
+  // safe source. Capped so the file can't grow unbounded.
+  const _waContacts = new Map();   // jid -> { name, notify, verifiedName }
+  const _NAME_DEBUG_PATH = join(STATE_BRIDGE_DIR, 'wa-name-debug.log');
+  let _nameDebugCount = 0;
+  const _NAME_DEBUG_CAP = 300;
+  const _ingestContacts = (list) => {
+    if (!Array.isArray(list)) return;
+    for (const c of list) {
+      if (!c?.id) continue;
+      const prev = _waContacts.get(c.id) ?? {};
+      _waContacts.set(c.id, {
+        name: c.name ?? prev.name ?? null,
+        notify: c.notify ?? prev.notify ?? null,
+        verifiedName: c.verifiedName ?? prev.verifiedName ?? null,
+      });
+    }
+  };
+  const _dumpNameDebug = (msg) => {
+    try {
+      if (_nameDebugCount >= _NAME_DEBUG_CAP) return;
+      const jid = msg?.key?.remoteJid;
+      if (!jid || !String(jid).endsWith('@lid')) return;
+      _nameDebugCount++;
+      const c = _waContacts.get(jid) ?? {};
+      const row = {
+        t: new Date().toISOString(),
+        jid,
+        fromMe: !!msg?.key?.fromMe,
+        pushName: msg?.pushName ?? null,
+        verifiedBizName: msg?.verifiedBizName ?? null,
+        senderPn: msg?.key?.senderPn ?? msg?.key?.participantPn ?? null,
+        remoteJidAlt: msg?.key?.remoteJidAlt ?? null,
+        contact_name: c.name ?? null,
+        contact_notify: c.notify ?? null,
+        contact_verifiedName: c.verifiedName ?? null,
+      };
+      appendFileSync(_NAME_DEBUG_PATH, JSON.stringify(row) + '\n', { mode: 0o600 });
+    } catch { /* diagnostic only — never throw into the message path */ }
+  };
   // Load persisted cache on boot — survives bridge restarts so
   // reaction enrichment can resolve parents from any session in the
   // last ~4000 messages, not just this one.
@@ -1044,6 +1091,13 @@ export async function startWhatsAppBridge({
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Contacts feed for the @lid name-leak diagnostic. We only READ this to
+    // compare .name (address book) vs .notify (their pushName); nothing
+    // user-facing consumes it yet.
+    sock.ev.on('contacts.upsert', (c) => _ingestContacts(c));
+    sock.ev.on('contacts.update', (c) => _ingestContacts(c));
+    sock.ev.on('contacts.set', (arg) => _ingestContacts(Array.isArray(arg) ? arg : arg?.contacts));
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
@@ -2712,6 +2766,7 @@ export async function startWhatsAppBridge({
     const userId = senderJid?.split(':')[0]?.split('@')[0] ?? '?';
     const username = msg.pushName ?? null;
     const firstName = username ?? `wa:${userId}`;
+    _dumpNameDebug(msg);   // @lid name-leak diagnostic (no-op for non-@lid / over cap)
     // Accept allowed-user entries with or without leading '+', spaces,
     // dashes, parens — the WA JID always has the bare digits, but a
     // human writing config might paste '+1 (646) 821-7865'.
