@@ -60,8 +60,22 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|off [<jid>|all] | /e auto pause|resume|status | /e heartbeat on|off|interval <min> [--slug|--jid] | /e confirm [<jid>] on|off|status [self|shell|egptbot|all]',
-  desc: 'reboot conversation-e in this chat; control auto-dispatch, heartbeats, and the confirm watcher',
+  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]',
+  desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
+  subs: [
+    { name: 'new',        usage: '/e new [<persona>]',                                       desc: 'reboot conversation-e in this chat: clear the thread, install <persona> (default), announce' },
+    { name: 'persona',    usage: '/e persona [<persona>]',                                   desc: '(re)install a persona on the EXISTING thread (threadId preserved)' },
+    { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status lists chats' },
+    { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l' },
+    { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)' },
+    { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)' },
+    { name: 'heartbeat',  usage: '/e heartbeat on|off | interval <min> [--slug|--jid]',      desc: 'opt this contact in/out of per-contact heartbeats; set the cadence in minutes' },
+    { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global' },
+    { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)' },
+    { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)" },
+    { name: 'butler',     usage: '/e butler <prompt>',                                       desc: 'ephemeral haiku sub-agent — no session memory, default all-tools' },
+    { name: 'supervisor', usage: '/e supervisor [status|install|uninstall|restart]',         desc: 'manage the supervisor watchdog' },
+  ],
 };
 
 // Legacy stub kept only because other call paths may import it. The

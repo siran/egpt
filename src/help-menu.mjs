@@ -26,18 +26,34 @@ export function buildMenu(commands = [], configEntries = [], { surface = 'shell'
   const entries = [];
   let section = 'MISC';
   for (const c of commands) {
-    if (c.section) { section = c.section; continue; }
+    // A header row carries `section` and no `cmd`. A command descriptor may
+    // ALSO carry its own `section` (slash-file metas do, for grouping) — that
+    // names its section directly, it is NOT a header.
+    if (c.section && !c.cmd) { section = c.section; continue; }
     if (!c.cmd) continue;
     if (c.surface && c.surface !== 'both' && c.surface !== surface) continue;
-    entries.push({ kind: 'command', id: c.cmd, label: c.cmd, section, usage: c.usage ?? c.cmd, desc: c.desc ?? '' });
+    const sec = c.section || section;
+    // A command may declare subcommands ([{ name, usage, desc }]) — used by
+    // slash-file commands like /e whose verbs (source, auto, residents…) are
+    // otherwise invisible. Subs become drillable leaves under the parent and
+    // are searchable in their own right.
+    const subs = Array.isArray(c.subs) ? c.subs.map(s => ({
+      kind: 'command', id: `${c.cmd} ${s.name}`, label: `${c.cmd} ${s.name}`,
+      section: sec, usage: s.usage ?? `${c.cmd} ${s.name}`, desc: s.desc ?? '', parentId: c.cmd,
+    })) : [];
+    entries.push({ kind: 'command', id: c.cmd, label: c.cmd, section: sec, usage: c.usage ?? c.cmd, desc: c.desc ?? '', subs });
   }
   for (const e of configEntries) {
     if (!e?.key) continue;
-    entries.push({ kind: 'config', id: `cfg:${e.key}`, label: e.key, section: 'CONFIG', usage: `/config ${e.key} [value]`, desc: e.doc ?? '' });
+    entries.push({ kind: 'config', id: `cfg:${e.key}`, label: e.key, section: 'CONFIG', usage: `/config ${e.key} [value]`, desc: e.doc ?? '', subs: [] });
   }
   const sections = [];
   for (const e of entries) if (!sections.includes(e.section)) sections.push(e.section);
-  return { entries, sections, surface };
+  // Flat id→entry index that also reaches subs, so detail/search can resolve a
+  // subcommand id even though it isn't a top-level section member.
+  const index = new Map();
+  for (const e of entries) { index.set(e.id, e); for (const s of e.subs) index.set(s.id, s); }
+  return { entries, sections, surface, index };
 }
 
 export const initState = () => ({ stack: [{ mode: 'top' }] });
@@ -45,10 +61,16 @@ const cur = (state) => state.stack[state.stack.length - 1] ?? { mode: 'top' };
 
 function matches(model, term) {
   const n = term.toLowerCase();
-  return model.entries.filter(e =>
+  const hit = (e) =>
     e.label.toLowerCase().includes(n) ||
     e.usage.toLowerCase().includes(n) ||
-    e.desc.toLowerCase().includes(n));
+    e.desc.toLowerCase().includes(n);
+  const out = [];
+  for (const e of model.entries) {
+    if (hit(e)) out.push(e);
+    for (const s of e.subs ?? []) if (hit(s)) out.push(s);
+  }
+  return out;
 }
 
 // A view is renderer-agnostic: { kind, title, footer, lines?, detail? }.
@@ -61,8 +83,17 @@ export function view(model, state) {
     ? 'reply a number · type to search · q to quit'
     : 'number · type to search · 0 back · q quit';
   if (c.mode === 'detail') {
-    const e = model.entries.find(x => x.id === c.id);
+    const e = model.index?.get(c.id) ?? model.entries.find(x => x.id === c.id);
     return { kind: 'detail', title: e?.label ?? c.id, detail: e ?? null, footer };
+  }
+  if (c.mode === 'subs') {
+    const e = model.index?.get(c.id);
+    const subs = e?.subs ?? [];
+    return {
+      kind: 'subs', title: e?.label ?? c.id,
+      lines: subs.map((s, i) => ({ n: i + 1, label: s.label, hint: clip(firstLine(s.desc), 60), _entry: s })),
+      footer,
+    };
   }
   if (c.mode === 'search') {
     const hits = matches(model, c.term);
@@ -76,7 +107,11 @@ export function view(model, state) {
     const items = model.entries.filter(e => e.section === c.section);
     return {
       kind: 'section', title: c.section,
-      lines: items.map((e, i) => ({ n: i + 1, label: e.label, hint: clip(firstLine(e.desc), 60), _entry: e })),
+      lines: items.map((e, i) => ({
+        n: i + 1,
+        label: e.subs?.length ? `${e.label} ▸` : e.label,
+        hint: clip(firstLine(e.desc), 60), _entry: e,
+      })),
       footer,
     };
   }
@@ -103,7 +138,9 @@ export function step(model, state, input) {
     const v = view(model, state);
     const sel = v.lines?.[parseInt(t, 10) - 1];
     if (!sel) return { state, view: { ...v, note: `no option ${t}` } };
-    const next = sel._section ? { mode: 'section', section: sel._section } : { mode: 'detail', id: sel._entry.id };
+    const next = sel._section
+      ? { mode: 'section', section: sel._section }
+      : (sel._entry.subs?.length ? { mode: 'subs', id: sel._entry.id } : { mode: 'detail', id: sel._entry.id });
     const ns = { stack: [...state.stack, next] };
     return { state: ns, view: view(model, ns) };
   }

@@ -8,6 +8,11 @@ const CMDS = [
   { cmd: '/rules',  surface: 'shell',     usage: '/rules',  desc: 'write room etiquette' },
   { cmd: '/clear',  surface: 'extension', usage: '/clear',  desc: 'clear display' },
   { cmd: '/channels', surface: 'both',    usage: '/channels [N]', desc: 'list WA chats. Pinned float.' },
+  { section: 'PERSONA' },
+  { cmd: '/e', surface: 'both', usage: '/e ...', desc: 'conversation-e controls', subs: [
+    { name: 'source', usage: '/e source [<path>]', desc: 'which checkout the daemon runs' },
+    { name: 'auto',   usage: '/e auto <mode>',     desc: 'per-chat reply mode' },
+  ] },
   { section: 'MISC' },
   { cmd: '/config', surface: 'both',      usage: '/config [key [value]]', desc: 'read or write config' },
 ];
@@ -21,7 +26,7 @@ describe('buildMenu', () => {
     expect(labels).toContain('/channels');    // both
     expect(labels).not.toContain('/clear');   // extension-only → hidden
     expect(labels).toContain('theme');        // config key
-    expect(m.sections).toEqual(['ROOM', 'MISC', 'CONFIG']);
+    expect(m.sections).toEqual(['ROOM', 'PERSONA', 'MISC', 'CONFIG']);
   });
   it('extension surface hides shell-only', () => {
     const m = buildMenu(CMDS, [], { surface: 'extension' });
@@ -37,7 +42,7 @@ describe('navigation', () => {
     let st = initState();
     const top = view(m, st);
     expect(top.kind).toBe('top');
-    expect(top.lines.map(l => l.label)).toEqual(['ROOM', 'MISC', 'CONFIG']);
+    expect(top.lines.map(l => l.label)).toEqual(['ROOM', 'PERSONA', 'MISC', 'CONFIG']);
 
     let r = step(m, st, '1');              // ROOM
     expect(r.view.kind).toBe('section');
@@ -67,6 +72,27 @@ describe('navigation', () => {
     const r = step(m, initState(), '99');
     expect(r.view.note).toMatch(/no option 99/);
     expect(r.state).toEqual(initState());
+  });
+});
+
+describe('subcommands', () => {
+  const m = buildMenu(CMDS, CFG, { surface: 'shell' });
+  it('drills a command with subs into its verbs, then a leaf detail', () => {
+    let r = step(m, initState(), '2');     // PERSONA
+    expect(r.view.title).toBe('PERSONA');
+    // /e carries subs → label gets the ▸ drill marker
+    expect(r.view.lines[0].label).toBe('/e ▸');
+    r = step(m, r.state, '1');             // /e → subs view
+    expect(r.view.kind).toBe('subs');
+    expect(r.view.lines.map(l => l.label)).toEqual(['/e source', '/e auto']);
+    r = step(m, r.state, '1');             // /e source detail
+    expect(r.view.kind).toBe('detail');
+    expect(r.view.detail.label).toBe('/e source');
+    expect(r.view.detail.usage).toMatch(/\/e source/);
+  });
+  it('search reaches into subcommands', () => {
+    const v = searchView(m, 'checkout');     // only in /e source desc
+    expect(v.lines.map(l => l.label)).toContain('/e source');
   });
 });
 
