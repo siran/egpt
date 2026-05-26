@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 export const meta = {
   cmd: '/textmovie',
-  section: 'BRAIN',
+  section: 'BRAINS',
   surface: 'shell',
   usage: '/textmovie "<text>" [--ms N] [--window N] [--stride N]',
   desc:

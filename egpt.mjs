@@ -75,6 +75,24 @@ const SLASH_REGISTRY = new Map();
     }
   }
 }
+// Help-menu source of commands. COMMANDS is the CURATED menu (hand-grouped
+// sections + descriptions) and stays authoritative — most commands have been
+// migrated to slash/*.mjs for dispatch, but their menu descriptors still live
+// here. A slash-only command (one with no COMMANDS entry, e.g. /e) opts INTO
+// the menu by declaring `section` in its meta; it's appended under that
+// section (existing names merge by name, so /e joins PERSONA next to
+// /identity). Slash files without a section stay out of the menu — they're
+// operational, not user-facing. This is what makes /e and its verbs (source,
+// auto, residents…) discoverable without disturbing the curated list.
+function _mergedHelpCommands() {
+  const inCommands = new Set(COMMANDS.filter(c => c.cmd).map(c => c.cmd));
+  const extra = [...SLASH_REGISTRY.values()]
+    .map(s => s.meta)
+    .filter(m => m?.cmd && m.section && !inCommands.has(m.cmd));
+  // Each meta carries its own `section`, so buildMenu places it directly;
+  // names matching a curated COMMANDS section (e.g. PERSONA) merge into it.
+  return extra.length ? [...COMMANDS, ...extra] : COMMANDS;
+}
 // Pidfile: single-writer ownership of the WA pairing (baileys can only
 // authenticate one client at a time). Headless engine writes its PID
 // here at startup; a subsequent interactive shell reads it, SIGTERMs
@@ -2197,7 +2215,7 @@ function App() {
   const _helpMode = useRef(new Map());   // chatKey -> { state, ts }
   const _HELP_TTL_MS = 3 * 60 * 1000;
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
-    COMMANDS,
+    _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
     { surface: 'shell' },   // shell + WA/TG run host commands; hides extension-only
   ));
