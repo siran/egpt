@@ -1,138 +1,151 @@
-// slash/room.mjs — /room create / join / leave / delete / info.
+// slash/room.mjs — multi-member rooms (operator 2026-05-26, supersedes the
+// legacy shell-session-bundle /room).
 //
-// Rooms group sessions into reattachable bundles. Each room has its
-// own /use recipients (active sessions are per-room). Joining a room
-// can optionally eager-attach saved CDP sessions; see EGPT_CONFIG.room.on_join.
+// A room is a named shared space whose members are WhatsApp groups, Telegram
+// groups, or brains. Every member RECEIVES the room; per-member state gates
+// what it CONTRIBUTES (mirrors the auto-modes): muted / mention / active.
+// Members join muted.
+//
+//   /room                          list rooms + members
+//   /room create <name>            make a room
+//   /room <name>                   show a room's members + states
+//   /room <name> join <member>     add a member (enters muted)
+//   /room <name> active|mute|mention <member>   set a member's contribution
+//   /room <name> leave <member>    remove a member
+//   /room <name> members           list members
+//   /room <name> delete            delete the room
+//
+// <member> is @waN (from the last /channels) or a WA jid, tg:<chatId>, or a
+// brain (@e / @l / <name>).
 
-import * as cdp from '../src/tools/cdp.mjs';
+import { resolveChatTarget } from '../conversations-state.mjs';
+import {
+  loadRooms, saveRooms, createRoom, deleteRoom, addMember, removeMember,
+  setMemberState, getRoom, listRooms, ROOM_MEMBER_STATES,
+} from '../src/rooms.mjs';
 
 export const meta = {
   cmd: '/room',
   section: 'ROOM',
-  surface: 'shell',
-  usage: '/room [create|join|leave|delete <name>]',
-  desc: 'manage rooms (per-room session bundles); no arg = show current',
+  surface: 'both',
+  usage: '/room | create <name> | <name> [join|active|mute|mention|leave <member> | members | delete]',
+  desc: 'multi-member rooms: WA/TG groups + brains share one space. Members join muted (lurk); active = full two-way; mention = only @mentions enter. <member> = @waN | jid | tg:<id> | @e/@l/<brain>.',
+  subs: [
+    { name: 'create',  usage: '/room create <name>',                 desc: 'create a room', example: '/room create estudio' },
+    { name: 'join',    usage: '/room <name> join <member>',          desc: 'add a member (WA group/jid, tg:<id>, or @e/@l/<brain>) — enters muted', example: '/room estudio join @e' },
+    { name: 'active',  usage: '/room <name> active <member>',        desc: 'full two-way: the member contributes everything to the room', example: '/room estudio active @wa3' },
+    { name: 'mention', usage: '/room <name> mention <member>',       desc: 'only the member messages that @mention a room participant enter the room', example: '/room estudio mention @wa3' },
+    { name: 'mute',    usage: '/room <name> mute <member>',          desc: 'lurk: the member receives the room but contributes nothing', example: '/room estudio mute @wa3' },
+    { name: 'members', usage: '/room <name> members',                desc: "list a room's members + states", example: '/room estudio members' },
+    { name: 'leave',   usage: '/room <name> leave <member>',         desc: 'remove a member from the room', example: '/room estudio leave @wa3' },
+    { name: 'delete',  usage: '/room <name> delete',                 desc: 'delete the room', example: '/room estudio delete' },
+  ],
 };
 
+const KIND_ICON = { 'wa-group': '💬', 'tg-group': '📱', brain: '🧠' };
+const STATE_ICON = { muted: '🔇', mention: '@', active: '🔊' };
+
+// Resolve a member token → { kind, id, label } or { error }.
+async function resolveMember(token, ctx) {
+  const t = String(token ?? '').trim();
+  if (!t) return { error: 'no member given' };
+  // Brain: @e / @l / bare name that isn't a chat token.
+  if (/^@?(e|egpt|l|local|[a-z][a-z0-9_-]{0,23})$/i.test(t) && !t.includes('.') && !t.startsWith('tg:') && !/^@wa\d+$/i.test(t) && !t.includes('@g.us') && !t.includes('@s.whatsapp') && !t.includes('@lid')) {
+    const id = t.replace(/^@/, '').toLowerCase();
+    return { kind: 'brain', id, label: `@${id}` };
+  }
+  // Telegram group.
+  if (t.toLowerCase().startsWith('tg:')) {
+    return { kind: 'tg-group', id: t.slice(3), label: `tg:${t.slice(3)}` };
+  }
+  // WA by @waN index (last /channels listing).
+  const waN = t.match(/^@wa(\d+)$/i);
+  if (waN) {
+    const chat = ctx.waChannelsCacheRef?.current?.[parseInt(waN[1], 10) - 1];
+    if (!chat) return { error: `no chat at ${t} — run /channels first to populate indices` };
+    return { kind: 'wa-group', id: chat.jid, label: chat.name ?? chat.jid };
+  }
+  // WA by raw jid or a name search.
+  const r = await resolveChatTarget(t, { waBridge: ctx.waBridgeRef?.current ?? null, surface: 'whatsapp' });
+  if (r.error) return { error: r.error };
+  if (r.jid) return { kind: 'wa-group', id: r.jid, label: r.name ?? r.jid };
+  return { error: `could not resolve member "${t}"` };
+}
+
+function fmtMembers(room) {
+  const ms = room?.members ?? [];
+  if (!ms.length) return '  (no members)';
+  return ms.map(m => `  ${KIND_ICON[m.kind] ?? '?'} ${STATE_ICON[m.state] ?? ''} ${m.id}`).join('\n');
+}
+
 export async function run({ arg, ctx }) {
-  // ctx keys consumed:
-  //   sysOut, EGPT_CONFIG, brainForName
-  //   roomSessionsMap, setRoomSessionsMap
-  //   getCurrentRoom() / setCurrentRoom(name)
-  //   setActiveSessions               — /use list is per-room
-  //   spawnChromeWithExtension        — eager-attach Chrome bootstrap
-  const { sysOut, EGPT_CONFIG, brainForName,
-          roomSessionsMap, setRoomSessionsMap,
-          getCurrentRoom, setCurrentRoom,
-          setActiveSessions, spawnChromeWithExtension } = ctx;
+  const { sysOut } = ctx;
+  const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
+  let state = await loadRooms();
 
-  const argParts = arg.split(/\s+/).filter(Boolean);
-  const sub = argParts[0];
-  const target = argParts[1];
-  const currentRoom = getCurrentRoom();
-
-  const fmtRoom = (name) => {
-    const sess = roomSessionsMap[name];
-    if (sess === undefined) {
-      return `room "${name}" doesn't exist — /room create ${name} to make it`;
-    }
-    const here = name === currentRoom ? '  (current)' : '';
-    const memberCount = Object.keys(sess).length;
-    const list = memberCount === 0
-      ? '(no members)'
-      : Object.entries(sess).map(([n, s]) => `${s.emoji ?? ''}${n} (${s.brain})`).join(', ');
-    return `room "${name}"${here}\n  members: ${list}`;
-  };
-
-  if (!sub) {
-    const all = Object.keys(roomSessionsMap).filter(r => r !== currentRoom);
-    const others = all.length ? `\n  other rooms: ${all.join(', ')}` : '';
-    sysOut(fmtRoom(currentRoom) + others);
+  // /room — list all.
+  if (!parts.length) {
+    const rooms = listRooms(state);
+    if (!rooms.length) { sysOut('no rooms yet — /room create <name>'); return true; }
+    sysOut(rooms.map(r => `📂 ${r.name} (${r.members.length} member${r.members.length === 1 ? '' : 's'})`).join('\n'));
     return true;
   }
 
-  if (sub === 'create') {
-    if (!target) { sysOut('usage: /room create <name>'); return true; }
-    if (roomSessionsMap[target]) { sysOut(`!! room "${target}" already exists`); return true; }
-    setRoomSessionsMap(rs => ({ ...rs, [target]: {} }));
-    sysOut(`room "${target}" created — /room join ${target} to enter`);
+  // /room create <name>
+  if (parts[0] === 'create') {
+    const name = parts[1];
+    if (!name) { sysOut('usage: /room create <name>'); return true; }
+    try { state = createRoom(state, name); await saveRooms(state); }
+    catch (e) { sysOut(`!! /room create: ${e.message}`); return true; }
+    sysOut(`📂 room created — /room ${name} to view, /room ${name} join <member> to add`);
     return true;
   }
 
-  if (sub === 'join') {
-    if (!target) { sysOut('usage: /room join <name>'); return true; }
-    if (!roomSessionsMap[target]) {
-      sysOut(`!! room "${target}" doesn't exist — /room create ${target}`);
-      return true;
-    }
-    if (target === currentRoom) { sysOut(`already in "${target}"`); return true; }
-    setCurrentRoom(target);
-    setActiveSessions([]);   // /use is per-room
-    sysOut(`joined room "${target}"`);
-    // Re-attach behaviour controlled by EGPT_CONFIG.room.on_join:
-    //   'lazy' (default)  saved sessions stay as data; first @session use triggers attach
-    //   'eager'           auto-/attach every CDP session: open tab at saved url + wire targetId
-    //   'off'             keep the data loaded but don't restore sessions on join
-    const onJoin = EGPT_CONFIG.room?.on_join ?? 'lazy';
-    if (onJoin === 'eager') {
-      const targetSessions = roomSessionsMap[target] ?? {};
-      const cdpSessions = Object.entries(targetSessions)
-        .filter(([, s]) => {
-          const b = brainForName(s.brain);
-          return b?.urlMatch && s.options?.url;
-        });
-      if (cdpSessions.length) {
-        sysOut(`eager-attach: spinning up ${cdpSessions.length} CDP session(s)…`);
-        for (const [name, s] of cdpSessions) {
-          try {
-            if (!(await cdp.isRunning())) {
-              sysOut('  chrome not reachable — starting…');
-              await spawnChromeWithExtension();
-            }
-            const tid = await cdp.openTab(s.options.url);
-            // Patch this session's options with the live targetId.
-            setRoomSessionsMap(rs => {
-              const cur = rs[target] ?? {};
-              const sNow = cur[name] ?? {};
-              const opts = { ...(sNow.options ?? {}), targetId: tid };
-              return { ...rs, [target]: { ...cur, [name]: { ...sNow, options: opts } } };
-            });
-            sysOut(`  ${s.emoji ?? ''} ${name} → ${s.brain} (tab ${tid.slice(0, 8)}…)`);
-          } catch (e) {
-            sysOut(`  !! could not attach ${name}: ${e.message}`);
-          }
-        }
-      }
-    }
+  const name = parts[0];
+  const action = parts[1];
+  if (!getRoom(state, name)) { sysOut(`!! no room "${name}" — /room create ${name}`); return true; }
+
+  // /room <name> — show.
+  if (!action || action === 'members') {
+    const room = getRoom(state, name);
+    sysOut(`📂 ${name}\n${fmtMembers(room)}`);
     return true;
   }
 
-  if (sub === 'leave') {
-    if (currentRoom === 'default') { sysOut('already in default room'); return true; }
-    const left = currentRoom;
-    setCurrentRoom('default');
-    setActiveSessions([]);
-    sysOut(`left "${left}" — back in default room`);
+  if (action === 'delete') {
+    try { state = deleteRoom(state, name); await saveRooms(state); }
+    catch (e) { sysOut(`!! /room delete: ${e.message}`); return true; }
+    sysOut(`📂 room "${name}" deleted`);
     return true;
   }
 
-  if (sub === 'delete') {
-    if (!target) { sysOut('usage: /room delete <name>'); return true; }
-    if (target === 'default') { sysOut('!! cannot delete default room'); return true; }
-    if (!roomSessionsMap[target]) { sysOut(`!! room "${target}" doesn't exist`); return true; }
-    // Bug fix during migration: was 'setActiveSession(null)' (singular,
-    // not defined) — now plural to match the actual React setter.
-    if (currentRoom === target) { setCurrentRoom('default'); setActiveSessions([]); }
-    setRoomSessionsMap(rs => {
-      const next = { ...rs };
-      delete next[target];
-      return next;
-    });
-    sysOut(`room "${target}" deleted`);
+  if (action === 'join') {
+    const m = await resolveMember(parts[2], ctx);
+    if (m.error) { sysOut(`!! /room ${name} join: ${m.error}`); return true; }
+    try { state = addMember(state, name, { kind: m.kind, id: m.id }); await saveRooms(state); }
+    catch (e) { sysOut(`!! /room ${name} join: ${e.message}`); return true; }
+    sysOut(`📂 ${name} ← ${KIND_ICON[m.kind]} ${m.label} (${m.id}) — joined 🔇 muted. /room ${name} active <member> to open two-way.`);
     return true;
   }
 
-  // /room <name>: show info on that room.
-  sysOut(fmtRoom(sub));
+  if (ROOM_MEMBER_STATES.includes(action)) {
+    const m = await resolveMember(parts[2], ctx);
+    if (m.error) { sysOut(`!! /room ${name} ${action}: ${m.error}`); return true; }
+    try { state = setMemberState(state, name, m.id, action); await saveRooms(state); }
+    catch (e) { sysOut(`!! /room ${name} ${action}: ${e.message}`); return true; }
+    sysOut(`📂 ${name}: ${KIND_ICON[m.kind]} ${m.label} → ${STATE_ICON[action]} ${action}`);
+    return true;
+  }
+
+  if (action === 'leave') {
+    const m = await resolveMember(parts[2], ctx);
+    if (m.error) { sysOut(`!! /room ${name} leave: ${m.error}`); return true; }
+    try { state = removeMember(state, name, m.id); await saveRooms(state); }
+    catch (e) { sysOut(`!! /room ${name} leave: ${e.message}`); return true; }
+    sysOut(`📂 ${name}: removed ${m.label}`);
+    return true;
+  }
+
+  sysOut(`!! /room: unknown action "${action}". ${meta.usage}`);
   return true;
 }
