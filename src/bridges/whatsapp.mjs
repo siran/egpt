@@ -53,13 +53,14 @@ import {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, extname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
+import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -3545,6 +3546,36 @@ export async function startWhatsAppBridge({
         }
       }
       return firstResult;
+    },
+    // Outbound media — send a file as its native WA attachment. Pass a `path`
+    // (read here) or a ready `buffer`. `kind` ('image'|'video'|'audio'|
+    // 'document') is inferred from mimetype/extension when omitted. `caption`
+    // rides on image/video/document; `ptt:true` makes audio a voice note.
+    // Used by /inject-to-group and any future E-sends-media path.
+    async sendMedia({ chatId, path, buffer, kind, caption, fileName, mimetype, ptt } = {}) {
+      const target = chatId ?? lastChat;
+      if (!target || !sock) return null;
+      let buf = buffer;
+      if (!buf && path) {
+        try { buf = await fs.readFile(path); }
+        catch (e) { err(`sendMedia: read ${path}: ${e.message}`); return null; }
+      }
+      if (!buf) { log('sendMedia: nothing to send (no path/buffer)'); return null; }
+      const ext = (extname(fileName ?? path ?? '') || '').replace(/^\./, '').toLowerCase();
+      const mt = mimetype ?? _MIME_BY_EXT[ext] ?? null;
+      const k = kind ?? _mediaKind(mt, ext);
+      const name = fileName ?? (path ? basename(path) : 'file');
+      let payload;
+      if (k === 'image')      payload = { image: buf, ...(mt ? { mimetype: mt } : {}), ...(caption ? { caption } : {}) };
+      else if (k === 'video') payload = { video: buf, ...(mt ? { mimetype: mt } : {}), ...(caption ? { caption } : {}) };
+      else if (k === 'audio') payload = { audio: buf, mimetype: mt ?? 'audio/ogg; codecs=opus', ptt: !!ptt };
+      else                    payload = { document: buf, mimetype: mt ?? 'application/octet-stream', fileName: name, ...(caption ? { caption } : {}) };
+      try {
+        const r = await _timeBound(_safeSend(target, payload), 'sendMedia');
+        rememberSent(r?.key?.id);
+        log(`sendMedia: ${k} (${(buf.length / 1024).toFixed(0)}KB) → ${target}`);
+        return r;
+      } catch (e) { err(`sendMedia: ${e.message}`); return null; }
     },
     // Reply to a specific message with a WA-native quote. `key` is the
     // baileys WAMessageKey of the message being replied to; `raw` is
