@@ -11,6 +11,7 @@ import {
 import { basename, dirname, extname, join } from 'node:path';
 
 import { parseInput } from './src/interpreter.mjs';
+import { splitEmittedReply } from './src/emitted-commands.mjs';
 import { resolveRoute } from './src/room.mjs';
 import {
   emptyState,
@@ -374,6 +375,11 @@ export async function dispatchPersonaTurn({
   personaEmoji = '🐶',
   personaName = decision?.name ?? 'egpt',
   runDefaultBrainTurn,
+  // Optional: execute an own-line slash command emitted in the brain's reply.
+  // (line, meta) -> { isCommand, handled }. isCommand=false means "not a real
+  // command, fold back into prose"; true means strip it (ran or blocked). The
+  // allowlist + safety policy live in the caller's runner, not here.
+  runEmittedCommand = null,
   stateDir,
 }) {
   let personaPrompt;
@@ -431,6 +437,32 @@ export async function dispatchPersonaTurn({
     return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
 
+  // Emitted commands: pull own-line slash commands out of the reply and run
+  // the allowed ones (the caller's runner enforces the allowlist). What's left
+  // is the prose actually delivered. A line the runner says ISN'T a command
+  // (unknown/inline) is folded back into prose. Only reached past the gates,
+  // so a chat that can't get a reply also can't trigger a command.
+  let deliverReply = reply;
+  const emitted = [];
+  if (typeof runEmittedCommand === 'function') {
+    const proseLines = [];
+    for (const seg of splitEmittedReply(reply)) {
+      if (seg.isCommand) {
+        const res = await runEmittedCommand(seg.text, meta).catch(e => {
+          errOut?.(`runEmittedCommand("${seg.text}"): ${e?.message ?? e}`);
+          return { isCommand: false };
+        });
+        if (res?.isCommand) { emitted.push({ line: seg.text, handled: !!res.handled }); continue; }
+      }
+      proseLines.push(seg.raw);
+    }
+    deliverReply = proseLines.join('\n').trim();
+    // Command-only turn: the action(s) ran, there's no prose to send.
+    if (emitted.length && !deliverReply) {
+      return { kind: 'commands', reply: '', threadCtx, personaPrompt, emitted };
+    }
+  }
+
   const delivery = await deliverBridgeReply({
     bridge,
     clock,
@@ -441,10 +473,10 @@ export async function dispatchPersonaTurn({
     meta,
     personaEmoji,
     personaName,
-    reply,
+    reply: deliverReply,
     stateDir,
   });
-  return { kind: 'reply', reply, threadCtx, delivery, personaPrompt };
+  return { kind: 'reply', reply: deliverReply, threadCtx, delivery, personaPrompt, emitted };
 }
 
 export function createDispatchRuntime({

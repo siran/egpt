@@ -6794,6 +6794,29 @@ function App() {
         const bridgeForReply = meta.fromWhatsApp ? waBridgeRef.current
           : meta.fromTelegram ? bridgeRef.current
           : null;
+        // Let the resident DRIVE commands: an own-line slash command in its
+        // reply runs through the same handleSlash pipeline the operator uses,
+        // in this chat's context. Gated by an allowlist (whatsapp.e_commands,
+        // default ['react']); known-but-disallowed commands are stripped +
+        // logged (never leak a raw "/restart" to the chat); unknown slashy
+        // lines fold back into prose. Only reached past the reply gate.
+        const runEmittedCommand = async (line, m) => {
+          const cmdTok = line.trim().split(/\s+/)[0] ?? '';
+          const name = cmdTok.replace(/^\//, '').toLowerCase();
+          if (!name) return { isCommand: false };
+          const known = SLASH_REGISTRY.has(cmdTok);
+          const allow = Array.isArray(EGPT_CONFIG.whatsapp?.e_commands)
+            ? EGPT_CONFIG.whatsapp.e_commands.map(s => String(s).replace(/^\//, '').toLowerCase())
+            : ['react'];
+          if (!allow.includes(name)) {
+            if (known) logOut(`@e command BLOCKED: ${cmdTok} (not in whatsapp.e_commands allowlist)`);
+            return { isCommand: known };
+          }
+          const eMeta = { fromWhatsApp: true, waChatId: m.waChatId, waMsgKey: m.waMsgKey, _emittedByE: true };
+          logOut(`@e → ${line}`);
+          const handled = await handleSlash(line, eMeta);
+          return { isCommand: true, handled: !!handled };
+        };
         const turn = await dispatchPersonaTurn({
           bridge: bridgeForReply,
           buildWaSurfaceTag,
@@ -6809,6 +6832,7 @@ function App() {
           personaEmoji,
           personaName,
           runDefaultBrainTurn,
+          runEmittedCommand,
           stateDir: EGPT_HOME,
         });
         // Watcher: "->E" (human prompt) or "S->E" (resident S's reply
@@ -6828,9 +6852,10 @@ function App() {
         }
         _recirculateResidentReply({ being: meta.forceTarget ?? personaName, reply: turn.reply, meta });
         // 'silence' = @e chose '…'; 'suppressed' = mode gate withheld the reply
-        // (E read it for context but this chat/mode doesn't permit replying now).
-        // Either way: nothing renders or sends to the chat.
-        if (turn.kind === 'silence' || turn.kind === 'suppressed') return;
+        // (E read it for context but this chat/mode doesn't permit replying now);
+        // 'commands' = the reply was only an emitted command (it already ran,
+        // there's no prose to send). Any of these: nothing renders or sends.
+        if (turn.kind === 'silence' || turn.kind === 'suppressed' || turn.kind === 'commands') return;
         const reply = turn.reply;
 
         if (meta.observeOnly) {

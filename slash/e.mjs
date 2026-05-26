@@ -60,7 +60,7 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]',
+  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<persona>]',                                       desc: 'reboot conversation-e in this chat: clear the thread, install <persona> (default), announce', example: '/e new default' },
@@ -73,6 +73,7 @@ export const meta = {
     { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global', example: '/e transcribe on' },
     { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
     { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)", example: '/e tool deny all' },
+    { name: 'cmd',        usage: '/e cmd allow|deny <command> | status',                     desc: 'which slash commands conversation-e may EXECUTE from its own reply (allowlist; default /react). Known-but-unlisted commands are stripped, never run', example: '/e cmd allow react' },
     { name: 'butler',     usage: '/e butler <prompt>',                                       desc: 'ephemeral haiku sub-agent — no session memory, default all-tools', example: '/e butler summarize my unread chats' },
     { name: 'supervisor', usage: '/e supervisor [status|install|uninstall|restart]',         desc: 'manage the supervisor watchdog', example: '/e supervisor status' },
   ],
@@ -645,6 +646,41 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       await writeConfig(saved);
     } catch (e) { sysOut(`!! /e tool: persist failed: ${e.message}`); return true; }
     sysOut(`/e tool ${mode}: ${target.toLowerCase() === 'all' ? `default → ${mode}` : target}`);
+    return true;
+  }
+
+  // /e cmd allow|deny|status [<command>] — which SLASH COMMANDS conversation-e
+  // may execute when it emits one on its own line in a reply (whatsapp.e_commands
+  // allowlist). SAFETY: E's output is model-generated and it reads messages from
+  // chat partners, so a crafted message could try to coax a command out of it.
+  // The allowlist is the gate — default ['react'] only; known-but-unlisted
+  // commands are stripped + logged, never run, never leaked to the chat.
+  if (sub === 'cmd') {
+    const action = (tokens[1] ?? '').toLowerCase();
+    const name = (tokens[2] ?? '').replace(/^\//, '').toLowerCase();
+    const cur = Array.isArray(EGPT_CONFIG.whatsapp?.e_commands)
+      ? EGPT_CONFIG.whatsapp.e_commands.map(s => String(s).replace(/^\//, '').toLowerCase())
+      : ['react'];
+    if (!action || action === 'status' || action === 'list') {
+      sysOut(`/e cmd allowlist (whatsapp.e_commands): ${cur.length ? cur.map(c => '/' + c).join(' ') : '(none)'}`);
+      return true;
+    }
+    if ((action !== 'allow' && action !== 'deny') || !name) {
+      sysOut('usage: /e cmd allow|deny <command> | status   (e.g. `/e cmd allow react`)');
+      return true;
+    }
+    const next = action === 'allow'
+      ? Array.from(new Set([...cur, name]))
+      : cur.filter(c => c !== name);
+    try {
+      const saved = await readConfig();
+      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
+      saved.whatsapp.e_commands = next;
+      await writeConfig(saved);
+      if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
+      EGPT_CONFIG.whatsapp.e_commands = next;
+    } catch (e) { sysOut(`!! /e cmd: persist failed: ${e.message}`); return true; }
+    sysOut(`/e cmd ${action}: /${name} → allowlist now ${next.length ? next.map(c => '/' + c).join(' ') : '(none)'}`);
     return true;
   }
 
