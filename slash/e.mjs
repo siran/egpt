@@ -36,7 +36,7 @@
 //                                    'all' = self+shell+egptbot. bare 'off'
 //                                    (or 'off all') stops watching.
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, isAbsolute, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -54,6 +54,8 @@ import {
   buildIdentityAnnouncement,
   buildPersonaAnnouncement,
   resolvePersonalityFile,
+  slugDir,
+  slugTranscriptPath,
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
@@ -119,6 +121,26 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
   if (!slug) {
     sysOut(`!! /e ${mode}: no contact registered for jid "${targetJid}" under surface "${surface}". Send a message in that chat first so @e registers it.`);
     return true;
+  }
+
+  // On 'new' (fresh thread): archive the current transcript so each transcript
+  // is 1:1 with a conversation thread (operator 2026-05-26). Move
+  // <slug>/transcript.md → <slug>/transcripts/<oldThreadId|timestamp>.md; a
+  // fresh transcript.md starts for the new thread. The old threadId (the
+  // claude session uuid) names the archive so it maps back to its thread.
+  if (mode === 'new') {
+    try {
+      const oldThreadId = cs.contacts?.[surface]?.[targetJid]?.threadId ?? null;
+      const tpath = slugTranscriptPath(surface, slug);
+      if (existsSync(tpath)) {
+        const arcDir = join(slugDir(surface, slug), 'transcripts');
+        await mkdir(arcDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const archiveName = `${stamp}${oldThreadId ? '_' + String(oldThreadId).slice(0, 8) : ''}.md`;
+        await rename(tpath, join(arcDir, archiveName));
+        sysOut(`/e new: archived transcript → transcripts/${archiveName}`);
+      }
+    } catch (e) { sysOut(`!! /e new: transcript archive failed — ${e.message}`); }
   }
 
   // Patch personality; clear thread only on 'new'. Full installs re-stamp
