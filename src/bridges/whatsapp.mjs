@@ -2205,71 +2205,81 @@ export async function startWhatsAppBridge({
           const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
           const speaker = pushedName ?? (fromMe ? 'You' : 'someone');
 
-          // (1) Post acknowledgment immediately (quoted to the voice).
+          // (1)+(2) Ack + transcribe, serialized per chat. The 👂 ack and its
+          // progress bar are posted INSIDE the whisper slot, so a chat's voice
+          // notes ack + decode strictly one at a time, in arrival order. Posting
+          // the ack up-front instead made a burst look parallel (N bars
+          // animating at once) and crosstalked: every waiting bar reads the
+          // single shared _whisperProgress, so it mirrored whichever note was
+          // actually decoding. Now a queued note stays silent until its turn,
+          // then shows its own bar tracking its own decode. (one whisper slot)
           let ackKey = null;
           let animTimer = null;
-          if (isAudioForAck) {
-            // Animation style. 'bar' (default): a DETERMINATE transcription bar
-            // driven by whisper-server's stderr `progress = N%` callback — the
-            // ACTUAL decode percent, no simulation. It sits at 0% until whisper
-            // emits its first reading (ffmpeg-convert + encode warm-up, ~1-2s),
-            // then fills to the real %. 'emoji': legacy ⏳🔊🎧🦻 cycle. Drops to
-            // the transcript on done either way.
-            const _animStyle = media.audio_transcribe?.animation ?? 'bar';
-            _whisperProgress = -1;   // reset; this note's decode hasn't reported yet
-            const W = 12;
-            const _barFill = (pct) => {
-              const f = Math.max(0, Math.min(W, Math.round(pct / 100 * W)));
-              return '▰'.repeat(f) + '▱'.repeat(W - f);
-            };
-            const _emoji = ['⏳', '🔊', '🎧', '🦻'];
-            const _frame = (i) => {
-              if (_animStyle === 'emoji') return `👂 ${speaker}'s ${dur}s @ ${hhmm} ${_emoji[i % _emoji.length]}`;
-              const pct = _whisperProgress >= 0 ? Math.min(100, _whisperProgress) : 0;
-              return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
-            };
+          transcript = await _serializeTranscription(chatJid, async () => {
+            if (isAudioForAck) {
+              // Animation style. 'bar' (default): a DETERMINATE transcription bar
+              // driven by whisper-server's stderr `progress = N%` callback — the
+              // ACTUAL decode percent, no simulation. It sits at 0% until whisper
+              // emits its first reading (ffmpeg-convert + encode warm-up, ~1-2s),
+              // then fills to the real %. 'emoji': legacy ⏳🔊🎧🦻 cycle. Drops to
+              // the transcript on done either way.
+              const _animStyle = media.audio_transcribe?.animation ?? 'bar';
+              _whisperProgress = -1;   // reset; this note's decode hasn't reported yet
+              const W = 12;
+              const _barFill = (pct) => {
+                const f = Math.max(0, Math.min(W, Math.round(pct / 100 * W)));
+                return '▰'.repeat(f) + '▱'.repeat(W - f);
+              };
+              const _emoji = ['⏳', '🔊', '🎧', '🦻'];
+              const _frame = (i) => {
+                if (_animStyle === 'emoji') return `👂 ${speaker}'s ${dur}s @ ${hhmm} ${_emoji[i % _emoji.length]}`;
+                const pct = _whisperProgress >= 0 ? Math.min(100, _whisperProgress) : 0;
+                return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
+              };
 
-            let _lastBody = _frame(0);
+              let _lastBody = _frame(0);
+              try {
+                const r = await _safeSend(
+                  chatJid,
+                  { text: _lastBody },
+                  { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+                );
+                ackKey = r?.key ?? null;
+                if (ackKey) rememberSent(ackKey.id);
+              } catch (e) {
+                log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
+              }
+
+              // Refresh while transcription runs. The bar re-edits ONLY when the
+              // real % actually changes (dedup) — no wasted edits, no fake
+              // motion. The emoji style cycles each tick. Soft-fail on WA throttle.
+              if (ackKey) {
+                let frameIdx = 0;
+                const _animMs = Number(media.audio_transcribe?.animation_ms)
+                  || (_animStyle === 'emoji' ? 4800 : 1000);
+                animTimer = setInterval(async () => {
+                  frameIdx++;
+                  const body = _frame(frameIdx);
+                  if (body === _lastBody) return;   // bar: % hasn't moved → skip
+                  _lastBody = body;
+                  try {
+                    await _safeSend(chatJid, { edit: ackKey, text: body });
+                  } catch (e) {
+                    // Soft-fail; rate-limit / blip shouldn't cascade.
+                  }
+                }, _animMs);
+              }
+            }
+
+            // Transcribe (single batch). Same _transcribeAudio for video —
+            // ffmpeg pulls the audio track. Silent → null. Stop the animation
+            // as soon as the decode settles, before the chain's next link.
             try {
-              const r = await _safeSend(
-                chatJid,
-                { text: _lastBody },
-                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-              );
-              ackKey = r?.key ?? null;
-              if (ackKey) rememberSent(ackKey.id);
-            } catch (e) {
-              log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
+              return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
+            } finally {
+              if (animTimer) { clearInterval(animTimer); animTimer = null; }
             }
-
-            // Refresh while transcription runs. The bar re-edits ONLY when the
-            // real % actually changes (dedup) — no wasted edits, no fake
-            // motion. The emoji style cycles each tick. Soft-fail on WA throttle.
-            if (ackKey) {
-              let frameIdx = 0;
-              const _animMs = Number(media.audio_transcribe?.animation_ms)
-                || (_animStyle === 'emoji' ? 4800 : 1000);
-              animTimer = setInterval(async () => {
-                frameIdx++;
-                const body = _frame(frameIdx);
-                if (body === _lastBody) return;   // bar: % hasn't moved → skip
-                _lastBody = body;
-                try {
-                  await _safeSend(chatJid, { edit: ackKey, text: body });
-                } catch (e) {
-                  // Soft-fail; rate-limit / blip shouldn't cascade.
-                }
-              }, _animMs);
-            }
-          }
-
-          // (2) Transcribe (single batch). Same _transcribeAudio for
-          // video — ffmpeg pulls the audio track. Silent → null.
-          // Serialized per chat so a chat's voice notes don't transcribe in
-          // parallel (one whisper slot; preserves arrival order). The ack
-          // animation keeps cycling while this one waits its turn.
-          transcript = await _serializeTranscription(chatJid, () => _transcribeAudio({ inputPath: path, outputDir: dir, base }))
-            .catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+          }).catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
