@@ -122,9 +122,16 @@ export async function run({ arg, ctx }) {
   if (action === 'join') {
     const m = await resolveMember(parts[2], ctx);
     if (m.error) { sysOut(`!! /room ${name} join: ${m.error}`); return true; }
-    try { state = addMember(state, name, { kind: m.kind, id: m.id }); await saveRooms(state); }
+    // Groups join 'muted' (lurk — reception always on, contribute nothing).
+    // Brains/operators join 'mention' = BLIND: they do NOT see general chatter
+    // (cost), only messages that @mention them; their replies always mirror in.
+    const joinState = m.kind === 'brain' ? 'mention' : 'muted';
+    try { state = addMember(state, name, { kind: m.kind, id: m.id, state: joinState }); await saveRooms(state); }
     catch (e) { sysOut(`!! /room ${name} join: ${e.message}`); return true; }
-    sysOut(`📂 ${name} ← ${KIND_ICON[m.kind]} ${m.label} (${m.id}) — joined 🔇 muted. /room ${name} active <member> to open two-way.`);
+    const how = m.kind === 'brain'
+      ? '@ blind (sees only @mentions; replies always mirror to the room). /room ' + name + ' active <member> to let it see all.'
+      : '🔇 muted (lurk). /room ' + name + ' active <member> to open two-way.';
+    sysOut(`📂 ${name} ← ${KIND_ICON[m.kind]} ${m.label} (${m.id}) — joined ${how}`);
     return true;
   }
 
