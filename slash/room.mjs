@@ -83,6 +83,17 @@ export async function run({ arg, ctx, meta = {} }) {
   const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
   let state = await loadRooms();
 
+  // Resolve a member token, or — when omitted and invoked from inside a WA
+  // chat — default to THAT chat. Lets join/active/mute/mention/leave be run
+  // from within the group itself (no @waN needed).
+  const resolveMemberArg = async (tok) => {
+    if (!tok && meta?.waChatId) {
+      const id = meta.waChatId;
+      return { kind: 'wa-group', id, label: ctx.waBridgeRef?.current?.getChatName?.(id) ?? id };
+    }
+    return resolveMember(tok, ctx);
+  };
+
   // /room — list all.
   if (!parts.length) {
     const rooms = listRooms(state);
@@ -120,14 +131,7 @@ export async function run({ arg, ctx, meta = {} }) {
   }
 
   if (action === 'join') {
-    // No member token + invoked from inside a WA chat → join THIS chat.
-    let m;
-    if (!parts[2] && meta?.waChatId) {
-      const id = meta.waChatId;
-      m = { kind: 'wa-group', id, label: ctx.waBridgeRef?.current?.getChatName?.(id) ?? id };
-    } else {
-      m = await resolveMember(parts[2], ctx);
-    }
+    const m = await resolveMemberArg(parts[2]);
     if (m.error) { sysOut(`!! /room ${name} join: ${m.error}  (or just \`/room ${name} join\` from inside a WA chat to add it)`); return true; }
     // Groups join 'muted' (lurk — reception always on, contribute nothing).
     // Brains/operators join 'mention' = BLIND: they do NOT see general chatter
@@ -143,7 +147,7 @@ export async function run({ arg, ctx, meta = {} }) {
   }
 
   if (ROOM_MEMBER_STATES.includes(action)) {
-    const m = await resolveMember(parts[2], ctx);
+    const m = await resolveMemberArg(parts[2]);
     if (m.error) { sysOut(`!! /room ${name} ${action}: ${m.error}`); return true; }
     try { state = setMemberState(state, name, m.id, action); await saveRooms(state); }
     catch (e) { sysOut(`!! /room ${name} ${action}: ${e.message}`); return true; }
@@ -152,7 +156,7 @@ export async function run({ arg, ctx, meta = {} }) {
   }
 
   if (action === 'leave') {
-    const m = await resolveMember(parts[2], ctx);
+    const m = await resolveMemberArg(parts[2]);
     if (m.error) { sysOut(`!! /room ${name} leave: ${m.error}`); return true; }
     try { state = removeMember(state, name, m.id); await saveRooms(state); }
     catch (e) { sysOut(`!! /room ${name} leave: ${e.message}`); return true; }
