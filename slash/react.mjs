@@ -97,7 +97,7 @@ export const meta = {
     'remove a prior reaction.',
 };
 
-export async function run({ arg, ctx }) {
+export async function run({ arg, ctx, meta = {} }) {
   // ctx keys consumed:
   //   sysOut(text)
   //   waBridgeRef           — React ref to the WA bridge (exposes react())
@@ -112,6 +112,26 @@ export async function run({ arg, ctx }) {
 
   const parts = arg.trim().split(/\s+/).filter(Boolean);
   const targetTok = parts[0];
+
+  // Contextual form (resident-emitted, operator 2026-05-26): `/react <emoji>`
+  // with no @target reacts to the message that TRIGGERED this turn — the key
+  // rides in meta.waMsgKey / meta.waChatId. Lets conversation-e react to what
+  // it's replying to without knowing @waN indices or msg-ids. The whole arg is
+  // the emoji here (there's no target token to strip).
+  const looksLikeTarget = /^@(?:wa|tg)[-_0-9]/i.test(targetTok ?? '');
+  if (!looksLikeTarget && meta?.waMsgKey?.id && meta?.waChatId) {
+    const e = ALIASES[arg.trim().toLowerCase()] ?? arg.trim();
+    const key = {
+      id: meta.waMsgKey.id,
+      fromMe: !!meta.waMsgKey.fromMe,
+      remoteJid: meta.waMsgKey.remoteJid ?? meta.waChatId,
+      ...(meta.waMsgKey.participant ? { participant: meta.waMsgKey.participant } : {}),
+    };
+    const r = await wa.react({ chatId: meta.waChatId, key, emoji: e });
+    if (r?.key) sysOut(`${e ? `reacted ${e} to` : 'cleared reaction on'} the current message`);
+    else sysOut('!! /react: bridge returned no key — message may not have reached WA');
+    return true;
+  }
   // Treat everything after the target as the emoji argument, so
   // multi-codepoint emojis split by an intermediate VS-16 / ZWJ on
   // some clipboards still land intact. Empty string removes.
