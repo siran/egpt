@@ -840,38 +840,107 @@ const POINTERS_OPERATOR_PATH = join(homedir(), '.egpt', 'e-pointers.md');
 // Read identity/rules/pointers content. Returns { identity, rules, pointers }
 // with empty strings (not null) for any missing file — easier downstream.
 export async function readIdentityBundle(personalityName, opts = {}) {
-  const identity = (await readPersonality(personalityName, opts)) ?? '';
+  // The PERSONALITY (config/personalities/<name>.md) — historically returned as
+  // `identity`, kept under that key for back-compat. The egpt-wide MANIFEST
+  // (e_identity.md) is passed in by the caller via opts.manifest, since this
+  // module doesn't know APP_DIR / config; '' when omitted.
+  const personality = (await readPersonality(personalityName, opts)) ?? '';
   let rules = '';
   let pointers = '';
   try { rules    = await readFile(opts.rulesPath    ?? RULES_OPERATOR_PATH,    'utf8'); }
   catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle rules.md: ${e?.message ?? e}`); }
   try { pointers = await readFile(opts.pointersPath ?? POINTERS_OPERATOR_PATH, 'utf8'); }
   catch (e) { if (e?.code !== 'ENOENT') console.error(`!! readIdentityBundle pointers.md: ${e?.message ?? e}`); }
-  return { identity, rules, pointers };
+  return { manifest: String(opts.manifest ?? ''), identity: personality, personality, rules, pointers };
 }
 
-// Copy identity/rules/pointers into <slug-dir>/. Conversation-e sees these
-// at ./identity.md, ./rules.md, ./pointers.md. Returns the bundle for
-// callers that want to compose the announcement frame without re-reading.
-export async function installPersonaIntoSlugDir(surface, slug, personalityName, opts = {}) {
+// <slug>/identity.d/ — the ordered set of files fed to conversation-e. Files
+// sort lexically; numeric prefixes give order + insertion gaps so the operator
+// (or E) can drop extras (e.g. 30-project.md) and they're fed too — no schema.
+export function identityDir(surface, slug) {
+  return join(slugDir(surface, slug), 'identity.d');
+}
+
+// Populate identity.d/ from sources. `manifest` is the egpt-wide e_identity
+// content (caller resolves brains.identity). Also keeps the flat ./identity.md
+// (= personality, back-compat) + ./rules.md + ./pointers.md the sandbox may cat.
+export async function populateIdentityDir(surface, slug, personalityName, opts = {}) {
   const bundle = await readIdentityBundle(personalityName, opts);
   const dir = slugDir(surface, slug);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'identity.md'), bundle.identity, 'utf8');
-  await writeFile(join(dir, 'rules.md'),    bundle.rules,    'utf8');
-  await writeFile(join(dir, 'pointers.md'), bundle.pointers, 'utf8');
+  const idd = identityDir(surface, slug);
+  await mkdir(idd, { recursive: true });
+  await writeFile(join(idd, '00-manifest.md'),    bundle.manifest,    'utf8');
+  await writeFile(join(idd, '20-personality.md'), bundle.personality, 'utf8');
+  await writeFile(join(idd, '40-rules.md'),       bundle.rules,       'utf8');
+  await writeFile(join(idd, '60-pointers.md'),    bundle.pointers,    'utf8');
+  // Flat copies for back-compat (e_identity references ./rules.md etc.).
+  await writeFile(join(dir, 'identity.md'), bundle.personality, 'utf8');
+  await writeFile(join(dir, 'rules.md'),    bundle.rules,       'utf8');
+  await writeFile(join(dir, 'pointers.md'), bundle.pointers,    'utf8');
   return bundle;
 }
 
-// Build the system-e "Reboot complete" announcement text.
-// Same frame for /e new and /e persona — the frame is what re-grounds the
-// model. Backend may or may not have actually cleared the thread.
-export function buildRebootAnnouncement(personalityName, bundle) {
-  const { identity, rules, pointers } = bundle;
+// Back-compat alias: same as populateIdentityDir, returns the bundle.
+export async function installPersonaIntoSlugDir(surface, slug, personalityName, opts = {}) {
+  return populateIdentityDir(surface, slug, personalityName, opts);
+}
+
+// Rewrite ONLY the personality slice of identity.d/ (for /e persona — swap
+// flavor without re-sending the manifest). Returns the new personality content.
+export async function writeIdentityPersonality(surface, slug, personalityName, opts = {}) {
+  const idd = identityDir(surface, slug);
+  await mkdir(idd, { recursive: true });
+  const personality = (await readPersonality(personalityName, opts)) ?? '';
+  await writeFile(join(idd, '20-personality.md'), personality, 'utf8');
+  await writeFile(join(slugDir(surface, slug), 'identity.md'), personality, 'utf8');
+  return personality;
+}
+
+// Read + concat identity.d/*.md in lexical (= numeric-prefix) order, skipping
+// empty files. This is the full bundle fed to E on /e new and /e identity.
+export async function readIdentityDir(surface, slug) {
+  const idd = identityDir(surface, slug);
+  let names = [];
+  try { const { readdir } = await import('node:fs/promises'); names = await readdir(idd); }
+  catch { return ''; }
+  const parts = [];
+  for (const n of names.filter(x => x.endsWith('.md')).sort()) {
+    try { const t = (await readFile(join(idd, n), 'utf8')).trim(); if (t) parts.push(t); }
+    catch (e) { console.error(`!! readIdentityDir ${n}: ${e?.message ?? e}`); }
+  }
+  return parts.join('\n\n');
+}
+
+// Full-install announcement: the whole identity.d bundle (manifest +
+// personality + rules + pointers + any extras), re-grounding the model.
+export function buildIdentityAnnouncement(personalityName, feed) {
   return [
     'Reboot complete. All systems operational.',
     `Installing persona: ${personalityName}`,
     '',
+    String(feed ?? '').trim(),
+  ].join('\n');
+}
+
+// Personality-only announcement (for /e persona — no manifest re-send).
+export function buildPersonaAnnouncement(personalityName, personality) {
+  return [
+    `Persona updated: ${personalityName}`,
+    '',
+    String(personality ?? '').trim(),
+  ].join('\n');
+}
+
+// Legacy frame kept for slash/egpt.mjs (the cross-chat @egpt variant) until it
+// migrates to identity.d. Embeds the manifest first when present.
+export function buildRebootAnnouncement(personalityName, bundle) {
+  const { manifest = '', identity = '', rules = '', pointers = '' } = bundle;
+  return [
+    'Reboot complete. All systems operational.',
+    `Installing persona: ${personalityName}`,
+    '',
+    manifest.trim(),
+    manifest.trim() ? '' : null,
     identity.trim(),
     '',
     'Please, remember to:',
@@ -880,7 +949,7 @@ export function buildRebootAnnouncement(personalityName, bundle) {
     '',
     '- read your ./pointers.md file when you think you lack an ability or tool:',
     pointers.trim(),
-  ].join('\n');
+  ].filter(x => x != null).join('\n');
 }
 
 // ── Heartbeat file resolution ──────────────────────────────────────────────

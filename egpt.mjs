@@ -5095,6 +5095,7 @@ function App() {
       }),
       readPersonality: (personality) => conversationsState.readPersonality(personality),
       readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),
+      loadManifest: () => _loadIdentity(),
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
       sysLog: (msg) => console.error(msg),

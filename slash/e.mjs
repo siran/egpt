@@ -48,8 +48,11 @@ import {
   resolveChatTarget,
   normalizeResidents,
   patchContact,
-  installPersonaIntoSlugDir,
-  buildRebootAnnouncement,
+  populateIdentityDir,
+  writeIdentityPersonality,
+  readIdentityDir,
+  buildIdentityAnnouncement,
+  buildPersonaAnnouncement,
   resolvePersonalityFile,
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
@@ -60,11 +63,12 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
+  usage: '/e new [<persona>] | /e identity [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
-    { name: 'new',        usage: '/e new [<persona>]',                                       desc: 'reboot conversation-e in this chat: clear the thread, install <persona> (default), announce', example: '/e new default' },
-    { name: 'persona',    usage: '/e persona [<persona>]',                                   desc: '(re)install a persona on the EXISTING thread (threadId preserved)', example: '/e persona default' },
+    { name: 'new',        usage: '/e new [<persona>]',                                       desc: 'reset the thread + rebuild & feed the WHOLE identity.d bundle (manifest + personality + rules + pointers)', example: '/e new default' },
+    { name: 'identity',   usage: '/e identity [<persona>]',                                  desc: 'rebuild & feed the whole identity.d bundle but KEEP the thread — refresh after editing e_identity.md or dropping a file in identity.d/', example: '/e identity' },
+    { name: 'persona',    usage: '/e persona [<persona>]',                                   desc: 'swap ONLY the personality (rewrite 20-personality.md, feed only it); keeps thread + manifest', example: '/e persona banter' },
     { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status lists chats', example: '/e auto mention all' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
@@ -90,89 +94,93 @@ async function _persistWaConfig() {
 // _resolveChatTarget is defined as a closure inside run() so it can reach the
 // live WA bridge (real group subjects) via ctx.waBridgeRef — see there.
 
-// Shared kickoff used by /e new (resetThread=true) and /e persona (false).
-// Both fire the same "Reboot complete" announcement frame; the difference
-// is whether the underlying claude thread is cleared first or continued.
-// Exported so /egpt new and /egpt persona can call it with a JID resolved
-// from a name-search.
-export async function _runReboot({ resetThread, personaName, targetJid, sysOut, ctx, originJid, surface = 'whatsapp' }) {
+// Shared install path for /e new, /e identity, /e persona.
+//   mode 'new'      — reset the thread, rebuild the WHOLE identity.d bundle
+//                     (00-manifest ← e_identity, 20-personality, 40-rules,
+//                     60-pointers), feed it to a fresh thread.
+//   mode 'identity' — rebuild + feed the WHOLE bundle, KEEP the thread
+//                     (refresh after editing e_identity.md or adding a file).
+//   mode 'persona'  — rewrite ONLY 20-personality.md, feed ONLY the personality
+//                     (swap flavor; no manifest re-send), keep the thread.
+// Back-compat: callers passing `resetThread` map to 'new' / 'persona'.
+// Exported so /egpt can call it with a JID resolved from a name-search.
+export async function _runReboot({ resetThread, mode, personaName, targetJid, sysOut, ctx, originJid, surface = 'whatsapp' }) {
   const { computeBrainTurn } = ctx;
-  // Validate persona exists before touching state.
+  if (!mode) mode = resetThread ? 'new' : 'persona';
+
   const personaFile = resolvePersonalityFile(personaName);
   if (!personaFile) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no personality "${personaName}" (looked under personalities/ and ~/.egpt/personalities/)`);
+    sysOut(`!! /e ${mode}: no personality "${personaName}" (looked under personalities/ and ~/.egpt/personalities/)`);
     return true;
   }
 
   let cs = await readConvState(CONV_YAML_PATH);
   const slug = findContactByJid(cs, surface, targetJid);
   if (!slug) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: no contact registered for jid "${targetJid}" under surface "${surface}". Send a message in that chat first so @e registers it.`);
+    sysOut(`!! /e ${mode}: no contact registered for jid "${targetJid}" under surface "${surface}". Send a message in that chat first so @e registers it.`);
     return true;
   }
 
-  // Patch persona + (for /e new) clear thread state. Both branches re-stamp
-  // identityInjectedAt because both are doing an identity install.
-  const patch = { personality: personaName, identityInjectedAt: null };
-  if (resetThread) { patch.threadId = null; patch.threadCreatedAt = null; }
+  // Patch personality; clear thread only on 'new'. Full installs re-stamp
+  // identityInjectedAt; a persona-only swap leaves it.
+  const patch = { personality: personaName };
+  if (mode !== 'persona') patch.identityInjectedAt = null;
+  if (mode === 'new') { patch.threadId = null; patch.threadCreatedAt = null; }
   cs = patchContact(cs, surface, slug, patch);
   await writeConvState(CONV_YAML_PATH, cs);
 
-  // Copy identity.md, rules.md, pointers.md into the slug-dir.
-  // Conversation-e is sandboxed to that dir and will read them at ./*.md.
-  let bundle;
+  // Build the feed + announcement.
+  let announcement;
+  let ackDetail;
   try {
-    bundle = await installPersonaIntoSlugDir(surface, slug, personaName);
+    if (mode === 'persona') {
+      const personality = await writeIdentityPersonality(surface, slug, personaName);
+      announcement = buildPersonaAnnouncement(personaName, personality);
+      ackDetail = `persona:${personaName} (personality only)`;
+    } else {
+      const manifest = (ctx.loadIdentity ? await ctx.loadIdentity() : '') ?? '';
+      await populateIdentityDir(surface, slug, personaName, { manifest });
+      const feed = await readIdentityDir(surface, slug);
+      announcement = buildIdentityAnnouncement(personaName, feed);
+      ackDetail = `manifest${manifest ? '' : '(empty)'} + persona:${personaName} + rules + pointers`;
+    }
   } catch (e) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: copying persona files failed — ${e?.message ?? e}`);
+    sysOut(`!! /e ${mode} ${slug}: building identity feed failed — ${e?.message ?? e}`);
     return true;
   }
 
-  // Build the announcement frame (same for /e new and /e persona).
-  const announcement = buildRebootAnnouncement(personaName, bundle);
-
-  // 1) Send announcement to the chat directly via outbox, framed as system-e.
+  // The CHAT gets only a short reboot marker — never the manifest/feed (that's
+  // internal and would leak into the group). The full feed goes to the brain
+  // via the kickoff turn below.
   try {
     const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-    const ev = {
-      type: 'wa-send', from: 'e', ts: Date.now(),
-      jid: targetJid,
-      body: `🧠 eGPT:\n\n${announcement}`,
-    };
+    const body = mode === 'persona' ? `🧠 eGPT: persona → ${personaName}` : `🧠 eGPT: reboot — persona "${personaName}"`;
+    const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: targetJid, body };
     await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
   } catch (e) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'}: outbox write failed — ${e?.message ?? e}`);
-    // Continue anyway — the kickoff turn below may still succeed.
+    sysOut(`!! /e ${mode}: outbox marker write failed — ${e?.message ?? e}`);
   }
 
-  // 2) Kick off the conversation-e thread with the same announcement as
-  //    its first user-turn. bypassAutoWrap skips the lineage auto-wrap so
-  //    we don't double-embed identity.
+  // Kick off the conversation-e thread with the full announcement as its first
+  // user-turn. bypassAutoWrap skips the lineage auto-wrap so we don't double-feed.
   const entry = cs.contacts[surface]?.[targetJid] ?? null;
   const pushedName = entry?.pushedName ?? slug;
   try {
     const reply = await computeBrainTurn('e', announcement, {
-      threadId: targetJid,
-      surface:  'wa',
-      slug,
-      name:     pushedName,
-      bypassAutoWrap: true,
+      threadId: targetJid, surface: 'wa', slug, name: pushedName, bypassAutoWrap: true,
     });
     const ackText = String(reply ?? '').trim();
-    if (!ackText) {
-      sysOut(`!! /e ${resetThread ? 'new' : 'persona'} ${slug}: kickoff produced empty reply — check /log.`);
-    } else {
-      sysOut(`/e ${resetThread ? 'new' : 'persona'} ${slug}: persona=${personaName} (@e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}")`);
-    }
-    // Relay conversation-e's reply to the chat if we have a different
-    // originating chat (so the operator who typed the slash sees it too).
+    // Bridge acknowledges delivery to the OPERATOR (system line) — no longer
+    // relying on E echoing "I am eGPT".
+    sysOut(`✓ /e ${mode} ${slug}: identity.d delivered → ${pushedName} (${ackDetail})`
+      + (ackText && ackText !== '...' && ackText !== '…' ? ` — @e: "${ackText.slice(0, 80)}${ackText.length > 80 ? '…' : ''}"` : ''));
     if (originJid && originJid !== targetJid && ackText && ackText !== '...' && ackText !== '…') {
       const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
       await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
     }
   } catch (e) {
-    sysOut(`!! /e ${resetThread ? 'new' : 'persona'} ${slug}: kickoff failed — ${e?.message ?? e}`);
+    sysOut(`!! /e ${mode} ${slug}: kickoff failed — ${e?.message ?? e}`);
   }
   return true;
 }
@@ -188,9 +196,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     resolveChatTarget(term, { waBridge: waBridgeRef?.current ?? null, surface });
 
   // ── /e new [<persona>] ──────────────────────────────────────────
-  // Reboot the conversation-e thread in the current chat. Clears
-  // threadId so the next dispatch spawns a fresh claude session, sets
-  // the personality, and sends the "Reboot complete" announcement.
+  // Reset the thread, rebuild the WHOLE identity.d bundle (manifest +
+  // personality + rules + pointers), feed it to a fresh thread.
   if (sub === 'new') {
     const personaName = tokens[1] || 'default';
     const targetJid = dispatchMeta?.waChatId;
@@ -198,13 +205,29 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       sysOut('!! /e new: no chat context. Use `/egpt new [<persona>] <name-search>` from the shell instead.');
       return true;
     }
-    return await _runReboot({ resetThread: true, personaName, targetJid, sysOut, ctx, originJid: targetJid });
+    return await _runReboot({ mode: 'new', personaName, targetJid, sysOut, ctx, originJid: targetJid });
+  }
+
+  // ── /e identity [<persona>] ─────────────────────────────────────
+  // Rebuild + feed the WHOLE identity.d bundle but KEEP the thread —
+  // the per-chat refresh after editing e_identity.md or dropping a file
+  // into identity.d/. (Per-chat analog of the top-level /identity.)
+  if (sub === 'identity') {
+    const cs = await readConvState(CONV_YAML_PATH);
+    const personaName = tokens[1]
+      || cs.contacts?.[ 'whatsapp' ]?.[ dispatchMeta?.waChatId ]?.personality
+      || 'default';
+    const targetJid = dispatchMeta?.waChatId;
+    if (!targetJid) {
+      sysOut('!! /e identity: no chat context. Use `/egpt` from the shell to target a chat by name.');
+      return true;
+    }
+    return await _runReboot({ mode: 'identity', personaName, targetJid, sysOut, ctx, originJid: targetJid });
   }
 
   // ── /e persona [<persona>] ──────────────────────────────────────
-  // Install (or re-install) a persona on the EXISTING conversation-e
-  // thread for the current chat. Same announcement frame, but the
-  // backend keeps the threadId.
+  // Swap ONLY the personality (rewrite 20-personality.md, feed only it).
+  // Keeps the thread and the manifest — no full re-install.
   if (sub === 'persona') {
     const personaName = tokens[1] || 'default';
     const targetJid = dispatchMeta?.waChatId;
@@ -212,7 +235,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       sysOut('!! /e persona: no chat context. Use `/egpt persona [<persona>] <name-search>` from the shell instead.');
       return true;
     }
-    return await _runReboot({ resetThread: false, personaName, targetJid, sysOut, ctx, originJid: targetJid });
+    return await _runReboot({ mode: 'persona', personaName, targetJid, sysOut, ctx, originJid: targetJid });
   }
 
   // ── /e butler <prompt> ──────────────────────────────────────────
