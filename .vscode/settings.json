@@ -1,0 +1,11 @@
+{
+  "files.eol": "\n",
+  "emeraldwalk.runonsave": {
+    "commands": [
+      {
+        "match": ".*\\.md$",
+        "cmd": "C:/Users/an/AppData/Local/Programs/Python/Python314/python.exe C:/Users/an/src/siran/writing/.scripts/format_markdown_spacing.py ${file}"
+      }
+    ]
+  }
+}
