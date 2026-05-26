@@ -15,6 +15,10 @@
 //   allowed_users — array of Telegram user IDs authorized for commands.
 //   chat_id       — optional initial outgoing chat target.
 
+import { readFile } from 'node:fs/promises';
+import { extname, basename } from 'node:path';
+import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
+
 const API = (token) => `https://api.telegram.org/bot${token}`;
 
 const POLL_TIMEOUT = 25;     // seconds — Telegram long-poll window
@@ -282,6 +286,35 @@ export function startTelegramBridge({
     }
   }
 
+  // Outbound media via multipart upload (Bot API sendPhoto/sendVideo/
+  // sendDocument/sendAudio/sendVoice). Mirrors the WA bridge's sendMedia so
+  // /inject delivers a real attachment to a TG group. kind+mimetype inferred
+  // from the extension when omitted; unknowns → document.
+  async function sendMedia(chatId, { path, buffer, kind, caption, fileName, mimetype, ptt } = {}) {
+    const target = chatId ?? lastChat;
+    if (!target) return null;
+    let buf = buffer;
+    if (!buf && path) { try { buf = await readFile(path); } catch (e) { err(`sendMedia read ${path}: ${e.message}`); return null; } }
+    if (!buf) return null;
+    const ext = (extname(fileName ?? path ?? '') || '').replace(/^\./, '').toLowerCase();
+    const mt = mimetype ?? MIME_BY_EXT[ext] ?? null;
+    const k = kind ?? mediaKind(mt, ext);
+    const name = fileName ?? (path ? basename(path) : 'file');
+    const method = k === 'image' ? 'sendPhoto' : k === 'video' ? 'sendVideo' : k === 'audio' ? (ptt ? 'sendVoice' : 'sendAudio') : 'sendDocument';
+    const field  = k === 'image' ? 'photo'     : k === 'video' ? 'video'     : k === 'audio' ? (ptt ? 'voice' : 'audio')       : 'document';
+    const form = new FormData();
+    form.append('chat_id', String(target));
+    if (caption) form.append('caption', caption);
+    form.append(field, new Blob([buf], mt ? { type: mt } : {}), name);
+    try {
+      const res = await fetch(`${API(botToken)}/${method}`, { method: 'POST', body: form });
+      const j = await res.json().catch(() => null);
+      if (!j?.ok) err(`sendMedia ${method}: ${j?.description ?? res.status}`);
+      else log(`sendMedia: ${k} (${(buf.length / 1024).toFixed(0)}KB) → ${target}`);
+      return j;
+    } catch (e) { err(`sendMedia: ${e.message}`); return null; }
+  }
+
   function startStreamMessage(initialText, { chatId } = {}) {
     const targetChat = chatId ?? lastChat;
     if (!targetChat) return null;
@@ -363,6 +396,7 @@ export function startTelegramBridge({
       if (!target) return;
       enqueue(() => sendText(target, text, { replyTo }));
     },
+    sendMedia(chatId, opts) { return sendMedia(chatId ?? lastChat, opts); },
     startStreamMessage,
     stop() {
       stopped = true;
