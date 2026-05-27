@@ -2302,7 +2302,16 @@ function App() {
     for (const m of (room.members ?? [])) {
       if (m.id === fromId) continue;
       try {
-        if (m.kind === 'wa-group')      waBridgeRef.current?.send(env, { chatId: m.id });
+        if (m.kind === 'wa-group') {
+          // Guard: a wa-group id must be a real jid — a malformed one (e.g. a
+          // stray shell handle mis-stored as wa-group) makes baileys hang until
+          // the 12s send timeout, starving real sends. Skip + log instead.
+          if (!/@(g\.us|s\.whatsapp\.net|lid)$/i.test(String(m.id))) {
+            logOut(`room ${roomName}: skipping wa-group member with non-jid id "${m.id}"`);
+            continue;
+          }
+          waBridgeRef.current?.send(env, { chatId: m.id });
+        }
         else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
         else if (m.kind === 'shell' || m.kind === 'extension')
           setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
