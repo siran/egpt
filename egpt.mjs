@@ -36,7 +36,7 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { loadRooms } from './src/rooms.mjs';
-import { planFanout, roomEnvelope } from './src/room-routing.mjs';
+import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
 import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/tools/logon-summary.mjs';
@@ -2328,6 +2328,9 @@ function App() {
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
+    // Echo/loop guard: a message that's already a room envelope was fanned BY
+    // us — never re-route it, or two active groups bounce it forever.
+    if (isRoomEnvelope(body)) return;
     const mentionsSomeone = /(^|\s)@[\w-]+/.test(String(body));
     let state; try { state = await loadRooms(); } catch { return; }
     for (const plan of planFanout(state, memberId, { atEAnywhere: mentionsSomeone })) {
