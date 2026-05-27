@@ -356,9 +356,14 @@ try {
     unlinkSync(_sidecar);
   } catch (e) { console.error(`!! egpt boot: restart-announce failed — ${e?.message ?? e}`); }
 })();
-// Per-cwd override config — still JSON, this is meant to be checked
-// into the project repo by power users (e.g. for tests).
-const LOCAL_CONFIG_PATH = join(process.cwd(), '.egpt', 'config.json');
+// Runtime overlay config (JSON) that /config writes to — kept SEPARATE from
+// config.yaml so /config never has to YAML-round-trip the operator's
+// hand-written config (which would drop all the `_note` comments). Anchored to
+// a STABLE ~/.egpt path, NOT process.cwd(): the daemon's cwd flips between
+// worktrees with /e source, and a cwd-relative overlay scattered /config writes
+// into src/egpt/.egpt vs src/egpt-dev/.egpt and silently "lost" settings
+// (routing_enabled) across restarts (operator 2026-05-27).
+const LOCAL_CONFIG_PATH = join(EGPT_HOME, 'config.local.json');
 function _isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 function _shallowDeepMerge(base, override) {
   if (!_isPlainObject(override)) return override;
