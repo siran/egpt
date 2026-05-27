@@ -5974,7 +5974,7 @@ function App() {
     // bare-meta, non-command shell input.
     if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched
         && !text.startsWith('/')) {
-      _maybeRouteToRooms({ memberId: 'shell', senderLabel: USER_NAME || 'shell', body: text })
+      _maybeRouteToRooms({ memberId: 'shell', senderLabel: `${USER_NAME} (${BUS_NODE_ID})`, body: text })
         .catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
     }
 
