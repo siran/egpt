@@ -48,12 +48,11 @@ import {
   resolveChatTarget,
   normalizeResidents,
   patchContact,
-  populateIdentityDir,
-  writeIdentityPersonality,
-  readIdentityDir,
+  installIdentity,
+  injectIdentityFile,
+  resolveIdentityDir,
   buildIdentityAnnouncement,
   buildPersonaAnnouncement,
-  resolvePersonalityFile,
   slugDir,
   slugTranscriptPath,
 } from '../conversations-state.mjs';
@@ -65,12 +64,12 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<persona>] | /e identity [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
-    { name: 'new',        usage: '/e new [<persona>]',                                       desc: 'reset the thread + rebuild & feed the WHOLE identity.d bundle (manifest + personality + rules + pointers)', example: '/e new default' },
-    { name: 'identity',   usage: '/e identity [<persona>]',                                  desc: 'rebuild & feed the whole identity.d bundle but KEEP the thread — refresh after editing e_identity.md or dropping a file in identity.d/', example: '/e identity' },
-    { name: 'persona',    usage: '/e persona [<persona>]',                                   desc: 'swap ONLY the personality (rewrite 20-personality.md, feed only it); keeps thread + manifest', example: '/e persona banter' },
+    { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
+    { name: 'identity',   usage: '/e identity [<identity>]',                                 desc: 'reinstall/refresh the identity folder, KEEP the thread — after editing identities/<name>/', example: '/e identity' },
+    { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
     { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status lists chats', example: '/e auto mention all' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
@@ -110,9 +109,8 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
   const { computeBrainTurn } = ctx;
   if (!mode) mode = resetThread ? 'new' : 'persona';
 
-  const personaFile = resolvePersonalityFile(personaName);
-  if (!personaFile) {
-    sysOut(`!! /e ${mode}: no personality "${personaName}" (looked under personalities/ and ~/.egpt/personalities/)`);
+  if (!resolveIdentityDir(personaName)) {
+    sysOut(`!! /e ${mode}: no identity "${personaName}" (looked in ~/.egpt/identities/ and shipped identities/)`);
     return true;
   }
 
@@ -143,31 +141,23 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
     } catch (e) { sysOut(`!! /e new: transcript archive failed — ${e.message}`); }
   }
 
-  // Patch personality; clear thread only on 'new'. Full installs re-stamp
-  // identityInjectedAt; a persona-only swap leaves it.
-  const patch = { personality: personaName };
-  if (mode !== 'persona') patch.identityInjectedAt = null;
+  // Full installs (new / identity / persona-no-file) re-stamp identityInjectedAt;
+  // only 'new' resets the thread.
+  const patch = { personality: personaName, identityInjectedAt: null };
   if (mode === 'new') { patch.threadId = null; patch.threadCreatedAt = null; }
   cs = patchContact(cs, surface, slug, patch);
   await writeConvState(CONV_YAML_PATH, cs);
 
-  // Build the feed + announcement.
+  // Install the identity FOLDER (copy its files de-prefixed into the slug-dir)
+  // and feed the concat (NN- order) as the kickoff.
   let announcement;
   let ackDetail;
   try {
-    if (mode === 'persona') {
-      const personality = await writeIdentityPersonality(surface, slug, personaName);
-      announcement = buildPersonaAnnouncement(personaName, personality);
-      ackDetail = `persona:${personaName} (personality only)`;
-    } else {
-      const manifest = (ctx.loadIdentity ? await ctx.loadIdentity() : '') ?? '';
-      await populateIdentityDir(surface, slug, personaName, { manifest });
-      const feed = await readIdentityDir(surface, slug);
-      announcement = buildIdentityAnnouncement(personaName, feed);
-      ackDetail = `manifest${manifest ? '' : '(empty)'} + persona:${personaName} + rules + pointers`;
-    }
+    const { feed, files } = await installIdentity(surface, slug, personaName);
+    announcement = buildIdentityAnnouncement(personaName, feed);
+    ackDetail = `identity:${personaName} (${files.join(', ') || 'empty'})`;
   } catch (e) {
-    sysOut(`!! /e ${mode} ${slug}: building identity feed failed — ${e?.message ?? e}`);
+    sysOut(`!! /e ${mode} ${slug}: installing identity failed — ${e?.message ?? e}`);
     return true;
   }
 
@@ -247,17 +237,38 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return await _runReboot({ mode: 'identity', personaName, targetJid, sysOut, ctx, originJid: targetJid });
   }
 
-  // ── /e persona [<persona>] ──────────────────────────────────────
-  // Swap ONLY the personality (rewrite 20-personality.md, feed only it).
-  // Keeps the thread and the manifest — no full re-install.
+  // ── /e persona [<persona>] [<file>] ─────────────────────────────
+  // No file → switch to identity <persona> (full install, keep thread) = alias
+  // of /e identity. With a file → inject ONLY that file from identity <persona>
+  // (e.g. `/e persona banter 20-personality.md`, or `/e persona banter
+  // personality`) — pull one file from any identity without disturbing the rest.
   if (sub === 'persona') {
     const personaName = tokens[1] || 'default';
+    const fileTok = tokens[2] || null;
     const targetJid = dispatchMeta?.waChatId;
     if (!targetJid) {
       sysOut('!! /e persona: no chat context. Use `/egpt persona [<persona>] <name-search>` from the shell instead.');
       return true;
     }
-    return await _runReboot({ mode: 'persona', personaName, targetJid, sysOut, ctx, originJid: targetJid });
+    if (!fileTok) {
+      return await _runReboot({ mode: 'persona', personaName, targetJid, sysOut, ctx, originJid: targetJid });
+    }
+    // Single-file inject from identity <persona>.
+    const cs = await readConvState(CONV_YAML_PATH);
+    const slug = findContactByJid(cs, 'whatsapp', targetJid);
+    if (!slug) { sysOut(`!! /e persona: no contact for ${targetJid} — send a message there first`); return true; }
+    if (!resolveIdentityDir(personaName)) { sysOut(`!! /e persona: no identity "${personaName}"`); return true; }
+    const injected = await injectIdentityFile('whatsapp', slug, personaName, fileTok);
+    if (!injected) { sysOut(`!! /e persona: no file "${fileTok}" in identity "${personaName}"`); return true; }
+    try {
+      const pushedName = cs.contacts?.whatsapp?.[targetJid]?.pushedName ?? slug;
+      const reply = await ctx.computeBrainTurn('e', buildPersonaAnnouncement(`${personaName}/${injected.name}`, injected.content), {
+        threadId: targetJid, surface: 'wa', slug, name: pushedName, bypassAutoWrap: true,
+      });
+      const r = String(reply ?? '').trim();
+      sysOut(`✓ /e persona ${slug}: injected ${personaName}/${injected.name}${r && r !== '...' && r !== '…' ? ` — @e: "${r.slice(0, 80)}"` : ''}`);
+    } catch (e) { sysOut(`!! /e persona inject: ${e?.message ?? e}`); }
+    return true;
   }
 
   // ── /e butler <prompt> ──────────────────────────────────────────

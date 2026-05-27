@@ -27,6 +27,10 @@ import * as YAML from 'yaml';
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
 const PERSONALITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'personalities');
+// Identity folders (operator 2026-05-26): an identity is a folder of NN-*.md
+// files (NN- orders the injection); operator overrides shipped, per folder.
+const IDENTITIES_SHIPPED_DIR  = join(_here, 'identities');
+const IDENTITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'identities');
 // Heartbeats moved under state/ alongside other internals (operator
 // 2026-05-22 declutter). Legacy path migrated on first boot in
 // egpt.mjs alongside the other directory moves.
@@ -909,6 +913,85 @@ export async function readIdentityDir(surface, slug) {
     catch (e) { console.error(`!! readIdentityDir ${n}: ${e?.message ?? e}`); }
   }
   return parts.join('\n\n');
+}
+
+// ── Identity folders (operator 2026-05-26) ──────────────────────────────────
+// An identity is a FOLDER `identities/<name>/` of NN-*.md files. The NN- prefix
+// orders the injection; it is STRIPPED when files are copied into the
+// conversation dir (40-rules.md → ./rules.md) so the sandboxed brain reads
+// clean names. The kickoff FEED is the concat in NN- order. Operator overrides
+// (~/.egpt/identities/<name>/) win over shipped (<repo>/identities/<name>/).
+
+export function resolveIdentityDir(name) {
+  const safe = sanitizeSlug(name || 'default') || 'default';
+  for (const base of [IDENTITIES_OPERATOR_DIR, IDENTITIES_SHIPPED_DIR]) {
+    const p = join(base, safe);
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+// Read a source identity folder's NN-*.md in order → [{ src, name, content }]
+// where `name` is the de-prefixed filename (40-rules.md → rules.md).
+async function _readIdentityFiles(dir) {
+  const { readdir } = await import('node:fs/promises');
+  let names = [];
+  try { names = (await readdir(dir)).filter(n => n.toLowerCase().endsWith('.md')).sort(); }
+  catch { return []; }
+  const out = [];
+  for (const n of names) {
+    try {
+      const content = await readFile(join(dir, n), 'utf8');
+      out.push({ src: n, name: n.replace(/^\d+[-_]/, ''), content });
+    } catch (e) { console.error(`!! _readIdentityFiles ${n}: ${e?.message ?? e}`); }
+  }
+  return out;
+}
+
+// Install identity <name> into a conversation slug-dir: copy each file
+// de-prefixed (so ./rules.md, ./pointers.md, ./identity.md exist in the
+// sandbox) and return { feed, files, dir }. feed = concat in NN- order for the
+// kickoff turn. Returns null dir when the identity folder doesn't exist.
+export async function installIdentity(surface, slug, name) {
+  const dir = resolveIdentityDir(name);
+  if (!dir) return { feed: '', files: [], dir: null };
+  const files = await _readIdentityFiles(dir);
+  const slugd = slugDir(surface, slug);
+  await mkdir(slugd, { recursive: true });
+  for (const f of files) await writeFile(join(slugd, f.name), f.content, 'utf8');
+  const feed = files.map(f => f.content.trim()).filter(Boolean).join('\n\n');
+  return { feed, files: files.map(f => f.name), dir };
+}
+
+// Read identity <name>'s concatenated feed (NN- order) WITHOUT writing any
+// slug-dir copies — for the first-dispatch auto-wrap, which just needs the
+// content in-context. '' when the identity folder doesn't exist.
+export async function readIdentityFeed(name) {
+  const dir = resolveIdentityDir(name);
+  if (!dir) return '';
+  const files = await _readIdentityFiles(dir);
+  return files.map(f => f.content.trim()).filter(Boolean).join('\n\n');
+}
+
+// Inject ONE file from identity <name> into the slug-dir (de-prefixed). The
+// token may be the source name (40-rules.md), the de-prefixed name (rules.md),
+// or a bare stem (rules). Returns { name, content } or null. Lets the operator
+// pull a single file from any identity without disturbing the rest.
+export async function injectIdentityFile(surface, slug, name, fileToken) {
+  const dir = resolveIdentityDir(name);
+  if (!dir) return null;
+  const files = await _readIdentityFiles(dir);
+  const tok = String(fileToken ?? '').toLowerCase();
+  const stem = tok.replace(/\.md$/, '').replace(/^\d+[-_]/, '');
+  const hit = files.find(f =>
+    f.name.toLowerCase() === tok ||
+    f.src.toLowerCase() === tok ||
+    f.name.replace(/\.md$/, '').toLowerCase() === stem);
+  if (!hit) return null;
+  const slugd = slugDir(surface, slug);
+  await mkdir(slugd, { recursive: true });
+  await writeFile(join(slugd, hit.name), hit.content, 'utf8');
+  return { name: hit.name, content: hit.content };
 }
 
 // Full-install announcement: the whole identity.d bundle (manifest +

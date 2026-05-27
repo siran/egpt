@@ -5170,6 +5170,7 @@ function App() {
       readPersonality: (personality) => conversationsState.readPersonality(personality),
       readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),
       loadManifest: () => _loadIdentity(),
+      loadIdentityFeed: (name) => conversationsState.readIdentityFeed(name),
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
       sysLog: (msg) => console.error(msg),
