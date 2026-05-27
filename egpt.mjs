@@ -5959,6 +5959,16 @@ function App() {
       return;
     }
 
+    // Shell as a first-class room member: the operator's own shell text fans
+    // into any room the shell is an active/mention member of. Additive (doesn't
+    // replace /use routing), gated + loop-safe inside _maybeRouteToRooms. Only
+    // bare-meta, non-command shell input.
+    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched
+        && !text.startsWith('/')) {
+      _maybeRouteToRooms({ memberId: 'shell', senderLabel: USER_NAME || 'shell', body: text })
+        .catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
+    }
+
     // Tell sysOut where this submit's output should go. fromTelegram means
     // the user issued the command from Telegram and the response should
     // flow back there; otherwise it stays local. Reset in finally so a

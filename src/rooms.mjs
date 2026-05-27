@@ -19,7 +19,7 @@ import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 
 export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active'];
-export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain'];
+export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain', 'shell', 'extension'];
 export const DEFAULT_MEMBER_STATE = 'muted';
 
 export const ROOMS_CONFIG_PATH = join(homedir(), '.egpt', 'rooms', 'config.yaml');
