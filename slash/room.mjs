@@ -36,7 +36,7 @@ export const meta = {
     { name: 'active',  usage: '/room <name> active <member>',        desc: 'full two-way: the member contributes everything to the room', example: '/room estudio active @wa3' },
     { name: 'mention', usage: '/room <name> mention <member>',       desc: 'only the member messages that @mention a room participant enter the room', example: '/room estudio mention @wa3' },
     { name: 'mute',    usage: '/room <name> mute <member>',          desc: 'lurk: the member receives the room but contributes nothing', example: '/room estudio mute @wa3' },
-    { name: 'members', usage: '/room <name> members',                desc: "list a room's members + states", example: '/room estudio members' },
+    { name: 'members', usage: '/room <name> members [search]',       desc: "list a room's members + states (names resolved); optional search narrows by group name/jid", example: '/room estudio members egpt2' },
     { name: 'leave',   usage: '/room <name> leave <member>',         desc: 'remove a member from the room', example: '/room estudio leave @wa3' },
     { name: 'delete',  usage: '/room <name> delete',                 desc: 'delete the room', example: '/room estudio delete' },
   ],
@@ -72,10 +72,37 @@ async function resolveMember(token, ctx) {
   return { error: `could not resolve member "${t}"` };
 }
 
-function fmtMembers(room) {
+// Display name for a member, or null when the id is the only handle we have.
+// wa-group jids are opaque (120363…@g.us), so resolve to the group's name via
+// the bridge; tg/brain/shell/extension carry their id as the label already.
+function memberName(m, ctx) {
+  if (m.kind === 'wa-group') {
+    const nm = ctx?.waBridgeRef?.current?.getChatName?.(m.id);
+    return nm && nm !== m.id ? nm : null;
+  }
+  return null;
+}
+
+// Render a room's members, numbered. With `search`, filter to members whose
+// name OR jid contains the term (case-insensitive) — so `/room test members
+// egpt2` narrows by group name even though the jid is opaque. Numbering mirrors
+// the help-menu Nx pattern: when several match, the operator can eyeball which.
+function fmtMembers(room, ctx, search) {
   const ms = room?.members ?? [];
   if (!ms.length) return '  (no members)';
-  return ms.map(m => `  ${KIND_ICON[m.kind] ?? '?'} ${STATE_ICON[m.state] ?? ''} ${m.id}`).join('\n');
+  const term = String(search ?? '').trim().toLowerCase();
+  const rows = ms.map(m => {
+    const nm = memberName(m, ctx);
+    return { m, nm, hay: `${nm ?? ''} ${m.id}`.toLowerCase() };
+  });
+  const shown = term ? rows.filter(r => r.hay.includes(term)) : rows;
+  if (term && !shown.length) return `  (no member matches "${search}")`;
+  return shown.map((r, i) => {
+    const icon = KIND_ICON[r.m.kind] ?? '?';
+    const st = STATE_ICON[r.m.state] ?? '';
+    const label = r.nm ? `${r.nm} — ` : '';
+    return `  ${i + 1}. ${icon} ${st} ${label}${r.m.id}`;
+  }).join('\n');
 }
 
 export async function run({ arg, ctx, meta = {} }) {
@@ -127,10 +154,13 @@ export async function run({ arg, ctx, meta = {} }) {
   const action = parts[1];
   if (!getRoom(state, name)) { sysOut(`!! no room "${name}" — /room create ${name}`); return true; }
 
-  // /room <name> — show.
+  // /room <name> [members [search]] — show. The optional search narrows the
+  // member list by name/jid substring (numbered output).
   if (!action || action === 'members') {
     const room = getRoom(state, name);
-    sysOut(`📂 ${name}\n${fmtMembers(room)}`);
+    const search = action === 'members' ? parts.slice(2).join(' ') : '';
+    const header = search ? `📂 ${name} members matching "${search}"` : `📂 ${name}`;
+    sysOut(`${header}\n${fmtMembers(room, ctx, search)}`);
     return true;
   }
 
