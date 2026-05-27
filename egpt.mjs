@@ -2342,6 +2342,12 @@ function App() {
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
+    // Slash commands are NOT room chatter — they're handled by the normal
+    // command path on whatever surface typed them. Routing them in would mirror
+    // e.g. `/restart` into the room (and to a shell member's display) as if it
+    // were a message. Guarded centrally here so every surface (WA/TG/shell) is
+    // covered (operator 2026-05-27).
+    if (String(body).trimStart().startsWith('/')) return;
     // Echo/loop guard: a message that's already a room envelope was fanned BY
     // us — never re-route it, or two active groups bounce it forever.
     if (isRoomEnvelope(body)) return;
