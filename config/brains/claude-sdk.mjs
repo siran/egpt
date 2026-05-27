@@ -223,6 +223,10 @@ export function stream({ history, message }, onUpdate, options = {}) {
             if (msg.subtype) parts.push(msg.subtype);
             if (typeof msg.result === 'string' && msg.result) parts.push(msg.result);
             if (msg.error) parts.push(typeof msg.error === 'string' ? msg.error : JSON.stringify(msg.error));
+            // "error_during_execution" alone is unactionable — dump the raw
+            // result message so the failure is diagnosable (num_turns, is_error,
+            // usage, any nested error). Truncated to keep the log sane.
+            try { onLog(`claude-sdk: error result = ${JSON.stringify(msg).slice(0, 800)}`); } catch {}
             return wrapReject(new Error(`claude-sdk: ${parts.join(' — ') || 'error_during_execution'}`));
           }
         }
