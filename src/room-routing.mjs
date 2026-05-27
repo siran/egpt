@@ -30,7 +30,15 @@ export function planFanout(roomsState, fromMemberId, { atEAnywhere = false } = {
 
 // The line written into a room's shared transcript / fanned to surface members.
 // Source-qualified so every surface sees who-said-what across the room.
+const ROOM_PREFIX = '🏠 ';
 export function roomEnvelope({ room, senderLabel, body }) {
   const who = String(senderLabel ?? 'someone').trim() || 'someone';
-  return `🏠 ${room} · ${who}: ${String(body ?? '').trim()}`;
+  return `${ROOM_PREFIX}${room} · ${who}: ${String(body ?? '').trim()}`;
+}
+
+// True when a body is ALREADY a room fan-out envelope. The echo/loop breaker:
+// a fanned "🏠 <room> · …" arriving at another member must never be re-routed,
+// or two active groups would bounce it forever.
+export function isRoomEnvelope(body) {
+  return String(body ?? '').trimStart().startsWith(ROOM_PREFIX);
 }

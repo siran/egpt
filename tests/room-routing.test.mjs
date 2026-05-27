@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planFanout, roomEnvelope } from '../src/room-routing.mjs';
+import { planFanout, roomEnvelope, isRoomEnvelope } from '../src/room-routing.mjs';
 import { emptyRooms, createRoom, addMember, setMemberState } from '../src/rooms.mjs';
 
 function room3() {
@@ -42,5 +42,17 @@ describe('roomEnvelope', () => {
   it('source-qualifies the line', () => {
     expect(roomEnvelope({ room: 'estudio', senderLabel: 'Ana', body: 'hola' }))
       .toBe('🏠 estudio · Ana: hola');
+  });
+});
+
+describe('isRoomEnvelope (echo guard)', () => {
+  it('flags a fanned message so it is not re-routed', () => {
+    expect(isRoomEnvelope(roomEnvelope({ room: 'r', senderLabel: 'A', body: 'hi' }))).toBe(true);
+    expect(isRoomEnvelope('🏠 test · An: hello')).toBe(true);
+  });
+  it('a normal message is not an envelope', () => {
+    expect(isRoomEnvelope('hello')).toBe(false);
+    expect(isRoomEnvelope('@e hola')).toBe(false);
+    expect(isRoomEnvelope('')).toBe(false);
   });
 });
