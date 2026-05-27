@@ -99,9 +99,9 @@ function fmtMembers(room, ctx, search) {
   if (term && !shown.length) return `  (no member matches "${search}")`;
   return shown.map((r, i) => {
     const icon = KIND_ICON[r.m.kind] ?? '?';
-    const st = STATE_ICON[r.m.state] ?? '';
+    const st = `${STATE_ICON[r.m.state] ?? ''} ${r.m.state}`.trim();
     const label = r.nm ? `${r.nm} — ` : '';
-    return `  ${i + 1}. ${icon} ${st} ${label}${r.m.id}`;
+    return `  ${i + 1}. ${icon} ${st} · ${label}${r.m.id}`;
   }).join('\n');
 }
 
