@@ -42,7 +42,7 @@ export const meta = {
   ],
 };
 
-const KIND_ICON = { 'wa-group': '💬', 'tg-group': '📱', brain: '🧠' };
+const KIND_ICON = { 'wa-group': '💬', 'tg-group': '📱', brain: '🧠', shell: '🖥️', extension: '🧩' };
 const STATE_ICON = { muted: '🔇', mention: '@', active: '🔊' };
 
 // Resolve a member token → { kind, id, label } or { error }.
