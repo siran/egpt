@@ -87,9 +87,20 @@ export async function run({ arg, ctx, meta = {} }) {
   // chat — default to THAT chat. Lets join/active/mute/mention/leave be run
   // from within the group itself (no @waN needed).
   const resolveMemberArg = async (tok) => {
-    if (!tok && meta?.waChatId) {
-      const id = meta.waChatId;
-      return { kind: 'wa-group', id, label: ctx.waBridgeRef?.current?.getChatName?.(id) ?? id };
+    // 'shell' / a shell handle (egptbot@shell-NNN) → the shell, id 'shell'.
+    if (tok && (/^@?shell$/i.test(tok) || /@shell\b/i.test(tok))) {
+      return { kind: 'shell', id: 'shell', label: 'shell' };
+    }
+    if (tok && (/^@?ext(ension)?$/i.test(tok) || /@(ext|extension)\b/i.test(tok))) {
+      return { kind: 'extension', id: 'extension', label: 'extension' };
+    }
+    if (!tok) {
+      if (meta?.waChatId) {
+        const id = meta.waChatId;
+        return { kind: 'wa-group', id, label: ctx.waBridgeRef?.current?.getChatName?.(id) ?? id };
+      }
+      // No member + no WA chat context → invoked from the shell: join the shell.
+      return { kind: 'shell', id: 'shell', label: 'shell' };
     }
     return resolveMember(tok, ctx);
   };
