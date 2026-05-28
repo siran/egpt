@@ -2587,15 +2587,12 @@ function App() {
         }
 
         // Room fan-out (gated + loop-safe; no-op unless this TG chat is a
-        // contributing room member). Classify intent at the bridge boundary
-        // (commands vs chat) so the router operates only on envelope + config.
+        // contributing room member). Routing is parallel to the bridge's own
+        // command execution — both happen, neither depends on the other.
         // tg-group members are keyed by the bare chat id (joined as
         // `tg:<id>`), matching String(from.chatId) here.
-        const _tgIsSlash = String(text ?? '').trimStart().startsWith('/');
-        if (!_tgIsSlash) {
-          _maybeRouteToRooms({ memberId: String(from.chatId ?? ''), senderLabel: who, body: text })
-            .catch(e => errOut(`!! _maybeRouteToRooms(tg): ${e?.message ?? e}`));
-        }
+        _maybeRouteToRooms({ memberId: String(from.chatId ?? ''), senderLabel: who, body: text })
+          .catch(e => errOut(`!! _maybeRouteToRooms(tg): ${e?.message ?? e}`));
 
         // Replication is unconditional: every Telegram message in the
         // room is part of the room. The legacy `mirror` policy now only
@@ -3268,13 +3265,12 @@ function App() {
           if (_modeChanged) _announcedMode.current.set(from.chatId, _autoMode);
           // Room fan-out (independent of the per-chat auto-mode dispatch below).
           // Gated + loop-safe; no-op unless this chat is a contributing room member.
-          // Routing takes only envelope + room config; the bridge already
-          // classified intent (isSlash). Commands aren't room chatter, so they
-          // don't enter routing — gated here at the boundary, not in the router.
-          if (!isSlash) {
-            _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text })
-              .catch(e => errOut(`!! _maybeRouteToRooms(wa): ${e?.message ?? e}`));
-          }
+          // Route every inbound — execution (the bridge's own command handling)
+          // and routing (transcript + mirror to room members) are independent.
+          // Whether a member CONTRIBUTES is the room member's state (active /
+          // mention / mute), not the message kind.
+          _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text })
+            .catch(e => errOut(`!! _maybeRouteToRooms(wa): ${e?.message ?? e}`));
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -6032,10 +6028,11 @@ function App() {
 
     // Shell as a first-class room member: the operator's own shell text fans
     // into any room the shell is an active/mention member of. Additive (doesn't
-    // replace /use routing), gated + loop-safe inside _maybeRouteToRooms. Only
-    // bare-meta, non-command shell input.
-    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched
-        && !text.startsWith('/')) {
+    // replace /use routing), gated + loop-safe inside _maybeRouteToRooms.
+    // Bare-meta only — re-dispatched / bridge-arrival items aren't shell input.
+    // No content classification: the per-member state (active/mention/mute) is
+    // what controls whether the shell contributes, not the message kind.
+    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched) {
       _maybeRouteToRooms({ memberId: 'shell', senderLabel: `${USER_NAME} (${BUS_NODE_ID})`, body: text })
         .catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
     }
