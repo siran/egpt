@@ -504,6 +504,12 @@ export function createDispatchRuntime({
   // the room's files when a member asks "what was said while I was away?".
   // Returns absolute dir paths; merged into the confined sandbox below.
   roomDirsForJids = async () => [],
+  // Operator-configured custom directory grants (operator 2026-05-27), sourced
+  // from conversations/config.yaml — a file OUTSIDE the contact sandbox, so
+  // conversation-e can never widen its own access. Resolves a contact
+  // ({ slug, personality, jids }) to a list of absolute dirs to merge into the
+  // confined sandbox. Managed by the operator via `/e path add|rm`.
+  grantDirsForContact = async () => [],
   readPersonality = async () => null,
   // Per-personality allowed_tools resolver. Defaults to `null` =
   // "don't override what sessionOptions returned". Inject the
@@ -786,11 +792,18 @@ export function createDispatchRuntime({
         let roomDirs = [];
         try { roomDirs = (await roomDirsForJids(convEntry.jids ?? [])) ?? []; }
         catch (e) { logger?.error?.(`!! roomDirsForJids: ${e?.message ?? e}`); }
+        let grantDirs = [];
+        try {
+          grantDirs = (await grantDirsForContact({
+            slug: convSlug, personality: convEntry.personality ?? 'default', jids: convEntry.jids ?? [],
+          })) ?? [];
+        } catch (e) { logger?.error?.(`!! grantDirsForContact: ${e?.message ?? e}`); }
         sessionOpts.addDirs = [
           sessionOpts.cwd,
           sluggedDir,
           ...((convEntry.jids ?? []).map(j => paths.jidMediaDir(j))),
           ...roomDirs,
+          ...grantDirs,
         ];
         // Confine conversation-e's file tools to its own dirs. A restricted
         // allowed_tools list (no Bash) is NOT enough — listing Read there

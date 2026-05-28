@@ -58,13 +58,17 @@ import {
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
+import {
+  loadGrants, saveGrants, grantedPaths, addGrant, removeGrant,
+} from '../src/conv-grants.mjs';
+import { loadRooms, roomsForMember } from '../src/rooms.mjs';
 import { homedir } from 'node:os';
 
 export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status | /e path [list|add|rm] [<path>] [<slug>]',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
@@ -79,6 +83,7 @@ export const meta = {
     { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
     { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)", example: '/e tool deny all' },
     { name: 'cmd',        usage: '/e cmd allow|deny <command> | status',                     desc: 'which slash commands conversation-e may EXECUTE from its own reply (allowlist; default /react). Known-but-unlisted commands are stripped, never run', example: '/e cmd allow react' },
+    { name: 'path',       usage: '/e path [list|add|rm] [<path>] [<slug>]',                  desc: 'custom directory grants for conversation-e (conversations/config.yaml, outside its sandbox). Bare /e path lists effective access; <slug> defaults to the current chat', example: '/e path add C:\\refs\\manual' },
     { name: 'butler',     usage: '/e butler <prompt>',                                       desc: 'ephemeral haiku sub-agent — no session memory, default all-tools', example: '/e butler summarize my unread chats' },
     { name: 'supervisor', usage: '/e supervisor [status|install|uninstall|restart]',         desc: 'manage the supervisor watchdog', example: '/e supervisor status' },
   ],
@@ -268,6 +273,70 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       const r = String(reply ?? '').trim();
       sysOut(`✓ /e persona ${slug}: injected ${personaName}/${injected.name}${r && r !== '...' && r !== '…' ? ` — @e: "${r.slice(0, 80)}"` : ''}`);
     } catch (e) { sysOut(`!! /e persona inject: ${e?.message ?? e}`); }
+    return true;
+  }
+
+  // ── /e path [list|add|rm] [<path>] [<slug>] ─────────────────────
+  // Manage conversation-e's custom directory grants (conversations/config.yaml,
+  // outside its sandbox). Bare `/e path` lists the current chat's effective
+  // access. <slug> defaults to the current chat; from the shell, pass it.
+  if (sub === 'path') {
+    const action = tokens[1] && /^(list|add|rm|remove|ls)$/i.test(tokens[1]) ? tokens[1].toLowerCase() : 'list';
+    const cs = await readConvState(CONV_YAML_PATH);
+    const here = dispatchMeta?.waChatId ? findContactByJid(cs, 'whatsapp', dispatchMeta.waChatId) : null;
+
+    // Collect every jid that maps to a slug (for the room-membership view).
+    const jidsForSlug = (slug) => {
+      const out = new Set();
+      for (const surf of Object.keys(cs.contacts ?? {})) {
+        for (const [key, e] of Object.entries(cs.contacts[surf] ?? {})) {
+          if (e?.slug === slug) { out.add(key); for (const j of e?.jids ?? []) out.add(j); }
+        }
+      }
+      return [...out];
+    };
+
+    if (action === 'list' || action === 'ls') {
+      const slug = tokens[2] || here;
+      if (!slug) { sysOut('!! /e path: no chat context — pass a slug: `/e path list <slug>`'); return true; }
+      const grants = await loadGrants();
+      const custom = grantedPaths(grants, slug);
+      const ownDir = slugDir('whatsapp', slug);
+      let roomNames = [];
+      try {
+        const rs = await loadRooms();
+        const seen = new Set();
+        for (const j of jidsForSlug(slug)) for (const r of roomsForMember(rs, j)) seen.add(r.name);
+        roomNames = [...seen];
+      } catch { /* best effort */ }
+      const lines = [`📂 conversation-e access for "${slug}" (all FULL read/write):`];
+      lines.push(`  own   · ${ownDir}`);
+      for (const n of roomNames) lines.push(`  room  · ${join(homedir(), '.egpt', 'rooms', n)}   — member of "${n}"`);
+      if (custom.length) for (const p of custom) lines.push(`  grant · ${p}`);
+      else lines.push('  (no custom grants — add with `/e path add <path>`)');
+      sysOut(lines.join('\n'));
+      return true;
+    }
+
+    // add | rm: `<path> [<slug>]`. The slug, when given, is the LAST token, so
+    // a path containing spaces survives (everything between the verb and an
+    // explicit slug is the path). With no explicit slug, the whole tail is the
+    // path and the target is the current chat.
+    const tail = tokens.slice(2);
+    if (!tail.length) { sysOut(`usage: /e path ${action} <path> [<slug>]`); return true; }
+    let path, slug;
+    if (tail.length >= 2) { slug = tail[tail.length - 1]; path = tail.slice(0, -1).join(' '); }
+    else { path = tail[0]; slug = here; }
+    if (!slug) { sysOut(`!! /e path ${action}: no chat context — pass a slug: \`/e path ${action} <path> <slug>\``); return true; }
+    if (!isAbsolute(path)) { sysOut(`!! /e path ${action}: "${path}" is not an absolute path`); return true; }
+
+    const grants = await loadGrants();
+    try {
+      const next = action === 'add' ? addGrant(grants, slug, path) : removeGrant(grants, slug, path);
+      await saveGrants(next);
+      const now = grantedPaths(next, slug);
+      sysOut(`✓ /e path ${action} "${slug}": ${action === 'add' ? 'granted' : 'removed'} ${path}\n  grants now: ${now.length ? now.join(', ') : '(none)'}\n  (takes effect on this contact's next turn)`);
+    } catch (e) { sysOut(`!! /e path ${action}: ${e?.message ?? e}`); }
     return true;
   }
 
