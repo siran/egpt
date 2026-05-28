@@ -1001,18 +1001,41 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (shown.length) {
       body = shown.map(r => `  - ${r.label}: ${r.m}`).join('\n');
     } else if (search) {
-      // Fall-through search: a contact that has no per-chat mode set uses
-      // the global default and won't appear in `merged`. Surface those.
-      const cs = await readConvState(CONV_YAML_PATH);
+      // Fall-through search across BOTH sources a contact may live in but
+      // not yet carry an explicit per-chat mode:
+      //   - the WA bridge's chat list (groups + DMs the user can reach today,
+      //     even if no E conversation has been initiated yet — this is the
+      //     same source `_resolveChatTarget` uses, so the listing matches the
+      //     setter's reach);
+      //   - conversations.yaml (older contacts whose chat may have rolled out
+      //     of the bridge's live list but which still have a thread).
+      const seenJid = new Set(Object.keys(merged));
       const matches = [];
+
+      try {
+        const chats = (await ctx.waBridgeRef?.current?.listChats?.({ all: true })) ?? [];
+        for (const c of chats) {
+          if (!c?.jid || seenJid.has(c.jid)) continue;
+          const hay = `${c?.name ?? ''} ${c.jid}`.toLowerCase();
+          if (hay.includes(search)) {
+            seenJid.add(c.jid);
+            const label = c?.name ? `«${c.name}» ${c.jid}` : c.jid;
+            matches.push(`  - ${label}: (default ${def})`);
+          }
+        }
+      } catch { /* offline / not yet connected — fall through to the registry */ }
+
+      const cs = await readConvState(CONV_YAML_PATH);
       for (const [j, e] of Object.entries(cs.contacts?.whatsapp ?? {})) {
-        if (merged[j]) continue;       // already covered above
+        if (seenJid.has(j)) continue;
         const hay = `${e?.pushedName ?? ''} ${e?.slug ?? ''} ${j}`.toLowerCase();
         if (hay.includes(search)) {
+          seenJid.add(j);
           const label = e?.pushedName ? `«${e.pushedName}» ${j}` : `«${e?.slug ?? j}» ${j}`;
           matches.push(`  - ${label}: (default ${def})`);
         }
       }
+
       body = matches.length
         ? `  (no explicit per-chat mode matches "${jidArg}" — these fall through to the default "${def}":)\n${matches.join('\n')}`
         : `  (no matches for "${jidArg}")`;
