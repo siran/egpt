@@ -11,6 +11,8 @@
 // Freshness guards against pid reuse: an old beat whose pid now belongs to some
 // unrelated process must NOT be read as "a daemon is alive".
 
+import { spawnSync } from 'node:child_process';
+
 const BEAT_RE = /^(?:tic|toc)\s+(\S+)\s+(\d+)\s*$/gm;
 
 export function liveDaemonPid(content, {
@@ -32,7 +34,30 @@ export function liveDaemonPid(content, {
 
 // process.kill(pid, 0) probes existence without signalling: ESRCH = gone,
 // EPERM = exists but not ours to signal (treat as alive — e.g. an S4U daemon).
-function defaultIsAlive(pid) {
+//
+// Cross-session pitfall on Windows: a session-1 process probing a session-0
+// (S4U scheduled-task) pid gets ESRCH from process.kill — not EPERM as one
+// might expect. The OS reports cross-session access denied as "not found"
+// across that boundary, so the singleton false-negatives every time a user
+// starts a manual supervisor while the scheduled-task daemon is alive — the
+// very split-brain it was meant to prevent (operator 2026-05-28). The
+// fallback re-asks the process table via `tasklist`, which can see any pid
+// owned by the current user regardless of session.
+export function defaultIsAlive(pid) {
   try { process.kill(pid, 0); return true; }
-  catch (e) { return e.code === 'EPERM'; }
+  catch (e) {
+    if (e.code === 'EPERM') return true;
+    if (process.platform === 'win32' && e.code === 'ESRCH') {
+      try {
+        const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], {
+          stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000,
+        });
+        const out = (r.stdout?.toString() ?? '').trim();
+        // tasklist prints `"Image","PID","Session",…` rows on hit, or an
+        // `INFO: No tasks…` line on miss. A CSV-quoted matching pid = alive.
+        return out.length > 0 && !/^INFO:/i.test(out) && new RegExp(`"${pid}"`).test(out);
+      } catch { /* tasklist missing / timeout → fall through to "dead" */ }
+    }
+    return false;
+  }
 }
