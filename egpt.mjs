@@ -19,7 +19,7 @@ import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
-import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit } from './src/auto-mode.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2295,7 +2295,56 @@ function App() {
   // @mentioned (blind) or marked 'active', and its reply re-circulates into the
   // room (chain-capped). `depth` guards brain↔brain loops; bridge sends are
   // rememberSent so a fanned copy echoes back fromMe and is never re-routed.
-  const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0 }) => {
+  // Synthetic per-chat dispatch for a wa-group room fan-out (operator
+  // 2026-05-28). When the room delivers a message to a wa-group, the bot's
+  // outbound send doesn't loop back through onIncoming, so the receiving
+  // group's per-chat E mode never gets consulted on routed traffic. This
+  // helper fires E for that group with the routed body so its per-chat mode
+  // (on/mention/mute) applies, and re-routes E's reply (if any) back into the
+  // room with E as the sender — marked _personaReply so receiving groups
+  // don't re-fire E on E's own reply (no second-order loop).
+  const _firePerChatRoutedDispatch = async ({ chatId, body, roomName, depth }) => {
+    const convEntry = _convStateCache?.contacts?.whatsapp?.[chatId];
+    if (!convEntry) return;             // first-contact via routing needs full install — out of scope here
+    const mode = _resolveChatAutoMode(chatId);
+    if (!autoReceives(mode)) return;    // 'off' — no read, no reply
+    const status = autoMentionStatus(body);
+    const replyAllowed = autoReplyAllowed(mode, status);
+    // For routed traffic, skip the brain when its reply wouldn't fire anyway
+    // (mute always, mention with no @-mention). The per-chat E that's set up
+    // to read-for-context still gets context via the routed envelope arriving
+    // as a regular WA message; running the brain again here would just burn
+    // tokens for no emission.
+    if (mode !== 'on' && !replyAllowed) return;
+    const personaName = EGPT_CONFIG.persona ?? 'e';
+    const personaCfg = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
+    const personaEmoji = personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI;
+    const threadCtx = {
+      threadId: chatId,
+      surface: 'wa',
+      slug: convEntry.slug ?? null,
+      name: convEntry.pushedName ?? null,
+    };
+    const reply = await runDefaultBrainTurn(body, () => {}, threadCtx);
+    const trimmed = String(reply ?? '').trim();
+    if (!trimmed || trimmed === '...' || trimmed === '…') return;
+    if (!_eMayReplyToChat(chatId, { replyAllowed })) return;
+    // Send E's reply to the receiving group (it lives in their chat history).
+    try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId }); }
+    catch (e) { logOut(`!! room ${roomName} → ${chatId}: send E reply: ${e?.message ?? e}`); }
+    // Re-enter the room as E. fromId=chatId so the originating group doesn't
+    // re-receive its own E reply; _personaReply=true so receiving wa-group
+    // members display E's reply but DO NOT fire their per-chat E again.
+    await _deliverToRoom(roomName, {
+      fromId: chatId,
+      senderLabel: `${personaEmoji} ${personaName}`,
+      body: trimmed,
+      depth: depth + 1,
+      _personaReply: true,
+    });
+  };
+
+  const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0, _personaReply = false }) => {
     let state; try { state = await loadRooms(); } catch { return; }
     const room = state.rooms?.[roomName];
     if (!room) return;
@@ -2317,6 +2366,12 @@ function App() {
             continue;
           }
           waBridgeRef.current?.send(env, { chatId: m.id });
+          // Fire E for this group's per-chat mode on the routed body — unless
+          // this delivery is E's own reply re-entering the room (no recursion).
+          if (!_personaReply && depth < _ROOM_CHAIN_CAP) {
+            _firePerChatRoutedDispatch({ chatId: m.id, body, roomName, depth })
+              .catch(e => logOut(`!! room ${roomName} → ${m.id} routed E: ${e?.message ?? e}`));
+          }
         }
         else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
         else if (m.kind === 'shell' || m.kind === 'extension')
