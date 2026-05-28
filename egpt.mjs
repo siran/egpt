@@ -35,7 +35,7 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms } from './src/rooms.mjs';
+import { loadRooms, roomsForMember } from './src/rooms.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
@@ -5194,6 +5194,20 @@ function App() {
       readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),
       loadManifest: () => _loadIdentity(),
       loadIdentityFeed: (name) => conversationsState.readIdentityFeed(name),
+      // Full access to the folders of any room this contact's jids belong to,
+      // so a per-contact E can read the shared transcript / room files when a
+      // member asks about the room. Membership (any state) grants it; reception
+      // is unconditional so even a muted member can inspect the transcript.
+      roomDirsForJids: async (jids) => {
+        try {
+          const state = await loadRooms();
+          const names = new Set();
+          for (const j of jids ?? []) {
+            for (const r of roomsForMember(state, j)) names.add(r.name);
+          }
+          return [...names].map(n => join(EGPT_HOME, 'rooms', n));
+        } catch { return []; }
+      },
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
       sysLog: (msg) => console.error(msg),
