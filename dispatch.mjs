@@ -791,13 +791,25 @@ export function createDispatchRuntime({
       } else {
         sessionOpts.sessionId = convEntry.threadId ?? null;
         sessionOpts.cwd = convEntry.threadCwd ?? sluggedDir;
+        // The contact's full jid set. conversations.yaml keys each entry BY
+        // its primary jid (the entry itself has no `jids:` field in the
+        // current schema), so without including threadCtx.threadId here both
+        // room-membership lookup and media-dir mapping would receive an empty
+        // array — silently disabling auto room-folder access for every
+        // single-jid contact (operator 2026-05-28, eGPT2).
+        const _contactJids = (() => {
+          const set = new Set();
+          if (threadCtx?.threadId) set.add(threadCtx.threadId);
+          for (const j of (convEntry.jids ?? [])) if (j) set.add(j);
+          return [...set];
+        })();
         let roomDirs = [];
-        try { roomDirs = (await roomDirsForJids(convEntry.jids ?? [])) ?? []; }
+        try { roomDirs = (await roomDirsForJids(_contactJids)) ?? []; }
         catch (e) { logger?.error?.(`!! roomDirsForJids: ${e?.message ?? e}`); }
         let grantEntries = [];
         try {
           grantEntries = (await grantDirsForContact({
-            slug: convSlug, personality: convEntry.personality ?? 'default', jids: convEntry.jids ?? [],
+            slug: convSlug, personality: convEntry.personality ?? 'default', jids: _contactJids,
           })) ?? [];
         } catch (e) { logger?.error?.(`!! grantDirsForContact: ${e?.message ?? e}`); }
         const grantDirs = grantEntries.map(e => (typeof e === 'string' ? e : e?.path)).filter(Boolean);
@@ -807,7 +819,7 @@ export function createDispatchRuntime({
         sessionOpts.addDirs = [
           sessionOpts.cwd,
           sluggedDir,
-          ...((convEntry.jids ?? []).map(j => paths.jidMediaDir(j))),
+          ..._contactJids.map(j => paths.jidMediaDir(j)),
           ...roomDirs,
           ...grantDirs,
         ];
