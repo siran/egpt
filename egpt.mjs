@@ -19,7 +19,7 @@ import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
-import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode } from './src/auto-mode.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2340,6 +2340,36 @@ function App() {
   // @mention of any room participant) seeds the room. planFanout is the
   // contribution gate. Surface-agnostic: the mention flag is any "@word" in the
   // body (not @e-specific), so WA and TG route identically.
+  // Resolve a WA chat's auto-mode the same way onIncoming does — the single
+  // source of truth, callable from any emit path. (operator 2026-05-28)
+  const _resolveChatAutoMode = (chatId) => {
+    const waCfg = EGPT_CONFIG.whatsapp ?? {};
+    const isSystem = (() => {
+      try {
+        const entry = _convStateCache?.contacts?.whatsapp?.[chatId];
+        if (!entry) return false;
+        if (entry.aliasOf) return _convStateCache.contacts.whatsapp[entry.aliasOf]?.personality === 'system';
+        return entry.personality === 'system';
+      } catch { return false; }
+    })();
+    if (isSystem) return 'on';
+    const modes = waCfg.auto_e_modes;
+    if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
+    if (Array.isArray(waCfg.auto_e_chats) && waCfg.auto_e_chats.includes(chatId)) return 'on';
+    if (autoIsMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
+    return DEFAULT_AUTO_MODE;
+  };
+  // The outbound backstop: may E SEND a reply to this WA chat right now? Every
+  // E-emit path (text, voice, emitted-command, future) funnels through here so
+  // 'mute'/'off' is a HARD block independent of any per-path flag — reception
+  // stays unconditional, only emission is vetted. Logs every block.
+  const _eMayReplyToChat = (chatId, { replyAllowed } = {}) => {
+    const mode = _resolveChatAutoMode(chatId);
+    const ok = autoMayEmit(mode, { replyAllowed });
+    if (!ok) logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed})`);
+    return ok;
+  };
+
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
@@ -3222,13 +3252,7 @@ function App() {
           // are always 'on'. A per-chat mode wins; then legacy auto_e_chats
           // membership (→ 'on'); then the global default (auto_e_default_mode,
           // set by `/e auto <mode> all`); then the built-in default ('mention').
-          const _autoMode = isSystemContact ? 'on' : (() => {
-            const modes = waCfg.auto_e_modes;
-            if (modes && typeof modes === 'object' && modes[from.chatId]) return modes[from.chatId];
-            if (isAutoEChat) return 'on';
-            if (autoIsMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
-            return DEFAULT_AUTO_MODE;
-          })();
+          const _autoMode = _resolveChatAutoMode(from.chatId);
           // replyAllowed: does this message's mention-status permit a reply
           // under the chat's mode? (E may still be invoked for context when
           // false.) Unused for accum (buffered + flushed on the heartbeat).
@@ -6060,8 +6084,15 @@ function App() {
       // post-cancel 'deleted' placeholder. Now: only open the stream
       // when the brain produces actual non-silence content worth
       // showing. All-silence voice notes leave NO message in the chat.
+      // Per-chat emit gate (operator 2026-05-28): E reads the voice note for
+      // context (the brain still runs below), but in a muted / mention-not-met
+      // chat it must NOT send a reply. Gating the stream-open here suppresses
+      // every voice-path send (all sends go through _ensureStream first), so a
+      // muted chat gets no message while E still hears it.
+      const _voiceMayEmit = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed });
       let voiceStream = null;
       const _ensureStream = () => {
+        if (!_voiceMayEmit) return;
         if (voiceStream) return;
         try {
           voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
@@ -7135,7 +7166,12 @@ function App() {
         // fetch failed…") is NOT a chat reply — it's already logged to the
         // shell; don't ALSO dump it into the group. Operator 2026-05-24.
         const _dropResident = (r) => _silentReply(r)
-          || meta.replyAllowed === false   // per-chat auto-mode gate withheld the reply
+          // Per-chat auto-mode gate. For WA, route through the shared emit
+          // backstop (hard-blocks mute/off regardless of the flag); other
+          // surfaces keep the plain per-turn flag.
+          || (meta.fromWhatsApp
+              ? !_eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed })
+              : meta.replyAllowed === false)
           || (_sibBrain?.sessionless && /^!!\s*@/.test(String(r ?? '').trimStart()));
         // Sessionless residents (@l) don't stream a "thinking…" placeholder —
         // we can't know they'll stay quiet until the reply is in, and a

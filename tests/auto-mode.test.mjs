@@ -1,7 +1,7 @@
 // Per-chat auto-mode semantics: standalone @e detection (no email false
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
-import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
+import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -64,5 +64,26 @@ describe('receives / accumulates / isAutoMode', () => {
     expect(isAutoMode('mention')).toBe(true);
     expect(isAutoMode('nope')).toBe(false);
     expect(DEFAULT_AUTO_MODE).toBe('mention');
+  });
+});
+
+describe('mayEmit — outbound backstop', () => {
+  it('HARD-blocks mute/off even when replyAllowed is (wrongly) true', () => {
+    expect(mayEmit('mute', { replyAllowed: true })).toBe(false);
+    expect(mayEmit('off',  { replyAllowed: true })).toBe(false);
+  });
+  it('allows on unconditionally', () => {
+    expect(mayEmit('on', {})).toBe(true);
+    expect(mayEmit('on', { replyAllowed: false })).toBe(true);
+  });
+  it('mention modes defer to the per-turn replyAllowed flag', () => {
+    expect(mayEmit('mention', { replyAllowed: true })).toBe(true);
+    expect(mayEmit('mention', { replyAllowed: false })).toBe(false);
+    expect(mayEmit('mention-direct', { replyAllowed: true })).toBe(true);
+    expect(mayEmit('accum', { replyAllowed: true })).toBe(true);
+  });
+  it('fails CLOSED for mention modes when the flag is absent', () => {
+    expect(mayEmit('mention', {})).toBe(false);
+    expect(mayEmit('mention-direct', {})).toBe(false);
   });
 });

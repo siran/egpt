@@ -51,3 +51,19 @@ export function replyAllowed(mode, status = {}) {
     default:               return atEAnywhere || replyToBot;   // unknown → treat as 'mention'
   }
 }
+
+// Outbound EMIT gate — the single backstop every E reply must pass before it
+// reaches a chat, regardless of which dispatch path produced it (text, voice,
+// emitted-command, future paths). E *receives* everything (reception is
+// unconditional); this gates only what E SENDS. Two layers:
+//   1. HARD: 'mute'/'off' can NEVER emit — independent of `replyAllowed`, so a
+//      path that forgot to thread the flag (the voice-note bug) still can't
+//      message a muted chat.
+//   2. mention / mention-direct / accum: emit only when the per-turn
+//      `replyAllowed` gate already passed. Fail-closed when the flag is absent.
+// `mode` is the chat's resolved auto-mode; `replyAllowed` is the per-turn flag.
+export function mayEmit(mode, { replyAllowed = undefined } = {}) {
+  if (mode === 'mute' || mode === 'off') return false;
+  if (mode === 'on') return true;
+  return replyAllowed === true;
+}
