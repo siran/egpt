@@ -59,7 +59,7 @@ import {
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
 import {
-  loadGrants, saveGrants, grantedPaths, addGrant, removeGrant,
+  loadGrants, saveGrants, grantedEntries, addGrant, removeGrant, normalizeAccess,
 } from '../src/conv-grants.mjs';
 import { loadRooms, roomsForMember } from '../src/rooms.mjs';
 import { homedir } from 'node:os';
@@ -83,7 +83,7 @@ export const meta = {
     { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
     { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)", example: '/e tool deny all' },
     { name: 'cmd',        usage: '/e cmd allow|deny <command> | status',                     desc: 'which slash commands conversation-e may EXECUTE from its own reply (allowlist; default /react). Known-but-unlisted commands are stripped, never run', example: '/e cmd allow react' },
-    { name: 'path',       usage: '/e path [list|add|rm] [<path>] [<slug>]',                  desc: 'custom directory grants for conversation-e (conversations/config.yaml, outside its sandbox). Bare /e path lists effective access; <slug> defaults to the current chat', example: '/e path add C:\\refs\\manual' },
+    { name: 'path',       usage: '/e path [list|add|rm] [<path>] [ro|rw] [<slug>]',          desc: 'custom directory grants for conversation-e (conversations/config.yaml, outside its sandbox). access ro=read-only, rw/full=read+write (default). Bare /e path lists effective access; <slug> defaults to the current chat', example: '/e path add C:\\refs\\manual ro' },
     { name: 'butler',     usage: '/e butler <prompt>',                                       desc: 'ephemeral haiku sub-agent — no session memory, default all-tools', example: '/e butler summarize my unread chats' },
     { name: 'supervisor', usage: '/e supervisor [status|install|uninstall|restart]',         desc: 'manage the supervisor watchdog', example: '/e supervisor status' },
   ],
@@ -300,7 +300,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       const slug = tokens[2] || here;
       if (!slug) { sysOut('!! /e path: no chat context — pass a slug: `/e path list <slug>`'); return true; }
       const grants = await loadGrants();
-      const custom = grantedPaths(grants, slug);
+      const custom = grantedEntries(grants, slug);
       const ownDir = slugDir('whatsapp', slug);
       let roomNames = [];
       try {
@@ -309,33 +309,39 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         for (const j of jidsForSlug(slug)) for (const r of roomsForMember(rs, j)) seen.add(r.name);
         roomNames = [...seen];
       } catch { /* best effort */ }
-      const lines = [`📂 conversation-e access for "${slug}" (all FULL read/write):`];
-      lines.push(`  own   · ${ownDir}`);
-      for (const n of roomNames) lines.push(`  room  · ${join(homedir(), '.egpt', 'rooms', n)}   — member of "${n}"`);
-      if (custom.length) for (const p of custom) lines.push(`  grant · ${p}`);
-      else lines.push('  (no custom grants — add with `/e path add <path>`)');
+      const lines = [`📂 conversation-e access for "${slug}":`];
+      lines.push(`  own   (full) · ${ownDir}`);
+      for (const n of roomNames) lines.push(`  room  (full) · ${join(homedir(), '.egpt', 'rooms', n)}   — member of "${n}"`);
+      if (custom.length) for (const e of custom) lines.push(`  grant (${e.access}) · ${e.path}`);
+      else lines.push('  (no custom grants — add with `/e path add <path> [ro]`)');
       sysOut(lines.join('\n'));
       return true;
     }
 
-    // add | rm: `<path> [<slug>]`. The slug, when given, is the LAST token, so
-    // a path containing spaces survives (everything between the verb and an
-    // explicit slug is the path). With no explicit slug, the whole tail is the
-    // path and the target is the current chat.
-    const tail = tokens.slice(2);
-    if (!tail.length) { sysOut(`usage: /e path ${action} <path> [<slug>]`); return true; }
+    // add | rm: `<path> [<access>] [<slug>]`. An access token (ro/read/rw/full)
+    // anywhere in the tail is pulled out first; then, of what remains, an
+    // explicit slug is the LAST token (so a path with spaces survives) and the
+    // path is everything before it. With no explicit slug, the whole remainder
+    // is the path and the target is the current chat. (rm ignores access.)
+    let tail = tokens.slice(2);
+    let access = 'full';
+    const accIdx = tail.findIndex(t => /^(ro|read|readonly|read-only|rw|full|write)$/i.test(t));
+    if (accIdx !== -1) { access = normalizeAccess(tail[accIdx]); tail = tail.filter((_, i) => i !== accIdx); }
+    if (!tail.length) { sysOut(`usage: /e path ${action} <path> [ro|rw] [<slug>]`); return true; }
     let path, slug;
     if (tail.length >= 2) { slug = tail[tail.length - 1]; path = tail.slice(0, -1).join(' '); }
     else { path = tail[0]; slug = here; }
-    if (!slug) { sysOut(`!! /e path ${action}: no chat context — pass a slug: \`/e path ${action} <path> <slug>\``); return true; }
+    if (!slug) { sysOut(`!! /e path ${action}: no chat context — pass a slug: \`/e path ${action} <path> [ro|rw] <slug>\``); return true; }
     if (!isAbsolute(path)) { sysOut(`!! /e path ${action}: "${path}" is not an absolute path`); return true; }
 
     const grants = await loadGrants();
     try {
-      const next = action === 'add' ? addGrant(grants, slug, path) : removeGrant(grants, slug, path);
+      const next = action === 'add' ? addGrant(grants, slug, path, access) : removeGrant(grants, slug, path);
       await saveGrants(next);
-      const now = grantedPaths(next, slug);
-      sysOut(`✓ /e path ${action} "${slug}": ${action === 'add' ? 'granted' : 'removed'} ${path}\n  grants now: ${now.length ? now.join(', ') : '(none)'}\n  (takes effect on this contact's next turn)`);
+      const now = grantedEntries(next, slug);
+      const shown = now.length ? now.map(e => `${e.path} (${e.access})`).join(', ') : '(none)';
+      const what = action === 'add' ? `granted ${path} (${access})` : `removed ${path}`;
+      sysOut(`✓ /e path ${action} "${slug}": ${what}\n  grants now: ${shown}\n  (takes effect on this contact's next turn)`);
     } catch (e) { sysOut(`!! /e path ${action}: ${e?.message ?? e}`); }
     return true;
   }

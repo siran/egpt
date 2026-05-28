@@ -507,8 +507,10 @@ export function createDispatchRuntime({
   // Operator-configured custom directory grants (operator 2026-05-27), sourced
   // from conversations/config.yaml — a file OUTSIDE the contact sandbox, so
   // conversation-e can never widen its own access. Resolves a contact
-  // ({ slug, personality, jids }) to a list of absolute dirs to merge into the
-  // confined sandbox. Managed by the operator via `/e path add|rm`.
+  // ({ slug, personality, jids }) to a list of { path, access } entries
+  // (access: 'full' | 'read'). All paths join the confined addDirs; read-only
+  // paths are additionally enforced by the brain's write-deny hook. Managed by
+  // the operator via `/e path add|rm`.
   grantDirsForContact = async () => [],
   readPersonality = async () => null,
   // Per-personality allowed_tools resolver. Defaults to `null` =
@@ -792,12 +794,16 @@ export function createDispatchRuntime({
         let roomDirs = [];
         try { roomDirs = (await roomDirsForJids(convEntry.jids ?? [])) ?? []; }
         catch (e) { logger?.error?.(`!! roomDirsForJids: ${e?.message ?? e}`); }
-        let grantDirs = [];
+        let grantEntries = [];
         try {
-          grantDirs = (await grantDirsForContact({
+          grantEntries = (await grantDirsForContact({
             slug: convSlug, personality: convEntry.personality ?? 'default', jids: convEntry.jids ?? [],
           })) ?? [];
         } catch (e) { logger?.error?.(`!! grantDirsForContact: ${e?.message ?? e}`); }
+        const grantDirs = grantEntries.map(e => (typeof e === 'string' ? e : e?.path)).filter(Boolean);
+        const readOnlyDirs = grantEntries
+          .filter(e => e && typeof e === 'object' && e.access === 'read')
+          .map(e => e.path).filter(Boolean);
         sessionOpts.addDirs = [
           sessionOpts.cwd,
           sluggedDir,
@@ -805,6 +811,9 @@ export function createDispatchRuntime({
           ...roomDirs,
           ...grantDirs,
         ];
+        // Read-only grants: in the sandbox (above) so reads work; the brain
+        // adds a PreToolUse hook that denies write-class tools under these.
+        if (readOnlyDirs.length) sessionOpts.readOnlyDirs = readOnlyDirs;
         // Confine conversation-e's file tools to its own dirs. A restricted
         // allowed_tools list (no Bash) is NOT enough — listing Read there
         // pre-approves reads of ANY absolute path, so a contact could read

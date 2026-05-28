@@ -34,6 +34,55 @@ function normalizeCwd(p) {
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
 }
 
+// Canonical form for path-prefix comparison: drive-letter uppercased,
+// separators unified to '/', trailing slash dropped, case-folded (Windows
+// filesystems are case-insensitive). Conservative — when in doubt, deny.
+function _normForCompare(p) {
+  let s = normalizeCwd(String(p ?? '')).replace(/\\/g, '/');
+  s = s.replace(/\/+$/, '');
+  return s.toLowerCase();
+}
+
+// Is `target` inside one of `roots`? Boundary-safe: a root C:/a does not match
+// C:/ab, only C:/a or C:/a/...
+export function isUnderAnyRoot(target, roots = []) {
+  const t = _normForCompare(target);
+  if (!t) return false;
+  return roots.some((r) => {
+    const root = _normForCompare(r);
+    return root && (t === root || t.startsWith(root + '/'));
+  });
+}
+
+// Tools that WRITE to a path. Read/Grep/Glob are not here — read-only grants
+// still allow them. Bash is denied wholesale by the sandbox already.
+const WRITE_TOOLS = new Set(['write', 'edit', 'multiedit', 'notebookedit']);
+
+// PreToolUse hook that denies a write-class tool whose target path falls under
+// a read-only grant root. A PreToolUse 'deny' bypasses the normal approval, so
+// this holds even though the dir is in additionalDirectories (needed for reads).
+export function makeReadOnlyHook(readOnlyRoots = [], onLog = () => {}) {
+  return async (input) => {
+    try {
+      const tool = String(input?.tool_name ?? '').toLowerCase();
+      if (!WRITE_TOOLS.has(tool)) return { continue: true };
+      const inp = input?.tool_input ?? {};
+      const target = inp.file_path ?? inp.path ?? inp.notebook_path ?? inp.filePath ?? null;
+      if (target && isUnderAnyRoot(target, readOnlyRoots)) {
+        onLog(`claude-sdk: read-only grant — denied ${tool} on ${target}`);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: `read-only grant: ${target} may be read but not written`,
+          },
+        };
+      }
+    } catch { /* fail open to continue — the sandbox still confines paths */ }
+    return { continue: true };
+  };
+}
+
 // Build the static (non-runtime) SDK options from a brain `options` block.
 // Pure + exported so the permission/confinement wiring is unit-testable.
 // Field mapping mirrors claude-code.mjs CLI flags:
@@ -107,6 +156,23 @@ export function buildSdkOptions(options = {}) {
       type: 'preset',
       preset: 'claude_code',
       append: options.appendSystemPrompt.trim(),
+    };
+  }
+
+  // Read-only grants: the dirs are already in additionalDirectories (so reads
+  // work); a PreToolUse hook denies write-class tools targeting them. The hook
+  // is programmatic (not from a settings file), so it fires even with
+  // settingSources:[].
+  const readOnlyDirs = Array.isArray(options.readOnlyDirs)
+    ? options.readOnlyDirs.filter((d) => d && typeof d === 'string')
+    : [];
+  if (readOnlyDirs.length) {
+    sdkOpts.hooks = {
+      ...(sdkOpts.hooks ?? {}),
+      PreToolUse: [
+        ...((sdkOpts.hooks?.PreToolUse) ?? []),
+        { hooks: [makeReadOnlyHook(readOnlyDirs, typeof options.onLog === 'function' ? options.onLog : () => {})] },
+      ],
     };
   }
   return sdkOpts;
