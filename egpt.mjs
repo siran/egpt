@@ -4100,7 +4100,7 @@ function App() {
           const matching = tabs.filter(t => !isInternalUrl(t.url) && brainForUrl(t.url));
           if (matching.length > 0 && !defaultRoomHintShown.current) {
             defaultRoomHintShown.current = true;
-            notice(`found ${matching.length} brain tab(s) but you're in the default lobby. To attach: /room create <name> && /room join <name> && /attach`);
+            notice(`found ${matching.length} brain tab(s) but you're in the default lobby. To attach them: /attach <brain> (auto-creates a room and switches you in).`);
           }
         } else {
         const tabs = await cdp.listTabs();

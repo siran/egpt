@@ -58,7 +58,7 @@ export async function run({ arg, ctx }) {
         const members = Object.entries(sess).map(([n, s]) => `${s.emoji ?? ''}${n}/${s.brain}`).join(', ') || '(empty)';
         return `  · ${r}  (${members})`;
       }).join('\n');
-      sysOut(`other rooms available — /room join <name> to resume one with its sessions:\n${list}`);
+      sysOut(`other rooms available — /attach <brain> auto-creates a room, or use the legacy /save-room/<load> flow to resume one with its sessions:\n${list}`);
     }
     if (!roomSessionsMap[autoRoomName]) {
       setRoomSessionsMap(rs => ({ ...rs, [autoRoomName]: {} }));

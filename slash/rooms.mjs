@@ -45,7 +45,7 @@ export async function run({ cmd, arg, ctx }) {
       sysOut(
         `Saved rooms in ${dp(ROOMS_DIR)}:\n` +
         `${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n` +
-        `/room join <name> to enter (and restore its sessions)`,
+        `(/attach <brain> spins up a new working room; legacy snapshot restore from these YAMLs is not currently wired through any slash command — open one as JSON if you need its session metadata.)`,
         { _themed: true },
       );
     } catch (e) { sysOut(`!! ${e.message}`); }

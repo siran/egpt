@@ -13,20 +13,21 @@ export const meta = {
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
   //   sysOut
-  //   getCurrentRoom                 — lobby blocks /open
-  //   sessions, setSessions
+  //   getCurrentRoom / setCurrentRoom — lobby auto-creates a room (was: refused)
+  //   sessions / setSessions          — shadowed below when leaving the lobby
+  //   roomSessionsMap / setRoomSessionsMap
   //   canonicalBrainName, brainForName, brainNamesForHelp
   //   nextName, nextEmoji
-  const { sysOut, getCurrentRoom,
-          sessions, setSessions,
+  const { sysOut,
+          sessions: roomSessions, setSessions: setRoomSessions,
+          getCurrentRoom, setCurrentRoom,
+          roomSessionsMap, setRoomSessionsMap,
           canonicalBrainName, brainForName, brainNamesForHelp,
           nextName, nextEmoji } = ctx;
 
-  if (getCurrentRoom() === 'default') {
-    sysOut('!! default room is the lobby and cannot host brains. Create a room first:\n  /room create <name>\n  /room join <name>\n  /open …');
-    return true;
-  }
-  const parts = arg.split(/\s+/);
+  // Parse + validate FIRST so `/open` with no args always prints the brain
+  // list — the lobby auto-create below shouldn't fire on a help-style call.
+  const parts = arg.split(/\s+/).filter(Boolean);
   const brainName = canonicalBrainName(parts[0]);
   let sessionName = parts[1];
   if (!brainName) {
@@ -35,6 +36,33 @@ export async function run({ arg, ctx }) {
   }
   const brain = brainForName(brainName);
   if (!brain) { sysOut(`unknown brain: ${brainName}`); return true; }
+
+  // Lobby auto-room (mirrors /attach so /open works as a single command).
+  // Was: refused with a "create a room first" message that suggested
+  // `/room join <name>` — fictional syntax, the new /room never switches the
+  // legacy currentRoom (only /attach did).
+  let targetRoom = getCurrentRoom();
+  if (targetRoom === 'default') {
+    const autoRoomName = sessionName || brainName || 'work';
+    if (!roomSessionsMap[autoRoomName]) {
+      setRoomSessionsMap(rs => ({ ...rs, [autoRoomName]: {} }));
+      sysOut(`auto-created room "${autoRoomName}"`);
+    }
+    setCurrentRoom(autoRoomName);
+    sysOut(`joined room "${autoRoomName}" — continuing /open`);
+    targetRoom = autoRoomName;
+  }
+  // Shadow sessions/setSessions to write into targetRoom now — setCurrentRoom
+  // above takes effect next render, but the rest of /open runs RIGHT NOW.
+  const sessions = roomSessionsMap[targetRoom] ?? {};
+  const setSessions = (updater) => {
+    setRoomSessionsMap(rs => {
+      const cur = rs[targetRoom] ?? {};
+      const next = typeof updater === 'function' ? updater(cur) : updater;
+      return { ...rs, [targetRoom]: next };
+    });
+  };
+
   if (!sessionName) sessionName = nextName(brainName, sessions);
   if (sessions[sessionName]) { sysOut(`session "${sessionName}" already exists`); return true; }
   try {
