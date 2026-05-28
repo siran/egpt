@@ -12,14 +12,37 @@
 // forensics, but /last shows the actual conversation.
 
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 export const meta = {
   cmd: '/last',
   section: 'ROOM',
   surface: 'shell',
-  usage: '/last [N]',
-  desc: 'tail N messages (default 10)',
+  usage: '/last [N] | /last <room> [N]',
+  desc: 'tail N messages (default 10) — this conversation, or a multi-member room transcript',
 };
+
+// `/last <room> [N]` — the multi-member room transcript is a flat line-per-
+// message log (`[ISO] 🏠 room · sender: body`), a different shape from the
+// conversation .md, so tail it raw rather than via parseMessages.
+async function tailRoom(name, n, { sysOut, setItems }) {
+  const file = join(homedir(), '.egpt', 'rooms', name, 'transcript.md');
+  let text;
+  try { text = await readFile(file, 'utf8'); }
+  catch { sysOut(`(no transcript for room "${name}" yet)`); return true; }
+  const lines = text.split('\n').map(l => l.trimEnd()).filter(Boolean);
+  if (!lines.length) { sysOut(`(room "${name}" transcript is empty)`); return true; }
+  const tail = lines.slice(-n);
+  sysOut(`--- last ${tail.length} line(s) from room "${name}" ---`);
+  setItems(p => [...p, ...tail.map((l, i) => ({
+    id: Date.now() + i / 1000,
+    author: `room@${name}`,
+    body: l.replace(/^\[[^\]]+\]\s*/, ''),   // drop the ISO timestamp prefix
+    _localOnly: true,
+  }))]);
+  return true;
+}
 
 export async function run({ arg, ctx }) {
   // ctx keys consumed:
@@ -34,6 +57,15 @@ export async function run({ arg, ctx }) {
   //   dp(path)                   — path display formatter
   const { sysOut, setItems, getFile, suppressTranscriptRef,
           parseMessages, isMetaMessage, dp } = ctx;
+
+  // `/last <room> [N]`: a leading non-numeric token is a room name (optional
+  // trailing N). `/last [N]` (numeric or empty) tails this conversation.
+  const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length && !/^\d+$/.test(parts[0])) {
+    const roomName = parts[0];
+    const roomN = parseInt(parts[1], 10) || 10;
+    return tailRoom(roomName, roomN, { sysOut, setItems });
+  }
 
   const n = parseInt(arg, 10) || 10;
   suppressTranscriptRef.current = true;
