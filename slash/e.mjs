@@ -74,7 +74,7 @@ export const meta = {
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
     { name: 'identity',   usage: '/e identity [<identity>]',                                 desc: 'reinstall/refresh the identity folder, KEEP the thread — after editing identities/<name>/', example: '/e identity' },
     { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
-    { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status lists chats', example: '/e auto mention all' },
+    { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats (optional name/jid filter that also finds contacts on the default mode)', example: '/e auto status daniel' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
     { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)', example: '/e source egpt-dev' },
@@ -972,22 +972,55 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const MODES = AUTO_MODES;   // on, accum, mute, mention-direct, mention, off
 
   if (action === 'status') {
+    // Optional substring filter: `/e auto status <name|jid>` narrows the list
+    // by case-insensitive match against name / jid. A search that finds
+    // nothing in the configured list also looks in the contact registry —
+    // a contact may fall through to the default mode and still be the one
+    // the operator was asking about (operator 2026-05-28).
+    const search = String(jidArg ?? '').trim().toLowerCase();
+
     // Merge legacy auto_e_chats (→ 'on') with explicit auto_e_modes.
     const merged = {};
     for (const j of (Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : [])) merged[j] = 'on';
     for (const [j, m] of Object.entries(wa.auto_e_modes)) merged[j] = m;
     const ents = Object.entries(merged);
-    let list = `  (none set — every chat defaults to "${DEFAULT_AUTO_MODE}")`;
-    if (ents.length) {
-      const rows = await Promise.all(ents.map(async ([j, m]) => {
-        const { name } = await _resolveChatTarget(j);
-        return `  - ${name ? `«${name}» ${j}` : j}: ${m}`;
-      }));
-      list = rows.join('\n');
-    }
+    const rows = await Promise.all(ents.map(async ([j, m]) => {
+      const { name } = await _resolveChatTarget(j);
+      const label = name ? `«${name}» ${j}` : j;
+      return { j, m, name, label, hay: `${label}: ${m}`.toLowerCase() };
+    }));
+    const shown = search ? rows.filter(r => r.hay.includes(search)) : rows;
+
     const paused = wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active';
     const def = wa.auto_e_default_mode || DEFAULT_AUTO_MODE;
-    sysOut(`auto: ${paused}  (default mode: ${def})\nper-chat modes:\n${list}`);
+    const header = search
+      ? `auto: ${paused}  (default mode: ${def})  matches for "${jidArg}":`
+      : `auto: ${paused}  (default mode: ${def})\nper-chat modes:`;
+
+    let body;
+    if (shown.length) {
+      body = shown.map(r => `  - ${r.label}: ${r.m}`).join('\n');
+    } else if (search) {
+      // Fall-through search: a contact that has no per-chat mode set uses
+      // the global default and won't appear in `merged`. Surface those.
+      const cs = await readConvState(CONV_YAML_PATH);
+      const matches = [];
+      for (const [j, e] of Object.entries(cs.contacts?.whatsapp ?? {})) {
+        if (merged[j]) continue;       // already covered above
+        const hay = `${e?.pushedName ?? ''} ${e?.slug ?? ''} ${j}`.toLowerCase();
+        if (hay.includes(search)) {
+          const label = e?.pushedName ? `«${e.pushedName}» ${j}` : `«${e?.slug ?? j}» ${j}`;
+          matches.push(`  - ${label}: (default ${def})`);
+        }
+      }
+      body = matches.length
+        ? `  (no explicit per-chat mode matches "${jidArg}" — these fall through to the default "${def}":)\n${matches.join('\n')}`
+        : `  (no matches for "${jidArg}")`;
+    } else {
+      body = `  (none set — every chat defaults to "${def}")`;
+    }
+
+    sysOut(`${header}\n${body}`);
     return true;
   }
 
