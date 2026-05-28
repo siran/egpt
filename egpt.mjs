@@ -7178,11 +7178,22 @@ function App() {
         // placeholder we'd have to delete is ugly. Collect, then send only if
         // non-silent (below). Session siblings (claude/codex) keep streaming.
         const _streaming = !_sibBrain?.sessionless;
-        const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage)
+        // CRITICAL: open the WA stream ONLY if E may emit to this chat. The
+        // streaming path (`waStream.finish(...)` below) does not consult
+        // _dropResident — it always delivers — so opening a stream in a muted
+        // chat bypasses every gate (operator 2026-05-28: Cristina). With
+        // waStream null, the fallback non-streaming send-path at the bottom of
+        // this block correctly drops on _dropResident. Even the placeholder
+        // "⌛ thinking…" delivery is a send → must be gated. Same for TG.
+        const _waMayEmit = meta.fromWhatsApp
+          ? _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed })
+          : true;
+        const _tgMayEmit = meta.fromTelegram ? (meta.replyAllowed !== false) : true;
+        const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
           ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
-        const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current)
+        const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
           ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
               { chatId: meta.waChatId })
           : null;
