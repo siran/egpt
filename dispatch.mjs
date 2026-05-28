@@ -498,6 +498,12 @@ export function createDispatchRuntime({
   // Identity-folder feed (operator 2026-05-26): concatenated identities/<name>/
   // NN-*.md. Preferred source for a NEW contact's first-turn grounding.
   loadIdentityFeed = async () => '',
+  // Room folders this contact's jids belong to (operator 2026-05-27). A
+  // per-contact E that is part of a room gets FULL access to that room's
+  // folder (~/.egpt/rooms/<name>/) — so it can read the shared transcript and
+  // the room's files when a member asks "what was said while I was away?".
+  // Returns absolute dir paths; merged into the confined sandbox below.
+  roomDirsForJids = async () => [],
   readPersonality = async () => null,
   // Per-personality allowed_tools resolver. Defaults to `null` =
   // "don't override what sessionOptions returned". Inject the
@@ -777,10 +783,14 @@ export function createDispatchRuntime({
       } else {
         sessionOpts.sessionId = convEntry.threadId ?? null;
         sessionOpts.cwd = convEntry.threadCwd ?? sluggedDir;
+        let roomDirs = [];
+        try { roomDirs = (await roomDirsForJids(convEntry.jids ?? [])) ?? []; }
+        catch (e) { logger?.error?.(`!! roomDirsForJids: ${e?.message ?? e}`); }
         sessionOpts.addDirs = [
           sessionOpts.cwd,
           sluggedDir,
           ...((convEntry.jids ?? []).map(j => paths.jidMediaDir(j))),
+          ...roomDirs,
         ];
         // Confine conversation-e's file tools to its own dirs. A restricted
         // allowed_tools list (no Bash) is NOT enough — listing Read there
