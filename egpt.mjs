@@ -2378,15 +2378,23 @@ function App() {
           // Show the envelope so the operator can read along.
           setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
           // ALSO feed the body through the shell's normal submit pipeline so
-          // @-mentions (`@cgpt1 hello`) actually reach their addressed brain
-          // and slash commands execute — same principle as the wa-group
-          // per-chat fan-out above. Without this the shell is display-only
-          // and a routed `@cgpt1` looks delivered but never reaches cgpt1
-          // (operator 2026-05-28). _routedFromRoom is the loop guard the
-          // shell-submit routing check honors so we don't re-fan to room.
-          // Skip when this delivery is a persona reply re-entering the room
-          // (no recursion through brain dispatch).
-          if (!_personaReply && m.kind === 'shell' && submitRef.current) {
+          // @-mentions (`@cgpt1 hello`) actually reach their addressed brain.
+          // Without this the shell is display-only and a routed `@cgpt1`
+          // looks delivered but never reaches cgpt1 (operator 2026-05-28).
+          //
+          // SLASH COMMANDS are deliberately EXCLUDED: they belong to the
+          // originating surface (it already executes them — `/room test
+          // members` typed in eGPT2 replies in eGPT2). Re-executing here
+          // would also race the shared outputSinkRef so the sysOut text
+          // could leak to the wrong surface, and would duplicate state-
+          // mutating commands across surfaces. Display still happens (the
+          // setItems above renders the envelope).
+          //
+          // _routedFromRoom is the loop guard the shell-submit routing
+          // check honors so we don't re-fan to room. Skipped when this is
+          // a persona reply re-entering the room (no brain re-dispatch).
+          if (!_personaReply && m.kind === 'shell' && submitRef.current
+              && !String(body).trimStart().startsWith('/')) {
             try { submitRef.current(body, { _routedFromRoom: roomName, _routedFromMember: fromId }); }
             catch (e) { logOut(`!! room ${roomName} → shell submit: ${e?.message ?? e}`); }
           }
