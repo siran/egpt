@@ -63,3 +63,30 @@ describe('rooms data model', () => {
     expect(getRoom(s1, 'r').members).toHaveLength(1);
   });
 });
+
+import { normalizeMemberState, isMemberStateAlias } from '../src/rooms.mjs';
+
+describe('normalizeMemberState — operator-friendly aliases', () => {
+  it('maps the canonical words to themselves', () => {
+    expect(normalizeMemberState('muted')).toBe('muted');
+    expect(normalizeMemberState('mention')).toBe('mention');
+    expect(normalizeMemberState('active')).toBe('active');
+  });
+  it('maps active aliases to "active"', () => {
+    for (const a of ['on', 'unmute', 'unmuted', 'open', 'ACTIVE', '  on  '])
+      expect(normalizeMemberState(a)).toBe('active');
+  });
+  it('maps muted aliases to "muted"', () => {
+    for (const a of ['mute', 'silent', 'MUTED'])
+      expect(normalizeMemberState(a)).toBe('muted');
+  });
+  it('returns null for unknown tokens', () => {
+    expect(normalizeMemberState('whatever')).toBe(null);
+    expect(normalizeMemberState('')).toBe(null);
+    expect(normalizeMemberState(null)).toBe(null);
+  });
+  it('isMemberStateAlias is true for known + false for unknown', () => {
+    expect(isMemberStateAlias('on')).toBe(true);
+    expect(isMemberStateAlias('whatever')).toBe(false);
+  });
+});

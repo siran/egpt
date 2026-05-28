@@ -22,6 +22,27 @@ export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active'];
 export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain', 'shell', 'extension'];
 export const DEFAULT_MEMBER_STATE = 'muted';
 
+// Operator-friendly aliases for the room member state — `/room test on shell`
+// or `/room test unmute shell` reads more naturally than `active`, but they
+// all mean the same input gate. Normalize to the canonical word here so the
+// stored state stays predictable. Unknown tokens return null.
+const _MEMBER_STATE_ALIASES = {
+  muted:    'muted',  mute:    'muted', silent: 'muted',
+  mention:  'mention',
+  active:   'active', on:      'active', unmute: 'active', unmuted: 'active', open: 'active',
+};
+
+export function normalizeMemberState(token) {
+  const t = String(token ?? '').trim().toLowerCase();
+  return _MEMBER_STATE_ALIASES[t] ?? null;
+}
+
+// Recognized — useful for the CLI to know "this looks like a state word" before
+// it commits to the parse (e.g. distinguishing a state token from a member id).
+export function isMemberStateAlias(token) {
+  return normalizeMemberState(token) !== null;
+}
+
 export const ROOMS_CONFIG_PATH = join(homedir(), '.egpt', 'rooms', 'config.yaml');
 export const roomFilesDir = (name) => join(homedir(), '.egpt', 'rooms', sanitizeName(name), 'files');
 

@@ -21,7 +21,7 @@
 import { resolveChatTarget } from '../conversations-state.mjs';
 import {
   loadRooms, saveRooms, createRoom, deleteRoom, addMember, removeMember,
-  setMemberState, getRoom, listRooms, ROOM_MEMBER_STATES,
+  setMemberState, getRoom, listRooms, ROOM_MEMBER_STATES, normalizeMemberState,
 } from '../src/rooms.mjs';
 
 export const meta = {
@@ -187,12 +187,16 @@ export async function run({ arg, ctx, meta = {} }) {
     return true;
   }
 
-  if (ROOM_MEMBER_STATES.includes(action)) {
+  // Accept any alias the operator might reach for — `on`/`unmute`/`active`
+  // all land on `active`, `mute`/`silent`/`muted` on `muted`. Storage stays
+  // canonical so the listing + routing logic stay simple.
+  const canonicalState = normalizeMemberState(action);
+  if (canonicalState) {
     const m = await resolveMemberArg(parts[2]);
     if (m.error) { sysOut(`!! /room ${name} ${action}: ${m.error}`); return true; }
-    try { state = setMemberState(state, name, m.id, action); await saveRooms(state); }
+    try { state = setMemberState(state, name, m.id, canonicalState); await saveRooms(state); }
     catch (e) { sysOut(`!! /room ${name} ${action}: ${e.message}`); return true; }
-    sysOut(`📂 ${name}: ${KIND_ICON[m.kind]} ${m.label} → ${STATE_ICON[action]} ${action}`);
+    sysOut(`📂 ${name}: ${KIND_ICON[m.kind]} ${m.label} → ${STATE_ICON[canonicalState]} ${canonicalState}`);
     return true;
   }
 
