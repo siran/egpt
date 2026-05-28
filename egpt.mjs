@@ -2374,8 +2374,23 @@ function App() {
           }
         }
         else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
-        else if (m.kind === 'shell' || m.kind === 'extension')
+        else if (m.kind === 'shell' || m.kind === 'extension') {
+          // Show the envelope so the operator can read along.
           setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
+          // ALSO feed the body through the shell's normal submit pipeline so
+          // @-mentions (`@cgpt1 hello`) actually reach their addressed brain
+          // and slash commands execute — same principle as the wa-group
+          // per-chat fan-out above. Without this the shell is display-only
+          // and a routed `@cgpt1` looks delivered but never reaches cgpt1
+          // (operator 2026-05-28). _routedFromRoom is the loop guard the
+          // shell-submit routing check honors so we don't re-fan to room.
+          // Skip when this delivery is a persona reply re-entering the room
+          // (no recursion through brain dispatch).
+          if (!_personaReply && m.kind === 'shell' && submitRef.current) {
+            try { submitRef.current(body, { _routedFromRoom: roomName, _routedFromMember: fromId }); }
+            catch (e) { logOut(`!! room ${roomName} → shell submit: ${e?.message ?? e}`); }
+          }
+        }
         else if (m.kind === 'brain') {
           // Blind by default: a brain sees a room message only when it @mentions
           // it (or it's 'active'). Its reply ALWAYS mirrors back so all read it.
@@ -6087,7 +6102,11 @@ function App() {
     // Bare-meta only — re-dispatched / bridge-arrival items aren't shell input.
     // No content classification: the per-member state (active/mention/mute) is
     // what controls whether the shell contributes, not the message kind.
-    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched) {
+    // Loop guard: a submit that ITSELF originated from room delivery (so a
+    // routed @cgpt1 hello gets dispatched to cgpt1) must not re-route — that
+    // would re-fan the same body back into the room. Loop-safe on the same
+    // principle as isRoomEnvelope on the wa-group side.
+    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched && !meta._routedFromRoom) {
       _maybeRouteToRooms({ memberId: 'shell', senderLabel: `${USER_NAME} (${BUS_NODE_ID})`, body: text })
         .catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
     }
