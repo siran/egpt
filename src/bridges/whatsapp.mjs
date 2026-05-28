@@ -1158,19 +1158,24 @@ export async function startWhatsAppBridge({
           stopped = true;
           return;
         }
-        // 440 = connectionReplaced. Means WA's server has another
-        // session authenticated with these credentials. Almost always
-        // a stale session from a prior shell that didn't release the
-        // WS cleanly on /upgrade or crash. Auto-reconnecting just
-        // trips the replacement again — we'd loop forever fighting
-        // ourselves. Stop and ask the operator to /whatsapp start
-        // after a brief wait so WA's side can drain the stale entry.
+        // 440 = connectionReplaced. WA's server has another session
+        // authenticated with these credentials. Historically we treated
+        // this as a self-conflict (a second egpt daemon fighting over the
+        // session) and disabled auto-reconnect to avoid a fight loop. The
+        // daemon-singleton (src/daemon-singleton.mjs, cross-session-aware
+        // since 2026-05-28) now PROVES we're alone, so 440 must be
+        // EXTERNAL — your phone's WA Web link, a browser tab on
+        // whatsapp.com, or the Chrome extension's WA-CDP. Keep retrying:
+        // the external client will eventually release (you close the tab,
+        // refresh the phone link) and the next reconnect attempt wins.
+        // _scheduleReconnect's exponential backoff caps at RECONNECT_MAX_MS,
+        // so this isn't a hot loop — just patient reattempts.
         if (reason === DisconnectReason.connectionReplaced || reason === 440) {
-          err('whatsapp: connection replaced by another session (reason 440). ' +
-              'A stale WS from a prior process is still on WA\'s server. ' +
-              'Wait ~30s then run /whatsapp start. Auto-reconnect disabled to avoid a fight loop.');
+          err('whatsapp: connection replaced (reason 440) — another WA Web client ' +
+              'holds the session (your phone, a browser tab on whatsapp.com, or the ' +
+              'extension). Reconnecting with backoff; close the other client to recover.');
           _stopWaAlive('connection_replaced', `reason ${reason}`);
-          stopped = true;
+          _scheduleReconnect(`connection replaced (reason ${reason})`);
           return;
         }
         _stopWaAlive('closed', `reason ${reason ?? '?'}`);
