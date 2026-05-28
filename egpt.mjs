@@ -36,6 +36,7 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { loadRooms, roomsForMember } from './src/rooms.mjs';
+import { pathsForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
@@ -5207,6 +5208,11 @@ function App() {
           }
           return [...names].map(n => join(EGPT_HOME, 'rooms', n));
         } catch { return []; }
+      },
+      // Operator-configured custom dir grants from conversations/config.yaml
+      // (outside the sandbox; managed via /e path). Keyed by contact slug.
+      grantDirsForContact: async ({ slug } = {}) => {
+        try { return await pathsForSlug(slug); } catch { return []; }
       },
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
