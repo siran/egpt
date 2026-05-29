@@ -2994,8 +2994,12 @@ export async function startWhatsAppBridge({
 
     // Mention status of THIS message, for the host's per-chat auto-mode reply
     // gate: standalone @e at start / anywhere, and whether it replies to one of
-    // our messages. Computed on the final `processed` text.
-    const _ms = mentionStatus(processed);
+    // our messages. Computed on the ORIGINAL user body — not `processed`. The
+    // mid-body @e expansion above rewrites "hey @e foo" → "@e hey @e foo" so
+    // parseInput sees a clean wake-word; computing the gate on the synthesized
+    // string would fake atEStart=true and bypass a chat in 'mention-direct'
+    // mode. The gate must reflect what the user actually typed.
+    const _ms = mentionStatus(text.trim());
     await onIncoming?.(processed, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
       isTranscriptFromVoice,

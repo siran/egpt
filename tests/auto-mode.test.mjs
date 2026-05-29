@@ -67,6 +67,35 @@ describe('receives / accumulates / isAutoMode', () => {
   });
 });
 
+// REGRESSION: the WA bridge rewrites "hey @e foo" → "@e hey @e foo" so
+// parseInput sees a clean wake-word at start. If the per-chat reply gate were
+// computed on that SYNTHESIZED body, atEStart would be true and a chat in
+// 'mention-direct' would leak a reply. The contract: gate reads the USER's
+// original text, never the synthesized `processed`. Bug: 2026-05-29 — E was
+// leaking into groups configured as mention-direct because the bridge passed
+// `processed` to mentionStatus. Fix: bridge now calls mentionStatus(text.trim()).
+describe('REGRESSION: mention-direct must not be bypassed by mid-body @e synthesis', () => {
+  it('original user text "hey @e foo" → atEStart false → mention-direct BLOCKS', () => {
+    const ms = mentionStatus('hey @e foo');
+    expect(ms.atEStart).toBe(false);
+    expect(ms.atEAnywhere).toBe(true);
+    expect(replyAllowed('mention-direct', { ...ms, replyToBot: false })).toBe(false);
+  });
+  it('THE TRAP — synthesized "@e hey @e foo" reads as atEStart=true; gate must NEVER see this string', () => {
+    const ms = mentionStatus('@e hey @e foo');
+    expect(ms.atEStart).toBe(true);
+    // If a future refactor passes `processed` to mentionStatus, this test
+    // still passes (it documents the trap, not the bug). The actual bridge
+    // contract — "compute on text.trim(), not on processed" — is asserted
+    // by the bridge code itself; the bug surface is small and the comment
+    // at the call site (`src/bridges/whatsapp.mjs`) names this regression.
+  });
+  it('mention mode still allows the same body (mention is permissive by design)', () => {
+    const ms = mentionStatus('hey @e foo');
+    expect(replyAllowed('mention', { ...ms, replyToBot: false })).toBe(true);
+  });
+});
+
 describe('mayEmit — outbound backstop', () => {
   it('HARD-blocks mute/off even when replyAllowed is (wrongly) true', () => {
     expect(mayEmit('mute', { replyAllowed: true })).toBe(false);
