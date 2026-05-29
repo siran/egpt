@@ -89,12 +89,25 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
   // Table-driven so the two never drift into copy-paste.
   const BOUNCE = {
     '/restart': { code: 43, pre: (sha) => `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…`,
-                  exitMsg: 'exiting with code 43 — egpt-daemon (if running) will respawn the shell' },
+                  exitMsg: 'exiting with code 43 — egpt-daemon will respawn the shell' },
     '/upgrade': { code: 42, pre: (sha) => `🧠 eGPT · ⬆ /upgrade (exit 42) — pull + rebuild from ${sha}…`,
-                  exitMsg: 'exiting with code 42 — egpt-daemon (if running) will pull, rebuild, and restart' },
+                  exitMsg: 'exiting with code 42 — egpt-daemon will pull, rebuild, and restart' },
   };
   if (BOUNCE[cmd]) {
     const b = BOUNCE[cmd];
+    // Supervision check: exit 42/43/44 is meaningful ONLY when egpt-daemon.mjs
+    // is the parent process and will read the exit code to decide whether to
+    // respawn. A user running `node egpt.mjs` directly has no supervisor, so
+    // /restart just kills the shell with no respawn (operator 2026-05-29:
+    // it died and dropped them back at a bash prompt). egpt-daemon sets
+    // EGPT_SUPERVISED in the child's env so we can tell the difference.
+    if (!process.env.EGPT_SUPERVISED) {
+      sysOut(`${cmd}: this shell isn't under egpt-daemon supervision — ` +
+             `exit ${b.code} would just kill the shell with no respawn. ` +
+             `Use /exit and re-run \`node egpt.mjs\` if you want a fresh boot, ` +
+             `or run egpt under the daemon (Task Scheduler / systemd / launchd).`);
+      return true;
+    }
     try {
       await announceBounce({ ctx, meta, preBody: b.pre });
     } catch (e) { sysOut(`!! ${cmd}: announce write failed — ${e.message}`); }
@@ -123,7 +136,15 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
       sysOut(`!! could not write rewind sidecar: ${e.message}`);
       return true;
     }
-    sysOut(`exiting with code 44 — egpt-daemon (if running) will checkout ${ref}, install, build, restart`);
+    // Same supervision check as /restart and /upgrade — exit 44 only does
+    // something when egpt-daemon reads it.
+    if (!process.env.EGPT_SUPERVISED) {
+      sysOut(`/rewind: this shell isn't under egpt-daemon supervision — ` +
+             `exit 44 would just kill the shell with no respawn. ` +
+             `Run egpt under the daemon (Task Scheduler / systemd / launchd) for /rewind to work.`);
+      return true;
+    }
+    sysOut(`exiting with code 44 — egpt-daemon will checkout ${ref}, install, build, restart`);
     setTimeout(() => exitClean(44), 100);
     return true;
   }
