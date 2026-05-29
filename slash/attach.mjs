@@ -5,8 +5,11 @@
 // commands. Lobby → auto-create+join a room named after the session
 // arg; Chrome unreachable → auto-spawn; no matching tab → auto-open one.
 //
-// Four forms:
+// Five forms:
 //   /attach                          rescan Chrome, attach any new matching tabs
+//   /attach <url|uuid|tabId>         attach THAT tab — brain inferred from URL,
+//                                    session auto-named (operator 2026-05-29:
+//                                    'the tab already defines brain type, url')
 //   /attach <profile>                start a YAML brain profile
 //   /attach <brain>                  attach all CDP tabs or create a local session
 //   /attach <brain> <name> [tabSpec] explicit attach to one specific tab
@@ -139,9 +142,41 @@ export async function run({ arg, ctx }) {
   const brainName = canonicalBrainName(parts[0]);
   const brain = brainForName(brainName);
   if (!brain) {
+    // Form 2 (URL/uuid/tabId): the operator passed a tab spec directly. The
+    // tab itself already defines its URL and (via brainForUrl) its brain, so
+    // brain + name are inferred — no need to type them. Operator 2026-05-29:
+    // "[tabspec] after defining brain... makes no sense, since the tab
+    // already defines brain type, url, etc."
+    if (parts.length === 1 && parts[0].length >= 6) {
+      try {
+        const tid = await resolveTabId(parts[0]);
+        if (tid) {
+          const tabs = await cdp.listTabs();
+          const tab = tabs.find(t => t.id === tid);
+          if (tab) {
+            const inferredBrain = brainForUrl(tab.url);
+            if (!inferredBrain) {
+              sysOut(`!! tab matched but no brain recognizes its URL: ${tab.url}`);
+              return true;
+            }
+            const existing = Object.entries(sessions).find(([_, s]) => s.options?.targetId === tid);
+            if (existing) {
+              sysOut(`tab already attached as ${existing[1].emoji ?? ''}${existing[0]} (${existing[1].brain})`);
+              return true;
+            }
+            const name = nextName(inferredBrain, sessions);
+            const emoji = nextEmoji(sessions);
+            setSessions(s => ({ ...s, [name]: { brain: inferredBrain, options: { targetId: tid }, emoji } }));
+            sysOut(`session "${name}" -> ${emoji} ${inferredBrain} (tab ${tid.slice(0, 8)}…, ${tab.title || tab.url.slice(0, 60)})\n  address it as @${name} for a single-recipient turn`);
+            return true;
+          }
+        }
+      } catch (e) { /* fall through to usage */ }
+    }
     sysOut(
       'usage: /attach                          rescan and attach new tabs\n' +
-      '       /attach <profile>                 start a YAML brain profile\n' +
+      '       /attach <url|uuid|tabId>         attach THAT tab; brain + name inferred\n' +
+      '       /attach <profile>                start a YAML brain profile\n' +
       '       /attach <brain>                  attach CDP tabs or create a local session\n' +
       '       /attach <brain> <name> [tabSpec] explicit attach\n' +
       'brains: ' + brainNamesForHelp().join(', ') +
