@@ -60,6 +60,7 @@ import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
+import { defaultIsAlive } from '../daemon-singleton.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -372,6 +373,33 @@ export async function startWhatsAppBridge({
       writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${process.pid} ${detail}\n`.trim() + '\n', { mode: 0o600 });
     } catch (e) { /* best effort */ }
   }
+  // Is there ANOTHER egpt currently holding WA? Reads the recent tic/toc
+  // lines from whatsapp-alive.txt (the bridge's own heartbeat) and returns
+  // the first alive pid that isn't us. Cross-session-safe via defaultIsAlive
+  // so a session-0 S4U daemon is detectable from session 1.
+  //
+  // This is the cooperation point on 440: with the daemon-singleton holding,
+  // a 440 means EITHER an external WA Web client OR our own daemon-vs-
+  // interactive race (operator runs `node egpt.mjs` while the headless
+  // daemon is up). The pidfile-handshake takeover (egpt.mjs takeoverIfRunning)
+  // uses process.kill across sessions which silently no-ops against the S4U
+  // daemon on Win32 — the takeover never completes, both processes keep
+  // their WA bridges, and they fight forever. Detecting the other egpt here
+  // and DEFERRING breaks the loop (operator 2026-05-29).
+  function _findAnotherEgptWithWA() {
+    let content = '';
+    try { content = readFileSync(WA_STATE_PATH, 'utf8'); } catch { return null; }
+    const re = /^(?:tic|toc)\s+(\S+)\s+(\d+)/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const ts = Date.parse(m[1]);
+      const pid = Number(m[2]);
+      if (!pid || pid === process.pid) continue;
+      if (!Number.isFinite(ts) || Date.now() - ts > 120_000) continue;   // 2 missed beats
+      if (defaultIsAlive(pid)) return pid;
+    }
+    return null;
+  }
   function _writeWaAliveNow() {
     try {
       const now = new Date().toISOString();
@@ -402,6 +430,16 @@ export async function startWhatsAppBridge({
     _stopWaAlive('reconnecting', reason);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
+      // Late-detection: another egpt may have taken WA between attempts
+      // (the 440 handler's first check can race the other side's first
+      // tic/toc write). Re-check here so we don't reconnect into a fight.
+      const otherEgpt = _findAnotherEgptWithWA();
+      if (otherEgpt) {
+        err(`whatsapp: reconnect deferred — another egpt (pid ${otherEgpt}) holds WA.`);
+        _stopWaAlive('connection_replaced', `deferring to pid ${otherEgpt}`);
+        stopped = true;
+        return;
+      }
       try { connect(); }
       catch (e) { _scheduleReconnect(`connect() threw: ${e.message}`); }
     }, delay);
@@ -1171,6 +1209,24 @@ export async function startWhatsAppBridge({
         // _scheduleReconnect's exponential backoff caps at RECONNECT_MAX_MS,
         // so this isn't a hot loop — just patient reattempts.
         if (reason === DisconnectReason.connectionReplaced || reason === 440) {
+          // Distinguish internal (another egpt has WA) from external (phone,
+          // browser tab, extension). Daemon-singleton makes self-conflicts
+          // structurally impossible AT THE DAEMON LEVEL, but a user can still
+          // run `node egpt.mjs` (the app, not the supervisor) alongside the
+          // headless daemon — the pidfile-handshake takeover is supposed to
+          // hand WA between them, but its process.kill is cross-session
+          // and silently no-ops against the S4U daemon on Win32. So check
+          // here and defer to the other egpt if found; the operator can /exit
+          // one of them to converge.
+          const otherEgpt = _findAnotherEgptWithWA();
+          if (otherEgpt) {
+            err(`whatsapp: connection replaced (reason 440) — another egpt (pid ${otherEgpt}) ` +
+                `currently holds WA. Deferring (will not fight). /exit one of them, ` +
+                `or run /whatsapp start to claim it here.`);
+            _stopWaAlive('connection_replaced', `reason ${reason} — deferring to pid ${otherEgpt}`);
+            stopped = true;
+            return;
+          }
           err('whatsapp: connection replaced (reason 440) — another WA Web client ' +
               'holds the session (your phone, a browser tab on whatsapp.com, or the ' +
               'extension). Reconnecting with backoff; close the other client to recover.');
