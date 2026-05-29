@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname, basename, extname } from 'node:path';
-import { promises as fs, existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
@@ -373,6 +373,10 @@ export async function startWhatsAppBridge({
     ].join(' ');
   }
   function _writeWaState(state, detail = '') {
+    // Option A: only the supervised daemon writes wa-alive.txt. Interactive
+    // shells share the home but don't touch the bridge-state file — keeps
+    // setup/watchdog.ps1's freshness check single-writer and unambiguous.
+    if (!process.env.EGPT_SUPERVISED) return;
     try {
       mkdirSync(dirname(WA_STATE_PATH), { recursive: true });
       writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${process.pid} ${detail}\n`.trim() + '\n', { mode: 0o600 });
@@ -398,36 +402,30 @@ export async function startWhatsAppBridge({
   //                      the OTHER process's tic/toc intact alongside (no
   //                      trunc), so this file often holds both pids while
   //                      one side has deferred.
-  // Per-pid heartbeat discovery — the canonical "is another egpt alive?"
-  // signal (operator 2026-05-29). Replaces scanning the shared alive.txt /
-  // wa-alive.txt files, which raced under multi-writer trunc-on-tic
-  // alternation: each pid's beat erased the other's, so the legacy files
-  // could show only one pid at a time and the daemon-vs-interactive
-  // detection randomly missed depending on who wrote last.
-  //
-  // Each egpt process now writes ~/.egpt/state/egpts/<pid>.json with
-  // { pid, last_beat_iso, started_at_ms, supervised } every heartbeat
-  // interval and unlinks it on clean exit. Discovery is readdir + filter
-  // by freshness (180s = 3 missed 60s beats) and defaultIsAlive (Win32
-  // cross-session via tasklist fallback).
-  const HEARTBEATS_DIR = join(homedir(), '.egpt', 'state', 'egpts');
+  // Option A discovery (operator 2026-05-29): one ~/.egpt/ = one egpt node.
+  // Only the supervised daemon writes alive.txt, so it's a clean single-
+  // writer single-reader signal. An interactive shell sharing the home
+  // detects the daemon via alive.txt and defers; a separate egpt node
+  // lives in its own ~/.egpt-<name>/ with its own wa-auth and own alive.txt,
+  // naturally parallel-safe.
+  const ALIVE_TXT_PATH = join(homedir(), '.egpt', 'state', 'alive.txt');
   function _findAnotherEgpt() {
-    let names = [];
-    try { names = readdirSync(HEARTBEATS_DIR); } catch { return null; }
-    for (const name of names) {
-      if (!name.endsWith('.json')) continue;
-      let entry;
-      try { entry = JSON.parse(readFileSync(join(HEARTBEATS_DIR, name), 'utf8')); }
-      catch { continue; }
-      const pid = Number(entry?.pid);
+    let content = '';
+    try { content = readFileSync(ALIVE_TXT_PATH, 'utf8'); } catch { return null; }
+    const re = /^(?:tic|toc)\s+(\S+)\s+(\d+)/gm;
+    let m;
+    while ((m = re.exec(content)) !== null) {
+      const ts = Date.parse(m[1]);
+      const pid = Number(m[2]);
       if (!pid || pid === process.pid) continue;
-      const ts = Date.parse(entry?.last_beat_iso ?? '');
       if (!Number.isFinite(ts) || Date.now() - ts > 180_000) continue;
       if (defaultIsAlive(pid)) return pid;
     }
     return null;
   }
   function _writeWaAliveNow() {
+    // Single-writer: only supervised daemon (see _writeWaState comment).
+    if (!process.env.EGPT_SUPERVISED) return;
     try {
       const now = new Date().toISOString();
       const beat = (label) => `${label} ${now} ${process.pid} ${_waAliveDetail()}\n`;
