@@ -450,8 +450,9 @@ export async function startWhatsAppBridge({
       // tic/toc write). Re-check here so we don't reconnect into a fight.
       const otherEgpt = _findAnotherEgpt();
       if (otherEgpt) {
-        err(`whatsapp: reconnect deferred — another egpt process (pid ${otherEgpt}) is alive. ` +
-            `Outbound sends from here will be relayed via the outbox.`);
+        // Internal deferral — INFO, see startup defer comment.
+        log(`whatsapp: reconnect deferred — another egpt (pid ${otherEgpt}) is alive. ` +
+            `Outbound sends relay via the outbox.`);
         _stopWaAlive('connection_replaced', `deferring to pid ${otherEgpt}`);
         _deferredToPid = otherEgpt;
         stopped = true;
@@ -1260,10 +1261,12 @@ export async function startWhatsAppBridge({
           // one of them to converge.
           const otherEgpt = _findAnotherEgpt();
           if (otherEgpt) {
-            err(`whatsapp: connection replaced (reason 440) — another egpt process ` +
-                `(pid ${otherEgpt}) is alive. Deferring (will not fight). Outbound ` +
-                `WA sends from here will be relayed through the other egpt via the ` +
-                `outbox. /exit one of them, or /whatsapp start to claim WA locally.`);
+            // Internal deferral — INFO, not an error. Goes to /log only so it
+            // doesn't pollute the shell. The send() relay through the outbox
+            // is the user-facing visible behavior ("hello reached WA"); the
+            // operator doesn't need to be told the plumbing on every 440.
+            log(`whatsapp: connection replaced (reason 440) — another egpt (pid ${otherEgpt}) ` +
+                `is alive. Deferring; outbound sends relay via the outbox.`);
             _stopWaAlive('connection_replaced', `reason ${reason} — deferring to pid ${otherEgpt}`);
             _deferredToPid = otherEgpt;
             stopped = true;
