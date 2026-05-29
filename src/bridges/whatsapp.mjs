@@ -54,7 +54,7 @@ import {
 import qrcode from 'qrcode-terminal';
 import { homedir } from 'node:os';
 import { join, dirname, basename, extname } from 'node:path';
-import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, readdirSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
@@ -398,20 +398,32 @@ export async function startWhatsAppBridge({
   //                      the OTHER process's tic/toc intact alongside (no
   //                      trunc), so this file often holds both pids while
   //                      one side has deferred.
-  const ALIVE_TXT_PATH = join(homedir(), '.egpt', 'state', 'alive.txt');
+  // Per-pid heartbeat discovery — the canonical "is another egpt alive?"
+  // signal (operator 2026-05-29). Replaces scanning the shared alive.txt /
+  // wa-alive.txt files, which raced under multi-writer trunc-on-tic
+  // alternation: each pid's beat erased the other's, so the legacy files
+  // could show only one pid at a time and the daemon-vs-interactive
+  // detection randomly missed depending on who wrote last.
+  //
+  // Each egpt process now writes ~/.egpt/state/egpts/<pid>.json with
+  // { pid, last_beat_iso, started_at_ms, supervised } every heartbeat
+  // interval and unlinks it on clean exit. Discovery is readdir + filter
+  // by freshness (180s = 3 missed 60s beats) and defaultIsAlive (Win32
+  // cross-session via tasklist fallback).
+  const HEARTBEATS_DIR = join(homedir(), '.egpt', 'state', 'egpts');
   function _findAnotherEgpt() {
-    const re = /^(?:tic|toc)\s+(\S+)\s+(\d+)/gm;
-    for (const path of [ALIVE_TXT_PATH, WA_STATE_PATH]) {
-      let content = '';
-      try { content = readFileSync(path, 'utf8'); } catch { continue; }
-      let m;
-      while ((m = re.exec(content)) !== null) {
-        const ts = Date.parse(m[1]);
-        const pid = Number(m[2]);
-        if (!pid || pid === process.pid) continue;
-        if (!Number.isFinite(ts) || Date.now() - ts > 180_000) continue;   // 3 missed beats
-        if (defaultIsAlive(pid)) return pid;
-      }
+    let names = [];
+    try { names = readdirSync(HEARTBEATS_DIR); } catch { return null; }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      let entry;
+      try { entry = JSON.parse(readFileSync(join(HEARTBEATS_DIR, name), 'utf8')); }
+      catch { continue; }
+      const pid = Number(entry?.pid);
+      if (!pid || pid === process.pid) continue;
+      const ts = Date.parse(entry?.last_beat_iso ?? '');
+      if (!Number.isFinite(ts) || Date.now() - ts > 180_000) continue;
+      if (defaultIsAlive(pid)) return pid;
     }
     return null;
   }
@@ -448,7 +460,8 @@ export async function startWhatsAppBridge({
       // Late-detection: another egpt may have taken WA between attempts
       // (the 440 handler's first check can race the other side's first
       // tic/toc write). Re-check here so we don't reconnect into a fight.
-      const otherEgpt = _findAnotherEgpt();
+      // Supervised never defers (see startup-defer comment).
+      const otherEgpt = process.env.EGPT_SUPERVISED ? null : _findAnotherEgpt();
       if (otherEgpt) {
         // Internal deferral — INFO, see startup defer comment.
         log(`whatsapp: reconnect deferred — another egpt (pid ${otherEgpt}) is alive. ` +
@@ -1147,7 +1160,13 @@ export async function startWhatsAppBridge({
     // egpt is already alive, defer without ever opening a socket. send()
     // will relay outbound through the outbox (operator 2026-05-29: "no
     // business in trying to take control if there is a daemon").
-    const otherEgpt = _findAnotherEgpt();
+    //
+    // The SUPERVISED daemon NEVER defers. The egpt-daemon.mjs singleton
+    // guarantees no other supervised egpt is running, so any 'other egpt'
+    // is an interactive shell that we should take from (the shell will
+    // defer to us on its next reconnect attempt), or an external WA Web
+    // contender (Beeper, etc.) — neither is a fight loop to avoid.
+    const otherEgpt = process.env.EGPT_SUPERVISED ? null : _findAnotherEgpt();
     if (otherEgpt) {
       log(`whatsapp: another egpt process (pid ${otherEgpt}) already alive — ` +
           `not starting our bridge. Outbound sends relay via the outbox; ` +
@@ -1259,7 +1278,8 @@ export async function startWhatsAppBridge({
           // and silently no-ops against the S4U daemon on Win32. So check
           // here and defer to the other egpt if found; the operator can /exit
           // one of them to converge.
-          const otherEgpt = _findAnotherEgpt();
+          // Supervised daemon never defers (see startup-defer comment).
+          const otherEgpt = process.env.EGPT_SUPERVISED ? null : _findAnotherEgpt();
           if (otherEgpt) {
             // Internal deferral — INFO, not an error. Goes to /log only so it
             // doesn't pollute the shell. The send() relay through the outbox
