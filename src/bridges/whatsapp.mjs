@@ -1137,6 +1137,26 @@ export async function startWhatsAppBridge({
 
   function connect() {
     if (stopped) return;
+    // STARTUP DEFERRAL: an interactive shell has no business taking control of
+    // WA when the daemon already has it. Pre-fix we would start baileys, get
+    // a 440 from the daemon's session being replaced (then the daemon would
+    // 440 us back), generate a brief flurry of "external WA Web client" log
+    // spam before the cooperative defer converged, and waste the cost of an
+    // auth handshake just to immediately defer. Check FIRST — if another
+    // egpt is already alive, defer without ever opening a socket. send()
+    // will relay outbound through the outbox (operator 2026-05-29: "no
+    // business in trying to take control if there is a daemon").
+    const otherEgpt = _findAnotherEgpt();
+    if (otherEgpt) {
+      log(`whatsapp: another egpt process (pid ${otherEgpt}) already alive — ` +
+          `not starting our bridge. Outbound sends relay via the outbox; ` +
+          `inbound is handled by pid ${otherEgpt}. /whatsapp start to claim ` +
+          `WA locally if that one /exits first.`);
+      _stopWaAlive('connection_replaced', `startup defer to pid ${otherEgpt}`);
+      _deferredToPid = otherEgpt;
+      stopped = true;
+      return;
+    }
     sock = makeWASocket({
       ...(version ? { version } : {}),
       auth: state,
