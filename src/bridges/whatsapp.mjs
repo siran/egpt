@@ -373,39 +373,40 @@ export async function startWhatsAppBridge({
       writeFileSync(WA_STATE_PATH, `${state} ${new Date().toISOString()} ${process.pid} ${detail}\n`.trim() + '\n', { mode: 0o600 });
     } catch (e) { /* best effort */ }
   }
-  // Is there ANOTHER egpt PROCESS alive? Read the egpt process heartbeat at
-  // ~/.egpt/state/alive.txt — the canonical "is an egpt running" signal,
-  // written by every egpt.mjs / egpt-daemon.mjs supervisor regardless of WA
-  // state. Returns the first alive pid that isn't us. Cross-session-safe via
+  // Is there ANOTHER egpt PROCESS alive? Cooperation signal on 440 — with the
+  // daemon-singleton holding, a 440 means EITHER an external WA Web client OR
+  // a daemon-vs-interactive race (operator runs `node egpt.mjs` alongside the
+  // headless daemon; the cross-session takeover silently no-ops on Win32).
+  // Defer to any other alive egpt to break the loop (operator 2026-05-29).
+  //
+  // Scan BOTH heartbeat files: each one races during the fight (both processes
+  // alternate truncate/append on the same path, so whichever wrote last owns
+  // the file's tic/toc lines while the other's get erased). Catching the
+  // other process in EITHER file is enough. Cross-session-safe via
   // defaultIsAlive (Win32 S4U detection via tasklist fallback).
   //
-  // The cooperation point on 440: with the daemon-singleton holding, a 440
-  // means EITHER an external WA Web client OR our own daemon-vs-interactive
-  // race (operator runs `node egpt.mjs` while the headless daemon is up).
-  // The pidfile-handshake takeover (egpt.mjs takeoverIfRunning) uses
-  // process.kill across sessions which silently no-ops against the S4U
-  // daemon on Win32 — the takeover never completes, both processes keep
-  // their WA bridges, and they fight forever. Deferring on 440 to any
-  // other alive egpt breaks the loop (operator 2026-05-29).
-  //
-  // We deliberately use alive.txt (egpt heartbeat) NOT whatsapp-alive.txt
-  // (WA bridge state): during the fight wa-alive.txt is in flux — one side
-  // just wrote `tic` overtop the other's, the other's `reconnecting` state
-  // line doesn't match a tic/toc regex — so checks miss. alive.txt is
-  // simpler (just heartbeat lines) and present whether or not the bridge
-  // is up, so the cross-process check is reliable across the transition.
+  // - alive.txt        — egpt process heartbeat; present whether the bridge
+  //                      is up or not, but trunc-on-tic alternation between
+  //                      two egpts means each is visible only ~half the time.
+  // - wa-alive.txt     — bridge state; the "deferring" / "reconnecting" state
+  //                      lines don't match a tic/toc regex but they DO leave
+  //                      the OTHER process's tic/toc intact alongside (no
+  //                      trunc), so this file often holds both pids while
+  //                      one side has deferred.
   const ALIVE_TXT_PATH = join(homedir(), '.egpt', 'state', 'alive.txt');
   function _findAnotherEgpt() {
-    let content = '';
-    try { content = readFileSync(ALIVE_TXT_PATH, 'utf8'); } catch { return null; }
     const re = /^(?:tic|toc)\s+(\S+)\s+(\d+)/gm;
-    let m;
-    while ((m = re.exec(content)) !== null) {
-      const ts = Date.parse(m[1]);
-      const pid = Number(m[2]);
-      if (!pid || pid === process.pid) continue;
-      if (!Number.isFinite(ts) || Date.now() - ts > 180_000) continue;   // 3 missed beats
-      if (defaultIsAlive(pid)) return pid;
+    for (const path of [ALIVE_TXT_PATH, WA_STATE_PATH]) {
+      let content = '';
+      try { content = readFileSync(path, 'utf8'); } catch { continue; }
+      let m;
+      while ((m = re.exec(content)) !== null) {
+        const ts = Date.parse(m[1]);
+        const pid = Number(m[2]);
+        if (!pid || pid === process.pid) continue;
+        if (!Number.isFinite(ts) || Date.now() - ts > 180_000) continue;   // 3 missed beats
+        if (defaultIsAlive(pid)) return pid;
+      }
     }
     return null;
   }
