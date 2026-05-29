@@ -1,5 +1,7 @@
-// tests/wa-commands.test.mjs — execution-side-effects coverage for
-// the WA-CDP slash commands extracted into wa-commands.js. These
+// tests/extension-wa-commands.test.mjs — execution-side-effects coverage
+// for the CHROME EXTENSION's WA-CDP commands (extension/src/commands/
+// wa-commands.js). NOT for the shell's baileys path (slash/whatsapp.mjs)
+// — that's still untested. These
 // pin: which storage keys are read, which bridge methods are called
 // with which args, what user-visible logs/errors fire, and what
 // state mutations happen — none of which were covered before, only

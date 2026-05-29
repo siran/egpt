@@ -1,6 +1,9 @@
-// tests/session-commands.test.mjs — execution-side tests for the
-// session-management slash commands (/use /sessions /detach /tabs
-// /open /attach). Same pattern as wa-commands.test.mjs.
+// tests/extension-session-commands.test.mjs — execution tests for the
+// CHROME EXTENSION's session-management command set
+// (extension/src/commands/session-commands.js: use, sessions, detach,
+// tabs, open, attach). The shell has a separate parallel implementation
+// in slash/{use,sessions,detach,tabs,open,attach}.mjs covered by its
+// own slash-*.test.mjs files — these tests do NOT cover the shell path.
 
 import { describe, it, expect } from 'vitest';
 import { use, sessions, detach, tabs, open, attach }

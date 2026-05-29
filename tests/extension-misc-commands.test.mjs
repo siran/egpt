@@ -1,5 +1,8 @@
-// tests/misc-commands.test.mjs — execution-side tests for /config,
-// /telegram, /clear, /help.
+// tests/extension-misc-commands.test.mjs — execution tests for the
+// CHROME EXTENSION's misc command set (extension/src/commands/
+// misc-commands.js: config, telegram, clear, help). The shell has
+// separate slash/{config,telegram,help}.mjs implementations not
+// covered here.
 
 import { describe, it, expect } from 'vitest';
 import { config, telegram, clear, help, busKey }
