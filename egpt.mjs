@@ -7550,7 +7550,7 @@ function App() {
   // outbox file watcher. Pure-ish: only side effect is wa.send + a log
   // item. Returns true iff the send was issued so the watcher can
   // decide whether to unlink the file or leave it for the next sweep.
-  dispatchWaSendRef.current = (ev, source = 'outbox') => {
+  dispatchWaSendRef.current = async (ev, source = 'outbox') => {
     const log = (msg) => setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     }]);
@@ -7605,7 +7605,21 @@ function App() {
       // deliverEcho (set by the /e confirm watcher's self-sends): don't
       // rememberSent, so the message flows back through onIncoming and the
       // Self residents see it as a normal chat message.
-      wa.send(body, { chatId: ev.jid, deliverEcho: ev.deliverEcho === true });
+      // _noRelay (operator 2026-05-29): if our bridge is deferred, do NOT
+      // let send() spool ANOTHER outbox event — that's a CPU-burning
+      // infinite loop (we'd just pick it up next sweep). Return null in
+      // that case so we leave the file in place for the next attempt.
+      const r = await wa.send(body, {
+        chatId: ev.jid,
+        deliverEcho: ev.deliverEcho === true,
+        _noRelay: true,
+      });
+      if (r === null) {
+        // Bridge unavailable right now (deferred or not connected). Leave
+        // the outbox file in place; the watcher will retry next sweep,
+        // and once a bridge comes online it'll dispatch normally.
+        return false;
+      }
       log(`${source}: wa-send → ${ev.jid} for ${ev.from} (${(body || '').slice(0, 40)}${body.length > 40 ? '…' : ''})`);
       return true;
     } catch (e) {
