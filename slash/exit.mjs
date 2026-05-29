@@ -10,9 +10,13 @@ export const meta = {
 
 export async function run({ ctx }) {
   // ctx keys consumed:
-  //   exit()  — Ink's useApp().exit, unmounts the app and ends the
-  //             process. Pidfile cleanup + bridge stops run via the
-  //             process.on('exit') handler wired in egpt.mjs.
-  ctx.exit();
+  //   exitClean(code) — bridge stops + baileys close-handshake wait +
+  //                     forced process.exit(code). The SAME path Ctrl-C
+  //                     (SIGINT) takes. Pre-fix /exit just called Ink's
+  //                     useApp().exit which unmounted the UI but left the
+  //                     process draining its own event loop (WA socket, TG
+  //                     polling, intervals) — many seconds, while Ctrl-C
+  //                     finished in ~800ms (operator 2026-05-29).
+  await ctx.exitClean(0);
   return true;
 }
