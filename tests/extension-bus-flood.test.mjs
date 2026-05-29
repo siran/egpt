@@ -1,4 +1,5 @@
-// tests/bus-flood.test.mjs — buffered flood detector with injected timer.
+// tests/extension-bus-flood.test.mjs — flood detector for the CHROME
+// EXTENSION (extension/src/tools/bus-flood.js). Extension-only.
 //
 // Goal: every body event is held briefly; if a duplicate arrives, BOTH
 // (held + duplicate) suppress and the detector enters flood mode. End

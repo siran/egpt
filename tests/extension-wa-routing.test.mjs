@@ -1,4 +1,7 @@
-// tests/wa-routing.test.mjs — pure routing rules for WA-CDP auto-mirror.
+// tests/extension-wa-routing.test.mjs — pure routing rules for the CHROME
+// EXTENSION's WA-CDP auto-mirror (extension/src/bridges/wa-routing.js).
+// The shell's _maybeRouteToRooms / _deliverToRoom path in egpt.mjs is a
+// DIFFERENT routing layer not covered by this file.
 //
 // Pins the invariant: nothing leaks into WA unless the user has
 // explicitly opted in (via /join @waN or by initiating from a WA chat).

@@ -1,4 +1,6 @@
-// tests/wa-echo.test.mjs — echo suppression rules for WA-CDP.
+// tests/extension-wa-echo.test.mjs — echo suppression rules for the CHROME
+// EXTENSION's WA-CDP (extension/src/bridges/wa-echo.js). Not related to
+// the shell's baileys-side echo handling.
 //
 // When the extension sends to WhatsApp via chrome.debugger Input.*, the
 // resulting page DOM mutation comes back through our own MutationObserver

@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -420,10 +421,12 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     expect(DEFAULT_PERSONALITY_TOOLS).toContain('Write');
   });
 
-  // Cleanup
+  // Cleanup — was `expect(true).toBe(true)` (tautology audit 2026-05-29).
+  // Now actually verifies each temp dir was removed.
   it('temp dirs cleaned up', async () => {
-    await Promise.all(tmpDirs.splice(0).map(d => rm(d, { recursive: true, force: true })));
-    expect(true).toBe(true);
+    const dirs = tmpDirs.splice(0);
+    await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
+    for (const d of dirs) expect(existsSync(d)).toBe(false);
   });
 });
 
