@@ -180,9 +180,15 @@ function spawnShell() {
   // In headless mode we don't inherit stdio — there's no tty to inherit
   // to under Task Scheduler's "Run whether user is logged on or not".
   // Pipe to /dev/null equivalents; egpt.mjs writes its own headless.log.
+  // EGPT_SUPERVISED tells the child that THIS process is its supervisor and
+  // will respawn it on exit codes 42/43/44 (upgrade/restart/rewind). The
+  // child uses it to refuse /restart-style exits when absent — a user
+  // running `node egpt.mjs` directly has no supervisor, so /restart would
+  // just kill the shell (operator 2026-05-29).
   child = spawn('node', args, {
     cwd: root,
     stdio: HEADLESS ? 'ignore' : 'inherit',
+    env: { ...process.env, EGPT_SUPERVISED: '1' },
   });
 
   child.on('exit', async (code, signal) => {
