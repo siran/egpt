@@ -3612,7 +3612,7 @@ export async function startWhatsAppBridge({
       }
       return { key: msgKey, deleted: autoDelete };
     },
-    async send(text, { chatId, deliverEcho = false } = {}) {
+    async send(text, { chatId, deliverEcho = false, _noRelay = false } = {}) {
       const target = chatId ?? lastChat;
       if (!target) return null;
       // Defense-in-depth silence filter (must run before the outbox relay too —
@@ -3622,11 +3622,16 @@ export async function startWhatsAppBridge({
         return { silenced: true };
       }
       // Bridge deferred to another egpt — relay via the outbox so the holder
-      // of the WA session does the send. Without this, the shell↔WA path
-      // breaks the moment we defer: send() returned null silently and the
-      // operator saw their typed messages disappear. The outbox event is
-      // atomic-rename written so the daemon's watcher reads a complete file.
+      // of the WA session does the send. _noRelay is the loop-breaker: when
+      // OUR outbox watcher dispatches a wa-send to OUR bridge and we're
+      // deferred, relaying again writes a new outbox event we'll just pick
+      // up next sweep — a CPU-burning infinite loop that flooded the
+      // operator's WA bridge with 1500+ duplicate sends (2026-05-29).
+      // _noRelay → null tells the watcher "couldn't dispatch right now"
+      // and it leaves the file for the next attempt (when our bridge has
+      // reconnected, or another egpt with WA processes it first).
       if (!sock && _deferredToPid) {
+        if (_noRelay) return null;
         try {
           const r = await _outboxWaSend({ jid: target, body: text, from: `egpt-pid-${process.pid}` });
           log(`send: relayed via outbox → ${target} (deferred to pid ${_deferredToPid}; file ${r.filename})`);
