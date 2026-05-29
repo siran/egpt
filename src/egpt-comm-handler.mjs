@@ -626,7 +626,13 @@ export function startOutboxWatcher({
       }
     } else if (payload?.type === 'daemon-restart') {
       log(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);
-      try { await unlink(full); } catch (e) { console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`); }
+      try { await unlink(full); } catch (e) {
+      // ENOENT here = another egpt's watcher consumed + unlinked this file
+      // first (operator 2026-05-29 — multi-egpt outbox cohabitation under
+      // the Option A 'one home, multiple readers' model). That's expected
+      // and harmless; only log real failures.
+      if (e?.code !== 'ENOENT') console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`);
+    }
       // Caller decides the actual restart shape (today: process.exit(0);
       // post-split: just kill the handler-side process).
       signalRestart(payload);
@@ -650,7 +656,13 @@ export function startOutboxWatcher({
         // Fall through to plain unlink so the bad event doesn't loop.
       }
     }
-    try { await unlink(full); } catch (e) { console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`); }
+    try { await unlink(full); } catch (e) {
+      // ENOENT here = another egpt's watcher consumed + unlinked this file
+      // first (operator 2026-05-29 — multi-egpt outbox cohabitation under
+      // the Option A 'one home, multiple readers' model). That's expected
+      // and harmless; only log real failures.
+      if (e?.code !== 'ENOENT') console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`);
+    }
   };
 
   const sweep = async () => {
