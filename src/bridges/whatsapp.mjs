@@ -61,6 +61,7 @@ import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { defaultIsAlive } from '../daemon-singleton.mjs';
+import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
@@ -317,6 +318,10 @@ export async function startWhatsAppBridge({
   }
 
   let stopped        = false;
+  // Set when the 440 handler defers to another live egpt — outbound send()
+  // calls fall back to the outbox so shell↔WhatsApp keeps working through the
+  // other process's bridge instead of failing silently (operator 2026-05-29).
+  let _deferredToPid = null;
   let connectedAt    = 0;     // ms; set to Date.now() when WS reaches 'open'
   // Pre-connect backlog: messages older than connectedAt -
   // maxBacklogSeconds get parked here instead of dispatched. The host
@@ -445,8 +450,10 @@ export async function startWhatsAppBridge({
       // tic/toc write). Re-check here so we don't reconnect into a fight.
       const otherEgpt = _findAnotherEgpt();
       if (otherEgpt) {
-        err(`whatsapp: reconnect deferred — another egpt process (pid ${otherEgpt}) is alive.`);
+        err(`whatsapp: reconnect deferred — another egpt process (pid ${otherEgpt}) is alive. ` +
+            `Outbound sends from here will be relayed via the outbox.`);
         _stopWaAlive('connection_replaced', `deferring to pid ${otherEgpt}`);
+        _deferredToPid = otherEgpt;
         stopped = true;
         return;
       }
@@ -1185,6 +1192,9 @@ export async function startWhatsAppBridge({
         // Healthy connect — clear backoff so the NEXT close starts
         // at the base 5s delay again, not wherever it left off.
         reconnectAttempts = 0;
+        // Clear any prior deferral state — we have a real session now, so
+        // future send()s go through baileys, not the outbox.
+        _deferredToPid = null;
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _startWaAlive();
@@ -1231,9 +1241,11 @@ export async function startWhatsAppBridge({
           const otherEgpt = _findAnotherEgpt();
           if (otherEgpt) {
             err(`whatsapp: connection replaced (reason 440) — another egpt process ` +
-                `(pid ${otherEgpt}) is alive. Deferring (will not fight). /exit one ` +
-                `of them, or /whatsapp start to claim WA here.`);
+                `(pid ${otherEgpt}) is alive. Deferring (will not fight). Outbound ` +
+                `WA sends from here will be relayed through the other egpt via the ` +
+                `outbox. /exit one of them, or /whatsapp start to claim WA locally.`);
             _stopWaAlive('connection_replaced', `reason ${reason} — deferring to pid ${otherEgpt}`);
+            _deferredToPid = otherEgpt;
             stopped = true;
             return;
           }
@@ -3582,12 +3594,29 @@ export async function startWhatsAppBridge({
     },
     async send(text, { chatId, deliverEcho = false } = {}) {
       const target = chatId ?? lastChat;
-      if (!target || !sock) return null;
-      // Defense-in-depth silence filter — see isSilenceMarker docs.
+      if (!target) return null;
+      // Defense-in-depth silence filter (must run before the outbox relay too —
+      // silence shouldn't get spooled to the daemon either).
       if (isSilenceMarker(text)) {
         log(`send: dropping silence-marker "${String(text).trim().slice(0, 40)}" → ${target}`);
         return { silenced: true };
       }
+      // Bridge deferred to another egpt — relay via the outbox so the holder
+      // of the WA session does the send. Without this, the shell↔WA path
+      // breaks the moment we defer: send() returned null silently and the
+      // operator saw their typed messages disappear. The outbox event is
+      // atomic-rename written so the daemon's watcher reads a complete file.
+      if (!sock && _deferredToPid) {
+        try {
+          const r = await _outboxWaSend({ jid: target, body: text, from: `egpt-pid-${process.pid}` });
+          log(`send: relayed via outbox → ${target} (deferred to pid ${_deferredToPid}; file ${r.filename})`);
+          return { relayed: true, outbox: r.filename };
+        } catch (e) {
+          err(`send: outbox relay failed → ${target}: ${e.message}`);
+          return null;
+        }
+      }
+      if (!sock) return null;
       // deliverEcho: skip rememberSent so this outbound is NOT filtered as a
       // self-echo when it comes back fromMe — it flows through onIncoming and
       // (in an auto_e chat) broadcasts to the chat's resident brains. Used by
