@@ -3702,8 +3702,14 @@ function App() {
       '',
     ].join('\n');
 
+    // sysLog → visible (errors); heartbeatLog → hidden by default (routine ticks
+    // are pure telemetry — pre-fix every tick polluted the shell with a noise
+    // line, operator 2026-05-28). The hidden lines are still surfaced via /log.
     const sysLog = (msg) => setItems(p => [...p, {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
+    }]);
+    const heartbeatLog = (msg) => setItems(p => [...p, {
+      id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true, body: msg,
     }]);
 
     try { mkdirSync(EGPT_HOME, { recursive: true }); } catch {}
@@ -3723,7 +3729,7 @@ function App() {
       // heartbeat prompt below, so it still runs when a prompt tick is busy).
       try { _accumFlush(); } catch (e) { sysLog(`!! accum flush: ${e?.message ?? e}`); }
       if (heartbeatBusyRef.current) {
-        sysLog(`heartbeat: skipped — previous tick still running`);
+        heartbeatLog(`heartbeat: skipped — previous tick still running`);
         return;
       }
       // Heartbeat resolution chain (C2): try ~/.egpt/heartbeats/default.md
@@ -3747,12 +3753,16 @@ function App() {
         const reply = await runDefaultBrainTurn(resolved, undefined, { threadId: 'heartbeat', surface: 'system', name: 'heartbeat tick' });
         if (stopped) return;
         const trimmed = (reply ?? '').trim();
-        if (trimmed === '...') {
-          sysLog(`heartbeat: @e chose silence`);
+        // Treat both ASCII '...' and the Unicode ellipsis '…' as silence — E's
+        // tokenizer can emit either. Without this, an `…` reply fell into the
+        // preview branch and printed "heartbeat: @e — …" to the shell every
+        // tick (operator 2026-05-28).
+        if (trimmed === '...' || trimmed === '…' || trimmed === '') {
+          heartbeatLog(`heartbeat: @e chose silence`);
         } else {
           const oneLine = trimmed.replace(/\s+/g, ' ');
           const preview = oneLine.length > 200 ? oneLine.slice(0, 199) + '…' : oneLine;
-          sysLog(`heartbeat: @e — ${preview}`);
+          heartbeatLog(`heartbeat: @e — ${preview}`);
           // Diary append — every non-silent thought persists to
           // ~/.egpt/e-diary.md so the operator can see what @e has
           // actually been thinking across ticks (the shell sysLog
