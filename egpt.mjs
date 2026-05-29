@@ -228,6 +228,34 @@ let _aliveTimer = null;
 // interval apart), not just that a single write happened; and the
 // two lines record the last-two-beats so the watchdog (and a human
 // `cat`) can read both "is it alive" and "time of last beat / death".
+// Per-pid heartbeat directory (operator 2026-05-29). The legacy alive.txt is
+// a single file written by every egpt process — multiple writers race the
+// trunc-on-tic alternation and each erases the other's beat, so discovery
+// (_findAnotherEgpt, used by the WA bridge's 440 deferral) is unreliable
+// when an interactive shell runs alongside the headless daemon. Switch to
+// one file per pid, written + unlinked atomically: { pid, started_at_ms,
+// last_beat_iso, supervised }. Discovery scans the directory; the legacy
+// alive.txt/whatsapp-alive.txt stay so setup/watchdog.ps1 keeps working.
+const EGPT_HEARTBEATS_DIR = join(EGPT_HOME, 'state', 'egpts');
+const EGPT_PER_PID_PATH = join(EGPT_HEARTBEATS_DIR, `${process.pid}.json`);
+const EGPT_START_MS = Date.now();
+function _writePerPidHeartbeat() {
+  try {
+    mkdirSync(EGPT_HEARTBEATS_DIR, { recursive: true });
+    writeFileSync(EGPT_PER_PID_PATH, JSON.stringify({
+      pid: process.pid,
+      started_at_ms: EGPT_START_MS,
+      last_beat_iso: new Date().toISOString(),
+      supervised: !!process.env.EGPT_SUPERVISED,
+    }), { mode: 0o600 });
+  } catch (e) {
+    try { _logCrash('per-pid-heartbeat-write', e); } catch {}
+  }
+}
+function _clearPerPidHeartbeat() {
+  try { unlinkSync(EGPT_PER_PID_PATH); } catch {}
+}
+
 function _writeAliveNow() {
   try {
     const now = new Date().toISOString();
@@ -264,13 +292,18 @@ function startAliveHeartbeat() {
     : ALIVE_INTERVAL_DEFAULT_MS;
   try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
   _writeAliveNow();
+  _writePerPidHeartbeat();
   if (_aliveTimer) clearInterval(_aliveTimer);
-  _aliveTimer = setInterval(_writeAliveNow, intervalMs);
+  _aliveTimer = setInterval(() => {
+    _writeAliveNow();
+    _writePerPidHeartbeat();
+  }, intervalMs);
   _aliveTimer.unref?.();
 }
 function stopAliveHeartbeat() {
   if (_aliveTimer) { clearInterval(_aliveTimer); _aliveTimer = null; }
   try { unlinkSync(ALIVE_PATH); } catch {}
+  _clearPerPidHeartbeat();
 }
 
 // Load config: global (~/.egpt/config.json) then local (.egpt/config.json).
