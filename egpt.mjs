@@ -203,6 +203,12 @@ function clearPidfile() {
 //     loop blocked or hung) that the wrapper's `& node …; respawn`
 //     pattern can't detect by itself.
 const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive.txt');   // .txt so it opens cleanly in Explorer / anywhere
+// Cross-process shell mirror — NDJSON append log, one event per line of the
+// form {"ts","pid","room","env"}. Producer: every egpt process appends here
+// when _deliverToRoom fans an envelope to a shell/extension member. Consumer:
+// every egpt process tails it and skips own-pid lines, so a deferred shell
+// can show traffic the daemon's bridge surfaced (operator 2026-05-29).
+const SHELL_MIRROR_PATH = join(EGPT_HOME, 'state', 'shell-mirror.jsonl');
 // Resolved lazily inside startAliveHeartbeat() — NOT at module-eval
 // time, because EGPT_CONFIG is declared ~65 lines below this and a
 // const referencing it here threw "Cannot access 'EGPT_CONFIG'
@@ -2377,6 +2383,17 @@ function App() {
         else if (m.kind === 'shell' || m.kind === 'extension') {
           // Show the envelope so the operator can read along.
           setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
+          // Cross-process shell mirror: append the rendered envelope to a
+          // tiny NDJSON stream so OTHER egpt processes (a deferred interactive
+          // shell while the headless daemon owns WA) can pick it up and
+          // display it too. The tail watcher below filters out self-pid lines
+          // so the writer never re-renders its own write (operator 2026-05-29:
+          // "a message typed in eGPT2 should also be delivered to shell").
+          try {
+            appendFileSync(SHELL_MIRROR_PATH,
+              JSON.stringify({ ts: Date.now(), pid: process.pid, room: roomName, env }) + '\n',
+              { mode: 0o600 });
+          } catch (e) { logOut(`!! shell-mirror append: ${e?.message ?? e}`); }
           // ALSO feed the body through the shell's normal submit pipeline so
           // @-mentions (`@cgpt1 hello`) actually reach their addressed brain.
           // Without this the shell is display-only and a routed `@cgpt1`
@@ -2602,6 +2619,46 @@ function App() {
       let msg = 'please act in the browser';
       try { msg = readFileSync(pauseFile, 'utf8').trim() || msg; unlinkSync(pauseFile); } catch {}
       setBrowserWaiting(msg);
+    }, 800);
+    return () => clearInterval(id);
+  }, []);
+
+  // Cross-process shell mirror tail (operator 2026-05-29). Tail the NDJSON
+  // append log SHELL_MIRROR_PATH; for each new line written by ANOTHER pid,
+  // render it as a room@<name> item. Lets a deferred interactive shell see
+  // room traffic the headless daemon's bridge fanned out.
+  //
+  // Tail semantics: at mount, remember the current file size; treat anything
+  // after that as new. Poll every 800ms (cheap stat + readSync). fs.watch on
+  // Windows is unreliable for atomic-append patterns; a poll is more robust.
+  // Skip own-pid lines so the writer never re-renders its own write.
+  useEffect(() => {
+    let cursor = 0;
+    try { cursor = statSync(SHELL_MIRROR_PATH).size; } catch { cursor = 0; }
+    let buf = '';
+    const id = setInterval(() => {
+      let size;
+      try { size = statSync(SHELL_MIRROR_PATH).size; } catch { return; }
+      if (size <= cursor) return;
+      let chunk = '';
+      try { chunk = readFileSync(SHELL_MIRROR_PATH, 'utf8').slice(cursor, size); }
+      catch { return; }
+      cursor = size;
+      buf += chunk;
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';   // last fragment may be incomplete; carry over
+      for (const line of lines) {
+        const s = line.trim();
+        if (!s) continue;
+        let ev;
+        try { ev = JSON.parse(s); } catch { continue; }
+        if (!ev || ev.pid === process.pid || !ev.env) continue;
+        setItems(p => [...p, {
+          id: Date.now() + Math.random(),
+          author: `room@${ev.room ?? '?'}`,
+          body: ev.env,
+        }]);
+      }
     }, 800);
     return () => clearInterval(id);
   }, []);
