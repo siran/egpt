@@ -382,6 +382,15 @@ export function startInboxWatcher({
   const handleFile = async (name) => {
     if (stopped) return;
     if (!name.endsWith('.json')) return;
+    // Skip the pre-rename temp file the writer uses for atomicity
+    // (outboxSend / inboxSend write `.tmp-<uuid>.json` then rename to the
+    // final `<ts>-<uuid>.json`). Without this guard, fs.watch fires for
+    // the .tmp create, we claim+read+dispatch it before the rename
+    // completes, then the unlink ENOENTs because the file is gone — AND
+    // we may dispatch the SAME event again when the renamed final file
+    // appears (the lock is keyed on filename; the two names differ).
+    // Operator 2026-05-29: "outbox unlink(...tmp-...): ENOENT" noise.
+    if (name.startsWith('.tmp-')) return;
     if (claimed.has(name)) return;
     claimed.add(name);
     const full = join(inboxDir, name);
@@ -533,6 +542,15 @@ export function startOutboxWatcher({
   const handleFile = async (name) => {
     if (stopped) return;
     if (!name.endsWith('.json')) return;
+    // Skip the pre-rename temp file the writer uses for atomicity
+    // (outboxSend / inboxSend write `.tmp-<uuid>.json` then rename to the
+    // final `<ts>-<uuid>.json`). Without this guard, fs.watch fires for
+    // the .tmp create, we claim+read+dispatch it before the rename
+    // completes, then the unlink ENOENTs because the file is gone — AND
+    // we may dispatch the SAME event again when the renamed final file
+    // appears (the lock is keyed on filename; the two names differ).
+    // Operator 2026-05-29: "outbox unlink(...tmp-...): ENOENT" noise.
+    if (name.startsWith('.tmp-')) return;
     if (claimed.has(name)) return;
     claimed.add(name);
     const full = join(outboxDir, name);
