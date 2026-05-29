@@ -2637,22 +2637,21 @@ function App() {
   // render it as a room@<name> item. Lets a deferred interactive shell see
   // room traffic the headless daemon's bridge fanned out.
   //
-  // Tail semantics: at mount, remember the current file size; treat anything
-  // after that as new. Poll every 800ms (cheap stat + readSync). fs.watch on
-  // Windows is unreliable for atomic-append patterns; a poll is more robust.
-  // Skip own-pid lines so the writer never re-renders its own write.
+  // Don't trust statSync.size cross-process on Windows: the size pulled
+  // from the directory entry can lag the writer's actual fs.write by an
+  // interval (operator 2026-05-29: eGPT3 message was in the file but the
+  // tail never picked it up). Just read the whole content every poll and
+  // diff against our cursor — the file is tiny, this is cheap.
   useEffect(() => {
     let cursor = 0;
-    try { cursor = statSync(SHELL_MIRROR_PATH).size; } catch { cursor = 0; }
+    try { cursor = readFileSync(SHELL_MIRROR_PATH, 'utf8').length; } catch { cursor = 0; }
     let buf = '';
     const id = setInterval(() => {
-      let size;
-      try { size = statSync(SHELL_MIRROR_PATH).size; } catch { return; }
-      if (size <= cursor) return;
-      let chunk = '';
-      try { chunk = readFileSync(SHELL_MIRROR_PATH, 'utf8').slice(cursor, size); }
-      catch { return; }
-      cursor = size;
+      let content;
+      try { content = readFileSync(SHELL_MIRROR_PATH, 'utf8'); } catch { return; }
+      if (content.length <= cursor) return;
+      const chunk = content.slice(cursor);
+      cursor = content.length;
       buf += chunk;
       const lines = buf.split('\n');
       buf = lines.pop() ?? '';   // last fragment may be incomplete; carry over
@@ -3413,8 +3412,22 @@ function App() {
           // and routing (transcript + mirror to room members) are independent.
           // Whether a member CONTRIBUTES is the room member's state (active /
           // mention / mute), not the message kind.
-          _maybeRouteToRooms({ memberId: from.chatId, senderLabel: from.senderName, body: text })
-            .catch(e => errOut(`!! _maybeRouteToRooms(wa): ${e?.message ?? e}`));
+          //
+          // Enriched senderLabel — when a room aggregates multiple WA groups,
+          // a bare "An:" in the envelope is ambiguous; readers can't tell
+          // WHICH group it came from (operator 2026-05-29: "the identification
+          // of who is writing is missing the group name"). Format:
+          //   {pushName}@{chatName}.wa (HH:MM)
+          // Falls back to the jid prefix when the chat name isn't resolvable.
+          {
+            const _chatName = waBridgeRef.current?.getChatName?.(from.chatId)
+              ?? String(from.chatId ?? '').split('@')[0]
+              ?? '?';
+            const _hhmm = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            const _routedSender = `${from.senderName ?? '?'}@${_chatName}.wa (${_hhmm})`;
+            _maybeRouteToRooms({ memberId: from.chatId, senderLabel: _routedSender, body: text })
+              .catch(e => errOut(`!! _maybeRouteToRooms(wa): ${e?.message ?? e}`));
+          }
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
@@ -6191,8 +6204,15 @@ function App() {
     // would re-fan the same body back into the room. Loop-safe on the same
     // principle as isRoomEnvelope on the wa-group side.
     if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched && !meta._routedFromRoom) {
-      _maybeRouteToRooms({ memberId: 'shell', senderLabel: `${USER_NAME} (${BUS_NODE_ID})`, body: text })
-        .catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
+      // Enriched senderLabel: {user}@{node}.shell (HH:MM) — same shape as
+      // the WA route's {pushName}@{chatName}.wa (HH:MM), so readers can tell
+      // which surface and which node a routed line came from.
+      const _hhmm = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      _maybeRouteToRooms({
+        memberId: 'shell',
+        senderLabel: `${USER_NAME}@${BUS_NODE_ID}.shell (${_hhmm})`,
+        body: text,
+      }).catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
     }
 
     // Tell sysOut where this submit's output should go. fromTelegram means
