@@ -4982,6 +4982,11 @@ function App() {
             if (s.example) lines.push(`     e.g.  ${s.example}`);
           }
         }
+        if (Array.isArray(m.notes) && m.notes.length) {
+          lines.push('');
+          lines.push('notes:');
+          for (const n of m.notes) lines.push(`  ${n}`);
+        }
         sysOut(lines.length ? lines.join('\n') : `(no help text registered for ${cmd})`);
         return true;
       }

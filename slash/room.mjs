@@ -40,6 +40,11 @@ export const meta = {
     { name: 'leave',   usage: '/room <name> leave <member>',         desc: 'remove a member from the room', example: '/room estudio leave @wa3' },
     { name: 'delete',  usage: '/room <name> delete',                 desc: 'delete the room', example: '/room estudio delete' },
   ],
+  notes: [
+    'state aliases: active = on / unmute / unmuted / open  ·  muted = mute / silent  ·  mention (no aliases)',
+    '<member> omitted: defaults to "shell" from the shell, or the current WA chat from a WA chat (e.g. /room test mute in eGPT2 mutes eGPT2 in test)',
+    '<member> formats: @waN (from /channels) · raw jid · tg:<chatId> · @e / @l / <brain-name>',
+  ],
 };
 
 const KIND_ICON = { 'wa-group': '💬', 'tg-group': '📱', brain: '🧠', shell: '🖥️', extension: '🧩' };
