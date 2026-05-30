@@ -431,9 +431,17 @@ export async function dispatchPersonaTurn({
   // Per-chat auto-mode reply gate: the brain RAN (so E has the message in
   // context), but this chat's mode + the message's mention-status don't permit
   // a reply right now — so don't send it. (e.g. 'mute', or 'mention' with no @e.)
-  if (meta.replyAllowed === false) {
+  // WA path fails CLOSED: undefined replyAllowed means the caller forgot to
+  // thread the per-chat gate (e.g. persona pile-drain), and silently emitting
+  // would leak into mute / mention / mention-direct chats. Non-bridge contexts
+  // (shell) keep the permissive default — only an explicit false blocks.
+  // Operator 2026-05-30: voice-transcript drain into a mention-direct chat.
+  const _gateAllow = meta.fromWhatsApp
+    ? meta.replyAllowed === true
+    : meta.replyAllowed !== false;
+  if (!_gateAllow) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-    logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent)`);
+    logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
     return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
 

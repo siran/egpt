@@ -7305,6 +7305,19 @@ function App() {
               senderName: it.senderName, body: it.body, ts: it.ts,
               surface, chatType, chatName,
             })).join('\n');
+            // Combined-batch reply gate (operator 2026-05-30): the drained
+            // turn must thread replyAllowed so dispatch.mjs's WA fail-closed
+            // gate doesn't silence a legitimately-mentioned drain — and
+            // doesn't leak the inverse (drain into mute / mention / mention-
+            // direct chat without an @e). Any piled message mentioning @e
+            // opens the batch; chat's auto-mode decides what 'mentioned'
+            // means (start vs anywhere).
+            const _drainMode = _resolveChatAutoMode(meta.waChatId);
+            const _drainStatus = drained.reduce((acc, it) => {
+              const s = autoMentionStatus(it.body ?? '');
+              return { atEStart: acc.atEStart || s.atEStart, atEAnywhere: acc.atEAnywhere || s.atEAnywhere };
+            }, { atEStart: false, atEAnywhere: false });
+            const _drainReplyAllowed = autoReplyAllowed(_drainMode, _drainStatus);
             const drainMeta = {
               fromWhatsApp: meta.fromWhatsApp,
               waChatId: meta.waChatId,
@@ -7316,6 +7329,7 @@ function App() {
               replyPersona: null,
               waSenderName: 'multiple',
               autoDispatched: true,
+              replyAllowed: _drainReplyAllowed,
               _personaBodyOverride: fullPrompt,
             };
             // The text-arg doesn't matter since override is set;
