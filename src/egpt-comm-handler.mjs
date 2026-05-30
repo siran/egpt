@@ -625,17 +625,21 @@ export function startOutboxWatcher({
         }
       }
     } else if (payload?.type === 'daemon-restart') {
+      // Multi-egpt cohabitation (operator 2026-05-29): only the SUPERVISED
+      // daemon-spawned egpt should consume daemon-restart events. signalRestart
+      // returns truthy when this process is the one that will act; an
+      // unsupervised sibling watcher returns falsy → release the claim and
+      // leave the file in place so the daemon's own watcher picks it up.
+      const handled = signalRestart(payload);
+      if (!handled) { claimed.delete(name); return; }
       log(`outbox: daemon-restart from ${payload.from ?? '<unknown>'} — exiting cleanly for wrapper to respawn`);
       try { await unlink(full); } catch (e) {
-      // ENOENT here = another egpt's watcher consumed + unlinked this file
-      // first (operator 2026-05-29 — multi-egpt outbox cohabitation under
-      // the Option A 'one home, multiple readers' model). That's expected
-      // and harmless; only log real failures.
-      if (e?.code !== 'ENOENT') console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`);
-    }
-      // Caller decides the actual restart shape (today: process.exit(0);
-      // post-split: just kill the handler-side process).
-      signalRestart(payload);
+        // ENOENT here = another egpt's watcher consumed + unlinked this file
+        // first (multi-egpt outbox cohabitation under the Option A 'one home,
+        // multiple readers' model). Expected and harmless; only log real
+        // failures.
+        if (e?.code !== 'ENOENT') console.error(`!! outbox unlink(${full}): ${e?.message ?? e}`);
+      }
       return;
     } else {
       // Unknown event type — quarantine instead of just deleting, so the
