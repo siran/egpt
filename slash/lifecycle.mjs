@@ -16,8 +16,9 @@
 // sidecar in place for the next daemon start.
 
 import { spawnSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { liveDaemonPid } from '../src/daemon-singleton.mjs';
 
 // Drop the Self-DM breadcrumbs a lifecycle bounce needs: a "going down" line in
 // the outbox + a state/restart-announce.json sidecar the NEXT process reads to
@@ -102,6 +103,33 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
     // it died and dropped them back at a bash prompt). egpt-daemon sets
     // EGPT_SUPERVISED in the child's env so we can tell the difference.
     if (!process.env.EGPT_SUPERVISED) {
+      // /restart in an unsupervised shell: if a daemon IS alive elsewhere
+      // (Option A: one home, one daemon, multiple thin-client shells), kick
+      // IT via a daemon-restart outbox event instead of refusing. The
+      // daemon's supervised egpt picks up the event, exits 43, and the
+      // wrapper respawns it — so code changes go live without the operator
+      // touching Task Scheduler. /upgrade and /rewind keep the strict
+      // refusal because they need git ops on the daemon's source root and
+      // aren't expressible via a single outbox event (yet).
+      if (cmd === '/restart') {
+        let daemonPid = null;
+        try {
+          const content = await readFile(join(EGPT_HOME, 'state', 'alive.txt'), 'utf8');
+          daemonPid = liveDaemonPid(content);
+        } catch { /* alive.txt missing → no daemon */ }
+        if (daemonPid) {
+          try {
+            await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
+            const _id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-daemon-restart`;
+            await writeFile(join(EGPT_HOME, 'outbox', `${_id}.json`),
+              JSON.stringify({ type: 'daemon-restart', from: `shell-pid-${process.pid}`, ts: Date.now() }));
+            sysOut(`/restart: this shell isn't supervised, but daemon pid ${daemonPid} is — dropped a daemon-restart event in the outbox. The daemon will exit 43 and egpt-daemon will respawn its egpt.mjs.`);
+          } catch (e) {
+            sysOut(`!! /restart: failed to write daemon-restart event — ${e.message}`);
+          }
+          return true;
+        }
+      }
       sysOut(`${cmd}: this shell isn't under egpt-daemon supervision — ` +
              `exit ${b.code} would just kill the shell with no respawn. ` +
              `Use /exit and re-run \`node egpt.mjs\` if you want a fresh boot, ` +

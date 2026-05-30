@@ -3677,10 +3677,18 @@ function App() {
       dispatchSlash:          (payload, src) => dispatchSlashRef.current?.(payload, src),
       dispatchButlerTask:     (payload, src) => dispatchButlerTaskRef.current?.(payload, src),
       log:                    sysLog,
-      // process.exit(0) → wrapper's while-loop respawns. Post-split
-      // this becomes a restart-handler event the keeper sends to
-      // the wrapper, without exiting the keeper itself.
-      signalRestart:  () => setTimeout(() => process.exit(0), 100),
+      // daemon-restart outbox event arrived. ONLY the supervised daemon-
+      // spawned egpt may consume it; an unsupervised interactive shell that
+      // happens to win the watcher race must release the event so the daemon's
+      // own watcher can pick it up (return falsy → comm-handler leaves the
+      // file in place). Supervised path: exit 43 so egpt-daemon.mjs respawns
+      // this child. Exit 0 here is WRONG — the wrapper reads code===0 as "user
+      // wanted out" and stops the daemon entirely (operator 2026-05-29).
+      signalRestart:  () => {
+        if (!process.env.EGPT_SUPERVISED) return false;
+        setTimeout(() => process.exit(43), 100);
+        return true;
+      },
     });
   }, []);
 
