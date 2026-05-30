@@ -4964,6 +4964,27 @@ function App() {
         isInternalUrl,
         resolveTabId,
       };
+      // Per-command help intercept (operator 2026-05-30). `/<cmd> ?` (also
+      // `help`, `-h`, `--help`) prints the entry's meta — usage, desc, and
+      // any `subs` block — without invoking run(). One hook covers every
+      // slash file; per-cmd opt-out isn't expected, so the test is global.
+      const _helpArg = String(arg ?? '').trim();
+      if (/^(\?|help|-h|--help)$/i.test(_helpArg)) {
+        const m = entry.meta ?? {};
+        const lines = [];
+        if (m.usage) lines.push(`usage: ${m.usage}`);
+        if (m.desc)  lines.push(m.desc);
+        if (Array.isArray(m.subs) && m.subs.length) {
+          lines.push('');
+          for (const s of m.subs) {
+            const head = s.usage ?? (s.name ? `${cmd} ${s.name}` : '(unnamed)');
+            lines.push(s.desc ? `  ${head}  — ${s.desc}` : `  ${head}`);
+            if (s.example) lines.push(`     e.g.  ${s.example}`);
+          }
+        }
+        sysOut(lines.length ? lines.join('\n') : `(no help text registered for ${cmd})`);
+        return true;
+      }
       return await entry.run({ cmd, arg, meta, ctx });
     }
 

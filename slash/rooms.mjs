@@ -1,10 +1,18 @@
-// slash/rooms.mjs — /rooms (list saved rooms) and /save-room (snapshot
-// current sessions + telegram chat_id to ~/.egpt/rooms/<name>.yaml).
+// slash/rooms.mjs — /rooms (alias of /room for listing) and /save-room
+// (legacy snapshot of current sessions). Active room CONFIG (members +
+// states) lives in ~/.egpt/rooms/config.yaml and is owned by /room;
+// /rooms info dumps that file.
+//
+//   /rooms                    list rooms with member counts (alias of /room)
+//   /rooms info [<name>|all]  dump the YAML config — one room or every room
 
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import * as YAML from 'yaml';
 import * as cdp from '../src/tools/cdp.mjs';
+import { loadRooms, listRooms, getRoom, ROOMS_CONFIG_PATH, sanitizeName } from '../src/rooms.mjs';
 
 const ROOMS_DIR = join(homedir(), '.egpt', 'rooms');
 
@@ -12,16 +20,21 @@ export const meta = [
   {
     cmd: '/rooms',
     section: 'ROOM',
-    surface: 'shell',
-    usage: '/rooms',
-    desc: 'list saved rooms',
+    surface: 'both',
+    usage: '/rooms [info [<name>|all]]',
+    desc: 'alias of /room for listing rooms; "/rooms info <name>" or "/rooms info all" dumps the YAML config',
+    subs: [
+      { name: 'info', usage: '/rooms info [<name>|all]',
+        desc: 'dump the YAML config for one room or every room',
+        example: '/rooms info test' },
+    ],
   },
   {
     cmd: '/save-room',
     section: 'ROOM',
     surface: 'shell',
     usage: '/save-room [name]',
-    desc: 'snapshot current sessions + telegram chat_id to ~/.egpt/rooms/<name>.yaml',
+    desc: 'snapshot current sessions + telegram chat_id to ~/.egpt/rooms/<name>.yaml (legacy)',
   },
 ];
 
@@ -29,26 +42,49 @@ export async function run({ cmd, arg, ctx }) {
   // ctx keys consumed:
   //   sysOut(text)
   //   dp(p)
-  //   sessions
-  //   tgBridgeRef           — telegram chat_id source
-  //   ts()                  — timestamp formatter
+  //   sessions, tgBridgeRef, ts        — /save-room only
   const { sysOut, dp, sessions, tgBridgeRef, ts } = ctx;
 
   if (cmd === '/rooms') {
-    try {
-      let files = [];
-      try { files = (await readdir(ROOMS_DIR)).filter(f => f.endsWith('.yaml')); } catch {}
-      if (!files.length) {
-        sysOut(`(no saved rooms)\n  /save-room <name> to save current room`, { _themed: true });
+    const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
+
+    // /rooms info [<name>|all] — YAML dump
+    if (parts[0] === 'info') {
+      const which = (parts[1] ?? 'all').toLowerCase();
+      if (!existsSync(ROOMS_CONFIG_PATH)) {
+        sysOut(`(no rooms yet — config at ${dp(ROOMS_CONFIG_PATH)} does not exist; /room create <name> to start)`);
         return true;
       }
-      sysOut(
-        `Saved rooms in ${dp(ROOMS_DIR)}:\n` +
-        `${files.map(f => `  ${f.replace('.yaml', '')}`).join('\n')}\n\n` +
-        `(/attach <brain> spins up a new working room; legacy snapshot restore from these YAMLs is not currently wired through any slash command — open one as JSON if you need its session metadata.)`,
-        { _themed: true },
-      );
-    } catch (e) { sysOut(`!! ${e.message}`); }
+      if (which === 'all' || which === '*') {
+        try {
+          const yaml = await readFile(ROOMS_CONFIG_PATH, 'utf8');
+          sysOut(`# ${dp(ROOMS_CONFIG_PATH)}\n${yaml.trimEnd()}`);
+        } catch (e) { sysOut(`!! /rooms info: ${e.message}`); }
+        return true;
+      }
+      const state = await loadRooms();
+      const room = getRoom(state, which);
+      if (!room) {
+        const names = Object.keys(state?.rooms ?? {});
+        sysOut(`!! no room "${which}"${names.length ? ` — available: ${names.join(', ')}` : ' — none defined yet'}`);
+        return true;
+      }
+      const block = YAML.stringify({ rooms: { [sanitizeName(which)]: room } }, { lineWidth: 100 });
+      sysOut(`# ${dp(ROOMS_CONFIG_PATH)} · room "${sanitizeName(which)}"\n${block.trimEnd()}`);
+      return true;
+    }
+
+    // /rooms — list (alias of /room with no args). One source of truth via loadRooms.
+    if (!parts.length) {
+      const state = await loadRooms();
+      const rooms = listRooms(state);
+      if (!rooms.length) { sysOut('no rooms yet — /room create <name>'); return true; }
+      sysOut(rooms.map(r =>
+        `📂 ${r.name} (${r.members.length} member${r.members.length === 1 ? '' : 's'})`).join('\n'));
+      return true;
+    }
+
+    sysOut(`!! /rooms: unknown subcommand "${parts[0]}". usage: /rooms [info [<name>|all]]`);
     return true;
   }
 
