@@ -48,29 +48,45 @@ export async function run({ cmd, arg, ctx }) {
   if (cmd === '/rooms') {
     const parts = String(arg ?? '').trim().split(/\s+/).filter(Boolean);
 
-    // /rooms info [<name>|all] — YAML dump
+    // Resolved view of a room: wa-group members get a `name` annotation from
+    // the bridge so the dump shows the readable handle next to the opaque jid.
+    // Operator 2026-05-30 ("it is not showing how a group could be mentioned"):
+    // the jid alone doesn't tell you which group is which; the name is what
+    // resolveChatTarget matches against, so it's what the operator addresses
+    // a member by. Brain/shell/extension/tg members already carry their id.
+    const _annotate = (room) => {
+      const waBridge = ctx.waBridgeRef?.current;
+      const members = (room?.members ?? []).map(m => {
+        if (m.kind !== 'wa-group') return m;
+        const nm = waBridge?.getChatName?.(m.id);
+        return (nm && nm !== m.id) ? { kind: m.kind, id: m.id, name: nm, state: m.state } : m;
+      });
+      return { ...room, members };
+    };
+
+    // /rooms info [<name>|all] — YAML dump (annotated view; not the raw file)
     if (parts[0] === 'info') {
       const which = (parts[1] ?? 'all').toLowerCase();
       if (!existsSync(ROOMS_CONFIG_PATH)) {
         sysOut(`(no rooms yet — config at ${dp(ROOMS_CONFIG_PATH)} does not exist; /room create <name> to start)`);
         return true;
       }
+      const state = await loadRooms();
       if (which === 'all' || which === '*') {
-        try {
-          const yaml = await readFile(ROOMS_CONFIG_PATH, 'utf8');
-          sysOut(`# ${dp(ROOMS_CONFIG_PATH)}\n${yaml.trimEnd()}`);
-        } catch (e) { sysOut(`!! /rooms info: ${e.message}`); }
+        const annotated = { rooms: Object.fromEntries(
+          Object.entries(state?.rooms ?? {}).map(([k, r]) => [k, _annotate(r)])) };
+        const yaml = YAML.stringify(annotated, { lineWidth: 100 });
+        sysOut(`# ${dp(ROOMS_CONFIG_PATH)} (annotated: wa-group .name resolved from the bridge)\n${yaml.trimEnd()}`);
         return true;
       }
-      const state = await loadRooms();
       const room = getRoom(state, which);
       if (!room) {
         const names = Object.keys(state?.rooms ?? {});
         sysOut(`!! no room "${which}"${names.length ? ` — available: ${names.join(', ')}` : ' — none defined yet'}`);
         return true;
       }
-      const block = YAML.stringify({ rooms: { [sanitizeName(which)]: room } }, { lineWidth: 100 });
-      sysOut(`# ${dp(ROOMS_CONFIG_PATH)} · room "${sanitizeName(which)}"\n${block.trimEnd()}`);
+      const block = YAML.stringify({ rooms: { [sanitizeName(which)]: _annotate(room) } }, { lineWidth: 100 });
+      sysOut(`# ${dp(ROOMS_CONFIG_PATH)} · room "${sanitizeName(which)}" (annotated: wa-group .name resolved from the bridge)\n${block.trimEnd()}`);
       return true;
     }
 
