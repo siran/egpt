@@ -86,6 +86,7 @@ describe('dispatch runtime', () => {
       waChatId: 'chat-a',
       waChatName: 'Alice',
       waSlug: 'alice',
+      replyAllowed: true,
     });
 
     expect(result.kind).toBe('reply');
@@ -187,6 +188,7 @@ describe('dispatch runtime', () => {
       waChatId: 'chat-a',
       waChatName: 'Alice',
       waSlug: 'alice',
+      replyAllowed: true,
     });
 
     expect(brainCalls).toHaveLength(2);
@@ -247,6 +249,7 @@ describe('dispatch runtime', () => {
       waChatId: '12345@lid',
       waChatName: 'Alice',
       waSlug: 'alice',
+      replyAllowed: true,
     });
 
     expect(brainCalls).toHaveLength(2);
@@ -384,11 +387,31 @@ describe('dispatch runtime', () => {
       fromWhatsApp: true,
       waChatId: 'chat-a',
       waSlug: 'alice',
+      replyAllowed: true,
     });
 
     expect(sends).toHaveLength(1);
     expect(sends[0].body).toContain('still delivered');
     expect(errors.some(e => e.includes('transcript') && e.includes('write denied'))).toBe(true);
+  });
+
+  // REGRESSION (operator 2026-05-30): the persona pile-drain in egpt.mjs was
+  // building drainMeta without `replyAllowed`, so the dispatch gate (checking
+  // `=== false`) let the reply through into a mention-direct chat. The WA fail-
+  // closed contract: undefined `replyAllowed` on a WA path treats the gate as
+  // CLOSED, never sends. Production callers (bridge handler, drain) must thread
+  // the flag explicitly; missing it is a bug, not "permissive default".
+  it('REGRESSION: WA reply with undefined replyAllowed is SUPPRESSED (not sent)', async () => {
+    const { runtime, sends } = await makeRuntime({ reply: 'leak attempt' });
+    const result = await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      waChatId: 'chat-a',
+      waSlug: 'alice',
+      // replyAllowed intentionally omitted — simulates a caller that forgot
+      // to thread the per-chat gate (the actual 2026-05-30 leak shape).
+    });
+    expect(result.kind).toBe('suppressed');
+    expect(sends).toEqual([]);
   });
 
   it('does not call bridge.send when the brain returns silence', async () => {
@@ -415,6 +438,7 @@ describe('dispatch runtime', () => {
       fromWhatsApp: true,
       waChatId: 'chat-a',
       waSlug: 'alice',
+      replyAllowed: true,
     });
 
     expect(sends).toHaveLength(1);
