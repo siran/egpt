@@ -353,6 +353,17 @@ export async function startWhatsAppBridge({
   let sock           = null;
   let reconnectTimer = null;
   let waAliveTimer   = null;
+  // Silent-socket-death detection (operator 2026-05-30): baileys can stop
+  // delivering messages.upsert without firing connection.update close — the
+  // WS dies but the JS timer keeps writing whatsapp-alive.txt, so the
+  // watchdog never restarts us. Track both signals: when did baileys last
+  // open, and when did the LAST inbound event arrive. If we've been open
+  // long enough that real silence is suspicious AND no upsert has fired in
+  // that window, stop heartbeating so the watchdog respawns the daemon.
+  let _openedAt      = 0;     // ms: 0 = not currently in 'open' state
+  let _lastUpsertTs  = 0;     // ms: last messages.upsert from baileys
+  let _staleLogged   = false; // one-shot per stale window (avoid log spam)
+  const INBOUND_SILENCE_THRESHOLD_MS = 5 * 60 * 1000;   // 5min open + no upsert ⇒ likely dead
   // Exponential backoff state. Reset to 0 when 'connection: open'
   // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
   // is the single retry path — both the close handler and the
@@ -426,6 +437,28 @@ export async function startWhatsAppBridge({
   function _writeWaAliveNow() {
     // Single-writer: only supervised daemon (see _writeWaState comment).
     if (!process.env.EGPT_SUPERVISED) return;
+    // Silent-socket-death guard: if baileys claims connected ('open' fired,
+    // never closed) but we haven't seen a single messages.upsert in
+    // INBOUND_SILENCE_THRESHOLD_MS, the WS is wedged. STOP writing the
+    // heartbeat — the watchdog (setup/watchdog.ps1, wa_stale_seconds=180s
+    // default) will catch the stale file and respawn the daemon. Operator
+    // 2026-05-30: "the daemon is not consuming baileys messages, and thus
+    // not restarting". The two-pid mtime check on _openedAt is critical
+    // because a freshly-connected bridge that just hasn't seen traffic yet
+    // would otherwise false-positive.
+    if (_openedAt > 0) {
+      const now = Date.now();
+      const openFor   = now - _openedAt;
+      const silentFor = _lastUpsertTs > 0 ? now - _lastUpsertTs : openFor;
+      if (openFor >= INBOUND_SILENCE_THRESHOLD_MS && silentFor >= INBOUND_SILENCE_THRESHOLD_MS) {
+        if (!_staleLogged) {
+          err(`whatsapp: silent-socket death suspected — open ${Math.round(openFor / 60000)}m, no inbound for ${Math.round(silentFor / 60000)}m. ` +
+              `Skipping heartbeat so the watchdog respawns the daemon.`);
+          _staleLogged = true;
+        }
+        return;
+      }
+    }
     try {
       const now = new Date().toISOString();
       const beat = (label) => `${label} ${now} ${process.pid} ${_waAliveDetail()}\n`;
@@ -1216,6 +1249,9 @@ export async function startWhatsAppBridge({
         });
       }
       if (connection === 'open') {
+        _openedAt = Date.now();
+        _lastUpsertTs = Date.now();   // freshly open — reset the silence clock
+        _staleLogged = false;          // re-arm the one-shot stale notice
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
         // LID is WhatsApp's privacy-format identity. The user's own
@@ -1247,6 +1283,7 @@ export async function startWhatsAppBridge({
         _refreshAllGroupNames();
       }
       if (connection === 'close') {
+        _openedAt = 0;   // silence-detection re-arms on next 'open'
         const reason = lastDisconnect?.error?.output?.statusCode;
         if (reason === DisconnectReason.loggedOut) {
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
@@ -1317,6 +1354,11 @@ export async function startWhatsAppBridge({
     // (worse) the brain receives a stream of stale messages as if
     // they were live questions.
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Silent-socket-death signal: any upsert (including fromMe echoes) proves
+      // the WS is alive. _writeWaAliveNow checks this against _openedAt to
+      // decide whether to skip the heartbeat (operator 2026-05-30).
+      _lastUpsertTs = Date.now();
+      _staleLogged = false;
       if (debug) {
         for (const m of messages) {
           const peek = textOf(m.message ?? {})?.slice(0, 60) ?? null;
