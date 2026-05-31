@@ -5058,6 +5058,24 @@ function App() {
     // /attach migrated to slash/attach.mjs.
     // /open migrated to slash/open.mjs.
     // /chrome + /tabs migrated to slash/chrome.mjs + slash/tabs.mjs.
+    // Final catch-all: a token starting with "/" that nothing handled is an
+    // UNKNOWN slash command. Reject loudly instead of letting the text fall
+    // through to chat dispatch (where E would politely "I don't recognize
+    // that command" and the operator can't tell typo from "bridge bug").
+    // Operator 2026-05-31: "/reload and /popo were passed through as if
+    // normal chatter". Returns true (handled) so the caller doesn't double-
+    // route. Lists nearby known commands for quick disambiguation.
+    if (cmd.startsWith('/')) {
+      const known = [...SLASH_REGISTRY.keys()].map(k => k.toLowerCase());
+      const target = cmd.toLowerCase();
+      // Cheap fuzzy: substring match in either direction, up to 5 suggestions.
+      const suggest = known
+        .filter(k => k.includes(target.slice(1, 4)) || target.includes(k.slice(1, 4)))
+        .slice(0, 5);
+      const tail = suggest.length ? `  did you mean: ${suggest.join(', ')}?` : '';
+      sysOut(`!! unknown slash command "${cmd}" — try /help for the list.${tail}`);
+      return true;
+    }
     return false;
   };
 
