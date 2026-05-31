@@ -53,7 +53,13 @@ export async function run({ arg, ctx }) {
     const lobbyParts = arg.split(/\s+/).filter(Boolean);
     const lobbyBrain = canonicalBrainName(lobbyParts[0]);
     const lobbySessName = lobbyParts[1] && brainForName(lobbyBrain) ? lobbyParts[1] : null;
-    const autoRoomName = lobbySessName || lobbyBrain || 'work';
+    // Only a RECOGNIZED brain may name the auto-room. The URL/uuid/tabId form
+    // (`/attach https://chatgpt.com/c/…`) passes through canonicalBrainName
+    // unchanged; using that raw as the room name made it a filesystem path →
+    // ENOENT on `_rooms\https:\chatgpt.com\c` (operator 2026-05-31). Fall back
+    // to the generic 'work' room for the tab-spec form.
+    const lobbyBrainName = brainForName(lobbyBrain) ? lobbyBrain : null;
+    const autoRoomName = lobbySessName || lobbyBrainName || 'work';
     const otherRooms = Object.keys(roomSessionsMap).filter(r => r !== 'default' && r !== autoRoomName);
     if (otherRooms.length) {
       const list = otherRooms.map(r => {
