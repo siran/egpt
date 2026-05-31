@@ -273,6 +273,13 @@ export async function startWhatsAppBridge({
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
   onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
   onSummonMovie, // called when '@movie <preset> [args]' token detected; host builds frames and calls playFrames with existingKey so the trigger message becomes the movie
+  // Called when the bridge enters a failure state the operator should act on:
+  //   { reason: 'auth_lost', permanent: true }         — loggedOut; re-pair needed
+  //   { reason: 'connect_failed', permanent: false,
+  //     attempts: N }                                  — N consecutive reconnect
+  //                                                      failures; still retrying
+  // Fired at most once per failure episode; reset on successful reconnect.
+  onBridgeDown = null,
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -399,6 +406,12 @@ export async function startWhatsAppBridge({
   // is the single retry path — both the close handler and the
   // catch around connect() funnel through it.
   let reconnectAttempts = 0;
+  // Suppress duplicate onBridgeDown calls within one failure episode.
+  // Reset to false on successful connect so the next outage fires again.
+  let _bridgeDownNotified = false;
+  // Fire onBridgeDown after this many consecutive reconnect failures
+  // (attempts 0-3 = ~75 s of backoff; hitting attempt 4 = cap reached).
+  const RECONNECT_NOTIFY_AT = 4;
 
   // Bridge heartbeat. Same prefix as state/alive.txt:
   // "<tic|toc> <iso> <pid> ...". Details after the pid identify
@@ -633,6 +646,10 @@ export async function startWhatsAppBridge({
     const delay = Math.min(RECONNECT_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
     reconnectAttempts++;
     err(`whatsapp: ${reason}; reconnect attempt ${reconnectAttempts} in ${Math.round(delay / 1000)}s`);
+    if (!_bridgeDownNotified && reconnectAttempts >= RECONNECT_NOTIFY_AT) {
+      _bridgeDownNotified = true;
+      try { onBridgeDown?.({ reason: 'connect_failed', permanent: false, attempts: reconnectAttempts }); } catch {}
+    }
     _stopWaAlive('reconnecting', reason);
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -1401,6 +1418,7 @@ export async function startWhatsAppBridge({
         _lastUpsertTs = Date.now();   // freshly open — reset the silence clock
         _lastProbeOkTs = Date.now();  // ditto for the probe-OK clock
         _staleLogged = false;          // re-arm the one-shot stale notice
+        _bridgeDownNotified = false;   // re-arm for the next outage episode
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
         // LID is WhatsApp's privacy-format identity. The user's own
@@ -1438,6 +1456,7 @@ export async function startWhatsAppBridge({
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
           _stopWaAlive('logged_out', `reason ${reason}`);
           stopped = true;
+          try { onBridgeDown?.({ reason: 'auth_lost', permanent: true }); } catch {}
           return;
         }
         // 440 = connectionReplaced. WA's server has another session
