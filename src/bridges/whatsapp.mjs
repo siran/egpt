@@ -383,6 +383,7 @@ export async function startWhatsAppBridge({
   // exhaustion, baileys version drift). _lastUpsertTs gets bumped on success so
   // it doubles as a heartbeat-poke for the passive detector.
   let _activeProbeTimer = null;
+  let _lastProbeOkTs = 0;    // ms: last successful onWhatsApp probe; SEPARATE from _lastUpsertTs
   const ACTIVE_PROBE_INTERVAL_MS = 60_000;
   const ACTIVE_PROBE_TIMEOUT_MS  = 5_000;
   // Exponential backoff state. Reset to 0 when 'connection: open'
@@ -535,10 +536,28 @@ export async function startWhatsAppBridge({
       setTimeout(() => reject(new Error('probe timeout')), ACTIVE_PROBE_TIMEOUT_MS));
     try {
       await Promise.race([sock.onWhatsApp(myNumber), timeoutPromise]);
-      // Probe round-tripped: WS is alive. Bump the silence clock so the passive
-      // detector doesn't false-trip during a genuinely quiet operator window.
-      _lastUpsertTs = Date.now();
-      _staleLogged = false;
+      // Probe round-tripped: WS auth path is alive. DO NOT bump _lastUpsertTs —
+      // those are SEPARATE signals (operator 2026-05-31: probe-OK does not
+      // imply messages-flowing; baileys can silently stop emitting upsert
+      // while onWhatsApp still works, e.g. decryption stall on inbound). Track
+      // probe-OK separately so the wedged-messages detector below has its
+      // own clock.
+      _lastProbeOkTs = Date.now();
+      // Probe-OK + no real upsert for the full threshold = baileys is wedged
+      // on the inbound side specifically. Reconnect forces baileys to re-
+      // subscribe to the message stream. This is the path that catches "WA
+      // says we're connected, but my /restart never arrives" — the exact
+      // class of failure that has been chasing the operator. The threshold
+      // is the same INBOUND_SILENCE_THRESHOLD_MS used by the passive
+      // detector; both signals now look at the same _lastUpsertTs.
+      const openFor   = Date.now() - _openedAt;
+      const silentFor = _lastUpsertTs > 0 ? Date.now() - _lastUpsertTs : openFor;
+      if (openFor >= INBOUND_SILENCE_THRESHOLD_MS && silentFor >= INBOUND_SILENCE_THRESHOLD_MS) {
+        err(`whatsapp: probe OK but messages.upsert silent ${Math.round(silentFor / 60000)}m (open ${Math.round(openFor / 60000)}m) — wedged inbound, forcing reconnect`);
+        try { sock?.end?.(new Error('wedged-inbound')); } catch {}
+        _openedAt = 0;
+        _scheduleReconnect('wedged inbound (probe OK, no upsert)');
+      }
     } catch (e) {
       err(`whatsapp: active probe failed (${e?.message ?? e}) — forcing reconnect`);
       try { sock?.end?.(e); } catch {}
@@ -1326,6 +1345,7 @@ export async function startWhatsAppBridge({
       if (connection === 'open') {
         _openedAt = Date.now();
         _lastUpsertTs = Date.now();   // freshly open — reset the silence clock
+        _lastProbeOkTs = Date.now();  // ditto for the probe-OK clock
         _staleLogged = false;          // re-arm the one-shot stale notice
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
