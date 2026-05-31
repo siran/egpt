@@ -364,7 +364,7 @@ export async function startWhatsAppBridge({
   let _openedAt      = 0;     // ms: 0 = not currently in 'open' state
   let _lastUpsertTs  = 0;     // ms: last messages.upsert from baileys
   let _staleLogged   = false; // one-shot per stale window (avoid log spam)
-  const INBOUND_SILENCE_THRESHOLD_MS = 2 * 60 * 1000;   // 2min open + no upsert ⇒ likely dead (operator 2026-05-31)
+  const INBOUND_SILENCE_THRESHOLD_MS = 30 * 1000;   // 30s open + no upsert ⇒ likely dead (operator 2026-05-31: "1s is enough" — 30s leaves room for genuinely quiet operator windows)
   // Wake-from-sleep detection (operator 2026-05-31): laptop sleep is the
   // dominant cause of broken-but-undetected WS — baileys' WebSocket times out
   // at the OS level but the close event never reaches us. Detect wake via

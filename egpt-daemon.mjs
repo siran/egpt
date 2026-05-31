@@ -47,8 +47,8 @@ function activeRoot() {
   } catch { /* missing/unreadable → stable */ }
   return ROOT;
 }
-const RESTART_MIN_MS = 2_000;       // baseline crash-restart delay
-const RESTART_MAX_MS = 60_000;      // cap on backoff
+const RESTART_MIN_MS = 1_000;       // baseline crash-restart delay (operator 2026-05-31: "1s is enough")
+const RESTART_MAX_MS = 10_000;      // cap on backoff (was 60s — local baileys reconnects in ~1s)
 const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
 const REWIND_EXIT_CODE  = 44;
@@ -58,9 +58,13 @@ const CLEAN_EXIT_CODE   = 0;
 // is older than WATCHDOG_STALE_MS, the child is wedged — kill (SIGTERM,
 // SIGKILL after grace), respawn. No separate watchdog task / wrapper script
 // needed; OS service manager just needs to keep THIS process alive.
-const WATCHDOG_POLL_MS  = 2_000;    // ≤2s detection of any wedge
-const WATCHDOG_STALE_MS = 90_000;   // matches the prior watchdog.ps1 threshold
-const WATCHDOG_GRACE_MS = 5_000;    // SIGTERM → wait → SIGKILL window
+// Thresholds tightened (operator 2026-05-31: "60s is always too much"):
+// boot takes ~1.5s in the smoke test, so 5s post-spawn grace is generous
+// and 10s stale is fast detection of a truly wedged child.
+const WATCHDOG_POLL_MS    = 1_000;    // 1s — local fs poll, cheap
+const WATCHDOG_STALE_MS   = 10_000;   // 10s — stale threshold (was 90s)
+const WATCHDOG_GRACE_MS   = 2_000;    // 2s SIGTERM → SIGKILL grace (was 5s)
+const POST_SPAWN_GRACE_MS = 5_000;    // 5s after spawn before first stale check (was 30s)
 // git and npm still go through spawnSync with shell:true (the only
 // way to invoke them portably across Windows .cmd shims, msys2,
 // macOS, and Linux). The extension build, however, runs via dynamic
@@ -217,12 +221,12 @@ function startWatchdog() {
   watchdogTimer = setInterval(() => {
     if (stopping || !child || killInFlight) return;
     // Grace period after spawn: alive.txt doesn't exist for the first few
-    // seconds while egpt.mjs boots. Treat absent as "fresh enough" for
-    // 30s after spawnAt, then expect a real beat.
+    // seconds while egpt.mjs boots. Boot takes ~1.5s on a healthy box
+    // (smoke test baseline); POST_SPAWN_GRACE_MS = 5s is generous.
     const sinceSpawn = Date.now() - spawnAt;
     const latest = readAliveLatestMs();
     if (latest === 0) {
-      if (sinceSpawn > 30_000) {
+      if (sinceSpawn > POST_SPAWN_GRACE_MS) {
         killChildAndLetWrapperRespawn(`no alive.txt after ${Math.round(sinceSpawn / 1000)}s`);
       }
       return;
