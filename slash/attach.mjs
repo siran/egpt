@@ -15,6 +15,7 @@
 //   /attach <brain> <name> [tabSpec] explicit attach to one specific tab
 
 import * as cdp from '../src/tools/cdp.mjs';
+import { sanitizeName } from '../src/rooms.mjs';
 
 export const meta = {
   cmd: '/attach',
@@ -51,9 +52,19 @@ export async function run({ arg, ctx }) {
   let targetRoom = getCurrentRoom();
   if (targetRoom === 'default') {
     const lobbyParts = arg.split(/\s+/).filter(Boolean);
-    const lobbyBrain = canonicalBrainName(lobbyParts[0]);
+    // First arg may be a URL (e.g. `/attach https://chatgpt.com/c/...`). Without
+    // resolving it to a brain name, the raw URL becomes the room key — and the
+    // transcript path then contains `://`, which Windows mkdir rejects with
+    // ENOENT, spamming "!! unhandledRejection" on every write. Operator
+    // 2026-05-31. Always sanitize the final room name as a defense-in-depth
+    // belt: even unknown weird tokens stay legal as a filesystem path.
+    let lobbyBrain = canonicalBrainName(lobbyParts[0]);
+    if (lobbyParts[0] && /^https?:\/\//i.test(lobbyParts[0])) {
+      const inferred = brainForUrl?.(lobbyParts[0]);
+      if (inferred) lobbyBrain = inferred;
+    }
     const lobbySessName = lobbyParts[1] && brainForName(lobbyBrain) ? lobbyParts[1] : null;
-    const autoRoomName = lobbySessName || lobbyBrain || 'work';
+    const autoRoomName = sanitizeName(lobbySessName || lobbyBrain || 'work');
     const otherRooms = Object.keys(roomSessionsMap).filter(r => r !== 'default' && r !== autoRoomName);
     if (otherRooms.length) {
       const list = otherRooms.map(r => {

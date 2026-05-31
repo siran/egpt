@@ -449,6 +449,7 @@ const _META_PATTERNS = [
   /^\(no held messages\)/,
   /^\(no messages yet\)/,
   /^\(empty room\)/,
+  /^\(empty\)/,
   /^--- last \d+/,
   /^default operator/,
   /^!! /,
@@ -2501,6 +2502,13 @@ function App() {
     const mentionsSomeone = /(^|\s)@[\w-]+/.test(String(body));
     let state; try { state = await loadRooms(); } catch { return; }
     for (const plan of planFanout(state, memberId, { atEAnywhere: mentionsSomeone })) {
+      // Per-session shell opt-in: persisted room membership in config.yaml is
+      // semantic ("the shell IS a member"); whether THIS shell session
+      // CONTRIBUTES is in-memory only and starts EMPTY. Operator 2026-05-31
+      // ("B"): "shell should start outside any room. then, after entering test,
+      // would messages typed in shell be replicated to room". Enter via
+      // `/room <name> enter`.
+      if (memberId === 'shell' && !_shellSessionRoomsRef.current.has(plan.room)) continue;
       await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
     }
   };
@@ -2534,6 +2542,14 @@ function App() {
   // know about rooms — they always operate on the current one.
   const [roomSessionsMap, setRoomSessionsMap] = useState({ default: {} });
   const [currentRoom, setCurrentRoom] = useState('default');
+  // Per-session routing-room contribution (operator 2026-05-31, "B"). On shell
+  // startup, this is EMPTY — the shell does not fan out to any rooms even if
+  // the persisted config has shell-active membership. Operator explicitly opts
+  // in for the current session via `/room <name> enter` (or `/room <name>
+  // active shell` from shell). `_shellSessionRoomsBump` forces a re-render
+  // when the set changes (Sets in refs don't trigger React updates).
+  const _shellSessionRoomsRef = useRef(new Set());
+  const [_shellSessionRoomsBump, setShellSessionRoomsBump] = useState(0);
   const sessions = roomSessionsMap[currentRoom] ?? {};
   const setSessions = (updater) => {
     setRoomSessionsMap(rs => {
@@ -4793,6 +4809,11 @@ function App() {
         parseMessages,                               // shared internal — pass-thru
         isMetaMessage: _isMetaMessage,               // /last filter
         suppressTranscriptRef: _suppressTranscriptRef,
+        // Per-session shell room contribution (operator 2026-05-31). The Set
+        // is in-memory only — shell does NOT auto-contribute based on the
+        // persisted config; operator opts in per session via /room <n> enter.
+        shellSessionRoomsRef: _shellSessionRoomsRef,
+        bumpShellSessionRooms: () => setShellSessionRoomsBump(n => n + 1),
         // Batch 4 additions
         outputSinkRef,                               // for /help to respect sink
         brainNamesForHelp,                           // help template substitutions
@@ -8562,20 +8583,31 @@ function App() {
         h(Text, { color: T.statusSessions }, (() => {
           // Status line: show what's actually in the room AND what
           // plain text routes to. Empty in-room sessions + no /use
-          // bindings = '(empty room)'; otherwise list local brains
+          // bindings = '(empty)'; otherwise list local brains
           // (* = active for plain text via /use) and any joined WA
           // chats (→ @waN "name") so the operator can see at a
-          // glance where their typing goes.
+          // glance where their typing goes. The trailing routing-
+          // room line shows which rooms THIS shell is currently
+          // CONTRIBUTING to (per-session opt-in; see /room <n> enter).
           const localBrains = Object.entries(sessions).map(([n, s]) => {
             const star = activeSessions.includes(n) ? '*' : '';
             return `${star}${s.emoji ?? ''}${n}`;
           });
           const waChats = _waJoinedAll().map(e =>
             `→@wa${e.idx >= 0 ? e.idx + 1 : '?'} "${(e.name ?? '').slice(0, 24)}"`);
-          if (!localBrains.length && !waChats.length) return '(empty room)';
+          // _shellSessionRoomsBump is read here ONLY so React re-renders this
+          // text when the Set in the ref changes (otherwise mutations to the
+          // ref's Set wouldn't trigger an update). Value itself unused.
+          void _shellSessionRoomsBump;
+          const shellRooms = [..._shellSessionRoomsRef.current];
           const parts = [];
           if (localBrains.length) parts.push(localBrains.join(' '));
           if (waChats.length) parts.push(waChats.join(' '));
+          if (shellRooms.length) parts.push(`rooms: [${shellRooms.join(', ')}]`);
+          else parts.push('rooms: [] (/room <n> enter to mirror typed msgs)');
+          if (!localBrains.length && !waChats.length && !shellRooms.length) {
+            return '(empty)  ·  rooms: [] (/room <n> enter to mirror typed msgs)';
+          }
           return parts.join('  ');
         })())),
       streaming && (() => {

@@ -1,6 +1,7 @@
 // slash/open.mjs — open a new tab/subprocess and register a session.
 
 import * as cdp from '../src/tools/cdp.mjs';
+import { sanitizeName } from '../src/rooms.mjs';
 
 export const meta = {
   cmd: '/open',
@@ -43,7 +44,11 @@ export async function run({ arg, ctx }) {
   // legacy currentRoom (only /attach did).
   let targetRoom = getCurrentRoom();
   if (targetRoom === 'default') {
-    const autoRoomName = sessionName || brainName || 'work';
+    // Sanitize: room name is used as a filesystem path component (the
+    // transcript file ~/.egpt/rooms/<name>.md). Unsanitized URLs / weird
+    // tokens contain `://` or `/` and Windows mkdir ENOENTs. See attach.mjs
+    // matching change (operator 2026-05-31).
+    const autoRoomName = sanitizeName(sessionName || brainName || 'work');
     if (!roomSessionsMap[autoRoomName]) {
       setRoomSessionsMap(rs => ({ ...rs, [autoRoomName]: {} }));
       sysOut(`auto-created room "${autoRoomName}"`);
