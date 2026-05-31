@@ -1,4 +1,4 @@
-# setup/install-windows.ps1 — register egpt-daemon as a Task Scheduler task.
+﻿# setup/install-windows.ps1 -- register egpt-daemon as a Task Scheduler task.
 #
 # The task runs `node egpt-daemon.mjs --headless` DIRECTLY (no PowerShell
 # wrapper). Task Scheduler's RestartOnFailure setting handles outer-layer
@@ -6,7 +6,7 @@
 # itself supervises the egpt.mjs child + runs the integrated heartbeat
 # watchdog. Two layers, both proper (operator 2026-05-31).
 #
-# Replaces the prior 3-layer setup: daemon-wrap.ps1 → egpt-daemon.mjs →
+# Replaces the prior 3-layer setup: daemon-wrap.ps1 -> egpt-daemon.mjs ->
 # egpt.mjs plus a separate egpt-watchdog task. Both daemon-wrap.ps1 and the
 # watchdog task are removed by this script.
 #
@@ -28,7 +28,7 @@ try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | 
 try { Start-Transcript -Path $LogPath -Append -Force | Out-Null } catch { Write-Host "(Start-Transcript failed: $($_.Exception.Message); continuing without transcript)" -ForegroundColor Yellow }
 Write-Output ("==== install-windows.ps1 run at {0} ====" -f (Get-Date))
 
-# Admin check — the .cmd launcher (install-windows.cmd) handles UAC. If
+# Admin check -- the .cmd launcher (install-windows.cmd) handles UAC. If
 # someone runs this .ps1 directly without admin, error out loudly instead
 # of silently no-op'ing.
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -44,7 +44,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
 Write-Output ("script: {0}" -f $MyInvocation.MyCommand.Path)
 Write-Output ("repo:   {0}" -f $RepoRoot)
-# Avoid PS7-only `?.` — Windows PS 5.1 (default) parses-errors on it.
+# Avoid PS7-only `?.` -- Windows PS 5.1 (default) parses-errors on it.
 $NodeCmd = Get-Command node -ErrorAction SilentlyContinue
 $NodeBin = if ($NodeCmd) { $NodeCmd.Source } else { $null }
 if (-not $NodeBin) { throw "node.exe not found in PATH" }
@@ -110,7 +110,7 @@ $Settings = New-ScheduledTaskSettingsSet `
 
 # Run as the current user, interactive (so it can access the user's home dir
 # + node + the WA auth in ~/.egpt). HighestAvailable so it inherits the
-# user's privileges (no elevation prompt — the task itself isn't elevated).
+# user's privileges (no elevation prompt -- the task itself isn't elevated).
 $Principal = New-ScheduledTaskPrincipal `
   -UserId  "$env:USERDOMAIN\$env:USERNAME" `
   -LogonType Interactive `
@@ -121,7 +121,7 @@ $Task = New-ScheduledTask `
   -Trigger   @($TrigLogon, $TrigBoot) `
   -Settings  $Settings `
   -Principal $Principal `
-  -Description "egpt — personal WA/TG bridge daemon (egpt-daemon.mjs supervisor)"
+  -Description "egpt -- personal WA/TG bridge daemon (egpt-daemon.mjs supervisor)"
 
 Register-ScheduledTask -TaskName $TaskName -InputObject $Task -Force | Out-Null
 Write-Output "registered scheduled task: $TaskName"
