@@ -37,7 +37,9 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
-$NodeBin   = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+# Avoid PS7-only `?.` — Windows PS 5.1 (default) parses-errors on it.
+$NodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$NodeBin = if ($NodeCmd) { $NodeCmd.Source } else { $null }
 if (-not $NodeBin) { throw "node.exe not found in PATH" }
 $DaemonJs  = Join-Path $RepoRoot 'egpt-daemon.mjs'
 if (-not (Test-Path $DaemonJs)) { throw "egpt-daemon.mjs not found at $DaemonJs" }
