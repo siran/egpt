@@ -1,27 +1,28 @@
 #!/usr/bin/env node
-// egpt-daemon.mjs — keeps `node egpt.mjs` running.
+// egpt-daemon.mjs — supervisor for `node egpt.mjs`.
 //
-// Spawns the shell as a child, restarts on crash with exponential backoff.
-// Four distinguished exit codes from the shell:
+// Two responsibilities:
+//   1. Spawn the shell as a child, restart on crash with exponential backoff,
+//      handle distinguished exit codes (42/43/44 = upgrade/restart/rewind).
+//   2. INTEGRATED HEARTBEAT WATCHDOG (operator 2026-05-31): poll the child's
+//      ~/.egpt/state/alive.txt every 2s. If the latest tic/toc is older than
+//      90s, the child is wedged-but-alive (event loop blocked, deadlock, WA
+//      hung). SIGTERM → grace → SIGKILL → wrapper respawns. No separate
+//      watchdog task or PowerShell wrapper is needed; the OS service manager
+//      only has to keep THIS process alive.
 //
+// Child exit codes:
 //   0    user wanted out (typed /exit, or SIGINT). Daemon stops too.
-//   42   /upgrade — run `git pull && npm install && npm run build:ext`,
-//        then restart.
+//   42   /upgrade — git pull && npm install && build:ext, then restart.
 //   43   /restart — restart immediately, no git pull, no build.
-//   44   /rewind — read ~/.egpt/rewind-target.txt for a git ref, run
-//        `git checkout <ref> && npm install && npm run build:ext`,
-//        then restart.
+//   44   /rewind — read ~/.egpt/rewind-target.txt for a git ref, then restart.
+//   *    crash — restart with exponential backoff.
 //
-// Any other exit code is treated as a crash and triggers restart with backoff.
-//
-// Cross-platform. To run on Windows logon:
-//
-//   schtasks /Create /TN "egpt-daemon" `
-//     /TR "node \"%USERPROFILE%\src\egpt\egpt-daemon.mjs\"" `
-//     /SC ONLOGON /RL HIGHEST /F
-//
-// On macOS / Linux: a launchd plist or systemd --user unit pointing at
-// `node /path/to/egpt-daemon.mjs`. See README for details.
+// Cross-platform install: see setup/install-linux.sh (systemd user unit),
+// setup/install-macos.sh (LaunchAgent), setup/install-windows.ps1 (Task
+// Scheduler with restart-on-failure). The OS service manager is the OUTER
+// supervisor — it restarts egpt-daemon.mjs if THIS process crashes. Together:
+// two layers, both proper, no PowerShell wrapper, no separate watchdog task.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, unlinkSync, existsSync } from 'node:fs';
@@ -52,6 +53,14 @@ const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
 const REWIND_EXIT_CODE  = 44;
 const CLEAN_EXIT_CODE   = 0;
+// Heartbeat watchdog (operator 2026-05-31, "the real fix"): the supervisor
+// polls the child's alive.txt every WATCHDOG_POLL_MS. If the latest tic/toc
+// is older than WATCHDOG_STALE_MS, the child is wedged — kill (SIGTERM,
+// SIGKILL after grace), respawn. No separate watchdog task / wrapper script
+// needed; OS service manager just needs to keep THIS process alive.
+const WATCHDOG_POLL_MS  = 2_000;    // ≤2s detection of any wedge
+const WATCHDOG_STALE_MS = 90_000;   // matches the prior watchdog.ps1 threshold
+const WATCHDOG_GRACE_MS = 5_000;    // SIGTERM → wait → SIGKILL window
 // git and npm still go through spawnSync with shell:true (the only
 // way to invoke them portably across Windows .cmd shims, msys2,
 // macOS, and Linux). The extension build, however, runs via dynamic
@@ -74,6 +83,8 @@ let backoff = RESTART_MIN_MS;
 let child = null;
 let srcCrashes = 0;   // consecutive boot-crashes of a non-stable source
 let spawnAt = 0;      // ms when the current child was spawned (crash-loop window)
+let watchdogTimer = null;
+let killInFlight = false;   // true while we're SIGTERMing + waiting for SIGKILL escalation
 
 function log(msg) {
   process.stdout.write(`[egpt-daemon ${new Date().toISOString()}] ${msg}\n`);
@@ -166,6 +177,62 @@ async function runRewind() {
   await buildExtension(root);
   log(`rewind to ${ref} complete`);
   return true;
+}
+
+// Read alive.txt's latest tic/toc timestamp. Returns ms since epoch, or 0
+// if missing / unparseable. Same line format the prior watchdog.ps1 parsed
+// ("<tic|toc> <iso> <pid> ..."); the newest stamp wins.
+function readAliveLatestMs() {
+  let content;
+  try { content = readFileSync(ALIVE_PATH, 'utf8'); }
+  catch { return 0; }
+  const BEAT_RE = /^(?:tic|toc)\s+(\S+)/gm;
+  let best = 0;
+  for (const m of content.matchAll(BEAT_RE)) {
+    const ts = Date.parse(m[1]);
+    if (Number.isFinite(ts) && ts > best) best = ts;
+  }
+  return best;
+}
+
+// Kill the child + respawn. Used by the watchdog when alive.txt goes stale.
+// SIGTERM first so egpt.mjs gets to flush bridges; SIGKILL after grace if it
+// hasn't exited (child.on('exit') will then fire the existing respawn path).
+function killChildAndLetWrapperRespawn(reason) {
+  if (killInFlight || !child) return;
+  killInFlight = true;
+  const pid = child.pid;
+  log(`watchdog: ${reason} — SIGTERM pid ${pid}, SIGKILL in ${WATCHDOG_GRACE_MS}ms if alive`);
+  try { child.kill('SIGTERM'); } catch (e) { log(`watchdog: SIGTERM failed: ${e?.message ?? e}`); }
+  setTimeout(() => {
+    if (!child || child.pid !== pid) { killInFlight = false; return; }
+    log(`watchdog: SIGTERM grace expired — SIGKILL pid ${pid}`);
+    try { child.kill('SIGKILL'); } catch (e) { log(`watchdog: SIGKILL failed: ${e?.message ?? e}`); }
+    killInFlight = false;
+  }, WATCHDOG_GRACE_MS);
+}
+
+function startWatchdog() {
+  if (watchdogTimer) clearInterval(watchdogTimer);
+  watchdogTimer = setInterval(() => {
+    if (stopping || !child || killInFlight) return;
+    // Grace period after spawn: alive.txt doesn't exist for the first few
+    // seconds while egpt.mjs boots. Treat absent as "fresh enough" for
+    // 30s after spawnAt, then expect a real beat.
+    const sinceSpawn = Date.now() - spawnAt;
+    const latest = readAliveLatestMs();
+    if (latest === 0) {
+      if (sinceSpawn > 30_000) {
+        killChildAndLetWrapperRespawn(`no alive.txt after ${Math.round(sinceSpawn / 1000)}s`);
+      }
+      return;
+    }
+    const age = Date.now() - latest;
+    if (age > WATCHDOG_STALE_MS) {
+      killChildAndLetWrapperRespawn(`alive.txt stale (age=${Math.round(age / 1000)}s > ${WATCHDOG_STALE_MS / 1000}s)`);
+    }
+  }, WATCHDOG_POLL_MS);
+  watchdogTimer.unref?.();
 }
 
 function spawnShell() {
@@ -286,3 +353,5 @@ if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'))
   log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
 }
 spawnShell();
+startWatchdog();
+log(`watchdog: integrated (poll every ${WATCHDOG_POLL_MS / 1000}s, stale threshold ${WATCHDOG_STALE_MS / 1000}s)`);
