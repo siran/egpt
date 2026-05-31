@@ -21,6 +21,13 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Tee everything to a log file so a quickly-closing elevated window leaves a
+# trace. Operator can post-mortem at C:\Users\<user>\.egpt\install-windows.log.
+$LogPath = Join-Path $env:USERPROFILE '.egpt\install-windows.log'
+try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null } catch {}
+try { Start-Transcript -Path $LogPath -Append -Force | Out-Null } catch {}
+Write-Output ("==== install-windows.ps1 run at {0} ====" -f (Get-Date))
+
 # Self-elevate if not admin — Task Scheduler service can kill its own
 # session-0 children only when we have admin. Also lets Unregister-ScheduledTask
 # / Stop-ScheduledTask remove orphan processes left by old setups. Skipped if
@@ -28,10 +35,9 @@ $ErrorActionPreference = 'Stop'
 # does this via -Verb RunAs).
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Output "not admin — relaunching elevated (one UAC prompt)..."
-  Start-Process powershell -Verb RunAs -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""
-  )
+  Write-Output "not admin -- relaunching elevated (one UAC prompt)..."
+  $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+  Start-Process powershell -Verb RunAs -ArgumentList $argList
   exit
 }
 
@@ -123,6 +129,13 @@ Write-Output ""
 Write-Output "status:"
 Get-ScheduledTask -TaskName $TaskName | Select-Object TaskName, State
 Write-Output ""
-Write-Output "logs:  Get-Content `"$env:USERPROFILE\.egpt\headless.log`" -Tail 30 -Wait"
-Write-Output "stop:  Stop-ScheduledTask  -TaskName '$TaskName'"
-Write-Output "start: Start-ScheduledTask -TaskName '$TaskName'"
+Write-Output ("logs:  Get-Content '{0}\.egpt\headless.log' -Tail 30 -Wait" -f $env:USERPROFILE)
+Write-Output ("stop:  Stop-ScheduledTask  -TaskName '{0}'" -f $TaskName)
+Write-Output ("start: Start-ScheduledTask -TaskName '{0}'" -f $TaskName)
+Write-Output ""
+Write-Output ("install log: {0}" -f $LogPath)
+try { Stop-Transcript | Out-Null } catch {}
+# Keep the elevated window open so the operator can read the output.
+Write-Host ""
+Write-Host "Press Enter to close this window..." -ForegroundColor Green
+try { [void](Read-Host) } catch {}
