@@ -154,6 +154,15 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
              `or run egpt under the daemon (Task Scheduler / systemd / launchd).`);
       return true;
     }
+    // Trace EVERY supervised invocation so the headless log unambiguously
+    // proves the slash reached the daemon (operator 2026-05-31: "/restart from
+    // WA didn't work — was it received at all?"). The trace includes the
+    // arriving surface (waChatId / telegramChatId / 'shell') so we can tell
+    // whether the round-trip from WA actually landed on the daemon's bridge.
+    const _src = meta?.waChatId ? `wa:${meta.waChatId}`
+      : meta?.telegramChatId ? `tg:${meta.telegramChatId}`
+      : 'shell';
+    sysOut(`${cmd}: invoked (supervised) from ${_src} — running announceBounce + scheduling exitClean(${b.code})`);
     try {
       await announceBounce({ ctx, meta, preBody: b.pre });
     } catch (e) { sysOut(`!! ${cmd}: announce write failed — ${e.message}`); }
