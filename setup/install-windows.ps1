@@ -21,6 +21,20 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Self-elevate if not admin — Task Scheduler service can kill its own
+# session-0 children only when we have admin. Also lets Unregister-ScheduledTask
+# / Stop-ScheduledTask remove orphan processes left by old setups. Skipped if
+# the user is invoking this from a launcher that already elevated (the .cmd
+# does this via -Verb RunAs).
+$me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+  Write-Output "not admin — relaunching elevated (one UAC prompt)..."
+  Start-Process powershell -Verb RunAs -ArgumentList @(
+    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`""
+  )
+  exit
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
 $NodeBin   = (Get-Command node -ErrorAction SilentlyContinue)?.Source
@@ -42,6 +56,25 @@ foreach ($n in $OldNames) {
     }
   } catch { Write-Output "could not remove $n : $($_.Exception.Message)" }
 }
+
+# Kill any orphan node.exe processes running egpt-daemon.mjs / egpt.mjs.
+# These can outlive a manually-deleted task or a crashed wrapper; without
+# admin we can't kill session-0/S4U leftovers, but admin + taskkill /F works
+# (Task Scheduler service is the owner; SYSTEM-level taskkill traverses it).
+$orphans = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -and ($_.CommandLine -match 'egpt-daemon\.mjs' -or $_.CommandLine -match 'egpt\.mjs') }
+if ($orphans) {
+  Write-Output "killing existing egpt node processes:"
+  foreach ($p in $orphans) {
+    Write-Output ("  pid {0}: {1}" -f $p.ProcessId, ($p.CommandLine.Substring(0, [Math]::Min(80, $p.CommandLine.Length))))
+    & taskkill.exe /F /PID $p.ProcessId /T 2>&1 | Out-Null
+  }
+  Start-Sleep -Seconds 2
+}
+# Also wipe a stale alive.txt so the new daemon doesn't see itself as
+# already-alive and refuse via the singleton guard.
+$alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive.txt'
+if (Test-Path $alivePath) { Remove-Item $alivePath -Force -ErrorAction SilentlyContinue; Write-Output "removed stale alive.txt" }
 
 # Action: node egpt-daemon.mjs --headless
 $Action = New-ScheduledTaskAction `
