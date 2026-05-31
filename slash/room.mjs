@@ -33,17 +33,20 @@ export const meta = {
   subs: [
     { name: 'create',  usage: '/room create <name>',                 desc: 'create a room', example: '/room create estudio' },
     { name: 'join',    usage: '/room <name> join <member>',          desc: 'add a member (WA group/jid, tg:<id>, or @e/@l/<brain>) — enters muted', example: '/room estudio join @e' },
+    { name: 'enter',   usage: '/room <name> enter',                  desc: 'shell-only, per-session: start CONTRIBUTING this shell to <name>. Persisted member state is unchanged; opt-out via `leave` or just exit the shell.', example: '/room test enter' },
+    { name: 'leave-here', usage: '/room <name> leave (no member)',   desc: 'shell-only, per-session: stop CONTRIBUTING this shell to <name>. Persisted membership unchanged.', example: '/room test leave' },
     { name: 'active',  usage: '/room <name> active <member>',        desc: 'full two-way: the member contributes everything to the room', example: '/room estudio active @wa3' },
     { name: 'mention', usage: '/room <name> mention <member>',       desc: 'only the member messages that @mention a room participant enter the room', example: '/room estudio mention @wa3' },
     { name: 'mute',    usage: '/room <name> mute <member>',          desc: 'lurk: the member receives the room but contributes nothing', example: '/room estudio mute @wa3' },
     { name: 'members', usage: '/room <name> members [search]',       desc: "list a room's members + states (names resolved); optional search narrows by group name/jid", example: '/room estudio members egpt2' },
-    { name: 'leave',   usage: '/room <name> leave <member>',         desc: 'remove a member from the room', example: '/room estudio leave @wa3' },
+    { name: 'leave',   usage: '/room <name> leave <member>',         desc: 'remove a member from the room (persisted)', example: '/room estudio leave @wa3' },
     { name: 'delete',  usage: '/room <name> delete',                 desc: 'delete the room', example: '/room estudio delete' },
   ],
   notes: [
     'state aliases: active = on / unmute / unmuted / open  ·  muted = mute / silent  ·  mention (no aliases)',
-    '<member> omitted: defaults to "shell" from the shell, or the current WA chat from a WA chat (e.g. /room test mute in eGPT2 mutes eGPT2 in test)',
+    '<member> omitted from shell: defaults to "shell"; from a WA chat: defaults to the current WA chat',
     '<member> formats: @waN (from /channels) · raw jid · tg:<chatId> · @e / @l / <brain-name>',
+    'shell membership is PER-SESSION: each new shell starts contributing to NO rooms. `/room <name> enter` opts in for this session only; persisted shell-active members in config.yaml are no longer auto-contributing (operator 2026-05-31).',
   ],
 };
 
@@ -166,6 +169,27 @@ export async function run({ arg, ctx, meta = {} }) {
     const search = action === 'members' ? parts.slice(2).join(' ') : '';
     const header = search ? `📂 ${name} members matching "${search}"` : `📂 ${name}`;
     sysOut(`${header}\n${fmtMembers(room, ctx, search)}`);
+    return true;
+  }
+
+  // Shell per-session contribution: /room <name> enter / leave (no member) —
+  // toggles whether THIS shell session contributes to <name>. Persisted
+  // membership unchanged. Operator 2026-05-31: shell starts contributing to
+  // nothing; opt-in per session via enter.
+  if (action === 'enter' || (action === 'leave' && parts[2] === undefined)) {
+    if (!ctx.shellSessionRoomsRef) {
+      sysOut(`!! /room ${name} ${action}: shell session ref not wired into ctx (caller surface unsupported)`);
+      return true;
+    }
+    if (action === 'enter') {
+      ctx.shellSessionRoomsRef.current.add(name);
+      ctx.bumpShellSessionRooms?.();
+      sysOut(`📂 entered "${name}" — this shell will now mirror typed messages to its members (session-only).`);
+    } else {
+      ctx.shellSessionRoomsRef.current.delete(name);
+      ctx.bumpShellSessionRooms?.();
+      sysOut(`📂 left "${name}" — this shell will no longer mirror to its members (persisted membership unchanged).`);
+    }
     return true;
   }
 
