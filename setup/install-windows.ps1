@@ -108,12 +108,17 @@ $Settings = New-ScheduledTaskSettingsSet `
   -RestartInterval (New-TimeSpan -Minutes 1) `
   -MultipleInstances IgnoreNew
 
-# Run as the current user, interactive (so it can access the user's home dir
-# + node + the WA auth in ~/.egpt). HighestAvailable so it inherits the
-# user's privileges (no elevation prompt -- the task itself isn't elevated).
+# Run as the current user, S4U (Service-for-User). S4U gives us two things
+# Interactive does not: (a) NO visible console window (the process runs in
+# session 0, no GUI), and (b) starts at boot without needing the user to log
+# on. Trade-off: session-0 isolation means the operator can't manually
+# Ctrl+C the daemon -- but the integrated watchdog + Task Scheduler restart-
+# on-failure handle wedge/crash recovery, and /restart / /exit slash
+# commands still work via the bridge. Operator 2026-05-31: "there shouldn't
+# be a visible window, it should be a background process".
 $Principal = New-ScheduledTaskPrincipal `
   -UserId  "$env:USERDOMAIN\$env:USERNAME" `
-  -LogonType Interactive `
+  -LogonType S4U `
   -RunLevel Highest
 
 $Task = New-ScheduledTask `
