@@ -35,7 +35,7 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms, roomsForMember } from './src/rooms.mjs';
+import { loadRooms, roomsForMember, sanitizeName } from './src/rooms.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
@@ -1523,11 +1523,11 @@ async function saveRoomToDisk(name, sessionsMap) {
   if (name === 'default') return;
   await mkdir(ROOMS_DIR, { recursive: true });
   const data = { name, saved: new Date().toISOString(), sessions: sessionsMap ?? {} };
-  await writeFile(join(ROOMS_DIR, `${name}.yaml`), YAML.stringify(data));
+  await writeFile(join(ROOMS_DIR, `${sanitizeName(name)}.yaml`), YAML.stringify(data));
 }
 
 async function deleteRoomFile(name) {
-  try { await unlink(join(ROOMS_DIR, `${name}.yaml`)); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
+  try { await unlink(join(ROOMS_DIR, `${sanitizeName(name)}.yaml`)); } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
 }
 
 // On-screen time only (HH:MM + short tz). Date is shown via day-change
@@ -2369,6 +2369,13 @@ function App() {
       await mkdir(dir, { recursive: true });
       await appendFile(join(dir, 'transcript.md'), `[${new Date().toISOString()}] ${env}\n`, 'utf8');
     } catch (e) { logOut(`!! room transcript ${roomName}: ${e?.message ?? e}`); }
+    // Persist a room utterance into the operator's conversation.md too — not
+    // just the room's own transcript + the per-contact WA log — so it's
+    // retained in every member's view (operator 2026-05-31: "it should live in
+    // the three places"). Guarded to fire ONCE per delivery even if both a
+    // shell and an extension member exist, and only when an operator surface
+    // is actually a member (a room the operator isn't in stays out of their file).
+    let _opPersisted = false;
     for (const m of (room.members ?? [])) {
       if (m.id === fromId) continue;
       try {
@@ -2392,6 +2399,9 @@ function App() {
         else if (m.kind === 'shell' || m.kind === 'extension') {
           // Show the envelope so the operator can read along.
           setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
+          // …and retain it in conversation.md (the operator's persistent file),
+          // parallel to the room transcript above. Once per delivery.
+          if (!_opPersisted) { _opPersisted = true; void append(`room@${roomName}`, env); }
           // Cross-process shell mirror: append the rendered envelope to a
           // tiny NDJSON stream so OTHER egpt processes (a deferred interactive
           // shell while the headless daemon owns WA) can pick it up and
@@ -4364,7 +4374,7 @@ function App() {
   // we drop a header so the file is well-formed.
   const transcriptFileForRoom = (room) => room === 'default'
     ? FILE
-    : join(ROOMS_DIR, `${room}.md`);
+    : join(ROOMS_DIR, `${sanitizeName(room)}.md`);
   const append = async (who, body) => {
     const file = transcriptFileForRoom(currentRoom);
     return queuedAppend(async () => {
@@ -6755,7 +6765,12 @@ function App() {
     // the time we get here, meta.observeOnly already reflects whether
     // this message should be surfaced.
     const echoItemId = Date.now() + Math.random();
-    if (!meta.observeOnly) {
+    // _routedFromRoom: this submit is a room delivery re-dispatched ONLY so a
+    // routed `@cgpt1 …` reaches its brain. The room envelope was already shown
+    // + persisted by _deliverToRoom, so suppress the echo here (else the same
+    // line duplicates as a wrong-author 'You' entry). resolveRoute below still
+    // runs, so the @mention dispatch is unaffected.
+    if (!meta.observeOnly && !meta._routedFromRoom) {
       setItems(p => [...p, {
         id: echoItemId, author: echoAuthor, body: text,
         ...(isSlashCommand ? { _localOnly: true } : {}),
