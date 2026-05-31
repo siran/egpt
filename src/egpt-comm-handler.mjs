@@ -405,8 +405,18 @@ export function startInboxWatcher({
       payload = JSON.parse(stripped);
     } catch (e) {
       if (e.code === 'ENOENT') { claimed.delete(name); return; }
-      log(`!! inbox: dropping ${name} — ${e.message}`);
-      try { await unlink(full); } catch {}
+      // Never silent-unlink (operator 2026-05-31). Quarantine instead so the
+      // bad payload is inspectable. Same policy as outbox-watcher above.
+      log(`!! inbox: ${name} unreadable — ${e.code ?? '?'}: ${e.message} — quarantining`);
+      try {
+        const qdir = join(inboxDir, '..', 'inbox-quarantine');
+        const { mkdir, rename } = await import('node:fs/promises');
+        await mkdir(qdir, { recursive: true });
+        await rename(full, join(qdir, name));
+      } catch (qe) {
+        log(`!! inbox: quarantine of ${name} also failed (${qe?.message ?? qe}) — leaving in place`);
+        claimed.delete(name);
+      }
       return;
     }
     let consumed = false;
@@ -564,16 +574,32 @@ export function startOutboxWatcher({
       const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
       payload = JSON.parse(stripped);
     } catch (e) {
-      // Vanished mid-read (another claimer won) or malformed (poison).
+      // Vanished mid-read (another claimer won) → benign, just release.
       if (e.code === 'ENOENT') { claimed.delete(name); return; }
-      log(`!! outbox: dropping ${name} — ${e.message}`);
-      try { await unlink(full); } catch {}
+      // Parse error or other read failure: NEVER silent-unlink (operator
+      // 2026-05-31: "nothing can be eaten silently"). Move to quarantine
+      // so the operator can inspect the bad payload; loud log with reason.
+      log(`!! outbox: ${name} unreadable — ${e.code ?? '?'}: ${e.message} — quarantining`);
+      try {
+        const qdir = join(outboxDir, '..', 'outbox-quarantine');
+        const { mkdir, rename } = await import('node:fs/promises');
+        await mkdir(qdir, { recursive: true });
+        await rename(full, join(qdir, name));
+      } catch (qe) {
+        log(`!! outbox: quarantine of ${name} also failed (${qe?.message ?? qe}) — leaving in place; manual review needed`);
+        claimed.delete(name);   // unblock retry; loop next sweep
+      }
       return;
     }
+    // ALL async dispatchers MUST be awaited — otherwise ok is a Promise (always
+    // truthy), the !ok retry branch never fires, and the file falls through to
+    // the unconditional unlink below. That ate every restart confirmation
+    // because the first dispatch attempt (before baileys connected) returned
+    // false but the await was missing. Operator 2026-05-31.
     if (payload?.type === 'wa-send') {
-      const ok = dispatchWaSend(payload, 'outbox');
+      const ok = await dispatchWaSend(payload, 'outbox');
       if (!ok) {
-        // Bridge down or malformed — leave for retry, release claim.
+        // Bridge down or transient failure — leave for retry, release claim.
         claimed.delete(name);
         return;
       }
@@ -581,7 +607,7 @@ export function startOutboxWatcher({
       if (typeof dispatchWaGroupSubject !== 'function') {
         log(`outbox: dropping wa-group-subject from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
       } else {
-        const ok = dispatchWaGroupSubject(payload, 'outbox');
+        const ok = await dispatchWaGroupSubject(payload, 'outbox');
         if (!ok) {
           // Bridge down / not admin / bad jid — leave for retry,
           // release claim. Caller's log already explained.
@@ -593,7 +619,7 @@ export function startOutboxWatcher({
       if (typeof dispatchWaGroupMembers !== 'function') {
         log(`outbox: dropping wa-group-members from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
       } else {
-        const ok = dispatchWaGroupMembers(payload, 'outbox');
+        const ok = await dispatchWaGroupMembers(payload, 'outbox');
         if (!ok) {
           // Bridge down / bad jid — leave for retry, release claim.
           claimed.delete(name);

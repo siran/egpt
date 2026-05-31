@@ -29,9 +29,12 @@ import { outboxSend } from '../src/tools/outbox-send.mjs';
 // is pre-bounce; the boot-announce re-reads HEAD, so /upgrade shows the NEW
 // commit it pulled to.
 async function announceBounce({ ctx, meta, preBody }) {
-  const { APP_DIR, EGPT_HOME } = ctx;
+  const { APP_DIR, EGPT_HOME, sysOut } = ctx;
   const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
-  if (!selfJid) return;
+  if (!selfJid) {
+    sysOut?.(`!! announceBounce: no selfJid (meta.waChatId=${meta?.waChatId ?? '?'}, config.whatsapp.chat_id=${ctx.EGPT_CONFIG?.whatsapp?.chat_id ?? '?'}) — no pre-bounce wa-send will be queued`);
+    return;
+  }
   let sha = '?', subj = '';
   try {
     const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
@@ -42,9 +45,21 @@ async function announceBounce({ ctx, meta, preBody }) {
   // raw writeFile, JSON.parse-throw, and unlink the file as poison — losing
   // the restart confirmation. Bug: 2026-05-31, operator saw no /restart
   // confirmation in WA Self.
-  await outboxSend({ type: 'wa-send', jid: selfJid, body: preBody(sha) }, { from: 'system' });
-  await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-  await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
+  try {
+    const { filename } = await outboxSend({ type: 'wa-send', jid: selfJid, body: preBody(sha) }, { from: 'system' });
+    sysOut?.(`announceBounce: pre-bounce wa-send queued in outbox as ${filename} for jid=${selfJid}`);
+  } catch (e) {
+    sysOut?.(`!! announceBounce: outboxSend failed (${e?.message ?? e}) — no pre-bounce wa-send delivered`);
+    throw e;   // surface to the caller; don't pretend it worked
+  }
+  try {
+    await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+    await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
+    sysOut?.(`announceBounce: state/restart-announce.json written (sha=${sha}) — next daemon will post "back online" to ${selfJid}`);
+  } catch (e) {
+    sysOut?.(`!! announceBounce: sidecar write failed (${e?.message ?? e}) — back-online ack will be skipped`);
+    throw e;
+  }
 }
 
 export const meta = [
