@@ -21,34 +21,37 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Tee everything to a log file so a quickly-closing elevated window leaves a
-# trace. Operator can post-mortem at C:\Users\<user>\.egpt\install-windows.log.
+# Tee everything to a log file so a quickly-closing window leaves a trace.
+# Operator post-mortem path: C:\Users\<user>\.egpt\install-windows.log.
 $LogPath = Join-Path $env:USERPROFILE '.egpt\install-windows.log'
 try { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Null } catch {}
-try { Start-Transcript -Path $LogPath -Append -Force | Out-Null } catch {}
+try { Start-Transcript -Path $LogPath -Append -Force | Out-Null } catch { Write-Host "(Start-Transcript failed: $($_.Exception.Message); continuing without transcript)" -ForegroundColor Yellow }
 Write-Output ("==== install-windows.ps1 run at {0} ====" -f (Get-Date))
 
-# Self-elevate if not admin — Task Scheduler service can kill its own
-# session-0 children only when we have admin. Also lets Unregister-ScheduledTask
-# / Stop-ScheduledTask remove orphan processes left by old setups. Skipped if
-# the user is invoking this from a launcher that already elevated (the .cmd
-# does this via -Verb RunAs).
+# Admin check — the .cmd launcher (install-windows.cmd) handles UAC. If
+# someone runs this .ps1 directly without admin, error out loudly instead
+# of silently no-op'ing.
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Output "not admin -- relaunching elevated (one UAC prompt)..."
-  $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
-  Start-Process powershell -Verb RunAs -ArgumentList $argList
-  exit
+  Write-Error "Not admin. Run setup\install-windows.cmd (double-click) for the UAC prompt, or launch this script from an elevated PowerShell."
+  try { Stop-Transcript | Out-Null } catch {}
+  exit 1
 }
+
+try {
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Split-Path -Parent $ScriptDir
+Write-Output ("script: {0}" -f $MyInvocation.MyCommand.Path)
+Write-Output ("repo:   {0}" -f $RepoRoot)
 # Avoid PS7-only `?.` — Windows PS 5.1 (default) parses-errors on it.
 $NodeCmd = Get-Command node -ErrorAction SilentlyContinue
 $NodeBin = if ($NodeCmd) { $NodeCmd.Source } else { $null }
 if (-not $NodeBin) { throw "node.exe not found in PATH" }
+Write-Output ("node:   {0}" -f $NodeBin)
 $DaemonJs  = Join-Path $RepoRoot 'egpt-daemon.mjs'
 if (-not (Test-Path $DaemonJs)) { throw "egpt-daemon.mjs not found at $DaemonJs" }
+Write-Output ("daemon: {0}" -f $DaemonJs)
 
 $TaskName = 'egpt-daemon'
 $OldNames = @('egpt-daemon-headless', 'egpt-watchdog')
@@ -134,8 +137,14 @@ Write-Output ("stop:  Stop-ScheduledTask  -TaskName '{0}'" -f $TaskName)
 Write-Output ("start: Start-ScheduledTask -TaskName '{0}'" -f $TaskName)
 Write-Output ""
 Write-Output ("install log: {0}" -f $LogPath)
-try { Stop-Transcript | Out-Null } catch {}
-# Keep the elevated window open so the operator can read the output.
-Write-Host ""
-Write-Host "Press Enter to close this window..." -ForegroundColor Green
-try { [void](Read-Host) } catch {}
+Write-Output "OK"
+
+} catch {
+  Write-Host ""
+  Write-Host ("!! INSTALL FAILED: {0}" -f $_.Exception.Message) -ForegroundColor Red
+  Write-Host ("   at: {0}" -f $_.InvocationInfo.PositionMessage) -ForegroundColor Red
+  Write-Host ""
+  Write-Host ("see full log: {0}" -f $LogPath) -ForegroundColor Yellow
+} finally {
+  try { Stop-Transcript | Out-Null } catch {}
+}
