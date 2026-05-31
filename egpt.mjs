@@ -215,7 +215,7 @@ const SHELL_MIRROR_PATH = join(EGPT_HOME, 'state', 'shell-mirror.jsonl');
 // before initialization" (TDZ) on EVERY startup → instant crash-loop,
 // daemon never reached the heartbeat. Operator 2026-05-23: that
 // crash-loop is what masqueraded as a "dead/wedged" daemon.
-const ALIVE_INTERVAL_DEFAULT_MS = 60_000;   // 15s was excessive disk I/O
+const ALIVE_INTERVAL_DEFAULT_MS = 3_000;   // 60s was too lax to catch wedges quickly; 3s = ~3 beats/watchdog window (operator 2026-05-31)
 let _aliveTimer = null;
 // tic/toc heartbeat (operator 2026-05-23). The file holds at most two
 // lines; the daemon alternates:

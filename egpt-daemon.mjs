@@ -58,13 +58,40 @@ const CLEAN_EXIT_CODE   = 0;
 // is older than WATCHDOG_STALE_MS, the child is wedged — kill (SIGTERM,
 // SIGKILL after grace), respawn. No separate watchdog task / wrapper script
 // needed; OS service manager just needs to keep THIS process alive.
-// Thresholds tightened (operator 2026-05-31: "60s is always too much"):
-// boot takes ~1.5s in the smoke test, so 5s post-spawn grace is generous
-// and 10s stale is fast detection of a truly wedged child.
+//
+// WATCHDOG_STALE_MS ADAPTS to the child's actual heartbeat interval
+// (egpt.mjs reads heartbeat.interval_ms from ~/.egpt/config.yaml, default
+// 3s). The supervisor reads the SAME config and computes a stale threshold
+// of max(MIN_STALE_MS, 3 * heartbeat_ms). That way a 60s heartbeat config
+// gets a 180s stale window (not a 10s "kill on every spawn" loop) — and
+// a fresh 3s default heartbeat gets a 10s stale window. Operator 2026-05-31
+// /restart bug: I hardcoded 10s while their config had heartbeat=60s,
+// which made the supervisor kill the child before its 2nd beat.
 const WATCHDOG_POLL_MS    = 1_000;    // 1s — local fs poll, cheap
-const WATCHDOG_STALE_MS   = 10_000;   // 10s — stale threshold (was 90s)
-const WATCHDOG_GRACE_MS   = 2_000;    // 2s SIGTERM → SIGKILL grace (was 5s)
-const POST_SPAWN_GRACE_MS = 5_000;    // 5s after spawn before first stale check (was 30s)
+const MIN_STALE_MS        = 10_000;   // floor: at least 10s before declaring stale
+const STALE_MULTIPLIER    = 3;        // stale = 3 * heartbeat (allows 2 missed beats)
+const WATCHDOG_GRACE_MS   = 2_000;    // 2s SIGTERM → SIGKILL grace
+const POST_SPAWN_GRACE_MS = 5_000;    // 5s after spawn before first stale check
+const HEARTBEAT_DEFAULT_MS = 3_000;   // matches ALIVE_INTERVAL_DEFAULT_MS in egpt.mjs
+
+// Read the effective heartbeat interval from ~/.egpt/config.yaml without
+// pulling in a YAML dep. Simple regex parse of the one key we care about.
+function readHeartbeatIntervalMs() {
+  const cfgPath = join(homedir(), '.egpt', 'config.yaml');
+  try {
+    if (!existsSync(cfgPath)) return HEARTBEAT_DEFAULT_MS;
+    const yaml = readFileSync(cfgPath, 'utf8');
+    // Look for `heartbeat:` block then `interval_ms: <N>` within ~10 lines.
+    const m = yaml.match(/^heartbeat:[\s\S]{0,400}?^\s*interval_ms:\s*(\d+)/m);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n >= 500) return n;
+    }
+  } catch { /* fall through to default */ }
+  return HEARTBEAT_DEFAULT_MS;
+}
+const _hbInterval     = readHeartbeatIntervalMs();
+const WATCHDOG_STALE_MS = Math.max(MIN_STALE_MS, STALE_MULTIPLIER * _hbInterval);
 // git and npm still go through spawnSync with shell:true (the only
 // way to invoke them portably across Windows .cmd shims, msys2,
 // macOS, and Linux). The extension build, however, runs via dynamic
@@ -358,4 +385,4 @@ if (process.platform !== 'win32') process.on('SIGHUP', () => shutdown('SIGHUP'))
 }
 spawnShell();
 startWatchdog();
-log(`watchdog: integrated (poll every ${WATCHDOG_POLL_MS / 1000}s, stale threshold ${WATCHDOG_STALE_MS / 1000}s)`);
+log(`watchdog: integrated (poll every ${WATCHDOG_POLL_MS / 1000}s, stale threshold ${WATCHDOG_STALE_MS / 1000}s, based on heartbeat interval ${_hbInterval / 1000}s from ${existsSync(join(homedir(), '.egpt', 'config.yaml')) ? 'config' : 'default'})`);
