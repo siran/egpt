@@ -364,7 +364,7 @@ export async function startWhatsAppBridge({
   let _openedAt      = 0;     // ms: 0 = not currently in 'open' state
   let _lastUpsertTs  = 0;     // ms: last messages.upsert from baileys
   let _staleLogged   = false; // one-shot per stale window (avoid log spam)
-  const INBOUND_SILENCE_THRESHOLD_MS = 5 * 60 * 1000;   // 5min open + no upsert ⇒ likely dead
+  const INBOUND_SILENCE_THRESHOLD_MS = 2 * 60 * 1000;   // 2min open + no upsert ⇒ likely dead (operator 2026-05-31)
   // Wake-from-sleep detection (operator 2026-05-31): laptop sleep is the
   // dominant cause of broken-but-undetected WS — baileys' WebSocket times out
   // at the OS level but the close event never reaches us. Detect wake via
@@ -386,6 +386,14 @@ export async function startWhatsAppBridge({
   let _lastProbeOkTs = 0;    // ms: last successful onWhatsApp probe; SEPARATE from _lastUpsertTs
   const ACTIVE_PROBE_INTERVAL_MS = 60_000;
   const ACTIVE_PROBE_TIMEOUT_MS  = 5_000;
+  // Local socket-state poll (operator 2026-05-31): sock.ws.isOpen is a sync,
+  // free, local boolean (just reads ws.readyState). Cheap to check at 2s — no
+  // network, no rate-limit risk. Catches socket death within seconds, even
+  // when baileys' own connection.update wrapper misses the close event (the
+  // exact silent-socket-death class we keep chasing). Triggers immediate
+  // reconnect.
+  let _wsStateTimer = null;
+  const WS_STATE_POLL_MS = 2_000;
   // Exponential backoff state. Reset to 0 when 'connection: open'
   // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
   // is the single retry path — both the close handler and the
@@ -498,12 +506,58 @@ export async function startWhatsAppBridge({
     waAliveTimer.unref?.();
     _startWakeWatch();
     _startActiveProbe();
+    _startWsStatePoll();
+    _attachRawWsListeners();
   }
   function _stopWaAlive(state, detail = '') {
     if (waAliveTimer) { clearInterval(waAliveTimer); waAliveTimer = null; }
     _stopWakeWatch();
     _stopActiveProbe();
+    _stopWsStatePoll();
     if (state) _writeWaState(state, detail);
+  }
+  // Raw WebSocket events: baileys' connection.update wrapper sometimes misses
+  // close — the underlying ws.on('close') fires immediately regardless. Hook
+  // both 'close' and 'error' directly so socket-level deaths trigger reconnect
+  // even when the wrapper is wedged. Re-attached on every connect because
+  // sock.ws is a fresh EventEmitter each time.
+  function _attachRawWsListeners() {
+    const ws = sock?.ws;
+    if (!ws || typeof ws.on !== 'function') return;
+    const onRawClose = (code, reason) => {
+      if (reconnectTimer || _openedAt === 0) return;
+      err(`whatsapp: raw ws 'close' fired (code=${code ?? '?'}, reason=${(reason ?? '').toString().slice(0, 80)}) — forcing reconnect`);
+      _openedAt = 0;
+      _scheduleReconnect(`raw ws close (code ${code ?? '?'})`);
+    };
+    const onRawError = (e) => {
+      if (reconnectTimer || _openedAt === 0) return;
+      err(`whatsapp: raw ws 'error' fired (${e?.message ?? e}) — forcing reconnect`);
+      _openedAt = 0;
+      _scheduleReconnect(`raw ws error (${e?.message ?? e})`);
+    };
+    ws.on('close', onRawClose);
+    ws.on('error', onRawError);
+  }
+  // Local socket-state poll (operator 2026-05-31): sock.ws.isOpen is sync +
+  // free. Polling every 2s catches a dead socket within seconds, no network
+  // round-trip needed. The raw 'close' listener above SHOULD fire first; this
+  // is a belt-and-suspenders backstop for the case where neither baileys nor
+  // the ws emits close at all (rare but observed).
+  function _startWsStatePoll() {
+    if (_wsStateTimer) clearInterval(_wsStateTimer);
+    _wsStateTimer = setInterval(() => {
+      if (_openedAt === 0 || !sock?.ws) return;     // not (or no longer) open
+      if (reconnectTimer) return;                    // already reconnecting
+      if (sock.ws.isOpen) return;                    // healthy — fast path
+      err(`whatsapp: sock.ws.isOpen=false while _openedAt>0 (isClosed=${sock.ws.isClosed}, isClosing=${sock.ws.isClosing}) — forcing reconnect`);
+      _openedAt = 0;
+      _scheduleReconnect('ws.isOpen=false');
+    }, WS_STATE_POLL_MS);
+    _wsStateTimer.unref?.();
+  }
+  function _stopWsStatePoll() {
+    if (_wsStateTimer) { clearInterval(_wsStateTimer); _wsStateTimer = null; }
   }
   function _startWakeWatch() {
     _lastWall = Date.now();
@@ -2826,23 +2880,41 @@ export async function startWhatsAppBridge({
         // means: don't auto-dispatch to brain. Media still saves to
         // disk via onMediaSaved (independent of the hold gate).
         const text = textOf(msg.message);
-        if (text) {
-          _heldMessages.push({
-            jid: msg.key?.remoteJid,
-            author: typeof msg.pushName === 'string' && msg.pushName.trim()
-              ? msg.pushName.trim()
-              : null,
-            text,
-            ts: msgTsMs,
-            key: msg.key?.id ? { id: msg.key.id, fromMe: !!msg.key.fromMe } : null,
-            raw: msg,    // kept so the operator can re-dispatch through
-                         // the same handleMessage path on /wa-pending
-                         // dispatch — single source of truth for awareness
-                         // + wake-word + brain routing.
-          });
-          log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
+        // Lifecycle slash commands typed by the OPERATOR are explicit live
+        // intent, not "stuff that happened while we were offline" — never
+        // park them in /wa-pending; they must always reach the slash
+        // dispatcher (operator 2026-05-31: "/restart from WA didn't work,
+        // again"). Only fromMe + private chat — preserves the existing
+        // safety for randos and group spam.
+        const _trim = (text ?? '').trimStart();
+        const _firstTok = _trim.split(/\s+/)[0] ?? '';
+        const _isLifecycle = msg.key?.fromMe
+          && !String(msg.key?.remoteJid ?? '').endsWith('@g.us')
+          && /^(?:\/restart|\/upgrade|\/rewind|\/exit)\b/i.test(_firstTok);
+        if (_isLifecycle) {
+          // Bypass the hold + DON'T return — fall through so normal awareness
+          // gate + onIncoming + slash dispatch run. The slash dispatcher's own
+          // gates (LIFECYCLE 1:1-only, supervised check) decide what happens.
+          log(`backlog-bypass: ${_firstTok} from ${msg.key?.remoteJid?.split('@')[0] ?? '?'} (msgTs ${new Date(msgTsMs).toISOString()} pre-dates connectedAt ${new Date(connectedAt).toISOString()}) — letting it through to slash dispatch`);
+        } else {
+          if (text) {
+            _heldMessages.push({
+              jid: msg.key?.remoteJid,
+              author: typeof msg.pushName === 'string' && msg.pushName.trim()
+                ? msg.pushName.trim()
+                : null,
+              text,
+              ts: msgTsMs,
+              key: msg.key?.id ? { id: msg.key.id, fromMe: !!msg.key.fromMe } : null,
+              raw: msg,    // kept so the operator can re-dispatch through
+                           // the same handleMessage path on /wa-pending
+                           // dispatch — single source of truth for awareness
+                           // + wake-word + brain routing.
+            });
+            log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
+          }
+          return;
         }
-        return;
       }
     }
 
