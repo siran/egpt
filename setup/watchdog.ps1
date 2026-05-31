@@ -37,11 +37,27 @@ function Log($m) {
   try { Add-Content -Path $logPath -Value "[watchdog $(Get-Date -Format o)] $m" } catch {}
 }
 
-# Missing alive file: daemon never started, or stopAliveHeartbeat
-# fired on graceful shutdown. Either way, the wrapper handles
-# respawn; watchdog stays out of it.
+# Missing alive file: daemon isn't running. Two cases:
+#   (a) Graceful shutdown / never started — the wrapper handles its own
+#       respawn if it's still alive inside the scheduled task.
+#   (b) The scheduled task itself was killed (operator manually ended the
+#       running task, or daemon-wrap.ps1 crashed). In that case nothing
+#       respawns — the task sits Ready until logon. Operator 2026-05-31:
+#       "killed daemon manually expecting watcher to restart; it didn't".
+# We can tell them apart: if the daemon-headless task State is Running,
+# the wrapper is alive and we stay out of it; if it's Ready, we Start it.
 if (-not (Test-Path $alivePath)) {
-  Log "no alive file at $alivePath; nothing to check"
+  $daemonTask = 'egpt-daemon-headless'
+  $state = $null
+  try { $state = (Get-ScheduledTask -TaskName $daemonTask -ErrorAction Stop).State.ToString() }
+  catch { Log "Get-ScheduledTask '$daemonTask' failed: $_"; exit 0 }
+  if ($state -eq 'Ready') {
+    Log "no alive file AND '$daemonTask' is Ready (not Running) — starting it"
+    try { Start-ScheduledTask -TaskName $daemonTask -ErrorAction Stop; Log "Start-ScheduledTask '$daemonTask' issued" }
+    catch { Log "Start-ScheduledTask '$daemonTask' failed: $_" }
+    exit 0
+  }
+  Log "no alive file at $alivePath; daemon task state=$state — wrapper is supposed to be respawning, staying out of it"
   exit 0
 }
 
