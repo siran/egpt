@@ -2501,19 +2501,14 @@ function App() {
     if (isRoomEnvelope(body)) return;
     const mentionsSomeone = /(^|\s)@[\w-]+/.test(String(body));
     let state; try { state = await loadRooms(); } catch { return; }
-    // Overlay session-only shell membership (operator 2026-05-31). loadRooms
-    // strips shell from the persisted config; here we inject the current
-    // session's shell entries from _shellRoomsMap so planFanout sees shell as
-    // a real member of the rooms the operator has joined this session.
-    if (_shellRoomsMap.current.size) {
-      for (const [roomName, info] of _shellRoomsMap.current.entries()) {
-        const room = state.rooms?.[roomName];
-        if (!room) continue;
-        room.members = (room.members ?? []).filter(m => m.id !== 'shell');
-        room.members.push({ kind: 'shell', id: 'shell', state: info.state });
-      }
-    }
     for (const plan of planFanout(state, memberId, { atEAnywhere: mentionsSomeone })) {
+      // Per-session shell opt-in: persisted room membership in config.yaml is
+      // semantic ("the shell IS a member"); whether THIS shell session
+      // CONTRIBUTES is in-memory only and starts EMPTY. Operator 2026-05-31
+      // ("B"): "shell should start outside any room. then, after entering test,
+      // would messages typed in shell be replicated to room". Enter via
+      // `/room <name> enter`.
+      if (memberId === 'shell' && !_shellSessionRoomsRef.current.has(plan.room)) continue;
       await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
     }
   };
@@ -2547,18 +2542,14 @@ function App() {
   // know about rooms — they always operate on the current one.
   const [roomSessionsMap, setRoomSessionsMap] = useState({ default: {} });
   const [currentRoom, setCurrentRoom] = useState('default');
-  // In-memory shell-rooms map (operator 2026-05-31): shell membership in rooms
-  // is session-only — persisted config never carries shell entries (stripped
-  // at load/save in src/rooms.mjs). This map is the SINGLE source of truth for
-  // which rooms the shell is currently a member of and at what state. Each new
-  // shell session starts empty (matches "start outside all rooms"); the
-  // operator joins via `/room <name> join` (no arg from shell = adds shell),
-  // and changes state via `/room <name> active|mute|mention shell`. Overlay
-  // onto the disk-loaded state before planFanout so routing sees shell as a
-  // real member when it's in the map. Bump state forces React re-render when
-  // the Map mutates (Maps in refs don't trigger updates on their own).
-  const _shellRoomsMap = useRef(new Map());   // roomName -> { state: 'active'|'mention'|'muted' }
-  const [_shellRoomsBump, setShellRoomsBump] = useState(0);
+  // Per-session routing-room contribution (operator 2026-05-31, "B"). On shell
+  // startup, this is EMPTY — the shell does not fan out to any rooms even if
+  // the persisted config has shell-active membership. Operator explicitly opts
+  // in for the current session via `/room <name> enter` (or `/room <name>
+  // active shell` from shell). `_shellSessionRoomsBump` forces a re-render
+  // when the set changes (Sets in refs don't trigger React updates).
+  const _shellSessionRoomsRef = useRef(new Set());
+  const [_shellSessionRoomsBump, setShellSessionRoomsBump] = useState(0);
   const sessions = roomSessionsMap[currentRoom] ?? {};
   const setSessions = (updater) => {
     setRoomSessionsMap(rs => {
@@ -4818,15 +4809,11 @@ function App() {
         parseMessages,                               // shared internal — pass-thru
         isMetaMessage: _isMetaMessage,               // /last filter
         suppressTranscriptRef: _suppressTranscriptRef,
-        // Session-only shell-rooms map (operator 2026-05-31). Slash commands
-        // mutate this map directly to add/remove/restate shell membership in
-        // rooms; bumpShellRooms() forces a re-render so the status line
-        // reflects changes immediately. Persisted config never carries shell
-        // entries (stripped at load/save in src/rooms.mjs), so this map is
-        // the single source of truth for shell membership while the shell is
-        // alive.
-        shellRoomsMap: _shellRoomsMap,
-        bumpShellRooms: () => setShellRoomsBump(n => n + 1),
+        // Per-session shell room contribution (operator 2026-05-31). The Set
+        // is in-memory only — shell does NOT auto-contribute based on the
+        // persisted config; operator opts in per session via /room <n> enter.
+        shellSessionRoomsRef: _shellSessionRoomsRef,
+        bumpShellSessionRooms: () => setShellSessionRoomsBump(n => n + 1),
         // Batch 4 additions
         outputSinkRef,                               // for /help to respect sink
         brainNamesForHelp,                           // help template substitutions
@@ -8608,22 +8595,18 @@ function App() {
           });
           const waChats = _waJoinedAll().map(e =>
             `→@wa${e.idx >= 0 ? e.idx + 1 : '?'} "${(e.name ?? '').slice(0, 24)}"`);
-          // _shellRoomsBump is read here ONLY so React re-renders this text
-          // when the Map in _shellRoomsMap mutates (Maps in refs don't
-          // trigger updates on their own). Value itself unused.
-          void _shellRoomsBump;
-          // shell-rooms display: list rooms shell has joined this session
-          // with their per-room state. Persisted config never carries shell
-          // entries — this map is the single source of truth.
-          const shellRoomsList = [..._shellRoomsMap.current.entries()]
-            .map(([n, info]) => info.state === 'active' ? n : `${n}(${info.state})`);
+          // _shellSessionRoomsBump is read here ONLY so React re-renders this
+          // text when the Set in the ref changes (otherwise mutations to the
+          // ref's Set wouldn't trigger an update). Value itself unused.
+          void _shellSessionRoomsBump;
+          const shellRooms = [..._shellSessionRoomsRef.current];
           const parts = [];
           if (localBrains.length) parts.push(localBrains.join(' '));
           if (waChats.length) parts.push(waChats.join(' '));
-          if (shellRoomsList.length) parts.push(`rooms: [${shellRoomsList.join(', ')}]`);
-          else parts.push('rooms: [] (/room <n> join to enter)');
-          if (!localBrains.length && !waChats.length && !shellRoomsList.length) {
-            return '(empty)  ·  rooms: [] (/room <n> join to enter)';
+          if (shellRooms.length) parts.push(`rooms: [${shellRooms.join(', ')}]`);
+          else parts.push('rooms: [] (/room <n> enter to mirror typed msgs)');
+          if (!localBrains.length && !waChats.length && !shellRooms.length) {
+            return '(empty)  ·  rooms: [] (/room <n> enter to mirror typed msgs)';
           }
           return parts.join('  ');
         })())),

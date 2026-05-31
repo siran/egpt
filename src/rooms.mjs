@@ -129,28 +129,12 @@ export function roomsForMember(state, id) {
 
 // ── thin fs load/save ──────────────────────────────────────────────────────
 
-// Shell membership in rooms is SESSION-ONLY (operator 2026-05-31: "when an
-// interactive shell starts, it does so out of all rooms"). We strip
-// kind === 'shell' members at BOTH the load and save boundary so the
-// persisted config.yaml never carries shell entries, and a re-load never
-// surfaces them. The host (egpt.mjs) keeps an in-memory map of which rooms
-// the current shell has joined this session; that map is the only source
-// of truth for shell membership.
-function _stripShellMembers(state) {
-  if (!state?.rooms) return state;
-  const next = { rooms: {} };
-  for (const [k, r] of Object.entries(state.rooms)) {
-    next.rooms[k] = { ...r, members: (r.members ?? []).filter(m => m.kind !== 'shell') };
-  }
-  return next;
-}
-
 export async function loadRooms(path = ROOMS_CONFIG_PATH) {
   try {
     if (!existsSync(path)) return emptyRooms();
     const doc = YAML.parse(await readFile(path, 'utf8'));
     if (!doc || typeof doc !== 'object' || typeof doc.rooms !== 'object') return emptyRooms();
-    return _stripShellMembers({ rooms: doc.rooms ?? {} });
+    return { rooms: doc.rooms ?? {} };
   } catch (e) {
     console.error(`!! loadRooms(${path}): ${e?.message ?? e}`);
     return emptyRooms();
@@ -159,5 +143,5 @@ export async function loadRooms(path = ROOMS_CONFIG_PATH) {
 
 export async function saveRooms(state, path = ROOMS_CONFIG_PATH) {
   await mkdir(join(path, '..'), { recursive: true });
-  await writeFile(path, YAML.stringify(_stripShellMembers(state), { lineWidth: 100 }), 'utf8');
+  await writeFile(path, YAML.stringify(state, { lineWidth: 100 }), 'utf8');
 }
