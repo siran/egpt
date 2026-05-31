@@ -3292,6 +3292,28 @@ function App() {
             errOut(`@movie failed: ${e.message}`);
           }
         },
+        onBridgeDown: ({ reason, permanent, attempts }) => {
+          const msg = reason === 'auth_lost'
+            ? `⚠️ WhatsApp auth lost — re-pair needed (/whatsapp pair, or delete ~/.egpt/wa-auth and restart)`
+            : `⚠️ WhatsApp bridge: ${attempts} consecutive reconnect failures — still retrying`;
+          errOut(msg);
+          // Forward to Telegram if the TG bridge is live
+          const _tgChatId = EGPT_CONFIG.telegram?.chat_id ?? null;
+          const _tgBridge = bridgeRef.current;
+          if (_tgBridge && _tgChatId) {
+            _tgBridge.send(msg, { chatId: _tgChatId }).catch(() => {});
+          }
+          // Queue a WA outbox entry — delivered when/if WA reconnects
+          const _selfJid = EGPT_CONFIG.whatsapp?.chat_id ?? null;
+          if (_selfJid) {
+            const _id = `${Date.now()}-wa-health-${reason}`;
+            const _tmp = join(EGPT_HOME, 'outbox', `.tmp-${_id}.json`);
+            const _fin = join(EGPT_HOME, 'outbox', `${_id}.json`);
+            writeFile(_tmp, JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid: _selfJid, body: msg }))
+              .then(() => rename(_tmp, _fin))
+              .catch(() => {});
+          }
+        },
         onIncoming: async (text, from) => {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           logOut(`(whatsapp message from ${who}) -> ${text}`);
