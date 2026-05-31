@@ -57,6 +57,7 @@ import { join, dirname, basename, extname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -364,6 +365,26 @@ export async function startWhatsAppBridge({
   let _lastUpsertTs  = 0;     // ms: last messages.upsert from baileys
   let _staleLogged   = false; // one-shot per stale window (avoid log spam)
   const INBOUND_SILENCE_THRESHOLD_MS = 5 * 60 * 1000;   // 5min open + no upsert ⇒ likely dead
+  // Wake-from-sleep detection (operator 2026-05-31): laptop sleep is the
+  // dominant cause of broken-but-undetected WS — baileys' WebSocket times out
+  // at the OS level but the close event never reaches us. Detect wake via
+  // wall-clock vs monotonic clock skew: Date.now() jumps forward by ~sleep
+  // duration on wake, performance.now() pauses during sleep so its delta is
+  // small. A big positive skew = we just woke. Trigger immediate reconnect.
+  let _wakeWatchTimer = null;
+  let _lastWall = 0;
+  let _lastMono = 0;
+  const WAKE_CHECK_INTERVAL_MS  = 5_000;
+  const WAKE_SKEW_THRESHOLD_MS  = 30_000;   // > 30s gap ⇒ slept
+  // Active liveness probe: every probe interval, call sock.onWhatsApp(myNumber)
+  // — cheapest round-trip that exercises auth + transport. If it times out, the
+  // WS is wedged and we trigger reconnect WITHOUT waiting for the 5-min passive
+  // silence window. Covers non-sleep silent failures (decryption stalls, pre-key
+  // exhaustion, baileys version drift). _lastUpsertTs gets bumped on success so
+  // it doubles as a heartbeat-poke for the passive detector.
+  let _activeProbeTimer = null;
+  const ACTIVE_PROBE_INTERVAL_MS = 60_000;
+  const ACTIVE_PROBE_TIMEOUT_MS  = 5_000;
   // Exponential backoff state. Reset to 0 when 'connection: open'
   // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
   // is the single retry path — both the close handler and the
@@ -474,10 +495,64 @@ export async function startWhatsAppBridge({
     if (waAliveTimer) clearInterval(waAliveTimer);
     waAliveTimer = setInterval(_writeWaAliveNow, BRIDGE_ALIVE_INTERVAL_MS);
     waAliveTimer.unref?.();
+    _startWakeWatch();
+    _startActiveProbe();
   }
   function _stopWaAlive(state, detail = '') {
     if (waAliveTimer) { clearInterval(waAliveTimer); waAliveTimer = null; }
+    _stopWakeWatch();
+    _stopActiveProbe();
     if (state) _writeWaState(state, detail);
+  }
+  function _startWakeWatch() {
+    _lastWall = Date.now();
+    _lastMono = performance.now();
+    if (_wakeWatchTimer) clearInterval(_wakeWatchTimer);
+    _wakeWatchTimer = setInterval(() => {
+      const wall = Date.now();
+      const mono = performance.now();
+      const skew = (wall - _lastWall) - (mono - _lastMono);
+      _lastWall = wall;
+      _lastMono = mono;
+      if (skew > WAKE_SKEW_THRESHOLD_MS) {
+        err(`whatsapp: wake-from-sleep detected (skipped ~${Math.round(skew / 1000)}s) — forcing reconnect`);
+        try { sock?.end?.(new Error('wake-from-sleep')); } catch {}
+        _openedAt = 0;
+        _scheduleReconnect('wake from sleep');
+      }
+    }, WAKE_CHECK_INTERVAL_MS);
+    _wakeWatchTimer.unref?.();
+  }
+  function _stopWakeWatch() {
+    if (_wakeWatchTimer) { clearInterval(_wakeWatchTimer); _wakeWatchTimer = null; }
+  }
+  async function _activeProbe() {
+    // Only probe when bridge claims open AND we have a number to probe with.
+    // myNumber is set on connection 'open'; before that we have nothing to ask
+    // about. Skip probes during reconnect.
+    if (_openedAt === 0 || !sock || !myNumber || reconnectTimer) return;
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('probe timeout')), ACTIVE_PROBE_TIMEOUT_MS));
+    try {
+      await Promise.race([sock.onWhatsApp(myNumber), timeoutPromise]);
+      // Probe round-tripped: WS is alive. Bump the silence clock so the passive
+      // detector doesn't false-trip during a genuinely quiet operator window.
+      _lastUpsertTs = Date.now();
+      _staleLogged = false;
+    } catch (e) {
+      err(`whatsapp: active probe failed (${e?.message ?? e}) — forcing reconnect`);
+      try { sock?.end?.(e); } catch {}
+      _openedAt = 0;
+      _scheduleReconnect(`active probe failed (${e?.message ?? e})`);
+    }
+  }
+  function _startActiveProbe() {
+    if (_activeProbeTimer) clearInterval(_activeProbeTimer);
+    _activeProbeTimer = setInterval(_activeProbe, ACTIVE_PROBE_INTERVAL_MS);
+    _activeProbeTimer.unref?.();
+  }
+  function _stopActiveProbe() {
+    if (_activeProbeTimer) { clearInterval(_activeProbeTimer); _activeProbeTimer = null; }
   }
   function _scheduleReconnect(reason) {
     if (stopped) return;
