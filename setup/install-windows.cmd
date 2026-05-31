@@ -1,9 +1,9 @@
 @echo off
 setlocal
 
-REM setup/install-windows.cmd  --  double-click installer for egpt-daemon.
-REM Self-elevates via UAC, then runs install-windows.ps1 in the elevated
-REM shell. Pauses at the end so output stays visible if anything errors.
+REM setup/install-windows.cmd -- double-click installer for the egpt
+REM Windows Service. Self-elevates via UAC, then runs install-windows.ps1.
+REM Pauses at the end so output stays visible if anything errors.
 
 REM ---- self-elevate ----
 net session >nul 2>&1
