@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { liveDaemonPid } from '../src/daemon-singleton.mjs';
+import { outboxSend } from '../src/tools/outbox-send.mjs';
 
 // Drop the Self-DM breadcrumbs a lifecycle bounce needs: a "going down" line in
 // the outbox + a state/restart-announce.json sidecar the NEXT process reads to
@@ -36,10 +37,12 @@ async function announceBounce({ ctx, meta, preBody }) {
     const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
     if (r.status === 0) { const [h, s] = (r.stdout?.toString() ?? '').trim().split('\t'); sha = h || '?'; subj = s || ''; }
   } catch { /* git optional */ }
-  await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
-  await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
-    type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid, body: preBody(sha),
-  }));
+  // outboxSend uses atomic-rename (.tmp-<uuid>.json → final), critical on
+  // Windows where the watcher fires on creation and would read a half-written
+  // raw writeFile, JSON.parse-throw, and unlink the file as poison — losing
+  // the restart confirmation. Bug: 2026-05-31, operator saw no /restart
+  // confirmation in WA Self.
+  await outboxSend({ type: 'wa-send', jid: selfJid, body: preBody(sha) }, { from: 'system' });
   await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
   await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
 }

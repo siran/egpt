@@ -316,11 +316,18 @@ try {
   try {
     const _bootAlertJid = '34836563681438@lid';   // operator's WA Self DM lid form
     const _id = Date.now() + '-bootfail';
-    writeFileSync(join(homedir(), '.egpt', 'outbox', `${_id}.json`), JSON.stringify({
+    // Atomic-rename (.tmp-… → final): the outbox watcher fires on creation and
+    // would read a half-written raw writeFileSync mid-flush, JSON.parse-throw,
+    // and unlink the file as poison — losing the alert. Bug: 2026-05-31.
+    const _outboxDir = join(homedir(), '.egpt', 'outbox');
+    const _tmp = join(_outboxDir, `.tmp-${_id}.json`);
+    const _final = join(_outboxDir, `${_id}.json`);
+    writeFileSync(_tmp, JSON.stringify({
       type: 'wa-send', from: 'system', ts: Date.now(),
       jid: _bootAlertJid,
       body: `⚠ egpt boot warning: config load FAILED — ${(e?.message ?? String(e)).slice(0, 200)}. Bridge running with empty config; every chat is observe-only. Restart after fixing.`,
     }));
+    renameSync(_tmp, _final);
   } catch (e2) { console.error(`!! egpt boot: alert write failed — ${e2?.message ?? e2}`); }
 }
 // Post-load sanity check: even if readConfigSync didn't throw, the
@@ -364,10 +371,19 @@ try {
           if (_h) { _sha = _h; _subj = _s ?? _subj; }
         }
       } catch { /* git optional */ }
-      writeFileSync(join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`), JSON.stringify({
+      // Atomic-rename (.tmp-… → final): the outbox watcher fires on creation
+      // and would read a half-written raw writeFileSync mid-flush, JSON.parse-
+      // throw, and unlink the file as poison — losing the back-online ack.
+      // Bug: 2026-05-31, operator saw no /restart confirmation in WA Self.
+      const _outboxDir = join(homedir(), '.egpt', 'outbox');
+      const _id = `${Date.now()}-restart-post`;
+      const _tmp = join(_outboxDir, `.tmp-${_id}.json`);
+      const _final = join(_outboxDir, `${_id}.json`);
+      writeFileSync(_tmp, JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
         body: `🧠 eGPT · ✅ back online — ${_sha}${_subj ? ` "${_subj}"` : ''}${_down != null ? ` (${_down}s down)` : ''}`,
       }));
+      renameSync(_tmp, _final);
     }
     unlinkSync(_sidecar);
   } catch (e) { console.error(`!! egpt boot: restart-announce failed — ${e?.message ?? e}`); }
