@@ -46,7 +46,9 @@ import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createOutputChannel } from './src/engine/output.mjs';
 import { startAttachHost } from './src/nucleus.mjs';
-import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
+import { clearNucleusInfoSync, readNucleusInfo } from './src/attach/discovery.mjs';
+import { connectAttachClient } from './src/attach/client.mjs';
+import { N2C } from './src/attach/protocol.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2600,6 +2602,9 @@ function App() {
   const submitRef = useRef(null);
   const bridgeRef = useRef(null);
   const wizardRef = useRef(null);
+  // Limb (CLIENT) → spine connection handle (set by the attach-client effect).
+  // submit() forwards typed lines through this instead of running locally.
+  const _attachClientRef = useRef(null);
   const sentItemsCountRef = useRef(0);
   // Where sysOut output should land. 'local' = mark items _localOnly so
   // they don't bounce to Telegram or peers; 'remote' = let them through.
@@ -4603,6 +4608,53 @@ function App() {
     return () => { closed = true; try { unsub?.(); } catch {} try { host?.close?.(); } catch {} _globalAttachHost = null; };
   }, []);
 
+  // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
+  // from ~/.egpt/state/nucleus.json + the shared ~/.egpt/bus.key, connects, and
+  // renders the spine's output frames through the SAME pushItem sink the local
+  // renderer already subscribes to. INPUT flows the other way (submit →
+  // handle.input). Reconnects on drop / spine restart. With the engine
+  // subsystems all gated off, this is the limb's only live wire.
+  useEffect(() => {
+    if (!CLIENT) return;
+    let handle = null, stopped = false, retryTimer = null;
+    const renderFrame = (frame) => {
+      if (frame.t === N2C.ITEM) { const { t, ...item } = frame; pushItem(item); }
+      else if (frame.t === N2C.SYS) pushItem({ id: Date.now() + Math.random(), author: 'system', body: frame.body, _localOnly: true });
+      else if (frame.t === N2C.BYE) sysOut(`spine going down (${frame.reason ?? 'bye'}) — will reattach`);
+      // STREAM / STREAM_END (live-typing partials): the engine output channel
+      // only fans finalized items today, so they don't arrive here yet; the
+      // final reply still lands as an ITEM. Streaming over attach is a TODO.
+    };
+    const connect = async () => {
+      if (stopped) return;
+      let info = null;
+      try { info = await readNucleusInfo(); } catch {}
+      if (!info?.port) {
+        errOut('no spine found (no nucleus.json) — start the engine; this limb will attach once it is up');
+        retryTimer = setTimeout(connect, 2000); return;
+      }
+      try {
+        const keyB64 = await bus.loadOrCreateBusKey();
+        handle = await connectAttachClient({
+          host: info.host ?? '127.0.0.1', port: info.port, keyB64, kind: 'shell',
+          cols: process.stdout?.columns ?? null, rows: process.stdout?.rows ?? null,
+          onFrame: renderFrame,
+          onClose: () => {
+            _attachClientRef.current = null;
+            if (!stopped) { sysOut('spine connection closed — reattaching…'); retryTimer = setTimeout(connect, 1000); }
+          },
+        });
+        _attachClientRef.current = handle;
+        sysOut(`attached to spine on ${info.host ?? '127.0.0.1'}:${info.port} (pid ${handle.welcome?.nucleusPid ?? '?'})`);
+      } catch (e) {
+        _attachClientRef.current = null;
+        if (!stopped) { errOut(`attach failed (${e?.message ?? e}) — retrying`); retryTimer = setTimeout(connect, 1500); }
+      }
+    };
+    connect();
+    return () => { stopped = true; if (retryTimer) clearTimeout(retryTimer); try { handle?.close?.(); } catch {} _attachClientRef.current = null; };
+  }, []);
+
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
     const body = await readFile(path, 'utf8');
@@ -6261,6 +6313,19 @@ function App() {
   const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
+
+    // Limb (CLIENT): forward the typed line to the spine over the socket and
+    // stop. The spine runs the interpreter and echoes the input + any reply
+    // back as ITEM frames, which the attach-client effect renders — so a limb
+    // never runs the engine pipeline locally (no double-dispatch, no local
+    // room/state writes). Bridge-arrival / re-dispatch metas don't exist on a
+    // limb (those subsystems are gated off), so this covers all limb input.
+    if (CLIENT) {
+      const h = _attachClientRef.current;
+      if (h?.connected) h.input(text);
+      else errOut('not attached to a spine yet — is the engine running? retrying…');
+      return;
+    }
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
     // re-dispatch) goes through the interactive help menu first.
