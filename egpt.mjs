@@ -3372,12 +3372,19 @@ function App() {
             // engine's "exiting…" sysOut only reaches the shell. The respawned
             // spine still posts "✅ back online" once it reconnects.
             if (firstTok === '/restart' || firstTok === '/upgrade' || firstTok === '/rewind') {
-              // AWAIT the ack so it actually FLUSHES on the live socket before the
-              // dispatch tears baileys down. Fire-and-forget raced _exitClean's WS
-              // close and died with "send: Connection Closed" (operator 2026-06-01:
-              // "did a /restart and didn't get feedback"). bridge.send is
-              // time-bounded, so this can't hang the restart.
-              try { await bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }); } catch {}
+              // Send the ack and give it up to ~1.5s to flush on the live socket
+              // — but NEVER let it block the exit. A bare `await bridge.send`
+              // hangs (it waits on a socket about to be torn down), so the spine
+              // ack'd "on it" but never reached exitClean (operator 2026-06-01:
+              // "stays saying 'on it' but doesn't harakiri"). The RESTART is the
+              // priority; the ack is best-effort within the 1.5s window (plus
+              // _exitClean's 800ms WS-close flush).
+              try {
+                await Promise.race([
+                  bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }).catch(() => {}),
+                  new Promise(res => setTimeout(res, 1500)),
+                ]);
+              } catch {}
             }
           }
           // Interactive help menu — only the account owner (authorized) drives
