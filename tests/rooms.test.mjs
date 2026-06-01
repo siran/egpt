@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   emptyRooms, createRoom, deleteRoom, addMember, removeMember,
   setMemberState, getRoom, listRooms, roomsForMember, sanitizeName,
-  DEFAULT_MEMBER_STATE,
+  sessionsMapFromMembers, DEFAULT_MEMBER_STATE,
 } from '../src/rooms.mjs';
 
 describe('rooms data model', () => {
@@ -61,6 +61,49 @@ describe('rooms data model', () => {
     const s1 = addMember(s0, 'r', { kind: 'brain', id: 'e' });
     expect(getRoom(s0, 'r').members).toHaveLength(0);
     expect(getRoom(s1, 'r').members).toHaveLength(1);
+  });
+});
+
+describe('brain members carry their session (sessions→members unification)', () => {
+  it('addMember stores brain + options + emoji for a brain member', () => {
+    let s = createRoom(emptyRooms(), 'r');
+    s = addMember(s, 'r', { kind: 'brain', id: 'cgpt1', brain: 'chatgpt-cdp', options: { targetId: 'ABC' }, emoji: '🦊' });
+    const m = getRoom(s, 'r').members[0];
+    expect(m).toMatchObject({ kind: 'brain', id: 'cgpt1', brain: 'chatgpt-cdp', emoji: '🦊', state: 'muted' });
+    expect(m.options).toEqual({ targetId: 'ABC' });
+  });
+
+  it('re-adding a brain merges session fields but keeps state', () => {
+    let s = addMember(createRoom(emptyRooms(), 'r'), 'r', { kind: 'brain', id: 'cgpt1', brain: 'chatgpt-cdp', options: { targetId: 'OLD' } });
+    s = setMemberState(s, 'r', 'cgpt1', 'active');
+    s = addMember(s, 'r', { kind: 'brain', id: 'cgpt1', options: { targetId: 'NEW' } });   // /attach updates the tab
+    const m = getRoom(s, 'r').members[0];
+    expect(m.state).toBe('active');                  // state preserved
+    expect(m.brain).toBe('chatgpt-cdp');             // untouched field kept
+    expect(m.options).toEqual({ targetId: 'NEW' });  // updated
+    expect(getRoom(s, 'r').members).toHaveLength(1);
+  });
+
+  it('non-brain members ignore brain/options fields', () => {
+    const s = addMember(createRoom(emptyRooms(), 'r'), 'r', { kind: 'wa-group', id: 'g1', brain: 'x', options: { y: 1 } });
+    const m = getRoom(s, 'r').members[0];
+    expect(m.brain).toBeUndefined();
+    expect(m.options).toBeUndefined();
+  });
+
+  it('sessionsMapFromMembers reconstructs the sessions map from brain members only', () => {
+    let s = createRoom(emptyRooms(), 'r');
+    s = addMember(s, 'r', { kind: 'wa-group', id: 'g1' });                                  // skipped (not a session)
+    s = addMember(s, 'r', { kind: 'brain', id: 'cgpt1', brain: 'chatgpt-cdp', options: { targetId: 'T1' }, emoji: '🦊' });
+    s = addMember(s, 'r', { kind: 'brain', id: 'e', brain: 'claude-sdk', options: {} });
+    const map = sessionsMapFromMembers(s, 'r');
+    expect(Object.keys(map).sort()).toEqual(['cgpt1', 'e']);
+    expect(map.cgpt1).toEqual({ brain: 'chatgpt-cdp', options: { targetId: 'T1' }, emoji: '🦊' });
+    expect(map.e).toEqual({ brain: 'claude-sdk', options: {} });
+  });
+
+  it('sessionsMapFromMembers returns {} for an unknown room', () => {
+    expect(sessionsMapFromMembers(emptyRooms(), 'nope')).toEqual({});
   });
 });
 
