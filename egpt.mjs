@@ -3372,7 +3372,12 @@ function App() {
             // engine's "exiting…" sysOut only reaches the shell. The respawned
             // spine still posts "✅ back online" once it reconnects.
             if (firstTok === '/restart' || firstTok === '/upgrade' || firstTok === '/rewind') {
-              try { bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }); } catch {}
+              // AWAIT the ack so it actually FLUSHES on the live socket before the
+              // dispatch tears baileys down. Fire-and-forget raced _exitClean's WS
+              // close and died with "send: Connection Closed" (operator 2026-06-01:
+              // "did a /restart and didn't get feedback"). bridge.send is
+              // time-bounded, so this can't hang the restart.
+              try { await bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }); } catch {}
             }
           }
           // Interactive help menu — only the account owner (authorized) drives
