@@ -4,9 +4,14 @@
 // rooms it enters and which other members should receive it. Reception is
 // unconditional (every other member gets it); the SENDER's state decides
 // whether the message contributes at all:
-//   active            → contributes
-//   mention + @mention→ contributes (the message named a room participant)
-//   muted / mention-no-mention → does NOT enter the room
+//   active | mention → contributes (humans/groups/shells are spontaneous, not
+//                      prompted; for them `mention` is degenerate and behaves
+//                      exactly like `active`)
+//   muted            → contributes NOTHING. Uniform + absolute — "muted is
+//                      muted, period," no member-kind branching.
+// (Refined 2026-06-01 — see ROOMS-UNIFICATION.md. The brain-attention split
+// between active and mention lives in the executor's brain dispatch, not here:
+// planFanout only gates a SENDER's contribution, and senders are non-brains.)
 //
 // All surfaces are first-class: a member can be a wa-group, tg-group, brain,
 // shell, or extension; the planner treats them identically (the executor
@@ -14,13 +19,13 @@
 
 // Returns [{ room, sender, targets:[{kind,id,state}] }] — one entry per room
 // the message contributes to. `targets` excludes the sender.
-export function planFanout(roomsState, fromMemberId, { atEAnywhere = false } = {}) {
+export function planFanout(roomsState, fromMemberId) {
   const plans = [];
   for (const [room, r] of Object.entries(roomsState?.rooms ?? {})) {
     const members = r.members ?? [];
     const me = members.find(m => m.id === fromMemberId);
     if (!me) continue;
-    const contributes = me.state === 'active' || (me.state === 'mention' && atEAnywhere);
+    const contributes = me.state !== 'muted';   // active|mention contribute; muted is absolute
     if (!contributes) continue;
     const targets = members.filter(m => m.id !== fromMemberId);
     if (targets.length) plans.push({ room, sender: me, targets });

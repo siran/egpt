@@ -37,8 +37,8 @@ rooms:
 ```
 
 - `kind` ∈ `shell | extension | brain | wa-group | tg-group`
-- `state` ∈ `muted | mention | active` — gates **room fan-out only** (what the
-  member contributes). Reception stays unconditional. (`room-routing.mjs`.)
+- `state` ∈ `muted | mention | active` — see **Room member states (refined)**
+  below for the exact, uniform semantics. (`room-routing.mjs`.)
 - brain `options` ⊇ `{ url?, targetId?, sessionId?, cwd?, model?, effort?, profileName? }`
   (the existing `normalizeSession` shape).
 
@@ -51,6 +51,42 @@ rooms:
    (This is why a blunt strip-the-`@` fix was rejected — `/use` is multi-recipient.)
 2. **Single store:** `~/.egpt/rooms/config.yaml` (membership) is the one source of
    truth. `_rooms/*.yaml` is migrated once, then deleted.
+
+## Room member states (refined 2026-06-01)
+
+Two simplifications over the original "gates contribution, type-dependent" read:
+
+1. **`muted` is absolute and uniform** — no member-kind branching. A muted
+   member contributes to **nothing** (no other member, no WhatsApp/Telegram, no
+   brain), and a muted brain is **never prompted — not even by an `@mention`**.
+   It may still *see* the room (lurk); it just never speaks into it or is
+   dispatched. ("muted is muted, period.")
+2. **`mention` is meaningful only for brains.** Humans / groups / shells are
+   *spontaneous* (not prompted), so for them only `active` (speak into the room)
+   or `muted` (silent) make sense — `mention` is degenerate and maps to
+   `active`. The `active`↔`mention` split is the inherent prompted-vs-spontaneous
+   difference, not arbitrary type-branching.
+
+| state | human / group / shell (spontaneous) | brain (prompted) |
+|---|---|---|
+| **muted** | sees the room, says nothing | never prompted (not even `@mention`) |
+| **active** | everything it says enters the room | every room message dispatched to it (+ reply fans back); **queued while the brain is busy** so nothing is dropped |
+| **mention** | = `active` (degenerate) | only `@<brain>` messages dispatched (+ reply back) |
+
+Implementation deltas from the current code:
+
+- **`planFanout`** (`room-routing.mjs`): contribution becomes simply
+  `state !== 'muted'` — drop the `mention && @mention` gate, so a non-brain
+  `mention` contributes like `active`.
+- **brain dispatch** (`_deliverToRoom` in `egpt.mjs`): skip a `muted` brain
+  *first*, so `@mention` no longer wakes a muted brain.
+- **wire room→dispatch for ALL brains**, not just `@e` (today `egpt.mjs` skips
+  `@cgpt2` with `"room-dispatch not wired yet (only @e)"`).
+- an `active` brain **piles/queues** room messages while mid-reply (extend the
+  persona-pile) and drains when idle.
+
+Rollout: low-risk first (uniform `muted` + non-brain `active|muted`), then the
+bigger piece (all-brain room dispatch + busy-queue).
 
 ## Mapping (today → target)
 

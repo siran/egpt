@@ -2474,8 +2474,12 @@ function App() {
           }
         }
         else if (m.kind === 'brain') {
-          // Blind by default: a brain sees a room message only when it @mentions
-          // it (or it's 'active'). Its reply ALWAYS mirrors back so all read it.
+          // Brain attention by state (refined 2026-06-01, ROOMS-UNIFICATION.md):
+          //   muted   → never prompted, NOT EVEN by @mention (absolute, checked first)
+          //   active  → every room message is dispatched to the brain
+          //   mention → only messages whose body @mentions it
+          // Its reply ALWAYS mirrors back so all read it.
+          if (m.state === 'muted') continue;
           if (!(m.state === 'active' || _bodyMentionsBrain(body, m.id))) continue;
           if (depth >= _ROOM_CHAIN_CAP) { logOut(`room ${roomName}: chain cap (${_ROOM_CHAIN_CAP}) — not dispatching @${m.id}`); continue; }
           if (m.id !== 'e' && m.id !== 'egpt') { logOut(`room ${roomName}: brain @${m.id} room-dispatch not wired yet (only @e)`); continue; }
@@ -2530,9 +2534,10 @@ function App() {
     // an idempotency check on the router's OWN output marker, not a content
     // classification — same as a network layer ignoring its own broadcast.)
     if (isRoomEnvelope(body)) return;
-    const mentionsSomeone = /(^|\s)@[\w-]+/.test(String(body));
     let state; try { state = await loadRooms(); } catch { return; }
-    for (const plan of planFanout(state, memberId, { atEAnywhere: mentionsSomeone })) {
+    // Contribution is now uniform: active|mention contribute, muted doesn't
+    // (refined 2026-06-01). The old @mention gate moved to brain dispatch below.
+    for (const plan of planFanout(state, memberId)) {
       await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
     }
   };
