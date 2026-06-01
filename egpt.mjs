@@ -1294,8 +1294,13 @@ const HEADLESS = _rawCliArgs.includes('--headless');
 // — input is forwarded to the spine, output is rendered from it, so a limb can
 // never contend for the WhatsApp pairing. (Phase D; becomes the default once
 // auto-detect — "attach if a spine exists, else become one" — lands.)
-const CLIENT = _rawCliArgs.includes('--client');
-const cliArgs = _rawCliArgs.filter(a => a !== '--headless' && a !== '--client');
+// Role: --client forces a limb; --spine/--engine (or --headless) forces the
+// spine. With neither, the role is AUTO-DETECTED at boot (see spineIsLive() and
+// the boot section below): attach as a limb if a live spine answers, else
+// become the spine. `let` because auto-detect refines it before the App renders.
+let CLIENT = _rawCliArgs.includes('--client');
+const FORCE_SPINE = _rawCliArgs.includes('--spine') || _rawCliArgs.includes('--engine');
+const cliArgs = _rawCliArgs.filter(a => !['--headless', '--client', '--spine', '--engine'].includes(a));
 if (cliArgs[0] === 'profile' || cliArgs[0] === 'profile-url') {
   try {
     const spec = parseProfileCreateArgs(cliArgs.slice(1).join(' '));
@@ -8738,6 +8743,37 @@ process.on('SIGINT',  () => { _exitClean(0); });
 process.on('SIGHUP',  () => { _exitClean(0); });
 process.on('SIGTERM', () => { _exitClean(0); });
 
+// Auto-detect the role (D3): does a live spine already answer on the port in
+// nucleus.json? A successful signed handshake means yes → run as a limb. A
+// missing/stale sidecar, or a refused/timed-out connect, means no → become the
+// spine. The probe connects then immediately closes; the App's attach-client
+// effect makes the real, persistent connection.
+async function spineIsLive() {
+  let info = null;
+  try { info = await readNucleusInfo(); } catch { return false; }
+  if (!info?.port) return false;
+  try {
+    const keyB64 = await bus.loadOrCreateBusKey();
+    const probe = await connectAttachClient({
+      host: info.host ?? '127.0.0.1', port: info.port, keyB64, kind: 'shell',
+      onFrame: () => {}, onClose: () => {},
+    });
+    try { probe.close(); } catch {}
+    return true;
+  } catch { return false; }
+}
+
+// Unless a role was forced (--client / --spine / --engine / --headless), decide
+// now: attach to a live spine if one answers, else become the spine ourselves.
+// This is "just run egpt and it does the right thing" — a second `node egpt.mjs`
+// now ATTACHES instead of taking the helm from the running one.
+if (!CLIENT && !FORCE_SPINE && !HEADLESS) {
+  CLIENT = await spineIsLive();
+  console.log(CLIENT
+    ? 'egpt: a spine is already running — attaching as a limb'
+    : 'egpt: no spine found — becoming the spine');
+}
+
 // Pidfile handshake: if an older instance is running (most commonly the
 // headless engine from Task Scheduler / systemd / launchd), ask it to
 // exit, wait for it to release the WA pairing, then take ownership.
@@ -8857,7 +8893,7 @@ if (HEADLESS) {
     exitOnCtrlC: false,
   });
 } else {
-  console.log(`egpt | ${FILE}`);
+  console.log(`egpt | ${FILE}${CLIENT ? ' (limb — attached to spine)' : ' (spine)'}`);
   console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
   render(h(App), { exitOnCtrlC: false });
 }
