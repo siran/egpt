@@ -9,9 +9,11 @@
 # spawn dead simple (no nested -Verb RunAs quoting in JS that risked
 # the TUI).
 #
-# Tasks (both "run whether or not logged on" via S4U):
+# Task ("run whether or not logged on" via S4U):
 #   egpt-daemon-headless -- boot/logon ? daemon-wrap.ps1 ? daemon
-#   egpt-watchdog        -- every 1 min ? kills wedged daemon
+# No watchdog task: the heartbeat-kill watchdog was removed. It killed
+# healthy/reconnecting daemons (the "daemon got confused with the
+# heartbeat" failure). One trivial supervisor, no liveness-kill.
 
 $ErrorActionPreference = 'Stop'
 
@@ -27,8 +29,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 # --- elevated from here ---
 $setupDir = Join-Path $env:USERPROFILE 'src\egpt\setup'
 $tasks = @(
-  @{ Name = 'egpt-daemon-headless'; Xml = (Join-Path $setupDir 'egpt-daemon-headless.xml') },
-  @{ Name = 'egpt-watchdog';        Xml = (Join-Path $setupDir 'egpt-watchdog.xml') }
+  @{ Name = 'egpt-daemon-headless'; Xml = (Join-Path $setupDir 'egpt-daemon-headless.xml') }
 )
 $log = Join-Path $env:USERPROFILE '.egpt\state\install-tasks.log'
 function Log($m) {
@@ -57,15 +58,18 @@ Log "done creating tasks"
 # transitions from crashing the machine.)
 Log "stopping running daemon + wrappers, re-running fresh task..."
 & schtasks /End /TN egpt-daemon-headless 2>$null
-& schtasks /End /TN egpt-watchdog        2>$null
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
   Where-Object { $_.CommandLine -and $_.CommandLine -match 'daemon-wrap\.ps1' -and $_.ProcessId -ne $PID } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# Kill only egpt's own node procs (match the command line), never every node
+# on the box — a blanket `Get-Process node | Stop-Process` would take down
+# unrelated node apps (and any agent session) too.
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -and $_.CommandLine -match 'egpt' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 3
 & schtasks /Run /TN egpt-daemon-headless 2>$null
-& schtasks /Run /TN egpt-watchdog        2>$null
-Log "fresh least-privilege daemon + watchdog started"
+Log "fresh least-privilege daemon started (no watchdog)"
 Write-Host ""
 Write-Host "egpt supervisor re-registered at LEAST-PRIVILEGE + restarted."
 Write-Host "From now on, restarts need NO UAC (reset-daemon.ps1 / /restart)."

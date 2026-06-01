@@ -367,9 +367,10 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   // ── /e supervisor [status|install|uninstall] ────────────────────
-  // Manage the Windows scheduled tasks that keep egpt alive:
+  // Manage the Windows scheduled task that keeps egpt alive:
   //   egpt-daemon-headless — logon trigger → daemon-wrap.ps1 → daemon
-  //   egpt-watchdog        — every 1 min → kills wedged daemon
+  // (No watchdog task — the heartbeat-kill watchdog was removed; it killed
+  //  healthy/reconnecting daemons. One trivial supervisor, no liveness-kill.)
   // LogonTrigger (not BootTrigger) means NO admin elevation needed —
   // a user can create a task that runs as themselves on logon. So
   // this runs schtasks synchronously, captured stdio, no UAC dance,
@@ -388,7 +389,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     const setupDir = join(homedir(), 'src', 'egpt', 'setup');
     const tasks = [
       { name: 'egpt-daemon-headless', xml: join(setupDir, 'egpt-daemon-headless.xml') },
-      { name: 'egpt-watchdog',        xml: join(setupDir, 'egpt-watchdog.xml') },
     ];
     const q = (name) => {
       const r = spawnSync('schtasks', ['/Query', '/TN', name, '/FO', 'LIST'], { stdio: 'pipe' });
@@ -485,14 +485,14 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       const { spawn } = await import('node:child_process');
       const cleaner =
         `schtasks /End /TN egpt-daemon-headless;` +
-        `schtasks /End /TN egpt-watchdog;` +
         `Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | ` +
         `Where-Object { $_.CommandLine -match 'daemon-wrap' } | ` +
         `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };` +
-        `Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;` +
+        `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | ` +
+        `Where-Object { $_.CommandLine -match 'egpt' } | ` +
+        `ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue };` +
         `Start-Sleep -Seconds 3;` +
-        `schtasks /Run /TN egpt-daemon-headless;` +
-        `schtasks /Run /TN egpt-watchdog`;
+        `schtasks /Run /TN egpt-daemon-headless`;
       try {
         const child = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', cleaner], {
           detached: true, stdio: 'ignore', windowsHide: true,

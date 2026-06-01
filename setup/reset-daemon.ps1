@@ -9,10 +9,10 @@
 # never prompts.)
 #
 # What it does:
-#   1. Stop both scheduled-task instances (egpt-daemon-headless, egpt-watchdog)
+#   1. Stop the daemon task instance (egpt-daemon-headless)
 #   2. Kill the daemon-wrap wrappers + node procs (clears duplicates)
 #   3. Re-run the daemon task (fresh single tree on current code)
-#   4. Wait + report: node procs, alive.txt freshness, watchdog status
+#   4. Wait + report: node procs, alive.txt freshness
 #
 # Run from any PowerShell (no admin needed):
 #   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\src\egpt\setup\reset-daemon.ps1"
@@ -22,9 +22,8 @@ $ErrorActionPreference = 'Continue'
 
 $alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive.txt'
 
-Write-Host "=== 1. stopping task instances ==="
+Write-Host "=== 1. stopping task instance ==="
 schtasks /End /TN egpt-daemon-headless 2>&1 | Out-Host
-schtasks /End /TN egpt-watchdog        2>&1 | Out-Host
 
 # Kill the daemon-wrap.ps1 WRAPPERS first. These are powershell.exe
 # (not node), so a node-only kill leaves them looping -> they respawn
@@ -55,11 +54,8 @@ else       { Write-Host "  all node procs cleared" }
 # Clear the stale heartbeat so the first fresh beat is unambiguous.
 Remove-Item $alivePath -Force -ErrorAction SilentlyContinue
 
-Write-Host "=== 3. starting daemon + watchdog tasks (fresh elevated) ==="
+Write-Host "=== 3. starting daemon task (fresh) ==="
 schtasks /Run /TN egpt-daemon-headless 2>&1 | Out-Host
-# The watchdog's TimeTrigger re-fires within a minute anyway, but
-# /Run it now so it's active immediately (we /End'd it above).
-schtasks /Run /TN egpt-watchdog 2>&1 | Out-Host
 
 Write-Host "=== 4. waiting 10s for boot + heartbeat ==="
 Start-Sleep -Seconds 10
@@ -73,7 +69,6 @@ if (Test-Path $alivePath) { Get-Content $alivePath | Out-Host }
 else { Write-Host "  (no alive.txt yet -- daemon may still be booting)" }
 
 Write-Host ""
-Write-Host "done. The watchdog task runs every 1 min; check"
-Write-Host "  ~/.egpt/state/watchdog.log  appears within a minute."
+Write-Host "done. One daemon, no watchdog. Check alive.txt freshness above."
 Write-Host "This window stays open. Press Enter to close."
 [void](Read-Host)
