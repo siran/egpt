@@ -45,6 +45,8 @@ import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bind
 import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createOutputChannel } from './src/engine/output.mjs';
+import { startAttachHost } from './src/nucleus.mjs';
+import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +60,10 @@ const EGPT_HOME = join(homedir(), '.egpt');
 // engine module when the engine is extracted from the App (Phase C).
 const outputChannel = createOutputChannel();
 const pushItem = (item) => outputChannel.emit(item);
+// The engine attach host (Phase C) — limbs (the thin TTY client, the extension)
+// connect here over loopback TCP. Module-scope handle so the process 'exit'
+// handler can clear its discovery sidecar. Set by the App's host-start effect.
+let _globalAttachHost = null;
 
 // slash/*.mjs file-command registry. Each file in slash/ exports a
 // `meta` (object or array of objects, one per cmd it registers) and
@@ -4555,6 +4561,35 @@ function App() {
       _localOnly: true, _bright: true,
     });
 
+  // Engine attach host (Phase C — ENGINE-SURFACE-SEPARATION.md). Limbs (the thin
+  // TTY client, the extension) attach over loopback TCP. OUTPUT: every item the
+  // engine emits is fanned to attached limbs (outputChannel → host.pushItem).
+  // INPUT: a limb's typed line goes straight into submit, exactly like local
+  // shell input. The host advertises its port in ~/.egpt/state/nucleus.json.
+  // Started once; closed on unmount. (A future thin-client limb won't run this —
+  // it attaches instead; the engine-vs-client gate lands with Phase D.)
+  useEffect(() => {
+    let host = null, unsub = null, closed = false;
+    (async () => {
+      try {
+        const keyB64 = await bus.loadOrCreateBusKey();
+        const h = await startAttachHost({
+          keyB64,
+          onInput: ({ text }) => {
+            try { submitRef.current?.(String(text ?? '')); }
+            catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
+          },
+          logger: { error: (m) => { try { errOut(String(m)); } catch {} } },
+        });
+        if (closed) { await h.close(); return; }   // unmounted mid-start
+        host = h; _globalAttachHost = h;
+        unsub = outputChannel.subscribe(item => { try { h.pushItem(item); } catch {} });
+        sysOut(`attach host on 127.0.0.1:${h.port} — limbs may attach`);
+      } catch (e) { errOut(`!! attach host failed to start: ${e?.message ?? e}`); }
+    })();
+    return () => { closed = true; try { unsub?.(); } catch {} try { host?.close?.(); } catch {} _globalAttachHost = null; };
+  }, []);
+
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
     const body = await readFile(path, 'utf8');
@@ -8742,7 +8777,7 @@ if (HEADLESS) {
   console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
   render(h(App), { exitOnCtrlC: false });
 }
-process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); });
+process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
 // lost to the inherited TTY). Persist the stack to ~/.egpt/state/
