@@ -1286,7 +1286,14 @@ async function findSessionJsonl(sessionIdOrPrefix) {
 // transfers cleanly via signal + poll instead of a live socket attach.
 const _rawCliArgs = process.argv.slice(2);
 const HEADLESS = _rawCliArgs.includes('--headless');
-const cliArgs = _rawCliArgs.filter(a => a !== '--headless');
+// --client: run as a LIMB that attaches to a running spine over loopback TCP
+// instead of being the engine. Full Ink UI, but it starts NONE of the engine
+// subsystems (WA/TG bridges, control-plane bus, CDP, outbox/inbox, attach host)
+// — input is forwarded to the spine, output is rendered from it, so a limb can
+// never contend for the WhatsApp pairing. (Phase D; becomes the default once
+// auto-detect — "attach if a spine exists, else become one" — lands.)
+const CLIENT = _rawCliArgs.includes('--client');
+const cliArgs = _rawCliArgs.filter(a => a !== '--headless' && a !== '--client');
 if (cliArgs[0] === 'profile' || cliArgs[0] === 'profile-url') {
   try {
     const spec = parseProfileCreateArgs(cliArgs.slice(1).join(' '));
@@ -2711,6 +2718,7 @@ function App() {
   const tgCfgRef = useRef(null);
 
   const startTgBridge = useCallback(async () => {
+    if (CLIENT) return false;   // a limb never owns Telegram — the spine does
     if (bridgeRef.current) return true;
     let cfg = tgCfgRef.current;
     if (!cfg) {
@@ -3033,6 +3041,7 @@ function App() {
   };
   const _waJoinedSize = () => waJoinedRef.current?.size ?? 0;
   const startWaBridge = useCallback(async (force = false) => {
+    if (CLIENT) return false;   // a limb never owns WhatsApp — the spine does
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
     if (!cfg || cfg.enabled === false) return false;
@@ -3700,6 +3709,7 @@ function App() {
   // dispatchWaSend goes through the ref so this useEffect doesn't
   // re-mount on every change.
   useEffect(() => {
+    if (CLIENT) return;   // outbox is a spine-side WA-send queue, not a limb's job
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
@@ -3731,6 +3741,7 @@ function App() {
   // env var, TBD), this onEvent gets replaced with real dispatch
   // via the extracted processWaIncoming function.
   useEffect(() => {
+    if (CLIENT) return;   // inbox is a spine-side WA-inbound watcher
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
@@ -4194,6 +4205,7 @@ function App() {
   };
 
   useEffect(() => {
+    if (CLIENT) return;   // Chrome/CDP discovery + the control-plane bus are spine-side
     let cancelled = false;
     let pollHandle = null;
     let lastNoticeBody = null;
@@ -4569,6 +4581,7 @@ function App() {
   // Started once; closed on unmount. (A future thin-client limb won't run this —
   // it attaches instead; the engine-vs-client gate lands with Phase D.)
   useEffect(() => {
+    if (CLIENT) return;   // a limb attaches to the spine's host; it doesn't host one
     let host = null, unsub = null, closed = false;
     (async () => {
       try {
@@ -8667,9 +8680,15 @@ process.on('SIGTERM', () => { _exitClean(0); });
 // single-writer invariant. Symmetric: a headless process started while
 // an interactive shell is up will also take over (rare but valid).
 const _egptMode = HEADLESS ? 'headless' : 'interactive';
-await takeoverIfRunning(_egptMode);
-writePidfile(_egptMode);
-startAliveHeartbeat();
+// A limb (client) never enters the WA-helm handshake: it attaches to the spine
+// over the socket, owns no WhatsApp pairing, and must NOT SIGTERM the running
+// spine (takeoverIfRunning) nor claim the owner pidfile. The takeover/pidfile/
+// heartbeat dance is strictly the engine's.
+if (!CLIENT) {
+  await takeoverIfRunning(_egptMode);
+  writePidfile(_egptMode);
+  startAliveHeartbeat();
+}
 
 // "while you were away" summary moved into the App mount effect (see
 // _welcomeBackEffect below). The previous pre-mount console.log path
