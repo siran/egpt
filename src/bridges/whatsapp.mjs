@@ -2915,7 +2915,16 @@ export async function startWhatsAppBridge({
     // privacy format is the OTHER party's lid, not our phone number,
     // so a strict allowed_users check would lock the operator out
     // of their own commands.
-    const authorized = fromMe || (allowedUsers.length > 0
+    // A message in the operator's OWN self-DM is, by definition, from the
+    // operator — authorize it regardless of fromMe (Beeper / other linked
+    // devices arrive WITHOUT a clean fromMe) or jid-form (lid vs phone). This
+    // is what un-breaks e.g. /restart sent via Beeper to the self-DM, where the
+    // sender reads as the lid and fromMe is absent (operator 2026-06-01).
+    const { isSelfDM: _isSelfDMChat } = classifyWhatsAppChat({
+      chatId: chatJid,
+      bridgeInfo: { myJid, myLid, myLidNumber, selfDmJid: myNumber ? `${myNumber}@s.whatsapp.net` : null },
+    });
+    const authorized = fromMe || _isSelfDMChat || (allowedUsers.length > 0
       && allowedUsers.some(u => normalize(u) === normalize(userId)));
 
     let processed = text.trim();
