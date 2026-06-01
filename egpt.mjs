@@ -195,13 +195,17 @@ function clearPidfile() {
 }
 
 // Heartbeat-to-file aliveness pattern (operator 2026-05-23):
-//   - daemon writes ~/.egpt/state/alive every 15s with epoch ms + pid
-//   - external watchdog (setup/watchdog.ps1, runs via TS every minute)
-//     checks the file's mtime; if stale > 90s, kills the pid so the
-//     wrapper's respawn loop fires.
-//   - protects against wedged-but-alive states (process exists, event
-//     loop blocked or hung) that the wrapper's `& node …; respawn`
-//     pattern can't detect by itself.
+//   - the supervised daemon writes ~/.egpt/state/alive.txt every interval
+//     with an ISO timestamp + pid (tic/toc, below).
+//   - the ONLY consumer now is the daemon SINGLETON GUARD: a second
+//     `egpt-daemon` reads this file (liveDaemonPid) and refuses to start
+//     when a live daemon's beat is fresh — so two daemons never fight over
+//     WhatsApp. A human `cat` can also read "is it alive / last beat".
+//   - NO watchdog kills based on this anymore. The heartbeat-kill watchdog
+//     (setup/watchdog.ps1) was removed: it killed healthy/reconnecting
+//     daemons (the "daemon got confused with the heartbeat" failure). One
+//     trivial supervisor, no liveness-kill — a wedged bridge reconnects on
+//     its own; it is not a reason to SIGKILL the engine.
 const ALIVE_PATH = join(EGPT_HOME, 'state', 'alive.txt');   // .txt so it opens cleanly in Explorer / anywhere
 // Cross-process shell mirror — NDJSON append log, one event per line of the
 // form {"ts","pid","room","env"}. Producer: every egpt process appends here
@@ -226,7 +230,7 @@ let _aliveTimer = null;
 // Freshness = the most recent of whatever tic/toc timestamps are
 // present. The alternation proves RHYTHM (two recent beats ~one
 // interval apart), not just that a single write happened; and the
-// two lines record the last-two-beats so the watchdog (and a human
+// two lines record the last-two-beats so the singleton guard (and a human
 // `cat`) can read both "is it alive" and "time of last beat / death".
 // Option A architecture (operator 2026-05-29): one ~/.egpt/ = one egpt node
 // = one supervised daemon. Only the supervised daemon writes alive.txt and
@@ -238,11 +242,9 @@ function _writeAliveNow() {
   if (!process.env.EGPT_SUPERVISED) return;   // only the daemon writes
   try {
     const now = new Date().toISOString();
-    // Each line carries the pid so the watchdog has a kill target
-    // straight from alive.txt — no dependency on a separate egpt.pid
-    // (which can go missing, as it did 2026-05-23 after testing left
-    // elevated zombies with no pidfile, leaving the watchdog unable
-    // to act). Format: "<tic|toc> <iso> <pid>".
+    // Each line carries the pid so the singleton guard can identify the
+    // live daemon straight from alive.txt — no dependency on a separate
+    // egpt.pid (which can go missing). Format: "<tic|toc> <iso> <pid>".
     const beat = (label) => `${label} ${now} ${process.pid}\n`;
     let content = '';
     try { content = readFileSync(ALIVE_PATH, 'utf8'); } catch {}
@@ -255,9 +257,8 @@ function _writeAliveNow() {
     }
   } catch (e) {
     // A heartbeat write failure is real signal (disk full, perms,
-    // path gone) — log it so it's not silently lost. The watchdog
-    // will see the stale file and respawn; crash.log records WHY.
-    // Operator 2026-05-23: "crash logger also captures tictoc
+    // path gone) — log it so it's not silently lost; crash.log records
+    // WHY. Operator 2026-05-23: "crash logger also captures tictoc
     // failures?" — yes.
     try { mkdirSync(join(EGPT_HOME, 'state'), { recursive: true }); } catch {}
     try { _logCrash('heartbeat-write', e); } catch {}
