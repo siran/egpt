@@ -2694,6 +2694,12 @@ function App() {
   // tail never picked it up). Just read the whole content every poll and
   // diff against our cursor — the file is tiny, this is cheap.
   useEffect(() => {
+    // A limb receives ALL room/engine output over the attach socket already;
+    // shell-mirror.jsonl is the PRE-ATTACH cross-process mirror, so reading it
+    // in a limb double-renders every fanned room message (operator 2026-06-01:
+    // writing in eGPT3 appeared twice in the limb). Engine-side only now — the
+    // attach transport supersedes the file mirror; the writer is vestigial.
+    if (CLIENT) return;
     let cursor = 0;
     try { cursor = readFileSync(SHELL_MIRROR_PATH, 'utf8').length; } catch { cursor = 0; }
     let buf = '';
