@@ -44,10 +44,20 @@ import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/
 import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bindings.mjs';
 import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
+import { createOutputChannel } from './src/engine/output.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+
+// Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
+// rendered item flows through this one channel; the Ink renderer subscribes
+// (see the App mount effect) and code emits via pushItem() instead of calling
+// setItems() directly. That decoupling is what lets Phase D's attached clients
+// subscribe to the same output stream. Module-scope for now; it moves into the
+// engine module when the engine is extracted from the App (Phase C).
+const outputChannel = createOutputChannel();
+const pushItem = (item) => outputChannel.emit(item);
 
 // slash/*.mjs file-command registry. Each file in slash/ exports a
 // `meta` (object or array of objects, one per cmd it registers) and
@@ -2080,6 +2090,13 @@ function _stableIdForItem(item, sessions) {
 // --- main app ---
 function App() {
   const [items, setItems] = useState([]);
+  // Render every item the engine output channel emits (Phase B). The flow is
+  // pushItem(x) → outputChannel.emit(x) → this subscriber → setItems append.
+  // This is the sole render sink; Phase D adds attached-client subscribers
+  // alongside it. subscribe() returns its unsubscribe, used as effect cleanup.
+  // NB: uses prev.concat (not [...prev, item]) so it is NOT itself a
+  // "setItems append" — pushItem must never feed back into pushItem.
+  useEffect(() => outputChannel.subscribe(item => setItems(prev => prev.concat(item))), []);
   const [streaming, setStreaming] = useState(null);
   const [busy, setBusy] = useState(false);
   // Custom spinner label per operation; defaults to 'thinking…' for
@@ -2399,7 +2416,7 @@ function App() {
         else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
         else if (m.kind === 'shell' || m.kind === 'extension') {
           // Show the envelope so the operator can read along.
-          setItems(p => [...p, { id: Date.now() + Math.random(), author: `room@${roomName}`, body: env }]);
+          pushItem({ id: Date.now() + Math.random(), author: `room@${roomName}`, body: env });
           // …and retain it in conversation.md (the operator's persistent file),
           // parallel to the room transcript above. Once per delivery.
           if (!_opPersisted) { _opPersisted = true; void append(`room@${roomName}`, env); }
@@ -2672,11 +2689,11 @@ function App() {
         let ev;
         try { ev = JSON.parse(s); } catch { continue; }
         if (!ev || ev.pid === process.pid || !ev.env) continue;
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(),
           author: `room@${ev.room ?? '?'}`,
           body: ev.env,
-        }]);
+        });
       }
     }, 800);
     return () => clearInterval(id);
@@ -2800,10 +2817,10 @@ function App() {
         bridgeRef.current = null;
         _globalBridge = null;
         setTgPolling(false);
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(), author: 'system', _localOnly: true,
           body: `telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram ${BUS_NODE_ID} to force-reclaim.`,
-        }]);
+        });
       },
       onChatId: async (id) => {
         // First captured chat — persist so future runs know the outbound
@@ -2836,7 +2853,7 @@ function App() {
     bridgeRef.current = null;
     _globalBridge = null;
     setTgPolling(false);
-    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge stopped', _localOnly: true }]);
+    pushItem({ id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge stopped', _localOnly: true });
     return true;
   }, []);
 
@@ -3017,10 +3034,10 @@ function App() {
     // `force` is set by /whatsapp pair to bypass this.
     const authDir = join(EGPT_HOME, 'wa-auth');
     if (!force && !isBaileysPaired(authDir)) {
-      setItems(p => [...p, {
+      pushItem({
         id: Date.now() + Math.random(), author: 'system', _localOnly: true,
         body: 'whatsapp configured but not paired. Run /whatsapp pair to scan a QR with your phone.',
-      }]);
+      });
       return false;
     }
     try {
@@ -3063,12 +3080,12 @@ function App() {
           const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
           for (const dest of dests) {
             if (dest === 'shell') {
-              setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: shellBody }]);
+              pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: shellBody });
             } else if (dest === 'self' || dest === 'egptbot') {
               const targetJid = dest === 'self' ? selfDm : (EGPT_CONFIG.whatsapp?.egptbot_jid ?? null);
               if (!targetJid) {
-                if (dest === 'egptbot') setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-                  body: `!! /e confirm: dest "egptbot" needs whatsapp.egptbot_jid configured (no bot account yet) — skipped` }]);
+                if (dest === 'egptbot') pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true,
+                  body: `!! /e confirm: dest "egptbot" needs whatsapp.egptbot_jid configured (no bot account yet) — skipped` });
                 continue;
               }
               if (targetJid === jid) continue;  // don't echo a watched chat into itself
@@ -3593,7 +3610,7 @@ function App() {
       logOut('whatsapp bridge enabled');
       return true;
     } catch (e) {
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${e.message}`, _localOnly: true }]);
+      pushItem({ id: Date.now() + Math.random(), author: 'system', body: `!! whatsapp: ${e.message}`, _localOnly: true });
       return false;
     }
   }, []);
@@ -3604,7 +3621,7 @@ function App() {
     waBridgeRef.current = null;
     streamFactoryRef.current = null;
     _globalWaBridge = null;
-    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge stopped', _localOnly: true }]);
+    pushItem({ id: Date.now() + Math.random(), author: 'system', body: 'whatsapp bridge stopped', _localOnly: true });
     return true;
   }, []);
 
@@ -3677,9 +3694,9 @@ function App() {
   // dispatchWaSend goes through the ref so this useEffect doesn't
   // re-mount on every change.
   useEffect(() => {
-    const sysLog = (msg) => setItems(p => [...p, {
+    const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     return startOutboxWatcher({
       outboxDir:              join(EGPT_HOME, 'outbox'),
       dispatchWaSend:         (payload, src) => dispatchWaSendRef.current?.(payload, src),
@@ -3708,9 +3725,9 @@ function App() {
   // env var, TBD), this onEvent gets replaced with real dispatch
   // via the extracted processWaIncoming function.
   useEffect(() => {
-    const sysLog = (msg) => setItems(p => [...p, {
+    const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     return startInboxWatcher({
       inboxDir: join(EGPT_HOME, 'inbox'),
       log: sysLog,
@@ -3795,12 +3812,12 @@ function App() {
     // sysLog → visible (errors); heartbeatLog → hidden by default (routine ticks
     // are pure telemetry — pre-fix every tick polluted the shell with a noise
     // line, operator 2026-05-28). The hidden lines are still surfaced via /log.
-    const sysLog = (msg) => setItems(p => [...p, {
+    const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
-    const heartbeatLog = (msg) => setItems(p => [...p, {
+    });
+    const heartbeatLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true, body: msg,
-    }]);
+    });
 
     try { mkdirSync(EGPT_HOME, { recursive: true }); } catch {}
     try {
@@ -4183,10 +4200,10 @@ function App() {
       // the conversation view and shows only via /log when asked.
       if (body === lastNoticeBody) return;
       lastNoticeBody = body;
-      setItems(p => [...p, {
+      pushItem({
         id: Date.now() + Math.random(), author: 'system',
         _localOnly: opts._localOnly ?? true, _log: true, body,
-      }]);
+      });
     };
 
     // Idempotent: each tick checks current state and only does work that
@@ -4354,10 +4371,10 @@ function App() {
     if (key.ctrl && input === 'r' && (busy || streaming)) {
       setBusy(false);
       setStreaming(null);
-      setItems(p => [...p, {
+      pushItem({
         id: Date.now() + Math.random(), author: 'system',
         body: '(reset by Ctrl+R — any in-flight brain stream is abandoned; the underlying tab/process may still be running)',
-      }]);
+      });
     }
   });
 
@@ -4493,7 +4510,7 @@ function App() {
     const meta = sink === 'local'
       ? { _localOnly: true }
       : { _target: sink };
-    setItems(p => [...p, {
+    pushItem({
       id: Date.now() + Math.random(), author: 'system', body,
       ...meta,
       // extras lets callers attach _replyTarget (or other item flags)
@@ -4503,7 +4520,7 @@ function App() {
       // photo. Without this, _stableIdForItem falls back to 's-<rnd>'
       // and the system line is unaddressable.
       ...extras,
-    }]);
+    });
     // Full-clarity logging: every system output (slash command
     // responses, status notes, errors) goes into the room transcript
     // too. Fire-and-forget — queuedAppend serialises so order is
@@ -4520,10 +4537,10 @@ function App() {
   // sysOut stays for command responses (slash output) which the user
   // explicitly asked for and should see inline.
   const logOut = body =>
-    setItems(p => [...p, {
+    pushItem({
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _log: true,
-    }]);
+    });
 
   // errOut is for error/failure lines that the operator needs to see
   // RIGHT NOW — bridge sends that failed, brain dispatch errors, any
@@ -4533,17 +4550,17 @@ function App() {
   // conversation). _bright marks them for the renderer so they stand
   // out from regular system messages.
   const errOut = body =>
-    setItems(p => [...p, {
+    pushItem({
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _bright: true,
-    }]);
+    });
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
     const body = await readFile(path, 'utf8');
     const note = `[injected summary "${name}" from ${path}${target ? ` into ${target}` : ''}]\n\n${body.trim()}`;
     await append('system', note);
-    setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: note }]);
+    pushItem({ id: Date.now() + Math.random(), author: 'system', body: note });
     if (target) {
       await dispatchToOperator('inject', { content: note }, target, sessionMap);
     }
@@ -5890,12 +5907,12 @@ function App() {
         } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* best-effort persist */ }
       }
       if (final) {
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(),
           author: `egpt@${SURFACE_TAG}`,
           body: final,
           _localOnly: true,
-        }]);
+        });
       }
       return final;
     } catch (e) {
@@ -5945,12 +5962,12 @@ function App() {
     // tag matches the session so it looks like a brain turn in shell.
     const trimmed = (final ?? '').trim();
     if (trimmed) {
-      setItems(p => [...p, {
+      pushItem({
         id: Date.now() + Math.random(),
         author: routedTo,
         body: trimmed,
         _localOnly: true,
-      }]);
+      });
     }
     // No flag to persist — the thread's own url / session_id (which
     // the brain assigns and we record on the next turn) is the
@@ -6137,13 +6154,13 @@ function App() {
       const trimmed = (final ?? '').trim();
       const streamSnapshot = lastStreamingText.trim();
       if (streamSnapshot && streamSnapshot !== trimmed) {
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(),
           author: routedTo,
           body: streamSnapshot,
           _thinking: true,
           _localOnly: true,
-        }]);
+        });
       }
       // Per-bridge "already-streamed" tags. The reply has just been
       // streamed-and-finished into tg (if any) and into one WA chat
@@ -6167,21 +6184,21 @@ function App() {
         // both locally and on Telegram.
         await tg?.finish(`${authorPrefix}\n—`);
         await wa?.finish(`${waPrefix}\n—`);
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(), author: routedTo, body: '—',
           _silent: true,
           ...tagsAlreadySent,
-        }]);
+        });
         return null;
       }
       // Finalize the streaming bridge messages with the full text.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
       await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
       await wa?.finish(`${waPrefix}\n${final}`);
-      setItems(p => [...p, {
+      pushItem({
         id: Date.now() + Math.random(), author: routedTo, body: final,
         ...tagsAlreadySent,
-      }]);
+      });
       await append(`${routedTo}@${SURFACE_TAG}`, final);
       return final;
     } catch (e) {
@@ -6494,20 +6511,20 @@ function App() {
       try { await voiceStream?.finish?.(`${waPrefix}${finalBody}${_sep}.`); }
       catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
       try {
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(),
           author: `egpt@${SURFACE_TAG}`,
           body: finalBody,
           _source: 'whatsapp',
           _sourceChatId: meta.waChatId,
-        }]);
+        });
       } catch (e) { console.error(`!! voice-stream items push: ${e?.message ?? e}`); }
       return;
     }
 
     // Wizard mode: /create-profile interactive questions intercept all input.
     if (wizardRef.current) {
-      setItems(p => [...p, { id: Date.now() + Math.random(), author: 'You', body: text }]);
+      pushItem({ id: Date.now() + Math.random(), author: 'You', body: text });
       wizardRef.current.answer(text);
       return;
     }
@@ -6543,10 +6560,10 @@ function App() {
         // to go, and broadcasting "@u-uucdp3 …" to TG/WA as plain
         // text would be confusing.
         const _echoFailedReply = () => {
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(),
             author: 'You', body: text, _localOnly: true,
-          }]);
+          });
           if (!_suppressTranscriptRef.current) void append('You', text);
         };
         let shortId, body, target, rt;
@@ -6657,13 +6674,13 @@ function App() {
           const rt = echoReplyTargets.length === 1
             ? echoReplyTargets[0]
             : (echoReplyTargets.length > 1 ? echoReplyTargets : undefined);
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(), author: 'You',
             body: text,
             _directWa: !!waTargets.length,
             _localOnly: !waTargets.length && !!tgTargets.length,
             ...(rt ? { _replyTarget: rt } : {}),
-          }]);
+          });
           void append('You', text);
           if (rt) _scheduleReplyTargetSave();
           return;
@@ -6680,10 +6697,10 @@ function App() {
           // Typed prompt is sacred — echo the raw input. The brain
           // prompt below still gets the resolved quote + sender
           // header; only the visible/transcript form stays verbatim.
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(), author: 'You',
             body: text,
-          }]);
+          });
           void append('You', text);
           // Brain prompt: include the quoted message + qualified
           // sender header. Brain has no concept of m-ids, so we
@@ -6772,7 +6789,7 @@ function App() {
     // line duplicates as a wrong-author 'You' entry). resolveRoute below still
     // runs, so the @mention dispatch is unaffected.
     if (!meta.observeOnly && !meta._routedFromRoom) {
-      setItems(p => [...p, {
+      pushItem({
         id: echoItemId, author: echoAuthor, body: text,
         ...(isSlashCommand ? { _localOnly: true } : {}),
         ...(echoSource ? { _source: echoSource } : {}),
@@ -6792,7 +6809,7 @@ function App() {
           ? { _replyTarget: { kind: 'tg', chatId: meta.telegramChatId, msgId: meta.telegramMessageId } }
           : {}),
         ...(willDirectWa ? { _directWa: true } : {}),
-      }]);
+      });
       // Full-clarity logging: persist every input — slash commands,
       // mentions, plain text — to the room transcript. Same FIFO
       // queue that sysOut uses, so input and the system output that
@@ -7236,14 +7253,14 @@ function App() {
           // still fanning out to OTHER joined chats — without it,
           // the brain reply double-posts in the origin chat. Set
           // for WA-arrived @e turns; left unset for local / TG.
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(),
             author: replyAuthor,
             body: reply,
             ...(replySource ? { _source: replySource } : {}),
             ...(meta.fromWhatsApp && meta.waChatId
               ? { _sourceChatId: meta.waChatId } : {}),
-          }]);
+          });
           await append(replyAuthor, reply);
           // Broadcast on bus so peers (extension, future surfaces) see
           // the persona reply as a play-script line. via: tags the
@@ -7513,14 +7530,14 @@ function App() {
           const replySource = meta.fromTelegram ? 'telegram'
             : meta.fromWhatsApp ? 'whatsapp'
             : null;
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(),
             author: replyAuthor,
             body: reply,
             ...(replySource ? { _source: replySource } : {}),
             ...(meta.fromWhatsApp && meta.waChatId
               ? { _sourceChatId: meta.waChatId } : {}),
-          }]);
+          });
           await append(replyAuthor, reply);
           const tid = busTargetIdRef.current;
           if (tid) {
@@ -7653,9 +7670,9 @@ function App() {
   // item. Returns true iff the send was issued so the watcher can
   // decide whether to unlink the file or leave it for the next sweep.
   dispatchWaSendRef.current = async (ev, source = 'outbox') => {
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
@@ -7738,9 +7755,9 @@ function App() {
   // don't loop forever on rejection.
   const dispatchWaGroupSubjectRef = useRef(null);
   dispatchWaGroupSubjectRef.current = async (ev, source = 'outbox') => {
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-group-subject from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!wa.setGroupSubject) { log(`${source}: wa-group-subject from ${ev.from} dropped — bridge lacks setGroupSubject (older code?)`); return true; }
@@ -7769,9 +7786,9 @@ function App() {
   // Output optionally relays back to a contact thread.
   const dispatchButlerTaskRef = useRef(null);
   dispatchButlerTaskRef.current = async (ev, source = 'outbox') => {
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const prompt = (ev.prompt ?? '').trim();
     if (!prompt) { log(`!! ${source}: butler-task from ${ev.from} dropped — empty prompt`); return true; }
     log(`${source}: butler-task from ${ev.from} (${prompt.length} chars) — spawning haiku…`);
@@ -7835,9 +7852,9 @@ function App() {
   // because the bridge dedupes its own sent messages.
   const dispatchSlashRef = useRef(null);
   dispatchSlashRef.current = async (ev, source = 'outbox') => {
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const cmd = (ev.cmd ?? '').trim();
     if (!cmd.startsWith('/')) {
       log(`!! ${source}: slash from ${ev.from} malformed — needs {cmd: '/...'}; got "${cmd.slice(0, 40)}"`);
@@ -7855,9 +7872,9 @@ function App() {
   };
 
   dispatchWaGroupMembersRef.current = async (ev, source = 'outbox') => {
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const wa = waBridgeRef.current;
     if (!wa) { log(`${source}: wa-group-members from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!wa.getGroupMembers) { log(`${source}: wa-group-members from ${ev.from} dropped — bridge lacks getGroupMembers`); return true; }
@@ -7879,9 +7896,9 @@ function App() {
   handleBusEventRef.current = async (ev) => {
     if (ev.from === BUS_NODE_ID) return; // ignore self-echoes
 
-    const log = (msg) => setItems(p => [...p, {
+    const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    }]);
+    });
     const post = async (event) => {
       const tid = busTargetIdRef.current;
       if (!tid) return;
@@ -8074,10 +8091,10 @@ function App() {
           // _localOnly so items-flush doesn't ALSO send it (which would
           // hit lastChat — possibly a different chat).
           const tgRouted = ev.tg_chat_id != null;
-          setItems(p => [...p, {
+          pushItem({
             id: Date.now() + Math.random(), author, body: ev.body ?? '(empty)',
             _node: ev.from, _localOnly: tgRouted,
-          }]);
+          });
           await append(author, ev.body ?? '');
           if (tgRouted && bridgeRef.current) {
             const sess = sessions[author] ?? sessions[target];
@@ -8182,11 +8199,11 @@ function App() {
           ev.via?.startsWith?.('telegram') ? 'telegram'
           : ev.via?.startsWith?.('whatsapp') ? 'whatsapp'
           : null;
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(), author: tag, body,
           ...(isPeerSlashCommand ? { _localOnly: true } : {}),
           ...(sourceFromVia ? { _source: sourceFromVia } : {}),
-        }]);
+        });
         return;
       }
       case 'room-reply': {
@@ -8201,10 +8218,10 @@ function App() {
           ev.via?.startsWith?.('telegram') ? 'telegram'
           : ev.via?.startsWith?.('whatsapp') ? 'whatsapp'
           : null;
-        setItems(p => [...p, {
+        pushItem({
           id: Date.now() + Math.random(), author: tag, body: ev.body ?? '',
           ...(sourceFromVia ? { _source: sourceFromVia } : {}),
-        }]);
+        });
         return;
       }
       default:
