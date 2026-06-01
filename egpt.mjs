@@ -35,7 +35,7 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms, roomsForMember, sanitizeName } from './src/rooms.mjs';
+import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember } from './src/rooms.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
@@ -4153,6 +4153,26 @@ function App() {
             persistedRoomsRef.current.delete(name);
           }
         }
+        // Dual-write (unification 1b — ROOMS-UNIFICATION.md): mirror each
+        // session-room's brain sessions into the MEMBERSHIP config
+        // (~/.egpt/rooms/config.yaml — a SEPARATE file from the main config)
+        // as brain members carrying {brain, options}. This populates the store
+        // Phase 2 will flip resolveRoute onto. Upsert-only for now: routing
+        // still reads roomSessionsMap, so stale members are harmless; pruning
+        // (on /detach) and the read-flip arrive with Phase 2.
+        try {
+          let mstate = await loadRooms();
+          let dirty = false;
+          for (const [room, sess] of Object.entries(roomSessionsMap)) {
+            if (room === 'default') continue;
+            for (const [sname, s] of Object.entries(sess || {})) {
+              if (!getRoom(mstate, room)) mstate = createRoom(mstate, room);
+              mstate = addMember(mstate, room, { kind: 'brain', id: sname, brain: s.brain, options: s.options ?? {}, emoji: s.emoji });
+              dirty = true;
+            }
+          }
+          if (dirty) await saveRooms(mstate);
+        } catch (e) { sysOut(`!! membership brain-member sync: ${e?.message ?? e}`); }
       })().catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
     }, 500);
     return () => clearTimeout(t);
