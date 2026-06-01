@@ -35,10 +35,18 @@ async function announceBounce({ ctx, meta, preBody }) {
     const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
     if (r.status === 0) { const [h, s] = (r.stdout?.toString() ?? '').trim().split('\t'); sha = h || '?'; subj = s || ''; }
   } catch { /* git optional */ }
-  await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
-  await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
-    type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid, body: preBody(sha),
-  }));
+  // The outbox "going down" pre-ack is only needed when the restart was
+  // initiated from a NON-WA surface (limb/shell) — so the operator's WA self-DM
+  // still hears the spine is bouncing. A WA-initiated /restart already got an
+  // IMMEDIATE live-socket ack at ingress, so skip this — otherwise the operator
+  // gets a duplicate, and often out-of-order (it's outbox-delayed until the new
+  // spine reconnects), "respawning on <sha>" message (operator 2026-06-01).
+  if (!meta?.fromWhatsApp) {
+    await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
+    await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
+      type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid, body: preBody(sha),
+    }));
+  }
   await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
   await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
 }
