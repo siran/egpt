@@ -135,6 +135,39 @@ the `CLIENT_MODE` gating; there is no shared dual-mode App anymore.
 One supervisor, the lifecycle rule above. `/restart` = engine re-exec; surfaces
 reconnect. Delete the spine's daemon/watchdog/exit-code machinery for good.
 
+## Command interpretation (engine-first) — 2026-06-01
+
+A `/command` is NOT a chat message and must not be routed like one. Today it can
+fall through the chat path: a WhatsApp command that fails the per-surface auth
+gate (or isn't recognized at ingress) flows on as a normal message — fanned to
+rooms, surfaced/mirrored to the shell — instead of being interpreted. So whether
+a command runs ends up depending on room membership + the shell's room state.
+That conflation is the bug behind "I sent `/restart` on WhatsApp and it didn't
+pick up; it got mirrored to the shell instead."
+
+Clean model:
+1. **Commands are an engine concern, surface-agnostic.** A `/command` from an
+   authorized operator (WA self-DM, shell, limb, extension) is interpreted by the
+   ENGINE directly — never fanned to rooms, never mirrored to another surface for
+   re-interpretation, never gated by a member's room state. Commands and chat are
+   different channels.
+2. **Robust operator identity.** Recognize the owner across ALL jid forms (phone
+   + lid) and linked devices (phone, Beeper, the bridge). A message in the
+   operator's self-DM is authorized regardless of `fromMe`/jid-form. *(Landed
+   2026-06-01: WA auth treats any self-DM message as authorized, and
+   `allowed_users` carries both the phone and lid numbers — un-breaks `/restart`
+   sent via Beeper.)*
+3. **One interpreter.** The engine has a single command path (`handleSlash`);
+   surfaces hand it the raw line + an authorized-operator flag and it decides. A
+   limb forwards the line over the attach socket; the engine interprets. No
+   surface re-interprets a command it merely received as a mirrored item.
+
+Status: the auth robustness (2) landed as a targeted fix. The structural split
+(1, 3) — interpret authorized commands at ingress, independent of the
+chat→room→mirror path — is the remaining work, and slots into the engine
+extraction (Phase C): the interpreter becomes an explicit Engine method every
+surface routes commands through.
+
 ## Open questions
 
 - **Where exactly is the engine/UI line?** Theming, emoji, time formatting are
