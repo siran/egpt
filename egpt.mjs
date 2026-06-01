@@ -2529,6 +2529,13 @@ function App() {
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
+    // A /command is operator tooling, NOT room chat — never fan it to rooms (it
+    // would leak "/restart" into WhatsApp groups and entangle command handling
+    // with room membership/state). Commands are interpreted by the engine's one
+    // command path (handleSlash), independent of rooms (ENGINE-SURFACE-
+    // SEPARATION.md: engine-first commands). This guard covers EVERY surface,
+    // since WA / TG / shell all route inbound through here. 2026-06-01.
+    if (String(body).trimStart().startsWith('/')) return;
     // Echo/loop guard: a message that's already a room envelope was fanned BY
     // us — never re-route it, or two active groups bounce it forever. (This is
     // an idempotency check on the router's OWN output marker, not a content
