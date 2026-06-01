@@ -3358,10 +3358,22 @@ function App() {
           // Lifecycle commands restricted to 1:1 chats, same as Telegram.
           const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
           const firstTok = text.trimStart().split(/\s+/)[0];
-          if (LIFECYCLE.has(firstTok) && from.chatType !== 'private') {
-            bridge.send(`${firstTok} only works in a 1:1 chat — DM me and try again`,
-              { chatId: from.chatId });
-            return;
+          if (LIFECYCLE.has(firstTok)) {
+            if (from.chatType !== 'private') {
+              bridge.send(`${firstTok} only works in a 1:1 chat — DM me and try again`,
+                { chatId: from.chatId });
+              return;
+            }
+            // Immediate WA ack, sent on the LIVE socket BEFORE dispatch+exit.
+            // Otherwise the operator gets no WhatsApp feedback and "can't tell if
+            // it's running" (operator 2026-06-01): the announceBounce pre-ack is
+            // queued to the outbox, but the process exits in ~1s — faster than the
+            // 2s outbox sweep — so the dying process never flushes it, and the
+            // engine's "exiting…" sysOut only reaches the shell. The respawned
+            // spine still posts "✅ back online" once it reconnects.
+            if (firstTok === '/restart' || firstTok === '/upgrade' || firstTok === '/rewind') {
+              try { bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }); } catch {}
+            }
           }
           // Interactive help menu — only the account owner (authorized) drives
           // it, in whichever chat /help was invoked. Consumes the owner's
