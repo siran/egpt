@@ -11,30 +11,29 @@ function room3() {
   return s;
 }
 
-describe('planFanout', () => {
+describe('planFanout (refined: active|mention contribute, muted is absolute)', () => {
   it('muted sender → no fan-out (message stays local)', () => {
-    const s = room3();
-    expect(planFanout(s, 'g1', { atEAnywhere: false })).toEqual([]);
+    const s = room3();   // g1 is muted by default
+    expect(planFanout(s, 'g1')).toEqual([]);
   });
 
   it('active sender → fans to all OTHER members', () => {
-    let s = setMemberState(room3(), 'r', 'g1', 'active');
-    const plans = planFanout(s, 'g1', {});
+    const s = setMemberState(room3(), 'r', 'g1', 'active');
+    const plans = planFanout(s, 'g1');
     expect(plans).toHaveLength(1);
     expect(plans[0].room).toBe('r');
     expect(plans[0].targets.map(t => t.id).sort()).toEqual(['e', 'g2']);
   });
 
-  it('mention sender contributes only when the message @mentions', () => {
-    let s = setMemberState(room3(), 'r', 'g1', 'mention');
-    expect(planFanout(s, 'g1', { atEAnywhere: false })).toEqual([]);
-    const plans = planFanout(s, 'g1', { atEAnywhere: true });
+  it('mention sender contributes like active (mention is degenerate for a non-brain sender)', () => {
+    const s = setMemberState(room3(), 'r', 'g1', 'mention');
+    const plans = planFanout(s, 'g1');
     expect(plans).toHaveLength(1);
     expect(plans[0].targets.map(t => t.id).sort()).toEqual(['e', 'g2']);
   });
 
   it('a member not in any room → no plans', () => {
-    expect(planFanout(room3(), 'stranger', {})).toEqual([]);
+    expect(planFanout(room3(), 'stranger')).toEqual([]);
   });
 });
 
