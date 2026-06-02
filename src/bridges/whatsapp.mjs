@@ -322,12 +322,20 @@ export async function startWhatsAppBridge({
   _blog('auth-state loaded');
   let version;
   try {
-    const fetched = await fetchLatestBaileysVersion();
+    // MUST be time-bound: fetchLatestBaileysVersion is a network call with no
+    // internal timeout. On the headless/before-logon spine it can hang
+    // indefinitely (DNS/network not fully up), and since it's awaited BEFORE
+    // connect() and the handle return, a hang means startBaileysBridge never
+    // resolves → waBridgeRef.current stays null → every outbound drops with
+    // "no baileys bridge here" and the back-online announce never sends
+    // (operator 2026-06-02 "no egpt back!"). On timeout we fall back to
+    // baileys' bundled default version and connect anyway.
+    const fetched = await _timeBound(fetchLatestBaileysVersion(), 'fetchLatestBaileysVersion', 10000);
     version = fetched.version;
     _blog(`version fetched: ${Array.isArray(version) ? version.join('.') : version}`);
   } catch (e) {
     console.error(`!! whatsapp.mjs fetchLatestBaileysVersion: ${e?.message ?? e}`);
-    // Offline or fetch blocked — baileys will use its default fallback.
+    // Offline / fetch blocked / TIMED OUT — baileys uses its default fallback.
     version = undefined;
     _blog(`version fetch FAILED (using baileys default): ${e?.message ?? e}`);
   }
