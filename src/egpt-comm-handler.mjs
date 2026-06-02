@@ -571,7 +571,14 @@ export function startOutboxWatcher({
       return;
     }
     if (payload?.type === 'wa-send') {
-      const ok = dispatchWaSend(payload, 'outbox');
+      // MUST await — dispatchWaSend is async. Without await, `ok` is a truthy
+      // Promise, `if (!ok)` never fires, and the file is unlinked below even
+      // when the send FAILED (bridge down → returns false). That silently
+      // discarded every wa-send attempted during the ~0.3s boot window before
+      // waBridgeRef is set — including the "egpt back!" announce — with NO
+      // retry. (operator 2026-06-02: "no egpt back!"; butler-task/slash below
+      // were already awaited.)
+      const ok = await dispatchWaSend(payload, 'outbox');
       if (!ok) {
         // Bridge down or malformed — leave for retry, release claim.
         claimed.delete(name);
@@ -581,7 +588,7 @@ export function startOutboxWatcher({
       if (typeof dispatchWaGroupSubject !== 'function') {
         log(`outbox: dropping wa-group-subject from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
       } else {
-        const ok = dispatchWaGroupSubject(payload, 'outbox');
+        const ok = await dispatchWaGroupSubject(payload, 'outbox');
         if (!ok) {
           // Bridge down / not admin / bad jid — leave for retry,
           // release claim. Caller's log already explained.
@@ -593,7 +600,7 @@ export function startOutboxWatcher({
       if (typeof dispatchWaGroupMembers !== 'function') {
         log(`outbox: dropping wa-group-members from ${payload.from ?? '<unknown>'} — no dispatcher wired`);
       } else {
-        const ok = dispatchWaGroupMembers(payload, 'outbox');
+        const ok = await dispatchWaGroupMembers(payload, 'outbox');
         if (!ok) {
           // Bridge down / bad jid — leave for retry, release claim.
           claimed.delete(name);

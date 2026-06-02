@@ -58,8 +58,11 @@ async function announceBounce({ ctx, meta, preBody }) {
     }));
   }
   await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-  await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
-  _rlog(EGPT_HOME, `announceBounce: sidecar WRITTEN → ${join(EGPT_HOME, 'state', 'restart-announce.json')} (jid=${selfJid}, sha=${sha})`);
+  // pid/sha here are the OUTGOING process's — the respawned process reports both
+  // "before" (this) and "booted" (its own), so the operator can confirm the PID
+  // changed (a real respawn) and see the running commit.
+  await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now(), pid: process.pid }));
+  _rlog(EGPT_HOME, `announceBounce: sidecar WRITTEN → ${join(EGPT_HOME, 'state', 'restart-announce.json')} (jid=${selfJid}, sha=${sha}, pid=${process.pid})`);
 }
 
 export const meta = [
