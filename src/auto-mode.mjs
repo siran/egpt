@@ -67,3 +67,35 @@ export function mayEmit(mode, { replyAllowed = undefined } = {}) {
   if (mode === 'on') return true;
   return replyAllowed === true;
 }
+
+// A reply that is ONLY ellipsis (ASCII '...' or unicode '…') or empty. This is
+// the ONE place a reply's BODY is consulted, and ONLY for the 'on'-mode cosmetic
+// below — E declining to add noise to a chat it's free to post in. It is NEVER
+// a gating input for mute / mention / mention-direct (operator 2026-06-02:
+// "it doesn't matter what the reply of E is … if E is muted the replies don't
+// fan out"). See [[egpt-emit-gate-bridge-controlled]].
+export function isSilenceReply(reply) {
+  const t = String(reply ?? '').trim();
+  return t === '' || /^(\.{3,}|…+)$/.test(t);
+}
+
+// THE single fan-out + record decision for a resident/persona reply. The reply
+// is ALWAYS written to the chat transcript (operator 2026-06-02: "don't drop
+// any message from E or from anyone"); this only decides whether it is ALSO
+// pushed to the surface, and — when it is not — the annotation the transcript
+// carries.
+//
+// Fan-out is decided by `mode` + the per-turn `replyAllowed` (which itself was
+// derived from the INCOMING message's mention status), NEVER from `reply` —
+// except the 'on'-mode silence cosmetic. Fails CLOSED for mention modes when
+// `replyAllowed` is absent, so any dispatch path that forgets to thread it
+// records-but-doesn't-send rather than leaking.
+//
+// Returns { sent, annotation }:
+//   sent=true  → push to surface; transcript records it plainly.
+//   sent=false → DO NOT push; transcript records `<reply> (annotation)`.
+export function fanOutDecision(mode, { replyAllowed = undefined, reply = '' } = {}) {
+  let sent = mayEmit(mode, { replyAllowed });
+  if (sent && mode === 'on' && isSilenceReply(reply)) sent = false;   // E opts out, still recorded
+  return { sent, annotation: sent ? null : `(not sent to group. auto: ${mode})` };
+}

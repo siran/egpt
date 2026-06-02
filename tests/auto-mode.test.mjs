@@ -1,7 +1,7 @@
 // Per-chat auto-mode semantics: standalone @e detection (no email false
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
-import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit } from '../src/auto-mode.mjs';
+import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -99,6 +99,48 @@ describe('mention-direct gate is immune to the @e-routing rewrite', () => {
     const gate = mentionStatus('@e ping');
     expect(replyAllowed('mention-direct', gate)).toBe(true);
     expect(replyAllowed('mention', gate)).toBe(true);
+  });
+});
+
+describe('fanOutDecision — single record-always / gate-on-mode chokepoint', () => {
+  // The operator's rule (2026-06-02): gating is mode + per-turn replyAllowed
+  // (from the INCOMING message), NEVER E's reply body — except the 'on'-mode
+  // silence cosmetic. Nothing is dropped; non-sent replies are annotated.
+  it('mute: NEVER fans out, whatever E said — recorded + annotated', () => {
+    expect(fanOutDecision('mute', { replyAllowed: true, reply: 'a long real answer' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: mute)' });
+    expect(fanOutDecision('mute', { reply: '…' }).sent).toBe(false);
+  });
+  it('mention: fan-out follows replyAllowed, the reply BODY is irrelevant', () => {
+    // replyAllowed true → sent, even if the reply is just "…"
+    expect(fanOutDecision('mention', { replyAllowed: true, reply: '…' }))
+      .toEqual({ sent: true, annotation: null });
+    // replyAllowed false → NOT sent, even a long reply → recorded + annotated
+    expect(fanOutDecision('mention', { replyAllowed: false, reply: 'a whole paragraph' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: mention)' });
+  });
+  it('mention-direct: same — body never decides', () => {
+    expect(fanOutDecision('mention-direct', { replyAllowed: true, reply: 'hi' }).sent).toBe(true);
+    expect(fanOutDecision('mention-direct', { replyAllowed: false, reply: 'long reflection' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: mention-direct)' });
+  });
+  it('fails CLOSED for mention modes when replyAllowed is absent (forgotten flag → recorded, not leaked)', () => {
+    expect(fanOutDecision('mention', { reply: 'leak attempt' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: mention)' });
+    expect(fanOutDecision('mention-direct', { reply: 'leak attempt' }).sent).toBe(false);
+  });
+  it('on: fans out real replies; a pure-silence reply is the ONLY body-aware case (recorded, not pushed)', () => {
+    expect(fanOutDecision('on', { reply: 'hello there' })).toEqual({ sent: true, annotation: null });
+    expect(fanOutDecision('on', { reply: '…' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: on)' });
+    expect(fanOutDecision('on', { reply: '...' }).sent).toBe(false);
+  });
+  it('isSilenceReply only matches pure ellipsis/empty', () => {
+    expect(isSilenceReply('…')).toBe(true);
+    expect(isSilenceReply('...')).toBe(true);
+    expect(isSilenceReply('   ')).toBe(true);
+    expect(isSilenceReply('… and then')).toBe(false);   // the leak shape: NOT silence
+    expect(isSilenceReply('ok')).toBe(false);
   });
 });
 
