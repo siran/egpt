@@ -96,9 +96,9 @@ export async function run({ cmd, arg, meta = {}, ctx }) {
   //                 commit actually running).
   // Table-driven so the two never drift into copy-paste.
   const BOUNCE = {
-    '/restart': { code: 43, pre: (sha) => `🧠 eGPT · ↻ /restart (exit 43) — respawning on ${sha}…`,
+    '/restart': { code: 43, pre: (sha) => `🧠 restart initiated — respawning on ${sha}…`,
                   exitMsg: 'exiting with code 43 — egpt-daemon will respawn the shell' },
-    '/upgrade': { code: 42, pre: (sha) => `🧠 eGPT · ⬆ /upgrade (exit 42) — pull + rebuild from ${sha}…`,
+    '/upgrade': { code: 42, pre: (sha) => `🧠 upgrade initiated — pull + rebuild from ${sha}…`,
                   exitMsg: 'exiting with code 42 — egpt-daemon will pull, rebuild, and restart' },
   };
   if (BOUNCE[cmd]) {

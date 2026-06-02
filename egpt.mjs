@@ -385,7 +385,7 @@ try {
       } catch { /* git optional */ }
       writeFileSync(join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`), JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
-        body: `🧠 eGPT · ✅ back online — ${_sha}${_subj ? ` "${_subj}"` : ''}${_down != null ? ` (${_down}s down)` : ''}`,
+        body: `🧠 egpt back!${_subj ? ` "${_subj}"` : ''} ${_sha}${_down != null ? ` (${_down}s down)` : ''}`,
       }));
     }
     unlinkSync(_sidecar);
@@ -3381,7 +3381,7 @@ function App() {
               // _exitClean's 800ms WS-close flush).
               try {
                 await Promise.race([
-                  bridge.send(`🧠 eGPT · ↻ ${firstTok} — on it…`, { chatId: from.chatId }).catch(() => {}),
+                  bridge.send(`🧠 ${firstTok.slice(1)} initiated…`, { chatId: from.chatId }).catch(() => {}),
                   new Promise(res => setTimeout(res, 1500)),
                 ]);
               } catch {}
