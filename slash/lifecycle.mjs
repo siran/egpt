@@ -17,7 +17,16 @@
 
 import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+// fs-direct restart-flow trace (sibling of wa-bridge.log). The shell's sysOut
+// goes to the Ink/headless render buffer, which drops lines, so the restart
+// announce chain was unobservable. Append-only, best-effort. Read with
+// `cat ~/.egpt/restart.log`. Operator 2026-06-02: "no egpt back!".
+function _rlog(EGPT_HOME, m) {
+  try { appendFileSync(join(EGPT_HOME, 'restart.log'), `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ }
+}
 
 // Drop the Self-DM breadcrumbs a lifecycle bounce needs: a "going down" line in
 // the outbox + a state/restart-announce.json sidecar the NEXT process reads to
@@ -29,7 +38,8 @@ import { join } from 'node:path';
 async function announceBounce({ ctx, meta, preBody }) {
   const { APP_DIR, EGPT_HOME } = ctx;
   const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
-  if (!selfJid) return;
+  _rlog(EGPT_HOME, `announceBounce: fromWhatsApp=${!!meta?.fromWhatsApp} metaWaChatId=${meta?.waChatId ?? 'none'} cfgChatId=${ctx.EGPT_CONFIG?.whatsapp?.chat_id ?? 'none'} → selfJid=${selfJid ?? 'NULL'}`);
+  if (!selfJid) { _rlog(EGPT_HOME, 'announceBounce: SKIPPED — no selfJid → NO sidecar → there will be no "egpt back!"'); return; }
   let sha = '?', subj = '';
   try {
     const r = spawnSync('git', ['log', '-1', '--format=%h\t%s'], { cwd: APP_DIR });
@@ -49,6 +59,7 @@ async function announceBounce({ ctx, meta, preBody }) {
   }
   await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
   await writeFile(join(EGPT_HOME, 'state', 'restart-announce.json'), JSON.stringify({ jid: selfJid, sha, subj, at: Date.now() }));
+  _rlog(EGPT_HOME, `announceBounce: sidecar WRITTEN → ${join(EGPT_HOME, 'state', 'restart-announce.json')} (jid=${selfJid}, sha=${sha})`);
 }
 
 export const meta = [
