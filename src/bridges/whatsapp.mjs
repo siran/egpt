@@ -289,6 +289,18 @@ export async function startWhatsAppBridge({
   const log = (m) => onLog?.(m);
   const err = (m) => onError?.(m);
 
+  // Dedicated, fs-direct bridge log. onLog/onError flow into the Ink/pushItem
+  // render buffer (headless.log), which silently DROPS lines under load — so on
+  // the headless spine we couldn't tell whether/when/why the outbound bridge
+  // reaches 'open'. This append-only file bypasses Ink entirely; best-effort,
+  // never throws. Operator 2026-06-02 ("no egpt back!"): the back-online ride
+  // the outbox, which needs a live bridge, and the bridge state was unobservable.
+  const _BRIDGE_LOG = join(homedir(), '.egpt', 'wa-bridge.log');
+  const _blog = (m) => {
+    try { appendFileSync(_BRIDGE_LOG, `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ }
+  };
+  _blog(`startWhatsAppBridge: ENTRY (authDir=${authDir}, supervised=${!!process.env.EGPT_SUPERVISED})`);
+
   // Bound a promise with a timeout. Rejects with a clear "<label> timed
   // out after N ms" when the underlying baileys send hangs (typically:
   // WS dropped mid-call, queue stalled waiting for reconnect). Used to
@@ -307,14 +319,17 @@ export async function startWhatsAppBridge({
   };
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  _blog('auth-state loaded');
   let version;
   try {
     const fetched = await fetchLatestBaileysVersion();
     version = fetched.version;
+    _blog(`version fetched: ${Array.isArray(version) ? version.join('.') : version}`);
   } catch (e) {
     console.error(`!! whatsapp.mjs fetchLatestBaileysVersion: ${e?.message ?? e}`);
     // Offline or fetch blocked — baileys will use its default fallback.
     version = undefined;
+    _blog(`version fetch FAILED (using baileys default): ${e?.message ?? e}`);
   }
 
   let stopped        = false;
@@ -1148,7 +1163,8 @@ export async function startWhatsAppBridge({
   }
 
   function connect() {
-    if (stopped) return;
+    if (stopped) { _blog('connect(): SKIPPED — stopped'); return; }
+    _blog('connect(): called');
     // STARTUP DEFERRAL: an interactive shell has no business taking control of
     // WA when the daemon already has it. Pre-fix we would start baileys, get
     // a 440 from the daemon's session being replaced (then the daemon would
@@ -1173,8 +1189,10 @@ export async function startWhatsAppBridge({
       _stopWaAlive('connection_replaced', `startup defer to pid ${otherEgpt}`);
       _deferredToPid = otherEgpt;
       stopped = true;
+      _blog(`connect(): STARTUP DEFER to pid ${otherEgpt} — no socket opened`);
       return;
     }
+    _blog('connect(): opening socket (makeWASocket)');
     sock = makeWASocket({
       ...(version ? { version } : {}),
       auth: state,
@@ -1235,6 +1253,7 @@ export async function startWhatsAppBridge({
         _deferredToPid = null;
         const display = sock.user?.name ?? myNumber ?? '?';
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
+        _blog(`connection OPEN — connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _startWaAlive();
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
@@ -1248,6 +1267,7 @@ export async function startWhatsAppBridge({
       }
       if (connection === 'close') {
         const reason = lastDisconnect?.error?.output?.statusCode;
+        _blog(`connection CLOSE — reason=${reason ?? '?'} (${lastDisconnect?.error?.message ?? 'no message'})`);
         if (reason === DisconnectReason.loggedOut) {
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
           _stopWaAlive('logged_out', `reason ${reason}`);
@@ -3071,6 +3091,7 @@ export async function startWhatsAppBridge({
   // ── Start ─────────────────────────────────────────────────────
 
   log('whatsapp: starting (baileys)');
+  _blog('starting — about to call connect()');
   // Same retry-on-throw protection as the close handler — an initial
   // connect() that fails (network unreachable at boot) used to leave
   // the bridge dead. Now it backs off and retries the same way.
@@ -3311,6 +3332,11 @@ export async function startWhatsAppBridge({
       .map(c => ({ jid: c.jid, name: c.name, isGroup: !!c.isGroup, egptPinned: c.egptPinned }));
   }
 
+  // If this line never appears in wa-bridge.log, an await ABOVE (auth-state /
+  // version fetch) hung and the handle was never returned → the host's
+  // `await startBaileysBridge(...)` never resolved → waBridgeRef.current stays
+  // null → every outbound "no baileys bridge here". This is the key signal.
+  _blog('handle RETURNED to host (waBridgeRef will be set)');
   return {
     listChats,
     prefetchHistoryForTopChats,
