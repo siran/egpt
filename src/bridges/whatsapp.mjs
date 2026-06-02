@@ -63,6 +63,7 @@ import { mentionStatus } from '../auto-mode.mjs';
 import { defaultIsAlive } from '../daemon-singleton.mjs';
 import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
+import { isAuthorizedUser } from '../identity.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -2673,10 +2674,7 @@ export async function startWhatsAppBridge({
       const _isGroup = _chatJid?.endsWith?.('@g.us');
       const _isStatus = _chatJid === 'status@broadcast';
       const _senderJid = (_isGroup || _isStatus) ? msg.key?.participant : _chatJid;
-      const _userId = _senderJid?.split(':')[0]?.split('@')[0] ?? '?';
-      const _normalize = (s) => String(s).replace(/[^\d]/g, '');
-      const _isAuthorized = msg.key?.fromMe || (allowedUsers.length > 0
-        && allowedUsers.some(u => _normalize(u) === _normalize(_userId)));
+      const _isAuthorized = msg.key?.fromMe || isAuthorizedUser(_senderJid, allowedUsers);
       if (_isAuthorized) {
         const body = textOf(msg.message);
         // '@movie' must stand alone as a token (avoid catching '@movies' or
@@ -2963,8 +2961,13 @@ export async function startWhatsAppBridge({
       chatId: chatJid,
       bridgeInfo: { myJid, myLid, myLidNumber, selfDmJid: myNumber ? `${myNumber}@s.whatsapp.net` : null },
     });
-    const authorized = fromMe || _isSelfDMChat || (allowedUsers.length > 0
-      && allowedUsers.some(u => normalize(u) === normalize(userId)));
+    // Layer B (src/identity.mjs): the sender's CANONICAL id (lid/phone, device-
+    // and group-independent) must be in allowed_users. Pass the raw senderJid —
+    // canonicalUserId strips @server/:device/_N and the operator's allow-list
+    // carries both lid + phone forms, so they're recognised from any group, 1:1,
+    // or device (proven from sender-key data 2026-06-02). Supersedes the ad-hoc
+    // normalize() compare.
+    const authorized = fromMe || _isSelfDMChat || isAuthorizedUser(senderJid, allowedUsers);
 
     let processed = text.trim();
 
