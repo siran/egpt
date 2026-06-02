@@ -125,6 +125,13 @@ const EGPT_PID_PATH = join(EGPT_HOME, 'egpt.pid');
 // post-mortem. Bridges + room.md are still the canonical record;
 // this is auxiliary.
 const EGPT_HEADLESS_LOG = join(EGPT_HOME, 'headless.log');
+// fs-direct host-side trace into the SAME wa-bridge.log the bridge writes, so
+// the bridge lifecycle (bridge side) and the host's waBridgeRef set/clear +
+// every outbox send attempt interleave on ONE timestamped timeline. Resolves
+// the "socket OPEN but outbox says 'no baileys bridge here'" contradiction
+// (operator 2026-06-02). Append-only, best-effort.
+const _WA_BRIDGE_LOG = join(EGPT_HOME, 'wa-bridge.log');
+const _walog = (m) => { try { appendFileSync(_WA_BRIDGE_LOG, `${new Date().toISOString()} [${process.pid}] host: ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ } };
 
 // Read the existing pidfile if any. Returns the PID number when the
 // process is still alive, otherwise null (and silently clears stale
@@ -3661,6 +3668,7 @@ function App() {
       });
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
+      _walog(`waBridgeRef SET (bridge=${!!bridge}) — outbound should now work`);
       // Seed the bypass set with auto_e_chats jids so fromMe + non-
       // mentioned member messages reach the auto-dispatch path (vs
       // being dropped by the default 'mentions' awareness gate).
@@ -3691,6 +3699,7 @@ function App() {
 
   const stopWaBridge = useCallback(() => {
     if (!waBridgeRef.current) return false;
+    _walog('waBridgeRef CLEARED (stopWaBridge called) — outbound will now drop until re-set');
     waBridgeRef.current.stop();
     waBridgeRef.current = null;
     streamFactoryRef.current = null;
@@ -7867,6 +7876,8 @@ function App() {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
     const wa = waBridgeRef.current;
+    const _isBack = typeof ev.body === 'string' && ev.body.includes('egpt back!');
+    if (_isBack || ev.from === 'system') _walog(`dispatchWaSend(${source}): wa=${wa ? 'SET' : 'NULL'} from=${ev.from} jid=${ev.jid} body="${String(ev.body ?? '').slice(0, 40)}"`);
     if (!wa) { log(`${source}: wa-send from ${ev.from} dropped — no baileys bridge here`); return false; }
     if (!ev.jid || !ev.body) { log(`${source}: wa-send from ${ev.from} dropped — missing jid/body`); return false; }
     // Silence protocol: literal '...' or '…' = brain's signed contract
