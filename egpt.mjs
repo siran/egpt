@@ -393,10 +393,16 @@ try {
           if (_h) { _sha = _h; _subj = _s ?? _subj; }
         }
       } catch { /* git optional */ }
+      // Report BOTH ends so a restart is verifiable in Self: the booted pid +
+      // commit ("booted"), and the outgoing pid + commit ("before"). PID change
+      // proves a real respawn; matching sha = /restart, differing sha = /upgrade.
+      const _oldPid = _info.pid ?? null;
+      const _oldSha = _info.sha ?? '?';
+      const _hashLine = _oldSha && _oldSha !== _sha ? `${_oldSha} → ${_sha}` : _sha;
       const _postFile = join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`);
       writeFileSync(_postFile, JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
-        body: `🧠 egpt back!${_subj ? ` "${_subj}"` : ''} ${_sha}${_down != null ? ` (${_down}s down)` : ''}`,
+        body: `🧠 egpt back! pid ${process.pid}${_oldPid ? ` (was ${_oldPid})` : ''} · ${_hashLine}${_subj ? ` "${_subj}"` : ''}${_down != null ? ` · ${_down}s down` : ''}`,
       }));
       _rlog(`queued "egpt back!" → outbox ${_postFile} (jid=${_info.jid}) — delivers when the bridge is up`);
     } else {
@@ -3395,7 +3401,7 @@ function App() {
               // _exitClean's 800ms WS-close flush).
               try {
                 await Promise.race([
-                  bridge.send(`🧠 ${firstTok.slice(1)} initiated…`, { chatId: from.chatId }).catch(() => {}),
+                  bridge.send(`🧠 ${firstTok.slice(1)} initiated… (pid ${process.pid} going down)`, { chatId: from.chatId }).catch(() => {}),
                   new Promise(res => setTimeout(res, 1500)),
                 ]);
               } catch {}
