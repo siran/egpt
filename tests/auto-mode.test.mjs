@@ -67,6 +67,41 @@ describe('receives / accumulates / isAutoMode', () => {
   });
 });
 
+// Regression: the WA bridge rewrites a mid-body "@e" to a LEADING "@e " prefix
+// (at_e_anywhere, default on) purely so start-anchored parseInput ROUTES the
+// message to @e. The per-chat reply gate must NOT be computed on that rewritten
+// body — doing so promotes a mid-message @e to atEStart and silently collapses
+// 'mention-direct' into 'mention'. The gate must read the user's ORIGINAL body.
+// (Mirrors src/bridges/whatsapp.mjs: `_gateMs = mentionStatus(processed)` is
+// taken BEFORE the `processed = '@e ' + processed` routing rewrite.)
+describe('mention-direct gate is immune to the @e-routing rewrite', () => {
+  // Minimal model of the bridge's at_e_anywhere expansion.
+  const routeRewrite = (body) =>
+    (!/^@\S/.test(body) && mentionStatus(body).atEAnywhere) ? `@e ${body}` : body;
+
+  it('mid-body @e routes to @e but does NOT open mention-direct', () => {
+    const original = 'hello @e are you up?';
+    const routed = routeRewrite(original);
+    expect(routed).toBe('@e hello @e are you up?');     // routing prepends for parseInput
+
+    // WRONG (the bug): gate computed on the rewritten body → false-positive start.
+    expect(mentionStatus(routed).atEStart).toBe(true);
+
+    // RIGHT: gate computed on the original body → mention-direct stays closed,
+    // mention still fires (the @e is genuinely present, just not at the start).
+    const gate = mentionStatus(original);
+    expect(gate).toEqual({ atEAnywhere: true, atEStart: false });
+    expect(replyAllowed('mention-direct', gate)).toBe(false);
+    expect(replyAllowed('mention', gate)).toBe(true);
+  });
+
+  it('genuine @e-at-start opens both mention and mention-direct', () => {
+    const gate = mentionStatus('@e ping');
+    expect(replyAllowed('mention-direct', gate)).toBe(true);
+    expect(replyAllowed('mention', gate)).toBe(true);
+  });
+});
+
 describe('mayEmit — outbound backstop', () => {
   it('HARD-blocks mute/off even when replyAllowed is (wrongly) true', () => {
     expect(mayEmit('mute', { replyAllowed: true })).toBe(false);

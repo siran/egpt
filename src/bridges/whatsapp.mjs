@@ -2929,6 +2929,17 @@ export async function startWhatsAppBridge({
 
     let processed = text.trim();
 
+    // Mention-mode GATE signal for the host's per-chat auto-mode (mention /
+    // mention-direct). It MUST reflect the user's ACTUAL typed body, so it is
+    // computed HERE — BEFORE the two @e-routing rewrites below (reply-as-mention
+    // synthesis + at_e_anywhere mid-body expansion), both of which PREPEND
+    // "@e ". Computing it after the rewrite makes a mid-message @e look like
+    // atEStart and silently collapses 'mention-direct' into 'mention' whenever
+    // at_e_anywhere is on (the default). Routing still uses the rewritten
+    // `processed`; only the gate uses this. The reply-to-our-message case is
+    // carried separately via replyToBot, so reply-as-mention needs no atEStart.
+    const _gateMs = mentionStatus(processed);
+
     // Reply-as-mention synthesis (paired with replyPersona detection
     // above). Drop the ↳ quote-preview that textOf prepended and
     // rebuild the body as "@<persona> <reply-text>\n\n↳ <preview>" so
@@ -3001,15 +3012,15 @@ export async function startWhatsAppBridge({
       ?? null;
     const isTranscriptFromVoice = !!_audioInner;
 
-    // Mention status of THIS message, for the host's per-chat auto-mode reply
-    // gate: standalone @e at start / anywhere, and whether it replies to one of
-    // our messages. Computed on the final `processed` text.
-    const _ms = mentionStatus(processed);
+    // Mention status for the host's per-chat auto-mode reply gate — taken from
+    // `_gateMs` (captured on the pre-rewrite body above), NOT from the rewritten
+    // `processed`, so 'mention-direct' (atEStart) is never falsely tripped by
+    // the @e-routing prefix. replyToBot covers the reply-to-our-message case.
     await onIncoming?.(processed, {
       userId, username, firstName, chatId: chatJid, chatType, authorized,
       isTranscriptFromVoice,
-      atEStart: _ms.atEStart,
-      atEAnywhere: _ms.atEAnywhere,
+      atEStart: _gateMs.atEStart,
+      atEAnywhere: _gateMs.atEAnywhere,
       replyToBot: isReplyToUs,
       // msgKey enables proper WA-reply quoting later — e.g. when the
       // operator types '@m42 …' in shell, we send the reply via
