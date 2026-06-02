@@ -103,49 +103,26 @@ export async function run({ cmd, arg, ctx }) {
       sysOut('active recipients cleared — plain text no longer auto-routes');
       return true;
     }
-    // Comma-separated multi-target. Trailing direction word (incoming/in,
-    // outgoing/out, both/bi + arrow aliases) applies to all @waN tokens in
-    // this call; subsequent /use calls can mix.
-    const allTokens = target.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-    let dir = 'both';
-    const positional = [];
-    for (const t of allTokens) {
-      const dn = DIR_WORDS[t.toLowerCase()];
-      if (dn) dir = dn;
-      else positional.push(t);
+    // /use is for BRAIN SESSIONS only now. WA chats are routed by the ROOM
+    // model (a group is a room member), never by a per-shell binding — the
+    // legacy /use @waN / /join set bypassed rooms and leaked (operator
+    // 2026-06-02). Reject @waN (and stray direction words) with a pointer.
+    const tokens = target.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    const waTokens = tokens.filter(t => /^@wa\d+$/i.test(t) || DIR_WORDS[t.toLowerCase()]);
+    const brainTokens = tokens.filter(t => !/^@wa\d+$/i.test(t) && !DIR_WORDS[t.toLowerCase()]);
+    if (waTokens.length) {
+      sysOut('!! /use no longer routes to WA chats — the ROOM is the router. ' +
+             'Add the group as a member of a room (see /room), or send ad-hoc with `@waN <text>`. ' +
+             '/use is for brain sessions only.');
+      return true;
     }
-    const waTokens = positional.filter(t => /^@wa\d+$/i.test(t));
-    const brainTokens = positional.filter(t => !/^@wa\d+$/i.test(t));
     const unknown = brainTokens.filter(n => !sessions[n]);
     if (unknown.length) {
       sysOut(`!! unknown session(s): ${unknown.join(', ')} — /sessions to list`);
       return true;
     }
-    const waAdds = [];
-    for (const t of waTokens) {
-      const idx = parseInt(t.match(/^@wa(\d+)$/i)[1], 10) - 1;
-      const chat = waChannelsCacheRef.current[idx];
-      if (!chat) {
-        sysOut(`!! /use ${t}: no channel at that index. Run /channels first.`);
-        return true;
-      }
-      if (!waBridgeRef.current) {
-        sysOut(`!! /use ${t}: whatsapp bridge not running`);
-        return true;
-      }
-      waAdds.push({ jid: chat.jid, name: chat.name, idx, dir });
-    }
-    if (brainTokens.length) {
-      const merged = [...new Set([...activeSessions, ...brainTokens])];
-      setActiveSessions(merged);
-    }
-    for (const e of waAdds) waJoined.add(e);
-    sysOut(`active recipients -> ${[
-      activeSessions.length || brainTokens.length
-        ? [...new Set([...activeSessions, ...brainTokens])].join(', ')
-        : null,
-      waJoined.size() > 0 ? fmtWaTargets() : null,
-    ].filter(Boolean).join(' + ')}  (↔ bidirectional, → outgoing, ← incoming)`);
+    if (brainTokens.length) setActiveSessions([...new Set([...activeSessions, ...brainTokens])]);
+    sysOut(`active recipients -> ${[...new Set([...activeSessions, ...brainTokens])].join(', ') || '(none)'}`);
     return true;
   }
 
@@ -177,95 +154,17 @@ export async function run({ cmd, arg, ctx }) {
     return true;
   }
 
-  if (cmd === '/join') {
-    const toks = arg.trim().split(/[\s,]+/).filter(Boolean);
-    let dir = 'both';
-    const waTokens = [];
-    for (const t of toks) {
-      const d = DIR_WORDS[t.toLowerCase()];
-      if (d) dir = d;
-      else if (/^@wa\d+$/i.test(t)) waTokens.push(t);
-      else { sysOut(`!! /join: "${t}" isn't @waN or a direction word (incoming | outgoing | both)`); return true; }
-    }
-    if (!waTokens.length) {
-      sysOut('usage: /join @waN[,@waM,…] [incoming|outgoing|both]   (N from /channels)');
-      return true;
-    }
-    if (!waBridgeRef.current) {
-      sysOut('!! /join: whatsapp bridge not running');
-      return true;
-    }
-    const adds = [];
-    for (const t of waTokens) {
-      const idx = parseInt(t.match(/^@wa(\d+)$/i)[1], 10) - 1;
-      const chat = waChannelsCacheRef.current[idx];
-      if (!chat) {
-        sysOut(`!! /join: no @wa${idx + 1} in cache — run /channels first`);
-        return true;
-      }
-      adds.push({ jid: chat.jid, name: chat.name, idx, dir });
-    }
-    for (const e of adds) waJoined.add(e);
-    const chat = adds[0];
-    const idx = chat.idx;
-    // Broadcast on the bus so peers with whatsapp.follow_join adopt.
-    const tid = busTargetIdRef.current;
-    if (tid) {
-      for (const a of adds) {
-        bus.postEvent(tid, {
-          type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
-          jid: a.jid, name: a.name,
-        }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
-      }
-    }
-    const dirNote =
-      dir === 'in'  ? ' (incoming only — they reach shell, shell-typed text does not)' :
-      dir === 'out' ? ' (outgoing only — shell-typed text reaches them, their arrivals do not render)' :
-      '';
-    sysOut(
-      `joined ${adds.map(a => `@wa${a.idx + 1} "${a.name}"`).join(', ')}${dirNote}. ` +
-      (waJoined.size() > adds.length ? `Currently ${waJoined.size()} WA chats joined. ` : '') +
-      `/unjoin to release${waJoined.size() > 1 ? ' all, /unjoin @waN to drop one' : ''}.`
-    );
-    return true;
-  }
-
-  if (cmd === '/unjoin') {
-    const target = arg.trim();
-    if (!waJoined.size()) {
-      sysOut('/unjoin: not joined');
-      return true;
-    }
-    if (target) {
-      const m = target.match(/^@wa(\d+)$/i);
-      if (!m) { sysOut('usage: /unjoin [@waN]   (omit to release all)'); return true; }
-      const idx = parseInt(m[1], 10) - 1;
-      const chat = waChannelsCacheRef.current[idx];
-      if (!chat || !waJoined.remove(chat.jid)) {
-        sysOut(`!! @wa${idx + 1} not currently joined`);
-        return true;
-      }
-      const tid = busTargetIdRef.current;
-      if (tid) {
-        bus.postEvent(tid, {
-          type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
-          removed: chat.jid,
-        }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
-      }
-      sysOut(`released @wa${idx + 1} "${chat.name}"  (${waJoined.size()} remaining)`);
-      return true;
-    }
-    const all = waJoined.all();
-    waJoined.clear();
-    const tid = busTargetIdRef.current;
-    if (tid) {
-      bus.postEvent(tid, {
-        type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(), jid: null,
-      }).catch(e => console.error(`!! recipients.mjs:[promise-catch] ${e?.message ?? e}`));
-    }
-    sysOut(`released ${all.length === 1
-      ? `@wa${all[0].idx + 1} "${all[0].name}"`
-      : `${all.length} WA chats`}`);
+  // /join + /unjoin are REMOVED. They bound WA chats to a per-shell, in-memory,
+  // invisible set that fanned every shell item to those chats — bypassing the
+  // room router and leaking a private /use cgpt2 test into the HFM group
+  // (operator 2026-06-02). The room is the single routing table now: to send a
+  // shell's traffic to a WhatsApp group, make the group a MEMBER of a room
+  // (see /room); per-member state (active|mention|mute) gates it. For a one-off
+  // send without binding, use `@waN <text>`.
+  if (cmd === '/join' || cmd === '/unjoin') {
+    sysOut(`${cmd} is removed — the room is the single router (it leaked otherwise). ` +
+           `Add the WhatsApp group as a member of a room (see /room) so it routes by ` +
+           `membership + state, or send ad-hoc with \`@waN <text>\`. No hidden per-shell binding.`);
     return true;
   }
 
