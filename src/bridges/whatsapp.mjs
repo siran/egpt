@@ -2720,6 +2720,17 @@ export async function startWhatsAppBridge({
         _sentIds.delete(id);
         return;
       }
+      // Our OWN edits echo back with a NEW outer key.id (the original lives in
+      // protocolMessage.key), so the _sentIds check above misses them and they
+      // re-enter as a phantom new turn — which is how a voice-ack's transcript
+      // edit ("👂 …'s …s @ HH:MM: <transcript>") got dispatched to @e a SECOND
+      // time and leaked a reply into a mention-mode chat (operator 2026-06-02,
+      // Joyce). An edit of our own message is never a fresh conversational turn;
+      // drop it before brain dispatch. The silent recap tracker (messages.upsert
+      // above) already folds edits onto recent[] for /recap, so this loses
+      // nothing there. Covers voice-ack animation + final edits AND persona
+      // stream edits — every bridge-originated edit.
+      if (msg.message?.protocolMessage?.editedMessage) return;
     }
 
     const chatJid0 = msg.key.remoteJid;
