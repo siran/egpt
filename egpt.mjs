@@ -366,10 +366,13 @@ try {
 // Self, with the exact running version. Delete the sidecar so a plain
 // boot/crash (no /restart) never re-announces. Best-effort; never blocks boot.
 (() => {
+  const _rlogPath = join(homedir(), '.egpt', 'restart.log');
+  const _rlog = (m) => { try { appendFileSync(_rlogPath, `${new Date().toISOString()} [${process.pid}] boot: ${m}\n`, { mode: 0o600 }); } catch {} };
   try {
     const _sidecar = join(homedir(), '.egpt', 'state', 'restart-announce.json');
-    if (!existsSync(_sidecar)) return;
+    if (!existsSync(_sidecar)) { _rlog('no restart-announce sidecar (cold boot / crash / non-/restart) → no "egpt back!"'); return; }
     const _info = JSON.parse(readFileSync(_sidecar, 'utf8'));
+    _rlog(`sidecar FOUND: jid=${_info?.jid ?? 'none'} sha=${_info?.sha ?? '?'}`);
     if (_info?.jid) {
       const _down = _info.at ? Math.max(0, Math.round((Date.now() - _info.at) / 1000)) : null;
       // Re-read HEAD: /upgrade changes the commit across the bounce, so the
@@ -383,13 +386,17 @@ try {
           if (_h) { _sha = _h; _subj = _s ?? _subj; }
         }
       } catch { /* git optional */ }
-      writeFileSync(join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`), JSON.stringify({
+      const _postFile = join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`);
+      writeFileSync(_postFile, JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
         body: `🧠 egpt back!${_subj ? ` "${_subj}"` : ''} ${_sha}${_down != null ? ` (${_down}s down)` : ''}`,
       }));
+      _rlog(`queued "egpt back!" → outbox ${_postFile} (jid=${_info.jid}) — delivers when the bridge is up`);
+    } else {
+      _rlog('sidecar had NO jid → nothing queued');
     }
     unlinkSync(_sidecar);
-  } catch (e) { console.error(`!! egpt boot: restart-announce failed — ${e?.message ?? e}`); }
+  } catch (e) { const _m = `restart-announce FAILED — ${e?.message ?? e}`; try { appendFileSync(join(homedir(), '.egpt', 'restart.log'), `${new Date().toISOString()} [${process.pid}] boot: ${_m}\n`); } catch {} console.error(`!! egpt boot: ${_m}`); }
 })();
 // Runtime overlay config (JSON) that /config writes to — kept SEPARATE from
 // config.yaml so /config never has to YAML-round-trip the operator's
@@ -4931,6 +4938,12 @@ function App() {
         exitClean:          _exitClean,
         APP_DIR,
         EGPT_HOME,
+        // announceBounce (slash/lifecycle.mjs) falls back to the operator's
+        // self-DM jid via EGPT_CONFIG.whatsapp.chat_id when meta.waChatId is
+        // absent (limb/shell-initiated /restart). Without this in ctx that
+        // fallback was always undefined → no restart-announce sidecar → no
+        // "egpt back!" for non-WA restarts (operator 2026-06-02).
+        EGPT_CONFIG,
         getFile:            () => FILE,
         // Theme setter wraps the three side-effects (T mutation,
         // _currentTheme reassignment, themeRev bump for re-render)
