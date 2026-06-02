@@ -4157,6 +4157,20 @@ function App() {
       if (item._localOnly) continue;
       if (item._directWa) continue;             // already direct-sent (@waN / /join)
       if (item._target && item._target !== 'whatsapp') continue;
+      // SECURITY — never mirror an attached brain session's reply into joined WA
+      // chats. /attach'd ChatGPT-CDP tabs (cgpt1/2/3), codex, llama, etc. are
+      // shell-WORKSPACE tools, NOT chat participants: a private `/use cgpt2`
+      // test leaked into the HFM group through this tap (operator 2026-06-02:
+      // "no sabía que eso se estaba leakeando"). Only the operator's own
+      // messages ('You') and the public @e persona belong in a joined group;
+      // any other session-authored item is shell-local. To put a brain in a
+      // group deliberately, add it as an explicit room member, not via /join.
+      const _bareAuthor = String(item.author ?? '').split('@')[0];
+      const _persona = EGPT_CONFIG.persona ?? 'e';
+      if (sessions[_bareAuthor] && _bareAuthor !== _persona && _bareAuthor !== 'e' && _bareAuthor !== 'egpt') {
+        logOut(`mirror: NOT fanning ${_bareAuthor}'s reply to joined WA chats (attached brain session — shell-local)`);
+        continue;
+      }
       const formatted = formatItemForWhatsApp(item, sessions);
       for (const t of targets) {
         if (item._sourceChatId === t) continue;  // skip echo to origin
