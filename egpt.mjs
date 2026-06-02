@@ -4137,18 +4137,15 @@ function App() {
     if (!wa) return;
     const opt = EGPT_CONFIG.whatsapp?.mirror_chat_id;
     if (opt === 'none' || opt === false) return;
-    // Mirror targets — every chat in waJoinedRef gets the item. When
-    // none are joined, fall back to the default mirror target
-    // (whatsapp.mirror_chat_id, or self-DM). Tagging an item with
-    // _sourceChatId means it CAME from a WA chat (Alice in @wa5);
-    // we skip sending it BACK to that chat (no self-echo) but DO
-    // send it to every OTHER joined chat — that's the cross-chat
-    // bridge: @wa5 ↔ @wa6 when both are in /use.
-    // Outgoing direction filter: 'in'-only joined chats receive
-    // nothing from shell — they're listen-only bindings.
-    const joinedTargets = _waJoinedOutgoing().map(e => e.jid);
+    // Operator-only self-DM mirror: shell items go to the operator's own self-DM
+    // (or whatsapp.mirror_chat_id) so they can watch the shell from their phone.
+    // This is NOT routing to others — the single router is the ROOM model
+    // (_deliverToRoom, fans to a room's members per their state). The legacy
+    // /join "fan every shell item to a bound waJoinedRef set" was REMOVED: it
+    // bypassed rooms and leaked a private `/use cgpt2` test into the HFM group
+    // (operator 2026-06-02). To send to a group, add it as a ROOM member.
     const fallbackTarget = (typeof opt === 'string' && opt) ? opt : wa.selfDmJid;
-    const targets = joinedTargets.length ? joinedTargets : (fallbackTarget ? [fallbackTarget] : []);
+    const targets = fallbackTarget ? [fallbackTarget] : [];
     // Match Telegram's pattern: advance the counter even when target
     // isn't ready yet, so items already on screen don't all flush as
     // a backlog the moment the bridge connects.
@@ -4174,10 +4171,8 @@ function App() {
       const formatted = formatItemForWhatsApp(item, sessions);
       for (const t of targets) {
         if (item._sourceChatId === t) continue;  // skip echo to origin
-        // Items from WA that have no specific origin tag fall back
-        // to the old skip rule (don't fan whatsapp-source items into
-        // the default self-DM target when no joins are set).
-        if (!joinedTargets.length && item._source === 'whatsapp') continue;
+        // Never mirror WA-sourced items back to the self-DM (would loop).
+        if (item._source === 'whatsapp') continue;
         wa.send(formatted, { chatId: t });
       }
     }
@@ -7225,54 +7220,10 @@ function App() {
       return;
     }
 
-    // /join @waN binding: every plain shell message goes to the joined
-    // chat in addition to whatever local routing decides next. The
-    // echo item is tagged _directWa so the wa-items-mirror skips
-    // (otherwise this would also land in self-DM). Explicit @waN
-    // takes precedence — that handler runs immediately after and
-    // returns, so the user can address a different chat ad-hoc
-    // without /unjoining first.
-    if (_waJoinedSize() > 0 && !meta.fromTelegram && !meta.fromWhatsApp
-        && !isAtWaNExplicit) {
-      const wa = waBridgeRef.current;
-      if (wa) {
-        // Fan out the user's plain text to every joined WA chat.
-        // 'in'-only joined chats are listen-only — they don't
-        // receive shell-typed text; the outgoing filter drops them.
-        // Capture each send's returned key so '@m<N>' on the echo
-        // item can reply-to-self via a proper WA quote. Sends are
-        // awaited in parallel — they don't block each other.
-        const settled = await Promise.allSettled(
-          _waJoinedOutgoing().map(entry => wa.send(text, { chatId: entry.jid })
-            .then(r => ({ entry, result: r }))),
-        );
-        const replyTargets = [];
-        for (const s of settled) {
-          if (s.status === 'fulfilled' && s.value?.result?.key) {
-            replyTargets.push({
-              kind: 'wa',
-              chatId: s.value.entry.jid,
-              key: s.value.result.key,
-              raw: { conversation: text },
-            });
-          } else if (s.status === 'rejected') {
-            sysOut(`!! /use send failed: ${s.reason?.message ?? s.reason}`);
-          }
-        }
-        // Patch the echo item with its reply targets (one per chat
-        // we successfully sent to). Single entry → object; multiple
-        // → array; @m<N> reply handler accepts both shapes.
-        if (replyTargets.length) {
-          const rt = replyTargets.length === 1 ? replyTargets[0] : replyTargets;
-          setItems(p => p.map(item =>
-            item.id === echoItemId ? { ...item, _replyTarget: rt } : item));
-          // setItems above changes items.length? no — same length, just
-          // a new array. The .length-effect won't refire. Trigger save
-          // manually so the new _replyTarget lands in the sidecar.
-          _scheduleReplyTargetSave();
-        }
-      }
-    }
+    // (Legacy /join "fan every plain shell message to a bound waJoinedRef set"
+    // REMOVED 2026-06-02 — it bypassed the room router and leaked. Shell→group
+    // is now ONLY via room membership (_deliverToRoom) or an explicit ad-hoc
+    // @waN below. To bind a group to the shell, add it as a room member.)
     // @waN <body> — ad-hoc send to the Nth chat from the most-recent
     // /channels listing. Mirrors the extension's behavior. Only fires
     // for shell-typed input (a bridge-sourced @waN would loop). The
