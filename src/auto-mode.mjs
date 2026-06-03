@@ -62,7 +62,12 @@ export function replyAllowed(mode, status = {}) {
 //   2. mention / mention-direct / accum: emit only when the per-turn
 //      `replyAllowed` gate already passed. Fail-closed when the flag is absent.
 // `mode` is the chat's resolved auto-mode; `replyAllowed` is the per-turn flag.
-export function mayEmit(mode, { replyAllowed = undefined } = {}) {
+export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } = {}) {
+  // A reaction is never a turn that warrants a reply — in ANY mode, including
+  // 'on'. WhatsApp/Beeper render a reaction as "<who> reacted <emoji> to …";
+  // letting @e answer it produced the "no reaccioné, boludo" embarrassment
+  // (operator 2026-06-03). Hard-block here so no mode can leak a reply to one.
+  if (isReaction) return false;
   if (mode === 'mute' || mode === 'off') return false;
   if (mode === 'on') return true;
   return replyAllowed === true;

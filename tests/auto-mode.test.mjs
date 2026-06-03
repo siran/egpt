@@ -163,4 +163,12 @@ describe('mayEmit — outbound backstop', () => {
     expect(mayEmit('mention', {})).toBe(false);
     expect(mayEmit('mention-direct', {})).toBe(false);
   });
+  it('a reaction NEVER emits — in any mode, even on / even with replyAllowed', () => {
+    expect(mayEmit('on',      { isReaction: true })).toBe(false);
+    expect(mayEmit('on',      { replyAllowed: true, isReaction: true })).toBe(false);
+    expect(mayEmit('mention', { replyAllowed: true, isReaction: true })).toBe(false);
+    expect(mayEmit('mention-direct', { replyAllowed: true, isReaction: true })).toBe(false);
+    // non-reactions in 'on' still emit (sanity — flag is opt-in)
+    expect(mayEmit('on', { isReaction: false })).toBe(true);
+  });
 });

@@ -2992,9 +2992,20 @@ export async function startWhatsAppBridge({
       || /(^|\s)reacted\s+\S{1,8}\s+to\s+"/i.test(processed)
       || /(^|\s)removed reaction from\s+"/i.test(processed)
       || /^\s*\[reaction\s/i.test(processed);
+    // An "@e" inside CODE or a QUOTED line is not the operator addressing @e —
+    // it's pasted/forwarded text. Pasting the 'egpt back!' announcement (which
+    // contains my own commit subject "…is not an @e mention…") woke @e in a
+    // group (operator 2026-06-03); triple-backticks didn't help because the
+    // scan ignored markdown. Strip fenced/inline code + quoted ('↳'/'>') lines
+    // BEFORE the mention check. A real "@e do this" sits outside code/quotes and
+    // still counts. (Gate only — routing may still prepend; the gate decides.)
+    const _forMention = String(processed)
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/`[^`\n]*`/g, ' ')
+      .split('\n').filter(l => !/^\s*(↳|>)/.test(l)).join('\n');
     const _gateMs = _isReactionNotice
       ? { atEStart: false, atEAnywhere: false }
-      : mentionStatus(processed);
+      : mentionStatus(_forMention);
 
     // Reply-as-mention synthesis (paired with replyPersona detection
     // above). Drop the ↳ quote-preview that textOf prepended and
@@ -3078,6 +3089,9 @@ export async function startWhatsAppBridge({
       atEStart: _gateMs.atEStart,
       atEAnywhere: _gateMs.atEAnywhere,
       replyToBot: isReplyToUs,
+      // Carry the reaction-notice signal so the host hard-blocks any reply to a
+      // reaction in EVERY mode (mayEmit), not just the mention gate.
+      isReaction: _isReactionNotice,
       // msgKey enables proper WA-reply quoting later — e.g. when the
       // operator types '@m42 …' in shell, we send the reply via
       // baileys with quoted: { key, message } pointing at this msg.
