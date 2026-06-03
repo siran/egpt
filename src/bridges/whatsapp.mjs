@@ -63,7 +63,8 @@ import { mentionStatus } from '../auto-mode.mjs';
 import { defaultIsAlive } from '../daemon-singleton.mjs';
 import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
-import { isAuthorizedUser } from '../identity.mjs';
+import { isAuthorizedUser, canonicalUserId } from '../identity.mjs';
+import { createLidMap } from '../lid-map.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -127,6 +128,10 @@ function _migratePathOnce(oldPath, newPath) {
 }
 const CHATS_CACHE_PATH = join(STATE_BRIDGE_DIR, 'wa-chats.json');
 _migratePathOnce(join(homedir(), '.egpt', 'wa-chats.json'), CHATS_CACHE_PATH);
+// Learned LID↔PN bijection (src/lid-map.mjs) — persisted so a lid-addressed
+// operator is authorized immediately after a respawn, before any new message
+// re-teaches the pairing.
+const LID_MAP_PATH = join(STATE_BRIDGE_DIR, 'wa-lid-map.json');
 // No cap on the persisted chat cache. Operator: "why are you even
 // deleting chats? there's space enough. whatsapp or beeper don't
 // delete my message. history is sacred." Every chat we've ever
@@ -652,6 +657,52 @@ export async function startWhatsAppBridge({
       });
     }
   };
+  // ── LID↔PN resolver (see src/lid-map.mjs) ──────────────────────────────
+  // WhatsApp addresses the same human by phone (PN) OR lid; baileys 7 hands us
+  // the pairing per-message (key alts), per-group (participant id+lid), and for
+  // ourselves (sock.user). We accumulate it so authorization works against a
+  // single-form allowlist and self-DM replies can be re-addressed to the
+  // watched note-to-self. ONLY WhatsApp-provided pairings are learned (never
+  // inferred), so a normalization can never authorize a stranger.
+  let _lidMap;
+  try {
+    let _seed = {};
+    if (existsSync(LID_MAP_PATH)) { try { _seed = JSON.parse(readFileSync(LID_MAP_PATH, 'utf8')) ?? {}; } catch { /* corrupt → fresh */ } }
+    _lidMap = createLidMap(_seed);
+  } catch { _lidMap = createLidMap(); }
+  let _lidMapWriteTimer = null;
+  const _scheduleLidMapWrite = () => {
+    if (!_lidMap.dirty || _lidMapWriteTimer) return;
+    _lidMapWriteTimer = setTimeout(() => {
+      _lidMapWriteTimer = null;
+      if (!_lidMap.dirty) return;
+      try {
+        mkdirSync(dirname(LID_MAP_PATH), { recursive: true });
+        writeFileSync(LID_MAP_PATH, JSON.stringify(_lidMap.toJSON()), { mode: 0o600 });
+        _lidMap.clearDirty();
+      } catch (e) { _blog(`lid-map write failed: ${e?.message ?? e}`); }
+    }, 5_000);
+    _lidMapWriteTimer.unref?.();
+  };
+  // Learn every lid↔pn pairing a message key exposes for the sender (both forms).
+  const _learnLidFromMsg = (msg) => {
+    const k = msg?.key; if (!k) return;
+    let changed = false;
+    changed = _lidMap.learnPair(k.remoteJid, k.remoteJidAlt) || changed;
+    changed = _lidMap.learnPair(k.participant, k.participantAlt) || changed;
+    changed = _lidMap.learnPair(k.participant, k.participantPn) || changed;
+    if (k.senderLid) changed = _lidMap.learnPair(k.senderLid, k.participant ?? k.remoteJid) || changed;
+    if (changed) _scheduleLidMapWrite();
+  };
+  // Authorization that also accepts the sender's lid/pn COUNTERPART, so the
+  // allowlist need carry only ONE form (phone OR lid) of each operator. The
+  // counterpart comes only from learned WhatsApp pairings.
+  const _authorize = (jid) => {
+    if (isAuthorizedUser(jid, allowedUsers)) return true;
+    const alt = _lidMap.counterpart(jid);
+    return alt ? isAuthorizedUser(alt, allowedUsers) : false;
+  };
+
   const _dumpNameDebug = (msg) => {
     try {
       if (_nameDebugCount >= _NAME_DEBUG_CAP) return;
@@ -1326,6 +1377,8 @@ export async function startWhatsAppBridge({
         // ever after a real connection) and clear any pending unhealthy clock.
         everConnected = true;
         unhealthySince = 0;
+        // Seed the resolver with OUR own lid↔phone pairing (sock.user).
+        try { if (_lidMap.learnPair(myLid, myJid)) _scheduleLidMapWrite(); } catch { /* best effort */ }
         // Clear any prior deferral state — we have a real session now, so
         // future send()s go through baileys, not the outbox.
         _deferredToPid = null;
@@ -2743,7 +2796,7 @@ export async function startWhatsAppBridge({
       const _isGroup = _chatJid?.endsWith?.('@g.us');
       const _isStatus = _chatJid === 'status@broadcast';
       const _senderJid = (_isGroup || _isStatus) ? msg.key?.participant : _chatJid;
-      const _isAuthorized = msg.key?.fromMe || isAuthorizedUser(_senderJid, allowedUsers);
+      const _isAuthorized = msg.key?.fromMe || _authorize(_senderJid);
       if (_isAuthorized) {
         const body = textOf(msg.message);
         // '@movie' must stand alone as a token (avoid catching '@movies' or
@@ -3010,6 +3063,7 @@ export async function startWhatsAppBridge({
     const username = msg.pushName ?? null;
     const firstName = username ?? `wa:${userId}`;
     _dumpNameDebug(msg);   // @lid name-leak diagnostic (no-op for non-@lid / over cap)
+    _learnLidFromMsg(msg); // accumulate this sender's lid↔pn pairing
     // Accept allowed-user entries with or without leading '+', spaces,
     // dashes, parens — the WA JID always has the bare digits, but a
     // human writing config might paste '+1 (646) 821-7865'.
@@ -3036,7 +3090,7 @@ export async function startWhatsAppBridge({
     // carries both lid + phone forms, so they're recognised from any group, 1:1,
     // or device (proven from sender-key data 2026-06-02). Supersedes the ad-hoc
     // normalize() compare.
-    const authorized = fromMe || _isSelfDMChat || isAuthorizedUser(senderJid, allowedUsers);
+    const authorized = fromMe || _isSelfDMChat || _authorize(senderJid);
 
     let processed = text.trim();
 
@@ -3488,6 +3542,13 @@ export async function startWhatsAppBridge({
       if (!meta || !meta.participants) {
         return [];
       }
+      // Group rows pair each member's phone (id/jid) with their lid — an
+      // authoritative source for the resolver.
+      try {
+        let _ch = false;
+        for (const p of meta.participants) _ch = _lidMap.learnPair(p.id ?? p.jid, p.lid) || _ch;
+        if (_ch) _scheduleLidMapWrite();
+      } catch { /* best effort */ }
       return meta.participants.map(p => ({
         jid: p.jid,
         pushName: p.name || p.pushName || '',
@@ -3810,10 +3871,19 @@ export async function startWhatsAppBridge({
       // (operator 2026-06-02: @e's answer to the operator kept landing in
       // Eduardo's chat). Every send must NAME its target; a missing chatId is a
       // caller bug — drop + log, never guess a recipient.
-      const target = chatId;
+      let target = chatId;
       if (!target) {
         log(`send: DROPPED — no chatId (no lastChat fallback; would leak). body="${String(text ?? '').trim().slice(0, 40)}"`);
         return null;
+      }
+      // Self-DM normalization: the operator's note-to-self frequently ARRIVES
+      // as the LID self-form (<myLid>@lid), and a raw @lid send does not surface
+      // in the phone-form self-DM the operator watches ("egpt back!" looked lost
+      // — 2026-06-03). If the target is OUR OWN lid, re-address it to the phone
+      // self-DM. Self-only — never rewrites another contact's chat.
+      if (myLidNumber && myNumber && canonicalUserId(target) === canonicalUserId(myLid)) {
+        const selfPn = `${myNumber}@s.whatsapp.net`;
+        if (target !== selfPn) { _blog(`send: normalized self-lid target ${target} → ${selfPn}`); target = selfPn; }
       }
       // Defense-in-depth silence filter (must run before the outbox relay too —
       // silence shouldn't get spooled to the daemon either).
@@ -4149,6 +4219,12 @@ export async function startWhatsAppBridge({
       _stopWaAlive('stopped');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
+      // Flush the learned lid↔pn map (the 5s debounce may not have fired).
+      if (_lidMapWriteTimer) { clearTimeout(_lidMapWriteTimer); _lidMapWriteTimer = null; }
+      if (_lidMap?.dirty) {
+        try { mkdirSync(dirname(LID_MAP_PATH), { recursive: true }); writeFileSync(LID_MAP_PATH, JSON.stringify(_lidMap.toJSON()), { mode: 0o600 }); _lidMap.clearDirty(); }
+        catch (e) { _blog(`lid-map flush failed: ${e?.message ?? e}`); }
+      }
       _stopWhisperServer();
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
