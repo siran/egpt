@@ -35,7 +35,8 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers } from './src/rooms.mjs';
+import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
+import * as hb from './src/heartbeats.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
@@ -3884,57 +3885,109 @@ function App() {
       try { _accumFlush(); } catch (e) { sysLog(`!! accum flush: ${e?.message ?? e}`); }
     };
 
-    // Per-contact heartbeat scanner — separate, faster tick than the
-    // global @e heartbeat so sub-5min intervals actually fire. Each
-    // call iterates contacts; fires a turn for those whose
-    // heartbeatEnabled is true AND interval has elapsed. Resolution
-    // chain: contact-slug.md > personality.md > default.md.
-    let perContactBusy = false;
-    const perContactTick = async () => {
-      if (stopped || perContactBusy) return;
-      perContactBusy = true;
+    // ── Heartbeat scanner ──────────────────────────────────────────────
+    // A heartbeat is a property of an ENTITY (a conversation or a room),
+    // configured by files in that entity's own folder and read FRESH each
+    // scan (config.yaml + heartbeat.md; see src/heartbeats.mjs). Every
+    // heartbeat is dispatched through the SAME confined + bridge-gated path
+    // as a normal reply — it can never reach a surface a reply couldn't.
+    // The sidecar heartbeat.state.json tracks lastFiredAt per entity.
+
+    // Conversation heartbeat: run @e CONFINED for the chat (threadId=jid →
+    // per-contact confine branch → cwd = the conversation folder, not the
+    // repo), then emit only if the chat's gate permits an UNPROMPTED message.
+    // A heartbeat carries no incoming @mention, so we gate with
+    // replyAllowed:false → _eMayReplyToChat lets it through in 'on' mode only,
+    // and NEVER when muted/off/mention(-direct) or auto_e_paused. WhatsApp
+    // only — that is where the auto-mode gate + bridge live.
+    const _fireConversationHeartbeat = async ({ chatId, surface, slug, name, prompt }) => {
+      if (surface !== 'whatsapp' && surface !== 'wa') return;
+      const reply = await runDefaultBrainTurn(prompt, () => {}, { threadId: chatId, surface: 'wa', slug, name });
+      const trimmed = String(reply ?? '').trim();
+      if (!trimmed || trimmed === '...' || trimmed === '…') return;
+      if (!_eMayReplyToChat(chatId, { replyAllowed: false })) return;   // gate: 'on' & not paused only
+      const personaName = EGPT_CONFIG.persona ?? 'e';
+      const personaEmoji = (EGPT_CONFIG.siblings ?? {})[personaName]?.body_emoji ?? EGPT_PERSONA_EMOJI;
+      try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId }); }
+      catch (e) { sysLog(`!! heartbeat send ${chatId}: ${e?.message ?? e}`); }
+    };
+
+    // Room heartbeat: prompt each ACTIVE brain member PRIVATELY — the prompt
+    // text is NEVER delivered to wa-group/tg members (that would leak it) —
+    // then fan only their REPLIES via _deliverToRoom, which gates each member
+    // by state. Muted/mention brains aren't prompted (a heartbeat @mentions
+    // no one). @e goes via the confined runDefaultBrainTurn; other brains via
+    // runBrainTurn(noBridge) so their reply only returns, then mirrors.
+    const _fireRoomHeartbeat = async (roomName, prompt) => {
+      let rstate; try { rstate = await loadRooms(); } catch { return; }
+      const room = rstate.rooms?.[roomName];
+      if (!room) return;
+      for (const m of room.members ?? []) {
+        if (stopped) break;
+        if (m.kind !== 'brain' || m.state !== 'active') continue;
+        let reply;
+        try {
+          if (m.id === 'e' || m.id === 'egpt') {
+            reply = await runDefaultBrainTurn(prompt, () => {}, { threadId: `room:${roomName}`, surface: 'system', name: `room:${roomName}` });
+          } else {
+            const roomSessions = sessionsMapFromMembers(rstate, roomName);
+            if (!roomSessions[m.id]?.brain) continue;
+            reply = await runBrainTurn(m.id, prompt, roomSessions, { noBridge: true });
+          }
+        } catch (e) { sysLog(`!! heartbeat room ${roomName}→${m.id}: ${e?.message ?? e}`); continue; }
+        const txt = String(reply ?? '').trim();
+        if (txt && txt !== '...' && txt !== '…') {
+          await _deliverToRoom(roomName, { fromId: m.id, senderLabel: `${m.emoji ?? '🧠'} ${m.id}`, body: txt, depth: 1 });
+        }
+      }
+    };
+
+    let heartbeatScanBusy = false;
+    const heartbeatScanTick = async () => {
+      if (stopped || heartbeatScanBusy) return;
+      heartbeatScanBusy = true;
       try {
-        const cs = await _loadConvState();
         const now = Date.now();
-        const tstr2 = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-        // Surface-nested schema: iterate each surface bucket separately.
-        // Aliases (entries with aliasOf, no slug) are skipped.
+        // Conversations — each contact with a slug maps to its folder.
+        const cs = await _loadConvState();
         for (const surface of Object.keys(cs.contacts ?? {})) {
           const bucket = cs.contacts[surface] ?? {};
           for (const [jid, entry] of Object.entries(bucket)) {
             if (stopped) break;
             if (entry?.aliasOf || !entry?.slug) continue;
-            if (!conversationsState.shouldFireHeartbeat(entry, now)) continue;
             if (conversationsState.isMuted(entry)) continue;
-            const slug = entry.slug;
-            const personality = entry.personality || 'default';
-            const hbContent = await conversationsState.readHeartbeat(slug, personality);
-            if (!hbContent || !hbContent.trim()) continue;
-            const text = hbContent.replace(/\$\{time\}/g, tstr2);
+            const dir = conversationsState.slugDir(surface, entry.slug);
+            const cfg = await hb.readConfig(dir);
+            if (!cfg.enabled) continue;   // common case: no heartbeat block — skip the state read
+            if (!hb.shouldFire(cfg, await hb.readLastFiredMs(dir), now)) continue;
+            const prompt = await hb.readPrompt(dir);
+            if (!prompt) continue;   // no / blank heartbeat.md = nothing to fire
             try {
-              await runDefaultBrainTurn(text, undefined, {
-                threadId: jid,
-                surface,
-                slug,
-                name:     entry.pushedName || slug,
-              });
-              const updated = conversationsState.patchContact(
-                await _loadConvState(),
-                surface, slug,
-                { heartbeatLastFiredAt: conversationsState.nowIsoString() },
-              );
-              await _writeConvState(updated);
-            } catch (e) {
-              sysLog(`!! heartbeat[${surface}/${slug}]: ${e.message}`);
-            }
+              await _fireConversationHeartbeat({ chatId: jid, surface, slug: entry.slug, name: entry.pushedName || entry.slug, prompt });
+            } catch (e) { sysLog(`!! heartbeat[${surface}/${entry.slug}]: ${e?.message ?? e}`); }
+            await hb.markFired(dir);   // mark even when gated-silent, so it doesn't re-attempt every scan
           }
         }
-      } finally { perContactBusy = false; }
+        // Rooms — each room maps to ~/.egpt/rooms/<name>/.
+        let rstate; try { rstate = await loadRooms(); } catch { rstate = null; }
+        for (const roomName of Object.keys(rstate?.rooms ?? {})) {
+          if (stopped) break;
+          const dir = roomDir(roomName);
+          const cfg = await hb.readConfig(dir);
+          if (!cfg.enabled) continue;
+          if (!hb.shouldFire(cfg, await hb.readLastFiredMs(dir), now)) continue;
+          const prompt = await hb.readPrompt(dir);
+          if (!prompt) continue;
+          try { await _fireRoomHeartbeat(roomName, prompt); }
+          catch (e) { sysLog(`!! heartbeat room ${roomName}: ${e?.message ?? e}`); }
+          await hb.markFired(dir);
+        }
+      } finally { heartbeatScanBusy = false; }
     };
 
     const timer = setInterval(tick, HEARTBEAT_MS);
-    const PER_CONTACT_TICK_MS = 30 * 1000;  // 30s scan; enables fractional-minute intervals
-    const perContactTimer = setInterval(perContactTick, PER_CONTACT_TICK_MS);
+    const HEARTBEAT_SCAN_MS = 30 * 1000;  // 30s scan; enables fractional-minute intervals
+    const perContactTimer = setInterval(heartbeatScanTick, HEARTBEAT_SCAN_MS);
 
     // play.md hard-cap rotator — runs on the same 5-min cadence as the
     // heartbeat. play.md is loaded into every sibling's context on every

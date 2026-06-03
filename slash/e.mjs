@@ -63,6 +63,7 @@ import {
 } from '../src/conv-grants.mjs';
 import { loadRooms, roomsForMember } from '../src/rooms.mjs';
 import { homedir } from 'node:os';
+import * as YAML from 'yaml';
 
 export const meta = {
   cmd: '/e',
@@ -527,6 +528,11 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       sysOut('usage: /e heartbeat on|off | /e heartbeat interval <min> [--slug | --jid]');
       return true;
     }
+    // Per-entity heartbeat config lives in the conversation's OWN folder:
+    //   <slugDir>/config.yaml  → { heartbeat: { enabled, interval_min } }
+    // read each scan by the daemon via src/heartbeats.mjs. The prompt body is
+    // a sibling heartbeat.md the operator drops in the same folder — without
+    // it the heartbeat has nothing to say and does not fire.
     const cs = await readConvState(CONV_YAML_PATH);
     // /e is WA-scoped by default — dispatchMeta.waChatId is a WA jid.
     // TG-side equivalent will be added with task #20.
@@ -536,21 +542,28 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       sysOut(`!! /e heartbeat: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
       return true;
     }
-    let patch = {};
-    if (hbAction === 'on')  patch.heartbeatEnabled = true;
-    if (hbAction === 'off') patch.heartbeatEnabled = false;
+    const hbDir = slugDir(surface, targetSlug);
+    const hbCfgPath = join(hbDir, 'config.yaml');
+    let hbDoc = {};
+    try { hbDoc = YAML.parse(await readFile(hbCfgPath, 'utf8')) ?? {}; } catch { /* no config.yaml yet */ }
+    if (!hbDoc || typeof hbDoc !== 'object') hbDoc = {};
+    const block = (hbDoc.heartbeat && typeof hbDoc.heartbeat === 'object') ? hbDoc.heartbeat : {};
+    if (hbAction === 'on')  block.enabled = true;
+    if (hbAction === 'off') block.enabled = false;
     if (hbAction === 'interval') {
       const mins = parseFloat(value);
       if (!Number.isFinite(mins) || mins < 0.1) {
         sysOut('!! /e heartbeat interval: minutes must be a positive number (>= 0.1, fractional OK)'); return true;
       }
-      patch.heartbeatIntervalMin = mins;
+      block.interval_min = mins;
     }
-    const next = patchContact(cs, surface, targetSlug, patch);
-    await writeConvState(CONV_YAML_PATH, next);
-    // Find the updated entry (by slug) for the status line.
-    const updated = Object.values(next.contacts[surface] ?? {}).find(e => e?.slug === targetSlug);
-    sysOut(`/e heartbeat: ${targetSlug} enabled=${!!updated?.heartbeatEnabled} interval=${updated?.heartbeatIntervalMin ?? 30}min`);
+    hbDoc.heartbeat = block;
+    try {
+      await mkdir(hbDir, { recursive: true });
+      await writeFile(hbCfgPath, YAML.stringify(hbDoc, { lineWidth: 100 }), 'utf8');
+    } catch (e) { sysOut(`!! /e heartbeat: write ${hbCfgPath} failed — ${e?.message ?? e}`); return true; }
+    const noPrompt = block.enabled === true && !existsSync(join(hbDir, 'heartbeat.md'));
+    sysOut(`/e heartbeat: ${targetSlug} enabled=${block.enabled === true} interval=${block.interval_min ?? 30}min (config.yaml)${noPrompt ? " — ⚠ no heartbeat.md in the folder yet; it won't fire until you add one" : ''}`);
     return true;
   }
 
