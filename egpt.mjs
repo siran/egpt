@@ -35,7 +35,7 @@ import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember } from './src/rooms.mjs';
+import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers } from './src/rooms.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
@@ -2502,11 +2502,23 @@ function App() {
           if (m.state === 'muted') continue;
           if (!(m.state === 'active' || _bodyMentionsBrain(body, m.id))) continue;
           if (depth >= _ROOM_CHAIN_CAP) { logOut(`room ${roomName}: chain cap (${_ROOM_CHAIN_CAP}) — not dispatching @${m.id}`); continue; }
-          if (m.id !== 'e' && m.id !== 'egpt') { logOut(`room ${roomName}: brain @${m.id} room-dispatch not wired yet (only @e)`); continue; }
-          const reply = await runDefaultBrainTurn(env, () => {}, { threadId: `room:${roomName}`, surface: 'system', name: `room:${roomName}` });
+          // @e is the default-brain persona (runDefaultBrainTurn). ANY other
+          // brain member (cgpt1/2/3, codex, llama, …) dispatches to ITS session
+          // via runBrainTurn, resolving its brain + options (e.g. chatgpt-cdp +
+          // targetId) from the room's members. noBridge:true makes the reply
+          // text return ONLY — it never touches a bridge's lastChat; we then
+          // mirror it to the room's members below (the single router).
+          let reply;
+          if (m.id === 'e' || m.id === 'egpt') {
+            reply = await runDefaultBrainTurn(env, () => {}, { threadId: `room:${roomName}`, surface: 'system', name: `room:${roomName}` });
+          } else {
+            const roomSessions = sessionsMapFromMembers(state, roomName);
+            if (!roomSessions[m.id]?.brain) { logOut(`room ${roomName}: brain @${m.id} has no brain/session — skipping`); continue; }
+            reply = await runBrainTurn(m.id, env, roomSessions, { noBridge: true });
+          }
           const txt = String(reply ?? '').trim();
           if (txt && txt !== '...' && txt !== '…') {
-            await _deliverToRoom(roomName, { fromId: m.id, senderLabel: `🧠 ${m.id}`, body: txt, depth: depth + 1 });
+            await _deliverToRoom(roomName, { fromId: m.id, senderLabel: `${m.emoji ?? '🧠'} ${m.id}`, body: txt, depth: depth + 1 });
           }
         }
       } catch (e) { logOut(`!! room deliver ${roomName}→${m.id}: ${e?.message ?? e}`); }
@@ -6185,6 +6197,13 @@ function App() {
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
     const tgChatId = callOpts.tgChatId ?? null;
     const waChatId = callOpts.waChatId ?? null;
+    // ROOM DISPATCH: when true, this turn produces ONLY a return value — no
+    // bridge streams, no committed shell item, no conversation.md append. The
+    // caller (_deliverToRoom) mirrors the text to the room's members itself.
+    // Without this, a room brain reply with no tg/wa chat id falls back to the
+    // bridge's lastChat — re-introducing the leak class we just removed. Default
+    // off, so the normal shell @session path is unchanged.
+    const noBridge = !!callOpts.noBridge;
     // Bridge selection rule: when a turn was triggered by an upstream
     // bridge (Telegram OR WhatsApp), only that bridge gets the reply
     // (route back to the chat that asked). For local typing, both
@@ -6291,7 +6310,7 @@ function App() {
     // the originating bridge; for local typing we call both (each goes
     // to its target chat — see resolveWaStreamTarget below for the
     // /join-aware WA target).
-    const tg = (!fromAnyBridge || tgChatId)
+    const tg = (!noBridge && (!fromAnyBridge || tgChatId))
       ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
       : null;
     // WhatsApp doesn't render HTML — strip tags for the WA stream.
@@ -6308,7 +6327,7 @@ function App() {
     // bridge — typically self-DM — instead of @wa6, defeating /join.
     const waStreamChatId = waChatId ?? _waJoinedFirst()?.jid;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
-    const wa = (!fromAnyBridge || waChatId)
+    const wa = (!noBridge && (!fromAnyBridge || waChatId))
       ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`,
           waStreamChatId ? { chatId: waStreamChatId } : {})
       : null;
@@ -6357,7 +6376,7 @@ function App() {
       setStreaming(null);
       const trimmed = (final ?? '').trim();
       const streamSnapshot = lastStreamingText.trim();
-      if (streamSnapshot && streamSnapshot !== trimmed) {
+      if (!noBridge && streamSnapshot && streamSnapshot !== trimmed) {
         pushItem({
           id: Date.now() + Math.random(),
           author: routedTo,
@@ -6388,7 +6407,7 @@ function App() {
         // both locally and on Telegram.
         await tg?.finish(`${authorPrefix}\n—`);
         await wa?.finish(`${waPrefix}\n—`);
-        pushItem({
+        if (!noBridge) pushItem({
           id: Date.now() + Math.random(), author: routedTo, body: '—',
           _silent: true,
           ...tagsAlreadySent,
@@ -6399,11 +6418,13 @@ function App() {
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
       await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
       await wa?.finish(`${waPrefix}\n${final}`);
-      pushItem({
-        id: Date.now() + Math.random(), author: routedTo, body: final,
-        ...tagsAlreadySent,
-      });
-      await append(`${routedTo}@${SURFACE_TAG}`, final);
+      if (!noBridge) {
+        pushItem({
+          id: Date.now() + Math.random(), author: routedTo, body: final,
+          ...tagsAlreadySent,
+        });
+        await append(`${routedTo}@${SURFACE_TAG}`, final);
+      }
       return final;
     } catch (e) {
       setStreaming(null);
