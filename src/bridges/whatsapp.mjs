@@ -101,6 +101,11 @@ const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
 // How often the in-bridge health watchdog checks for a WEDGED socket (a
 // silent death with no 'close' event, or a reconnect that never succeeds).
 const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
+// Wake-from-sleep detection: a short tick; a gap MUCH larger than the tick
+// interval means the host was suspended (sleep/hibernate/Task-Scheduler wake)
+// in between, so the WA socket is dead and we should reconnect immediately.
+const WAKE_TICK_MS = 20_000;
+const WAKE_GAP_MS  = 60_000;   // a >60s gap on a 20s tick = the host slept
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -399,6 +404,14 @@ export async function startWhatsAppBridge({
   let unhealthySince  = 0;      // ms when the socket last became unhealthy (0 = healthy)
   let _fatalFired     = false;  // onFatal fires at most once
   let bridgeWatchdogTimer = null;
+  // Wake-from-sleep detection. A short timer that, if it fires much later than
+  // its interval, means the host was SUSPENDED (sleep/hibernate) in between —
+  // the WA socket is then dead (TCP dropped) but baileys often gets no 'close'
+  // event, so the normal reconnect never arms. We detect the time gap and
+  // re-arm an immediate reconnect, so a scheduled Task-Scheduler wake (or any
+  // resume) reconnects in seconds instead of waiting out the wedged-grace.
+  let _lastWakeTick   = Date.now();
+  let wakeTimer       = null;
 
   // Bridge heartbeat. Same prefix as state/alive.txt:
   // "<tic|toc> <iso> <pid> ...". Details after the pid identify
@@ -566,6 +579,28 @@ export async function startWhatsAppBridge({
     if (bridgeWatchdogTimer) return;
     bridgeWatchdogTimer = setInterval(_bridgeWatchdogTick, BRIDGE_WATCHDOG_INTERVAL_MS);
     bridgeWatchdogTimer.unref?.();
+  }
+
+  // Wake detector — see WAKE_* notes. If the gap since the last tick is much
+  // larger than the tick interval, the host was suspended and the WA socket is
+  // dead: re-arm reconnect NOW (reset backoff) instead of waiting for the
+  // wedged-grace, so a Task-Scheduler wake / lid resume reconnects in seconds.
+  function _wakeTick() {
+    const now = Date.now();
+    const gap = now - _lastWakeTick;
+    _lastWakeTick = now;
+    if (stopped || gap <= WAKE_GAP_MS) return;
+    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — re-arming WA reconnect (readyState=${_socketReadyState() ?? '?'})`);
+    reconnectAttempts = 0;        // reset backoff so it retries promptly, not at the 60s cap
+    unhealthySince = 0;           // give the fresh socket a full wedged-grace
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    _scheduleReconnect('resumed from sleep');   // base 5s delay — lets the NIC re-associate first
+  }
+  function _startWakeDetector() {
+    if (wakeTimer) return;
+    _lastWakeTick = Date.now();
+    wakeTimer = setInterval(_wakeTick, WAKE_TICK_MS);
+    wakeTimer.unref?.();
   }
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
@@ -3269,6 +3304,7 @@ export async function startWhatsAppBridge({
   // real connection (everConnected), so this is safe to start before the first
   // 'open'. unref'd so it never keeps the process alive on its own.
   _startBridgeWatchdog();
+  _startWakeDetector();
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
   // server-side. Falls back to the bare JID when we can't reach it.
@@ -4281,6 +4317,7 @@ export async function startWhatsAppBridge({
       _stopWaAlive('stopped');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
+      if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
       // Flush the learned lid↔pn map (the 5s debounce may not have fired).
       if (_lidMapWriteTimer) { clearTimeout(_lidMapWriteTimer); _lidMapWriteTimer = null; }
       if (_lidMap?.dirty) {
