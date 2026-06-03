@@ -3412,9 +3412,17 @@ function App() {
               // "stays saying 'on it' but doesn't harakiri"). The RESTART is the
               // priority; the ack is best-effort within the 1.5s window (plus
               // _exitClean's 800ms WS-close flush).
+              // Target the operator's Self DM (configured chat_id, phone-form)
+              // rather than from.chatId: the self-DM frequently ARRIVES as the
+              // LID form (34…@lid), and a raw @lid send does not surface in the
+              // note-to-self the operator watches — so the ack (and the later
+              // "egpt back!") looked like the spine "never came back" when it
+              // was actually healthy (operator 2026-06-03). Falls back to the
+              // arrival chat only when no chat_id is configured.
+              const _ackJid = EGPT_CONFIG.whatsapp?.chat_id || from.chatId;
               try {
                 await Promise.race([
-                  bridge.send(`🧠 ${firstTok.slice(1)} initiated… (pid ${process.pid} going down)`, { chatId: from.chatId }).catch(() => {}),
+                  bridge.send(`🧠 ${firstTok.slice(1)} initiated… (pid ${process.pid} going down)`, { chatId: _ackJid }).catch(() => {}),
                   new Promise(res => setTimeout(res, 1500)),
                 ]);
               } catch {}

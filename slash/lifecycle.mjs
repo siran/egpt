@@ -37,8 +37,21 @@ function _rlog(EGPT_HOME, m) {
 // commit it pulled to.
 async function announceBounce({ ctx, meta, preBody }) {
   const { APP_DIR, EGPT_HOME } = ctx;
-  const selfJid = meta?.waChatId || ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
-  _rlog(EGPT_HOME, `announceBounce: fromWhatsApp=${!!meta?.fromWhatsApp} metaWaChatId=${meta?.waChatId ?? 'none'} cfgChatId=${ctx.EGPT_CONFIG?.whatsapp?.chat_id ?? 'none'} → selfJid=${selfJid ?? 'NULL'}`);
+  // The bounce ("egpt back!") is a self/system notification — it belongs in the
+  // operator's note-to-self (the configured chat_id, phone-form), NOT wherever
+  // /restart happened to arrive. Two failures when we preferred meta.waChatId:
+  //  1. /restart often ARRIVES addressed as the LID self-jid (34…@lid); a raw
+  //     @lid send does not surface in the phone-form Self DM the operator
+  //     watches — so the respawn looked like "never came back" even though the
+  //     engine + WA were healthy (operator 2026-06-03).
+  //  2. /restart can be issued from a group (groups are command-capable users);
+  //     announcing there would leak "egpt back! pid…" operational noise into
+  //     the group.
+  // So prefer the configured Self DM; fall back to the arrival chat only when
+  // no chat_id is configured.
+  const cfgChatId = ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
+  const selfJid = cfgChatId || meta?.waChatId || null;
+  _rlog(EGPT_HOME, `announceBounce: fromWhatsApp=${!!meta?.fromWhatsApp} metaWaChatId=${meta?.waChatId ?? 'none'} cfgChatId=${cfgChatId ?? 'none'} → selfJid=${selfJid ?? 'NULL'}`);
   if (!selfJid) { _rlog(EGPT_HOME, 'announceBounce: SKIPPED — no selfJid → NO sidecar → there will be no "egpt back!"'); return; }
   let sha = '?', subj = '';
   try {
