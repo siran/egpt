@@ -3702,13 +3702,23 @@ function App() {
                 });
               }
             } else {
-              // No residents-broadcast this turn. For a non-'off' chat this
-              // branch is reached only when @e is PAUSED — but the conversation
-              // must still be recorded. Log the inbound brain-free, EXCEPT the
-              // messages the submit below still dispatches+logs on its own
-              // (reactions, @e-mentions), so we never double-log. 'off' chats
-              // and slash commands are deliberately not conversation-logged.
-              if (!isSlash && autoReceives(_autoMode) && !from.isReaction && !from.atEAnywhere && !from.atEStart) {
+              // Record to the CHAT's OWN transcript (the 1:1 or group), brain-
+              // free + no fan. Every utterance lands in its chat transcript, and
+              // ADDITIONALLY in any room transcript the chat belongs to (handled
+              // by _maybeRouteToRooms above) — operator 2026-06-03: "written both
+              // in room transcript (if she's in a room) and in the group's or
+              // 1:1's chat transcript". This branch is reached, for a non-'off'
+              // chat, by:
+              //   - a /command (always lands here): recorded as part of the
+              //     chat's history; submit below still EXECUTES it (it is not
+              //     dispatched/fanned as chatter), and
+              //   - @e PAUSED chatter, which would otherwise vanish.
+              // Skip the messages the submit below itself dispatches+logs to the
+              // chat transcript (an @e-mention or reaction while paused) to avoid
+              // a double entry. 'off' chats are never logged (deliberate ignore).
+              const _logToChat = autoReceives(_autoMode)
+                && (isSlash || (!from.isReaction && !from.atEAnywhere && !from.atEStart));
+              if (_logToChat) {
                 _recordInboundOnly(from, text).catch(e => errOut(`!! inbound-log: ${e?.message ?? e}`));
               }
               await submitRef.current(text, { ...baseMeta, autoDispatched: false });
