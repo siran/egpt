@@ -2418,6 +2418,35 @@ function App() {
     });
   };
 
+  // Brain-free conversation logger. The transcript is normally written by the
+  // @e dispatch (dispatch.mjs:appendTranscript). But when @e is PAUSED a chat's
+  // messages take the no-dispatch path and would vanish from the record —
+  // pausing @e must silence its REPLIES, never drop the conversation (operator
+  // principle: "don't drop any message from anyone"; observed 2026-06-03 on the
+  // Joyce DM, where only fromMe reactions logged while paused). This appends an
+  // inbound message to the conversation transcript with NO brain turn (no token
+  // cost). Called ONLY for messages we are NOT dispatching, so it never
+  // double-logs the ones the dispatch already records.
+  const _recordInboundOnly = async (from, body) => {
+    try {
+      const surface = 'whatsapp';
+      const cs = await _loadConvState();
+      const entry = conversationsState.getContact(cs, surface, from.chatId);
+      const slug = entry?.slug;
+      if (!slug) return;   // no contact folder yet — the next dispatched message creates it
+      const dir = conversationsState.slugDir(surface, slug);
+      await mkdir(dir, { recursive: true });
+      const chatName = waBridgeRef.current?.getChatName?.(from.chatId) ?? String(from.chatId ?? '').split('@')[0];
+      const line = formatAutoDispatchLine({
+        senderName: from.senderName ?? 'someone',
+        body,
+        ts: Date.now(),
+        surface: `wa.${chatName}`,
+      });
+      await appendFile(join(dir, 'transcript.md'), `${line}\n\n`, 'utf8');
+    } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
+  };
+
   const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0, _personaReply = false }) => {
     let state; try { state = await loadRooms(); } catch { return; }
     const room = state.rooms?.[roomName];
@@ -3656,6 +3685,15 @@ function App() {
                 });
               }
             } else {
+              // No residents-broadcast this turn. For a non-'off' chat this
+              // branch is reached only when @e is PAUSED — but the conversation
+              // must still be recorded. Log the inbound brain-free, EXCEPT the
+              // messages the submit below still dispatches+logs on its own
+              // (reactions, @e-mentions), so we never double-log. 'off' chats
+              // and slash commands are deliberately not conversation-logged.
+              if (!isSlash && autoReceives(_autoMode) && !from.isReaction && !from.atEAnywhere && !from.atEStart) {
+                _recordInboundOnly(from, text).catch(e => errOut(`!! inbound-log: ${e?.message ?? e}`));
+              }
               await submitRef.current(text, { ...baseMeta, autoDispatched: false });
             }
           }
