@@ -3576,6 +3576,15 @@ function App() {
           // membership (→ 'on'); then the global default (auto_e_default_mode,
           // set by `/e auto <mode> all`); then the built-in default ('mention').
           const _autoMode = _resolveChatAutoMode(from.chatId);
+          // 'off' = NO egpt on this chat at all: no room routing, no transcript,
+          // no command execution, no @e (operator 2026-06-03: "off means no egpt
+          // whatsoever in that surface/channel/group … not even logging should
+          // occur, nor commands be processed"). The engine treats the chat as
+          // nonexistent; manage its mode from an active chat (Self) via
+          // `/e auto <mode> --slug <name>`. NOTE: media download + lid-learning
+          // still run bridge-side (before onIncoming) — pushing the off-filter
+          // fully into the bridge/awareness layer is a follow-up.
+          if (!autoReceives(_autoMode)) return;
           // replyAllowed: does this message's mention-status permit a reply
           // under the chat's mode? (E may still be invoked for context when
           // false.) Unused for accum (buffered + flushed on the heartbeat).
