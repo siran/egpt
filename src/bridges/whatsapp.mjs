@@ -97,6 +97,9 @@ export function isSilenceMarker(text) {
 const RECONNECT_MS = 5_000;
 const RECONNECT_MAX_MS = 60_000;
 const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
+// How often the in-bridge health watchdog checks for a WEDGED socket (a
+// silent death with no 'close' event, or a reconnect that never succeeds).
+const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -273,6 +276,8 @@ export async function startWhatsAppBridge({
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
   onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
   onSummonMovie, // called when '@movie <preset> [args]' token detected; host builds frames and calls playFrames with existingKey so the trigger message becomes the movie
+  onFatal,     // called ONCE when the bridge is WEDGED beyond recovery (silent socket death / reconnect that never succeeds past the grace). The HOST decides what to do — the supervised spine exits with a crash code so egpt-daemon respawns a clean process. No external liveness-kill.
+  wedgedGraceMs = 3 * 60_000, // how long the WA socket may stay unhealthy (after having connected once) before onFatal fires
 }) {
   const aware = {
     self_chat: awareness.self_chat ?? 'both',
@@ -382,6 +387,13 @@ export async function startWhatsAppBridge({
   // is the single retry path — both the close handler and the
   // catch around connect() funnel through it.
   let reconnectAttempts = 0;
+  // Health-watchdog state (see _bridgeWatchdogTick). everConnected gates the
+  // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
+  // or a network-down boot is left to reconnect/backoff, never an exit-loop.
+  let everConnected   = false;  // set true on the first 'connection: open'
+  let unhealthySince  = 0;      // ms when the socket last became unhealthy (0 = healthy)
+  let _fatalFired     = false;  // onFatal fires at most once
+  let bridgeWatchdogTimer = null;
 
   // Bridge heartbeat. Same prefix as state/alive.txt:
   // "<tic|toc> <iso> <pid> ...". Details after the pid identify
@@ -496,6 +508,59 @@ export async function startWhatsAppBridge({
       try { connect(); }
       catch (e) { _scheduleReconnect(`connect() threw: ${e.message}`); }
     }, delay);
+  }
+
+  // Read the underlying WebSocket readyState across baileys versions. 1 = OPEN.
+  // A socket can die SILENTLY (network change, sleep/wake) without baileys ever
+  // firing 'connection: close' — so connectedAt stays set and _scheduleReconnect
+  // never arms. readyState exposes that wedge. Returns undefined when the
+  // version doesn't surface it (we then fall back to the close-based signal).
+  function _socketReadyState() {
+    const ws = sock?.ws;
+    if (typeof ws?.readyState === 'number') return ws.readyState;
+    if (typeof ws?.socket?.readyState === 'number') return ws.socket.readyState;
+    return undefined;
+  }
+
+  // Health watchdog. Per the supervision model (one egpt-daemon, respawn on
+  // process EXIT, NO external liveness-kill) the bridge does NOT try to surgically
+  // recover a wedged socket in-process — that fragile dance is exactly what
+  // caused the old daemon/heartbeat thrash. Instead it DETECTS a wedge and, once
+  // it has persisted past wedgedGraceMs, signals the host via onFatal; the
+  // supervised spine then exits with a crash code and the daemon respawns a clean
+  // process. Normal reconnects (which succeed within the grace) never trip this.
+  function _bridgeWatchdogTick() {
+    if (stopped) return;        // loggedOut / deferred-to-another-egpt → intentional stop, not a wedge
+    if (!everConnected) return; // never connected yet (initial pairing / boot) → reconnect+backoff owns it
+    let healthy;
+    if (!sock || reconnectTimer) {
+      healthy = false;          // mid-reconnect (between attempts) or no socket
+    } else {
+      const rs = _socketReadyState();
+      // readyState known → must be OPEN(1); unknown → trust connectedAt (we
+      // believe we're connected and have no close event saying otherwise).
+      healthy = (rs === undefined) ? (connectedAt > 0) : (rs === 1);
+    }
+    if (healthy) { unhealthySince = 0; return; }
+    if (!unhealthySince) {
+      unhealthySince = Date.now();
+      _blog(`watchdog: WA socket unhealthy (sock=${!!sock} reconnecting=${!!reconnectTimer} readyState=${_socketReadyState() ?? '?'}) — grace ${Math.round(wedgedGraceMs / 1000)}s`);
+      return;
+    }
+    const downMs = Date.now() - unhealthySince;
+    if (downMs >= wedgedGraceMs && !_fatalFired) {
+      _fatalFired = true;
+      const reason = `WA socket unhealthy ${Math.round(downMs / 1000)}s (reconnectAttempts=${reconnectAttempts}, readyState=${_socketReadyState() ?? '?'})`;
+      _blog(`watchdog: WEDGED — ${reason}; signaling host onFatal`);
+      err(`whatsapp: bridge wedged — ${reason}`);
+      try { onFatal?.(reason); }
+      catch (e) { _blog(`watchdog: onFatal threw: ${e?.message ?? e}`); }
+    }
+  }
+  function _startBridgeWatchdog() {
+    if (bridgeWatchdogTimer) return;
+    bridgeWatchdogTimer = setInterval(_bridgeWatchdogTick, BRIDGE_WATCHDOG_INTERVAL_MS);
+    bridgeWatchdogTimer.unref?.();
   }
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
@@ -1257,6 +1322,10 @@ export async function startWhatsAppBridge({
         // Healthy connect — clear backoff so the NEXT close starts
         // at the base 5s delay again, not wherever it left off.
         reconnectAttempts = 0;
+        // Health watchdog: we have a live socket. Arm the wedged-exit (only
+        // ever after a real connection) and clear any pending unhealthy clock.
+        everConnected = true;
+        unhealthySince = 0;
         // Clear any prior deferral state — we have a real session now, so
         // future send()s go through baileys, not the outbox.
         _deferredToPid = null;
@@ -3136,6 +3205,10 @@ export async function startWhatsAppBridge({
   // the bridge dead. Now it backs off and retries the same way.
   try { connect(); }
   catch (e) { _scheduleReconnect(`initial connect() threw: ${e.message}`); }
+  // Arm the health watchdog for the life of the bridge. It only acts AFTER a
+  // real connection (everConnected), so this is safe to start before the first
+  // 'open'. unref'd so it never keeps the process alive on its own.
+  _startBridgeWatchdog();
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
   // server-side. Falls back to the bare JID when we can't reach it.
@@ -4075,6 +4148,7 @@ export async function startWhatsAppBridge({
       stopped = true;
       _stopWaAlive('stopped');
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+      if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
       _stopWhisperServer();
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
