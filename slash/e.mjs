@@ -20,9 +20,9 @@
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
 //
-//   /e heartbeat on|off            — opt the current contact in/out of
-//                                    per-contact heartbeats
-//   /e heartbeat interval <min>    — set per-contact heartbeat cadence
+//   /e heartbeat [<slug>]          — show heartbeat status (current chat or <slug>)
+//   /e heartbeat [<slug>] on|off   — enable/disable a conversation's heartbeat
+//   /e heartbeat [<slug>] interval <min> — set its cadence (writes <slug>/config.yaml)
 //                                    (minutes; default 30)
 //   /e butler <prompt>             — ephemeral haiku sub-agent (no
 //                                    session memory, default all-tools)
@@ -69,7 +69,7 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status | /e path [list|add|rm] [<path>] [<slug>]',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status | /e path [list|add|rm] [<path>] [<slug>]',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
@@ -79,7 +79,7 @@ export const meta = {
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
     { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)', example: '/e source egpt-dev' },
-    { name: 'heartbeat',  usage: '/e heartbeat on|off | interval <min> [--slug|--jid]',      desc: 'opt this contact in/out of per-contact heartbeats; set the cadence in minutes', example: '/e heartbeat interval 30' },
+    { name: 'heartbeat',  usage: '/e heartbeat [<slug>] [on|off|interval <min>]',      desc: 'per-conversation heartbeat (writes <slug>/config.yaml); bare or <slug> alone shows status; needs a heartbeat.md prompt in the folder to fire', example: '/e heartbeat diego on' },
     { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global', example: '/e transcribe on' },
     { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
     { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)", example: '/e tool deny all' },
@@ -513,20 +513,37 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
-  // ── /e heartbeat on|off | interval <min> [--slug | --jid] ────────
+  // ── /e heartbeat [<slug>] [on|off|interval <min>] [--slug|--jid <x>] ──
+  // Forms:
+  //   /e heartbeat                       → status for the CURRENT chat
+  //   /e heartbeat on|off|interval <min> → set the CURRENT chat (or --slug/--jid)
+  //   /e heartbeat <slug>                → status for <slug>   (works from Self)
+  //   /e heartbeat <slug> on|off|interval <min> → set <slug>   (works from Self)
   if (sub === 'heartbeat') {
-    const tokens2 = arg.split(/\s+/).filter(Boolean);
-    const hbAction = tokens2[1] ?? null;
-    let value = tokens2[2] ?? null;
-    let slugFlag = null;
-    let jidFlag = null;
+    const tokens2 = arg.split(/\s+/).filter(Boolean);   // ['heartbeat', ...]
+    const ACTIONS = ['on', 'off', 'interval'];
+    // Pull --slug/--jid out anywhere; keep the rest as positionals.
+    let slugFlag = null, jidFlag = null;
+    const pos = [];
     for (let i = 1; i < tokens2.length; i++) {
-      if (tokens2[i] === '--slug' && tokens2[i + 1]) slugFlag = tokens2[++i];
-      if (tokens2[i] === '--jid'  && tokens2[i + 1]) jidFlag  = tokens2[++i];
+      if (tokens2[i] === '--slug' && tokens2[i + 1]) { slugFlag = tokens2[++i]; continue; }
+      if (tokens2[i] === '--jid'  && tokens2[i + 1]) { jidFlag  = tokens2[++i]; continue; }
+      pos.push(tokens2[i]);
     }
-    if (!hbAction || !['on','off','interval'].includes(hbAction)) {
-      sysOut('usage: /e heartbeat on|off | /e heartbeat interval <min> [--slug | --jid]');
-      return true;
+    // Disambiguate the positionals: a leading on|off|interval acts on the
+    // current chat; otherwise the first positional is a target SLUG and the
+    // (optional) second is the action. No action → status (read-only).
+    let posSlug = null, hbAction = null, value = null;
+    if (pos.length === 0) {
+      hbAction = null;                                   // status, current chat
+    } else if (ACTIONS.includes(pos[0])) {
+      hbAction = pos[0]; value = pos[1] ?? null;         // act on current chat / flagged
+    } else {
+      posSlug = pos[0];                                  // first positional is the slug
+      if (pos[1] && ACTIONS.includes(pos[1])) { hbAction = pos[1]; value = pos[2] ?? null; }
+    }
+    if (hbAction === 'interval' && value == null) {
+      sysOut('usage: /e heartbeat [<slug>] interval <min>'); return true;
     }
     // Per-entity heartbeat config lives in the conversation's OWN folder:
     //   <slugDir>/config.yaml  → { heartbeat: { enabled, interval_min } }
@@ -537,9 +554,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     // /e is WA-scoped by default — dispatchMeta.waChatId is a WA jid.
     // TG-side equivalent will be added with task #20.
     const surface = 'whatsapp';
-    const targetSlug = slugFlag ?? findContactByJid(cs, surface, jidFlag ?? dispatchMeta?.waChatId);
+    const targetSlug = posSlug ?? slugFlag ?? findContactByJid(cs, surface, jidFlag ?? dispatchMeta?.waChatId);
     if (!targetSlug) {
-      sysOut(`!! /e heartbeat: no contact for ${slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'}`);
+      sysOut(`!! /e heartbeat: no contact for ${posSlug ?? slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'} — try /e heartbeat <slug> [on|off|interval <min>]`);
       return true;
     }
     const hbDir = slugDir(surface, targetSlug);
@@ -548,6 +565,19 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     try { hbDoc = YAML.parse(await readFile(hbCfgPath, 'utf8')) ?? {}; } catch { /* no config.yaml yet */ }
     if (!hbDoc || typeof hbDoc !== 'object') hbDoc = {};
     const block = (hbDoc.heartbeat && typeof hbDoc.heartbeat === 'object') ? hbDoc.heartbeat : {};
+
+    // Status form (no action) — read-only report, no write.
+    if (!hbAction) {
+      const hasPrompt = existsSync(join(hbDir, 'heartbeat.md'));
+      let lastFired = 'never';
+      try {
+        const st = JSON.parse(readFileSync(join(hbDir, 'heartbeat.state.json'), 'utf8'));
+        if (st?.lastFiredAt) lastFired = st.lastFiredAt;
+      } catch { /* never fired */ }
+      sysOut(`/e heartbeat ${targetSlug}: enabled=${block.enabled === true} interval=${block.interval_min ?? 30}min prompt=${hasPrompt ? 'heartbeat.md ✓' : "✗ none (won't fire)"} lastFired=${lastFired}`);
+      return true;
+    }
+
     if (hbAction === 'on')  block.enabled = true;
     if (hbAction === 'off') block.enabled = false;
     if (hbAction === 'interval') {
@@ -971,7 +1001,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat on|off|interval <min> | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
     return true;
   }
 
