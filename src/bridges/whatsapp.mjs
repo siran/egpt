@@ -107,11 +107,14 @@ const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
 // in between, so the WA socket is dead and we should reconnect immediately.
 const WAKE_TICK_MS = 20_000;
 const WAKE_GAP_MS  = 60_000;   // a >60s gap on a 20s tick = the host slept
-// After a detected wake, hold the host awake this long so the reconnect +
-// offline-message arrival + transcription + reply can complete before idle-
-// sleep. A transcription/brain turn that outlasts it extends the hold on its
-// own (stay-awake.mjs is reference-counted).
-const WAKE_STAY_AWAKE_MS = 5 * 60_000;
+// After a detected wake, hold the host awake just long enough for the "quick
+// check" — reconnect + offline-message arrival — then release so the machine
+// sleeps again until the next scheduled wake (the spine wakes every ~5 min). An
+// actual transcription / brain turn that's still running EXTENDS the hold on
+// its own (stay-awake.mjs is reference-counted) + a 30s linger, so real work is
+// never cut off; this base window must stay WELL under the wake interval or the
+// holds would bridge together and the host would never sleep.
+const WAKE_STAY_AWAKE_MS = 120_000;   // 2 min base; jobs extend it as needed
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
