@@ -291,7 +291,7 @@ export function startTelegramBridge({
   // /inject delivers a real attachment to a TG group. kind+mimetype inferred
   // from the extension when omitted; unknowns → document.
   async function sendMedia(chatId, { path, buffer, kind, caption, fileName, mimetype, ptt } = {}) {
-    const target = chatId ?? lastChat;
+    const target = chatId;   // no lastChat fallback — never guess a recipient
     if (!target) return null;
     let buf = buffer;
     if (!buf && path) { try { buf = await readFile(path); } catch (e) { err(`sendMedia read ${path}: ${e.message}`); return null; } }
@@ -316,7 +316,7 @@ export function startTelegramBridge({
   }
 
   function startStreamMessage(initialText, { chatId } = {}) {
-    const targetChat = chatId ?? lastChat;
+    const targetChat = chatId;   // no lastChat fallback — streaming must name its chat
     if (!targetChat) return null;
     let msgId       = null;
     let pending     = null;
@@ -392,11 +392,11 @@ export function startTelegramBridge({
 
   return {
     send(text, { chatId, replyTo } = {}) {
-      const target = chatId ?? lastChat;
+      const target = chatId;   // no lastChat fallback — never guess a recipient
       if (!target) return;
       enqueue(() => sendText(target, text, { replyTo }));
     },
-    sendMedia(chatId, opts) { return sendMedia(chatId ?? lastChat, opts); },
+    sendMedia(chatId, opts) { return sendMedia(chatId, opts); },
     startStreamMessage,
     stop() {
       stopped = true;
