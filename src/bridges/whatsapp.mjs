@@ -641,7 +641,7 @@ export async function startWhatsAppBridge({
   // baileys contacts.* events, and dump per-@lid-message how each field
   // compares. Lets us confirm `.notify` (or absence of `.name`) as the
   // safe source. Capped so the file can't grow unbounded.
-  const _waContacts = new Map();   // jid -> { name, notify, verifiedName }
+  const _waContacts = new Map();   // jid -> { name, notify, verifiedName, lid, status, imgUrl }
   const _NAME_DEBUG_PATH = join(STATE_BRIDGE_DIR, 'wa-name-debug.log');
   let _nameDebugCount = 0;
   const _NAME_DEBUG_CAP = 300;
@@ -654,6 +654,12 @@ export async function startWhatsAppBridge({
         name: c.name ?? prev.name ?? null,
         notify: c.notify ?? prev.notify ?? null,
         verifiedName: c.verifiedName ?? prev.verifiedName ?? null,
+        // baileys also pushes these on contacts.upsert/update when known.
+        // imgUrl can arrive as the sentinel 'changed' (avatar changed, refetch
+        // needed) — don't store that as a URL.
+        lid: c.lid ?? prev.lid ?? null,
+        status: c.status ?? prev.status ?? null,
+        imgUrl: (c.imgUrl && c.imgUrl !== 'changed') ? c.imgUrl : (prev.imgUrl ?? null),
       });
     }
   };
@@ -3510,6 +3516,62 @@ export async function startWhatsAppBridge({
     getChatSlug,
     setEgptPin,
     listEgptPinned,
+    // A consolidated contact card: the cheap STORED fields (name / notify /
+    // verifiedName / lid / status / imgUrl from contacts events + the resolver)
+    // plus, when query!==false, the on-demand baileys lookups — device list
+    // (getUSyncDevices: which devices the number runs, e.g. phone + Beeper +
+    // web), about/status, profile picture, and business profile. Every lookup
+    // is time-bound + best-effort: a slow/blocked field is simply omitted, the
+    // card still returns. Resolves lid↔phone via the learned map so either form
+    // works as input.
+    async contactInfo(jid, { query = true } = {}) {
+      if (!jid) return null;
+      const isLid = /@lid\b/i.test(jid);
+      const pnDigits = isLid ? _lidMap.pnForLid(jid) : canonicalUserId(jid);
+      const lidDigits = isLid ? canonicalUserId(jid) : _lidMap.lidForPn(jid);
+      const pn = pnDigits ? `${pnDigits}@s.whatsapp.net` : (isLid ? null : jid);
+      const stored = _waContacts.get(jid) ?? (pn ? _waContacts.get(pn) : null) ?? {};
+      const info = {
+        jid,
+        pn,
+        lid: lidDigits ? `${lidDigits}@lid` : (stored.lid ?? null),
+        name: stored.name ?? null,
+        notify: stored.notify ?? null,
+        verifiedName: stored.verifiedName ?? null,
+        status: stored.status ?? null,
+        imgUrl: stored.imgUrl ?? null,
+        devices: null,
+        business: null,
+      };
+      if (!query || !sock) return info;
+      const q = pn || jid;   // queries prefer the phone form
+      try {
+        const d = await _timeBound(sock.getUSyncDevices([q], true, false), 'getUSyncDevices');
+        if (Array.isArray(d)) info.devices = [...new Set(d.map(x => Number(x?.device ?? 0)))].sort((a, b) => a - b);
+      } catch (e) { _blog(`contactInfo getUSyncDevices: ${e?.message ?? e}`); }
+      if (!info.status) {
+        try {
+          const s = await _timeBound(sock.fetchStatus(q), 'fetchStatus');
+          const first = Array.isArray(s) ? s[0] : s;
+          info.status = first?.status?.status ?? first?.status ?? null;
+        } catch (e) { _blog(`contactInfo fetchStatus: ${e?.message ?? e}`); }
+      }
+      try {
+        const url = await _timeBound(sock.profilePictureUrl(q, 'preview'), 'profilePictureUrl');
+        if (url) info.imgUrl = url;
+      } catch (e) { /* 'no picture' / privacy → keep stored */ }
+      try {
+        const b = await _timeBound(sock.getBusinessProfile(q), 'getBusinessProfile');
+        if (b) info.business = {
+          description: b.description ?? null,
+          category: b.category ?? null,
+          email: b.email ?? null,
+          website: Array.isArray(b.website) ? b.website : (b.website ? [b.website] : null),
+          address: b.address ?? null,
+        };
+      } catch (e) { /* not a business account → null */ }
+      return info;
+    },
     // Fire-and-forget group-name lookup. Idempotent (returns
     // immediately if the chat already has a name OR if a fetch is
     // already in flight). Used by /recap to backfill names for any
