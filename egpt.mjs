@@ -37,6 +37,7 @@ import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs'
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
 import * as hb from './src/heartbeats.mjs';
+import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
@@ -2758,6 +2759,15 @@ function App() {
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(id);
+  }, [busy]);
+
+  // Keep the host awake while the engine is BUSY (a brain turn / processing is
+  // in flight), so a scheduled wake can finish its work before the machine
+  // idle-sleeps. Reference-counted in stay-awake.mjs, so this nests with the
+  // bridge's post-wake + transcription holds; released the moment we go idle.
+  useEffect(() => {
+    if (!busy) return;
+    return acquireStayAwake();
   }, [busy]);
 
   // Poll for ~/.egpt/browser-pause.txt — written by browser.waitForHuman() inside

@@ -65,6 +65,7 @@ import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 import { isAuthorizedUser, canonicalUserId } from '../identity.mjs';
 import { createLidMap } from '../lid-map.mjs';
+import { acquireStayAwake, holdStayAwake, setStayAwakeLogger } from '../tools/stay-awake.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -106,6 +107,11 @@ const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
 // in between, so the WA socket is dead and we should reconnect immediately.
 const WAKE_TICK_MS = 20_000;
 const WAKE_GAP_MS  = 60_000;   // a >60s gap on a 20s tick = the host slept
+// After a detected wake, hold the host awake this long so the reconnect +
+// offline-message arrival + transcription + reply can complete before idle-
+// sleep. A transcription/brain turn that outlasts it extends the hold on its
+// own (stay-awake.mjs is reference-counted).
+const WAKE_STAY_AWAKE_MS = 5 * 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -591,6 +597,10 @@ export async function startWhatsAppBridge({
     _lastWakeTick = now;
     if (stopped || gap <= WAKE_GAP_MS) return;
     _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — re-arming WA reconnect (readyState=${_socketReadyState() ?? '?'})`);
+    // Hold the host awake through the post-wake processing burst (reconnect →
+    // offline backlog → transcription → reply). Auto-releases after the window;
+    // a transcription/brain turn that runs longer extends the hold itself.
+    holdStayAwake(WAKE_STAY_AWAKE_MS);
     reconnectAttempts = 0;        // reset backoff so it retries promptly, not at the 60s cap
     unhealthySince = 0;           // give the fresh socket a full wedged-grace
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
@@ -2048,6 +2058,12 @@ export async function startWhatsAppBridge({
     }
     const finalTxt = join(outputDir, `${base}.transcript.txt`);
     if (existsSync(finalTxt)) return null;     // already transcribed
+    // Hold the host awake for the duration of this transcription (reference-
+    // counted; released in the finally on EVERY exit path) so a voice note that
+    // arrives just after a scheduled wake is fully transcribed before the
+    // machine idle-sleeps again (operator 2026-06-03).
+    const _awakeT = acquireStayAwake();
+    try {
     const wavPath = join(outputDir, `${base}.tmp.wav`);
     // ffmpeg: opus/m4a/mp3 → 16kHz mono PCM WAV
     try {
@@ -2125,6 +2141,7 @@ export async function startWhatsAppBridge({
       log(`transcribed ${base}: "${preview}"`);
     }
     return text ? { path: finalTxt, text } : null;
+    } finally { _awakeT(); }
   }
 
   // Streaming variant of _transcribeAudio (operator 2026-05-22):
@@ -3305,6 +3322,7 @@ export async function startWhatsAppBridge({
   // 'open'. unref'd so it never keeps the process alive on its own.
   _startBridgeWatchdog();
   _startWakeDetector();
+  setStayAwakeLogger((m) => _blog(m));   // route stay-awake telemetry into wa-bridge.log
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
   // server-side. Falls back to the bare JID when we can't reach it.
