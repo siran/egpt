@@ -2551,10 +2551,10 @@ function App() {
   // E-emit path (text, voice, emitted-command, future) funnels through here so
   // 'mute'/'off' is a HARD block independent of any per-path flag — reception
   // stays unconditional, only emission is vetted. Logs every block.
-  const _eMayReplyToChat = (chatId, { replyAllowed } = {}) => {
+  const _eMayReplyToChat = (chatId, { replyAllowed, isReaction = false } = {}) => {
     const mode = _resolveChatAutoMode(chatId);
-    const ok = autoMayEmit(mode, { replyAllowed });
-    if (!ok) logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed})`);
+    const ok = autoMayEmit(mode, { replyAllowed, isReaction });
+    if (!ok) logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed}${isReaction ? ', reaction' : ''})`);
     return ok;
   };
 
@@ -3563,6 +3563,9 @@ function App() {
             waMsgKey: from.msgKey ?? null,
             waMsgRaw: from.msgRaw ?? null,
             observeOnly,
+            // A reaction notification — E may read it for context but must NEVER
+            // reply to it, in ANY mode (mayEmit hard-blocks on this).
+            isReaction: !!from.isReaction,
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
@@ -6526,7 +6529,7 @@ function App() {
       // chat it must NOT send a reply. Gating the stream-open here suppresses
       // every voice-path send (all sends go through _ensureStream first), so a
       // muted chat gets no message while E still hears it.
-      const _voiceMayEmit = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed });
+      const _voiceMayEmit = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
       let voiceStream = null;
       const _ensureStream = () => {
         if (!_voiceMayEmit) return;
@@ -7568,7 +7571,7 @@ function App() {
           // backstop (hard-blocks mute/off regardless of the flag); other
           // surfaces keep the plain per-turn flag.
           || (meta.fromWhatsApp
-              ? !_eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed })
+              ? !_eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
               : meta.replyAllowed === false)
           || (_sibBrain?.sessionless && /^!!\s*@/.test(String(r ?? '').trimStart()));
         // Sessionless residents (@l) don't stream a "thinking…" placeholder —
@@ -7584,7 +7587,7 @@ function App() {
         // this block correctly drops on _dropResident. Even the placeholder
         // "⌛ thinking…" delivery is a send → must be gated. Same for TG.
         const _waMayEmit = meta.fromWhatsApp
-          ? _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed })
+          ? _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
           : true;
         const _tgMayEmit = meta.fromTelegram ? (meta.replyAllowed !== false) : true;
         const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
