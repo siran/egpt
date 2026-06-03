@@ -2980,7 +2980,14 @@ export async function startWhatsAppBridge({
     // at_e_anywhere is on (the default). Routing still uses the rewritten
     // `processed`; only the gate uses this. The reply-to-our-message case is
     // carried separately via replyToBot, so reply-as-mention needs no atEStart.
-    const _gateMs = mentionStatus(processed);
+    // A reaction NOTIFICATION ("@e reacted 👍 to …" / "reacted 👍 to …") is NOT
+    // someone addressing @e — the "@e" is the REACTOR. Without this, the bot's
+    // own reaction (the operator reacts via Beeper on the shared account) reads
+    // as a mention and @e indignantly replies "no reaccioné, boludo. dejá de
+    // hacer eso." (operator 2026-06-02). A reaction never counts as a mention.
+    const _gateMs = msg.message?.reactionMessage
+      ? { atEStart: false, atEAnywhere: false }
+      : mentionStatus(processed);
 
     // Reply-as-mention synthesis (paired with replyPersona detection
     // above). Drop the ↳ quote-preview that textOf prepended and
