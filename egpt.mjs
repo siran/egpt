@@ -6310,26 +6310,20 @@ function App() {
     // the originating bridge; for local typing we call both (each goes
     // to its target chat — see resolveWaStreamTarget below for the
     // /join-aware WA target).
-    const tg = (!noBridge && (!fromAnyBridge || tgChatId))
+    // Stream to a bridge ONLY when this turn explicitly came from that bridge
+    // (route the reply back to the chat that asked). NEVER fall back to the
+    // bridge's lastChat: that sends a shell/room-initiated reply to whatever
+    // WA/TG chat happened to message last — which leaked @e's answer to the
+    // operator into Eduardo's chat (operator 2026-06-02). Shell/room replies
+    // reach the operator via the shell + self-DM mirror + the room — never a
+    // bridge guess. (Removing the legacy /join deleted _waJoinedFirst, which had
+    // been masking this lastChat fallback.)
+    const tg = (!noBridge && tgChatId)
       ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
       : null;
-    // WhatsApp doesn't render HTML — strip tags for the WA stream.
-    // Pick the WA stream target:
-    //   1. waChatId if the turn came from a WA arrival (route back there)
-    //   2. first joined chat (waJoinedRef) — the binding the operator
-    //      explicitly set. When multiple are joined we stream to the
-    //      first; the others get the final reply via items-mirror
-    //      (no per-chat streaming since WA's edit-stream is one
-    //      message per chat).
-    //   3. undefined → bridge falls back to lastChat (default behaviour)
-    // Without (2) a shell-typed @cgpt1 while joined to @wa6 would
-    // stream the reply to whatever WA chat was last active in the
-    // bridge — typically self-DM — instead of @wa6, defeating /join.
-    const waStreamChatId = waChatId ?? _waJoinedFirst()?.jid;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
-    const wa = (!noBridge && (!fromAnyBridge || waChatId))
-      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`,
-          waStreamChatId ? { chatId: waStreamChatId } : {})
+    const wa = (!noBridge && waChatId)
+      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId })
       : null;
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
@@ -6395,11 +6389,7 @@ function App() {
       // joined targets to fan out to.
       const tagsAlreadySent = {
         ...(tg ? { _source: 'telegram' } : {}),
-        ...(wa
-          ? (waStreamChatId
-              ? { _sourceChatId: waStreamChatId }
-              : { _localOnly: true })
-          : {}),
+        ...(wa ? { _sourceChatId: waChatId } : {}),   // wa only set when waChatId is explicit
       };
       const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
       if (isSilence) {
