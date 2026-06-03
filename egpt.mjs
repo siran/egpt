@@ -2704,16 +2704,6 @@ function App() {
   // when the keeper runs in its own process the same call site
   // gets a file-IPC implementation, transparent to callers.
   const streamFactoryRef = useRef(null);
-  // 5-minute @e heartbeat guard. true while a heartbeat tick is
-  // mid-dispatch; the next tick that fires during that window is
-  // skipped (try again in 5 minutes). Operator-driven @e activity
-  // is not gated — they can interrupt at any time.
-  const heartbeatBusyRef = useRef(false);
-  // Consecutive `...` silence count for the heartbeat. Stasis-as-
-  // spontaneity-trigger per operator: once @e has chosen silence
-  // several ticks in a row, the next prompt gets a nudge appended so
-  // the haiku-bias toward the easy default doesn't drain the loop
-  // of life. Reset to 0 on any non-silent reply.
 
   useEffect(() => {
     if (!busy) { setBusyStart(null); return; }
@@ -3863,144 +3853,35 @@ function App() {
     });
   }, []);
 
-  // 5-minute @e heartbeat. Every interval tick, read the operator-
-  // editable prompt at ~/.egpt/e-heartbeat.md and dispatch it to the
-  // default brain. @e decides what to do — reply '...' to stay silent
-  // (logged, nothing sent), or use its Bash tool access to drop
-  // wa-send files into ~/.egpt/outbox/ for the keeper to send. The
-  // reply text itself is logged in shell but does NOT become a
-  // message by this path — actions happen via tool calls, not text.
-  // Operator can disable by emptying the prompt file.
+  // Periodic background ticks: accum-mode flush, the (confined) per-contact
+  // heartbeat scanner, and the play.md rotator. There is deliberately NO
+  // global @e heartbeat here anymore — see the note in `tick` below.
   useEffect(() => {
-    // Heartbeat PROMPT file (operator-editable). Renamed from
-    // e-heartbeat.md → heartbeat-prompt.md (operator 2026-05-22) so
-    // e-heartbeat.md can hold the heartbeat TRANSCRIPT (matching
-    // e-feed.md's pattern). One-shot migration below moves an existing
-    // prompt file to the new name on first run.
-    const HEARTBEAT_PATH = join(EGPT_HOME, 'heartbeat-prompt.md');
-    const LEGACY_PROMPT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
-    const LEGACY_TRANSCRIPT_PATH = join(EGPT_HOME, 'state', 'heartbeat.md');
-    const NEW_TRANSCRIPT_PATH = join(EGPT_HOME, 'e-heartbeat.md');
     const HEARTBEAT_MS = 5 * 60 * 1000;
-    // One-shot migration:
-    //   1. If the legacy prompt file exists at ~/.egpt/e-heartbeat.md
-    //      AND its content looks like a prompt (no transcript-format
-    //      lines like '[@e (HH:MM)]:'), rename it to heartbeat-prompt.md.
-    //   2. If the legacy transcript at ~/.egpt/state/heartbeat.md exists
-    //      AND the new path doesn't (or step 1 cleared it), move it.
-    try {
-      if (existsSync(LEGACY_PROMPT_PATH) && !existsSync(HEARTBEAT_PATH)) {
-        const content = readFileSync(LEGACY_PROMPT_PATH, 'utf8');
-        const looksLikeTranscript = /\n\[(?:@e|system-e|heartbeat) /.test(content);
-        if (!looksLikeTranscript) {
-          renameSync(LEGACY_PROMPT_PATH, HEARTBEAT_PATH);
-        }
-      }
-    } catch (e) { console.error(`!! heartbeat migrate prompt: ${e?.message ?? e}`); }
-    try {
-      if (existsSync(LEGACY_TRANSCRIPT_PATH) && !existsSync(NEW_TRANSCRIPT_PATH)) {
-        renameSync(LEGACY_TRANSCRIPT_PATH, NEW_TRANSCRIPT_PATH);
-      }
-    } catch (e) { console.error(`!! heartbeat migrate transcript: ${e?.message ?? e}`); }
-    const DEFAULT_PROMPT = [
-      '# @e heartbeat',
-      '',
-      'Addressed to @e. Every 5 minutes the daemon dispatches this prompt to you, @e, via',
-      'runDefaultBrainTurn — so you (and only you) can decide whether to act this tick.',
-      '',
-      'Options:',
-      '',
-      '- Stay silent — reply with the literal string `...` (logged, nothing sent anywhere).',
-      '- Send a WhatsApp message — use Bash to write `~/.egpt/outbox/<ms>-<6hex>.json` with shape',
-      '  `{"type":"wa-send","from":"e","ts":<ms>,"jid":"<targetJid>","body":"🧠 e: <text>"}`.',
-      '  The comm-handler picks the file up and sends it. JIDs wired for you live in',
-      '  `~/.egpt/config.json` under `whatsapp.auto_e_chats`.',
-      '- Other tools — any side effect reachable via Bash / file IO is fair game.',
-      '',
-      'Your reply text is logged so the operator can see what you considered, but does NOT',
-      'become a message by itself. Only files dropped in the outbox do.',
-      '',
-      'Empty this file to disable the heartbeat. Edit it freely — changes take effect on the',
-      'next tick.',
-      '',
-    ].join('\n');
 
-    // sysLog → visible (errors); heartbeatLog → hidden by default (routine ticks
-    // are pure telemetry — pre-fix every tick polluted the shell with a noise
-    // line, operator 2026-05-28). The hidden lines are still surfaced via /log.
+    // sysLog → visible system line (errors / notable events). Routine per-tick
+    // telemetry stays out of the shell.
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
-    const heartbeatLog = (msg) => pushItem({
-      id: Date.now() + Math.random(), author: 'system', _localOnly: true, _log: true, body: msg,
-    });
-
-    try { mkdirSync(EGPT_HOME, { recursive: true }); } catch {}
-    try {
-      if (!existsSync(HEARTBEAT_PATH)) {
-        writeFileSync(HEARTBEAT_PATH, DEFAULT_PROMPT, 'utf8');
-      }
-    } catch (e) {
-      sysLog(`!! heartbeat: failed to seed ${HEARTBEAT_PATH}: ${e.message}`);
-    }
 
     let stopped = false;
 
     const tick = async () => {
       if (stopped) return;
-      // Flush 'accum'-mode chats every heartbeat (independent of the @e
-      // heartbeat prompt below, so it still runs when a prompt tick is busy).
+      // accum-mode chats: buffer bursts, flush as ONE combined turn on this
+      // cadence.
+      //
+      // The old GLOBAL @e heartbeat that fired here was REMOVED (operator
+      // 2026-06-03: "remove this rogue, legacy heartbeat completely"). It was
+      // an UNCONFINED runDefaultBrainTurn on the 'system' surface — cwd = the
+      // repo, Bash enabled — whose prompt told @e to self-emit by writing
+      // wa-send files into ~/.egpt/outbox/. That was both conversation-e's
+      // path into the repo AND an ungated emit side-channel. A heartbeat is
+      // now a property of a CONVERSATION or a ROOM, dispatched through the
+      // same confined + bridge-gated path as any reply — see perContactTick
+      // below (and the per-room heartbeat, [[heartbeat-per-room-config]]).
       try { _accumFlush(); } catch (e) { sysLog(`!! accum flush: ${e?.message ?? e}`); }
-      if (heartbeatBusyRef.current) {
-        heartbeatLog(`heartbeat: skipped — previous tick still running`);
-        return;
-      }
-      // Heartbeat resolution chain (C2): try ~/.egpt/heartbeats/default.md
-      // first, then fall back to the legacy ~/.egpt/e-heartbeat.md.
-      // Per-contact / per-personality heartbeats fire separately below.
-      let prompt = await conversationsState.readHeartbeat(null, 'default');
-      if (prompt == null) {
-        try { prompt = readFileSync(HEARTBEAT_PATH, 'utf8'); }
-        catch (e) {
-          sysLog(`!! heartbeat: cannot read ${HEARTBEAT_PATH}: ${e.message}`);
-          return;
-        }
-      }
-      if (!prompt || !prompt.trim()) return;   // empty content = disabled
-      heartbeatBusyRef.current = true;
-      try {
-        // ${time} substitution: HH:MM local so @e knows current time
-        // without us repeating context every tick.
-        const tstr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-        const resolved = prompt.replace(/\$\{time\}/g, tstr);
-        const reply = await runDefaultBrainTurn(resolved, undefined, { threadId: 'heartbeat', surface: 'system', name: 'heartbeat tick' });
-        if (stopped) return;
-        const trimmed = (reply ?? '').trim();
-        // Treat both ASCII '...' and the Unicode ellipsis '…' as silence — E's
-        // tokenizer can emit either. Without this, an `…` reply fell into the
-        // preview branch and printed "heartbeat: @e — …" to the shell every
-        // tick (operator 2026-05-28).
-        if (trimmed === '...' || trimmed === '…' || trimmed === '') {
-          heartbeatLog(`heartbeat: @e chose silence`);
-        } else {
-          const oneLine = trimmed.replace(/\s+/g, ' ');
-          const preview = oneLine.length > 200 ? oneLine.slice(0, 199) + '…' : oneLine;
-          heartbeatLog(`heartbeat: @e — ${preview}`);
-          // Diary append — every non-silent thought persists to
-          // ~/.egpt/e-diary.md so the operator can see what @e has
-          // actually been thinking across ticks (the shell sysLog
-          // scrolls past, the diary doesn't).
-          try {
-            const entry = `\n## ${new Date().toISOString()}\n\n${trimmed}\n`;
-            await appendFile(join(EGPT_HOME, 'e-diary.md'), entry);
-          } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); /* diary best-effort; never block the tick */ }
-        }
-      } catch (e) {
-        sysLog(`!! heartbeat: dispatch failed — ${e.message}`);
-      } finally {
-        heartbeatBusyRef.current = false;
-      }
-
     };
 
     // Per-contact heartbeat scanner — separate, faster tick than the
