@@ -3702,8 +3702,17 @@ export async function startWhatsAppBridge({
       return { key: msgKey, deleted: autoDelete };
     },
     async send(text, { chatId, deliverEcho = false, _noRelay = false } = {}) {
-      const target = chatId ?? lastChat;
-      if (!target) return null;
+      // NO lastChat fallback. A send with no explicit chatId used to go to
+      // whatever chat messaged the bridge last — which leaked shell/brain/@e
+      // replies into a stranger's chat, re-firing on every interaction
+      // (operator 2026-06-02: @e's answer to the operator kept landing in
+      // Eduardo's chat). Every send must NAME its target; a missing chatId is a
+      // caller bug — drop + log, never guess a recipient.
+      const target = chatId;
+      if (!target) {
+        log(`send: DROPPED — no chatId (no lastChat fallback; would leak). body="${String(text ?? '').trim().slice(0, 40)}"`);
+        return null;
+      }
       // Defense-in-depth silence filter (must run before the outbox relay too —
       // silence shouldn't get spooled to the daemon either).
       if (isSilenceMarker(text)) {
