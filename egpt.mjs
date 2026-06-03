@@ -2447,7 +2447,7 @@ function App() {
     } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
   };
 
-  const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0, _personaReply = false }) => {
+  const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0, _personaReply = false, logOnly = false }) => {
     let state; try { state = await loadRooms(); } catch { return; }
     const room = state.rooms?.[roomName];
     if (!room) return;
@@ -2457,6 +2457,19 @@ function App() {
       await mkdir(dir, { recursive: true });
       await appendFile(join(dir, 'transcript.md'), `[${new Date().toISOString()}] ${env}\n`, 'utf8');
     } catch (e) { logOut(`!! room transcript ${roomName}: ${e?.message ?? e}`); }
+    // logOnly: the utterance is RECORDED as room activity but NEVER fanned to
+    // surface members and never dispatched to brains. Used for /commands —
+    // operator tooling that is part of the room's history ("all that is said in
+    // a room must be logged", operator 2026-06-03) but must not be blasted as
+    // text into a wa-group (leak) or re-executed via room membership. It still
+    // lands in the room transcript above + the operator's own conversation.md +
+    // the operator's shell view, so the record is complete on every operator
+    // surface; external members simply don't receive a command.
+    if (logOnly) {
+      pushItem({ id: Date.now() + Math.random(), author: `room@${roomName}`, body: env, _localOnly: true });
+      void append(`room@${roomName}`, env);
+      return;
+    }
     // Persist a room utterance into the operator's conversation.md too — not
     // just the room's own transcript + the per-contact WA log — so it's
     // retained in every member's view (operator 2026-05-31: "it should live in
@@ -2601,23 +2614,27 @@ function App() {
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
     if (!body || !memberId) return;
-    // A /command is operator tooling, NOT room chat — never fan it to rooms (it
-    // would leak "/restart" into WhatsApp groups and entangle command handling
-    // with room membership/state). Commands are interpreted by the engine's one
-    // command path (handleSlash), independent of rooms (ENGINE-SURFACE-
-    // SEPARATION.md: engine-first commands). This guard covers EVERY surface,
-    // since WA / TG / shell all route inbound through here. 2026-06-01.
-    if (String(body).trimStart().startsWith('/')) return;
     // Echo/loop guard: a message that's already a room envelope was fanned BY
     // us — never re-route it, or two active groups bounce it forever. (This is
     // an idempotency check on the router's OWN output marker, not a content
     // classification — same as a network layer ignoring its own broadcast.)
     if (isRoomEnvelope(body)) return;
     let state; try { state = await loadRooms(); } catch { return; }
+    // A /command is operator tooling. It must NOT be fanned as text to room
+    // surfaces (sending "/restart" into a WhatsApp group would leak it +
+    // entangle command handling with room membership) NOR dispatched to brains
+    // — commands are interpreted by the engine's one command path, independent
+    // of rooms. BUT it IS part of the room's activity, so it must be RECORDED:
+    // log-only delivery writes it to each member-room's transcript (+ the
+    // operator's view) without fanning (operator 2026-06-03: "slash commands …
+    // are part of the chatter being seen in the room. all that is said in a
+    // room must be logged"). This guard covers EVERY surface (WA/TG/shell all
+    // route inbound through here).
+    const _isCommand = String(body).trimStart().startsWith('/');
     // Contribution is now uniform: active|mention contribute, muted doesn't
     // (refined 2026-06-01). The old @mention gate moved to brain dispatch below.
     for (const plan of planFanout(state, memberId)) {
-      await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0 });
+      await _deliverToRoom(plan.room, { fromId: memberId, senderLabel, body, depth: 0, logOnly: _isCommand });
     }
   };
 
