@@ -2552,6 +2552,16 @@ function App() {
   // 'mute'/'off' is a HARD block independent of any per-path flag — reception
   // stays unconditional, only emission is vetted. Logs every block.
   const _eMayReplyToChat = (chatId, { replyAllowed, isReaction = false } = {}) => {
+    // Global pause is an ABSOLUTE @e emit kill — it overrides mode/mention. The
+    // dispatch-side autoPaused gate only stops the AUTO broadcast; an explicit
+    // '@e …' still reaches @e via the submit() else-branch, so without this
+    // backstop a PAUSED @e still replied to '@e estas?' (operator 2026-06-03,
+    // /e auto status = PAUSED). Checked here so NO emit path (text, voice, the
+    // mention else-branch) can speak while paused.
+    if (EGPT_CONFIG.whatsapp?.auto_e_paused) {
+      logOut(`auto-mode: E emit to ${chatId} BLOCKED — auto_e_paused (global kill)`);
+      return false;
+    }
     const mode = _resolveChatAutoMode(chatId);
     const ok = autoMayEmit(mode, { replyAllowed, isReaction });
     if (!ok) logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed}${isReaction ? ', reaction' : ''})`);
