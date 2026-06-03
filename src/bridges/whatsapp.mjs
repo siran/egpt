@@ -2980,12 +2980,19 @@ export async function startWhatsAppBridge({
     // at_e_anywhere is on (the default). Routing still uses the rewritten
     // `processed`; only the gate uses this. The reply-to-our-message case is
     // carried separately via replyToBot, so reply-as-mention needs no atEStart.
-    // A reaction NOTIFICATION ("@e reacted 👍 to …" / "reacted 👍 to …") is NOT
-    // someone addressing @e — the "@e" is the REACTOR. Without this, the bot's
-    // own reaction (the operator reacts via Beeper on the shared account) reads
-    // as a mention and @e indignantly replies "no reaccioné, boludo. dejá de
-    // hacer eso." (operator 2026-06-02). A reaction never counts as a mention.
-    const _gateMs = msg.message?.reactionMessage
+    // A reaction NOTIFICATION is not an @e mention — the "@e" is the REACTOR,
+    // not an address. Catch BOTH the native WA reaction (msg.reactionMessage)
+    // AND the TEXT form that Beeper delivers ('@e reacted ❤ to "[sticker]"…',
+    // 'reacted 👍 to "…"'). 9b107c9 only caught the protobuf, so Beeper's text
+    // still tripped the mention gate and @e kept replying 'no reaccioné, para
+    // de decir' in spoiler_alert (operator 2026-06-03). Pattern-match the
+    // reaction-notice shape so it never counts as a mention. (A genuine "@e why
+    // did you react?" has no 'reacted <emoji> to "' and still mentions normally.)
+    const _isReactionNotice = !!msg.message?.reactionMessage
+      || /(^|\s)reacted\s+\S{1,8}\s+to\s+"/i.test(processed)
+      || /(^|\s)removed reaction from\s+"/i.test(processed)
+      || /^\s*\[reaction\s/i.test(processed);
+    const _gateMs = _isReactionNotice
       ? { atEStart: false, atEAnywhere: false }
       : mentionStatus(processed);
 
