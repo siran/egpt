@@ -3428,7 +3428,7 @@ export async function startWhatsAppBridge({
     // reaction's own key for echo bookkeeping.
     async react({ chatId, key, emoji }) {
       if (!sock) return null;
-      const target = chatId ?? lastChat;
+      const target = chatId ?? key?.remoteJid;   // the target message's chat, never lastChat
       if (!target || !key?.id) return null;
       return _timeBound(
         sock.sendMessage(target, { react: { text: emoji ?? '', key } }),
@@ -3440,7 +3440,7 @@ export async function startWhatsAppBridge({
     // answer once it lands. Returns the baileys send result.
     async editMessage({ chatId, key, text }) {
       if (!sock) return null;
-      const target = chatId ?? lastChat;
+      const target = chatId ?? key?.remoteJid;   // the target message's chat, never lastChat
       if (!target || !key?.id) return null;
       return _timeBound(
         _safeSend(target, { edit: key, text }),
@@ -3488,7 +3488,7 @@ export async function startWhatsAppBridge({
       idleAnimationBudget = 20,
     }) {
       if (!sock) return null;
-      const target = chatId ?? lastChat;
+      const target = chatId;   // oracle play — no lastChat fallback
       if (!target) return null;
       const summonFrames   = Array.isArray(phases.summon)   ? phases.summon   : [];
       const idleFrames     = Array.isArray(phases.idle)     ? phases.idle     : [];
@@ -3641,7 +3641,8 @@ export async function startWhatsAppBridge({
     // Retire the oracle running in `chatId` (or do nothing if none).
     // Returns true if an oracle was actually stopped.
     async stopOracle(chatId) {
-      const target = chatId ?? lastChat;
+      const target = chatId;   // no lastChat fallback
+      if (!target) return false;
       const handle = _liveOracles.get(target);
       if (!handle) return false;
       await handle.stop();
@@ -3691,7 +3692,7 @@ export async function startWhatsAppBridge({
     // and autoDelete cleanly revokes the trigger at the end.
     async playFrames({ chatId, frames, frameMs = 700, autoDelete = false, holdMs = 2000, existingKey = null }) {
       if (!sock) return null;
-      const target = chatId ?? lastChat;
+      const target = chatId ?? existingKey?.remoteJid;   // the played-in message's chat, never lastChat
       if (!target || !Array.isArray(frames) || !frames.length) return null;
       let msgKey;
       if (existingKey?.id) {
@@ -3804,7 +3805,7 @@ export async function startWhatsAppBridge({
     // rides on image/video/document; `ptt:true` makes audio a voice note.
     // Used by /inject-to-group and any future E-sends-media path.
     async sendMedia({ chatId, path, buffer, kind, caption, fileName, mimetype, ptt } = {}) {
-      const target = chatId ?? lastChat;
+      const target = chatId;   // no lastChat fallback — media must name its chat
       if (!target || !sock) return null;
       let buf = buffer;
       if (!buf && path) {
@@ -3835,7 +3836,7 @@ export async function startWhatsAppBridge({
     // `send` if either is missing.
     async replyTo({ chatId, key, raw, text }) {
       if (!sock) return null;
-      const target = chatId ?? lastChat;
+      const target = chatId ?? key?.remoteJid;   // the replied-to message's chat, never lastChat
       if (!target) return null;
       // Return the baileys send-result so callers can capture the new
       // message's key and attach it to the echo's _replyTarget — that
@@ -3863,7 +3864,9 @@ export async function startWhatsAppBridge({
       //      every 8s so the typing indicator stays visible until
       //      finish() (baileys auto-expires it after ~10s otherwise).
       //   4. finish() flushes the last pending edit and clears typing.
-      const target = chatId ?? lastChat;
+      // NO lastChat fallback — streaming a brain/persona reply with no explicit
+      // chat would leak it to whoever messaged the bridge last (operator 2026-06-03).
+      const target = chatId;
       if (!target || !sock) return null;
 
       let msgKey      = null;
