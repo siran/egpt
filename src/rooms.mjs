@@ -44,6 +44,11 @@ export function isMemberStateAlias(token) {
 }
 
 export const ROOMS_CONFIG_PATH = join(homedir(), '.egpt', 'rooms', 'config.yaml');
+// A room's own folder: ~/.egpt/rooms/<name>/. Holds per-room config.yaml +
+// heartbeat.md + heartbeat.state.json (see src/heartbeats.mjs) and the files/
+// subdir below. NOTE the roster lives at rooms/config.yaml (parent); a room's
+// per-room config is rooms/<name>/config.yaml.
+export const roomDir = (name) => join(homedir(), '.egpt', 'rooms', sanitizeName(name));
 export const roomFilesDir = (name) => join(homedir(), '.egpt', 'rooms', sanitizeName(name), 'files');
 
 export function sanitizeName(name) {
