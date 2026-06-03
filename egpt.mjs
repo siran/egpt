@@ -7875,15 +7875,18 @@ function App() {
       log(`${source}: wa-send from ${ev.from} to ${ev.jid} dropped — polite '...' (not sent)`);
       return true;
     }
-    // Write-side whitelist for the @e persona: e can only post to
-    // chats explicitly enrolled by the operator (auto_e_chats + the
-    // operator's self_dm chat_id). Other sender labels (jay-*, wren-*,
-    // sibling subprocesses, scripts) are unrestricted — the trust
-    // model is: the operator controls who can write outbox files;
-    // 'from' is a label, not auth. Per "messages are sacred":
-    // BLOCKED sends are logged with reason and consumed (return true)
-    // so they don't retry — operator sees the audit in /log.
-    if (ev.from === 'e' || ev.from === 'egpt') {
+    // OUTBOX WRITE-WHITELIST — applies to EVERY wa-send, regardless of the
+    // 'from' label. The label is display, NOT auth: conversation-e is a
+    // Bash-capable subprocess and can write any outbox file with any 'from'
+    // (e.g. 'from:system' to dodge an @e-only check). So the outbox can only
+    // reach the operator's explicitly-enrolled chats (auto_e_chats) + the
+    // self-DM (chat_id). Anything else is BLOCKED + logged. This makes the
+    // outbox NOT a bypass: E's ONLY routes to WA are the gated persona/room
+    // dispatch and a whitelisted chat here — never one nobody enrolled.
+    // (operator 2026-06-03: leaks are unacceptable; never trust 'from'. A
+    // legitimate send to a new chat is enrolled via auto_e_chats / sent with an
+    // explicit operator @waN, not by labelling an outbox file.)
+    {
       const waCfg = EGPT_CONFIG.whatsapp ?? {};
       const allowed = new Set(
         [
@@ -7892,7 +7895,7 @@ function App() {
         ].filter(Boolean),
       );
       if (!allowed.has(ev.jid)) {
-        log(`!! ${source}: wa-send from e to ${ev.jid} BLOCKED — not in auto_e_chats or self_dm. body="${(ev.body || '').slice(0, 60)}${ev.body.length > 60 ? '…' : ''}"`);
+        log(`!! ${source}: wa-send (from ${ev.from}) to ${ev.jid} BLOCKED — not in auto_e_chats or self-DM. The outbox is gated by CHAT, never the 'from' label. body="${(ev.body || '').slice(0, 60)}${(ev.body || '').length > 60 ? '…' : ''}"`);
         return true;  // consume — don't retry; operator audits via /log
       }
     }
