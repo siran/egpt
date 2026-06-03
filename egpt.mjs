@@ -3687,6 +3687,29 @@ function App() {
             logOut(`whatsapp: outbound chat ${id} captured and saved`);
           } catch (e) { console.error(`!! egpt.mjs:[catch] ${e?.message ?? e}`); }
         },
+        // The WA bridge self-detected a WEDGED socket it can't recover in-
+        // process. Supervision model: one egpt-daemon, respawn on process
+        // EXIT, NO external liveness-kill. So the SUPERVISED spine exits with a
+        // crash code (non 0/42/43/44 → egpt-daemon.mjs's backoff respawn path)
+        // and a clean process re-establishes WA. A bare `node egpt.mjs` has NO
+        // supervisor, so exiting would just kill the operator's shell — there
+        // we only log loudly and leave it for an explicit /restart.
+        wedgedGraceMs: Number(EGPT_CONFIG.whatsapp?.wedged_grace_ms) > 0
+          ? Number(EGPT_CONFIG.whatsapp.wedged_grace_ms) : undefined,
+        onFatal: (reason) => {
+          const supervised = !!process.env.EGPT_SUPERVISED;
+          const line = `whatsapp bridge WEDGED — ${reason} — ${supervised ? 'exiting (code 75) for egpt-daemon respawn' : 'no supervisor; staying up, use /restart'}`;
+          try { errOut(`!! ${line}`); } catch { /* Ink may be torn down */ }
+          try {
+            appendFileSync(join(EGPT_HOME, 'headless.log'),
+              `[${new Date().toISOString()}] FATAL ${line}\n`, { mode: 0o600 });
+          } catch { /* best effort */ }
+          if (!supervised) return;
+          // Brief delay so the log lines flush, then crash-exit; the daemon
+          // respawns with backoff (capped 60s), so a persistent outage can't
+          // hot-loop.
+          setTimeout(() => { try { process.exit(75); } catch { /* already exiting */ } }, 300);
+        },
       });
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
