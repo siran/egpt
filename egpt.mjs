@@ -2289,6 +2289,76 @@ function App() {
       }
     }
   };
+  // ── Backlog catch-up accumulator (operator 2026-06-04 "as-if always on") ──
+  // Messages that arrived while we were offline (sleep / restart) are tagged
+  // backlog:true by the bridge. Rather than a brain dispatch per stale message,
+  // we buffer them per chat and flush ONE consolidated, timestamped turn to E
+  // once the burst settles — prefixed with a "resumed after Nh offline" hint so
+  // E knows it's catch-up and can be sensible about stale items. Reply is
+  // mode-gated EXACTLY like live (replyAllowed OR'd across the batch — if any
+  // message in the catch-up warranted a reply under the chat's mode, E may
+  // reply once to the whole chunk). A debounce (NOT the heartbeat) drives the
+  // flush, so a backlog delivered across several reconnect upserts still
+  // coalesces into one turn per chat. Sequencing is automatic: backlog
+  // onIncoming only fires after `open`, and the debounce waits for the burst to
+  // settle, so the flush lands on a live socket.
+  const _backlogBuffers = useRef(new Map());   // chatId -> { msgs:[{body,senderName,ts}], replyAllowed, meta, firstTs }
+  const _backlogTimer = useRef(null);
+  const _BACKLOG_DEBOUNCE_MS = 8000;
+  const _backlogFlush = () => {
+    if (!submitRef.current) return;
+    for (const [chatId, b] of [..._backlogBuffers.current.entries()]) {
+      _backlogBuffers.current.delete(chatId);
+      if (!b.msgs.length) continue;
+      const surface = buildWaSurfaceTag(chatId);
+      const idStr = String(chatId);
+      const chatType = idStr.endsWith('@g.us') ? 'group'
+        : idStr === 'status@broadcast' ? 'status' : 'private';
+      const chatName = waBridgeRef.current?.getChatName?.(chatId) ?? null;
+      // Chronological: E reads the catch-up oldest-first, with real timestamps.
+      const ordered = [...b.msgs].sort((x, y) => (x.ts || 0) - (y.ts || 0));
+      const lines = ordered.map(it => formatAutoDispatchLine({
+        senderName: it.senderName, body: it.body, ts: it.ts, surface, chatType, chatName,
+      })).join('\n');
+      // Nap hint. Offline duration proxied by the age of the oldest unprocessed
+      // message (≈ when we dropped). Frames it for E so a 10h gap reads
+      // differently than a 3-min nap, without a hard staleness cutoff.
+      const napMs = b.firstTs ? Math.max(0, Date.now() - b.firstTs) : 0;
+      const napH = napMs / 3_600_000;
+      const napStr = napH >= 1 ? `~${napH.toFixed(napH >= 10 ? 0 : 1)}h` : `~${Math.max(1, Math.round(napMs / 60000))}m`;
+      const nowHHMM = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+      const hint = `⏰ (resumed at ${nowHHMM} after ${napStr} offline — catch-up below, oldest first; reply once and mind the timestamps)`;
+      const fullPrompt = `${hint}\n${lines}`;
+      const residents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[chatId]);
+      const globalRes = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
+      const beings = residents.length ? residents : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
+      for (const being of beings) {
+        submitRef.current(`@${being} (backlog catch-up)`, {
+          fromWhatsApp: true,
+          waChatId: chatId,
+          waUser: b.meta?.waUser,
+          waClientLabel: b.meta?.waClientLabel,
+          waSenderName: 'multiple',
+          replyAllowed: b.replyAllowed,   // chat-mode gate, OR'd across the batch
+          autoDispatched: true,
+          forceTarget: being,
+          _chainDepth: 0,
+          _personaBodyOverride: fullPrompt,
+        }).catch(e => errOut(`!! backlog flush failed (${chatId}): ${e.message}`));
+      }
+    }
+  };
+  const _backlogPush = (chatId, msg, replyAllowed, baseMeta) => {
+    let b = _backlogBuffers.current.get(chatId);
+    if (!b) { b = { msgs: [], replyAllowed: false, meta: null, firstTs: msg.ts }; _backlogBuffers.current.set(chatId, b); }
+    b.msgs.push(msg);
+    b.replyAllowed = b.replyAllowed || !!replyAllowed;
+    b.meta = baseMeta;
+    if (msg.ts && (!b.firstTs || msg.ts < b.firstTs)) b.firstTs = msg.ts;
+    logOut(`backlog: buffered ${chatId} (n=${b.msgs.length}${b.replyAllowed ? ', reply-allowed' : ''})`);
+    if (_backlogTimer.current) clearTimeout(_backlogTimer.current);
+    _backlogTimer.current = setTimeout(() => { _backlogTimer.current = null; _backlogFlush(); }, _BACKLOG_DEBOUNCE_MS);
+  };
   // ── Interactive help/config menu (/h · /? · /help) ──────────────────────
   // Surface-agnostic: src/help-menu.mjs holds the model + nav + render. Here we
   // arm a per-chat menu (operator-only) and feed the owner's numbers/text into
@@ -3670,6 +3740,21 @@ function App() {
           // commands + non-resident chats fall through to one normal dispatch
           // (observe-only / wake-word handling downstream).
           if (submitRef.current) {
+            // CATCH-UP first: a message tagged backlog (arrived while we were
+            // offline) is buffered per chat and flushed to E as ONE timestamped
+            // chunk once the burst settles — not a dispatch per stale message
+            // (see _backlogPush). 'off' already returned above; paused or slash
+            // backlog falls through to the normal record/handle path (we don't
+            // auto-run a stale brain turn while paused, nor execute a stale
+            // slash). The chat-mode reply gate (_replyAllowed) rides along so
+            // the consolidated turn replies only where the mode permits.
+            if (from.backlog && !isSlash && !autoPaused) {
+              _backlogPush(from.chatId,
+                { body: text, senderName: from.senderName ?? 'someone', ts: from.backlogTsMs || Date.now() },
+                _replyAllowed,
+                baseMeta);
+              return;
+            }
             // Reception: every mode except 'off' broadcasts to the residents so
             // E (haiku) reads the chat. The per-message `replyAllowed` (in
             // baseMeta) gates whether each reply is actually sent. 'off' falls
