@@ -2356,15 +2356,29 @@ export async function startWhatsAppBridge({
       // (operator 2026-06-04 real-sleep test). Retry a few times too — the
       // first attempt right after a post-wake reconnect can hit a transient
       // failure while the NIC re-associates (the ENOTFOUND window).
+      // EVERY attempt is time-bounded. reuploadRequest awaits the SENDER's
+      // re-upload with NO internal timeout, so on a fragile post-wake socket it
+      // hangs FOREVER — and because the upsert handler awaits this save, a hung
+      // download wedges the whole catch-up batch (no transcript, the batch's
+      // backlog flush never fires) indefinitely (operator 2026-06-04: a self
+      // voice note stuck the Self catch-up for minutes). A racing timeout turns
+      // a hang into a retry, and a final give-up that at least RETURNS so the
+      // batch proceeds. Attempt 1 is a PLAIN download (fast when the CDN blob is
+      // present — the live case, and a fast 404 when evicted); later attempts
+      // add reuploadRequest to recover an evicted blob (the backlog case).
+      const DL_TIMEOUT_MS = 20_000;
       let buf = null, lastErr = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          buf = await downloadMediaMessage(msg, 'buffer', {}, {
-            logger: silentLogger(),
-            reuploadRequest: sock.updateMediaMessage,
-          });
-          if (attempt > 1) _blog(`media download recovered on attempt ${attempt} for ${msgId} (${hit.kind})`);
-          break;
+          const opts = attempt === 1 ? {} : { reuploadRequest: sock.updateMediaMessage };
+          const dl = downloadMediaMessage(msg, 'buffer', {}, { logger: silentLogger(), ...opts });
+          dl.catch(() => {});   // a losing (timed-out) download must not raise an unhandled rejection
+          buf = await Promise.race([
+            dl,
+            new Promise((_, rej) => setTimeout(() => rej(new Error(`download timeout ${DL_TIMEOUT_MS}ms`)), DL_TIMEOUT_MS)),
+          ]);
+          if (buf && attempt > 1) _blog(`media download recovered on attempt ${attempt} for ${msgId} (${hit.kind})`);
+          if (buf) break;
         } catch (e) {
           lastErr = e;
           _blog(`media download attempt ${attempt}/3 failed for ${msgId} (${hit.kind}): ${e?.message ?? e}`);
