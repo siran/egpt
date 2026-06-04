@@ -1471,6 +1471,15 @@ export async function startWhatsAppBridge({
         everConnected = true;
         _connectionOpen = true;
         unhealthySince = 0;
+        // CANCEL any reconnect armed during the down-period. We're connected
+        // now, so there is nothing to reconnect — and if a stale timer fires
+        // it would run connect(), whose single-socket teardown bulldozes THIS
+        // live socket and restarts the churn. That residual cascade (after the
+        // storm fix) dropped the socket ~4s post-open, mid media-download, so a
+        // Self voice note arrived as an upsert but its audio never finished
+        // downloading → nothing to transcribe (operator 2026-06-04). A real
+        // future disconnect re-arms via the 'close' handler / watchdog.
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
         // Seed the resolver with OUR own lid↔phone pairing (sock.user).
         try { if (_lidMap.learnPair(myLid, myJid)) _scheduleLidMapWrite(); } catch { /* best effort */ }
         // Clear any prior deferral state — we have a real session now, so
