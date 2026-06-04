@@ -72,6 +72,16 @@ async function makeRuntime(opts = {}) {
     sysLog: opts.sysLog,
     systemCwd: opts.systemCwd,
   });
+  // Mirror the production bridge: the runtime's WA reply gate now fails CLOSED
+  // (replyAllowed must be EXPLICITLY true), so supply replyAllowed from the
+  // message's @e mention when a test didn't set it — exactly what the bridge
+  // (egpt.mjs onIncoming) computes before calling the runtime.
+  const _origSubmitIncoming = runtime.submitIncoming.bind(runtime);
+  runtime.submitIncoming = (text, meta = {}) => {
+    const replyAllowed = meta.replyAllowed
+      ?? (meta.fromWhatsApp ? /(^|\s)@(?:egpt|e)\b/i.test(String(text ?? '')) : undefined);
+    return _origSubmitIncoming(text, { ...meta, replyAllowed });
+  };
   return { brainCalls, bridge, errors, runtime, sends, stateDir };
 }
 
@@ -244,6 +254,7 @@ describe('dispatch runtime', () => {
 
     await runtime.submitIncoming('@e hello', {
       fromWhatsApp: true,
+      replyAllowed: true,   // this test builds its own runtime (not the wrapped makeRuntime one)
       waChatId: '12345@lid',
       waChatName: 'Alice',
       waSlug: 'alice',
@@ -403,6 +414,25 @@ describe('dispatch runtime', () => {
     expect(result.kind).toBe('silence');
     expect(brainCalls).toHaveLength(1);
     expect(sends).toHaveLength(0);
+  });
+
+  it('the MODE GATE is authoritative: a non-silence reply is suppressed when replyAllowed is not true (no leak)', async () => {
+    // The leak (operator 2026-06-04, Joyce, mention mode, no @e): the gate was
+    // fail-OPEN (`replyAllowed === false`) and checked AFTER the silence test,
+    // so a "…\n\n<reflection>" reply — NOT pure silence — sailed through and was
+    // sent. The model's reply text must be IRRELEVANT: anything other than an
+    // explicit replyAllowed:true on WA gets nothing delivered.
+    const reflection = '…\n\nAnd here we see the caring side of collaboration.';
+    const { brainCalls, runtime, sends } = await makeRuntime({ reply: reflection });
+    const result = await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      replyAllowed: false,   // mention-mode with no @e: the bridge says do-not-reply
+      waChatId: 'chat-a',
+      waSlug: 'alice',
+    });
+    expect(result.kind).toBe('suppressed');   // NOT 'reply', NOT 'silence' — the body is irrelevant
+    expect(brainCalls).toHaveLength(1);        // E still READ it for context
+    expect(sends).toHaveLength(0);             // but nothing reached the chat
   });
 
   it('records SEND-FAIL activity when bridge.send returns null', async () => {
