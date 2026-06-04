@@ -3468,15 +3468,15 @@ function App() {
               // "stays saying 'on it' but doesn't harakiri"). The RESTART is the
               // priority; the ack is best-effort within the 1.5s window (plus
               // _exitClean's 800ms WS-close flush).
-              // Target the operator's Self DM (configured chat_id, phone-form)
-              // rather than from.chatId: the self-DM frequently ARRIVES as the
-              // LID form (34…@lid), and a raw @lid send does not surface in the
-              // note-to-self the operator watches — so the ack (and the later
-              // "egpt back!") looked like the spine "never came back" when it
-              // was actually healthy (operator 2026-06-03). Falls back to the
-              // arrival chat only when no chat_id is configured.
-              const _ackJid = EGPT_CONFIG.whatsapp?.chat_id || from.chatId;
-              try {
+              // This ack is a SYSTEM message → it may ONLY go to the operator's
+              // self-DM (configured chat_id), NEVER the chat /restart happened
+              // to arrive in (operator 2026-06-04: system messages are
+              // structurally limited to Self). If no chat_id is configured, skip
+              // the immediate ack entirely — the respawned spine still posts
+              // "egpt back!" (also self-gated via the outbox). The self-DM also
+              // dodges the @lid-doesn't-surface problem from 2026-06-03.
+              const _ackJid = EGPT_CONFIG.whatsapp?.chat_id || null;
+              if (_ackJid) try {
                 await Promise.race([
                   bridge.send(`🧠 ${firstTok.slice(1)} initiated… (pid ${process.pid} going down)`, { chatId: _ackJid }).catch(() => {}),
                   new Promise(res => setTimeout(res, 1500)),
@@ -7978,14 +7978,25 @@ function App() {
     // explicit operator @waN, not by labelling an outbox file.)
     {
       const waCfg = EGPT_CONFIG.whatsapp ?? {};
-      const allowed = new Set(
-        [
-          ...(Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : []),
-          waCfg.chat_id,
-        ].filter(Boolean),
-      );
+      // SYSTEM messages (operator notices: restart acks, debug echo, <think>)
+      // are structurally limited to the operator's OWN destinations — the
+      // self-DM (chat_id) and the optional debug-bot — NEVER a contact's chat,
+      // not even an enrolled one (operator 2026-06-04: "even system-messages
+      // should be structurally limited to Self"). The 'from' label is NOT
+      // trusted (conversation-e can spoof 'from:system'), but spoofing it only
+      // makes a send MORE restricted (Self-only), never a bypass. Model/persona
+      // sends use the enrolled write-whitelist (auto_e_chats + self-DM).
+      const allowed = ev.from === 'system'
+        ? new Set([waCfg.chat_id, waCfg.egptbot_jid].filter(Boolean))
+        : new Set([
+            ...(Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : []),
+            waCfg.chat_id,
+          ].filter(Boolean));
       if (!allowed.has(ev.jid)) {
-        log(`!! ${source}: wa-send (from ${ev.from}) to ${ev.jid} BLOCKED — not in auto_e_chats or self-DM. The outbox is gated by CHAT, never the 'from' label. body="${(ev.body || '').slice(0, 60)}${(ev.body || '').length > 60 ? '…' : ''}"`);
+        const why = ev.from === 'system'
+          ? 'a system message may ONLY reach the operator self-DM / debug-bot — never a contact chat'
+          : 'not in auto_e_chats or self-DM';
+        log(`!! ${source}: wa-send (from ${ev.from}) to ${ev.jid} BLOCKED — ${why}. The outbox is gated by CHAT, never the 'from' label. body="${(ev.body || '').slice(0, 60)}${(ev.body || '').length > 60 ? '…' : ''}"`);
         return true;  // consume — don't retry; operator audits via /log
       }
     }
