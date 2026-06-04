@@ -410,9 +410,15 @@ export async function startWhatsAppBridge({
   // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
   // or a network-down boot is left to reconnect/backoff, never an exit-loop.
   let everConnected   = false;  // set true on the first 'connection: open'
+  // Health is decided by baileys' OWN connection events, NOT ws.readyState —
+  // the wrapped socket can report readyState 0 while baileys is fully 'open'
+  // (false-wedged exits, operator 2026-06-04). _connectionOpen flips with the
+  // open/close events; that is the single source of truth for "connected".
+  let _connectionOpen = false;
   let unhealthySince  = 0;      // ms when the socket last became unhealthy (0 = healthy)
   let _fatalFired     = false;  // onFatal fires at most once
   let bridgeWatchdogTimer = null;
+  let _lastWatchdogTick = 0;    // for sleep-awareness: a big gap = the host slept
   // Wake-from-sleep detection. A short timer that, if it fires much later than
   // its interval, means the host was SUSPENDED (sleep/hibernate) in between —
   // the WA socket is then dead (TCP dropped) but baileys often gets no 'close'
@@ -557,27 +563,33 @@ export async function startWhatsAppBridge({
   // supervised spine then exits with a crash code and the daemon respawns a clean
   // process. Normal reconnects (which succeed within the grace) never trip this.
   function _bridgeWatchdogTick() {
+    const now = Date.now();
+    // SLEEP-AWARENESS (critical): unhealthySince is wall-clock, but the process
+    // is FROZEN while the host sleeps. Without this, on wake the first tick sees
+    // `now - unhealthySince` = the whole sleep duration and instantly "wedges"
+    // (operator 2026-06-04: 1160s false-wedge on wake). If the gap since our
+    // last tick is much larger than our interval, the host slept: reset the
+    // unhealthy clock and skip this tick so the post-wake reconnect gets a fresh
+    // grace. (_wakeTick already re-arms the reconnect.)
+    const tickGap = _lastWatchdogTick ? (now - _lastWatchdogTick) : 0;
+    _lastWatchdogTick = now;
+    if (tickGap > WAKE_GAP_MS) { unhealthySince = 0; return; }
     if (stopped) return;        // loggedOut / deferred-to-another-egpt → intentional stop, not a wedge
     if (!everConnected) return; // never connected yet (initial pairing / boot) → reconnect+backoff owns it
-    let healthy;
-    if (!sock || reconnectTimer) {
-      healthy = false;          // mid-reconnect (between attempts) or no socket
-    } else {
-      const rs = _socketReadyState();
-      // readyState known → must be OPEN(1); unknown → trust connectedAt (we
-      // believe we're connected and have no close event saying otherwise).
-      healthy = (rs === undefined) ? (connectedAt > 0) : (rs === 1);
-    }
+    // Health = baileys' OWN connection state, NOT ws.readyState (the wrapped
+    // socket reports 0 while baileys is 'open' → false-wedge). Healthy iff
+    // baileys says open AND we're not mid-reconnect.
+    const healthy = _connectionOpen && !reconnectTimer;
     if (healthy) { unhealthySince = 0; return; }
     if (!unhealthySince) {
-      unhealthySince = Date.now();
-      _blog(`watchdog: WA socket unhealthy (sock=${!!sock} reconnecting=${!!reconnectTimer} readyState=${_socketReadyState() ?? '?'}) — grace ${Math.round(wedgedGraceMs / 1000)}s`);
+      unhealthySince = now;
+      _blog(`watchdog: WA not connected (open=${_connectionOpen} reconnecting=${!!reconnectTimer}) — grace ${Math.round(wedgedGraceMs / 1000)}s`);
       return;
     }
-    const downMs = Date.now() - unhealthySince;
+    const downMs = now - unhealthySince;
     if (downMs >= wedgedGraceMs && !_fatalFired) {
       _fatalFired = true;
-      const reason = `WA socket unhealthy ${Math.round(downMs / 1000)}s (reconnectAttempts=${reconnectAttempts}, readyState=${_socketReadyState() ?? '?'})`;
+      const reason = `WA not connected for ${Math.round(downMs / 1000)}s while awake (reconnectAttempts=${reconnectAttempts})`;
       _blog(`watchdog: WEDGED — ${reason}; signaling host onFatal`);
       err(`whatsapp: bridge wedged — ${reason}`);
       try { onFatal?.(reason); }
@@ -1427,9 +1439,11 @@ export async function startWhatsAppBridge({
         // Healthy connect — clear backoff so the NEXT close starts
         // at the base 5s delay again, not wherever it left off.
         reconnectAttempts = 0;
-        // Health watchdog: we have a live socket. Arm the wedged-exit (only
-        // ever after a real connection) and clear any pending unhealthy clock.
+        // Health watchdog: baileys says we're connected. Arm the wedged-exit
+        // (only ever after a real connection) and clear any pending unhealthy
+        // clock. _connectionOpen is the watchdog's source of truth.
         everConnected = true;
+        _connectionOpen = true;
         unhealthySince = 0;
         // Seed the resolver with OUR own lid↔phone pairing (sock.user).
         try { if (_lidMap.learnPair(myLid, myJid)) _scheduleLidMapWrite(); } catch { /* best effort */ }
@@ -1451,6 +1465,7 @@ export async function startWhatsAppBridge({
         _refreshAllGroupNames();
       }
       if (connection === 'close') {
+        _connectionOpen = false;
         const reason = lastDisconnect?.error?.output?.statusCode;
         _blog(`connection CLOSE — reason=${reason ?? '?'} (${lastDisconnect?.error?.message ?? 'no message'})`);
         if (reason === DisconnectReason.loggedOut) {
