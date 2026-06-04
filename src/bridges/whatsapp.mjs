@@ -2320,7 +2320,34 @@ export async function startWhatsAppBridge({
     const indexBefore = await _readMediaIndex(dir);
     if (indexBefore[msgId]) return indexBefore[msgId].path ?? path;
     try {
-      const buf = await downloadMediaMessage(msg, 'buffer', {});
+      // reuploadRequest is ESSENTIAL for offline / sleep-synced media. A
+      // message sent while we were in S0 suspend arrives on reconnect as a
+      // type=append backlog, but by then WhatsApp's media CDN has often
+      // EVICTED the encrypted blob — a plain download(msg,'buffer',{}) then
+      // throws 404/410 and the voice note is lost with no transcript (the
+      // `.catch` upstream swallows it to the err channel). reuploadRequest
+      // lets baileys ask the SENDER's device to re-upload so we can fetch it.
+      // That was the gap: online notes (fresh on CDN) transcribed fine; a
+      // note sent during real sleep arrived as an upsert but never downloaded
+      // (operator 2026-06-04 real-sleep test). Retry a few times too — the
+      // first attempt right after a post-wake reconnect can hit a transient
+      // failure while the NIC re-associates (the ENOTFOUND window).
+      let buf = null, lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          buf = await downloadMediaMessage(msg, 'buffer', {}, {
+            logger: silentLogger(),
+            reuploadRequest: sock.updateMediaMessage,
+          });
+          if (attempt > 1) _blog(`media download recovered on attempt ${attempt} for ${msgId} (${hit.kind})`);
+          break;
+        } catch (e) {
+          lastErr = e;
+          _blog(`media download attempt ${attempt}/3 failed for ${msgId} (${hit.kind}): ${e?.message ?? e}`);
+          if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
+        }
+      }
+      if (!buf) throw lastErr ?? new Error('media download failed — no buffer');
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path, buf);
       // Sidecar .txt with the full caption / filename when the
