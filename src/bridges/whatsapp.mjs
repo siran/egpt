@@ -2935,43 +2935,22 @@ export async function startWhatsAppBridge({
       }
     }
 
-    // Backlog filter: messages whose timestamp is older than
-    // (connectedAt - maxBacklogSeconds) are HELD instead of dispatched.
-    // baileys hands you the recent backlog right after WS open, which
-    // for a daemon-restart scenario means an @e from 20 minutes ago
-    // would otherwise auto-run the brain — surprising and unsafe. We
-    // capture them in _heldMessages so the operator can review via
-    // /wa-pending and decide whether to dispatch each (or all, or
-    // clear them). Set maxBacklogSeconds=0 to disable the hold and
-    // restore the old auto-dispatch behaviour.
+    // Backlog TAG (operator 2026-06-04, "as-if always on"): a message older
+    // than (connectedAt - maxBacklogSeconds) arrived while we were OFFLINE
+    // (sleep / restart). We used to HOLD it in _heldMessages → /wa-pending and
+    // never auto-dispatch — a build-time crutch to stop a restart bursting a
+    // brain turn per stale message. Now we PASS it through tagged backlog:true;
+    // the host accumulates the catch-up per chat into ONE timestamped chunk fed
+    // to E once (with a "resumed after Nh offline" hint), gated by the chat's
+    // mode like any reply. So a 20-min-old @e doesn't auto-burst — it's one
+    // consolidated, mode-gated turn. maxBacklogSeconds is the staleness
+    // threshold for the tag (default 0 = anything pre-connect is backlog;
+    // -1 disables the tag → everything looks live). Media + transcription
+    // already ran in _saveMediaIfAny (transcript inlined downstream).
+    let _isBacklog = false;
     if (maxBacklogSeconds >= 0 && connectedAt > 0) {
-      const msgTsMs = (Number(msg.messageTimestamp) || 0) * 1000;
-      if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
-        // Hold ALL backlog including fromMe (operator 2026-05-23: on
-        // reconnect, the operator's own queued sends also pile up — if
-        // we let fromMe through, the brain still gets bombarded with
-        // 20 dispatches from "while we were offline" sends). Hold
-        // means: don't auto-dispatch to brain. Media still saves to
-        // disk via onMediaSaved (independent of the hold gate).
-        const text = textOf(msg.message);
-        if (text) {
-          _heldMessages.push({
-            jid: msg.key?.remoteJid,
-            author: typeof msg.pushName === 'string' && msg.pushName.trim()
-              ? msg.pushName.trim()
-              : null,
-            text,
-            ts: msgTsMs,
-            key: msg.key?.id ? { id: msg.key.id, fromMe: !!msg.key.fromMe } : null,
-            raw: msg,    // kept so the operator can re-dispatch through
-                         // the same handleMessage path on /wa-pending
-                         // dispatch — single source of truth for awareness
-                         // + wake-word + brain routing.
-          });
-          log(`held pre-connect message from ${msg.key?.remoteJid?.split('@')[0] ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /wa-pending to review`);
-        }
-        return;
-      }
+      const _bms = (Number(msg.messageTimestamp) || 0) * 1000;
+      _isBacklog = _bms > 0 && _bms < connectedAt - maxBacklogSeconds * 1000;
     }
 
     // Filter our own bridge-sent echoes: WhatsApp delivers every outbound
@@ -3364,6 +3343,13 @@ export async function startWhatsAppBridge({
       // system still sees the canonical <base>.transcript.txt via
       // _transcriptByMsgId on completion.
       voiceStream: msg.key?.id ? (_voiceStreamsByMsgId.get(msg.key.id) ?? null) : null,
+      // Catch-up tag: this message arrived while we were offline (sleep/
+      // restart). The host buffers backlog per chat and feeds E ONE
+      // accumulated chunk instead of a dispatch per stale message. Also
+      // carries the message's own timestamp so the host can frame the
+      // "resumed after Nh offline" hint and order the chunk by real time.
+      backlog: _isBacklog,
+      backlogTsMs: (Number(msg.messageTimestamp) || 0) * 1000 || null,
     });
   }
 
