@@ -50,7 +50,11 @@ async function announceBounce({ ctx, meta, preBody }) {
   // So prefer the configured Self DM; fall back to the arrival chat only when
   // no chat_id is configured.
   const cfgChatId = ctx.EGPT_CONFIG?.whatsapp?.chat_id || null;
-  const selfJid = cfgChatId || meta?.waChatId || null;
+  // SYSTEM message → Self ONLY (operator 2026-06-04). No meta.waChatId fallback:
+  // the restart ack is for the operator, never the chat /restart arrived in —
+  // and the outbox now hard-blocks a from:'system' send to anything but the
+  // self-DM anyway, so a non-Self target would just be dropped.
+  const selfJid = cfgChatId;
   _rlog(EGPT_HOME, `announceBounce: fromWhatsApp=${!!meta?.fromWhatsApp} metaWaChatId=${meta?.waChatId ?? 'none'} cfgChatId=${cfgChatId ?? 'none'} → selfJid=${selfJid ?? 'NULL'}`);
   if (!selfJid) { _rlog(EGPT_HOME, 'announceBounce: SKIPPED — no selfJid → NO sidecar → there will be no "egpt back!"'); return; }
   let sha = '?', subj = '';
