@@ -423,18 +423,31 @@ export async function dispatchPersonaTurn({
     : { threadId: 'shell', surface: 'shell' };
 
   const reply = await runDefaultBrainTurn(personaPrompt, () => {}, threadCtx);
+  // MODE GATE FIRST — the per-chat auto-mode is authoritative; the model's reply
+  // text is IRRELEVANT to whether @e may speak (operator 2026-06-04: "MODEL'S
+  // REPLY IS IRRELEVANT FOR GATING … no reply to a prompt can go anywhere
+  // ungated"). The brain still RAN (so E has the message in context), but a chat
+  // whose mode + mention-status don't permit a reply gets NOTHING delivered,
+  // whatever the reply says.
+  //
+  // Fails CLOSED for WA: replyAllowed must be EXPLICITLY true. An undefined flag
+  // (a caller that forgot to thread it) must NOT emit. The previous
+  // `replyAllowed === false` test was fail-OPEN — undefined passed it, so @e's
+  // reflections leaked into Joyce's mention-mode chat whenever the reply wasn't
+  // a pure '...'. (Same class as the pile-drain leak; this path never got it.)
+  const _gateAllow = meta.fromWhatsApp ? (meta.replyAllowed === true) : (meta.replyAllowed !== false);
+  if (!_gateAllow) {
+    const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+    logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
+    return { kind: 'suppressed', reply, threadCtx, personaPrompt };
+  }
+  // 'on'-mode politeness cosmetic, reached ONLY after the mode gate already
+  // allowed a reply — E may decline by replying just '...'. It is NOT a gating
+  // input (a mode-blocked chat never gets here), just a no-noise courtesy.
   if (isSilence(reply)) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
     logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
-  }
-  // Per-chat auto-mode reply gate: the brain RAN (so E has the message in
-  // context), but this chat's mode + the message's mention-status don't permit
-  // a reply right now — so don't send it. (e.g. 'mute', or 'mention' with no @e.)
-  if (meta.replyAllowed === false) {
-    const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-    logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent)`);
-    return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
 
   // Emitted commands: pull own-line slash commands out of the reply and run
