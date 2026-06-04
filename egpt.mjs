@@ -3819,13 +3819,32 @@ function App() {
       // when the keeper runs as its own process.
       const streamCfg = EGPT_CONFIG.streaming ?? {};
       const streamChannel = createInProcessStreamChannel(bridge);
-      streamFactoryRef.current = (initialText, opts = {}) =>
-        streamChannel.makeStream(initialText, opts, {
+      streamFactoryRef.current = (initialText, opts = {}) => {
+        // ── THE single WhatsApp emit chokepoint ──────────────────────────────
+        // EVERY model reply that reaches a WA chat is a stream opened HERE (the
+        // "⌛ thinking…" placeholder + its updates/finish). Gating here makes a
+        // leak structurally impossible: the only way to put text in a WA chat is
+        // through this gate, so a path that forgets to gate (or a future new
+        // path) CANNOT leak — it just gets nothing.
+        //
+        // FAILS CLOSED: a caller that omits replyAllowed, or a chat whose mode
+        // forbids a reply (mute/off/mention-without-@e) or the global
+        // auto_e_paused kill, gets `null` — NOT a no-op stream. Returning null
+        // (vs a dead handle) matters: a dead handle would later report
+        // `!delivered` and trip the raw fallback-send, re-leaking. With null the
+        // caller's `?.` no-ops and its `if (stream)` branch is skipped entirely.
+        // The lone bypass is opts.system (restart acks etc., separately gated).
+        if (!opts.system &&
+            !_eMayReplyToChat(opts.chatId, { replyAllowed: opts.replyAllowed, isReaction: opts.isReaction })) {
+          return null;
+        }
+        return streamChannel.makeStream(initialText, opts, {
           ...(typeof streamCfg.update_coalesce_ms === 'number'
             ? { updateCoalesceMs: streamCfg.update_coalesce_ms } : {}),
           ...(typeof streamCfg.finish_timeout_ms === 'number'
             ? { finishTimeoutMs: streamCfg.finish_timeout_ms } : {}),
         });
+      };
       logOut('whatsapp bridge enabled');
       return true;
     } catch (e) {
@@ -6384,8 +6403,12 @@ function App() {
       ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
       : null;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
+    // Named-brain reply: replyAllowed:true because the brain was explicitly
+    // addressed (the caller already nulled waChatId for mute/off/paused chats);
+    // the chokepoint re-confirms via the same gate. waChatId here is only set
+    // for a chat the gate already permitted.
     const wa = (!noBridge && waChatId)
-      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId })
+      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId, replyAllowed: true })
       : null;
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
@@ -6594,7 +6617,7 @@ function App() {
         if (!_voiceMayEmit) return;
         if (voiceStream) return;
         try {
-          voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+          voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
         } catch (e) { console.error(`!! voice-stream lazy open: ${e?.message ?? e}`); }
       };
       const _isSilencePartial = (s) => {
@@ -7655,7 +7678,7 @@ function App() {
           : null;
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
           ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
-              { chatId: meta.waChatId })
+              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
           : null;
         // WA two-message split for thinking models (@l). Operator
         // 2026-05-24: "the thinking response should reply once, after
@@ -7692,7 +7715,7 @@ function App() {
               if (!waSplit) {
                 waSplit = true;
                 waStream.finish(`${waPrefix}${think}`);     // freeze the thinking message
-                waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+                waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
               }
               if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
             }
@@ -7735,7 +7758,7 @@ function App() {
             if (!waSplit) {
               waSplit = true;
               await waStream.finish(`${waPrefix}${think}`);
-              waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId });
+              waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
             }
             if (waAnswerStream) { await waAnswerStream.finish(`${waPrefix}${answer || '…'}`); primaryStream = waAnswerStream; }
           } else {
