@@ -1430,7 +1430,13 @@ export async function startWhatsAppBridge({
     sock.ev.on('contacts.update', (c) => _ingestContacts(c));
     sock.ev.on('contacts.set', (arg) => _ingestContacts(Array.isArray(arg) ? arg : arg?.contacts));
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr, receivedPendingNotifications }) => {
+      // baileys fires this true once it has flushed the offline notification
+      // queue for this session. Logging it pins down the sleep/wake
+      // backlog question: a reconnect that reports receivedPendingNotifications
+      // with NO upsert traces means WhatsApp had nothing queued for us (it
+      // already delivered to the frozen pre-sleep socket).
+      if (receivedPendingNotifications) _blog('connection: receivedPendingNotifications=true (offline queue flushed)');
       if (qr) {
         _writeWaState('pairing', 'qr');
         // Render QR to a string so Ink can print it cleanly,
@@ -1557,6 +1563,18 @@ export async function startWhatsAppBridge({
     // (worse) the brain receives a stream of stale messages as if
     // they were live questions.
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // fs-direct upsert trace — the ONLY durable record of what baileys
+      // actually hands us (the headless Ink buffer drops lines; the debug
+      // log is opt-in). This is the instrument for the offline-backlog
+      // question: after an S0 sleep/wake, if a message sent DURING sleep
+      // never shows up here on reconnect, then WhatsApp delivered it to the
+      // frozen pre-sleep socket and won't re-send to the fresh one
+      // (operator 2026-06-04: a Self voice note sent while asleep never
+      // arrived, despite a clean reconnect). Terse: type + count + jids.
+      try {
+        const jids = [...new Set(messages.map((m) => m.key?.remoteJid).filter(Boolean))];
+        _blog(`upsert: type=${type} n=${messages.length} jids=${jids.slice(0, 4).join(',')}${jids.length > 4 ? '…' : ''}`);
+      } catch { /* best effort */ }
       if (debug) {
         for (const m of messages) {
           const peek = textOf(m.message ?? {})?.slice(0, 60) ?? null;
