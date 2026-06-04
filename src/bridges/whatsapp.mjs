@@ -1698,7 +1698,7 @@ export async function startWhatsAppBridge({
         if (msg.message?.protocolMessage) {
           return _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
         }
-        return _saveMediaIfAny(msg).catch(e => err(`media save threw: ${e.message}`));
+        return _saveMediaIfAny(msg).catch(e => { _blog(`media save threw for ${msg.key?.id} (${msg.key?.remoteJid}): ${e?.message ?? e}`); err(`media save threw: ${e.message}`); });
       }));
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
@@ -2302,6 +2302,7 @@ export async function startWhatsAppBridge({
     ];
     const hit = kinds.find(k => m[k.key]);
     if (!hit) return null;
+    _blog(`media-fn: hit=${hit.kind} ${msg.key?.id} (${msg.key?.remoteJid}) — entered`);  // proves _saveMediaIfAny ran for this media node
     // images_docs filter — only images + documents (videos / audio
     // / stickers skipped).
     if (downloadMode === 'images_docs' && !(hit.kind === 'image' || hit.kind === 'document')) return null;
@@ -2318,6 +2319,13 @@ export async function startWhatsAppBridge({
     }
     const ext = _extFor(node.mimetype, node.fileName);
     const dir = _mediaDirFor(chatJid);
+    // Durable entry trace (operator 2026-06-04: backlog audios produced no save
+    // and no error visible in the lossy headless buffer). Tells us a media node
+    // passed every guard and reached the save/download — so if it's MISSING for
+    // a given msgId we know an early return ate it, and if it's PRESENT but no
+    // 'media saved'/'download attempt' follows, the download/transcribe is where
+    // it dies. Removed once the catch-up media path is proven.
+    _blog(`media: ${hit.kind} ${msgId} chat=${chatJid} fromMe=${!!msg.key?.fromMe} ptt=${!!node.ptt} len=${Number(node.fileLength)||0} → save`);
     // Filename: <YYYYMMDD-HHMM>_<author>_<slug>_<shortId>.<ext>
     //   - timestamp gives chronological sort
     //   - author slug (pushName or 'you')
