@@ -293,6 +293,7 @@ export async function startWhatsAppBridge({
   onChatId,    // called once when first chat is captured (host can persist)
   onQR,        // called with the rendered QR ASCII when WA wants a fresh pair; host can route to a visible surface
   onMediaSaved, // called per successful media download: { kind, chatJid, msgId, path, sizeBytes }
+  onBacklogDelivered, // called after an offline-backlog upsert batch (type!=='notify') finishes processing; host flushes the accumulated catch-up to E (no timer — this is the real delivery boundary)
   onSummonGenie, // called when '@?' token detected in an allowed sender's message; host summons a genie
   onSummonMovie, // called when '@movie <preset> [args]' token detected; host builds frames and calls playFrames with existingKey so the trigger message becomes the movie
   onFatal,     // called ONCE when the bridge is WEDGED beyond recovery (silent socket death / reconnect that never succeeds past the grace). The HOST decides what to do — the supervised spine exits with a crash code so egpt-daemon respawns a clean process. No external liveness-kill.
@@ -1702,6 +1703,16 @@ export async function startWhatsAppBridge({
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
+      }
+      // Offline-backlog delivery boundary. type!=='notify' (append/prepend) is
+      // the catch-up sync baileys hands over on reconnect (sleep/restart). Every
+      // message in this batch has now been processed — transcribed + handed to
+      // the host (which buffered the backlog-tagged ones). Signal the host to
+      // flush the accumulated per-chat catch-up to E as ONE turn. This is the
+      // real delivery boundary, so the host needs no timer/debounce. Live
+      // ('notify') batches don't fire it — those dispatch per-message as normal.
+      if (type !== 'notify') {
+        try { onBacklogDelivered?.(); } catch (e) { err(`onBacklogDelivered threw: ${e.message}`); }
       }
     });
 

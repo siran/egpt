@@ -2292,29 +2292,23 @@ function App() {
   // ── Backlog catch-up accumulator (operator 2026-06-04 "as-if always on") ──
   // Messages that arrived while we were offline (sleep / restart) are tagged
   // backlog:true by the bridge. Rather than a brain dispatch per stale message,
-  // we buffer them per chat and flush ONE consolidated, timestamped turn to E
-  // once the burst settles — prefixed with a "resumed after Nh offline" hint so
-  // E knows it's catch-up and can be sensible about stale items. Reply is
-  // mode-gated EXACTLY like live (replyAllowed OR'd across the batch — if any
-  // message in the catch-up warranted a reply under the chat's mode, E may
-  // reply once to the whole chunk). A debounce (NOT the heartbeat) drives the
-  // flush, so a backlog delivered across several reconnect upserts still
-  // coalesces into one turn per chat. Sequencing is automatic: backlog
-  // onIncoming only fires after `open`, and the debounce waits for the burst to
-  // settle, so the flush lands on a live socket.
+  // we buffer them per chat and feed E ONE consolidated, timestamped turn —
+  // prefixed with a "resumed after Nh offline" hint so E knows it's catch-up and
+  // can be sensible about stale items. Reply is mode-gated EXACTLY like live
+  // (replyAllowed OR'd across the batch — if any message warranted a reply under
+  // the chat's mode, E may reply once to the whole chunk).
+  //
+  // The flush is driven by the bridge's onBacklogDelivered signal (fired after
+  // it finishes processing an offline-backlog upsert batch) — NOT a timer. There
+  // is nothing to wait for: baileys hands the offline queue over in a delivery,
+  // and the reconnect is now clean (single-socket), so the old fragmented-across-
+  // reconnects delivery that motivated a debounce no longer happens. No hold of
+  // our own either: the bridge's transcription hold and the engine's brain-busy
+  // hold (acquireStayAwake while `busy`) cover the burst, and the 30s stay-awake
+  // release-linger cushions the handoff + leaves a grace window for any
+  // follow-up after the catch-up posts (operator 2026-06-04).
   const _backlogBuffers = useRef(new Map());   // chatId -> { msgs:[{body,senderName,ts}], replyAllowed, meta, firstTs }
-  const _backlogTimer = useRef(null);
-  const _backlogAwakeRelease = useRef(null);   // stay-awake hold spanning the debounce → flush
-  const _BACKLOG_DEBOUNCE_MS = 8000;
   const _backlogFlush = () => {
-    // Release the catch-up stay-awake hold once the turns are DISPATCHED — the
-    // brain-busy hold (acquireStayAwake while `busy`) then carries us through
-    // E's inference + emit. This makes "a scheduled wake finishes the whole
-    // catch-up (transcript → debounce → flush → E reply) before idle-sleep"
-    // STRUCTURAL, instead of relying on the 30s release-linger to happen to
-    // bridge the debounce. Captured-then-nulled so every exit path releases.
-    const _rel = _backlogAwakeRelease.current; _backlogAwakeRelease.current = null;
-    try {
     if (!submitRef.current) return;
     for (const [chatId, b] of [..._backlogBuffers.current.entries()]) {
       _backlogBuffers.current.delete(chatId);
@@ -2356,9 +2350,6 @@ function App() {
         }).catch(e => errOut(`!! backlog flush failed (${chatId}): ${e.message}`));
       }
     }
-    } finally {
-      if (_rel) _rel();
-    }
   };
   const _backlogPush = (chatId, msg, replyAllowed, baseMeta) => {
     let b = _backlogBuffers.current.get(chatId);
@@ -2368,13 +2359,6 @@ function App() {
     b.meta = baseMeta;
     if (msg.ts && (!b.firstTs || msg.ts < b.firstTs)) b.firstTs = msg.ts;
     logOut(`backlog: buffered ${chatId} (n=${b.msgs.length}${b.replyAllowed ? ', reply-allowed' : ''})`);
-    // Hold the machine awake across the debounce → flush so a SCHEDULED wake
-    // doesn't idle-sleep in the 8s gap after transcription releases its hold
-    // (which would freeze the flush setTimeout until the NEXT wake). One hold
-    // for the whole catch-up burst; _backlogFlush hands off to the busy-hold.
-    if (!_backlogAwakeRelease.current) _backlogAwakeRelease.current = acquireStayAwake();
-    if (_backlogTimer.current) clearTimeout(_backlogTimer.current);
-    _backlogTimer.current = setTimeout(() => { _backlogTimer.current = null; _backlogFlush(); }, _BACKLOG_DEBOUNCE_MS);
   };
   // ── Interactive help/config menu (/h · /? · /help) ──────────────────────
   // Surface-agnostic: src/help-menu.mjs holds the model + nav + render. Here we
@@ -3846,6 +3830,11 @@ function App() {
             }
           }
         },
+        // The bridge fires this after it finishes processing an offline-backlog
+        // upsert batch (sleep/restart catch-up). Flush the accumulated per-chat
+        // catch-up to E now — one consolidated turn per chat. No timer: this is
+        // the real delivery boundary.
+        onBacklogDelivered: () => { try { _backlogFlush(); } catch (e) { errOut(`!! backlog flush: ${e?.message ?? e}`); } },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => errOut(`!! whatsapp: ${msg}`),
         onQR: (_qrText, msgWithHeader) => {
