@@ -1583,6 +1583,19 @@ export async function startWhatsAppBridge({
       try {
         const jids = [...new Set(messages.map((m) => m.key?.remoteJid).filter(Boolean))];
         _blog(`upsert: type=${type} n=${messages.length} jids=${jids.slice(0, 4).join(',')}${jids.length > 4 ? '…' : ''}`);
+        // Offline-backlog structure probe. A type!=='notify' batch is the
+        // sleep/wake catch-up; logging each message's content keys tells us
+        // whether the voice note arrives WITH its audioMessage payload or as a
+        // bare placeholder (m.message null / only senderKey/protocol stubs).
+        // That's the open question behind "note arrived but never downloaded"
+        // (operator 2026-06-04): _saveMediaIfAny silently returns when there's
+        // no media node, so we need to SEE what the backlog actually carries.
+        if (type !== 'notify') {
+          for (const m of messages) {
+            const mk = m.message ? Object.keys(m.message) : null;
+            _blog(`  ↳ ${type} id=${m.key?.id} fromMe=${!!m.key?.fromMe} ts=${m.messageTimestamp} keys=${mk ? '[' + mk.join(',') + ']' : 'NULL'}`);
+          }
+        }
       } catch { /* best effort */ }
       if (debug) {
         for (const m of messages) {
