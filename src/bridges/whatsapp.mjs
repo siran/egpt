@@ -2351,6 +2351,13 @@ export async function startWhatsAppBridge({
     // on disk (or under deleted/) — skip re-download.
     const indexBefore = await _readMediaIndex(dir);
     if (indexBefore[msgId]) return indexBefore[msgId].path ?? path;
+    // ONE continuous stay-awake hold for the WHOLE media job (download → write
+    // → transcribe → post). Fragmented holds let an unattended nap idle-sleep
+    // in the GAP between stages — operator 2026-06-04: every download succeeded
+    // (download OK) but the machine froze before writeFile, so no .ogg landed
+    // and nothing transcribed. Held from here; released in the finally on every
+    // exit path. Nests with _transcribeAudio's own hold (ref-counted).
+    const _mediaAwake = acquireStayAwake();
     try {
       // reuploadRequest is ESSENTIAL for offline / sleep-synced media. A
       // message sent while we were in S0 suspend arrives on reconnect as a
@@ -2376,14 +2383,6 @@ export async function startWhatsAppBridge({
       // add reuploadRequest to recover an evicted blob (the backlog case).
       const DL_TIMEOUT_MS = 20_000;
       let buf = null, lastErr = null;
-      // Hold the machine awake for the DOWNLOAD too (transcription is already
-      // held at _transcribeAudio, but the download runs BEFORE it and was
-      // unprotected). Without this, a scheduled wake can idle-sleep mid-fetch
-      // and freeze the download — the catch-up never finishes (operator
-      // 2026-06-04: backlog audio reached '→ save' then neither completed nor
-      // timed out across minutes of S0 nap). Released in the finally.
-      const _dlAwake = acquireStayAwake();
-      try {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const opts = attempt === 1 ? {} : { reuploadRequest: sock.updateMediaMessage };
@@ -2401,7 +2400,6 @@ export async function startWhatsAppBridge({
           if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
         }
       }
-      } finally { _dlAwake(); }
       if (!buf) throw lastErr ?? new Error('media download failed — no buffer');
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path, buf);
@@ -2826,7 +2824,10 @@ export async function startWhatsAppBridge({
       return path;
     } catch (e) {
       log(`media download failed (${hit.kind} from ${chatJid}, msgId ${msgId}): ${e.message}`);
+      _blog(`media JOB failed for ${msgId} (${hit.kind}): ${e?.message ?? e}`);
       return null;
+    } finally {
+      _mediaAwake();
     }
   }
 
