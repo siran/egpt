@@ -2376,23 +2376,32 @@ export async function startWhatsAppBridge({
       // add reuploadRequest to recover an evicted blob (the backlog case).
       const DL_TIMEOUT_MS = 20_000;
       let buf = null, lastErr = null;
+      // Hold the machine awake for the DOWNLOAD too (transcription is already
+      // held at _transcribeAudio, but the download runs BEFORE it and was
+      // unprotected). Without this, a scheduled wake can idle-sleep mid-fetch
+      // and freeze the download — the catch-up never finishes (operator
+      // 2026-06-04: backlog audio reached '→ save' then neither completed nor
+      // timed out across minutes of S0 nap). Released in the finally.
+      const _dlAwake = acquireStayAwake();
+      try {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const opts = attempt === 1 ? {} : { reuploadRequest: sock.updateMediaMessage };
+          _blog(`media download attempt ${attempt}/3 START for ${msgId} (${hit.kind}, ${attempt === 1 ? 'plain' : 'reupload'})`);
           const dl = downloadMediaMessage(msg, 'buffer', {}, { logger: silentLogger(), ...opts });
           dl.catch(() => {});   // a losing (timed-out) download must not raise an unhandled rejection
           buf = await Promise.race([
             dl,
             new Promise((_, rej) => setTimeout(() => rej(new Error(`download timeout ${DL_TIMEOUT_MS}ms`)), DL_TIMEOUT_MS)),
           ]);
-          if (buf && attempt > 1) _blog(`media download recovered on attempt ${attempt} for ${msgId} (${hit.kind})`);
-          if (buf) break;
+          if (buf) { _blog(`media download OK attempt ${attempt} for ${msgId} (${buf.length}B)`); break; }
         } catch (e) {
           lastErr = e;
-          _blog(`media download attempt ${attempt}/3 failed for ${msgId} (${hit.kind}): ${e?.message ?? e}`);
+          _blog(`media download attempt ${attempt}/3 FAILED for ${msgId} (${hit.kind}): ${e?.message ?? e}`);
           if (attempt < 3) await new Promise(r => setTimeout(r, 1500 * attempt));
         }
       }
+      } finally { _dlAwake(); }
       if (!buf) throw lastErr ?? new Error('media download failed — no buffer');
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(path, buf);
