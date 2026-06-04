@@ -1656,7 +1656,18 @@ export async function startWhatsAppBridge({
     // state the user pulls via /channels — same posture as the chat
     // list itself.
     sock.ev.on('messaging-history.set', (params) => {
-      const { chats, messages, syncType, isLatest } = params;
+      const { chats, contacts, messages, syncType, isLatest } = params;
+      // Bulk ADDRESS-BOOK sync — the SAME source Beeper (and every linked
+      // device) reads: WhatsApp propagates the names YOU saved on your phone to
+      // linked devices via app-state, delivered here as contact.name (saved
+      // name) vs contact.notify (their pushname). We were dropping it entirely,
+      // so saved names like "Morgan" never arrived and slugs fell back to the
+      // pushname ("le moi"). Ingest it so the registry/resolver can use the
+      // real name (operator 2026-06-04).
+      if (Array.isArray(contacts) && contacts.length) {
+        _ingestContacts(contacts);
+        log(`whatsapp[history]: ingested ${contacts.length} address-book contacts (saved names)`);
+      }
       const chatsCount = Array.isArray(chats) ? chats.length : 0;
       const messagesCount = Array.isArray(messages) ? messages.length : 0;
       // Visible diagnostic so the user can see how much history baileys
