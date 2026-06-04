@@ -2412,17 +2412,17 @@ export async function startWhatsAppBridge({
       let transcript = null;
       let keyframePath = null;
       let voiceStream = null;        // streaming-transcription handle, when enabled + audio
-      // Pre-connect backlog: baileys re-delivers offline messages on reconnect
-      // (e.g. after a crash/restart). The media is SAVED above (logged), but
-      // transcription + the 👂 ack are PROCESSING — skip them, same posture as
-      // the dispatch hold (max_backlog_seconds → /wa-pending). Otherwise a
-      // restart triggers a whisper storm over every old voice note. Operator,
-      // repeatedly: "these bursts must be logged but not processed." Live
-      // messages transcribe as normal.
-      if (preConnect && (hit.kind === 'audio' || hit.kind === 'video')) {
-        log(`media saved, transcription skipped (pre-connect backlog): ${notifyKind} → ${path}`);
-      }
-      if ((hit.kind === 'audio' || hit.kind === 'video') && !preConnect) {
+      // Backlog transcribes the SAME as live (operator 2026-06-04, "as-if
+      // always on"). The old pre-connect SKIP (logged-not-transcribed) was a
+      // build-time crutch from when transcription ran fully-parallel = a
+      // whisper storm on every restart. It's obsolete now that decoding is
+      // per-chat-SEQUENTIAL via _serializeTranscription (one whisper slot;
+      // a chat's notes decode one at a time, different chats in parallel), so
+      // a 10h backlog drains in an orderly queue instead of a thundering herd.
+      // So a voice note that arrived while we slept gets its transcript posted
+      // on resume — the whole point of the catch-up. (preConnect still gates
+      // host-side mirroring/dispatch; see onMediaSaved + the chunk feed.)
+      if (hit.kind === 'audio' || hit.kind === 'video') {
         // Voice flow (operator 2026-05-23 redesign — "let's keep it
         // easy, remove all other ways, restart clean"):
         //
@@ -2702,114 +2702,57 @@ export async function startWhatsAppBridge({
           }
         }
         if (!voiceStream) {
-          // Single-path voice flow (operator 2026-05-23 "keep it easy,
-          // remove all other ways, restart clean"):
-          //   1. If audio + wantPostAck: post acknowledgment reply
-          //      "👂 <speaker>'s NNs @ HH:MM ⏳"
-          //      with simple looped emoji animation while we transcribe.
-          //   2. Run _transcribeAudio (single whisper-server batch
-          //      inference). Same for video — ffmpeg pulls the audio
-          //      track.
-          //   3. On done: edit the ack message to
-          //      "👂 <speaker>'s NNs @ HH:MM: <transcript>"
-          //   4. _transcriptByMsgId set so brain dispatch gets the
-          //      transcript inline via _enrichAudioText.
-          const isAudioForAck = hit.kind === 'audio' && wantPostAck && msg.key;
+          // Single-path voice flow (operator 2026-06-04 redesign — "no
+          // progress bar"):
+          //   1. Transcribe (single whisper-server batch inference),
+          //      serialized per chat via _serializeTranscription so a chat's
+          //      notes decode one at a time in arrival order; different chats
+          //      run in parallel. Same _transcribeAudio for video (ffmpeg
+          //      pulls the audio track). Silent → null.
+          //   2. When DONE, post the transcript as ONE threaded (quoted)
+          //      reply to the original audio:
+          //        "👂 <speaker>'s NNs @ HH:MM: <transcript>"
+          //   3. _transcriptByMsgId set so brain dispatch inlines it via
+          //      _enrichAudioText.
+          //
+          // The old flow posted an immediate ack + an animated progress bar
+          // that edited in place until done. That broke the WhatsApp "hit
+          // play and listen to several voice notes in a row" flow — every
+          // note sprouted a reply that kept twitching. Now a note stays
+          // untouched until its transcript is ready, then gets a single
+          // clean reply. No up-front ack, no animation, no edits. Backlog
+          // (post-wake / restart) transcribes + posts the SAME way, so the
+          // transcript appears whether the note arrived live or while we
+          // slept. wantPostAck (per-chat config) still lets a chat keep the
+          // inline brain transcript without the WA post.
           const dur = Number(node?.seconds) || 0;
           const tsMs = (Number(msg.messageTimestamp) || 0) * 1000;
           const pad = (n) => String(n).padStart(2, '0');
           const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
           const speaker = pushedName ?? (fromMe ? 'You' : 'someone');
 
-          // (1)+(2) Ack + transcribe, serialized per chat. The 👂 ack and its
-          // progress bar are posted INSIDE the whisper slot, so a chat's voice
-          // notes ack + decode strictly one at a time, in arrival order. Posting
-          // the ack up-front instead made a burst look parallel (N bars
-          // animating at once) and crosstalked: every waiting bar reads the
-          // single shared _whisperProgress, so it mirrored whichever note was
-          // actually decoding. Now a queued note stays silent until its turn,
-          // then shows its own bar tracking its own decode. (one whisper slot)
-          let ackKey = null;
-          let animTimer = null;
           transcript = await _serializeTranscription(chatJid, async () => {
-            if (isAudioForAck) {
-              // Animation style. 'bar' (default): a DETERMINATE transcription bar
-              // driven by whisper-server's stderr `progress = N%` callback — the
-              // ACTUAL decode percent, no simulation. It sits at 0% until whisper
-              // emits its first reading (ffmpeg-convert + encode warm-up, ~1-2s),
-              // then fills to the real %. 'emoji': legacy ⏳🔊🎧🦻 cycle. Drops to
-              // the transcript on done either way.
-              const _animStyle = media.audio_transcribe?.animation ?? 'bar';
-              _whisperProgress = -1;   // reset; this note's decode hasn't reported yet
-              const W = 12;
-              const _barFill = (pct) => {
-                const f = Math.max(0, Math.min(W, Math.round(pct / 100 * W)));
-                return '▰'.repeat(f) + '▱'.repeat(W - f);
-              };
-              const _emoji = ['⏳', '🔊', '🎧', '🦻'];
-              const _frame = (i) => {
-                if (_animStyle === 'emoji') return `👂 ${speaker}'s ${dur}s @ ${hhmm} ${_emoji[i % _emoji.length]}`;
-                const pct = _whisperProgress >= 0 ? Math.min(100, _whisperProgress) : 0;
-                return `👂 ${speaker}'s ${dur}s @ ${hhmm}\n${_barFill(pct)} ${pct}%`;
-              };
-
-              let _lastBody = _frame(0);
-              try {
-                const r = await _safeSend(
-                  chatJid,
-                  { text: _lastBody },
-                  { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-                );
-                ackKey = r?.key ?? null;
-                if (ackKey) rememberSent(ackKey.id);
-              } catch (e) {
-                log(`voice-ack post failed (${base}): ${e?.message ?? e}`);
-              }
-
-              // Refresh while transcription runs. The bar re-edits ONLY when the
-              // real % actually changes (dedup) — no wasted edits, no fake
-              // motion. The emoji style cycles each tick. Soft-fail on WA throttle.
-              if (ackKey) {
-                let frameIdx = 0;
-                const _animMs = Number(media.audio_transcribe?.animation_ms)
-                  || (_animStyle === 'emoji' ? 4800 : 1000);
-                animTimer = setInterval(async () => {
-                  frameIdx++;
-                  const body = _frame(frameIdx);
-                  if (body === _lastBody) return;   // bar: % hasn't moved → skip
-                  _lastBody = body;
-                  try {
-                    await _safeSend(chatJid, { edit: ackKey, text: body });
-                  } catch (e) {
-                    // Soft-fail; rate-limit / blip shouldn't cascade.
-                  }
-                }, _animMs);
-              }
-            }
-
-            // Transcribe (single batch). Same _transcribeAudio for video —
-            // ffmpeg pulls the audio track. Silent → null. Stop the animation
-            // as soon as the decode settles, before the chain's next link.
-            try {
-              return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
-            } finally {
-              if (animTimer) { clearInterval(animTimer); animTimer = null; }
-            }
+            return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
           }).catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
           if (transcript?.text && msg.key?.id) {
             _transcriptByMsgId.set(msg.key.id, transcript.text);
           }
 
-          // (3) Finalize ack message with transcript.
-          if (animTimer) { clearInterval(animTimer); animTimer = null; }
-          if (isAudioForAck && ackKey) {
+          // Post the transcript as a threaded reply, when there's something to
+          // show. Silence (no text) posts nothing — don't clutter the chat
+          // with "(no transcript)". rememberSent so our own reply isn't
+          // re-ingested as inbound.
+          const wantPost = hit.kind === 'audio' && wantPostAck && msg.key;
+          if (wantPost && transcript?.text) {
             try {
-              const finalBody = transcript?.text
-                ? `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}`
-                : `👂 ${speaker}'s ${dur}s @ ${hhmm}: (no transcript)`;
-              await _safeSend(chatJid, { edit: ackKey, text: finalBody });
+              const r = await _safeSend(
+                chatJid,
+                { text: `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}` },
+                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+              );
+              if (r?.key?.id) rememberSent(r.key.id);
             } catch (e) {
-              log(`voice-ack final edit failed (${base}): ${e?.message ?? e}`);
+              log(`voice transcript reply failed (${base}): ${e?.message ?? e}`);
             }
           }
         }
