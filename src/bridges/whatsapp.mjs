@@ -1383,6 +1383,26 @@ export async function startWhatsAppBridge({
       _blog(`connect(): STARTUP DEFER to pid ${otherEgpt} — no socket opened`);
       return;
     }
+    // SINGLE-SOCKET INVARIANT. Tear down any prior socket before opening a new
+    // one. A reconnect can be triggered by three independent paths — the wake
+    // re-arm (_wakeTick), the watchdog, and a 'close' that raced an
+    // already-in-flight retry — and on connected-standby the pre-sleep socket
+    // often survives the suspend (TCP still up), so connect() runs with `sock`
+    // still LIVE. Reassigning `sock = makeWASocket(...)` would then leave two
+    // live sockets on the same creds; WhatsApp answers the duplicate with a 440
+    // conflict, and since each socket's own 'close' re-arms the reconnect, that
+    // self-sustains an OPEN→conflict→OPEN storm that never settles (operator
+    // 2026-06-04, post-wake: the voice note never landed because the bridge
+    // never held still). Detach the old listeners FIRST so its dying 'close'
+    // can't schedule another reconnect, mark us not-open, then end it.
+    if (sock) {
+      _blog('connect(): tearing down prior socket before reopen (single-socket invariant)');
+      _connectionOpen = false;
+      try { sock.ev.removeAllListeners(); } catch { /* best effort */ }
+      try { sock.ws?.close?.(); } catch { /* best effort */ }
+      try { sock.end?.(undefined); } catch { /* best effort */ }
+      sock = null;
+    }
     _blog('connect(): opening socket (makeWASocket)');
     sock = makeWASocket({
       ...(version ? { version } : {}),
