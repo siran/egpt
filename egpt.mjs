@@ -7865,7 +7865,15 @@ function App() {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
     const tgChatId = meta.fromTelegram ? meta.telegramChatId ?? null : null;
-    const waChatId = meta.fromWhatsApp ? meta.waChatId ?? null : null;
+    // ALL model replies are gated (operator 2026-06-04). runBrainTurn opens its
+    // WA stream on waChatId ALONE (no mode gate), so a NAMED brain (cgpt/codex/
+    // llama) addressed in a mute/off/paused chat would stream its reply there.
+    // Gate HERE: pass waChatId only when the chat permits an emit. replyAllowed
+    // is true because the brain WAS explicitly addressed; _eMayReplyToChat still
+    // hard-blocks mute/off and the global auto_e_paused kill.
+    const _waRaw = meta.fromWhatsApp ? meta.waChatId ?? null : null;
+    const waChatId = (_waRaw && _eMayReplyToChat(_waRaw, { replyAllowed: true, isReaction: meta.isReaction }))
+      ? _waRaw : null;
     const replies = [];
     for (const recipient of recipients) {
       const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId, waChatId });
