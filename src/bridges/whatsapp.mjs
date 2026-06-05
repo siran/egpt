@@ -108,28 +108,39 @@ const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
 // How often the in-bridge health watchdog checks for a WEDGED socket (a
 // silent death with no 'close' event, or a reconnect that never succeeds).
 const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
-// Wake-from-sleep detection: a short tick; a gap MUCH larger than the tick
-// interval means the host was suspended (sleep/hibernate/Task-Scheduler wake)
-// in between, so the WA socket is dead and we should reconnect immediately.
-const WAKE_TICK_MS = 20_000;
-const WAKE_GAP_MS  = 60_000;   // a >60s gap on a 20s tick = the host slept
-// NIC-readiness probe: on post-sleep wake the Wi-Fi NIC takes 10-30s+ to
-// reassociate. Firing connect() too soon yields a getaddrinfo ENOTFOUND
-// avalanche that exhausts the wake window before recovery (operator
-// 2026-06-05 overnight test: 15+ wake events all failed DNS, only a manual
-// mouse move at ~6:30 EDT finally produced a sustained connection).
-// Probe DNS at a fixed 2s cadence with a 1s per-attempt timeout, up to 60s.
+// Connectivity tick — runs the bridge's recurring health/recovery loop.
+// Replaces the old "wake detector" model (operator 2026-06-05): instead
+// of trying to spot a suspend by comparing tick gaps, we just check
+// connectivity state on every tick and let the state drive recovery.
+// A truly-connected socket is the green path (tick is a no-op); anything
+// else (NIC down, socket wedged, no 'open' yet) means recovery — acquire
+// stay-awake, poke NIC, schedule reconnect. The system goes back to
+// sleep as soon as we're connected again. No gap heuristic, no wake
+// flag — the loop's behavior follows the bridge's actual state.
+const CONNECTIVITY_TICK_MS    = 20_000;
+// Watchdog-only sleep heuristic: if the watchdog's own tick interval
+// stretched far past its expected 30s cadence, the host was suspended.
+// This stays gap-based (not state-based like the connectivity tick)
+// because it's protecting unhealthySince from a false-wedge on resume.
+const WATCHDOG_SLEEP_GAP_MS   = 60_000;
+// NIC-readiness probe inside a recovery cycle. On post-sleep wake the
+// Wi-Fi NIC takes 10-30s+ to reassociate; firing connect() too soon
+// yields a getaddrinfo ENOTFOUND avalanche that exhausts the wake
+// window before recovery (operator 2026-06-05 overnight test: 15+
+// wake events all failed DNS, only a manual mouse move at ~6:30 EDT
+// finally produced a sustained connection). Probe DNS at a fixed 2s
+// cadence with a 1s per-attempt timeout, up to 60s.
 const NIC_PROBE_HOST          = 'web.whatsapp.com';
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
 const NIC_PROBE_BUDGET_MS     = 60_000;   // ~30 attempts every 2s
-// Maximum total time we keep stay-awake held by the wake-recovery hold alone
-// (i.e. when the reconnect never actually opens, so no downstream handler
-// ever takes ownership of the hold). Past this we release; if a successful
-// open ever lands the 'open' handler re-acquires its own short hold for
-// the catch-up burst. Stops a hung wake from pinning the machine awake
-// indefinitely on battery.
-const WAKE_HOLD_CAP_MS        = 5 * 60_000;
+// Safety cap on the recovery stay-awake hold. If recovery never
+// completes (NIC stays down forever, baileys never opens), the hold
+// would otherwise pin the machine awake until the process dies — bad
+// on battery. Past the cap we release; subsequent ticks keep trying,
+// and a successful 'open' lets downstream handlers (media-save, brain-
+// turn) acquire their OWN holds for transcription + reply.
+const RECOVERY_HOLD_CAP_MS    = 5 * 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -421,13 +432,16 @@ export async function startWhatsAppBridge({
   // Used only for visibility now — _scheduleReconnect uses a FIXED 2s delay
   // (no exponential backoff; see RECONNECT_MS docstring).
   let reconnectAttempts = 0;
-  // Wake-recovery stay-awake hold. Acquired in _wakeTick on a real suspend
-  // gap, released by the connection 'open' handler so downstream media-save /
-  // brain-turn holds take over via the 30s linger in stay-awake.mjs. Capped
-  // at WAKE_HOLD_CAP_MS so a stuck wake (NIC never returns) can't pin the
-  // machine awake on battery indefinitely.
-  let _wakeHoldRelease = null;
-  let _wakeHoldCapTimer = null;
+  // Recovery stay-awake hold. The connectivity tick acquires it the moment
+  // it sees we're not truly connected; releases it the moment it sees we
+  // are. Downstream media-save / brain-turn holds take over for the actual
+  // work via the 30s linger in stay-awake.mjs. Capped at RECOVERY_HOLD_CAP_MS
+  // so a stuck recovery (NIC never returns) can't pin the machine awake on
+  // battery indefinitely. _recoveryInProgress prevents stacking when the
+  // tick fires while the async poke loop is still running.
+  let _recoveryHoldRelease = null;
+  let _recoveryHoldCapTimer = null;
+  let _recoveryInProgress = false;
   // Health-watchdog state (see _bridgeWatchdogTick). everConnected gates the
   // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
   // or a network-down boot is left to reconnect/backoff, never an exit-loop.
@@ -543,7 +557,7 @@ export async function startWhatsAppBridge({
     // Fixed 2s — see RECONNECT_MS docstring. The previous Math.pow(2, N)
     // backoff stretched the per-attempt wait up to 60s, which on a post-
     // sleep wake meant the machine idle-slept again before the NIC came
-    // up. With NIC readiness probed FIRST (by _wakeTick / _pokeNicUntilReady)
+    // up. With NIC readiness probed FIRST (by _connectivityTick / _pokeNicUntilReady)
     // and a uniform 2s cadence here, each close → reconnect cycle is short
     // enough that the wake window covers many attempts.
     const delay = RECONNECT_MS;
@@ -597,8 +611,8 @@ export async function startWhatsAppBridge({
     // `now - unhealthySince` = the whole sleep duration and instantly "wedges"
     // (operator 2026-06-04: 1160s false-wedge on wake). If the gap since our
     // last tick is much larger than our interval, the host slept: reset the
-    // unhealthy clock and skip this tick so the post-wake reconnect gets a fresh
-    // grace. (_wakeTick already re-arms the reconnect.)
+    // unhealthy clock and skip this tick so the connectivity tick's recovery
+    // path gets a fresh grace.
     const tickGap = _lastWatchdogTick ? (now - _lastWatchdogTick) : 0;
     _lastWatchdogTick = now;
     // Always-on per-tick trace (operator 2026-06-04 nap test). The existing
@@ -611,7 +625,7 @@ export async function startWhatsAppBridge({
     const rs = _socketReadyState();
     const unhealthyAgeS = unhealthySince ? Math.round((now - unhealthySince) / 1000) : 0;
     _blog(`watchdog-tick: gap=${tickGap}ms open=${_connectionOpen} rs=${rs ?? '?'} reconnecting=${!!reconnectTimer} unhealthyAge=${unhealthyAgeS}s everConnected=${everConnected} stopped=${stopped}`);
-    if (tickGap > WAKE_GAP_MS) { unhealthySince = 0; return; }
+    if (tickGap > WATCHDOG_SLEEP_GAP_MS) { unhealthySince = 0; return; }
     if (stopped) return;        // loggedOut / deferred-to-another-egpt → intentional stop, not a wedge
     if (!everConnected) return; // never connected yet (initial pairing / boot) → reconnect+backoff owns it
     // Health = baileys' OWN connection state, NOT ws.readyState (the wrapped
@@ -669,62 +683,97 @@ export async function startWhatsAppBridge({
     return false;
   }
 
-  // Wake detector — see WAKE_* notes. If the gap since the last tick is much
-  // larger than the tick interval, the host was suspended and the WA socket is
-  // dead: re-arm reconnect NOW so a Task-Scheduler wake / lid resume reconnects
-  // in seconds. Flow per operator 2026-06-05:
-  //   1. acquire stay-awake (no timer — held until 'open' fires)
-  //   2. poke NIC until DNS resolves (fixed 2s cadence, 1s timeout, 60s budget)
-  //   3. fire _scheduleReconnect (which now uses a fixed 2s interval)
-  //   4. the connection 'open' handler releases the wake-hold; the 30s linger
-  //      in stay-awake.mjs covers the gap to when media-save / brain-turn
-  //      acquire their OWN holds for transcription + reply.
-  function _wakeTick() {
+  // Connectivity tick — the bridge's recurring health/recovery loop.
+  // Replaces the old wake detector (operator 2026-06-05). Logic:
+  //   1. Truly connected (open && rs===1)  -> release recovery hold if held.
+  //   2. Not connected, never connected     -> let initial pairing flow run.
+  //   3. Not connected, was once connected  -> RECOVERY:
+  //        - acquire stay-awake hold if not already held (capped)
+  //        - if not already in flight, spawn _recoveryAttempt(): poke NIC
+  //          (fixed 2s cadence, 1s timeout, 60s budget); when NIC is up,
+  //          schedule reconnect (which uses a fixed 2s interval).
+  //   The connection 'open' handler does NOT release the hold anymore —
+  //   the next connectivity tick sees the healthy state and releases it.
+  //   That way a fragile "open -> close 30s later" doesn't release prema-
+  //   turely; the tick's view of state is the single source of truth.
+  function _connectivityTick() {
+    if (stopped) return;
     const now = Date.now();
-    const gap = now - _lastWakeTick;
+    const gap = _lastWakeTick ? (now - _lastWakeTick) : 0;
     _lastWakeTick = now;
-    // Always-on per-tick trace (operator 2026-06-04 nap test). The existing
-    // `wake:` line only fires when gap > WAKE_GAP_MS (S3 suspend). On S0
-    // modern-standby the gap may stay under threshold even while the WA
-    // socket is silently dead. Log every tick so the silent path is legible.
-    const rsW = _socketReadyState();
-    _blog(`wake-tick: gap=${gap}ms open=${_connectionOpen} rs=${rsW ?? '?'} reconnecting=${!!reconnectTimer} stayAwake=${stayAwakeActive()}`);
-    if (stopped || gap <= WAKE_GAP_MS) return;
-    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — poking NIC then reconnecting (readyState=${rsW ?? '?'})`);
-    // Drop any prior wake-hold (this wake interrupted an in-flight recovery).
-    if (_wakeHoldRelease) {
-      try { _wakeHoldRelease(); } catch {}
-      _wakeHoldRelease = null;
-    }
-    if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
-    // Hold the host awake. No timer — released by the 'open' handler or by
-    // the safety cap below.
-    _wakeHoldRelease = acquireStayAwake();
-    _wakeHoldCapTimer = setTimeout(() => {
-      _wakeHoldCapTimer = null;
-      if (_wakeHoldRelease) {
-        _blog(`wake-hold: cap (${Math.round(WAKE_HOLD_CAP_MS/1000)}s) reached without a successful open — releasing; baileys will keep retrying`);
-        try { _wakeHoldRelease(); } catch {}
-        _wakeHoldRelease = null;
+    const rs = _socketReadyState();
+    const trulyConnected = _connectionOpen && rs === 1;
+    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} reconnecting=${!!reconnectTimer} recoveryHold=${!!_recoveryHoldRelease} stayAwake=${stayAwakeActive()}`);
+
+    if (trulyConnected) {
+      // Green path. Release the recovery hold if held; the linger in
+      // stay-awake.mjs gives downstream handlers (media-save, brain-turn)
+      // time to acquire their own holds for any backlog work.
+      if (_recoveryHoldRelease) {
+        _blog(`conn-tick: connectivity restored — releasing recovery hold`);
+        try { _recoveryHoldRelease(); } catch {}
+        _recoveryHoldRelease = null;
       }
-    }, WAKE_HOLD_CAP_MS);
-    _wakeHoldCapTimer.unref?.();
-    reconnectAttempts = 0;
-    unhealthySince = 0;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    // Poke NIC in the background so the setInterval callback returns promptly;
-    // then schedule the reconnect. Whether or not the poke succeeded, we still
-    // fire — baileys' own retry chain will handle a still-failing NIC.
+      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
+      return;
+    }
+
+    if (!everConnected) return;  // first pairing — startup flow owns this
+
+    // Not connected. Acquire recovery hold if we don't already have it.
+    if (!_recoveryHoldRelease) {
+      _blog(`conn-tick: connectivity LOST (open=${_connectionOpen}, rs=${rs ?? '?'}) — acquiring recovery hold`);
+      _recoveryHoldRelease = acquireStayAwake();
+      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); }
+      _recoveryHoldCapTimer = setTimeout(() => {
+        _recoveryHoldCapTimer = null;
+        if (_recoveryHoldRelease) {
+          _blog(`recovery-hold: cap (${Math.round(RECOVERY_HOLD_CAP_MS/1000)}s) reached without restored connectivity — releasing; ticks keep trying`);
+          try { _recoveryHoldRelease(); } catch {}
+          _recoveryHoldRelease = null;
+        }
+      }, RECOVERY_HOLD_CAP_MS);
+      _recoveryHoldCapTimer.unref?.();
+    }
+
+    // Don't pile up overlapping recovery attempts. The poke loop is async
+    // and can run for up to NIC_PROBE_BUDGET_MS (~60s) — much longer than
+    // a tick interval. Skip subsequent ticks until the in-flight attempt
+    // returns; if NIC is still down at that point the next tick fires it
+    // again.
+    if (_recoveryInProgress) return;
+    _recoveryInProgress = true;
     (async () => {
-      const nicReady = await _pokeNicUntilReady();
-      if (stopped) return;
-      _scheduleReconnect(nicReady ? 'resumed from sleep, NIC ready' : 'resumed from sleep, NIC probe exhausted');
+      try {
+        const nicReady = await _pokeNicUntilReady();
+        if (stopped) return;
+        if (!nicReady) {
+          // NIC still down at the end of the budget. Let the next tick
+          // try again; nothing to schedule yet.
+          return;
+        }
+        // NIC up. If baileys isn't already attempting a reconnect and we
+        // don't have a healthy open socket, fire one. _scheduleReconnect
+        // is idempotent against an already-armed timer.
+        if (!_connectionOpen && !reconnectTimer) {
+          unhealthySince = 0;
+          _scheduleReconnect('connectivity tick: NIC ready');
+        } else if (_connectionOpen && _socketReadyState() !== 1 && !reconnectTimer) {
+          // Silent wedge: baileys still reports open but the underlying
+          // socket is dead. Force a reconnect — connect() tears down the
+          // stale socket via the single-socket invariant.
+          unhealthySince = 0;
+          _scheduleReconnect('connectivity tick: socket wedged (open=true, rs!=1)');
+        }
+      } finally {
+        _recoveryInProgress = false;
+      }
     })();
   }
-  function _startWakeDetector() {
+  function _startConnectivityTick() {
     if (wakeTimer) return;
     _lastWakeTick = Date.now();
-    wakeTimer = setInterval(_wakeTick, WAKE_TICK_MS);
+    wakeTimer = setInterval(_connectivityTick, CONNECTIVITY_TICK_MS);
     wakeTimer.unref?.();
   }
 
@@ -1485,7 +1534,7 @@ export async function startWhatsAppBridge({
     }
     // SINGLE-SOCKET INVARIANT. Tear down any prior socket before opening a new
     // one. A reconnect can be triggered by three independent paths — the wake
-    // re-arm (_wakeTick), the watchdog, and a 'close' that raced an
+    // re-arm (_connectivityTick), the watchdog, and a 'close' that raced an
     // already-in-flight retry — and on connected-standby the pre-sleep socket
     // often survives the suspend (TCP still up), so connect() runs with `sock`
     // still LIVE. Reassigning `sock = makeWASocket(...)` would then leave two
@@ -1589,18 +1638,12 @@ export async function startWhatsAppBridge({
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _blog(`connection OPEN — connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _startWaAlive();
-        // Wake recovery succeeded — release the wake-hold. Downstream
-        // handlers (media-save in the upsert handler, brain-turn in the
-        // host) acquire their OWN holds for their work, and the 30s linger
-        // in stay-awake.mjs spans the gap between this release and their
-        // acquires. So transcription + reply NEVER get cut off by idle-
-        // sleep, but a quiet connect (no work) returns to sleep promptly.
-        if (_wakeHoldRelease) {
-          _blog(`wake-hold: released on connection OPEN — downstream handlers hold their own through transcription/reply`);
-          try { _wakeHoldRelease(); } catch {}
-          _wakeHoldRelease = null;
-        }
-        if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
+        // Recovery hold (if held) gets released by the next connectivity
+        // tick that observes the healthy state. The tick is the single
+        // source of truth so a fragile "open -> close 30s later" pattern
+        // doesn't release prematurely. The 30s linger in stay-awake.mjs
+        // covers the gap to when media-save / brain-turn handlers acquire
+        // their own holds for transcription + reply.
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
         // a group's cached label could end up as a person's name
@@ -1619,10 +1662,10 @@ export async function startWhatsAppBridge({
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
           _stopWaAlive('logged_out', `reason ${reason}`);
           stopped = true;
-          // Logged-out is permanent — don't keep the wake-hold pinning the
-          // machine awake for retries that will never succeed.
-          if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
-          if (_wakeHoldRelease) { try { _wakeHoldRelease(); } catch {} _wakeHoldRelease = null; }
+          // Logged-out is permanent — don't keep the recovery hold pinning
+          // the machine awake for retries that will never succeed.
+          if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
+          if (_recoveryHoldRelease) { try { _recoveryHoldRelease(); } catch {} _recoveryHoldRelease = null; }
           return;
         }
         // 440 = connectionReplaced. WA's server has another session
@@ -3526,7 +3569,7 @@ export async function startWhatsAppBridge({
   // real connection (everConnected), so this is safe to start before the first
   // 'open'. unref'd so it never keeps the process alive on its own.
   _startBridgeWatchdog();
-  _startWakeDetector();
+  _startConnectivityTick();
   setStayAwakeLogger((m) => _blog(m));   // route stay-awake telemetry into wa-bridge.log
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
@@ -4541,10 +4584,10 @@ export async function startWhatsAppBridge({
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
       if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
-      // Drop any wake-recovery stay-awake hold so a stop()-after-wake
+      // Drop any recovery stay-awake hold so stop()-during-recovery
       // doesn't pin the machine awake until the cap timer fires.
-      if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
-      if (_wakeHoldRelease) { try { _wakeHoldRelease(); } catch {} _wakeHoldRelease = null; }
+      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
+      if (_recoveryHoldRelease) { try { _recoveryHoldRelease(); } catch {} _recoveryHoldRelease = null; }
       // Flush the learned lid↔pn map (the 5s debounce may not have fired).
       if (_lidMapWriteTimer) { clearTimeout(_lidMapWriteTimer); _lidMapWriteTimer = null; }
       if (_lidMap?.dirty) {
