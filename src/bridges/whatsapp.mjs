@@ -1918,26 +1918,27 @@ export async function startWhatsAppBridge({
       // Promise.all — within a batch, multiple media saves can run
       // concurrently; dispatch waits for all of them. Voice notes
       // transcribed via whisper.cpp dominate the wait when present.
-      // Backlog batches (anything but type==='notify') are the offline
-      // catch-up after sleep/restart. We defer audio transcription so
-      // multiple voice notes get BUNDLED into one whisper encoder pass
-      // — operator 2026-06-05. Live batches keep per-clip transcribe
-      // (no latency cost added for a single arriving voice note).
-      const audioBundle = (type !== 'notify') ? [] : null;
+      // Saves + audio queue. _saveMediaIfAny enqueues audios onto the
+      // per-chat audio queue and awaits its flush, so by the time
+      // Promise.all resolves, every audio's .transcript.txt is on disk
+      // and _transcriptByMsgId is populated (handleMessage's
+      // _enrichAudioText reads them). Both backlog and live audios
+      // travel this same path; cross-upsert ordering is handled by
+      // the queue's ts-sort on flush (operator 2026-06-05).
       await Promise.all(messages.map(msg => {
         if (msg.message?.protocolMessage) {
           return _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
         }
-        return _saveMediaIfAny(msg, audioBundle).catch(e => { _blog(`media save threw for ${msg.key?.id} (${msg.key?.remoteJid}): ${e?.message ?? e}`); err(`media save threw: ${e.message}`); });
+        return _saveMediaIfAny(msg).catch(e => { _blog(`media save threw for ${msg.key?.id} (${msg.key?.remoteJid}): ${e?.message ?? e}`); err(`media save threw: ${e.message}`); });
       }));
-      // Bundle-transcribe all deferred audios in the batch. Must complete
-      // BEFORE handleMessage runs, because handleMessage's _enrichAudioText
-      // reads _transcriptByMsgId — populated by the bundler.
-      if (audioBundle && audioBundle.length) {
-        try { await _bundledTranscribe(audioBundle); }
-        catch (e) { _blog(`bundle: top-level threw (${e?.message ?? e}) — handleMessage will dispatch with whatever transcripts landed`); }
-      }
-      for (const msg of messages) {
+      // Dispatch in ts order so a backlog batch (or any batch baileys
+      // emits out-of-order) reaches @e oldest-first. Stable sort, so
+      // text msgs that share a second with an audio msg keep their
+      // original baileys order. Operator 2026-06-05: the per-chat
+      // queue fixed transcribe ordering; this fixes dispatch ordering.
+      const orderedMessages = [...messages].sort((a, b) =>
+        (Number(a.messageTimestamp) || 0) - (Number(b.messageTimestamp) || 0));
+      for (const msg of orderedMessages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
       }
@@ -2575,6 +2576,129 @@ export async function startWhatsAppBridge({
 
   const BUNDLE_SILENCE_MS = 400;   // gap between concatenated clips
 
+  // Per-chat audio queue (operator 2026-06-05). Replaces the previous
+  // backlog-only bundling. Every audio — backlog or live — drops into
+  // this queue. The flush is debounced; consecutive audios within the
+  // window join the same bundle. On flush, items are sorted by ts and
+  // split into same-sender contiguous runs, then bundled.
+  //
+  // This is steps 2-5 of the operator's 7-step model expressed as one
+  // mechanism:
+  //   - <lock> = acquireStayAwake when the queue opens
+  //   - step 2 (concat same-contact audios) = the flush's run-grouping
+  //   - step 3 (transcribe) = _runBundleForGroup
+  //   - step 4 (feed to @e) = _transcriptByMsgId populated; handleMessage
+  //     enriches via _enrichAudioText reading the now-on-disk .transcript.txt
+  //   - step 5 (post @e response) = host-side dispatch via handleMessage
+  //   - step 6 (linger for reactions) = CHAT_LINGER_MS after flush
+  //     completes before releasing the stay-awake hold
+  //   - <unlock> = stay-awake released after the linger
+  //
+  // _saveMediaIfAny enqueues every audio and returns the queue's flush
+  // promise. The upsert handler's `await Promise.all(_saveMediaIfAny)`
+  // therefore blocks until the transcript is on disk — handleMessage's
+  // _enrichAudioText then finds the .transcript.txt as before. No
+  // separate _bundledTranscribe step from the upsert handler anymore;
+  // the queue is the single audio-processing path.
+  const CHAT_AUDIO_DEBOUNCE_MS = 2_000;
+  const CHAT_AUDIO_MAX_HOLD_MS = 10_000;  // hard cap on debounce extension — keeps a steady stream from blocking forever
+  const CHAT_LINGER_MS = 30_000;          // step 6 — keep host awake briefly for reactions / follow-ups
+  /** @type {Map<string, {items: Array, flushTimer: any, hardTimer: any, flushedPromise: Promise<void>, flushedResolve: ()=>void, stayAwakeRelease: ()=>void, lingerTimer: any, startedMs: number, openedAt: number}>} */
+  const _chatAudioQueue = new Map();
+
+  function _enqueueAudio(item) {
+    let queue = _chatAudioQueue.get(item.chatJid);
+    if (!queue) {
+      const stayAwakeRelease = acquireStayAwake();
+      let resolver;
+      const flushedPromise = new Promise(r => { resolver = r; });
+      queue = {
+        items: [],
+        flushTimer: null,
+        hardTimer: null,
+        flushedPromise,
+        flushedResolve: resolver,
+        stayAwakeRelease,
+        lingerTimer: null,
+        startedMs: Date.now(),
+        openedAt: Date.now(),
+      };
+      // Hard cap: even if debounce keeps resetting, force flush after the cap
+      queue.hardTimer = setTimeout(() => {
+        _blog(`chat-queue: HARD cap (${CHAT_AUDIO_MAX_HOLD_MS}ms) reached for chat=${item.chatJid} — forcing flush`);
+        _flushChatAudioQueue(item.chatJid);
+      }, CHAT_AUDIO_MAX_HOLD_MS);
+      queue.hardTimer.unref?.();
+      _chatAudioQueue.set(item.chatJid, queue);
+      _blog(`chat-queue: OPEN chat=${item.chatJid} — debounce ${CHAT_AUDIO_DEBOUNCE_MS}ms (cap ${CHAT_AUDIO_MAX_HOLD_MS}ms)`);
+    } else {
+      _blog(`chat-queue: extend chat=${item.chatJid} — N=${queue.items.length + 1}, timer reset to ${CHAT_AUDIO_DEBOUNCE_MS}ms`);
+    }
+    queue.items.push(item);
+    if (queue.flushTimer) clearTimeout(queue.flushTimer);
+    queue.flushTimer = setTimeout(() => _flushChatAudioQueue(item.chatJid), CHAT_AUDIO_DEBOUNCE_MS);
+    queue.flushTimer.unref?.();
+    return queue.flushedPromise;
+  }
+
+  async function _flushChatAudioQueue(chatJid) {
+    const queue = _chatAudioQueue.get(chatJid);
+    if (!queue) return;
+    _chatAudioQueue.delete(chatJid);  // detach so a new audio after now opens a fresh queue
+    if (queue.flushTimer) { clearTimeout(queue.flushTimer); queue.flushTimer = null; }
+    if (queue.hardTimer)  { clearTimeout(queue.hardTimer);  queue.hardTimer = null; }
+    const items = queue.items;
+    _blog(`chat-queue: FLUSH chat=${chatJid} N=${items.length} (open ${Date.now()-queue.openedAt}ms)`);
+    try {
+      items.sort((a, b) => (a.tsMs || 0) - (b.tsMs || 0));
+      const runs = [];
+      let current = [];
+      let currentKey = null;
+      for (const it of items) {
+        const key = `${it.fromMe ? '_me' : (it.pushedName ?? '_anon')}`;
+        if (key !== currentKey) {
+          if (current.length) runs.push(current);
+          current = [];
+          currentKey = key;
+        }
+        current.push(it);
+      }
+      if (current.length) runs.push(current);
+      _blog(`chat-queue: ${runs.length} run(s) [${runs.map(r => r.length).join(',')}] chat=${chatJid}`);
+      for (const run of runs) {
+        await _serializeTranscription(chatJid, () => _runBundleForGroup(run))
+          .catch(e => _blog(`chat-queue: run failed chat=${chatJid} (${e?.message ?? e})`));
+      }
+    } finally {
+      // Release the awaiters first (so handleMessage can proceed with
+      // the now-written .transcript.txt files), THEN start the linger.
+      try { queue.flushedResolve(); } catch (_) {}
+      queue.lingerTimer = setTimeout(() => {
+        try { queue.stayAwakeRelease(); } catch (_) {}
+        _blog(`chat-queue: linger end chat=${chatJid} — stay-awake released`);
+      }, CHAT_LINGER_MS);
+      queue.lingerTimer.unref?.();
+      _blog(`chat-queue: END chat=${chatJid} (lingering ${Math.round(CHAT_LINGER_MS/1000)}s for reactions)`);
+    }
+  }
+
+  // Drain all open queues, used by stop() to avoid hanging awaiters.
+  // Releases stay-awake holds and resolves all pending flushedPromises
+  // so any in-flight upsert handlers can return.
+  function _drainChatAudioQueues(reason) {
+    if (_chatAudioQueue.size === 0) return;
+    _blog(`chat-queue: drain (${_chatAudioQueue.size} open) — reason=${reason}`);
+    for (const chatJid of Array.from(_chatAudioQueue.keys())) {
+      const q = _chatAudioQueue.get(chatJid);
+      _chatAudioQueue.delete(chatJid);
+      if (q?.flushTimer)  clearTimeout(q.flushTimer);
+      if (q?.hardTimer)   clearTimeout(q.hardTimer);
+      if (q?.lingerTimer) clearTimeout(q.lingerTimer);
+      try { q?.flushedResolve?.(); } catch (_) {}
+      try { q?.stayAwakeRelease?.(); } catch (_) {}
+    }
+  }
+
   async function _ffprobeDuration(inputPath) {
     // ffprobe sits next to ffmpeg in every standard distribution. We
     // derive the path from ffmpeg_command so the operator doesn't need
@@ -2737,36 +2861,11 @@ export async function startWhatsAppBridge({
   // each chat's runs are processed sequentially (_serializeTranscription
   // boundary) so a chat with many notes doesn't fire many overlapping
   // whisper calls; different chats parallel naturally.
-  async function _bundledTranscribe(items) {
-    if (!items?.length) return;
-    const byChat = new Map();
-    for (const item of items) {
-      let arr = byChat.get(item.chatJid);
-      if (!arr) { arr = []; byChat.set(item.chatJid, arr); }
-      arr.push(item);
-    }
-    await Promise.all(Array.from(byChat.entries()).map(async ([chatJid, chatItems]) => {
-      chatItems.sort((a, b) => (a.tsMs || 0) - (b.tsMs || 0));
-      // Split into contiguous same-sender runs.
-      const runs = [];
-      let current = [];
-      let currentKey = null;
-      for (const it of chatItems) {
-        const key = `${it.fromMe ? '_me' : (it.pushedName ?? '_anon')}`;
-        if (key !== currentKey) {
-          if (current.length) runs.push(current);
-          current = [];
-          currentKey = key;
-        }
-        current.push(it);
-      }
-      if (current.length) runs.push(current);
-      for (const run of runs) {
-        await _serializeTranscription(chatJid, () => _runBundleForGroup(run))
-          .catch(e => _blog(`bundle: chat=${chatJid} run failed (${e?.message ?? e})`));
-      }
-    }));
-  }
+  // (_bundledTranscribe was the operator 2026-06-05 phase-1 entry point —
+  // called from the upsert handler once per backlog batch with all the
+  // batch's audios. Superseded by the per-chat queue _enqueueAudio /
+  // _flushChatAudioQueue, which handles backlog and live uniformly with
+  // ts-ordering across upsert events, debounce, and a post-flush linger.)
 
   // Streaming variant of _transcribeAudio (operator 2026-05-22):
   // returns an EventEmitter + donePromise so the dispatcher can react
@@ -2810,14 +2909,14 @@ export async function startWhatsAppBridge({
     }
   }
 
-  // `audioBundle` (optional): when an array is passed, the audio
-  // transcribe + 👂 reply step is DEFERRED. Audio metadata is pushed
-  // to the array instead, for the caller to bundle and transcribe
-  // together (saves whisper encoder passes when multiple voice notes
-  // arrive in the same upsert batch — typically the offline-backlog
-  // path). The save + ffmpeg-to-WAV part still runs normally. When
-  // null/undefined: per-clip transcribe-and-post inline (live path).
-  async function _saveMediaIfAny(msg, audioBundle = null) {
+  // Every audio enqueues onto the per-chat audio queue (see
+  // _enqueueAudio). The function returns AFTER the queue's flush
+  // promise resolves — i.e. once the .transcript.txt is on disk and
+  // _transcriptByMsgId has been populated, so the upsert handler's
+  // `await Promise.all(_saveMediaIfAny)` correctly gates handleMessage.
+  // Non-audio media (image/video/sticker) take the existing inline
+  // path with no queue indirection.
+  async function _saveMediaIfAny(msg) {
     const downloadMode = media.download ?? 'all';
     if (downloadMode === 'off') return null;
     const m = msg.message ?? {};
@@ -3302,52 +3401,27 @@ export async function startWhatsAppBridge({
           const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
           const speaker = pushedName ?? (fromMe ? 'You' : 'someone');
 
-          if (audioBundle) {
-            // Deferred path (operator 2026-06-05). Push enough metadata
-            // for _bundledTranscribe to (a) ffmpeg-concat the .ogg files,
-            // (b) split the resulting transcript back to per-msg, and
-            // (c) post the per-msg 👂 reply itself. _saveMediaIfAny
-            // returns without invoking _transcribeAudio for THIS msg.
-            audioBundle.push({
-              msg,
-              chatJid,
-              inputPath: path,
-              outputDir: dir,
-              base,
-              pushedName,
-              fromMe,
-              durSec: dur,
-              tsMs,
-              speaker,
-              hhmm,
-              wantPostAck: !!wantPostAck,
-            });
-          } else {
-            transcript = await _serializeTranscription(chatJid, async () => {
-              return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
-            }).catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
-            if (transcript?.text && msg.key?.id) {
-              _transcriptByMsgId.set(msg.key.id, transcript.text);
-            }
-
-            // Post the transcript as a threaded reply, when there's something to
-            // show. Silence (no text) posts nothing — don't clutter the chat
-            // with "(no transcript)". rememberSent so our own reply isn't
-            // re-ingested as inbound.
-            const wantPost = hit.kind === 'audio' && wantPostAck && msg.key;
-            if (wantPost && transcript?.text) {
-              try {
-                const r = await _safeSend(
-                  chatJid,
-                  { text: `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}` },
-                  { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-                );
-                if (r?.key?.id) rememberSent(r.key.id);
-              } catch (e) {
-                log(`voice transcript reply failed (${base}): ${e?.message ?? e}`);
-              }
-            }
-          }
+          // Enqueue onto the per-chat audio queue. The queue debounces
+          // briefly so consecutive audios from the same chat collapse
+          // into one whisper encoder pass; on flush, items are sorted
+          // by ts and bundled. _saveMediaIfAny awaits the queue's
+          // flush promise so handleMessage runs AFTER the transcripts
+          // are on disk (existing _enrichAudioText then finds them).
+          const flushedPromise = _enqueueAudio({
+            msg,
+            chatJid,
+            inputPath: path,
+            outputDir: dir,
+            base,
+            pushedName,
+            fromMe,
+            durSec: dur,
+            tsMs,
+            speaker,
+            hhmm,
+            wantPostAck: !!wantPostAck,
+          });
+          await flushedPromise;
         }
       }
       if (hit.kind === 'video') {
@@ -4987,6 +5061,7 @@ export async function startWhatsAppBridge({
         catch (e) { _blog(`lid-map flush failed: ${e?.message ?? e}`); }
       }
       _stopWhisperServer();
+      _drainChatAudioQueues('stop');
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
       // the last burst of counters that the 2s timer hadn't fired yet.
