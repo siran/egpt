@@ -52,7 +52,7 @@ import {
   downloadMediaMessage,
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
-import { homedir } from 'node:os';
+import { homedir, cpus } from 'node:os';
 import { join, dirname, basename, extname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
@@ -2229,10 +2229,26 @@ export async function startWhatsAppBridge({
       _whisperServerStarting = false;
       return null;
     }
+    // Thread count for the decoder (whisper-server's `-t N`). Default is
+    // 4, which leaves a lot of CPU on the table on multi-core boxes
+    // (operator 2026-06-05 on Ryzen 7 7730U: 8 physical cores / 16 logical;
+    // 1s voice was decoding in ~20s with the default 4 threads). Whisper
+    // is CPU-bound matrix math — past the physical-core count, SMT/HT
+    // siblings compete on the same FPU/AVX units and add little, sometimes
+    // hurt. We default to the logical-core count clamped at 16 (a safe
+    // upper bound; large servers won't benefit linearly past that for
+    // this workload). Override via audio_transcribe.threads in config.
+    const detectedThreads = (() => {
+      try { return cpus()?.length ?? 4; } catch { return 4; }
+    })();
+    const threads = Number.isFinite(cfg.threads) && cfg.threads > 0
+      ? Math.floor(cfg.threads)
+      : Math.min(detectedThreads, 16);
     const args = [
       '-m', modelPath,
       '--host', host,
       '--port', String(port),
+      '-t', String(threads),
     ];
     if (language) args.push('-l', language);
     // Apply the same tunables that whisper-cli accepts.
@@ -2246,7 +2262,8 @@ export async function startWhatsAppBridge({
     args.push('--print-progress');   // emit `progress = N%` to stderr for the live bar
 
     _whisperServerUrl = `http://${host}:${port}`;
-    log(`whisper-server: starting ${serverBin} on ${_whisperServerUrl} (model ${modelPath.split(/[\\/]/).pop()})`);
+    log(`whisper-server: starting ${serverBin} on ${_whisperServerUrl} (model ${modelPath.split(/[\\/]/).pop()}, threads=${threads}/${detectedThreads} detected)`);
+    _blog(`whisper-server: spawn args -m ${modelPath.split(/[\\/]/).pop()} --host ${host} --port ${port} -t ${threads} -l ${language ?? '?'}`);
     try {
       _whisperServerProc = _spawnChild(serverBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     } catch (e) {
