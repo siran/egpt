@@ -769,13 +769,23 @@ export async function startWhatsAppBridge({
     }
   }
 
-  // Connectivity tick — the bridge's recurring health check.
-  // Reads bridge state + actively probes the NIC (raw TCP, 1s timeout,
-  // bypasses any DNS/cache shenanigans). If all signals say healthy,
-  // tick is a no-op. If anything looks off, spawn ONE bounded recovery
-  // attempt (60s NIC budget). After a failed attempt the cooldown
-  // suppresses the next attempts for RECOVERY_COOLDOWN_MS so a long
-  // outage doesn't pin the machine awake on retry-every-20s.
+  // Connectivity tick — the bridge's recurring health check + SOLE
+  // reconnect path. The close handler now just logs + triggers an
+  // immediate tick instead of running its own _scheduleReconnect chain
+  // (that chain was hammering 2s reconnects + ENOTFOUND closes during
+  // outages, swamping the log and ignoring our cooldown).
+  //
+  // Decision tree:
+  //   trulyConnected (open && rs===1 && nicUp)  -> no-op
+  //   !everConnected                            -> first pairing owns it
+  //   _recoveryAttemptInProgress                -> let it run
+  //   nicUp                                      -> FAST: schedule reconnect
+  //                                                immediately, BYPASS cooldown
+  //                                                (cooldown is for NIC-down
+  //                                                storm prevention; with NIC
+  //                                                up we should reconnect fast)
+  //   nicUp=false && cooldown active             -> wait it out
+  //   nicUp=false && cooldown expired            -> spawn recovery attempt
   async function _connectivityTick() {
     if (stopped) return;
     const now = Date.now();
@@ -788,13 +798,30 @@ export async function startWhatsAppBridge({
     const cooldownLeftMs = _lastFailedRecoveryAt ? Math.max(0, RECOVERY_COOLDOWN_MS - (now - _lastFailedRecoveryAt)) : 0;
     _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s stayAwake=${stayAwakeActive()}`);
 
-    if (trulyConnected) return;            // healthy — nothing to do
-    if (!everConnected) return;            // first pairing owned by startup
-    if (_recoveryAttemptInProgress) return; // attempt already running
-    if (cooldownLeftMs > 0) return;        // recent failure — wait it out
+    if (trulyConnected) return;
+    if (!everConnected) return;
+    if (_recoveryAttemptInProgress) return;
 
-    // Spawn the recovery attempt in the background so the tick returns
-    // promptly. The attempt holds stay-awake itself.
+    // FAST PATH — NIC is up but bridge isn't. Could be a stale socket,
+    // a silent wedge, or a fresh close. Schedule reconnect immediately;
+    // bypass the cooldown clock since it's only meant to prevent
+    // hammering when the NIC itself is down.
+    if (nicUp === true) {
+      if (!_connectionOpen && !reconnectTimer) {
+        unhealthySince = 0;
+        _lastFailedRecoveryAt = 0;
+        _scheduleReconnect('conn-tick: NIC up, bridge not connected');
+      } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
+        unhealthySince = 0;
+        _lastFailedRecoveryAt = 0;
+        _scheduleReconnect('conn-tick: socket wedged (open=true, rs!=1)');
+      }
+      return;
+    }
+
+    // SLOW PATH — NIC is down. Cooldown gate prevents back-to-back
+    // 60s-attempt-then-fail cycles burning battery on a long outage.
+    if (cooldownLeftMs > 0) return;
     _recoveryAttempt(nicUp);
   }
   function _startConnectivityTick() {
@@ -1696,36 +1723,14 @@ export async function startWhatsAppBridge({
           return;
         }
         // 440 = connectionReplaced. WA's server has another session
-        // authenticated with these credentials. Historically we treated
-        // this as a self-conflict (a second egpt daemon fighting over the
-        // session) and disabled auto-reconnect to avoid a fight loop. The
-        // daemon-singleton (src/daemon-singleton.mjs, cross-session-aware
-        // since 2026-05-28) now PROVES we're alone, so 440 must be
-        // EXTERNAL — your phone's WA Web link, a browser tab on
-        // whatsapp.com, or the Chrome extension's WA-CDP. Keep retrying:
-        // the external client will eventually release (you close the tab,
-        // refresh the phone link) and the next reconnect attempt wins.
-        // _scheduleReconnect uses a fixed 2s interval (no exponential),
-        // so this is a steady-cadence reattempt loop. The external client
-        // releasing (you close the WA Web tab) triggers a successful next
-        // attempt — usually within seconds.
+        // authenticated with these credentials. Either another egpt
+        // (we defer to it) or an external client (phone WA Web tab,
+        // chrome extension WA-CDP) — for external, we retry; the
+        // conn-tick fires the actual reconnect attempts now (fixed
+        // 2s via _scheduleReconnect when NIC is up).
         if (reason === DisconnectReason.connectionReplaced || reason === 440) {
-          // Distinguish internal (another egpt has WA) from external (phone,
-          // browser tab, extension). Daemon-singleton makes self-conflicts
-          // structurally impossible AT THE DAEMON LEVEL, but a user can still
-          // run `node egpt.mjs` (the app, not the supervisor) alongside the
-          // headless daemon — the pidfile-handshake takeover is supposed to
-          // hand WA between them, but its process.kill is cross-session
-          // and silently no-ops against the S4U daemon on Win32. So check
-          // here and defer to the other egpt if found; the operator can /exit
-          // one of them to converge.
-          // Supervised daemon never defers (see startup-defer comment).
           const otherEgpt = process.env.EGPT_SUPERVISED ? null : _findAnotherEgpt();
           if (otherEgpt) {
-            // Internal deferral — INFO, not an error. Goes to /log only so it
-            // doesn't pollute the shell. The send() relay through the outbox
-            // is the user-facing visible behavior ("hello reached WA"); the
-            // operator doesn't need to be told the plumbing on every 440.
             log(`whatsapp: connection replaced (reason 440) — another egpt (pid ${otherEgpt}) ` +
                 `is alive. Deferring; outbound sends relay via the outbox.`);
             _stopWaAlive('connection_replaced', `reason ${reason} — deferring to pid ${otherEgpt}`);
@@ -1735,16 +1740,21 @@ export async function startWhatsAppBridge({
           }
           err('whatsapp: connection replaced (reason 440) — another WA Web client ' +
               'holds the session (your phone, a browser tab on whatsapp.com, or the ' +
-              'extension). Reconnecting with backoff; close the other client to recover.');
+              'extension). Reconnecting; close the other client to recover.');
           _stopWaAlive('connection_replaced', `reason ${reason}`);
-          _scheduleReconnect(`connection replaced (reason ${reason})`);
-          return;
+          // Fall through — _kickConnTick below schedules an immediate retry.
+        } else {
+          _stopWaAlive('closed', `reason ${reason ?? '?'}`);
         }
-        _stopWaAlive('closed', `reason ${reason ?? '?'}`);
-        // Other close reasons: funnel through _scheduleReconnect —
-        // backoff retry, operator-visible errOut, and recovery from
-        // a connect() that throws synchronously.
-        _scheduleReconnect(`connection closed (reason ${reason ?? '?'})`);
+        // Don't call _scheduleReconnect here (operator 2026-06-05). The
+        // close handler used to schedule its own retry, which during an
+        // outage produced a 2s-cadence storm of connect→ENOTFOUND→close
+        // → schedule → repeat, flooding the log and ignoring our
+        // cooldown. Now: the conn-tick is the sole reconnect path. We
+        // kick it RIGHT NOW so we don't wait up to 20s for the next
+        // scheduled tick — when NIC is up this gives near-instant
+        // recovery for transient closes.
+        Promise.resolve().then(() => { _connectivityTick().catch(() => {}); });
       }
     });
 
