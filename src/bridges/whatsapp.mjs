@@ -455,6 +455,14 @@ export async function startWhatsAppBridge({
   // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
   // or a network-down boot is left to reconnect/backoff, never an exit-loop.
   let everConnected   = false;  // set true on the first 'connection: open'
+  // Cleared by the first close OR open event. Differentiates "first
+  // connect attempt is still in flight (likely QR pairing)" from "first
+  // attempt closed without opening — please retry." conn-tick gates on
+  // this so it doesn't interrupt initial QR pairing, but DOES retry
+  // after a first-attempt failure (operator 2026-06-05: bridge sat
+  // wedged for minutes after a reason=428 on the very first connect
+  // because conn-tick refused to act while !everConnected).
+  let _initialConnectInFlight = true;
   // Health is decided by baileys' OWN connection events, NOT ws.readyState —
   // the wrapped socket can report readyState 0 while baileys is fully 'open'
   // (false-wedged exits, operator 2026-06-04). _connectionOpen flips with the
@@ -636,7 +644,7 @@ export async function startWhatsAppBridge({
     _blog(`watchdog-tick: gap=${tickGap}ms open=${_connectionOpen} rs=${rs ?? '?'} reconnecting=${!!reconnectTimer} unhealthyAge=${unhealthyAgeS}s everConnected=${everConnected} stopped=${stopped}`);
     if (tickGap > WATCHDOG_SLEEP_GAP_MS) { unhealthySince = 0; return; }
     if (stopped) return;        // loggedOut / deferred-to-another-egpt → intentional stop, not a wedge
-    if (!everConnected) return; // never connected yet (initial pairing / boot) → reconnect+backoff owns it
+    if (!everConnected && _initialConnectInFlight) return; // first attempt in flight (likely QR pairing) — don't interfere
     // Health = baileys' OWN connection state, NOT ws.readyState (the wrapped
     // socket reports 0 while baileys is 'open' → false-wedge). Healthy iff
     // baileys says open AND we're not mid-reconnect.
@@ -799,7 +807,7 @@ export async function startWhatsAppBridge({
     _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s stayAwake=${stayAwakeActive()}`);
 
     if (trulyConnected) return;
-    if (!everConnected) return;
+    if (!everConnected && _initialConnectInFlight) return; // first attempt in flight (likely QR pairing) — don't interfere
     if (_recoveryAttemptInProgress) return;
 
     // FAST PATH — NIC is up but bridge isn't. Could be a stale socket,
@@ -1654,6 +1662,7 @@ export async function startWhatsAppBridge({
         });
       }
       if (connection === 'open') {
+        _initialConnectInFlight = false;
         myJid = sock.user?.id ?? null;          // e.g. '1234567890:42@s.whatsapp.net' (with device id)
         myNumber = myJid?.split(':')[0]?.split('@')[0] ?? null;
         // LID is WhatsApp's privacy-format identity. The user's own
@@ -1727,6 +1736,7 @@ export async function startWhatsAppBridge({
       }
       if (connection === 'close') {
         _connectionOpen = false;
+        _initialConnectInFlight = false;
         const reason = lastDisconnect?.error?.output?.statusCode;
         _blog(`connection CLOSE — reason=${reason ?? '?'} (${lastDisconnect?.error?.message ?? 'no message'})`);
         if (reason === DisconnectReason.loggedOut) {
