@@ -1698,6 +1698,20 @@ export async function startWhatsAppBridge({
         // doesn't release prematurely. The 30s linger in stay-awake.mjs
         // covers the gap to when media-save / brain-turn handlers acquire
         // their own holds for transcription + reply.
+        //
+        // Pre-warm whisper-server NOW (operator 2026-06-05). Otherwise
+        // the first voice note in the backlog pays the entire ~15-30s
+        // model-load + HTTP-ready cost serially before dispatch, so a
+        // 3-second voice note can take ~2min from "media download OK"
+        // to "@e receives transcript". Pre-warm hides that cost behind
+        // network I/O — by the time the first audio lands, the server
+        // is hot and the /inference call is a few hundred ms.
+        // Fire-and-forget: doesn't block connect; failures fall back
+        // to per-call whisper-cli (its own slower fallback path).
+        (async () => {
+          try { await _ensureWhisperServer(); }
+          catch (e) { _blog(`whisper-server: pre-warm threw — ${e?.message ?? e}`); }
+        })();
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
         // a group's cached label could end up as a person's name
@@ -2193,10 +2207,13 @@ export async function startWhatsAppBridge({
     if (_whisperServerProc) return _whisperServerReady;
     if (_whisperServerStarting) return _whisperServerReady;
     _whisperServerStarting = true;
+    const _twh0 = Date.now();
+    _blog(`whisper-server: spawn START (model load + HTTP ready can take 15-30s with ggml-large-v3)`);
 
     const serverBin = _whisperServerBinPath();
     if (!existsSync(serverBin)) {
       log(`whisper-server: binary not found at ${serverBin} — falling back to per-call whisper-cli`);
+      _blog(`whisper-server: spawn FAIL (binary not found at ${serverBin}) after ${Date.now()-_twh0}ms`);
       _whisperServerStarting = false;
       return null;
     }
@@ -2259,17 +2276,21 @@ export async function startWhatsAppBridge({
     // a simple TCP poll is more robust.
     _whisperServerReady = (async () => {
       const deadline = Date.now() + 60_000;
+      const startedAt = Date.now();
       while (Date.now() < deadline) {
         try {
           const r = await fetch(`${_whisperServerUrl}/`, { method: 'GET' });
           if (r.status < 500) {
-            log(`whisper-server: ready (${Date.now() - (deadline - 60_000)}ms to boot)`);
+            const ms = Date.now() - startedAt;
+            log(`whisper-server: ready (${ms}ms to boot)`);
+            _blog(`whisper-server: READY after ${ms}ms`);
             return true;
           }
         } catch (_) { /* not up yet */ }
         await new Promise(res => setTimeout(res, 250));
       }
       log(`whisper-server: failed to come up within 60s`);
+      _blog(`whisper-server: TIMEOUT after 60s — killing proc, falling back to whisper-cli per-call`);
       try { _whisperServerProc?.kill(); } catch {}
       _whisperServerProc = null;
       return false;
@@ -2360,15 +2381,24 @@ export async function startWhatsAppBridge({
     // arrives just after a scheduled wake is fully transcribed before the
     // machine idle-sleeps again (operator 2026-06-03).
     const _awakeT = acquireStayAwake();
+    // Timing trace (operator 2026-06-05). Voice notes have been slow to land
+    // (~2min between download OK and dispatch). The wa-bridge.log had no
+    // visibility into transcription — only `log()` was used here. Now every
+    // phase emits a _blog line so we can pinpoint where the time goes.
+    const _tx0 = Date.now();
+    _blog(`transcribe: START ${base} (chat=${inputPath.split(/[\\/]/).slice(-3, -2)[0] ?? '?'})`);
     try {
     const wavPath = join(outputDir, `${base}.tmp.wav`);
     // ffmpeg: opus/m4a/mp3 → 16kHz mono PCM WAV
+    const _tFf = Date.now();
     try {
       await _runCmd(ffmpegBin, ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath]);
     } catch (e) {
       log(`transcribe: ffmpeg failed for ${base}: ${e.message}`);
+      _blog(`transcribe: ffmpeg FAILED ${base} after ${Date.now()-_tFf}ms — ${e.message}`);
       return null;
     }
+    _blog(`transcribe: ffmpeg done ${base} (${Date.now()-_tFf}ms)`);
     const args = ['-m', modelPath, '-f', wavPath, '--output-txt', '--no-prints'];
     if (typeof cfg.language === 'string' && cfg.language.trim()) {
       args.push('-l', cfg.language.trim());
@@ -2408,20 +2438,26 @@ export async function startWhatsAppBridge({
     // overhead). Falls back to per-call whisper-cli if the server
     // isn't available, hasn't started, or HTTP-failed this call.
     let text = null;
+    const _tSrv = Date.now();
     const serverResult = await _transcribeViaServer({ wavPath, language: cfg.language });
     if (serverResult?.text) {
+      _blog(`transcribe: server done ${base} (${Date.now()-_tSrv}ms)`);
       text = serverResult.text;
       try { await fs.writeFile(finalTxt, text, 'utf8'); }
       catch (e) { log(`transcribe: write finalTxt failed: ${e?.message ?? e}`); }
       try { await fs.unlink(wavPath); } catch {}
     } else {
+      _blog(`transcribe: server unavailable after ${Date.now()-_tSrv}ms — falling back to whisper-cli for ${base}`);
+      const _tCli = Date.now();
       try {
         await _runCmd(whisperBin, args);
       } catch (e) {
         log(`transcribe: whisper failed for ${base}: ${e.message}`);
+        _blog(`transcribe: whisper-cli FAILED ${base} after ${Date.now()-_tCli}ms — ${e.message}`);
         try { await fs.unlink(wavPath); } catch {}
         return null;
       }
+      _blog(`transcribe: whisper-cli done ${base} (${Date.now()-_tCli}ms)`);
       // whisper.cpp writes <wavPath>.txt — move next to the audio
       // with a stable suffix the host / @e can grep for.
       const txtSrc = `${wavPath}.txt`;
@@ -2437,6 +2473,7 @@ export async function startWhatsAppBridge({
       const preview = text.length > 60 ? text.slice(0, 59) + '…' : text;
       log(`transcribed ${base}: "${preview}"`);
     }
+    _blog(`transcribe: END ${base} (total ${Date.now()-_tx0}ms${text ? `, ${text.length}ch` : ', no text'})`);
     return text ? { path: finalTxt, text } : null;
     } finally { _awakeT(); }
   }
