@@ -96,8 +96,14 @@ export function isSilenceMarker(text) {
 // the bridge must keep retrying instead of giving up after one
 // scheduled attempt. Until this commit the retry was one-shot:
 // connect() threw → setTimeout never re-armed → bridge dead.
-const RECONNECT_MS = 5_000;
-const RECONNECT_MAX_MS = 60_000;
+// FIXED 2s reconnect interval — NO exponential backoff (operator 2026-06-05).
+// The failure modes we've seen are:
+//   (a) NIC not ready — handled by _pokeNicUntilReady BEFORE we call connect.
+//   (b) WA edge fault — which a longer wait can't fix; same-shaped retry as (a).
+// Exponential backoff just stretches the recovery window past the next
+// scheduled sleep so the system never actually reaches a healthy state.
+const RECONNECT_MS = 2_000;
+// (RECONNECT_MAX_MS no longer used; constant retired with the exponential.)
 const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
 // How often the in-bridge health watchdog checks for a WEDGED socket (a
 // silent death with no 'close' event, or a reconnect that never succeeds).
@@ -107,14 +113,23 @@ const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
 // in between, so the WA socket is dead and we should reconnect immediately.
 const WAKE_TICK_MS = 20_000;
 const WAKE_GAP_MS  = 60_000;   // a >60s gap on a 20s tick = the host slept
-// After a detected wake, hold the host awake just long enough for the "quick
-// check" — reconnect + offline-message arrival — then release so the machine
-// sleeps again until the next scheduled wake (the spine wakes every ~5 min). An
-// actual transcription / brain turn that's still running EXTENDS the hold on
-// its own (stay-awake.mjs is reference-counted) + a 30s linger, so real work is
-// never cut off; this base window must stay WELL under the wake interval or the
-// holds would bridge together and the host would never sleep.
-const WAKE_STAY_AWAKE_MS = 120_000;   // 2 min base; jobs extend it as needed
+// NIC-readiness probe: on post-sleep wake the Wi-Fi NIC takes 10-30s+ to
+// reassociate. Firing connect() too soon yields a getaddrinfo ENOTFOUND
+// avalanche that exhausts the wake window before recovery (operator
+// 2026-06-05 overnight test: 15+ wake events all failed DNS, only a manual
+// mouse move at ~6:30 EDT finally produced a sustained connection).
+// Probe DNS at a fixed 2s cadence with a 1s per-attempt timeout, up to 60s.
+const NIC_PROBE_HOST          = 'web.whatsapp.com';
+const NIC_PROBE_INTERVAL_MS   = 2_000;
+const NIC_PROBE_TIMEOUT_MS    = 1_000;
+const NIC_PROBE_BUDGET_MS     = 60_000;   // ~30 attempts every 2s
+// Maximum total time we keep stay-awake held by the wake-recovery hold alone
+// (i.e. when the reconnect never actually opens, so no downstream handler
+// ever takes ownership of the hold). Past this we release; if a successful
+// open ever lands the 'open' handler re-acquires its own short hold for
+// the catch-up burst. Stops a hung wake from pinning the machine awake
+// indefinitely on battery.
+const WAKE_HOLD_CAP_MS        = 5 * 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -402,11 +417,17 @@ export async function startWhatsAppBridge({
   let sock           = null;
   let reconnectTimer = null;
   let waAliveTimer   = null;
-  // Exponential backoff state. Reset to 0 when 'connection: open'
-  // fires; doubled on each consecutive close/connect-throw. _scheduleReconnect
-  // is the single retry path — both the close handler and the
-  // catch around connect() funnel through it.
+  // Reconnect attempt counter. Reset to 0 when 'connection: open' fires.
+  // Used only for visibility now — _scheduleReconnect uses a FIXED 2s delay
+  // (no exponential backoff; see RECONNECT_MS docstring).
   let reconnectAttempts = 0;
+  // Wake-recovery stay-awake hold. Acquired in _wakeTick on a real suspend
+  // gap, released by the connection 'open' handler so downstream media-save /
+  // brain-turn holds take over via the 30s linger in stay-awake.mjs. Capped
+  // at WAKE_HOLD_CAP_MS so a stuck wake (NIC never returns) can't pin the
+  // machine awake on battery indefinitely.
+  let _wakeHoldRelease = null;
+  let _wakeHoldCapTimer = null;
   // Health-watchdog state (see _bridgeWatchdogTick). everConnected gates the
   // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
   // or a network-down boot is left to reconnect/backoff, never an exit-loop.
@@ -519,7 +540,13 @@ export async function startWhatsAppBridge({
   function _scheduleReconnect(reason) {
     if (stopped) return;
     if (reconnectTimer) return;            // already armed
-    const delay = Math.min(RECONNECT_MS * Math.pow(2, reconnectAttempts), RECONNECT_MAX_MS);
+    // Fixed 2s — see RECONNECT_MS docstring. The previous Math.pow(2, N)
+    // backoff stretched the per-attempt wait up to 60s, which on a post-
+    // sleep wake meant the machine idle-slept again before the NIC came
+    // up. With NIC readiness probed FIRST (by _wakeTick / _pokeNicUntilReady)
+    // and a uniform 2s cadence here, each close → reconnect cycle is short
+    // enough that the wake window covers many attempts.
+    const delay = RECONNECT_MS;
     reconnectAttempts++;
     err(`whatsapp: ${reason}; reconnect attempt ${reconnectAttempts} in ${Math.round(delay / 1000)}s`);
     _stopWaAlive('reconnecting', reason);
@@ -613,10 +640,45 @@ export async function startWhatsAppBridge({
     bridgeWatchdogTimer.unref?.();
   }
 
+  // Probe NIC readiness with a cheap DNS lookup at a fixed 2s cadence,
+  // each attempt bounded to 1s. Returns true when DNS resolves; false if
+  // the per-wake budget expires (we still attempt connect either way).
+  // The numbers are operator-specified ("every 2s for 1s during a minute"):
+  // fixed-interval, no exponential, no jitter.
+  async function _pokeNicUntilReady() {
+    let dnsMod = null;
+    try { dnsMod = (await import('node:dns')).promises; }
+    catch (e) { _blog(`nic-poke: import node:dns failed (${e?.message ?? e}) — skipping probe`); return false; }
+    const startMs = Date.now();
+    let attempts = 0;
+    while (!stopped && Date.now() - startMs < NIC_PROBE_BUDGET_MS) {
+      attempts++;
+      try {
+        const result = await Promise.race([
+          dnsMod.lookup(NIC_PROBE_HOST),
+          new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${NIC_PROBE_TIMEOUT_MS}ms`)), NIC_PROBE_TIMEOUT_MS)),
+        ]);
+        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — ${NIC_PROBE_HOST} -> ${result?.address ?? '?'}`);
+        return true;
+      } catch (e) {
+        _blog(`nic-poke: attempt ${attempts} failed (${(e?.message ?? 'unknown').slice(0, 80)}) — retry in ${NIC_PROBE_INTERVAL_MS/1000}s`);
+        await new Promise(r => setTimeout(r, NIC_PROBE_INTERVAL_MS));
+      }
+    }
+    _blog(`nic-poke: budget exhausted after ${attempts} attempt(s) (${Math.round(NIC_PROBE_BUDGET_MS/1000)}s); attempting connect anyway`);
+    return false;
+  }
+
   // Wake detector — see WAKE_* notes. If the gap since the last tick is much
   // larger than the tick interval, the host was suspended and the WA socket is
-  // dead: re-arm reconnect NOW (reset backoff) instead of waiting for the
-  // wedged-grace, so a Task-Scheduler wake / lid resume reconnects in seconds.
+  // dead: re-arm reconnect NOW so a Task-Scheduler wake / lid resume reconnects
+  // in seconds. Flow per operator 2026-06-05:
+  //   1. acquire stay-awake (no timer — held until 'open' fires)
+  //   2. poke NIC until DNS resolves (fixed 2s cadence, 1s timeout, 60s budget)
+  //   3. fire _scheduleReconnect (which now uses a fixed 2s interval)
+  //   4. the connection 'open' handler releases the wake-hold; the 30s linger
+  //      in stay-awake.mjs covers the gap to when media-save / brain-turn
+  //      acquire their OWN holds for transcription + reply.
   function _wakeTick() {
     const now = Date.now();
     const gap = now - _lastWakeTick;
@@ -628,15 +690,36 @@ export async function startWhatsAppBridge({
     const rsW = _socketReadyState();
     _blog(`wake-tick: gap=${gap}ms open=${_connectionOpen} rs=${rsW ?? '?'} reconnecting=${!!reconnectTimer} stayAwake=${stayAwakeActive()}`);
     if (stopped || gap <= WAKE_GAP_MS) return;
-    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — re-arming WA reconnect (readyState=${rsW ?? '?'})`);
-    // Hold the host awake through the post-wake processing burst (reconnect →
-    // offline backlog → transcription → reply). Auto-releases after the window;
-    // a transcription/brain turn that runs longer extends the hold itself.
-    holdStayAwake(WAKE_STAY_AWAKE_MS);
-    reconnectAttempts = 0;        // reset backoff so it retries promptly, not at the 60s cap
-    unhealthySince = 0;           // give the fresh socket a full wedged-grace
+    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — poking NIC then reconnecting (readyState=${rsW ?? '?'})`);
+    // Drop any prior wake-hold (this wake interrupted an in-flight recovery).
+    if (_wakeHoldRelease) {
+      try { _wakeHoldRelease(); } catch {}
+      _wakeHoldRelease = null;
+    }
+    if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
+    // Hold the host awake. No timer — released by the 'open' handler or by
+    // the safety cap below.
+    _wakeHoldRelease = acquireStayAwake();
+    _wakeHoldCapTimer = setTimeout(() => {
+      _wakeHoldCapTimer = null;
+      if (_wakeHoldRelease) {
+        _blog(`wake-hold: cap (${Math.round(WAKE_HOLD_CAP_MS/1000)}s) reached without a successful open — releasing; baileys will keep retrying`);
+        try { _wakeHoldRelease(); } catch {}
+        _wakeHoldRelease = null;
+      }
+    }, WAKE_HOLD_CAP_MS);
+    _wakeHoldCapTimer.unref?.();
+    reconnectAttempts = 0;
+    unhealthySince = 0;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    _scheduleReconnect('resumed from sleep');   // base 5s delay — lets the NIC re-associate first
+    // Poke NIC in the background so the setInterval callback returns promptly;
+    // then schedule the reconnect. Whether or not the poke succeeded, we still
+    // fire — baileys' own retry chain will handle a still-failing NIC.
+    (async () => {
+      const nicReady = await _pokeNicUntilReady();
+      if (stopped) return;
+      _scheduleReconnect(nicReady ? 'resumed from sleep, NIC ready' : 'resumed from sleep, NIC probe exhausted');
+    })();
   }
   function _startWakeDetector() {
     if (wakeTimer) return;
@@ -1506,6 +1589,18 @@ export async function startWhatsAppBridge({
         log(`whatsapp: connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _blog(`connection OPEN — connected as ${display} (${myNumber}${myLidNumber ? `, lid ${myLidNumber}` : ''})`);
         _startWaAlive();
+        // Wake recovery succeeded — release the wake-hold. Downstream
+        // handlers (media-save in the upsert handler, brain-turn in the
+        // host) acquire their OWN holds for their work, and the 30s linger
+        // in stay-awake.mjs spans the gap between this release and their
+        // acquires. So transcription + reply NEVER get cut off by idle-
+        // sleep, but a quiet connect (no work) returns to sleep promptly.
+        if (_wakeHoldRelease) {
+          _blog(`wake-hold: released on connection OPEN — downstream handlers hold their own through transcription/reply`);
+          try { _wakeHoldRelease(); } catch {}
+          _wakeHoldRelease = null;
+        }
+        if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
         // Heal stale group names. Pre-fix bridge builds wrote the
         // first-speaker's pushName into the chat name for groups, so
         // a group's cached label could end up as a person's name
@@ -1524,6 +1619,10 @@ export async function startWhatsAppBridge({
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
           _stopWaAlive('logged_out', `reason ${reason}`);
           stopped = true;
+          // Logged-out is permanent — don't keep the wake-hold pinning the
+          // machine awake for retries that will never succeed.
+          if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
+          if (_wakeHoldRelease) { try { _wakeHoldRelease(); } catch {} _wakeHoldRelease = null; }
           return;
         }
         // 440 = connectionReplaced. WA's server has another session
@@ -1536,8 +1635,10 @@ export async function startWhatsAppBridge({
         // whatsapp.com, or the Chrome extension's WA-CDP. Keep retrying:
         // the external client will eventually release (you close the tab,
         // refresh the phone link) and the next reconnect attempt wins.
-        // _scheduleReconnect's exponential backoff caps at RECONNECT_MAX_MS,
-        // so this isn't a hot loop — just patient reattempts.
+        // _scheduleReconnect uses a fixed 2s interval (no exponential),
+        // so this is a steady-cadence reattempt loop. The external client
+        // releasing (you close the WA Web tab) triggers a successful next
+        // attempt — usually within seconds.
         if (reason === DisconnectReason.connectionReplaced || reason === 440) {
           // Distinguish internal (another egpt has WA) from external (phone,
           // browser tab, extension). Daemon-singleton makes self-conflicts
@@ -4440,6 +4541,10 @@ export async function startWhatsAppBridge({
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
       if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
+      // Drop any wake-recovery stay-awake hold so a stop()-after-wake
+      // doesn't pin the machine awake until the cap timer fires.
+      if (_wakeHoldCapTimer) { clearTimeout(_wakeHoldCapTimer); _wakeHoldCapTimer = null; }
+      if (_wakeHoldRelease) { try { _wakeHoldRelease(); } catch {} _wakeHoldRelease = null; }
       // Flush the learned lid↔pn map (the 5s debounce may not have fired).
       if (_lidMapWriteTimer) { clearTimeout(_lidMapWriteTimer); _lidMapWriteTimer = null; }
       if (_lidMap?.dirty) {
