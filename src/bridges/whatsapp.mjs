@@ -654,11 +654,36 @@ export async function startWhatsAppBridge({
     bridgeWatchdogTimer.unref?.();
   }
 
-  // Probe NIC readiness with a cheap DNS lookup at a fixed 2s cadence,
-  // each attempt bounded to 1s. Returns true when DNS resolves; false if
-  // the per-wake budget expires (we still attempt connect either way).
-  // The numbers are operator-specified ("every 2s for 1s during a minute"):
-  // fixed-interval, no exponential, no jitter.
+  // One-shot connectivity probe used by the connectivity tick. Returns:
+  //   true   — DNS resolved within timeout (NIC has internet)
+  //   false  — DNS query failed/timed out (NIC down / no route)
+  //   null   — couldn't even run the probe (node:dns unavailable; rare)
+  //
+  // Uses dns.resolve4() — NOT dns.lookup() — to bypass the OS resolver
+  // cache. lookup() returns Windows' cached IP for web.whatsapp.com
+  // instantly even when the Wi-Fi NIC is OFF (operator 2026-06-05 wifi
+  // test: the bridge reported open=true rs=1 for cycles after pulling
+  // the network because lookup() was still answering from cache).
+  // resolve4() actually sends a UDP query to the configured DNS server,
+  // so an offline NIC produces ENETUNREACH/ETIMEDOUT within ms.
+  async function _quickNicCheck() {
+    let dnsMod = null;
+    try { dnsMod = (await import('node:dns')).promises; }
+    catch { return null; }
+    try {
+      await Promise.race([
+        dnsMod.resolve4(NIC_PROBE_HOST),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${NIC_PROBE_TIMEOUT_MS}ms`)), NIC_PROBE_TIMEOUT_MS)),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // Repeated probe used during a recovery cycle. Same resolve4 semantics
+  // as the quick check, but loops at a fixed 2s cadence until NIC is
+  // ready or the per-recovery budget expires.
   async function _pokeNicUntilReady() {
     let dnsMod = null;
     try { dnsMod = (await import('node:dns')).promises; }
@@ -669,10 +694,11 @@ export async function startWhatsAppBridge({
       attempts++;
       try {
         const result = await Promise.race([
-          dnsMod.lookup(NIC_PROBE_HOST),
+          dnsMod.resolve4(NIC_PROBE_HOST),
           new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${NIC_PROBE_TIMEOUT_MS}ms`)), NIC_PROBE_TIMEOUT_MS)),
         ]);
-        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — ${NIC_PROBE_HOST} -> ${result?.address ?? '?'}`);
+        const addr = Array.isArray(result) ? result[0] : '?';
+        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — ${NIC_PROBE_HOST} -> ${addr}`);
         return true;
       } catch (e) {
         _blog(`nic-poke: attempt ${attempts} failed (${(e?.message ?? 'unknown').slice(0, 80)}) — retry in ${NIC_PROBE_INTERVAL_MS/1000}s`);
@@ -684,26 +710,33 @@ export async function startWhatsAppBridge({
   }
 
   // Connectivity tick — the bridge's recurring health/recovery loop.
-  // Replaces the old wake detector (operator 2026-06-05). Logic:
-  //   1. Truly connected (open && rs===1)  -> release recovery hold if held.
-  //   2. Not connected, never connected     -> let initial pairing flow run.
-  //   3. Not connected, was once connected  -> RECOVERY:
-  //        - acquire stay-awake hold if not already held (capped)
-  //        - if not already in flight, spawn _recoveryAttempt(): poke NIC
-  //          (fixed 2s cadence, 1s timeout, 60s budget); when NIC is up,
-  //          schedule reconnect (which uses a fixed 2s interval).
-  //   The connection 'open' handler does NOT release the hold anymore —
-  //   the next connectivity tick sees the healthy state and releases it.
-  //   That way a fragile "open -> close 30s later" doesn't release prema-
-  //   turely; the tick's view of state is the single source of truth.
-  function _connectivityTick() {
+  // Replaces the old wake detector (operator 2026-06-05). Logic per tick:
+  //   - Read bridge state (open + rs)
+  //   - ACTIVELY probe NIC (one resolve4, 1s timeout — bypasses OS cache)
+  //   - trulyConnected = open && rs===1 && nicUp
+  //   - if trulyConnected: release recovery hold (if held), return
+  //   - else: acquire recovery hold (capped), spawn slow poke if needed
+  //
+  // The active probe is the KEY change from the prior version (operator
+  // 2026-06-05 wifi test: open=true rs=1 reported for cycles after the
+  // Wi-Fi was pulled because the bridge flags stayed stale). Probing
+  // every tick lets us detect connectivity loss BEFORE baileys' own
+  // keep-alive notices and fires 'close'.
+  //
+  // The 'open' handler does NOT release the recovery hold — this tick
+  // is the single source of truth. That way a fragile "open then close
+  // 30s later" pattern doesn't release prematurely.
+  async function _connectivityTick() {
     if (stopped) return;
     const now = Date.now();
     const gap = _lastWakeTick ? (now - _lastWakeTick) : 0;
     _lastWakeTick = now;
     const rs = _socketReadyState();
-    const trulyConnected = _connectionOpen && rs === 1;
-    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} reconnecting=${!!reconnectTimer} recoveryHold=${!!_recoveryHoldRelease} stayAwake=${stayAwakeActive()}`);
+    const bridgeOk = _connectionOpen && rs === 1;
+    // Active probe — bypasses OS DNS cache. See _quickNicCheck.
+    const nicUp = await _quickNicCheck();
+    const trulyConnected = bridgeOk && nicUp === true;
+    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} recoveryHold=${!!_recoveryHoldRelease} stayAwake=${stayAwakeActive()}`);
 
     if (trulyConnected) {
       // Green path. Release the recovery hold if held; the linger in
@@ -722,7 +755,7 @@ export async function startWhatsAppBridge({
 
     // Not connected. Acquire recovery hold if we don't already have it.
     if (!_recoveryHoldRelease) {
-      _blog(`conn-tick: connectivity LOST (open=${_connectionOpen}, rs=${rs ?? '?'}) — acquiring recovery hold`);
+      _blog(`conn-tick: connectivity LOST (open=${_connectionOpen}, rs=${rs ?? '?'}, nicUp=${nicUp}) — acquiring recovery hold`);
       _recoveryHoldRelease = acquireStayAwake();
       if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); }
       _recoveryHoldCapTimer = setTimeout(() => {
@@ -736,34 +769,36 @@ export async function startWhatsAppBridge({
       _recoveryHoldCapTimer.unref?.();
     }
 
-    // Don't pile up overlapping recovery attempts. The poke loop is async
-    // and can run for up to NIC_PROBE_BUDGET_MS (~60s) — much longer than
-    // a tick interval. Skip subsequent ticks until the in-flight attempt
-    // returns; if NIC is still down at that point the next tick fires it
-    // again.
+    // FAST PATH: NIC is already up but the bridge isn't healthy (stale
+    // socket / silent wedge / mid-reconnect-gap). Schedule reconnect
+    // immediately — no need for the slow poke loop.
+    if (nicUp === true) {
+      if (!_connectionOpen && !reconnectTimer) {
+        unhealthySince = 0;
+        _scheduleReconnect('conn-tick: NIC up, bridge not connected');
+      } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
+        // Silent wedge — connect() tears down the stale socket.
+        unhealthySince = 0;
+        _scheduleReconnect('conn-tick: socket wedged (open=true, rs!=1)');
+      }
+      return;
+    }
+
+    // SLOW PATH: NIC is down (or probe couldn't run). Enter the poke
+    // loop — fixed 2s cadence for up to 60s. Don't pile up if one is
+    // already running; the next tick fires another if needed.
     if (_recoveryInProgress) return;
     _recoveryInProgress = true;
     (async () => {
       try {
         const nicReady = await _pokeNicUntilReady();
-        if (stopped) return;
-        if (!nicReady) {
-          // NIC still down at the end of the budget. Let the next tick
-          // try again; nothing to schedule yet.
-          return;
-        }
-        // NIC up. If baileys isn't already attempting a reconnect and we
-        // don't have a healthy open socket, fire one. _scheduleReconnect
-        // is idempotent against an already-armed timer.
+        if (stopped || !nicReady) return;
         if (!_connectionOpen && !reconnectTimer) {
           unhealthySince = 0;
-          _scheduleReconnect('connectivity tick: NIC ready');
+          _scheduleReconnect('conn-tick poke: NIC ready');
         } else if (_connectionOpen && _socketReadyState() !== 1 && !reconnectTimer) {
-          // Silent wedge: baileys still reports open but the underlying
-          // socket is dead. Force a reconnect — connect() tears down the
-          // stale socket via the single-socket invariant.
           unhealthySince = 0;
-          _scheduleReconnect('connectivity tick: socket wedged (open=true, rs!=1)');
+          _scheduleReconnect('conn-tick poke: socket wedged');
         }
       } finally {
         _recoveryInProgress = false;
