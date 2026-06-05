@@ -57,6 +57,7 @@ import { join, dirname, basename, extname } from 'node:path';
 import { promises as fs, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { spawn as _spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { createConnection as _netCreateConnection } from 'node:net';
 import { classifyWhatsAppChat } from './whatsapp-classify.mjs';
 import { makeSerialByKey } from '../serial-by-key.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -123,14 +124,22 @@ const CONNECTIVITY_TICK_MS    = 20_000;
 // This stays gap-based (not state-based like the connectivity tick)
 // because it's protecting unhealthySince from a false-wedge on resume.
 const WATCHDOG_SLEEP_GAP_MS   = 60_000;
-// NIC-readiness probe inside a recovery cycle. On post-sleep wake the
-// Wi-Fi NIC takes 10-30s+ to reassociate; firing connect() too soon
-// yields a getaddrinfo ENOTFOUND avalanche that exhausts the wake
-// window before recovery (operator 2026-06-05 overnight test: 15+
-// wake events all failed DNS, only a manual mouse move at ~6:30 EDT
-// finally produced a sustained connection). Probe DNS at a fixed 2s
-// cadence with a 1s per-attempt timeout, up to 60s.
-const NIC_PROBE_HOST          = 'web.whatsapp.com';
+// NIC-readiness probe — a raw TCP connect to a well-known public IP,
+// NOT a DNS query. Why: on Windows, Node's c-ares (used by both
+// dns.resolve4 and the recovery dns.lookup path) is finicky about
+// finding the system's real DNS servers. Operator 2026-06-05 wifi test:
+// resolve4 returned `ECONNREFUSED queryA web.whatsapp.com` even while
+// the bridge's actual WhatsApp connection was healthy — c-ares had
+// fallen back to a DNS endpoint that wasn't reachable, but the network
+// itself was fine. A raw TCP connect sidesteps the DNS stack entirely
+// and answers "does this NIC have a route to the internet right now?"
+// — which is what we actually care about. We try two targets in order
+// (Cloudflare then Google) so a network that blocks one but not the
+// other doesn't false-negative.
+const NIC_PROBE_TARGETS = [
+  { host: '1.1.1.1', port: 443 },   // Cloudflare HTTPS endpoint
+  { host: '8.8.8.8', port: 443 },   // Google HTTPS endpoint
+];
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
 const NIC_PROBE_BUDGET_MS     = 60_000;   // ~30 attempts every 2s
@@ -654,56 +663,63 @@ export async function startWhatsAppBridge({
     bridgeWatchdogTimer.unref?.();
   }
 
-  // One-shot connectivity probe used by the connectivity tick. Returns:
-  //   true   — DNS resolved within timeout (NIC has internet)
-  //   false  — DNS query failed/timed out (NIC down / no route)
-  //   null   — couldn't even run the probe (node:dns unavailable; rare)
-  //
-  // Uses dns.resolve4() — NOT dns.lookup() — to bypass the OS resolver
-  // cache. lookup() returns Windows' cached IP for web.whatsapp.com
-  // instantly even when the Wi-Fi NIC is OFF (operator 2026-06-05 wifi
-  // test: the bridge reported open=true rs=1 for cycles after pulling
-  // the network because lookup() was still answering from cache).
-  // resolve4() actually sends a UDP query to the configured DNS server,
-  // so an offline NIC produces ENETUNREACH/ETIMEDOUT within ms.
-  async function _quickNicCheck() {
-    let dnsMod = null;
-    try { dnsMod = (await import('node:dns')).promises; }
-    catch { return null; }
-    try {
-      await Promise.race([
-        dnsMod.resolve4(NIC_PROBE_HOST),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${NIC_PROBE_TIMEOUT_MS}ms`)), NIC_PROBE_TIMEOUT_MS)),
-      ]);
-      return true;
-    } catch {
-      return false;
-    }
+  // TCP-connect probe. Returns { ok, target?, error? }. ok=true if any
+  // target connects within the timeout; false if all targets failed.
+  // Uses raw net.createConnection — no DNS, no resolver, no cache.
+  function _tcpProbe(host, port, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      let socket = null;
+      const finish = (ok, errorMsg = null) => {
+        if (done) return;
+        done = true;
+        if (timer) clearTimeout(timer);
+        if (socket) { try { socket.removeAllListeners(); socket.destroy(); } catch {} }
+        resolve({ ok, error: errorMsg });
+      };
+      const timer = setTimeout(() => finish(false, `timeout ${timeoutMs}ms`), timeoutMs);
+      try {
+        socket = _netCreateConnection({ host, port });
+        socket.once('connect', () => finish(true));
+        socket.once('error', (e) => finish(false, e?.code ?? e?.message ?? 'error'));
+      } catch (e) {
+        finish(false, e?.message ?? 'createConnection threw');
+      }
+    });
   }
 
-  // Repeated probe used during a recovery cycle. Same resolve4 semantics
-  // as the quick check, but loops at a fixed 2s cadence until NIC is
-  // ready or the per-recovery budget expires.
+  // One-shot connectivity probe used by the connectivity tick. Returns:
+  //   true   — at least one probe target connected within timeout
+  //   false  — all probe targets failed/timed out (NIC down / no route)
+  // See NIC_PROBE_TARGETS for the rationale on raw TCP vs DNS.
+  async function _quickNicCheck() {
+    for (const t of NIC_PROBE_TARGETS) {
+      const r = await _tcpProbe(t.host, t.port, NIC_PROBE_TIMEOUT_MS);
+      if (r.ok) return true;
+    }
+    return false;
+  }
+
+  // Repeated probe used during a recovery cycle. Same TCP-connect
+  // semantics as the quick check, but loops at a fixed 2s cadence until
+  // a probe target answers or the per-recovery budget expires.
   async function _pokeNicUntilReady() {
-    let dnsMod = null;
-    try { dnsMod = (await import('node:dns')).promises; }
-    catch (e) { _blog(`nic-poke: import node:dns failed (${e?.message ?? e}) — skipping probe`); return false; }
     const startMs = Date.now();
     let attempts = 0;
     while (!stopped && Date.now() - startMs < NIC_PROBE_BUDGET_MS) {
       attempts++;
-      try {
-        const result = await Promise.race([
-          dnsMod.resolve4(NIC_PROBE_HOST),
-          new Promise((_, rej) => setTimeout(() => rej(new Error(`timeout ${NIC_PROBE_TIMEOUT_MS}ms`)), NIC_PROBE_TIMEOUT_MS)),
-        ]);
-        const addr = Array.isArray(result) ? result[0] : '?';
-        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — ${NIC_PROBE_HOST} -> ${addr}`);
-        return true;
-      } catch (e) {
-        _blog(`nic-poke: attempt ${attempts} failed (${(e?.message ?? 'unknown').slice(0, 80)}) — retry in ${NIC_PROBE_INTERVAL_MS/1000}s`);
-        await new Promise(r => setTimeout(r, NIC_PROBE_INTERVAL_MS));
+      let okTarget = null, lastError = null;
+      for (const t of NIC_PROBE_TARGETS) {
+        const r = await _tcpProbe(t.host, t.port, NIC_PROBE_TIMEOUT_MS);
+        if (r.ok) { okTarget = t; break; }
+        lastError = r.error;
       }
+      if (okTarget) {
+        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — TCP ${okTarget.host}:${okTarget.port} OK`);
+        return true;
+      }
+      _blog(`nic-poke: attempt ${attempts} failed (last: ${(lastError ?? 'unknown').toString().slice(0, 80)}) — retry in ${NIC_PROBE_INTERVAL_MS/1000}s`);
+      await new Promise(r => setTimeout(r, NIC_PROBE_INTERVAL_MS));
     }
     _blog(`nic-poke: budget exhausted after ${attempts} attempt(s) (${Math.round(NIC_PROBE_BUDGET_MS/1000)}s); attempting connect anyway`);
     return false;
