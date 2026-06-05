@@ -2647,15 +2647,15 @@ function App() {
   // source of truth, callable from any emit path. (operator 2026-05-28)
   const _resolveChatAutoMode = (chatId) => {
     const waCfg = EGPT_CONFIG.whatsapp ?? {};
-    const isSystem = (() => {
-      try {
-        const entry = _convStateCache?.contacts?.whatsapp?.[chatId];
-        if (!entry) return false;
-        if (entry.aliasOf) return _convStateCache.contacts.whatsapp[entry.aliasOf]?.personality === 'system';
-        return entry.personality === 'system';
-      } catch { return false; }
-    })();
-    if (isSystem) return 'on';
+    // (Used to short-circuit to 'on' for system-personality chats so the
+    // operator's Self DM was always responsive. Removed 2026-06-05: it
+    // overrode explicit auto_e_modes config — operator caught a leak
+    // where a Self DM they had configured as 'mention' kept getting
+    // @e replies. Now the precedence is purely: explicit entry > auto_e_chats
+    // membership > auto_e_default_mode > DEFAULT_AUTO_MODE. To keep the
+    // old "Self always responsive" behavior, add an explicit entry, e.g.
+    //   auto_e_modes:
+    //     34836563681438@lid: on)
     const modes = waCfg.auto_e_modes;
     if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
     if (Array.isArray(waCfg.auto_e_chats) && waCfg.auto_e_chats.includes(chatId)) return 'on';
