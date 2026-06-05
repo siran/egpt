@@ -2275,8 +2275,17 @@ export async function startWhatsAppBridge({
     // ready, but stderr ordering across model-load steps is fiddly;
     // a simple TCP poll is more robust.
     _whisperServerReady = (async () => {
-      const deadline = Date.now() + 60_000;
+      // 120s deadline — operator 2026-06-05 trace showed ggml-large-v3
+      // model-load taking >60s on cold filesystem cache (3GB read +
+      // CPU-only init). The old 60s deadline declared "TIMEOUT" while
+      // the proc was healthy mid-load, killed it, and forced the first
+      // voice note onto whisper-cli (which costs ~100s/call because it
+      // re-loads the model each invocation). 120s comfortably fits the
+      // cold-cache case; the warm-cache case still completes in 15-20s.
+      const READY_DEADLINE_MS = 120_000;
+      const deadline = Date.now() + READY_DEADLINE_MS;
       const startedAt = Date.now();
+      let lastProgressLog = startedAt;
       while (Date.now() < deadline) {
         try {
           const r = await fetch(`${_whisperServerUrl}/`, { method: 'GET' });
@@ -2287,10 +2296,16 @@ export async function startWhatsAppBridge({
             return true;
           }
         } catch (_) { /* not up yet */ }
+        // Periodic "still waiting" trace so a slow boot is visible
+        // rather than 120s of silence followed by either READY or TIMEOUT.
+        if (Date.now() - lastProgressLog >= 15_000) {
+          lastProgressLog = Date.now();
+          _blog(`whisper-server: still booting (${Math.round((Date.now()-startedAt)/1000)}s elapsed, deadline ${Math.round(READY_DEADLINE_MS/1000)}s) — model load + HTTP bind in progress`);
+        }
         await new Promise(res => setTimeout(res, 250));
       }
-      log(`whisper-server: failed to come up within 60s`);
-      _blog(`whisper-server: TIMEOUT after 60s — killing proc, falling back to whisper-cli per-call`);
+      log(`whisper-server: failed to come up within ${Math.round(READY_DEADLINE_MS/1000)}s`);
+      _blog(`whisper-server: TIMEOUT after ${Math.round(READY_DEADLINE_MS/1000)}s — killing proc, falling back to whisper-cli per-call`);
       try { _whisperServerProc?.kill(); } catch {}
       _whisperServerProc = null;
       return false;
