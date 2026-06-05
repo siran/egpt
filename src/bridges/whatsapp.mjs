@@ -1706,8 +1706,11 @@ export async function startWhatsAppBridge({
         // to "@e receives transcript". Pre-warm hides that cost behind
         // network I/O — by the time the first audio lands, the server
         // is hot and the /inference call is a few hundred ms.
-        // Fire-and-forget: doesn't block connect; failures fall back
-        // to per-call whisper-cli (its own slower fallback path).
+        // Fire-and-forget: doesn't block connect. With the whisper-cli
+        // fallback path removed (operator 2026-06-05: server-only), a
+        // spawn failure here means transcription is broken until the
+        // next audio respawn-retries; the .ogg stays on disk so we can
+        // re-attempt once the server is up.
         (async () => {
           try { await _ensureWhisperServer(); }
           catch (e) { _blog(`whisper-server: pre-warm threw — ${e?.message ?? e}`); }
@@ -2212,7 +2215,7 @@ export async function startWhatsAppBridge({
 
     const serverBin = _whisperServerBinPath();
     if (!existsSync(serverBin)) {
-      log(`whisper-server: binary not found at ${serverBin} — falling back to per-call whisper-cli`);
+      log(`whisper-server: binary not found at ${serverBin} — transcription will fail until the binary is installed (operator: server-only; whisper-cli path was removed)`);
       _blog(`whisper-server: spawn FAIL (binary not found at ${serverBin}) after ${Date.now()-_twh0}ms`);
       _whisperServerStarting = false;
       return null;
@@ -2382,7 +2385,6 @@ export async function startWhatsAppBridge({
   async function _transcribeAudio({ inputPath, outputDir, base }) {
     const cfg = media.audio_transcribe ?? {};
     if (!cfg.enabled) return null;
-    const whisperBin = cfg.command || 'whisper-cli';
     const ffmpegBin  = cfg.ffmpeg_command || 'ffmpeg';
     const modelPath  = cfg.model_path;
     if (!modelPath) {
@@ -2414,44 +2416,21 @@ export async function startWhatsAppBridge({
       return null;
     }
     _blog(`transcribe: ffmpeg done ${base} (${Date.now()-_tFf}ms)`);
-    const args = ['-m', modelPath, '-f', wavPath, '--output-txt', '--no-prints'];
-    if (typeof cfg.language === 'string' && cfg.language.trim()) {
-      args.push('-l', cfg.language.trim());
-    }
-    // Tunable whisper-cli flags via config (operator 2026-05-22 after
-    // observing silence misclassified as [Música]). See whisper.cpp's
-    // README for all flags. Common knobs:
-    //   no_context: true            → --no-context  (each segment
-    //                                  independent — prevents "carry-over"
-    //                                  hallucinations like repeated music
-    //                                  markers from one silent stretch).
-    //   no_speech_threshold: 0.6    → --no-speech-thold N  (probability
-    //                                  threshold above which the segment
-    //                                  is marked as silence. Raise to
-    //                                  reduce false silence; lower to
-    //                                  catch more silence).
-    //   logprob_threshold: -1.0     → --logprob-thold N  (drop low-
-    //                                  confidence guesses — catches some
-    //                                  hallucinated music/applause).
-    //   temperature: 0              → -tp N  (sampling temperature; 0 is
-    //                                  most deterministic).
-    //   beam_size: 5                → -bs N  (beam search width).
-    //   suppress_blank: true        → --suppress-blank  (don't emit
-    //                                  "blank" tokens at start of segment).
-    //   extra_args: ['--vad']       → spread literally (catch-all).
-    if (cfg.no_context === true)  args.push('--no-context');
-    if (cfg.no_fallback === true) args.push('--no-fallback');
-    if (Number.isFinite(cfg.no_speech_threshold)) args.push('--no-speech-thold', String(cfg.no_speech_threshold));
-    if (Number.isFinite(cfg.logprob_threshold))   args.push('--logprob-thold',   String(cfg.logprob_threshold));
-    if (Number.isFinite(cfg.temperature))         args.push('-tp',               String(cfg.temperature));
-    if (Number.isFinite(cfg.beam_size))           args.push('-bs',               String(cfg.beam_size));
-    if (Number.isFinite(cfg.best_of))             args.push('-bo',               String(cfg.best_of));
-    if (cfg.suppress_blank === true)              args.push('--suppress-blank');
-    if (Array.isArray(cfg.extra_args))            args.push(...cfg.extra_args.map(String));
-
-    // Try the warm whisper-server first (no per-call cold-start
-    // overhead). Falls back to per-call whisper-cli if the server
-    // isn't available, hasn't started, or HTTP-failed this call.
+    // (The same whisper tunables — no_context, no_speech_threshold,
+    // logprob_threshold, temperature, beam_size, best_of, suppress_blank,
+    // extra_args — are applied to whisper-server at its spawn time;
+    // see _ensureWhisperServer. They're no longer assembled here because
+    // the per-call whisper-cli path has been removed.)
+    // Whisper-server only — operator 2026-06-05: "we have whisper
+    // server, never use whisper-cli; always keep whisper-server."
+    // _transcribeViaServer awaits _ensureWhisperServer's readiness
+    // (with the 120s boot deadline), so a still-booting server
+    // blocks per-chat-serialized transcription rather than racing
+    // past it. If the server times out OR /inference fails for THIS
+    // call, _ensureWhisperServer cleared the proc handle — the NEXT
+    // call respawns and tries again. We don't shell out to
+    // whisper-cli (it re-loads the 3GB model per invocation and
+    // dominates total turn time when the server has a brief hiccup).
     let text = null;
     const _tSrv = Date.now();
     const serverResult = await _transcribeViaServer({ wavPath, language: cfg.language });
@@ -2462,27 +2441,11 @@ export async function startWhatsAppBridge({
       catch (e) { log(`transcribe: write finalTxt failed: ${e?.message ?? e}`); }
       try { await fs.unlink(wavPath); } catch {}
     } else {
-      _blog(`transcribe: server unavailable after ${Date.now()-_tSrv}ms — falling back to whisper-cli for ${base}`);
-      const _tCli = Date.now();
-      try {
-        await _runCmd(whisperBin, args);
-      } catch (e) {
-        log(`transcribe: whisper failed for ${base}: ${e.message}`);
-        _blog(`transcribe: whisper-cli FAILED ${base} after ${Date.now()-_tCli}ms — ${e.message}`);
-        try { await fs.unlink(wavPath); } catch {}
-        return null;
-      }
-      _blog(`transcribe: whisper-cli done ${base} (${Date.now()-_tCli}ms)`);
-      // whisper.cpp writes <wavPath>.txt — move next to the audio
-      // with a stable suffix the host / @e can grep for.
-      const txtSrc = `${wavPath}.txt`;
-      try {
-        text = (await fs.readFile(txtSrc, 'utf8')).trim();
-        await fs.rename(txtSrc, finalTxt);
-      } catch (e) {
-        log(`transcribe: read/move failed for ${base}: ${e.message}`);
-      }
+      _blog(`transcribe: server FAILED ${base} after ${Date.now()-_tSrv}ms — no transcript will be written; .ogg remains on disk for re-attempt`);
+      log(`transcribe: server unavailable for ${base} — no fallback (operator: server-only); next audio will respawn the server`);
       try { await fs.unlink(wavPath); } catch {}
+      _blog(`transcribe: END ${base} (total ${Date.now()-_tx0}ms, FAILED)`);
+      return null;
     }
     if (text) {
       const preview = text.length > 60 ? text.slice(0, 59) + '…' : text;
