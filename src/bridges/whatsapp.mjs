@@ -65,7 +65,7 @@ import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 import { isAuthorizedUser, canonicalUserId } from '../identity.mjs';
 import { createLidMap } from '../lid-map.mjs';
-import { acquireStayAwake, holdStayAwake, setStayAwakeLogger } from '../tools/stay-awake.mjs';
+import { acquireStayAwake, holdStayAwake, setStayAwakeLogger, stayAwakeActive } from '../tools/stay-awake.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -574,6 +574,16 @@ export async function startWhatsAppBridge({
     // grace. (_wakeTick already re-arms the reconnect.)
     const tickGap = _lastWatchdogTick ? (now - _lastWatchdogTick) : 0;
     _lastWatchdogTick = now;
+    // Always-on per-tick trace (operator 2026-06-04 nap test). The existing
+    // log only fires on state TRANSITIONS, so an S0 modern-standby wedge —
+    // where _connectionOpen stays true while the socket has silently died —
+    // is invisible. This line makes every tick legible: gap=ms shows whether
+    // the tick interval stretched (suspend hint), rs=N is ws.readyState
+    // (1=OPEN, 3=CLOSED), and the rest cross-checks bridge state without
+    // changing any behaviour.
+    const rs = _socketReadyState();
+    const unhealthyAgeS = unhealthySince ? Math.round((now - unhealthySince) / 1000) : 0;
+    _blog(`watchdog-tick: gap=${tickGap}ms open=${_connectionOpen} rs=${rs ?? '?'} reconnecting=${!!reconnectTimer} unhealthyAge=${unhealthyAgeS}s everConnected=${everConnected} stopped=${stopped}`);
     if (tickGap > WAKE_GAP_MS) { unhealthySince = 0; return; }
     if (stopped) return;        // loggedOut / deferred-to-another-egpt → intentional stop, not a wedge
     if (!everConnected) return; // never connected yet (initial pairing / boot) → reconnect+backoff owns it
@@ -611,8 +621,14 @@ export async function startWhatsAppBridge({
     const now = Date.now();
     const gap = now - _lastWakeTick;
     _lastWakeTick = now;
+    // Always-on per-tick trace (operator 2026-06-04 nap test). The existing
+    // `wake:` line only fires when gap > WAKE_GAP_MS (S3 suspend). On S0
+    // modern-standby the gap may stay under threshold even while the WA
+    // socket is silently dead. Log every tick so the silent path is legible.
+    const rsW = _socketReadyState();
+    _blog(`wake-tick: gap=${gap}ms open=${_connectionOpen} rs=${rsW ?? '?'} reconnecting=${!!reconnectTimer} stayAwake=${stayAwakeActive()}`);
     if (stopped || gap <= WAKE_GAP_MS) return;
-    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — re-arming WA reconnect (readyState=${_socketReadyState() ?? '?'})`);
+    _blog(`wake: ${Math.round(gap / 1000)}s suspend gap detected — re-arming WA reconnect (readyState=${rsW ?? '?'})`);
     // Hold the host awake through the post-wake processing burst (reconnect →
     // offline backlog → transcription → reply). Auto-releases after the window;
     // a transcription/brain turn that runs longer extends the hold itself.
