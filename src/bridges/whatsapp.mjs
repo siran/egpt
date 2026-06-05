@@ -2600,14 +2600,30 @@ export async function startWhatsAppBridge({
   // _enrichAudioText then finds the .transcript.txt as before. No
   // separate _bundledTranscribe step from the upsert handler anymore;
   // the queue is the single audio-processing path.
-  const CHAT_AUDIO_DEBOUNCE_MS = 2_000;
-  const CHAT_AUDIO_MAX_HOLD_MS = 10_000;  // hard cap on debounce extension — keeps a steady stream from blocking forever
-  const CHAT_LINGER_MS = 30_000;          // step 6 — keep host awake briefly for reactions / follow-ups
+  // Debounce scales with audio length (operator 2026-06-05): if the last
+  // queued clip was N seconds long, wait MIN(N×PER_SEC_MS, MAX) before
+  // flushing. Rationale: a fixed 2s debounce missed all bursts because
+  // voice notes don't arrive at sub-2s intervals — recording the next
+  // one takes 5-15s. Scaling matches the actual cadence: short clips
+  // probably won't be followed by long ones; long clips often come in
+  // pairs/triples ("mid-thought" pattern).
+  const CHAT_AUDIO_DEBOUNCE_MIN_MS     = 4_000;   // floor: catches even sub-second clip bursts
+  const CHAT_AUDIO_DEBOUNCE_PER_SEC_MS = 1_500;   // 1.5× last clip's duration
+  const CHAT_AUDIO_DEBOUNCE_MAX_MS     = 25_000;  // ceiling per-extend
+  const CHAT_AUDIO_MAX_HOLD_MS         = 60_000;  // absolute hard cap from queue-open: stops a steady stream from holding forever
+  const CHAT_LINGER_MS = 30_000;                  // step 6 — keep host awake briefly for reactions / follow-ups
+
+  // Per-clip debounce window: scales with the just-queued clip's duration.
+  function _audioDebounceForItem(item) {
+    const fromDur = Math.round((Number(item?.durSec) || 0) * CHAT_AUDIO_DEBOUNCE_PER_SEC_MS);
+    return Math.min(CHAT_AUDIO_DEBOUNCE_MAX_MS, Math.max(CHAT_AUDIO_DEBOUNCE_MIN_MS, fromDur));
+  }
   /** @type {Map<string, {items: Array, flushTimer: any, hardTimer: any, flushedPromise: Promise<void>, flushedResolve: ()=>void, stayAwakeRelease: ()=>void, lingerTimer: any, startedMs: number, openedAt: number}>} */
   const _chatAudioQueue = new Map();
 
   function _enqueueAudio(item) {
     let queue = _chatAudioQueue.get(item.chatJid);
+    const debounceMs = _audioDebounceForItem(item);
     if (!queue) {
       const stayAwakeRelease = acquireStayAwake();
       let resolver;
@@ -2630,13 +2646,13 @@ export async function startWhatsAppBridge({
       }, CHAT_AUDIO_MAX_HOLD_MS);
       queue.hardTimer.unref?.();
       _chatAudioQueue.set(item.chatJid, queue);
-      _blog(`chat-queue: OPEN chat=${item.chatJid} — debounce ${CHAT_AUDIO_DEBOUNCE_MS}ms (cap ${CHAT_AUDIO_MAX_HOLD_MS}ms)`);
+      _blog(`chat-queue: OPEN chat=${item.chatJid} — debounce ${debounceMs}ms (audio=${item.durSec}s, cap ${CHAT_AUDIO_MAX_HOLD_MS}ms)`);
     } else {
-      _blog(`chat-queue: extend chat=${item.chatJid} — N=${queue.items.length + 1}, timer reset to ${CHAT_AUDIO_DEBOUNCE_MS}ms`);
+      _blog(`chat-queue: extend chat=${item.chatJid} — N=${queue.items.length + 1}, audio=${item.durSec}s, timer reset to ${debounceMs}ms`);
     }
     queue.items.push(item);
     if (queue.flushTimer) clearTimeout(queue.flushTimer);
-    queue.flushTimer = setTimeout(() => _flushChatAudioQueue(item.chatJid), CHAT_AUDIO_DEBOUNCE_MS);
+    queue.flushTimer = setTimeout(() => _flushChatAudioQueue(item.chatJid), debounceMs);
     queue.flushTimer.unref?.();
     return queue.flushedPromise;
   }
