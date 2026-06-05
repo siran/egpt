@@ -143,13 +143,16 @@ const NIC_PROBE_TARGETS = [
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
 const NIC_PROBE_BUDGET_MS     = 60_000;   // ~30 attempts every 2s
-// Safety cap on the recovery stay-awake hold. If recovery never
-// completes (NIC stays down forever, baileys never opens), the hold
-// would otherwise pin the machine awake until the process dies — bad
-// on battery. Past the cap we release; subsequent ticks keep trying,
-// and a successful 'open' lets downstream handlers (media-save, brain-
-// turn) acquire their OWN holds for transcription + reply.
-const RECOVERY_HOLD_CAP_MS    = 5 * 60_000;
+// Cooldown between recovery attempts (operator 2026-06-05). Each
+// recovery attempt acquires stay-awake, runs the NIC poke for up to
+// NIC_PROBE_BUDGET_MS (60s), and releases on either success or budget-
+// out. After a FAILED attempt we wait RECOVERY_COOLDOWN_MS before
+// trying again — that way a long outage doesn't pin the machine awake
+// burning battery on back-to-back failed retries every 20s. Combined
+// with the 60s attempt budget this gives a roughly 5-min cycle which
+// matches Task Scheduler's PT5M cadence: on a real wake/resume the
+// next conn-tick fires the next attempt naturally.
+const RECOVERY_COOLDOWN_MS    = 4 * 60_000;
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -441,16 +444,13 @@ export async function startWhatsAppBridge({
   // Used only for visibility now — _scheduleReconnect uses a FIXED 2s delay
   // (no exponential backoff; see RECONNECT_MS docstring).
   let reconnectAttempts = 0;
-  // Recovery stay-awake hold. The connectivity tick acquires it the moment
-  // it sees we're not truly connected; releases it the moment it sees we
-  // are. Downstream media-save / brain-turn holds take over for the actual
-  // work via the 30s linger in stay-awake.mjs. Capped at RECOVERY_HOLD_CAP_MS
-  // so a stuck recovery (NIC never returns) can't pin the machine awake on
-  // battery indefinitely. _recoveryInProgress prevents stacking when the
-  // tick fires while the async poke loop is still running.
-  let _recoveryHoldRelease = null;
-  let _recoveryHoldCapTimer = null;
-  let _recoveryInProgress = false;
+  // Recovery state. ONE attempt at a time; an attempt holds stay-awake
+  // for at most ~60s while it pokes NIC, then releases on either success
+  // (connect scheduled — downstream handlers take over via the 30s linger
+  // in stay-awake.mjs) or budget-out (we give up, set the cooldown clock,
+  // release). The cooldown stops the tick from re-firing back-to-back.
+  let _recoveryAttemptInProgress = false;
+  let _lastFailedRecoveryAt = 0;
   // Health-watchdog state (see _bridgeWatchdogTick). everConnected gates the
   // wedged-exit so a slow first pairing (waiting for the operator's QR scan)
   // or a network-down boot is left to reconnect/backoff, never an exit-loop.
@@ -725,23 +725,57 @@ export async function startWhatsAppBridge({
     return false;
   }
 
-  // Connectivity tick — the bridge's recurring health/recovery loop.
-  // Replaces the old wake detector (operator 2026-06-05). Logic per tick:
-  //   - Read bridge state (open + rs)
-  //   - ACTIVELY probe NIC (one resolve4, 1s timeout — bypasses OS cache)
-  //   - trulyConnected = open && rs===1 && nicUp
-  //   - if trulyConnected: release recovery hold (if held), return
-  //   - else: acquire recovery hold (capped), spawn slow poke if needed
-  //
-  // The active probe is the KEY change from the prior version (operator
-  // 2026-06-05 wifi test: open=true rs=1 reported for cycles after the
-  // Wi-Fi was pulled because the bridge flags stayed stale). Probing
-  // every tick lets us detect connectivity loss BEFORE baileys' own
-  // keep-alive notices and fires 'close'.
-  //
-  // The 'open' handler does NOT release the recovery hold — this tick
-  // is the single source of truth. That way a fragile "open then close
-  // 30s later" pattern doesn't release prematurely.
+  // One bounded recovery attempt. Acquires stay-awake at the start,
+  // releases it before returning — whether we recovered or timed out.
+  // Operator 2026-06-05 model: "60s should be enough for connectivity to
+  // resume; if it resumes then keep hold until work is done, else release
+  // lock." Downstream handlers (media-save, brain-turn) acquire their
+  // OWN stay-awake during their work, and the 30s linger in
+  // stay-awake.mjs spans the gap between our release and theirs, so
+  // transcription + reply never get cut off.
+  async function _recoveryAttempt(initialNicUp) {
+    if (_recoveryAttemptInProgress) return;
+    _recoveryAttemptInProgress = true;
+    const releaseHold = acquireStayAwake();
+    try {
+      const startMs = Date.now();
+      _blog(`recovery: starting attempt (initialNicUp=${initialNicUp}, budget=${Math.round(NIC_PROBE_BUDGET_MS/1000)}s)`);
+      const nicReady = initialNicUp === true ? true : await _pokeNicUntilReady();
+      if (stopped) return;
+      if (!nicReady) {
+        _lastFailedRecoveryAt = Date.now();
+        _blog(`recovery: failed after ${Math.round((Date.now()-startMs)/1000)}s — releasing hold; cooldown ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s before next attempt`);
+        return;
+      }
+      // NIC is ready. Schedule a reconnect (the schedule itself is
+      // idempotent / cheap; 'open' arrives ~2s later if WA is healthy).
+      // We then drop our hold — downstream handlers take over via the
+      // 30s linger if there's work. If there's no work, the linger
+      // expires and the machine can idle-sleep again. That's correct.
+      const rs = _socketReadyState();
+      if (!_connectionOpen && !reconnectTimer) {
+        unhealthySince = 0;
+        _scheduleReconnect('recovery: NIC ready');
+      } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
+        // Silent wedge — connect() tears down the stale socket.
+        unhealthySince = 0;
+        _scheduleReconnect('recovery: socket wedged (open=true, rs!=1)');
+      }
+      _lastFailedRecoveryAt = 0;   // reset so next tick can attempt freely
+      _blog(`recovery: NIC ready after ${Math.round((Date.now()-startMs)/1000)}s, reconnect scheduled — releasing hold (downstream handlers cover their own work)`);
+    } finally {
+      try { releaseHold(); } catch {}
+      _recoveryAttemptInProgress = false;
+    }
+  }
+
+  // Connectivity tick — the bridge's recurring health check.
+  // Reads bridge state + actively probes the NIC (raw TCP, 1s timeout,
+  // bypasses any DNS/cache shenanigans). If all signals say healthy,
+  // tick is a no-op. If anything looks off, spawn ONE bounded recovery
+  // attempt (60s NIC budget). After a failed attempt the cooldown
+  // suppresses the next attempts for RECOVERY_COOLDOWN_MS so a long
+  // outage doesn't pin the machine awake on retry-every-20s.
   async function _connectivityTick() {
     if (stopped) return;
     const now = Date.now();
@@ -749,77 +783,19 @@ export async function startWhatsAppBridge({
     _lastWakeTick = now;
     const rs = _socketReadyState();
     const bridgeOk = _connectionOpen && rs === 1;
-    // Active probe — bypasses OS DNS cache. See _quickNicCheck.
     const nicUp = await _quickNicCheck();
     const trulyConnected = bridgeOk && nicUp === true;
-    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} recoveryHold=${!!_recoveryHoldRelease} stayAwake=${stayAwakeActive()}`);
+    const cooldownLeftMs = _lastFailedRecoveryAt ? Math.max(0, RECOVERY_COOLDOWN_MS - (now - _lastFailedRecoveryAt)) : 0;
+    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s stayAwake=${stayAwakeActive()}`);
 
-    if (trulyConnected) {
-      // Green path. Release the recovery hold if held; the linger in
-      // stay-awake.mjs gives downstream handlers (media-save, brain-turn)
-      // time to acquire their own holds for any backlog work.
-      if (_recoveryHoldRelease) {
-        _blog(`conn-tick: connectivity restored — releasing recovery hold`);
-        try { _recoveryHoldRelease(); } catch {}
-        _recoveryHoldRelease = null;
-      }
-      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
-      return;
-    }
+    if (trulyConnected) return;            // healthy — nothing to do
+    if (!everConnected) return;            // first pairing owned by startup
+    if (_recoveryAttemptInProgress) return; // attempt already running
+    if (cooldownLeftMs > 0) return;        // recent failure — wait it out
 
-    if (!everConnected) return;  // first pairing — startup flow owns this
-
-    // Not connected. Acquire recovery hold if we don't already have it.
-    if (!_recoveryHoldRelease) {
-      _blog(`conn-tick: connectivity LOST (open=${_connectionOpen}, rs=${rs ?? '?'}, nicUp=${nicUp}) — acquiring recovery hold`);
-      _recoveryHoldRelease = acquireStayAwake();
-      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); }
-      _recoveryHoldCapTimer = setTimeout(() => {
-        _recoveryHoldCapTimer = null;
-        if (_recoveryHoldRelease) {
-          _blog(`recovery-hold: cap (${Math.round(RECOVERY_HOLD_CAP_MS/1000)}s) reached without restored connectivity — releasing; ticks keep trying`);
-          try { _recoveryHoldRelease(); } catch {}
-          _recoveryHoldRelease = null;
-        }
-      }, RECOVERY_HOLD_CAP_MS);
-      _recoveryHoldCapTimer.unref?.();
-    }
-
-    // FAST PATH: NIC is already up but the bridge isn't healthy (stale
-    // socket / silent wedge / mid-reconnect-gap). Schedule reconnect
-    // immediately — no need for the slow poke loop.
-    if (nicUp === true) {
-      if (!_connectionOpen && !reconnectTimer) {
-        unhealthySince = 0;
-        _scheduleReconnect('conn-tick: NIC up, bridge not connected');
-      } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
-        // Silent wedge — connect() tears down the stale socket.
-        unhealthySince = 0;
-        _scheduleReconnect('conn-tick: socket wedged (open=true, rs!=1)');
-      }
-      return;
-    }
-
-    // SLOW PATH: NIC is down (or probe couldn't run). Enter the poke
-    // loop — fixed 2s cadence for up to 60s. Don't pile up if one is
-    // already running; the next tick fires another if needed.
-    if (_recoveryInProgress) return;
-    _recoveryInProgress = true;
-    (async () => {
-      try {
-        const nicReady = await _pokeNicUntilReady();
-        if (stopped || !nicReady) return;
-        if (!_connectionOpen && !reconnectTimer) {
-          unhealthySince = 0;
-          _scheduleReconnect('conn-tick poke: NIC ready');
-        } else if (_connectionOpen && _socketReadyState() !== 1 && !reconnectTimer) {
-          unhealthySince = 0;
-          _scheduleReconnect('conn-tick poke: socket wedged');
-        }
-      } finally {
-        _recoveryInProgress = false;
-      }
-    })();
+    // Spawn the recovery attempt in the background so the tick returns
+    // promptly. The attempt holds stay-awake itself.
+    _recoveryAttempt(nicUp);
   }
   function _startConnectivityTick() {
     if (wakeTimer) return;
@@ -1713,10 +1689,10 @@ export async function startWhatsAppBridge({
           err(`whatsapp: logged out — delete ${authDir} and restart to re-pair`);
           _stopWaAlive('logged_out', `reason ${reason}`);
           stopped = true;
-          // Logged-out is permanent — don't keep the recovery hold pinning
-          // the machine awake for retries that will never succeed.
-          if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
-          if (_recoveryHoldRelease) { try { _recoveryHoldRelease(); } catch {} _recoveryHoldRelease = null; }
+          // Logged-out is permanent — any in-flight recovery attempt's
+          // hold gets released by its own finally block as soon as
+          // _pokeNicUntilReady's stopped-check returns. Nothing more to
+          // do here.
           return;
         }
         // 440 = connectionReplaced. WA's server has another session
@@ -4635,10 +4611,9 @@ export async function startWhatsAppBridge({
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       if (bridgeWatchdogTimer) { clearInterval(bridgeWatchdogTimer); bridgeWatchdogTimer = null; }
       if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
-      // Drop any recovery stay-awake hold so stop()-during-recovery
-      // doesn't pin the machine awake until the cap timer fires.
-      if (_recoveryHoldCapTimer) { clearTimeout(_recoveryHoldCapTimer); _recoveryHoldCapTimer = null; }
-      if (_recoveryHoldRelease) { try { _recoveryHoldRelease(); } catch {} _recoveryHoldRelease = null; }
+      // An in-flight recovery attempt releases its own stay-awake in its
+      // finally block when _pokeNicUntilReady's stopped-check exits, so
+      // stop() doesn't need to chase it down here.
       // Flush the learned lid↔pn map (the 5s debounce may not have fired).
       if (_lidMapWriteTimer) { clearTimeout(_lidMapWriteTimer); _lidMapWriteTimer = null; }
       if (_lidMap?.dirty) {
