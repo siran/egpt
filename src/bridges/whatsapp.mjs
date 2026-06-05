@@ -1908,12 +1908,25 @@ export async function startWhatsAppBridge({
       // Promise.all — within a batch, multiple media saves can run
       // concurrently; dispatch waits for all of them. Voice notes
       // transcribed via whisper.cpp dominate the wait when present.
+      // Backlog batches (anything but type==='notify') are the offline
+      // catch-up after sleep/restart. We defer audio transcription so
+      // multiple voice notes get BUNDLED into one whisper encoder pass
+      // — operator 2026-06-05. Live batches keep per-clip transcribe
+      // (no latency cost added for a single arriving voice note).
+      const audioBundle = (type !== 'notify') ? [] : null;
       await Promise.all(messages.map(msg => {
         if (msg.message?.protocolMessage) {
           return _handleRevoke(msg).catch(e => err(`media revoke threw: ${e.message}`));
         }
-        return _saveMediaIfAny(msg).catch(e => { _blog(`media save threw for ${msg.key?.id} (${msg.key?.remoteJid}): ${e?.message ?? e}`); err(`media save threw: ${e.message}`); });
+        return _saveMediaIfAny(msg, audioBundle).catch(e => { _blog(`media save threw for ${msg.key?.id} (${msg.key?.remoteJid}): ${e?.message ?? e}`); err(`media save threw: ${e.message}`); });
       }));
+      // Bundle-transcribe all deferred audios in the batch. Must complete
+      // BEFORE handleMessage runs, because handleMessage's _enrichAudioText
+      // reads _transcriptByMsgId — populated by the bundler.
+      if (audioBundle && audioBundle.length) {
+        try { await _bundledTranscribe(audioBundle); }
+        catch (e) { _blog(`bundle: top-level threw (${e?.message ?? e}) — handleMessage will dispatch with whatever transcripts landed`); }
+      }
       for (const msg of messages) {
         try { await handleMessage(msg, { bypassAwareness: debug }); }
         catch (e) { err(`onIncoming threw: ${e.message}`); }
@@ -2130,6 +2143,48 @@ export async function startWhatsAppBridge({
   async function _writeMediaIndex(dir, idx) {
     try { await fs.writeFile(join(dir, '.media-index.json'), JSON.stringify(idx, null, 2)); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
   }
+  // Variant that captures stdout. Used by the bundle path for ffprobe
+  // duration queries.
+  function _runCmdCapture(cmd, args, opts = {}) {
+    return new Promise((resolve, reject) => {
+      let proc;
+      try {
+        proc = _spawnChild(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, ...opts });
+      } catch (e) { return reject(e); }
+      let stdout = '', stderr = '';
+      proc.stdout?.on('data', d => { stdout += d.toString(); });
+      proc.stderr?.on('data', d => { stderr += d.toString(); });
+      proc.on('error', reject);
+      proc.on('close', code => {
+        if (code === 0) resolve({ stdout, stderr });
+        else reject(new Error(`${cmd} exited ${code}${stderr ? `: ${stderr.slice(0, 240).trim()}` : ''}`));
+      });
+    });
+  }
+
+  // Whisper sometimes emits bracketed tag tokens — typically when the
+  // audio is mostly silence, noisy, or hits the model's "background sound"
+  // class. Map them to visible glyphs so the operator can see WHERE the
+  // model said "I heard music here" vs treating the whole transcript as
+  // certain. Operator 2026-06-05: silence is 8 spaces (literally a gap
+  // the reader can see); music/applause/etc. get emoji. The list is
+  // additive — unknown tags fall through unchanged. Multi-lingual
+  // because we run -l es but other languages also pass through this.
+  function normalizeWhisperMarkers(text) {
+    if (typeof text !== 'string' || !text) return text;
+    return text
+      .replace(/\[(?:silence|SILENCE|BLANK_AUDIO|blank_audio)\]/g, '        ')
+      .replace(/\[(?:Música|música|Music|MUSIC|music)\]/g, '🎵')
+      .replace(/\*music\*/g, '🎵')
+      .replace(/\[(?:Aplausos|aplausos|Applause|APPLAUSE|applause)\]/g, '👏')
+      .replace(/\[(?:Risas|risas|Laughter|LAUGHTER|laughter)\]/g, '😂')
+      .replace(/\((?:risas|laughter)\)/gi, '😂')
+      .replace(/\[(?:Inaudible|inaudible|unintelligible)\]/g, '❓')
+      .replace(/\[(?:Tos|tos|Cough|cough)\]/g, '🤧')
+      .replace(/\[(?:Suspiro|suspiro|Sigh|sigh)\]/g, '💨')
+      .replace(/\[(?:Respiración|respiración|Breath|breath)\]/g, '🫁');
+  }
+
   // Spawn a command and resolve when it exits 0; reject otherwise.
   // stdout is piped to capture but unused by transcribe today; stderr is
   // included in the rejection so the log line points at the real cause.
@@ -2334,10 +2389,14 @@ export async function startWhatsAppBridge({
     return _whisperServerReady;
   }
 
-  // POST a WAV file to the warm whisper-server and return parsed text.
-  // Returns null on failure so the caller can fall back to spawning
-  // whisper-cli for that single call.
-  async function _transcribeViaServer({ wavPath, language }) {
+  // POST a WAV file to the warm whisper-server and return parsed text
+  // (and segments, when the caller asks for them). Returns null on failure.
+  // `wantSegments`: when true, the returned object also has `segments`
+  // (the array baileys' whisper-server emits inside the JSON response):
+  // [{ start: <sec>, end: <sec>, text: <str> }, ...]. The bundle path
+  // uses this to map per-segment text back to source messages by
+  // timestamp.
+  async function _transcribeViaServer({ wavPath, language, wantSegments = false }) {
     const ready = await _ensureWhisperServer();
     if (!ready || !_whisperServerUrl) return null;
     try {
@@ -2360,7 +2419,15 @@ export async function startWhatsAppBridge({
       // transcript reads as one sentence. Operator 2026-05-23
       // noticed this in andrés gonzález chat.
       const text = (j.text || '').replace(/\s+/g, ' ').trim();
-      return { text };
+      const out = { text };
+      if (wantSegments && Array.isArray(j.segments)) {
+        out.segments = j.segments.map(s => ({
+          start: Number(s.start ?? s.t0 ?? 0) || 0,
+          end:   Number(s.end   ?? s.t1 ?? 0) || 0,
+          text:  String(s.text ?? '').replace(/\s+/g, ' ').trim(),
+        }));
+      }
+      return out;
     } catch (e) {
       log(`whisper-server: POST failed: ${e?.message ?? e}`);
       return null;
@@ -2473,6 +2540,224 @@ export async function startWhatsAppBridge({
     } finally { _awakeT(); }
   }
 
+  // ── Bundled transcription (operator 2026-06-05) ──────────────────
+  //
+  // Whisper's encoder runs on a fixed 30-second mel-spectrogram window
+  // regardless of how short the audio actually is. So three separate
+  // 5s voice notes pay 3× the encoder cost (each padded to its own 30s
+  // window). Concatenating them into ONE 15s audio pays the encoder
+  // cost ONCE — that's the win. Rule: ⌈total_seconds / 30⌉ encoder
+  // passes for the stitched audio, vs N passes for N separate clips.
+  // Best case: N short clips collapse to 1 pass.
+  //
+  // For the offline-backlog path (post-sleep, post-restart) all the
+  // queued voice notes arrive in the same upsert batch and are on disk
+  // by the time we get to transcribe — perfect bundling territory. We
+  // group by chat + contiguous same-sender runs, ffmpeg-concat with
+  // 400ms silence between clips (so whisper segments cleanly at the
+  // boundaries), run whisper-server once per run with JSON output,
+  // then map segments back to source messages by timestamp and write
+  // a per-msg .transcript.txt + post the per-msg 👂 reply.
+  //
+  // Single-clip runs short-circuit to the per-clip _transcribeAudio
+  // path so the bundling machinery only runs when it actually saves
+  // work.
+
+  const BUNDLE_SILENCE_MS = 400;   // gap between concatenated clips
+
+  async function _ffprobeDuration(inputPath) {
+    // ffprobe sits next to ffmpeg in every standard distribution. We
+    // derive the path from ffmpeg_command so the operator doesn't need
+    // a second config knob.
+    const ffmpegBin = media.audio_transcribe?.ffmpeg_command || 'ffmpeg';
+    const ffprobeBin = ffmpegBin.replace(/ffmpeg(\.exe)?$/i, (_m, ext) => `ffprobe${ext || ''}`);
+    const { stdout } = await _runCmdCapture(ffprobeBin, [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      inputPath,
+    ]);
+    const sec = Number(String(stdout).trim());
+    if (!Number.isFinite(sec) || sec <= 0) throw new Error(`ffprobe returned no duration for ${inputPath}`);
+    return sec;
+  }
+
+  async function _runSinglePerClipFromBundle(item) {
+    // Single-item "run" — defer to the existing per-clip path. We
+    // mirror what the inline path would have done in _saveMediaIfAny.
+    const transcript = await _transcribeAudio({
+      inputPath: item.inputPath,
+      outputDir: item.outputDir,
+      base: item.base,
+    }).catch(e => { log(`transcribe error (${item.base}): ${e.message}`); return null; });
+    const normalized = transcript?.text ? normalizeWhisperMarkers(transcript.text) : null;
+    if (normalized && item.msg.key?.id) _transcriptByMsgId.set(item.msg.key.id, normalized);
+    if (item.wantPostAck && item.msg.key && normalized) {
+      try {
+        const r = await _safeSend(
+          item.chatJid,
+          { text: `👂 ${item.speaker}'s ${item.durSec}s @ ${item.hhmm}: ${normalized}` },
+          { quoted: { key: item.msg.key, message: item.msg.message ?? { conversation: '' } } },
+        );
+        if (r?.key?.id) rememberSent(r.key.id);
+      } catch (e) { _blog(`bundle-single: 👂 reply failed (${item.base}): ${e?.message ?? e}`); }
+    }
+  }
+
+  async function _runBundleForGroup(run) {
+    if (!run.length) return;
+    if (run.length === 1) return _runSinglePerClipFromBundle(run[0]);
+    const _t0 = Date.now();
+    const chatJid = run[0].chatJid;
+    _blog(`transcribe-bundle: START chat=${chatJid} N=${run.length} silenceMs=${BUNDLE_SILENCE_MS}`);
+
+    // ── Probe durations in parallel ─────────────────────────
+    let durations;
+    try {
+      durations = await Promise.all(run.map(item => _ffprobeDuration(item.inputPath)));
+    } catch (e) {
+      _blog(`transcribe-bundle: ffprobe FAILED chat=${chatJid} — ${e?.message ?? e}; falling back to per-clip`);
+      for (const item of run) await _runSinglePerClipFromBundle(item).catch(e2 => _blog(`bundle-fallback: ${e2?.message ?? e2}`));
+      return;
+    }
+
+    // ── Compute msg time ranges in the stitched audio ───────
+    const ranges = [];
+    let cursor = 0;
+    for (let i = 0; i < run.length; i++) {
+      ranges.push({ start: cursor, end: cursor + durations[i] });
+      cursor += durations[i] + (i < run.length - 1 ? BUNDLE_SILENCE_MS / 1000 : 0);
+    }
+    const totalSec = cursor;
+
+    // ── Concat with 400ms silence between clips (apad) ──────
+    // filter_complex graph:
+    //   [0:a]apad=pad_dur=0.4[a0]
+    //   [1:a]apad=pad_dur=0.4[a1]
+    //   ... (all but the last get a trailing pad)
+    //   [a0][a1]...[lastInput]concat=n=N:v=0:a=1[out]
+    const ffmpegBin = media.audio_transcribe?.ffmpeg_command || 'ffmpeg';
+    const wavPath = join(run[0].outputDir, `bundle-${Date.now()}-${run.length}.tmp.wav`);
+    const args = ['-y'];
+    for (const item of run) args.push('-i', item.inputPath);
+    const filters = [];
+    for (let i = 0; i < run.length - 1; i++) {
+      filters.push(`[${i}:a]apad=pad_dur=${BUNDLE_SILENCE_MS / 1000}[a${i}]`);
+    }
+    const labels = run.map((_, i) => (i < run.length - 1) ? `[a${i}]` : `[${i}:a]`).join('');
+    filters.push(`${labels}concat=n=${run.length}:v=0:a=1[out]`);
+    args.push('-filter_complex', filters.join('; '));
+    args.push('-map', '[out]', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath);
+
+    const _awakeBundle = acquireStayAwake();
+    try {
+      const _tFf = Date.now();
+      try { await _runCmd(ffmpegBin, args); }
+      catch (e) {
+        _blog(`transcribe-bundle: ffmpeg FAILED chat=${chatJid} (${Date.now()-_tFf}ms) — ${e?.message ?? e}; falling back to per-clip`);
+        try { await fs.unlink(wavPath); } catch {}
+        for (const item of run) await _runSinglePerClipFromBundle(item).catch(e2 => _blog(`bundle-fallback: ${e2?.message ?? e2}`));
+        return;
+      }
+      _blog(`transcribe-bundle: ffmpeg concat done chat=${chatJid} (${Date.now()-_tFf}ms, totalAudio=${totalSec.toFixed(2)}s)`);
+
+      // ── whisper-server with segments ────────────────────────
+      const _tSrv = Date.now();
+      const result = await _transcribeViaServer({
+        wavPath,
+        language: media.audio_transcribe?.language,
+        wantSegments: true,
+      });
+      try { await fs.unlink(wavPath); } catch {}
+      if (!result?.segments) {
+        _blog(`transcribe-bundle: server FAILED or no segments chat=${chatJid} (${Date.now()-_tSrv}ms) — falling back to per-clip`);
+        for (const item of run) await _runSinglePerClipFromBundle(item).catch(e2 => _blog(`bundle-fallback: ${e2?.message ?? e2}`));
+        return;
+      }
+      _blog(`transcribe-bundle: server done chat=${chatJid} (${Date.now()-_tSrv}ms) — ${result.segments.length} segments`);
+
+      // ── Map segments to source messages by timestamp ────────
+      const perMsg = run.map(() => []);
+      const markerCounts = { silence: 0, music: 0, applause: 0, laughter: 0, other: 0 };
+      for (const seg of result.segments) {
+        const mid = (seg.start + seg.end) / 2;
+        const idx = ranges.findIndex(r => mid >= r.start && mid <= r.end);
+        if (idx < 0) continue;  // segment fell in a silence gap — drop
+        const raw = seg.text ?? '';
+        if (/\[(?:silence|SILENCE|BLANK_AUDIO|blank_audio)\]/.test(raw)) markerCounts.silence++;
+        else if (/\[(?:Música|música|Music|MUSIC|music)\]|\*music\*/.test(raw)) markerCounts.music++;
+        else if (/\[(?:Aplausos|aplausos|Applause|APPLAUSE|applause)\]/.test(raw)) markerCounts.applause++;
+        else if (/\[(?:Risas|risas|Laughter|LAUGHTER|laughter)\]|\((?:risas|laughter)\)/i.test(raw)) markerCounts.laughter++;
+        else if (/\[[^\]]+\]/.test(raw)) markerCounts.other++;
+        perMsg[idx].push(normalizeWhisperMarkers(raw));
+      }
+
+      // ── Write per-msg transcripts + post per-msg 👂 replies ─
+      const charCounts = [];
+      for (let i = 0; i < run.length; i++) {
+        const item = run[i];
+        const text = perMsg[i].join(' ').replace(/\s+/g, ' ').trim();
+        charCounts.push(text.length);
+        if (!text) continue;
+        const finalTxt = join(item.outputDir, `${item.base}.transcript.txt`);
+        try { await fs.writeFile(finalTxt, text, 'utf8'); }
+        catch (e) { _blog(`bundle: write transcript failed (${item.base}): ${e?.message ?? e}`); }
+        if (item.msg.key?.id) _transcriptByMsgId.set(item.msg.key.id, text);
+        if (item.wantPostAck && item.msg.key) {
+          try {
+            const r = await _safeSend(
+              item.chatJid,
+              { text: `👂 ${item.speaker}'s ${item.durSec}s @ ${item.hhmm}: ${text}` },
+              { quoted: { key: item.msg.key, message: item.msg.message ?? { conversation: '' } } },
+            );
+            if (r?.key?.id) rememberSent(r.key.id);
+          } catch (e) { _blog(`bundle: 👂 reply failed (${item.base}): ${e?.message ?? e}`); }
+        }
+      }
+      _blog(`transcribe-bundle: mapped to ${run.length} msgs (${charCounts.join('+')}=${charCounts.reduce((a,b)=>a+b,0)}ch)`);
+      _blog(`transcribe-bundle: markers silence=${markerCounts.silence} music=${markerCounts.music} applause=${markerCounts.applause} laughter=${markerCounts.laughter} other=${markerCounts.other}`);
+      const bundledPasses = Math.max(1, Math.ceil(totalSec / 30));
+      const saved = run.length - bundledPasses;
+      _blog(`transcribe-bundle: END chat=${chatJid} (total ${Date.now()-_t0}ms, ${run.length} clips, ${totalSec.toFixed(1)}s, saved ${saved} encoder pass${saved === 1 ? '' : 'es'} vs ${run.length} unstitched)`);
+    } finally { _awakeBundle(); }
+  }
+
+  // Public entry: takes the array filled by _saveMediaIfAny when called
+  // with the bundle flag. Groups by chat + same-sender contiguous runs;
+  // each chat's runs are processed sequentially (_serializeTranscription
+  // boundary) so a chat with many notes doesn't fire many overlapping
+  // whisper calls; different chats parallel naturally.
+  async function _bundledTranscribe(items) {
+    if (!items?.length) return;
+    const byChat = new Map();
+    for (const item of items) {
+      let arr = byChat.get(item.chatJid);
+      if (!arr) { arr = []; byChat.set(item.chatJid, arr); }
+      arr.push(item);
+    }
+    await Promise.all(Array.from(byChat.entries()).map(async ([chatJid, chatItems]) => {
+      chatItems.sort((a, b) => (a.tsMs || 0) - (b.tsMs || 0));
+      // Split into contiguous same-sender runs.
+      const runs = [];
+      let current = [];
+      let currentKey = null;
+      for (const it of chatItems) {
+        const key = `${it.fromMe ? '_me' : (it.pushedName ?? '_anon')}`;
+        if (key !== currentKey) {
+          if (current.length) runs.push(current);
+          current = [];
+          currentKey = key;
+        }
+        current.push(it);
+      }
+      if (current.length) runs.push(current);
+      for (const run of runs) {
+        await _serializeTranscription(chatJid, () => _runBundleForGroup(run))
+          .catch(e => _blog(`bundle: chat=${chatJid} run failed (${e?.message ?? e})`));
+      }
+    }));
+  }
+
   // Streaming variant of _transcribeAudio (operator 2026-05-22):
   // returns an EventEmitter + donePromise so the dispatcher can react
   // to chunks of transcript as they're produced, rather than awaiting
@@ -2515,7 +2800,14 @@ export async function startWhatsAppBridge({
     }
   }
 
-  async function _saveMediaIfAny(msg) {
+  // `audioBundle` (optional): when an array is passed, the audio
+  // transcribe + 👂 reply step is DEFERRED. Audio metadata is pushed
+  // to the array instead, for the caller to bundle and transcribe
+  // together (saves whisper encoder passes when multiple voice notes
+  // arrive in the same upsert batch — typically the offline-backlog
+  // path). The save + ffmpeg-to-WAV part still runs normally. When
+  // null/undefined: per-clip transcribe-and-post inline (live path).
+  async function _saveMediaIfAny(msg, audioBundle = null) {
     const downloadMode = media.download ?? 'all';
     if (downloadMode === 'off') return null;
     const m = msg.message ?? {};
@@ -3000,28 +3292,50 @@ export async function startWhatsAppBridge({
           const hhmm = tsMs ? `${pad(new Date(tsMs).getHours())}:${pad(new Date(tsMs).getMinutes())}` : '?';
           const speaker = pushedName ?? (fromMe ? 'You' : 'someone');
 
-          transcript = await _serializeTranscription(chatJid, async () => {
-            return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
-          }).catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
-          if (transcript?.text && msg.key?.id) {
-            _transcriptByMsgId.set(msg.key.id, transcript.text);
-          }
+          if (audioBundle) {
+            // Deferred path (operator 2026-06-05). Push enough metadata
+            // for _bundledTranscribe to (a) ffmpeg-concat the .ogg files,
+            // (b) split the resulting transcript back to per-msg, and
+            // (c) post the per-msg 👂 reply itself. _saveMediaIfAny
+            // returns without invoking _transcribeAudio for THIS msg.
+            audioBundle.push({
+              msg,
+              chatJid,
+              inputPath: path,
+              outputDir: dir,
+              base,
+              pushedName,
+              fromMe,
+              durSec: dur,
+              tsMs,
+              speaker,
+              hhmm,
+              wantPostAck: !!wantPostAck,
+            });
+          } else {
+            transcript = await _serializeTranscription(chatJid, async () => {
+              return await _transcribeAudio({ inputPath: path, outputDir: dir, base });
+            }).catch(e => { log(`transcribe error (${base}): ${e.message}`); return null; });
+            if (transcript?.text && msg.key?.id) {
+              _transcriptByMsgId.set(msg.key.id, transcript.text);
+            }
 
-          // Post the transcript as a threaded reply, when there's something to
-          // show. Silence (no text) posts nothing — don't clutter the chat
-          // with "(no transcript)". rememberSent so our own reply isn't
-          // re-ingested as inbound.
-          const wantPost = hit.kind === 'audio' && wantPostAck && msg.key;
-          if (wantPost && transcript?.text) {
-            try {
-              const r = await _safeSend(
-                chatJid,
-                { text: `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}` },
-                { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
-              );
-              if (r?.key?.id) rememberSent(r.key.id);
-            } catch (e) {
-              log(`voice transcript reply failed (${base}): ${e?.message ?? e}`);
+            // Post the transcript as a threaded reply, when there's something to
+            // show. Silence (no text) posts nothing — don't clutter the chat
+            // with "(no transcript)". rememberSent so our own reply isn't
+            // re-ingested as inbound.
+            const wantPost = hit.kind === 'audio' && wantPostAck && msg.key;
+            if (wantPost && transcript?.text) {
+              try {
+                const r = await _safeSend(
+                  chatJid,
+                  { text: `👂 ${speaker}'s ${dur}s @ ${hhmm}: ${transcript.text}` },
+                  { quoted: { key: msg.key, message: msg.message ?? { conversation: '' } } },
+                );
+                if (r?.key?.id) rememberSent(r.key.id);
+              } catch (e) {
+                log(`voice transcript reply failed (${base}): ${e?.message ?? e}`);
+              }
             }
           }
         }
