@@ -108,7 +108,16 @@ const RECONNECT_MS = 2_000;
 const BRIDGE_ALIVE_INTERVAL_MS = 60_000;
 // How often the in-bridge health watchdog checks for a WEDGED socket (a
 // silent death with no 'close' event, or a reconnect that never succeeds).
-const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
+// Operator 2026-06-06: merged the separate conn-tick (PT20S) and
+// watchdog-tick (PT30S) into ONE periodic tick at PT10S. Two ticks
+// interleaving every 10-50 seconds made the log noisy and hard to
+// read during nap-tests. Now there's one "tick:" line every 10 s
+// carrying all the state both ticks used to log separately
+// (connection, NIC, recovery, cooldown, watchdog unhealthyAge,
+// stayAwake). The watchdog's transition lines (first-unhealthy,
+// WEDGED, etc.) and recovery/nic-poke events still log as before;
+// only the per-tick heartbeat line is unified.
+const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;   // legacy constant, no longer used
 // Connectivity tick — runs the bridge's recurring health/recovery loop.
 // Replaces the old "wake detector" model (operator 2026-06-05): instead
 // of trying to spot a suspend by comparing tick gaps, we just check
@@ -118,7 +127,7 @@ const BRIDGE_WATCHDOG_INTERVAL_MS = 30_000;
 // stay-awake, poke NIC, schedule reconnect. The system goes back to
 // sleep as soon as we're connected again. No gap heuristic, no wake
 // flag — the loop's behavior follows the bridge's actual state.
-const CONNECTIVITY_TICK_MS    = 20_000;
+const CONNECTIVITY_TICK_MS    = 10_000;   // unified tick (was 20s; merged with watchdog at 10s)
 // Watchdog-only sleep heuristic: if the watchdog's own tick interval
 // stretched far past its expected 30s cadence, the host was suspended.
 // This stays gap-based (not state-based like the connectivity tick)
@@ -676,9 +685,12 @@ export async function startWhatsAppBridge({
     }
   }
   function _startBridgeWatchdog() {
-    if (bridgeWatchdogTimer) return;
-    bridgeWatchdogTimer = setInterval(_bridgeWatchdogTick, BRIDGE_WATCHDOG_INTERVAL_MS);
-    bridgeWatchdogTimer.unref?.();
+    // Operator 2026-06-06: NO-OP. The watchdog logic was merged into
+    // _connectivityTick (now logged as "tick:") at PT10S. The old
+    // PT30S watchdog timer is no longer started; _bridgeWatchdogTick
+    // is kept defined for any external code that references it but
+    // is never invoked.
+    return;
   }
 
   // TCP-connect probe. Returns { ok, target?, error? }. ok=true if any
@@ -826,7 +838,34 @@ export async function startWhatsAppBridge({
     const nicUp = await _quickNicCheck();
     const trulyConnected = bridgeOk && nicUp === true;
     const cooldownLeftMs = _lastFailedRecoveryAt ? Math.max(0, RECOVERY_COOLDOWN_MS - (now - _lastFailedRecoveryAt)) : 0;
-    _blog(`conn-tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s stayAwake=${stayAwakeActive()}`);
+    const unhealthyAgeS = unhealthySince ? Math.round((now - unhealthySince) / 1000) : 0;
+    _blog(`tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s unhealthyAge=${unhealthyAgeS}s stayAwake=${stayAwakeActive()}`);
+
+    // === watchdog: detect a long unhealthy stretch and fatal-exit ===
+    // Operator 2026-06-06: merged from the former _bridgeWatchdogTick so
+    // the log has ONE periodic line per tick instead of two interleaved.
+    if (gap > WATCHDOG_SLEEP_GAP_MS) {
+      // Sleep gap detected: reset unhealthy clock so the wake doesn't
+      // false-wedge from the frozen wall-clock during sleep.
+      unhealthySince = 0;
+    } else if (!stopped && !(!everConnected && _initialConnectInFlight)) {
+      const healthy = _connectionOpen && !reconnectTimer;
+      if (healthy) {
+        unhealthySince = 0;
+      } else if (!unhealthySince) {
+        unhealthySince = now;
+        _blog(`watchdog: WA not connected (open=${_connectionOpen} reconnecting=${!!reconnectTimer}) — grace ${Math.round(wedgedGraceMs / 1000)}s`);
+      } else {
+        const downMs = now - unhealthySince;
+        if (downMs >= wedgedGraceMs && !_fatalFired) {
+          _fatalFired = true;
+          const reason = `WA not connected for ${Math.round(downMs / 1000)}s while awake (reconnectAttempts=${reconnectAttempts})`;
+          _blog(`watchdog: WEDGED — ${reason}; signaling host onFatal`);
+          err(`whatsapp: bridge wedged — ${reason}`);
+          try { onFatal?.(reason); } catch (e) { _blog(`watchdog: onFatal threw: ${e?.message ?? e}`); }
+        }
+      }
+    }
 
     if (trulyConnected) return;
     if (!everConnected && _initialConnectInFlight) return; // first attempt in flight (likely QR pairing) — don't interfere
@@ -840,11 +879,11 @@ export async function startWhatsAppBridge({
       if (!_connectionOpen && !reconnectTimer) {
         unhealthySince = 0;
         _lastFailedRecoveryAt = 0;
-        _scheduleReconnect('conn-tick: NIC up, bridge not connected');
+        _scheduleReconnect('tick: NIC up, bridge not connected');
       } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
         unhealthySince = 0;
         _lastFailedRecoveryAt = 0;
-        _scheduleReconnect('conn-tick: socket wedged (open=true, rs!=1)');
+        _scheduleReconnect('tick: socket wedged (open=true, rs!=1)');
       }
       return;
     }
