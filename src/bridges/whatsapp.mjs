@@ -912,7 +912,11 @@ export async function startWhatsAppBridge({
   // long suspension) is obvious.
   const EGPT_TICK_LOG = join(homedir(), '.egpt', 'logs', 'egpt-tick.log');
   const CURL_TICK_MS = 20_000;
-  const CURL_TICK_TARGET = 'https://worldtimeapi.org/api/timezone/Etc/UTC';
+  // Diagnostic target: google's generate_204 is famously reliable, returns
+  // an empty 204 No Content body in a few ms, and includes the standard
+  // HTTP Date header so we get the remote UTC time for free. Operator
+  // 2026-06-06: switched from worldtimeapi.org which was down at test time.
+  const CURL_TICK_TARGET = 'https://www.google.com/generate_204';
   let _curlTickTimer = null;
   async function _curlTick() {
     if (stopped) return;
@@ -924,14 +928,15 @@ export async function startWhatsAppBridge({
     const ts = `${dow} ${pad(d.getMonth()+1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(Math.floor(d.getMilliseconds()/10),2)}`;
     let line;
     try {
-      const r = await fetch(CURL_TICK_TARGET, { signal: AbortSignal.timeout(5000) });
+      const r = await fetch(CURL_TICK_TARGET, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
       const rtt = Date.now() - t0;
-      if (r.ok) {
-        let remote = '';
-        try { const j = await r.json(); remote = j?.datetime ?? ''; } catch {}
-        line = `${ts} service curl=OK rtt=${rtt}ms remote=${remote}`;
+      // generate_204 returns 204; treat any 2xx as OK. The Date header is
+      // the remote UTC time (always present on HTTP responses).
+      const remote = r.headers.get('date') ?? '?';
+      if (r.status >= 200 && r.status < 300) {
+        line = `${ts} service curl=OK rtt=${rtt}ms status=${r.status} remote=${remote}`;
       } else {
-        line = `${ts} service curl=HTTP${r.status} rtt=${rtt}ms`;
+        line = `${ts} service curl=HTTP${r.status} rtt=${rtt}ms remote=${remote}`;
       }
     } catch (e) {
       const rtt = Date.now() - t0;
