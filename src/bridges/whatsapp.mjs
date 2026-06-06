@@ -142,7 +142,12 @@ const NIC_PROBE_TARGETS = [
 ];
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
-const NIC_PROBE_BUDGET_MS     = 60_000;   // ~30 attempts every 2s
+// Operator 2026-06-05 (NSSM-as-service era): tightened from 60s -> 6s.
+// In the service model, OS grants brief execution windows during Modern
+// Standby; sitting on a 60s probe loop is wasteful when the next conn-tick
+// (20s) will retry anyway. Three probes at 2s = 6s total, enough to cover
+// a NIC that's still warming after a wake, no longer than necessary.
+const NIC_PROBE_BUDGET_MS     = 6_000;    // 3 attempts every 2s
 // Cooldown between recovery attempts (operator 2026-06-05). Each
 // recovery attempt acquires stay-awake, runs the NIC poke for up to
 // NIC_PROBE_BUDGET_MS (60s), and releases on either success or budget-
@@ -744,35 +749,41 @@ export async function startWhatsAppBridge({
   async function _recoveryAttempt(initialNicUp) {
     if (_recoveryAttemptInProgress) return;
     _recoveryAttemptInProgress = true;
-    const releaseHold = acquireStayAwake();
+    // No stay-awake hold here (operator 2026-06-05, NSSM-as-service era):
+    // recovery is "wait for NIC, then schedule reconnect" — it's not WORK,
+    // it's POLLING. Holding ES_SYSTEM_REQUIRED during it blocks Modern
+    // Standby and wastes battery while the bridge is failing to connect.
+    // Real work (chat-queue audio handling, transcribe) acquires its own
+    // stay-awake; that's the right place for it. Recovery just returns
+    // when it's done; the next conn-tick (20s) retries if needed.
     try {
       const startMs = Date.now();
-      _blog(`recovery: starting attempt (initialNicUp=${initialNicUp}, budget=${Math.round(NIC_PROBE_BUDGET_MS/1000)}s)`);
+      _blog(`recovery: starting attempt (initialNicUp=${initialNicUp}, budget=${Math.round(NIC_PROBE_BUDGET_MS/1000)}s, holdAwake=false)`);
       const nicReady = initialNicUp === true ? true : await _pokeNicUntilReady();
       if (stopped) return;
       if (!nicReady) {
         _lastFailedRecoveryAt = Date.now();
-        _blog(`recovery: failed after ${Math.round((Date.now()-startMs)/1000)}s — releasing hold; cooldown ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s before next attempt`);
+        _blog(`recovery: failed after ${Math.round((Date.now()-startMs)/1000)}s; cooldown ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s before next attempt`);
         return;
       }
       // NIC is ready. Schedule a reconnect (the schedule itself is
       // idempotent / cheap; 'open' arrives ~2s later if WA is healthy).
-      // We then drop our hold — downstream handlers take over via the
-      // 30s linger if there's work. If there's no work, the linger
-      // expires and the machine can idle-sleep again. That's correct.
+      // Downstream handlers (chat-queue, transcribe) acquire their own
+      // stay-awake when they have work; if there's nothing in the
+      // backlog, the bridge stays connected but idle and the OS is free
+      // to put us into Modern Standby until the next inbound packet.
       const rs = _socketReadyState();
       if (!_connectionOpen && !reconnectTimer) {
         unhealthySince = 0;
         _scheduleReconnect('recovery: NIC ready');
       } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
-        // Silent wedge — connect() tears down the stale socket.
+        // Silent wedge - connect() tears down the stale socket.
         unhealthySince = 0;
         _scheduleReconnect('recovery: socket wedged (open=true, rs!=1)');
       }
       _lastFailedRecoveryAt = 0;   // reset so next tick can attempt freely
-      _blog(`recovery: NIC ready after ${Math.round((Date.now()-startMs)/1000)}s, reconnect scheduled — releasing hold (downstream handlers cover their own work)`);
+      _blog(`recovery: NIC ready after ${Math.round((Date.now()-startMs)/1000)}s, reconnect scheduled`);
     } finally {
-      try { releaseHold(); } catch {}
       _recoveryAttemptInProgress = false;
     }
   }
