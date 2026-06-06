@@ -23,9 +23,11 @@ import { join } from 'node:path';
 // fs-direct restart-flow trace (sibling of wa-bridge.log). The shell's sysOut
 // goes to the Ink/headless render buffer, which drops lines, so the restart
 // announce chain was unobservable. Append-only, best-effort. Read with
-// `cat ~/.egpt/restart.log`. Operator 2026-06-02: "no egpt back!".
+// `cat ~/.egpt/logs/restart.log`. Operator 2026-06-02: "no egpt back!".
+// (Path moved into the logs/ subdir 2026-06-05 with the wider top-level
+// cleanup; previous ~/.egpt/restart.log files are historical artifacts.)
 function _rlog(EGPT_HOME, m) {
-  try { appendFileSync(join(EGPT_HOME, 'restart.log'), `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ }
+  try { appendFileSync(join(EGPT_HOME, 'logs', 'restart.log'), `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ }
 }
 
 // Drop the Self-DM breadcrumbs a lifecycle bounce needs: a "going down" line in

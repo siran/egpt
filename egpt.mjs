@@ -55,6 +55,14 @@ import { N2C } from './src/attach/protocol.mjs';
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+// Logs subdir (operator 2026-06-05 cleanup): wa-bridge.log, headless.log,
+// restart.log, and other rolling traces live here instead of polluting the
+// top of ~/.egpt with a dozen .log files. Code paths that wrote at the old
+// location are updated in lockstep. Existing top-level *.log files are
+// historical artifacts and can be archived/deleted manually; the daemon
+// won't write to them anymore.
+const EGPT_LOGS = join(EGPT_HOME, 'logs');
+try { mkdirSync(EGPT_LOGS, { recursive: true }); } catch {}
 
 // Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
 // rendered item flows through this one channel; the Ink renderer subscribes
@@ -126,13 +134,13 @@ const EGPT_PID_PATH = join(EGPT_HOME, 'egpt.pid');
 // console.log / sysOut that would have hit the terminal lands here for
 // post-mortem. Bridges + room.md are still the canonical record;
 // this is auxiliary.
-const EGPT_HEADLESS_LOG = join(EGPT_HOME, 'headless.log');
+const EGPT_HEADLESS_LOG = join(EGPT_LOGS, 'headless.log');
 // fs-direct host-side trace into the SAME wa-bridge.log the bridge writes, so
 // the bridge lifecycle (bridge side) and the host's waBridgeRef set/clear +
 // every outbox send attempt interleave on ONE timestamped timeline. Resolves
 // the "socket OPEN but outbox says 'no baileys bridge here'" contradiction
 // (operator 2026-06-02). Append-only, best-effort.
-const _WA_BRIDGE_LOG = join(EGPT_HOME, 'wa-bridge.log');
+const _WA_BRIDGE_LOG = join(EGPT_LOGS, 'wa-bridge.log');
 const _walog = (m) => { try { appendFileSync(_WA_BRIDGE_LOG, `${new Date().toISOString()} [${process.pid}] host: ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ } };
 
 // Read the existing pidfile if any. Returns the PID number when the
@@ -375,7 +383,7 @@ try {
 // Self, with the exact running version. Delete the sidecar so a plain
 // boot/crash (no /restart) never re-announces. Best-effort; never blocks boot.
 (() => {
-  const _rlogPath = join(homedir(), '.egpt', 'restart.log');
+  const _rlogPath = join(EGPT_LOGS, 'restart.log');
   const _rlog = (m) => { try { appendFileSync(_rlogPath, `${new Date().toISOString()} [${process.pid}] boot: ${m}\n`, { mode: 0o600 }); } catch {} };
   try {
     const _sidecar = join(homedir(), '.egpt', 'state', 'restart-announce.json');
@@ -411,7 +419,7 @@ try {
       _rlog('sidecar had NO jid → nothing queued');
     }
     unlinkSync(_sidecar);
-  } catch (e) { const _m = `restart-announce FAILED — ${e?.message ?? e}`; try { appendFileSync(join(homedir(), '.egpt', 'restart.log'), `${new Date().toISOString()} [${process.pid}] boot: ${_m}\n`); } catch {} console.error(`!! egpt boot: ${_m}`); }
+  } catch (e) { const _m = `restart-announce FAILED — ${e?.message ?? e}`; try { appendFileSync(join(EGPT_LOGS, 'restart.log'), `${new Date().toISOString()} [${process.pid}] boot: ${_m}\n`); } catch {} console.error(`!! egpt boot: ${_m}`); }
 })();
 // Runtime overlay config (JSON) that /config writes to — kept SEPARATE from
 // config.yaml so /config never has to YAML-round-trip the operator's
@@ -3884,7 +3892,7 @@ function App() {
           const line = `whatsapp bridge WEDGED — ${reason} — ${supervised ? 'exiting (code 75) for egpt-daemon respawn' : 'no supervisor; staying up, use /restart'}`;
           try { errOut(`!! ${line}`); } catch { /* Ink may be torn down */ }
           try {
-            appendFileSync(join(EGPT_HOME, 'headless.log'),
+            appendFileSync(join(EGPT_LOGS, 'headless.log'),
               `[${new Date().toISOString()}] FATAL ${line}\n`, { mode: 0o600 });
           } catch { /* best effort */ }
           if (!supervised) return;
