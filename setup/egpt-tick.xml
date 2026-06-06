@@ -26,19 +26,19 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      2 triggers, StartBoundary 1m10s apart (operator 2026-06-06,
-      deconstruct phase II): kept only the initial (00:00) and the
-      last (was 00:50, now bumped to 00:01:10 so the gap between the
-      two triggers is 1m10s instead of 50s). Both still repeat PT1M.
+      3 triggers within the same minute (operator 2026-06-06,
+      deconstruct phase III): offsets 00:00, 00:20, 00:40, each
+      repeating PT1M. Modern Standby coalesces wake timers per
+      trigger, so 3 independent requests means 3 separate coalescing
+      candidates - empirically more likely to break through than 2.
 
-      Why 2 not 6: Sleep 3 of today's test proved beta-19 handles
-      lid-down sleep when PCIe ASPM AC=Off + NSSM service + the
-      tick task are all in place. With ASPM keeping the NIC alive,
-      the bridge stays scheduled via inbound WA packets - the wake
-      hedge only needs to bridge dead silence. 2 staggered triggers
-      with a 1m10s phase offset is sparser than 6-at-10s but still
-      gives Modern Standby two independent wake-timer requests to
-      coalesce; one of them tends to survive.
+      Previous attempts:
+        6 staggered at 10s offsets    -> WORKED (brute force)
+        1 trigger PT1M                -> failed (coalesced away)
+        2 triggers 1m10s phase apart  -> failed (the 1m10s phase
+                                        meant the OS treated them
+                                        as one effective wake rate)
+        3 in the same minute (this)   -> midpoint experiment
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
@@ -49,7 +49,15 @@
       </Repetition>
     </TimeTrigger>
     <TimeTrigger>
-      <StartBoundary>2026-01-01T00:01:10</StartBoundary>
+      <StartBoundary>2026-01-01T00:00:20</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:40</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
