@@ -26,20 +26,19 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      6-staggered triggers (operator 2026-06-06, restored after the
-      deconstruct test): one trigger at each 10-second offset within
-      the minute, each ticking every PT1M. Modern Standby coalesces
-      wake timers per-trigger, so 6 independent PT1M triggers means
-      6 separate wake-timer requests to coalesce. Nominal effective
-      interval when fully honored: PT10S.
+      2 triggers, StartBoundary 1m10s apart (operator 2026-06-06,
+      deconstruct phase II): kept only the initial (00:00) and the
+      last (was 00:50, now bumped to 00:01:10 so the gap between the
+      two triggers is 1m10s instead of 50s). Both still repeat PT1M.
 
-      Why we tried just 1 and put 6 back: with only 1 trigger, the
-      operator's nap-test failed to resume the bridge after Modern
-      Standby. The empirical answer is that on this Ryzen 7 7730U /
-      DRIPS firmware, the coalescing is aggressive enough that a
-      single PT1M wake-timer request gets absorbed almost entirely.
-      Six independent requests survive coalescing better - the OS
-      grants at least one of them. Brute force, but it works.
+      Why 2 not 6: Sleep 3 of today's test proved beta-19 handles
+      lid-down sleep when PCIe ASPM AC=Off + NSSM service + the
+      tick task are all in place. With ASPM keeping the NIC alive,
+      the bridge stays scheduled via inbound WA packets - the wake
+      hedge only needs to bridge dead silence. 2 staggered triggers
+      with a 1m10s phase offset is sparser than 6-at-10s but still
+      gives Modern Standby two independent wake-timer requests to
+      coalesce; one of them tends to survive.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
@@ -50,39 +49,7 @@
       </Repetition>
     </TimeTrigger>
     <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:10</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:20</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:30</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:40</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:50</StartBoundary>
+      <StartBoundary>2026-01-01T00:01:10</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
