@@ -26,30 +26,43 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      6 staggered triggers at 10s offsets (operator 2026-06-06,
-      empirical floor): proven necessary after this deconstruct
-      sequence:
+      6 staggered triggers at 10s offsets, repeating PT7M (operator
+      2026-06-06, deconstruct phase IV - the BATTERY-SPACING test).
 
-        6@10s (00,10,20,30,40,50)   -> WORKED  (lid-down sleep)
-        1 trigger PT1M              -> failed
-        2 triggers 1m10s phase apart -> failed
-        3@20s (00,20,40)            -> failed
-        -> 6@10s restored (this)
+      Sequence so far:
+        6@10s PT1M battery-per-minute    -> worked, BUT @e replies
+                                            were suspiciously fast,
+                                            suggesting the firmware
+                                            never actually descended
+                                            to deep DRIPS / Austerity
+        1 / 2 / 3 trigger variants       -> failed
+        6@10s PT7M battery-per-7min      -> testing now
 
-      So 6 is the empirical floor on this hardware (Ryzen 7 7730U,
-      DRIPS / S0LPI Modern Standby). Per-trigger coalescing means
-      we need at least 6 independent wake-timer requests for one
-      to reliably survive each minute during lid-down sleep.
+      Hypothesis: Modern Standby has multiple depth levels (S0i1
+      light idle, S0i2/i3 deeper, DRIPS, Austerity). The firmware
+      only descends to the deepest after sustained quiet. If a
+      6-trigger battery fires every 60 seconds, the firmware
+      probably keeps us at a shallow level the whole time - which
+      means we never test 'real' Modern Standby and the fast @e
+      reply was the shallow-state speed, not a true wake-from-deep.
 
-      Don't re-deconstruct this without retesting. The other beta-19
-      pieces (NSSM service, PCIe ASPM AC=Off) are necessary but not
-      sufficient on their own.
+      PT7M lets the firmware have ~6m50s of uninterrupted quiet
+      between batteries to actually descend, then the battery has
+      to break through real coalescing. This is the more honest
+      stress test of lid-down sleep behavior.
+
+      During a 10-min nap: ~2 batteries fire (at 0 and at 7 min).
+      If @e responds via these, the architecture truly handles
+      deep lid-down sleep.
+
+      Don't reduce battery count below 6 (already proven necessary).
+      Tune PT7M up/down based on what test results look like.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -57,7 +70,7 @@
       <StartBoundary>2026-01-01T00:00:10</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -65,7 +78,7 @@
       <StartBoundary>2026-01-01T00:00:20</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -73,7 +86,7 @@
       <StartBoundary>2026-01-01T00:00:30</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -81,7 +94,7 @@
       <StartBoundary>2026-01-01T00:00:40</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -89,7 +102,7 @@
       <StartBoundary>2026-01-01T00:00:50</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT1M</Interval>
+        <Interval>PT7M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
