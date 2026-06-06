@@ -364,7 +364,7 @@ export async function startWhatsAppBridge({
   // reaches 'open'. This append-only file bypasses Ink entirely; best-effort,
   // never throws. Operator 2026-06-02 ("no egpt back!"): the back-online ride
   // the outbox, which needs a live bridge, and the bridge state was unobservable.
-  const _BRIDGE_LOG = join(homedir(), '.egpt', 'wa-bridge.log');
+  const _BRIDGE_LOG = join(homedir(), '.egpt', 'logs', 'wa-bridge.log');
   const _blog = (m) => {
     try { appendFileSync(_BRIDGE_LOG, `${new Date().toISOString()} [${process.pid}] ${m}\n`, { mode: 0o600 }); } catch { /* best effort */ }
   };
