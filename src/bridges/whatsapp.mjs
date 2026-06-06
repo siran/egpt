@@ -142,12 +142,18 @@ const NIC_PROBE_TARGETS = [
 ];
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
-// Operator 2026-06-05 (NSSM-as-service era): tightened from 60s -> 6s.
-// In the service model, OS grants brief execution windows during Modern
-// Standby; sitting on a 60s probe loop is wasteful when the next conn-tick
-// (20s) will retry anyway. Three probes at 2s = 6s total, enough to cover
-// a NIC that's still warming after a wake, no longer than necessary.
-const NIC_PROBE_BUDGET_MS     = 6_000;    // 3 attempts every 2s
+// Operator 2026-06-06 (post-failed-nap-test): tightened to 6s on 2026-06-05
+// (NSSM service era assumption: 'the next conn-tick will retry anyway'),
+// but a 2026-06-06 5-min lid-closed test showed the OS suspended us
+// mid-recovery and we lost ~11 min of execution time. The right answer
+// is to HOLD AWAKE during the NIC poll so the OS can't pull the rug
+// (see _recoveryAttempt below) AND give the poll enough budget to
+// actually catch a NIC coming up from Modern Standby (which is often
+// several seconds, sometimes a dozen). Bumped to 20s with the
+// hold-awake reinstated. The cost (~20s of awake budget per failed
+// reconnect attempt) is small vs. the cost (missed messages until
+// next tick).
+const NIC_PROBE_BUDGET_MS     = 20_000;   // 10 attempts every 2s, awake-held
 // Cooldown between recovery attempts (operator 2026-06-05). Each
 // recovery attempt acquires stay-awake, runs the NIC poke for up to
 // NIC_PROBE_BUDGET_MS (60s), and releases on either success or budget-
@@ -749,16 +755,21 @@ export async function startWhatsAppBridge({
   async function _recoveryAttempt(initialNicUp) {
     if (_recoveryAttemptInProgress) return;
     _recoveryAttemptInProgress = true;
-    // No stay-awake hold here (operator 2026-06-05, NSSM-as-service era):
-    // recovery is "wait for NIC, then schedule reconnect" — it's not WORK,
-    // it's POLLING. Holding ES_SYSTEM_REQUIRED during it blocks Modern
-    // Standby and wastes battery while the bridge is failing to connect.
-    // Real work (chat-queue audio handling, transcribe) acquires its own
-    // stay-awake; that's the right place for it. Recovery just returns
-    // when it's done; the next conn-tick (20s) retries if needed.
+    // Hold stay-awake while we poll the NIC (operator 2026-06-06,
+    // post-failed-nap-test). Previous design (2026-06-05) ran the poll
+    // WITHOUT a hold on the theory that 'recovery is polling, not work.'
+    // That was wrong during Modern Standby: when the OS gives us a brief
+    // execution window via egpt-tick, we need to USE it to wait for the
+    // NIC to come up. Without a hold, the OS suspends us mid-poll and
+    // the budget elapses in wall-clock time without our setTimeout
+    // actually firing. With a hold, we get a guaranteed N seconds of
+    // execution to wait for the NIC, reconnect, and drain. Released
+    // either way at the bottom of the try block; chat-queue handlers
+    // grab their own holds for the actual work.
+    const releaseHold = acquireStayAwake();
     try {
       const startMs = Date.now();
-      _blog(`recovery: starting attempt (initialNicUp=${initialNicUp}, budget=${Math.round(NIC_PROBE_BUDGET_MS/1000)}s, holdAwake=false)`);
+      _blog(`recovery: starting attempt (initialNicUp=${initialNicUp}, budget=${Math.round(NIC_PROBE_BUDGET_MS/1000)}s, holdAwake=true)`);
       const nicReady = initialNicUp === true ? true : await _pokeNicUntilReady();
       if (stopped) return;
       if (!nicReady) {
@@ -784,6 +795,7 @@ export async function startWhatsAppBridge({
       _lastFailedRecoveryAt = 0;   // reset so next tick can attempt freely
       _blog(`recovery: NIC ready after ${Math.round((Date.now()-startMs)/1000)}s, reconnect scheduled`);
     } finally {
+      try { releaseHold(); } catch (_) {}
       _recoveryAttemptInProgress = false;
     }
   }
