@@ -33,46 +33,18 @@
   <RegistrationInfo>
     <Author>egpt</Author>
     <URI>\wake-test</URI>
-    <Description>Probe: can Windows wake this laptop from sleep every PT5M via Task Scheduler? Each fire appends a timestamp line. Independent of egpt; used to isolate wake-timer policy/firmware behavior from egpt code.</Description>
+    <Description>Diagnostic: can Windows wake this laptop from Modern Standby for a scheduled job? Each fire appends a timestamp + network state line to ~/wake-test.log. Standalone (no egpt code) so it isolates wake-timer policy / firmware behavior from anything egpt does. Used 2026-06-05 to characterize this Ryzen 7 7730U's Modern Standby DRIPS rebasing; the production supervisor is now the NSSM 'egpt-daemon' service, so this task should ONLY be installed when diagnosing again.</Description>
   </RegistrationInfo>
   <Triggers>
-    <!--
-      Brute-force multi-trigger (operator 2026-06-05). Each trigger has
-      its own PT1M repetition, but they're offset by 15 seconds via
-      different StartBoundary times. Windows coalesces wake timers
-      PER-TRIGGER, so 4 staggered PT1M triggers should give ~4x as many
-      wake opportunities as a single PT1M trigger when Modern Standby
-      timer rebasing is active. Nominal effective interval: PT15S.
-      Worst case (heavy coalescing): still ~4x the firing rate of a
-      single trigger. The action is idempotent (just appends a line),
-      so duplicate fires within the same second are harmless.
-    -->
+    <!-- Single PT1M trigger. The 4-staggered "brute-force" variant in
+         git history (commit pre-2026-06-06 cleanup) was a one-time
+         diagnostic to characterize Windows timer-coalescing under
+         Modern Standby; not useful operationally and not committed
+         back into the tree once the answer was known. If you need to
+         diagnose again, bump this to PT5M or PT10M depending on what
+         you're testing. -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:15</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:30</StartBoundary>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </TimeTrigger>
-    <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:45</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
