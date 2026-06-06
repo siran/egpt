@@ -26,19 +26,63 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      Single PT1M trigger (operator 2026-06-06: deconstruct phase).
-      The 6-staggered diagnostic XML in git history was needed to
-      SEE coalescing behavior during the wake-from-Modern-Standby
-      investigation. Functionally during normal operation, the NSSM
-      egpt-daemon service is the load-bearing piece - it handles
-      incoming WA packets in real-time via baileys' WebSocket. This
-      task only exists as a wake-hedge for the rare 'OS has fully
-      suspended us, no packets to schedule us' case. One trigger
-      every PT1M is plenty for that. Modern Standby will coalesce
-      regardless of how many triggers we have.
+      6-staggered triggers (operator 2026-06-06, restored after the
+      deconstruct test): one trigger at each 10-second offset within
+      the minute, each ticking every PT1M. Modern Standby coalesces
+      wake timers per-trigger, so 6 independent PT1M triggers means
+      6 separate wake-timer requests to coalesce. Nominal effective
+      interval when fully honored: PT10S.
+
+      Why we tried just 1 and put 6 back: with only 1 trigger, the
+      operator's nap-test failed to resume the bridge after Modern
+      Standby. The empirical answer is that on this Ryzen 7 7730U /
+      DRIPS firmware, the coalescing is aggressive enough that a
+      single PT1M wake-timer request gets absorbed almost entirely.
+      Six independent requests survive coalescing better - the OS
+      grants at least one of them. Brute force, but it works.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:10</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:20</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:30</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:40</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:50</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
