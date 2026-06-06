@@ -26,22 +26,35 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      3 triggers within the same minute (operator 2026-06-06,
-      deconstruct phase III): offsets 00:00, 00:20, 00:40, each
-      repeating PT1M. Modern Standby coalesces wake timers per
-      trigger, so 3 independent requests means 3 separate coalescing
-      candidates - empirically more likely to break through than 2.
+      6 staggered triggers at 10s offsets (operator 2026-06-06,
+      empirical floor): proven necessary after this deconstruct
+      sequence:
 
-      Previous attempts:
-        6 staggered at 10s offsets    -> WORKED (brute force)
-        1 trigger PT1M                -> failed (coalesced away)
-        2 triggers 1m10s phase apart  -> failed (the 1m10s phase
-                                        meant the OS treated them
-                                        as one effective wake rate)
-        3 in the same minute (this)   -> midpoint experiment
+        6@10s (00,10,20,30,40,50)   -> WORKED  (lid-down sleep)
+        1 trigger PT1M              -> failed
+        2 triggers 1m10s phase apart -> failed
+        3@20s (00,20,40)            -> failed
+        -> 6@10s restored (this)
+
+      So 6 is the empirical floor on this hardware (Ryzen 7 7730U,
+      DRIPS / S0LPI Modern Standby). Per-trigger coalescing means
+      we need at least 6 independent wake-timer requests for one
+      to reliably survive each minute during lid-down sleep.
+
+      Don't re-deconstruct this without retesting. The other beta-19
+      pieces (NSSM service, PCIe ASPM AC=Off) are necessary but not
+      sufficient on their own.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:10</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
@@ -57,7 +70,23 @@
       </Repetition>
     </TimeTrigger>
     <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:30</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:40</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:50</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
