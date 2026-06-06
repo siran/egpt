@@ -1,0 +1,117 @@
+<?xml version="1.0"?>
+<!--
+  wake-test.xml — minimal scheduled task to verify that this laptop can be
+  woken from sleep by Task Scheduler every PT5M. No egpt code involved.
+  Each fire writes one timestamped line to C:\Users\an\wake-test.log.
+
+  Differences from egpt-spine.xml:
+    - RunOnlyIfNetworkAvailable=false   (we explicitly want the task to fire
+                                         regardless of NIC state, so we can
+                                         tell wake-timer-refused from
+                                         network-not-yet-available)
+    - LogonType=InteractiveToken        (no S4U/password handshake; runs as
+                                         the currently logged-in user)
+    - The action is a one-line PowerShell append, no working directory,
+      no engine, no node.
+
+  To import (Administrator):
+    schtasks /Create /XML "C:\Users\an\src\egpt\setup\wake-test.xml" /TN wake-test
+
+  After importing, the first fire happens within ~1 min. Then close the lid,
+  wait 20+ minutes asleep, wake the laptop, and read the log:
+    type C:\Users\an\wake-test.log
+
+  Lines spaced ~5 min apart that span the sleep window mean wake works.
+  Only the pre-sleep + post-wake lines mean wake is being refused at the
+  OS / policy layer (independent of egpt).
+
+  To remove:
+    schtasks /Delete /TN wake-test /F
+    del C:\Users\an\wake-test.log
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>egpt</Author>
+    <URI>\wake-test</URI>
+    <Description>Probe: can Windows wake this laptop from sleep every PT5M via Task Scheduler? Each fire appends a timestamp line. Independent of egpt; used to isolate wake-timer policy/firmware behavior from egpt code.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <!--
+      Brute-force multi-trigger (operator 2026-06-05). Each trigger has
+      its own PT1M repetition, but they're offset by 15 seconds via
+      different StartBoundary times. Windows coalesces wake timers
+      PER-TRIGGER, so 4 staggered PT1M triggers should give ~4x as many
+      wake opportunities as a single PT1M trigger when Modern Standby
+      timer rebasing is active. Nominal effective interval: PT15S.
+      Worst case (heavy coalescing): still ~4x the firing rate of a
+      single trigger. The action is idempotent (just appends a line),
+      so duplicate fires within the same second are harmless.
+    -->
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:15</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:30</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:45</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>REVE\an</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>/c "C:\Users\an\src\egpt\setup\wake-test.cmd"</Arguments>
+      <WorkingDirectory>C:\Users\an</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
