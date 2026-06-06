@@ -873,11 +873,9 @@ export async function startWhatsAppBridge({
     const trulyConnected = bridgeOk && nicUp === true;
     const cooldownLeftMs = _lastFailedRecoveryAt ? Math.max(0, RECOVERY_COOLDOWN_MS - (now - _lastFailedRecoveryAt)) : 0;
     const unhealthyAgeS = unhealthySince ? Math.round((now - unhealthySince) / 1000) : 0;
-    // Single brief line - one stream of signals (operator 2026-06-06).
-    // Bool fields are t/f to keep this scannable; curl is the cached
-    // result of the PT30S background HEAD probe.
-    const b = (v) => v === true ? 't' : v === false ? 'f' : '?';
-    _blog(`tick: gap=${gap}ms o=${b(_connectionOpen)} rs=${rs ?? '?'} nic=${b(nicUp)} reconn=${b(!!reconnectTimer)} recov=${b(_recoveryAttemptInProgress)} cool=${Math.round(cooldownLeftMs/1000)}s unh=${unhealthyAgeS}s lock=${b(stayAwakeActive())} msg=${_msgsSinceTick} media=${_mediaSinceTick} curl=${_lastCurlResult}`);
+    // Single line, one stream of signals (operator 2026-06-06). Original
+    // field names restored for readability; msg/media/curl appended.
+    _blog(`tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s unhealthyAge=${unhealthyAgeS}s stayAwake=${stayAwakeActive()} msg=${_msgsSinceTick} media=${_mediaSinceTick} curl=${_lastCurlResult}`);
     _msgsSinceTick = 0;
     _mediaSinceTick = 0;
 
