@@ -142,18 +142,17 @@ const NIC_PROBE_TARGETS = [
 ];
 const NIC_PROBE_INTERVAL_MS   = 2_000;
 const NIC_PROBE_TIMEOUT_MS    = 1_000;
-// Operator 2026-06-06 (post-failed-nap-test): tightened to 6s on 2026-06-05
-// (NSSM service era assumption: 'the next conn-tick will retry anyway'),
-// but a 2026-06-06 5-min lid-closed test showed the OS suspended us
-// mid-recovery and we lost ~11 min of execution time. The right answer
-// is to HOLD AWAKE during the NIC poll so the OS can't pull the rug
-// (see _recoveryAttempt below) AND give the poll enough budget to
-// actually catch a NIC coming up from Modern Standby (which is often
-// several seconds, sometimes a dozen). Bumped to 20s with the
-// hold-awake reinstated. The cost (~20s of awake budget per failed
-// reconnect attempt) is small vs. the cost (missed messages until
-// next tick).
-const NIC_PROBE_BUDGET_MS     = 20_000;   // 10 attempts every 2s, awake-held
+// Operator 2026-06-06 (test-mode): wait up to 4 minutes for NIC to come
+// up. The poll runs holding stay-awake so the OS can't suspend us
+// mid-wait. If a subsequent egpt-tick fires while this recovery is
+// still in progress, the conn-tick sees _recoveryAttemptInProgress=true
+// and skips - the existing lock just continues, the existing poll
+// keeps trying. Worst case (NIC never comes up in 4 min): recovery
+// fails, RECOVERY_COOLDOWN_MS (4 min) before next attempt is allowed,
+// so the system gets to sleep again. Best case (NIC comes up in 5 s):
+// recovery succeeds in 5 s, lock releases, chat-queue takes over for
+// transcribe.
+const NIC_PROBE_BUDGET_MS     = 240_000;  // 120 attempts every 2s, awake-held
 // Cooldown between recovery attempts (operator 2026-06-05). Each
 // recovery attempt acquires stay-awake, runs the NIC poke for up to
 // NIC_PROBE_BUDGET_MS (60s), and releases on either success or budget-
