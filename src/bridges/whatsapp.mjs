@@ -500,6 +500,40 @@ export async function startWhatsAppBridge({
   let _lastWakeTick   = Date.now();
   let wakeTimer       = null;
 
+  // Per-tick activity counters + cached curl result, folded into the
+  // single tick: line (operator 2026-06-06). _msgsSinceTick counts
+  // upsert batches (any type), _mediaSinceTick counts media-fn entries
+  // (one per downloaded audio/image/video/etc). _lastCurlResult is
+  // refreshed by a background HEAD probe (every 30s) and just READ
+  // by the tick - never blocks the tick on network.
+  let _msgsSinceTick   = 0;
+  let _mediaSinceTick  = 0;
+  let _lastCurlResult  = '?';
+  let _curlBgTimer     = null;
+  const CURL_BG_MS     = 30_000;
+  const CURL_TARGET    = 'https://www.google.com/generate_204';
+  async function _curlBg() {
+    if (stopped) return;
+    const t0 = Date.now();
+    try {
+      const r = await fetch(CURL_TARGET, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
+      const rtt = Date.now() - t0;
+      _lastCurlResult = (r.status >= 200 && r.status < 300) ? `OK/${rtt}ms` : `HTTP${r.status}/${rtt}ms`;
+    } catch (e) {
+      const rtt = Date.now() - t0;
+      _lastCurlResult = `FAIL/${rtt}ms`;
+    }
+  }
+  function _startCurlBg() {
+    if (_curlBgTimer) return;
+    _curlBg().catch(() => {});
+    _curlBgTimer = setInterval(() => { _curlBg().catch(() => {}); }, CURL_BG_MS);
+    _curlBgTimer.unref?.();
+  }
+  function _stopCurlBg() {
+    if (_curlBgTimer) { clearInterval(_curlBgTimer); _curlBgTimer = null; }
+  }
+
   // Bridge heartbeat. Same prefix as state/alive.txt:
   // "<tic|toc> <iso> <pid> ...". Details after the pid identify
   // which WA account is connected. Keep .txt so double-click opens.
@@ -839,7 +873,13 @@ export async function startWhatsAppBridge({
     const trulyConnected = bridgeOk && nicUp === true;
     const cooldownLeftMs = _lastFailedRecoveryAt ? Math.max(0, RECOVERY_COOLDOWN_MS - (now - _lastFailedRecoveryAt)) : 0;
     const unhealthyAgeS = unhealthySince ? Math.round((now - unhealthySince) / 1000) : 0;
-    _blog(`tick: gap=${gap}ms open=${_connectionOpen} rs=${rs ?? '?'} nicUp=${nicUp} reconnecting=${!!reconnectTimer} inRecovery=${_recoveryAttemptInProgress} cooldown=${Math.round(cooldownLeftMs/1000)}s unhealthyAge=${unhealthyAgeS}s stayAwake=${stayAwakeActive()}`);
+    // Single brief line - one stream of signals (operator 2026-06-06).
+    // Bool fields are t/f to keep this scannable; curl is the cached
+    // result of the PT30S background HEAD probe.
+    const b = (v) => v === true ? 't' : v === false ? 'f' : '?';
+    _blog(`tick: gap=${gap}ms o=${b(_connectionOpen)} rs=${rs ?? '?'} nic=${b(nicUp)} reconn=${b(!!reconnectTimer)} recov=${b(_recoveryAttemptInProgress)} cool=${Math.round(cooldownLeftMs/1000)}s unh=${unhealthyAgeS}s lock=${b(stayAwakeActive())} msg=${_msgsSinceTick} media=${_mediaSinceTick} curl=${_lastCurlResult}`);
+    _msgsSinceTick = 0;
+    _mediaSinceTick = 0;
 
     // === watchdog: detect a long unhealthy stretch and fatal-exit ===
     // Operator 2026-06-06: merged from the former _bridgeWatchdogTick so
@@ -1870,6 +1910,7 @@ export async function startWhatsAppBridge({
       try {
         const jids = [...new Set(messages.map((m) => m.key?.remoteJid).filter(Boolean))];
         _blog(`upsert: type=${type} n=${messages.length} jids=${jids.slice(0, 4).join(',')}${jids.length > 4 ? '…' : ''}`);
+        _msgsSinceTick += messages.length;
         // Offline-backlog structure probe. A type!=='notify' batch is the
         // sleep/wake catch-up; logging each message's content keys tells us
         // whether the voice note arrives WITH its audioMessage payload or as a
@@ -3011,6 +3052,7 @@ export async function startWhatsAppBridge({
     const hit = kinds.find(k => m[k.key]);
     if (!hit) return null;
     _blog(`media-fn: hit=${hit.kind} ${msg.key?.id} (${msg.key?.remoteJid}) — entered`);  // proves _saveMediaIfAny ran for this media node
+    _mediaSinceTick += 1;
     // images_docs filter — only images + documents (videos / audio
     // / stickers skipped).
     if (downloadMode === 'images_docs' && !(hit.kind === 'image' || hit.kind === 'document')) return null;
@@ -4115,6 +4157,7 @@ export async function startWhatsAppBridge({
   // 'open'. unref'd so it never keeps the process alive on its own.
   _startBridgeWatchdog();
   _startConnectivityTick();
+  _startCurlBg();
   setStayAwakeLogger((m) => _blog(m));   // route stay-awake telemetry into wa-bridge.log
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
@@ -5139,6 +5182,7 @@ export async function startWhatsAppBridge({
         catch (e) { _blog(`lid-map flush failed: ${e?.message ?? e}`); }
       }
       _stopWhisperServer();
+      _stopCurlBg();
       _drainChatAudioQueues('stop');
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
