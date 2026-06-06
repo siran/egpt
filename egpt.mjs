@@ -63,6 +63,44 @@ const EGPT_HOME = join(homedir(), '.egpt');
 // won't write to them anymore.
 const EGPT_LOGS = join(EGPT_HOME, 'logs');
 try { mkdirSync(EGPT_LOGS, { recursive: true }); } catch {}
+// state subdir holds runtime state files (alive.txt, nucleus.json,
+// restart-announce.json, egpt.pid as of beta-19). Created here at
+// module load so any module-level constants that reference state/
+// can use it without their own mkdir.
+const EGPT_STATE = join(EGPT_HOME, 'state');
+try { mkdirSync(EGPT_STATE, { recursive: true }); } catch {}
+
+// ── One-shot migration on startup (operator 2026-06-05) ──────────
+// beta-18 left a handful of files at the top of ~/.egpt that beta-19
+// relocated. Files that COULDN'T be moved while the daemon was running
+// (because the daemon held them open) get nuked here on the next start
+// — by which point either (a) the daemon already wrote the new copy
+// in EGPT_LOGS / EGPT_STATE, making the top-level copy a stale orphan,
+// or (b) the daemon never opened them again. Idempotent: silently
+// no-ops once the top-level path is gone.
+//
+// /restart from Self triggers this naturally — the dying engine
+// releases its handles, the new engine boots, this block runs, the
+// orphans are cleaned up. No external script required.
+try {
+  // egpt.pid: ~/.egpt/egpt.pid -> ~/.egpt/state/egpt.pid
+  const oldPid = join(EGPT_HOME, 'egpt.pid');
+  if (existsSync(oldPid)) { try { unlinkSync(oldPid); } catch {} }
+
+  // *.log: ~/.egpt/<name>.log -> ~/.egpt/logs/<name>.log. Includes
+  // service-{stdout,stderr}.log which the prior NSSM install kept
+  // open at the top-level path; the reinstall released them but a
+  // stale 0-byte file can linger.
+  for (const name of [
+    'wa-bridge.log', 'headless.log', 'headless.log.1',
+    'restart.log', 'wrap.log', 'keeper.log', 'install-windows.log',
+    'service-stdout.log', 'service-stderr.log',
+    'egpt-service.out.log', 'egpt-service.err.log',
+  ]) {
+    const p = join(EGPT_HOME, name);
+    if (existsSync(p)) { try { unlinkSync(p); } catch {} }
+  }
+} catch { /* best-effort — never block startup */ }
 
 // Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
 // rendered item flows through this one channel; the Ink renderer subscribes
@@ -129,7 +167,7 @@ function _mergedHelpCommands() {
 // here at startup; a subsequent interactive shell reads it, SIGTERMs
 // the old process, polls until it exits, then takes over. Cleared on
 // clean exit (signal handler + process.exit). See takeoverIfRunning().
-const EGPT_PID_PATH = join(EGPT_HOME, 'egpt.pid');
+const EGPT_PID_PATH = join(EGPT_STATE, 'egpt.pid');
 // Headless mode log: Ink renders nowhere visible (no tty), so any
 // console.log / sysOut that would have hit the terminal lands here for
 // post-mortem. Bridges + room.md are still the canonical record;
