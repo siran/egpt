@@ -26,16 +26,16 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      Brute-force multi-trigger (operator 2026-06-06, restored after a
-      failed 5-min nap test showed PT2M wakes being coalesced by Modern
-      Standby down to one fire per ~10 min. We cleaned this up earlier
-      today thinking PT2M would be enough; data said no. Four PT1M
-      triggers offset by 15-second start boundaries means Modern Standby
-      has 4 INDEPENDENT wake-timer requests to coalesce; even if each
-      gets squashed badly, we win the lottery more often. Action is
-      idempotent (one cmd line appended), so duplicate fires within the
-      same second are harmless. Nominal effective interval: PT15S; worst
-      case ~PT2M of effective fire rate even under heavy coalescing.
+      6-staggered triggers (operator 2026-06-06): each starts at a
+      different 10-second offset within the minute, each ticks every
+      PT1M. Modern Standby coalesces wake timers per-trigger, so 6
+      independent PT1M triggers means 6 separate wake-timer requests
+      to coalesce. Nominal effective interval: PT10S. The cmd action
+      is idempotent (one log-line append) so dupe fires are harmless.
+      The egpt service ALSO writes to the same log file every PT20S
+      with a curl-time-API result, so the log shows two signals
+      interleaved: (1) did the OS schedule the task at all,
+      (2) when the service has execution time, is the network up.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
@@ -46,7 +46,15 @@
       </Repetition>
     </TimeTrigger>
     <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:15</StartBoundary>
+      <StartBoundary>2026-01-01T00:00:10</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:20</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
@@ -62,7 +70,15 @@
       </Repetition>
     </TimeTrigger>
     <TimeTrigger>
-      <StartBoundary>2026-01-01T00:00:45</StartBoundary>
+      <StartBoundary>2026-01-01T00:00:40</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:50</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
         <Interval>PT1M</Interval>
