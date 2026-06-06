@@ -768,9 +768,33 @@ export async function startWhatsAppBridge({
   // semantics as the quick check, but loops at a fixed 2s cadence until
   // a probe target answers or the per-recovery budget expires.
   async function _pokeNicUntilReady() {
-    const startMs = Date.now();
+    // Suspension-aware budget (operator 2026-06-06, 10-min nap-test
+    // failure analysis). The previous wall-clock check assumed time
+    // moves forward only while we have execution - true on AC awake,
+    // false on Modern Standby. During lid-down sleep the bridge gets
+    // suspended for 10+ min, wall-clock advances by that much, then
+    // when the OS finally schedules us again the loop's first check
+    // says 'budget exhausted' even though we only made one attempt
+    // before sleep. So we detect the wall-clock JUMP between iterations
+    // (anything >> NIC_PROBE_INTERVAL_MS is OS suspension) and reset
+    // the start time. Same 240s of *actual polling*, just not penalized
+    // for time we couldn't poll.
+    let startMs = Date.now();
+    let lastIterMs = startMs;
     let attempts = 0;
     while (!stopped && Date.now() - startMs < NIC_PROBE_BUDGET_MS) {
+      const iterStart = Date.now();
+      const iterGap = iterStart - lastIterMs;
+      // If a long wall-clock gap shows up, we were suspended between
+      // the previous setTimeout and now. Reset startMs so the budget
+      // counts our actual polling time, not the time the OS held us.
+      // Threshold = 4x the normal sleep interval (2s -> 8s).
+      if (attempts > 0 && iterGap > Math.max(8_000, NIC_PROBE_INTERVAL_MS * 4)) {
+        _blog(`nic-poke: suspension detected (${Math.round(iterGap/1000)}s wall-clock jump between attempts ${attempts}/${attempts+1}); resetting budget`);
+        startMs = iterStart;
+      }
+      lastIterMs = iterStart;
+
       attempts++;
       let okTarget = null, lastError = null;
       for (const t of NIC_PROBE_TARGETS) {
