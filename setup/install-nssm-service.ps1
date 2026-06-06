@@ -45,6 +45,30 @@ if (-not $nssm) {
 }
 Write-Host "NSSM: $nssm" -ForegroundColor Cyan
 
+# --- 2b. copy nssm.exe to a renamed binary so Task Manager shows
+#         'egpt-service.exe' instead of 'nssm.exe' for the service host.
+#         The renamed copy still IS nssm — the binary just has a friendlier
+#         name. NSSM honors any rename of its executable: SCM launches
+#         whatever path is registered as the service ImagePath, so we point
+#         that at the renamed copy. All `nssm set/start/stop/remove` commands
+#         in the rest of this script still use the canonical $nssm (those
+#         are admin operations that don't care which copy is invoked). ---
+$serviceBinDir = Join-Path $env:USERPROFILE '.egpt\bin'
+if (-not (Test-Path $serviceBinDir)) { New-Item -ItemType Directory -Path $serviceBinDir -Force | Out-Null }
+$serviceBin = Join-Path $serviceBinDir 'egpt-service.exe'
+# Resolve $nssm if it's a winget shim symlink — symlinks can't be SCM ImagePath
+# (SCM derefs the link but Get-Command may have returned the link target via
+# the shim binary). Copy from the actual file either way.
+$nssmReal = (Get-Item $nssm).FullName
+if (-not (Test-Path $serviceBin) -or
+    (Get-Item $serviceBin).Length -ne (Get-Item $nssmReal).Length -or
+    (Get-Item $serviceBin).LastWriteTime -lt (Get-Item $nssmReal).LastWriteTime) {
+  Write-Host "Copying $nssmReal -> $serviceBin (so the service appears in Task Manager as egpt-service.exe)..." -ForegroundColor Cyan
+  Copy-Item -Path $nssmReal -Destination $serviceBin -Force
+} else {
+  Write-Host "Reusing existing $serviceBin (matches winget NSSM)." -ForegroundColor DarkGray
+}
+
 # --- 3. resolve egpt paths ---
 $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $daemonPath = Join-Path $repoRoot 'egpt-daemon.mjs'
@@ -52,12 +76,17 @@ $node       = 'C:\Program Files\nodejs\node.exe'
 if (-not (Test-Path $daemonPath)) { throw "egpt-daemon.mjs not found at $daemonPath" }
 if (-not (Test-Path $node))       { throw "node.exe not found at $node - install Node.js or edit this script's `\$node path" }
 
-# --- 4. stop the Task Scheduler approach so we don't run TWO daemons ---
-Write-Host "Stopping any running egpt-spine task instance..." -ForegroundColor Yellow
-schtasks /End /TN egpt-spine 2>&1 | Out-Null
-Write-Host "Disabling egpt-spine task (NSSM service takes over)..." -ForegroundColor Yellow
-schtasks /Change /TN egpt-spine /DISABLE 2>&1 | Out-Null
-Write-Host "  (Re-enable with: schtasks /Change /TN egpt-spine /ENABLE)" -ForegroundColor DarkGray
+# --- 4. remove any legacy egpt-spine Task Scheduler entry so we don't run
+#        TWO daemons. The XML definition stays in setup/egpt-spine.xml as
+#        the documented fallback path; a user who wants to revert can
+#        re-import it with schtasks /Create /XML setup\egpt-spine.xml. ---
+$existingTask = schtasks /Query /TN egpt-spine /FO LIST 2>$null
+if ($LASTEXITCODE -eq 0) {
+  Write-Host "Removing legacy egpt-spine Task Scheduler task..." -ForegroundColor Yellow
+  schtasks /End    /TN egpt-spine 2>&1 | Out-Null
+  schtasks /Delete /TN egpt-spine /F 2>&1 | Out-Null
+  Write-Host "  (Re-create with: schtasks /Create /XML setup\egpt-spine.xml /TN egpt-spine /RU <user> /RP *)" -ForegroundColor DarkGray
+}
 
 # --- 5. kill any leftover node.exe so the new service starts cleanly ---
 Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
@@ -85,8 +114,12 @@ if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Forc
 $stdoutLog = Join-Path $logDir 'service-stdout.log'
 $stderrLog = Join-Path $logDir 'service-stderr.log'
 
-Write-Host "Installing egpt-daemon service..." -ForegroundColor Cyan
-& $nssm install egpt-daemon $node "$daemonPath" --headless
+Write-Host "Installing egpt-daemon service (host: $serviceBin)..." -ForegroundColor Cyan
+# Use the renamed binary for `install` so SCM records ImagePath = egpt-service.exe.
+# All subsequent `nssm set/start/stop` calls can use either copy — they're
+# admin operations that just talk to SCM about config; they don't change
+# which exe is the service host.
+& $serviceBin install egpt-daemon $node "$daemonPath" --headless
 & $nssm set egpt-daemon AppDirectory       $repoRoot
 & $nssm set egpt-daemon DisplayName        'egpt personal AI bridge daemon'
 & $nssm set egpt-daemon Description        'Node.js egpt-daemon.mjs wrapped via NSSM. Holds the WhatsApp bridge + engine. Equivalent to the egpt-spine Task Scheduler task; replaces it on Modern Standby hardware where TS wakes are suppressed during sleep.'

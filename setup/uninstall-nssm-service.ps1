@@ -45,18 +45,23 @@ Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
   Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
-# --- 4. re-enable the Task Scheduler task ---
-Write-Host "Re-enabling egpt-spine Task Scheduler task..." -ForegroundColor Cyan
-schtasks /Change /TN egpt-spine /ENABLE 2>&1 | Out-Null
-schtasks /Run    /TN egpt-spine 2>&1 | Out-Null
+# --- 4. (optional) restore the Task Scheduler supervisor ---
+# Skipped by default (operator 2026-06-05): when you choose to uninstall the
+# service, the expectation is no autostart. If you want the Task Scheduler
+# approach back, re-import it explicitly:
+#
+#   schtasks /Create /XML setup\egpt-spine.xml /TN egpt-spine /RU $env:USERNAME /RP *
+#
+# The XML lives in the repo as the documented fallback supervisor.
 
-Start-Sleep -Seconds 3
 Write-Host ""
-Write-Host "Done. Task Scheduler supervisor is back." -ForegroundColor Green
+Write-Host "Done. NSSM service removed." -ForegroundColor Green
 Write-Host ""
 Write-Host "Verify:" -ForegroundColor Cyan
-Write-Host "  schtasks /Query /TN egpt-spine /V /FO LIST"
-Write-Host "  Get-Process node"
-Write-Host "  Get-Content $env:USERPROFILE\.egpt\wa-bridge.log -Tail 20"
+Write-Host "  Get-Service egpt-daemon -ErrorAction SilentlyContinue   # should be empty"
+Write-Host "  Get-Process node                                          # should be empty"
 Write-Host ""
-Write-Host "Service stdout/stderr logs at $env:USERPROFILE\.egpt\service-{stdout,stderr}.log are preserved (delete manually if you want)."
+Write-Host "To restore the Task Scheduler supervisor instead:"
+Write-Host "  schtasks /Create /XML setup\egpt-spine.xml /TN egpt-spine /RU `$env:USERNAME /RP *"
+Write-Host ""
+Write-Host "Service logs at $env:USERPROFILE\.egpt\logs\service-{stdout,stderr}.log are preserved (delete manually if you want)."
