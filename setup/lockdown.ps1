@@ -1,8 +1,8 @@
-# lockdown.ps1 — restrict ~/.egpt so only the operator + SYSTEM can read it.
+# lockdown.ps1 - restrict ~/.egpt so only the operator + SYSTEM can read it.
 #
 # Audit at the start of this work (operator 2026-06-06) showed every sensitive
-# file under ~/.egpt — wa-auth/ session keys, bus.key, cdp-token, config.yaml,
-# the whole conversations/ tree — was readable by BUILTIN\Administrators via
+# file under ~/.egpt - wa-auth/ session keys, bus.key, cdp-token, config.yaml,
+# the whole conversations/ tree - was readable by BUILTIN\Administrators via
 # inherited ACL. On a single-user laptop that mostly doesn't matter; on a
 # shared machine OR if another local admin account exists, it's a real leak
 # (a second local admin can read your WhatsApp session, impersonate the bus,
@@ -19,13 +19,13 @@
 #      Every child path inherits from the root, so the whole tree is
 #      operator+SYSTEM only after this.
 #
-# Idempotent — safe to run multiple times. Local admins can always take
+# Idempotent - safe to run multiple times. Local admins can always take
 # ownership back if they have to (e.g. for system maintenance), so this is
 # a friction layer, not a vault.
 #
 # Run from any PowerShell (no admin needed if you only own the directory and
 # its children; admin needed if any subdir is currently owned by
-# BUILTIN\Administrators — the takeown step). The double-click wrapper
+# BUILTIN\Administrators - the takeown step). The double-click wrapper
 # (lockdown.cmd) auto-elevates.
 
 $ErrorActionPreference = 'Stop'
@@ -45,7 +45,7 @@ Write-Host ""
 Write-Host "Taking ownership of the whole tree (as $user)..." -ForegroundColor Cyan
 & takeown /F $root /R /D Y 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
-  Write-Host "  takeown returned non-zero ($LASTEXITCODE) — likely need elevation. Re-run via lockdown.cmd." -ForegroundColor Yellow
+  Write-Host "  takeown returned non-zero ($LASTEXITCODE) - likely need elevation. Re-run via lockdown.cmd." -ForegroundColor Yellow
   exit 1
 }
 
@@ -60,7 +60,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # --- 3. verify ---
 Write-Host ""
-Write-Host "Verifying — sensitive paths now show ONLY $user + SYSTEM:" -ForegroundColor Green
+Write-Host "Verifying - sensitive paths now show ONLY $user + SYSTEM:" -ForegroundColor Green
 $check = @(
   $root,
   (Join-Path $root 'wa-auth'),
@@ -77,8 +77,8 @@ foreach ($p in $check) {
   $unique = $principals | Sort-Object -Unique
   $expected = @($user, 'NT AUTHORITY\SYSTEM') | Sort-Object -Unique
   $hasOnlyExpected = ($unique.Count -eq $expected.Count) -and -not (Compare-Object $unique $expected)
-  $mark = if ($hasOnlyExpected) { '✓' } else { '✗' }
-  Write-Host "  $mark $p  →  $($unique -join ', ')"
+  $mark = if ($hasOnlyExpected) { '[OK]' } else { '[FAIL]' }
+  Write-Host "  $mark $p  ->  $($unique -join ', ')"
 }
 Write-Host ""
 Write-Host "Done. Other local users (including other admins, unless they take" -ForegroundColor Green
