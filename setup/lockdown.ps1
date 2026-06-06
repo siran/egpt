@@ -68,12 +68,25 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
-# --- 3. remove inheritance, set explicit ACL: user + SYSTEM only ---
-# We capture stderr instead of black-holing it so a future Access-Denied
-# tells us WHICH file (most useful when something other than egpt-daemon
-# is holding a handle - Defender, OneDrive, Indexing Service, etc.).
-Write-Host "Removing inheritance..." -ForegroundColor Cyan
-$inhOut = & icacls $root /inheritance:r /T /Q 2>&1
+# --- 3. remove inheritance + set explicit ACL ON THE ROOT ONLY ---
+#
+# IMPORTANT: no /T on these calls. Reason (learned the hard way 2026-06-06):
+# /T means "recurse through every child and modify their ACL." If a single
+# descendant denies the modification (file in use, weird historical ACL,
+# Indexing Service hold, antivirus quarantine, etc.), icacls bails midway
+# and leaves us in a half-applied state where SOME paths have inheritance
+# off AND no explicit ACEs - they become unreadable to ANYONE, including
+# the operator and the daemon. Recovery is setup/unlock.cmd.
+#
+# Approach instead: only modify the ROOT (~/.egpt) ACL. The (OI)(CI) flags
+# on the explicit ACEs propagate to every NEW file/dir and to every
+# EXISTING file/dir that was inheriting from parent (which the audit
+# showed was the case for every sensitive path: 'inherits from parent:
+# True' on wa-auth, bus.key, cdp-token, config.yaml). Children with their
+# own non-inheriting ACLs would need separate handling, but in practice
+# ~/.egpt doesn't have any.
+Write-Host "Removing inheritance on root and setting explicit ACL..." -ForegroundColor Cyan
+$inhOut = & icacls $root /inheritance:r 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Host "  icacls /inheritance:r failed:" -ForegroundColor Red
   $inhOut | Where-Object { $_ -match 'denied|fail' } | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
@@ -81,8 +94,7 @@ if ($LASTEXITCODE -ne 0) {
   exit 1
 }
 
-Write-Host "Setting explicit ACL (user + SYSTEM only)..." -ForegroundColor Cyan
-$grantOut = & icacls $root /grant:r "${user}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" /T /Q 2>&1
+$grantOut = & icacls $root /grant:r "${user}:(OI)(CI)F" "SYSTEM:(OI)(CI)F" 2>&1
 if ($LASTEXITCODE -ne 0) {
   Write-Host "  icacls /grant:r failed:" -ForegroundColor Red
   $grantOut | Where-Object { $_ -match 'denied|fail' } | Select-Object -First 5 | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
