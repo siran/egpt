@@ -80,8 +80,8 @@ if ($existing) {
 }
 
 # --- 8. install + configure the service ---
-$logDir = Join-Path $env:USERPROFILE '.egpt'
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+$logDir = Join-Path $env:USERPROFILE '.egpt\logs'
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $stdoutLog = Join-Path $logDir 'service-stdout.log'
 $stderrLog = Join-Path $logDir 'service-stderr.log'
 
