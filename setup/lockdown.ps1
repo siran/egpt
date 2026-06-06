@@ -71,7 +71,7 @@ if ($LASTEXITCODE -ne 0) {
 # --- 3. remove inheritance, set explicit ACL: user + SYSTEM only ---
 # We capture stderr instead of black-holing it so a future Access-Denied
 # tells us WHICH file (most useful when something other than egpt-daemon
-# is holding a handle — Defender, OneDrive, Indexing Service, etc.).
+# is holding a handle - Defender, OneDrive, Indexing Service, etc.).
 Write-Host "Removing inheritance..." -ForegroundColor Cyan
 $inhOut = & icacls $root /inheritance:r /T /Q 2>&1
 if ($LASTEXITCODE -ne 0) {
