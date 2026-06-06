@@ -139,6 +139,30 @@ Write-Host "Installing egpt-daemon service (host: $serviceBin)..." -ForegroundCo
 & $nssm set egpt-daemon AppStopMethodWindow  5000     # 5 s for WM_CLOSE
 & $nssm set egpt-daemon AppStopMethodThreads 5000     # 5 s for thread termination
 
+# --- 8b. SCM-level failure actions ---
+# NSSM's AppExit/AppRestartDelay handle the case where the wrapped node.exe
+# child crashes (NSSM sees its child die and respawns it). They do NOT
+# handle the case where the wrapper itself (egpt-service.exe) dies - e.g.
+# someone End-Tasks it from Task Manager. For that we need SCM-level
+# recovery: actions registered with the Service Control Manager that fire
+# when the service process terminates unexpectedly.
+#
+# Without this, an End-Task on egpt-service.exe leaves the service stopped
+# until next reboot. With this, SCM restarts the wrapper after 5s, NSSM
+# starts back up, NSSM spawns node, normal operation resumes within ~10s.
+#
+# reset=86400 - reset the failure counter after a day of uptime so a long
+#               stable run doesn't accumulate phantom failures.
+# actions=restart/5000/restart/5000/restart/5000
+#             - first 3 failures: restart with 5s delay between attempts.
+# failureflag=1 - apply the actions even on "non-crash" stops (which is
+#                 how SCM categorizes a kill-from-Task-Manager). Default
+#                 is to only apply on crash; flag=1 enables for any
+#                 unexpected stop.
+Write-Host "Configuring SCM failure actions (restart 3x with 5s delay if wrapper killed)..." -ForegroundColor Cyan
+& sc.exe failure egpt-daemon reset=86400 actions=restart/5000/restart/5000/restart/5000 | Out-Null
+& sc.exe failureflag egpt-daemon 1 | Out-Null
+
 # --- 9. start it ---
 Write-Host "Starting egpt-daemon service..." -ForegroundColor Cyan
 & $nssm start egpt-daemon
