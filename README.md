@@ -159,25 +159,42 @@ the bridges come up and stay up across `/restart` / `/upgrade` cycles.
 ### Headless background mode
 
 To keep eGPT running **across reboots even when nobody is logged in**, add
-`--headless`. Two ways to install the Task Scheduler entry:
+`--headless` and install the daemon as a persistent supervisor. The
+**recommended** path on Windows since beta-19 is the NSSM-wrapped Windows
+Service (`install-nssm-service.cmd`), because on Modern Standby hardware
+(any laptop without S3 sleep in firmware — most newer Ryzen / Intel
+laptops) Task Scheduler timer wakes are aggressively suppressed during
+sleep, while a continuously-running service holding a live WebSocket
+gets brief execution windows from Connected Standby. Validated 2026-06-05:
+voice notes sent during a lid-closed Modern Standby window were received,
+transcribed, and dispatched hands-off.
 
-**A — Import the bundled XML** (easiest, especially for non-developers).
+**Windows — NSSM service** (recommended):
+
+Double-click `setup\install-nssm-service.cmd` from Explorer. UAC prompt
+→ Yes → installer console opens → enter your Windows password once → the
+script installs NSSM via winget if needed, stops the older Task Scheduler
+task if present, registers `egpt-daemon` as an auto-start service, and
+starts it. To revert: `setup\uninstall-nssm-service.cmd`.
+
+**Windows — legacy Task Scheduler** (still works; useful if you can't
+install NSSM):
+
 Open Task Scheduler (`Win+R` → `taskschd.msc`), Right pane → `Import Task...`,
-select `egpt-daemon-headless.xml` from this repo. In the Properties
-dialog click `Change User or Group...` and pick your own account, confirm
-`Run whether user is logged on or not` is selected, click `OK`, enter your
-Windows password. Done.
+select `setup\egpt-spine.xml`. In the Properties dialog click `Change
+User or Group...`, pick your own account, confirm `Run whether user is
+logged on or not` is selected, click `OK`, enter your Windows password.
 
-**B — Command-line** (elevated PowerShell):
+Or command-line (elevated PowerShell):
 
 ```powershell
-schtasks /Create /XML "egpt-daemon-headless.xml" `
-  /TN "egpt-daemon-headless" `
+schtasks /Create /XML "setup\egpt-spine.xml" `
+  /TN "egpt-spine" `
   /RU "$env:USERNAME" /RP * /F
 ```
 
-Either form prompts for your Windows password once. It's stored encrypted in
-the SAM so the task can authenticate at boot before any logon.
+Either form prompts for your Windows password once. It's stored encrypted
+in the SAM so the task can authenticate at boot before any logon.
 
 In headless mode:
 
@@ -208,10 +225,37 @@ is up will also take over.
 
 ### macOS / Linux
 
-Same `--headless` flag; wrap `egpt-daemon.mjs --headless` in a launchd
-user-agent plist (`~/Library/LaunchAgents/com.egpt.daemon.plist`) or a
-`systemd --user` unit. Enable with `launchctl load …` or
-`systemctl --user enable --now egpt-daemon`.
+> **Untested as of beta-19.** Primary development happens on Windows;
+> the macOS launchd and Linux systemd paths below are written from
+> Apple/freedesktop docs and the Windows experience, not from running
+> production. Expected to work — the bridge code, chat-queue, and
+> whisper-server integration are all Node.js + cross-platform tools —
+> but report regressions if you hit them.
+
+Single auto-detecting installer:
+
+```bash
+./setup/install-service.sh
+```
+
+It detects via `uname -s`:
+
+- **macOS** → writes `~/Library/LaunchAgents/com.egpt.daemon.plist`
+  with `RunAtLoad=true`, `KeepAlive=true`, `ThrottleInterval=5`, loads
+  it via `launchctl load`. Logs to `~/.egpt/service-{stdout,stderr}.log`.
+- **Linux (systemd)** → writes `~/.config/systemd/user/egpt-daemon.service`
+  with `Restart=always`, `RestartSec=5s`, enables + starts via
+  `systemctl --user enable --now`. On a headless / server box, run
+  `sudo loginctl enable-linger $USER` once so the service stays up past
+  logout — the installer prints this hint if linger isn't already
+  enabled.
+
+Reversal: `./setup/uninstall-service.sh`. Doesn't touch `~/.egpt`.
+
+`stay-awake.mjs` is a no-op on non-Windows (it short-circuits on
+`process.platform !== 'win32'`); this is intentional because a
+continuously-running service doesn't need to fight idle-sleep the way
+a Task-Scheduler-woken brief job did.
 
 ## Basic Use
 
