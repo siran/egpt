@@ -1,47 +1,28 @@
-# setup/reset-daemon.ps1 -- hard-reset the egpt daemon to ONE clean
-# instance. NO elevation: the daemon now runs at LeastPrivilege (operator
-# 2026-05-24 — de-elevated to stop UAC secure-desktop transitions, which
-# were crashing the machine). At medium integrity we can kill the daemon's
-# node procs + re-run the task without admin and WITHOUT a UAC prompt.
+# setup/reset-daemon.ps1 -- hard-reset egpt to ONE clean daemon instance.
 #
-# (One-time exception: flipping the tasks elevated->least-privilege needs a
-# single UAC — that's install-tasks.ps1, not this. After that, this script
-# never prompts.)
+# Use this to recover from a respawn / takeover war (two engines fighting over
+# the single WhatsApp session: 61s respawns, "connection replaced (reason 440)"
+# in whatsapp-alive.txt). It stops the task, kills the node procs, clears the
+# stale liveness/takeover files, restarts ONE daemon, and reports.
 #
-# What it does:
-#   1. Stop the daemon task instance (egpt-daemon-headless)
-#   2. Kill the daemon-wrap wrappers + node procs (clears duplicates)
-#   3. Re-run the daemon task (fresh single tree on current code)
-#   4. Wait + report: node procs, alive.txt freshness
+# NO elevation needed: the daemon runs at LeastPrivilege, so your own (same-user)
+# shell can kill its node procs and re-run the task without admin or a UAC prompt.
+# Scripts are blocked by the default execution policy, so run it like this:
 #
-# Run from any PowerShell (no admin needed):
 #   powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\src\egpt\setup\reset-daemon.ps1"
-# or just:  .\src\egpt\setup\reset-daemon.ps1
+#
+# (NOTE: step 2 kills ALL node.exe processes -- the surest way to clear the war.
+# If you run other Node apps, close this one and kill egpt selectively instead.)
 
 $ErrorActionPreference = 'Continue'
+$Task = 'egpt-spine'                       # the current daemon task (was egpt-daemon-headless)
+$EgptHome = Join-Path $env:USERPROFILE '.egpt'
+$alivePath = Join-Path $EgptHome 'state\alive.txt'
 
-$alivePath = Join-Path $env:USERPROFILE '.egpt\state\alive.txt'
+Write-Host "=== 1. stopping task instance ($Task) ==="
+schtasks /End /TN $Task 2>&1 | Out-Host
 
-Write-Host "=== 1. stopping task instance ==="
-schtasks /End /TN egpt-daemon-headless 2>&1 | Out-Host
-
-# Kill the daemon-wrap.ps1 WRAPPERS first. These are powershell.exe
-# (not node), so a node-only kill leaves them looping -> they respawn
-# fresh daemons -> duplicates survive the reset. Match by command line
-# containing 'daemon-wrap.ps1', EXCLUDING this very process (and its
-# parent shell) so the reset doesn't suicide.
-Write-Host "=== 2a. killing daemon-wrap.ps1 wrappers ==="
-$selfPid = $PID
-try {
-  Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'daemon-wrap\.ps1' -and $_.ProcessId -ne $selfPid } |
-    ForEach-Object {
-      Write-Host ("  kill wrapper pid " + $_.ProcessId)
-      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-} catch { Write-Host ("  wrapper scan error: " + $_) }
-
-Write-Host "=== 2b. killing all node.exe ==="
+Write-Host "=== 2. killing all node.exe (clears duplicates / the war) ==="
 Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
   Write-Host ("  kill pid " + $_.Id)
   Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
@@ -51,24 +32,28 @@ $left = Get-Process node -ErrorAction SilentlyContinue
 if ($left) { Write-Host ("  WARNING: still alive: " + ($left.Id -join ', ')) }
 else       { Write-Host "  all node procs cleared" }
 
-# Clear the stale heartbeat so the first fresh beat is unambiguous.
-Remove-Item $alivePath -Force -ErrorAction SilentlyContinue
+Write-Host "=== 3. clearing stale liveness / takeover files ==="
+foreach ($f in $alivePath, (Join-Path $EgptHome 'egpt.pid'), (Join-Path $EgptHome 'nucleus.json')) {
+  if (Test-Path $f) { Remove-Item $f -Force -ErrorAction SilentlyContinue; Write-Host ("  cleared " + (Split-Path $f -Leaf)) }
+}
 
-Write-Host "=== 3. starting daemon task (fresh) ==="
-schtasks /Run /TN egpt-daemon-headless 2>&1 | Out-Host
+Write-Host "=== 4. starting daemon task (fresh, single tree on current code) ==="
+schtasks /Run /TN $Task 2>&1 | Out-Host
 
-Write-Host "=== 4. waiting 10s for boot + heartbeat ==="
-Start-Sleep -Seconds 10
+Write-Host "=== 5. waiting 18s for boot + connect ==="
+Start-Sleep -Seconds 18
 
 Write-Host "--- node procs (expect 2: egpt-daemon.mjs + egpt.mjs) ---"
-Get-Process node -ErrorAction SilentlyContinue |
-  Select-Object Id, SessionId | Format-Table -AutoSize | Out-Host
+Get-Process node -ErrorAction SilentlyContinue | Select-Object Id, SessionId | Format-Table -AutoSize | Out-Host
 
-Write-Host "--- alive.txt (expect fresh tic/toc, SAME pid) ---"
-if (Test-Path $alivePath) { Get-Content $alivePath | Out-Host }
-else { Write-Host "  (no alive.txt yet -- daemon may still be booting)" }
+Write-Host "--- alive.txt (expect fresh tic/toc, ONE pid) ---"
+if (Test-Path $alivePath) { Get-Content $alivePath | Out-Host } else { Write-Host "  (no alive.txt yet -- still booting)" }
+
+$waPath = Join-Path $EgptHome 'state\whatsapp-alive.txt'
+Write-Host "--- whatsapp-alive.txt (want 'tic/toc ... pushname=...', NOT 'reconnecting') ---"
+if (Test-Path $waPath) { Get-Content $waPath | Out-Host } else { Write-Host "  (not connected yet)" }
 
 Write-Host ""
-Write-Host "done. One daemon, no watchdog. Check alive.txt freshness above."
+Write-Host "done. One daemon. If WhatsApp shows tic/toc with a pushname, you're good to sleep + test."
 Write-Host "This window stays open. Press Enter to close."
 [void](Read-Host)
