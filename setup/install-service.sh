@@ -34,7 +34,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
 daemon_path="$repo_root/egpt-daemon.mjs"
-log_dir="$HOME/.egpt"
+log_dir="$HOME/.egpt/logs"
 
 # Sanity checks
 if [[ ! -f "$daemon_path" ]]; then
