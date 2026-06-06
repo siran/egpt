@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<!--
+  egpt-tick.xml — Task Scheduler task that wakes the OS every PT10M so
+  the NSSM-managed egpt-daemon service gets execution time even during
+  long Modern Standby naps. The TASK does almost nothing (one cmd line
+  appends a timestamp); the WAKE is the point.
+
+  Why this exists: on this hardware class (Ryzen 7 7730U, S0LPI only)
+  Modern Standby can suppress the service's scheduler windows during
+  long deep-sleep stretches — and if egpt sits suspended for an hour
+  it misses outbox sends, heartbeat cadences, and any other due work.
+  PT10M wake bounds the miss-window to 10 minutes maximum.
+
+  This task does NOT replace the NSSM service. It complements it. The
+  service is the spine; this task just nudges the OS to schedule it.
+
+  Install via setup/install-tick-task.cmd (auto-elevates, prompts once
+  for the password to register S4U principal).
+  Uninstall via setup/uninstall-tick-task.cmd.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Author>egpt</Author>
+    <URI>\egpt-tick</URI>
+    <Description>Wake-the-OS hedge for the egpt-daemon NSSM service. Fires every PT10M with WakeToRun=true. Action is a one-line cmd append to ~/.egpt/logs/egpt-tick.log; the wake side effect is what matters - it ensures the always-running egpt-daemon service gets execution time at least every 10 minutes even during Modern Standby DRIPS / Austerity sub-states. Combined with NSSM-as-service, this gives bounded miss-windows for heartbeats / outbox sends / scheduled rollups.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT10M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>REVE\an</UserId>
+      <LogonType>Password</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>false</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>true</WakeToRun>
+    <ExecutionTimeLimit>PT1M</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>/c "C:\Users\an\src\egpt\setup\egpt-tick.cmd"</Arguments>
+      <WorkingDirectory>C:\Users\an</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
