@@ -26,7 +26,7 @@
   </RegistrationInfo>
   <Triggers>
     <!--
-      6 staggered triggers at 10s offsets, repeating PT7M (operator
+      6 staggered triggers at 10s offsets, repeating PT8M (operator
       2026-06-06, deconstruct phase IV - the BATTERY-SPACING test).
 
       Sequence so far:
@@ -36,7 +36,8 @@
                                             never actually descended
                                             to deep DRIPS / Austerity
         1 / 2 / 3 trigger variants       -> failed
-        6@10s PT7M battery-per-7min      -> testing now
+        6@10s PT7M (6m10s silence)       -> too short for descent
+        6@10s PT8M (7m10s silence)       -> testing now (this XML)
 
       Hypothesis: Modern Standby has multiple depth levels (S0i1
       light idle, S0i2/i3 deeper, DRIPS, Austerity). The firmware
@@ -46,23 +47,24 @@
       means we never test 'real' Modern Standby and the fast @e
       reply was the shallow-state speed, not a true wake-from-deep.
 
-      PT7M lets the firmware have ~6m50s of uninterrupted quiet
-      between batteries to actually descend, then the battery has
-      to break through real coalescing. This is the more honest
-      stress test of lid-down sleep behavior.
+      Battery span = 50s (6 fires at 10s offsets from 00:00 to 00:50).
+      PT8M cycle - 50s battery = 7m10s of true quiet between batteries.
+      That's cleanly above the typical DRIPS descent threshold (~1-2
+      min on consumer firmware), so the firmware has real time to
+      deepen.
 
-      During a 10-min nap: ~2 batteries fire (at 0 and at 7 min).
+      During a 10-min nap: ~1-2 batteries fire (at 0 and possibly 8 min).
       If @e responds via these, the architecture truly handles
       deep lid-down sleep.
 
       Don't reduce battery count below 6 (already proven necessary).
-      Tune PT7M up/down based on what test results look like.
+      Tune PT8M up/down based on what test results look like.
     -->
     <TimeTrigger>
       <StartBoundary>2026-01-01T00:00:00</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -70,7 +72,7 @@
       <StartBoundary>2026-01-01T00:00:10</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -78,7 +80,7 @@
       <StartBoundary>2026-01-01T00:00:20</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -86,7 +88,7 @@
       <StartBoundary>2026-01-01T00:00:30</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -94,7 +96,7 @@
       <StartBoundary>2026-01-01T00:00:40</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
@@ -102,7 +104,7 @@
       <StartBoundary>2026-01-01T00:00:50</StartBoundary>
       <Enabled>true</Enabled>
       <Repetition>
-        <Interval>PT7M</Interval>
+        <Interval>PT8M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </TimeTrigger>
