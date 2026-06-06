@@ -900,61 +900,6 @@ export async function startWhatsAppBridge({
     wakeTimer.unref?.();
   }
 
-  // Diagnostic curl-tick (operator 2026-06-06). Writes to the SAME log
-  // the egpt-tick.cmd action writes to (~/.egpt/logs/egpt-tick.log) so
-  // the operator can monitor one file and see two interleaved signals:
-  //   1. cmd-side lines = "did the OS schedule the task at all"
-  //      (one per egpt-tick TimeTrigger fire)
-  //   2. service-side lines = "when the service has execution, is the
-  //      network actually reachable"
-  // The service line includes round-trip-ms and the remote-reported
-  // UTC time so a stale fetch (from a process briefly waking after
-  // long suspension) is obvious.
-  const EGPT_TICK_LOG = join(homedir(), '.egpt', 'logs', 'egpt-tick.log');
-  const CURL_TICK_MS = 20_000;
-  // Diagnostic target: google's generate_204 is famously reliable, returns
-  // an empty 204 No Content body in a few ms, and includes the standard
-  // HTTP Date header so we get the remote UTC time for free. Operator
-  // 2026-06-06: switched from worldtimeapi.org which was down at test time.
-  const CURL_TICK_TARGET = 'https://www.google.com/generate_204';
-  let _curlTickTimer = null;
-  async function _curlTick() {
-    if (stopped) return;
-    const t0 = Date.now();
-    // ASCII-only date format matches the cmd action ("Sat 06/06/2026 14:30:01.45")
-    const d = new Date();
-    const pad = (n, w = 2) => String(n).padStart(w, '0');
-    const dow = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
-    const ts = `${dow} ${pad(d.getMonth()+1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(Math.floor(d.getMilliseconds()/10),2)}`;
-    let line;
-    try {
-      const r = await fetch(CURL_TICK_TARGET, { method: 'HEAD', signal: AbortSignal.timeout(5000) });
-      const rtt = Date.now() - t0;
-      // generate_204 returns 204; treat any 2xx as OK. The Date header is
-      // the remote UTC time (always present on HTTP responses).
-      const remote = r.headers.get('date') ?? '?';
-      if (r.status >= 200 && r.status < 300) {
-        line = `${ts} service curl=OK rtt=${rtt}ms status=${r.status} remote=${remote}`;
-      } else {
-        line = `${ts} service curl=HTTP${r.status} rtt=${rtt}ms remote=${remote}`;
-      }
-    } catch (e) {
-      const rtt = Date.now() - t0;
-      const msg = (e?.message ?? String(e)).replace(/\s+/g, ' ').slice(0, 80);
-      line = `${ts} service curl=FAIL rtt=${rtt}ms err=${msg}`;
-    }
-    try { appendFileSync(EGPT_TICK_LOG, line + '\n'); } catch (_) { /* best-effort */ }
-  }
-  function _startCurlTick() {
-    if (_curlTickTimer) return;
-    // Fire once immediately so the first line lands quickly, then on interval.
-    _curlTick().catch(() => {});
-    _curlTickTimer = setInterval(() => { _curlTick().catch(() => {}); }, CURL_TICK_MS);
-    _curlTickTimer.unref?.();
-  }
-  function _stopCurlTick() {
-    if (_curlTickTimer) { clearInterval(_curlTickTimer); _curlTickTimer = null; }
-  }
 
   // Chat tracker. baileys is configured with shouldSyncHistoryMessage:
   // () => false so we never get a bulk chat list on each startup —
@@ -4170,7 +4115,6 @@ export async function startWhatsAppBridge({
   // 'open'. unref'd so it never keeps the process alive on its own.
   _startBridgeWatchdog();
   _startConnectivityTick();
-  _startCurlTick();
   setStayAwakeLogger((m) => _blog(m));   // route stay-awake telemetry into wa-bridge.log
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
@@ -5195,7 +5139,6 @@ export async function startWhatsAppBridge({
         catch (e) { _blog(`lid-map flush failed: ${e?.message ?? e}`); }
       }
       _stopWhisperServer();
-      _stopCurlTick();
       _drainChatAudioQueues('stop');
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
