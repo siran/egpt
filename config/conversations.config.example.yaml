@@ -1,0 +1,66 @@
+# conversations.config.yaml — global per-conversation policy.
+#
+# Inherited by every conversation. Each conversation can override any block by
+# setting the same key inside its own conversations/<surface>/<slug>/config.yaml.
+#
+# Currently applies to:
+#   - diary: rolling summary cadence for each conversation
+#
+# Edit freely; no daemon restart required (read at each heartbeat tick).
+
+diary:
+  # ── DAILY ──
+  # Fires at this local time, every day, ONLY if the conversation had at
+  # least min_turns_for_summary @e turns that day. Quiet days are skipped
+  # (no brain call, no file written). Reads <conv>/diary/raw/YYYY-MM-DD.md.
+  daily:
+    enabled: true
+    at: "23:59"
+
+  # ── WEEKLY ──
+  # Fires Sunday end-of-day. Reads this week's daily summaries (and the raw
+  # day's content if needed). Lands in <conv>/diary/summaries/weekly/YYYY-Www.md.
+  weekly:
+    enabled: true
+    day: sunday
+    at: "23:59"
+
+  # ── MONTHLY ──
+  # Fires the 1st of each month. Reads the month's weeklys (and dailys at the
+  # brain's discretion). Lands in <conv>/diary/summaries/monthly/YYYY-MM.md.
+  monthly:
+    enabled: true
+    day_of_month: 1
+    at: "00:01"
+
+  # ── YEARLY ──
+  # Fires Jan 1. Reads the year's monthlys. Lands in
+  # <conv>/diary/summaries/yearly/YYYY.md.
+  yearly:
+    enabled: true
+    month: 1
+    day_of_month: 1
+    at: "00:01"
+
+  # Skip the brain call on days with fewer than this many @e turns; just
+  # write "quiet day" to the daily summary so the weekly rollup has SOMETHING
+  # to read for every day.
+  min_turns_for_summary: 3
+
+  # Brain to use for summarization. null = the conversation's own @e (which
+  # also has full transcript access for context). Override only if you want
+  # a dedicated summarizer brain.
+  summarizer: null
+
+  # Where the prompt templates live (one per cadence). Substituted vars:
+  #   ${date}            — YYYY-MM-DD of the rollup
+  #   ${conv.label}      — conversation's display name
+  #   ${diary.raw.today} — path to today's raw turns file (daily only)
+  #   ${diary.weekDir}   — path to this week's daily summaries dir (weekly)
+  #   ${diary.monthDir}  — path to this month's weekly + daily dirs (monthly)
+  #   ${diary.yearDir}   — path to this year's monthly summaries dir (yearly)
+  prompts:
+    daily:   "~/.egpt/state/heartbeat.daily.md"
+    weekly:  "~/.egpt/state/heartbeat.weekly.md"
+    monthly: "~/.egpt/state/heartbeat.monthly.md"
+    yearly:  "~/.egpt/state/heartbeat.yearly.md"
