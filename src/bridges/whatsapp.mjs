@@ -161,7 +161,7 @@ const NIC_PROBE_TIMEOUT_MS    = 1_000;
 // so the system gets to sleep again. Best case (NIC comes up in 5 s):
 // recovery succeeds in 5 s, lock releases, chat-queue takes over for
 // transcribe.
-const NIC_PROBE_BUDGET_MS     = 240_000;  // 120 attempts every 2s, awake-held
+const NIC_PROBE_BUDGET_MS     = 90_000;   // 1.5 min of nic-poke after wake (operator 2026-06-06: shorter so a failed wake-attempt goes quiet sooner, letting the firmware deepen sooner)
 // Cooldown between recovery attempts (operator 2026-06-05). Each
 // recovery attempt acquires stay-awake, runs the NIC poke for up to
 // NIC_PROBE_BUDGET_MS (60s), and releases on either success or budget-
@@ -171,7 +171,7 @@ const NIC_PROBE_BUDGET_MS     = 240_000;  // 120 attempts every 2s, awake-held
 // with the 60s attempt budget this gives a roughly 5-min cycle which
 // matches Task Scheduler's PT5M cadence: on a real wake/resume the
 // next conn-tick fires the next attempt naturally.
-const RECOVERY_COOLDOWN_MS    = 4 * 60_000;
+const RECOVERY_COOLDOWN_MS    = 7 * 60_000;  // 7 min of TRUE bridge silence between wake-attempts (operator 2026-06-06: aligns with PT8M egpt-tick battery, lets the firmware fully descend into deep Modern Standby instead of being kept warm by our own setInterval traffic)
 // Bound every sock.sendMessage with this timeout so a flapping/down
 // WS doesn't queue the call inside baileys forever. Symptom this
 // catches: persona @e reply shows '⌛ thinking…' in WA and never
@@ -844,6 +844,7 @@ export async function startWhatsAppBridge({
       if (!nicReady) {
         _lastFailedRecoveryAt = Date.now();
         _blog(`recovery: failed after ${Math.round((Date.now()-startMs)/1000)}s; cooldown ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s before next attempt`);
+        _goQuietDuringCooldown();
         return;
       }
       // NIC is ready. Schedule a reconnect (the schedule itself is
@@ -962,6 +963,32 @@ export async function startWhatsAppBridge({
     _lastWakeTick = Date.now();
     wakeTimer = setInterval(_connectivityTick, CONNECTIVITY_TICK_MS);
     wakeTimer.unref?.();
+  }
+
+  // Stop the connectivity tick + curl-bg during recovery cooldown so the
+  // bridge process has TRUE silence — no setInterval traffic, no HEAD
+  // probes — which lets the OS firmware actually descend into deep
+  // Modern Standby (DRIPS / Austerity) instead of being kept at S0i1
+  // by our own activity. setTimeout fires at cooldown end (whether the
+  // OS gave us execution earlier via egpt-tick or not — setTimeout
+  // wall-clock fires once enough wall-clock time has accumulated).
+  // (operator 2026-06-06: "bridge can't be poking continuously...
+  // wa-bridge should be silent during the 7m gap. deep sleep.")
+  let _cooldownReviveTimer = null;
+  function _goQuietDuringCooldown() {
+    if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
+    _stopCurlBg();
+    _blog(`bridge: going quiet for ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s cooldown (let firmware deepen)`);
+    if (_cooldownReviveTimer) clearTimeout(_cooldownReviveTimer);
+    _cooldownReviveTimer = setTimeout(() => {
+      _cooldownReviveTimer = null;
+      if (stopped) return;
+      _blog(`bridge: cooldown ended, resuming ticks for next wake-attempt`);
+      _lastFailedRecoveryAt = 0;
+      _startConnectivityTick();
+      _startCurlBg();
+    }, RECOVERY_COOLDOWN_MS);
+    _cooldownReviveTimer.unref?.();
   }
 
 
@@ -5207,6 +5234,7 @@ export async function startWhatsAppBridge({
       }
       _stopWhisperServer();
       _stopCurlBg();
+      if (_cooldownReviveTimer) { clearTimeout(_cooldownReviveTimer); _cooldownReviveTimer = null; }
       _drainChatAudioQueues('stop');
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
