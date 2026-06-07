@@ -30,22 +30,29 @@
       2026-06-07: "15 minutes is too much wait, do every 5min").
 
       MEASURED REALITY on this firmware (Ryzen 7 7730U, S0LPI only,
-      nap-tests + overnight forensics 2026-06-06..07):
+      nap-tests + overnight forensics 2026-06-06..07), FINAL:
 
       - Lid-OPEN standby honors these wake timers natively: batteries
         fired ON SCHEDULE (10:00/10:08/10:16) through a 29-min standby
         window, even in work-lock-free gaps. Sleep -> resume -> work ->
         sleep works in this regime; the bridge's work-lock
         (PowerRequestExecutionRequired, stay-awake.mjs) holds the
-        system awake only while a cycle is processing.
+        system awake only while a cycle is processing. THIS is egpt's
+        operating regime: lid open (even a crack) when away.
 
-      - Lid-CLOSED standby is a COMA: timers are PENDED until lid-open
-        (a 10:28:32 probe trigger fired at 10:36:55, one second after
-        lid-open; 27+ batteries skipped silently overnight). NumberOf-
-        MissedRuns stays 0 - the scheduler doesn't even count them.
-        NOTHING software-side can self-wake from it. The fix lives in
-        the lid-action power setting (lid-close = do nothing on AC),
-        which maps lid-close onto the working lid-open regime.
+      - Lid-CLOSED standby is a COMA, and the cause is the PHYSICAL LID,
+        not the entry path - PROVEN 2026-06-07 15:02-17:02: a standby
+        that was IDLE-entered (reason=12, the same regime that cycles
+        fine lid-OPEN) sat 2 h with the lid shut and fired ZERO of ~24
+        due batteries; the NIC stayed powered off (ENETUNREACH) the
+        whole time. Every lever was tried and FAILED to change this:
+        lid-action=do-nothing, network-in-standby=Enabled, RTCWAKE=
+        Enabled, discrete-vs-repetition triggers. It is a hardware
+        property, not a config bug. So closed-lid is the catch-up
+        contract: deep sleep while shut, drain in ~2 min on lid-open
+        (proven repeatedly). The bridge recovers cleanly on wake
+        (freeze-immune nic-poke budget + cooldown ear, stay-awake.mjs
+        / whatsapp.mjs).
 
       The 6-trigger 50s battery shape is kept as a wake hedge (single
       triggers were unreliable in earlier shallow-standby tests; the
