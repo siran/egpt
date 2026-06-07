@@ -8,6 +8,9 @@
 # the app). This script stops bounded, kills whatever's left, starts
 # fresh, and reports.
 $ErrorActionPreference = 'Continue'
+# Elevated windows close with their output — keep a transcript so the
+# non-elevated caller can read what actually happened.
+try { Start-Transcript -Path (Join-Path $env:USERPROFILE '.egpt\logs\restart-elevated.log') -Force | Out-Null } catch {}
 
 Write-Host "stopping egpt-daemon..."
 sc.exe stop egpt-daemon | Out-Null
@@ -36,4 +39,5 @@ sc.exe start egpt-daemon | Out-Null
 Start-Sleep -Seconds 5
 $svc = Get-Service egpt-daemon
 $nodes = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'egpt' })
-Write-Host ("service={0} egpt-node-procs={1}" -f $svc.Status, $nodes.Count)
+Write-Host ("service={0} egpt-node-procs={1} pids={2}" -f $svc.Status, $nodes.Count, (($nodes | ForEach-Object { $_.ProcessId }) -join ','))
+try { Stop-Transcript | Out-Null } catch {}
