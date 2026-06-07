@@ -782,18 +782,27 @@ export async function startWhatsAppBridge({
     let startMs = Date.now();
     let lastIterMs = startMs;
     let attempts = 0;
-    while (!stopped && Date.now() - startMs < NIC_PROBE_BUDGET_MS) {
+    while (!stopped) {
       const iterStart = Date.now();
       const iterGap = iterStart - lastIterMs;
       // If a long wall-clock gap shows up, we were suspended between
       // the previous setTimeout and now. Reset startMs so the budget
       // counts our actual polling time, not the time the OS held us.
       // Threshold = 4x the normal sleep interval (2s -> 8s).
+      // CRITICAL: this check must run BEFORE the budget-elapsed check
+      // below; otherwise a long suspension's wall-clock jump trips
+      // the budget exit before we get to reset it. (operator 2026-06-06:
+      // proven by the 32-min lid-down nap where the 17.8-min suspension
+      // hit 'budget exhausted after 1 attempt' on resume.)
       if (attempts > 0 && iterGap > Math.max(8_000, NIC_PROBE_INTERVAL_MS * 4)) {
         _blog(`nic-poke: suspension detected (${Math.round(iterGap/1000)}s wall-clock jump between attempts ${attempts}/${attempts+1}); resetting budget`);
         startMs = iterStart;
       }
       lastIterMs = iterStart;
+      // Budget check AFTER the suspension-detection. If we just reset
+      // startMs, this lets us proceed with a fresh 90s window. If we
+      // didn't (normal case), we exit when actually exceeded.
+      if (Date.now() - startMs >= NIC_PROBE_BUDGET_MS) break;
 
       attempts++;
       let okTarget = null, lastError = null;
