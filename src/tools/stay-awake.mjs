@@ -44,6 +44,16 @@ import { fileURLToPath } from 'node:url';
 const STOP_LINGER_MS = 30_000;
 // Don't respawn a crashing helper more often than this (spawn-storm guard).
 const RESPAWN_MIN_GAP_MS = 10_000;
+// AC/DC poll cadence. Nap-test 2026-06-07 proved lid-closed standby is a
+// COMA on this firmware: user-mode fully frozen (the helper couldn't even
+// execute PowerSetRequest — armed-line logged, ack never came), NIC powered
+// off, wake timers pended until lid-open. An EXECUTION request can only
+// PREVENT the descent, never reverse it. So the policy is regime-based:
+//   AC  → hold the lock CONTINUOUSLY (plugged-in = fully alive; lid-close
+//         finds the request already held and the system stays runnable)
+//   DC  → release the continuous hold; deep standby wins (operator's
+//         battery priority) and the proven catch-up-on-wake covers it.
+const AC_POLL_MS = 15_000;
 
 const HELPER_PATH = fileURLToPath(new URL('./stay-awake-helper.ps1', import.meta.url));
 
@@ -53,7 +63,22 @@ let _lastSpawnMs = 0;
 let _on = false;             // desired lock state (what we last asked for)
 let _refs = 0;
 let _stopTimer = null;
+let _acRelease = null;       // the implicit plugged-in hold (one ref while on AC)
+let _acPollTimer = null;
 let _log = () => {};
+
+// AC state transition — drives the continuous plugged-in hold.
+function _onAcState(onAc) {
+  if (onAc && !_acRelease) {
+    _acRelease = acquireStayAwake();
+    _log('work-lock: AC power detected — continuous hold (plugged-in = fully alive, lid-close safe)');
+  } else if (!onAc && _acRelease) {
+    const r = _acRelease;
+    _acRelease = null;
+    r();
+    _log('work-lock: on battery — continuous hold released (deep standby allowed; catch-up on wake)');
+  }
+}
 
 export function setStayAwakeLogger(fn) { if (typeof fn === 'function') _log = fn; }
 
@@ -86,6 +111,9 @@ function _ensureHelper() {
       if (line.startsWith('ready')) {
         _helperMode = line.includes('es-fallback') ? 'es-fallback' : 'power-request';
         _log(`work-lock: helper ready (mode=${_helperMode}${_helperMode === 'es-fallback' ? ' — power requests UNAVAILABLE, standby will still freeze us' : ''})`);
+        _send('ac');   // immediate AC probe — don't wait out the first poll interval
+      } else if (line.startsWith('ac ')) {
+        _onAcState(line.trim() === 'ac 1');
       } else {
         _log(`work-lock: ${line}`);
       }
@@ -114,7 +142,14 @@ function _ensureHelper() {
 
 // Eager init — call once at bridge start so the ~1-2 s powershell+Add-Type
 // boot cost is paid while idle, not at the moment a wake window opens.
-export function initStayAwake() { _ensureHelper(); }
+// Also arms the AC/DC poll that drives the continuous plugged-in hold.
+export function initStayAwake() {
+  _ensureHelper();
+  if (!_acPollTimer && process.platform === 'win32') {
+    _acPollTimer = setInterval(() => { _ensureHelper(); _send('ac'); }, AC_POLL_MS);
+    _acPollTimer.unref?.();
+  }
+}
 
 function _assert() {
   if (process.platform !== 'win32') return;

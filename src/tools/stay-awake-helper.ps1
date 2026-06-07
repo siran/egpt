@@ -53,6 +53,17 @@ public static class EgptPower {
   public static extern bool PowerClearRequest(IntPtr h, int type);
   [DllImport("kernel32.dll")]
   public static extern uint SetThreadExecutionState(uint flags);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct SYSTEM_POWER_STATUS {
+    public byte ACLineStatus;        // 0 = battery, 1 = AC, 255 = unknown
+    public byte BatteryFlag;
+    public byte BatteryLifePercent;
+    public byte SystemStatusFlag;
+    public uint BatteryLifeTime;
+    public uint BatteryFullLifeTime;
+  }
+  [DllImport("kernel32.dll")]
+  public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
 }
 '@
 Add-Type -TypeDefinition $src
@@ -112,6 +123,15 @@ while ($true) {
     Clear-Lock
     $on = $false
     [Console]::Out.WriteLine('ack off')
+    [Console]::Out.Flush()
+  } elseif ($line -eq 'ac') {
+    # AC/DC probe — node polls this to drive the plugged-in continuous
+    # hold (operator 2026-06-07: lid-closed standby is a coma the lock
+    # cannot reverse, only prevent — so on AC the lock is held BEFORE
+    # any lid-close; on battery it's released and deep standby wins).
+    $sps = New-Object EgptPower+SYSTEM_POWER_STATUS
+    [void][EgptPower]::GetSystemPowerStatus([ref]$sps)
+    [Console]::Out.WriteLine('ac ' + $(if ($sps.ACLineStatus -eq 1) { '1' } else { '0' }))
     [Console]::Out.Flush()
   } elseif ($line -eq 'exit') {
     break
