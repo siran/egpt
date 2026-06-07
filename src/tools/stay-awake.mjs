@@ -28,15 +28,28 @@ export function setStayAwakeLogger(fn) { if (typeof fn === 'function') _log = fn
 
 function _start() {
   if (_child || process.platform !== 'win32') return;
-  // ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001) = 0x80000001.
-  // The helper sets the continuous state, then loops watching OUR pid — if we
-  // vanish (crash/kill) it breaks and exits, clearing the assertion. We also
-  // kill it explicitly on release.
+  // ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001) |
+  // ES_AWAYMODE_REQUIRED (0x00000040) = 0x80000041.
+  //
+  // Operator 2026-06-06: added ES_AWAYMODE_REQUIRED. The plain
+  // ES_SYSTEM_REQUIRED only blocks IDLE sleep - it does not prevent
+  // the firmware from descending into deeper S0LPI / DRIPS / Austerity
+  // sub-states during lid-down Modern Standby. AWAYMODE_REQUIRED is
+  // specifically designed for the 'appear sleeping but keep running'
+  // scenario (originally for unattended media recording) and DOES keep
+  // the system in the working state even when the display is off and
+  // the lid is closed - which is exactly what we need during the
+  // 30s post-wake reconnect window so baileys can complete its
+  // WebSocket handshake before the OS suspends us again.
+  //
+  // The helper sets the continuous state, then loops watching OUR pid -
+  // if we vanish (crash/kill) it breaks and exits, clearing the
+  // assertion. We also kill it explicitly on release.
   const ppid = process.pid;
   const ps =
     "$s='[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint e);';" +
     "$t=Add-Type -MemberDefinition $s -Name P -Namespace W -PassThru;" +
-    "[void]$t::SetThreadExecutionState(0x80000001);" +
+    "[void]$t::SetThreadExecutionState(0x80000041);" +
     `while($true){Start-Sleep -Seconds 5; if(-not(Get-Process -Id ${ppid} -ErrorAction SilentlyContinue)){break}}`;
   try {
     _child = spawn('powershell.exe',
@@ -44,7 +57,7 @@ function _start() {
       { stdio: 'ignore', windowsHide: true });
     _child.on('exit', () => { _child = null; });
     _child.unref?.();
-    _log('stay-awake: ES_SYSTEM_REQUIRED asserted (no idle-sleep while busy)');
+    _log('stay-awake: ES_SYSTEM_REQUIRED | ES_AWAYMODE_REQUIRED asserted (block deep MS during work)');
   } catch (e) { _child = null; _log(`stay-awake: assert failed — ${e?.message ?? e}`); }
 }
 
