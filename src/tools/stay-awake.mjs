@@ -44,17 +44,17 @@ import { fileURLToPath } from 'node:url';
 const STOP_LINGER_MS = 30_000;
 // Don't respawn a crashing helper more often than this (spawn-storm guard).
 const RESPAWN_MIN_GAP_MS = 10_000;
-// AC/DC poll cadence. Nap-test 2026-06-07 proved lid-closed standby is a
-// COMA on this firmware: user-mode fully frozen (the helper couldn't even
-// execute PowerSetRequest — armed-line logged, ack never came), NIC powered
-// off, wake timers pended until lid-open. An EXECUTION request can only
-// PREVENT the descent, never reverse it. So the policy is regime-based:
-//   AC  → hold the lock CONTINUOUSLY (plugged-in = fully alive; lid-close
-//         finds the request already held and the system stays runnable)
-//   DC  → release the continuous hold; deep standby wins (operator's
-//         battery priority) and the proven catch-up-on-wake covers it.
-const AC_POLL_MS = 15_000;
-
+// NOTE (operator 2026-06-07): an "AC ⇒ hold continuously" policy was built
+// and immediately retired — the operator wants the machine to actually
+// SLEEP and resume on a 15-min cadence, not to be pinned awake while
+// plugged in. The lock is therefore refs-only: held during work, released
+// after. The sleep/resume cadence comes from lid-open-style standby (which
+// honors wake timers on this firmware — proven 2026-06-07 09:48-10:18:
+// egpt-tick batteries fired on schedule during standby) — NOT from any
+// continuous assert here. Lid-CLOSED standby remains a coma no code can
+// escape: wake timers are pended until lid-open (proven twice), so the
+// lid-action power setting is what maps lid-close onto the working regime.
+// The helper still answers an 'ac' probe; nothing drives a hold from it.
 const HELPER_PATH = fileURLToPath(new URL('./stay-awake-helper.ps1', import.meta.url));
 
 let _helper = null;          // resident powershell child (lives for our lifetime)
@@ -63,22 +63,7 @@ let _lastSpawnMs = 0;
 let _on = false;             // desired lock state (what we last asked for)
 let _refs = 0;
 let _stopTimer = null;
-let _acRelease = null;       // the implicit plugged-in hold (one ref while on AC)
-let _acPollTimer = null;
 let _log = () => {};
-
-// AC state transition — drives the continuous plugged-in hold.
-function _onAcState(onAc) {
-  if (onAc && !_acRelease) {
-    _acRelease = acquireStayAwake();
-    _log('work-lock: AC power detected — continuous hold (plugged-in = fully alive, lid-close safe)');
-  } else if (!onAc && _acRelease) {
-    const r = _acRelease;
-    _acRelease = null;
-    r();
-    _log('work-lock: on battery — continuous hold released (deep standby allowed; catch-up on wake)');
-  }
-}
 
 export function setStayAwakeLogger(fn) { if (typeof fn === 'function') _log = fn; }
 
@@ -111,9 +96,9 @@ function _ensureHelper() {
       if (line.startsWith('ready')) {
         _helperMode = line.includes('es-fallback') ? 'es-fallback' : 'power-request';
         _log(`work-lock: helper ready (mode=${_helperMode}${_helperMode === 'es-fallback' ? ' — power requests UNAVAILABLE, standby will still freeze us' : ''})`);
-        _send('ac');   // immediate AC probe — don't wait out the first poll interval
       } else if (line.startsWith('ac ')) {
-        _onAcState(line.trim() === 'ac 1');
+        // informational only — power source never drives a hold
+        _log(`work-lock: power source ${line.trim() === 'ac 1' ? 'AC' : 'battery'}`);
       } else {
         _log(`work-lock: ${line}`);
       }
@@ -142,14 +127,7 @@ function _ensureHelper() {
 
 // Eager init — call once at bridge start so the ~1-2 s powershell+Add-Type
 // boot cost is paid while idle, not at the moment a wake window opens.
-// Also arms the AC/DC poll that drives the continuous plugged-in hold.
-export function initStayAwake() {
-  _ensureHelper();
-  if (!_acPollTimer && process.platform === 'win32') {
-    _acPollTimer = setInterval(() => { _ensureHelper(); _send('ac'); }, AC_POLL_MS);
-    _acPollTimer.unref?.();
-  }
-}
+export function initStayAwake() { _ensureHelper(); }
 
 function _assert() {
   if (process.platform !== 'win32') return;
