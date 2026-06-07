@@ -768,41 +768,35 @@ export async function startWhatsAppBridge({
   // semantics as the quick check, but loops at a fixed 2s cadence until
   // a probe target answers or the per-recovery budget expires.
   async function _pokeNicUntilReady() {
-    // Suspension-aware budget (operator 2026-06-06, 10-min nap-test
-    // failure analysis). The previous wall-clock check assumed time
-    // moves forward only while we have execution - true on AC awake,
-    // false on Modern Standby. During lid-down sleep the bridge gets
-    // suspended for 10+ min, wall-clock advances by that much, then
-    // when the OS finally schedules us again the loop's first check
-    // says 'budget exhausted' even though we only made one attempt
-    // before sleep. So we detect the wall-clock JUMP between iterations
-    // (anything >> NIC_PROBE_INTERVAL_MS is OS suspension) and reset
-    // the start time. Same 240s of *actual polling*, just not penalized
-    // for time we couldn't poll.
-    let startMs = Date.now();
-    let lastIterMs = startMs;
+    // FREEZE-IMMUNE budget (operator 2026-06-07, lid-closed-test failure).
+    // History: the original wall-clock window mis-fired after OS suspensions
+    // ('budget exhausted after 1 attempt'); the 2026-06-06 fix reset the
+    // window on detected wall-clock JUMPS between iterations — but the
+    // 14:09 lid-closed nap proved the OS can freeze the process BETWEEN TWO
+    // STATEMENTS of the SAME iteration (an 11-min freeze landed after the
+    // jump-check and before the budget's own Date.now(), so it declared
+    // 'budget exhausted after 3 attempts (90s)' with 744s of wall-clock and
+    // only ~6s of real polling — exactly as the operator opened the lid).
+    // Suspension does not respect statement boundaries, so no ordering of
+    // wall-clock checks can win. Instead the budget now counts ACCUMULATED
+    // PER-ITERATION TIME, with each iteration's contribution CAPPED at its
+    // theoretical maximum (probe timeouts + sleep) — an OS freeze can
+    // inflate one iteration's wall-clock but it still deposits at most
+    // ~4s into the budget. 90s budget => >=22 genuine probe rounds, no
+    // matter how often or how long the OS holds us.
+    const ITER_COST_CAP_MS = NIC_PROBE_INTERVAL_MS + NIC_PROBE_TARGETS.length * NIC_PROBE_TIMEOUT_MS;
+    let polledMs = 0;        // accumulated capped polling time (freeze-immune)
+    let lastIterMs = Date.now();
     let attempts = 0;
     while (!stopped) {
       const iterStart = Date.now();
       const iterGap = iterStart - lastIterMs;
-      // If a long wall-clock gap shows up, we were suspended between
-      // the previous setTimeout and now. Reset startMs so the budget
-      // counts our actual polling time, not the time the OS held us.
-      // Threshold = 4x the normal sleep interval (2s -> 8s).
-      // CRITICAL: this check must run BEFORE the budget-elapsed check
-      // below; otherwise a long suspension's wall-clock jump trips
-      // the budget exit before we get to reset it. (operator 2026-06-06:
-      // proven by the 32-min lid-down nap where the 17.8-min suspension
-      // hit 'budget exhausted after 1 attempt' on resume.)
+      // Telemetry only — the budget no longer needs rescuing from jumps.
       if (attempts > 0 && iterGap > Math.max(8_000, NIC_PROBE_INTERVAL_MS * 4)) {
-        _blog(`nic-poke: suspension detected (${Math.round(iterGap/1000)}s wall-clock jump between attempts ${attempts}/${attempts+1}); resetting budget`);
-        startMs = iterStart;
+        _blog(`nic-poke: suspension detected (${Math.round(iterGap/1000)}s wall-clock jump between attempts ${attempts}/${attempts+1}); not counted against budget`);
       }
       lastIterMs = iterStart;
-      // Budget check AFTER the suspension-detection. If we just reset
-      // startMs, this lets us proceed with a fresh 90s window. If we
-      // didn't (normal case), we exit when actually exceeded.
-      if (Date.now() - startMs >= NIC_PROBE_BUDGET_MS) break;
+      if (polledMs >= NIC_PROBE_BUDGET_MS) break;
 
       attempts++;
       let okTarget = null, lastError = null;
@@ -812,13 +806,16 @@ export async function startWhatsAppBridge({
         lastError = r.error;
       }
       if (okTarget) {
-        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round((Date.now()-startMs)/1000)}s — TCP ${okTarget.host}:${okTarget.port} OK`);
+        _blog(`nic-poke: ready after ${attempts} attempt(s), ${Math.round(polledMs/1000)}s polled — TCP ${okTarget.host}:${okTarget.port} OK`);
         return true;
       }
       _blog(`nic-poke: attempt ${attempts} failed (last: ${(lastError ?? 'unknown').toString().slice(0, 80)}) — retry in ${NIC_PROBE_INTERVAL_MS/1000}s`);
       await new Promise(r => setTimeout(r, NIC_PROBE_INTERVAL_MS));
+      // Deposit this iteration's cost, capped — a mid-iteration OS freeze
+      // cannot burn more than one iteration's worth of budget.
+      polledMs += Math.min(Date.now() - iterStart, ITER_COST_CAP_MS);
     }
-    _blog(`nic-poke: budget exhausted after ${attempts} attempt(s) (${Math.round(NIC_PROBE_BUDGET_MS/1000)}s); attempting connect anyway`);
+    if (!stopped) _blog(`nic-poke: budget exhausted after ${attempts} attempt(s) (${Math.round(polledMs/1000)}s polled of ${Math.round(NIC_PROBE_BUDGET_MS/1000)}s); attempting connect anyway`);
     return false;
   }
 
@@ -1000,30 +997,46 @@ export async function startWhatsAppBridge({
     wakeTimer.unref?.();
   }
 
-  // Stop the connectivity tick + curl-bg during recovery cooldown so the
-  // bridge process has TRUE silence — no setInterval traffic, no HEAD
-  // probes — which lets the OS firmware actually descend into deep
-  // Modern Standby (DRIPS / Austerity) instead of being kept at S0i1
-  // by our own activity. setTimeout fires at cooldown end (whether the
-  // OS gave us execution earlier via egpt-tick or not — setTimeout
-  // wall-clock fires once enough wall-clock time has accumulated).
-  // (operator 2026-06-06: "bridge can't be poking continuously...
-  // wa-bridge should be silent during the 7m gap. deep sleep.")
+  // Quiet-but-not-DEAF cooldown. The original (2026-06-06) stopped the
+  // connectivity tick + curl-bg entirely for the whole cooldown so the
+  // firmware could descend into deep Modern Standby. The 2026-06-07
+  // lid-closed test exposed the flaw: the operator opened the lid at the
+  // exact second a failed recovery started its 420s of total silence —
+  // the bridge sat deliberately deaf for 7 minutes while NIC and user
+  // were back, AND its silence let even the lid-open standby deepen
+  // enough to pend the next wake batteries (14:30 fired, 14:35 didn't).
+  // The fix keeps the cooldown quiet (no 10s ticks, no 30s curls) but
+  // leaves one EAR: a 60s single-TCP-probe. During genuine deep sleep
+  // the ear's timer is frozen anyway (costs nothing, doesn't fight the
+  // descent); awake/thawed it notices a live NIC within <=60s and ends
+  // the cooldown immediately so recovery rides the wake window instead
+  // of waiting it out.
   let _cooldownReviveTimer = null;
+  let _cooldownEarTimer = null;
+  function _endCooldown(why) {
+    if (_cooldownReviveTimer) { clearTimeout(_cooldownReviveTimer); _cooldownReviveTimer = null; }
+    if (_cooldownEarTimer)    { clearInterval(_cooldownEarTimer);   _cooldownEarTimer = null; }
+    if (stopped) return;
+    _blog(`bridge: cooldown ended (${why}), resuming ticks for next wake-attempt`);
+    _lastFailedRecoveryAt = 0;
+    _startConnectivityTick();
+    _startCurlBg();
+  }
   function _goQuietDuringCooldown() {
     if (wakeTimer) { clearInterval(wakeTimer); wakeTimer = null; }
     _stopCurlBg();
-    _blog(`bridge: going quiet for ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s cooldown (let firmware deepen)`);
+    _blog(`bridge: going quiet for ${Math.round(RECOVERY_COOLDOWN_MS/1000)}s cooldown (ear probes NIC every 60s)`);
     if (_cooldownReviveTimer) clearTimeout(_cooldownReviveTimer);
-    _cooldownReviveTimer = setTimeout(() => {
-      _cooldownReviveTimer = null;
-      if (stopped) return;
-      _blog(`bridge: cooldown ended, resuming ticks for next wake-attempt`);
-      _lastFailedRecoveryAt = 0;
-      _startConnectivityTick();
-      _startCurlBg();
-    }, RECOVERY_COOLDOWN_MS);
+    _cooldownReviveTimer = setTimeout(() => { _cooldownReviveTimer = null; _endCooldown('timer'); }, RECOVERY_COOLDOWN_MS);
     _cooldownReviveTimer.unref?.();
+    if (_cooldownEarTimer) clearInterval(_cooldownEarTimer);
+    _cooldownEarTimer = setInterval(async () => {
+      if (stopped) { clearInterval(_cooldownEarTimer); _cooldownEarTimer = null; return; }
+      try {
+        if (await _quickNicCheck()) _endCooldown('ear heard the NIC');
+      } catch { /* stay quiet */ }
+    }, 60_000);
+    _cooldownEarTimer.unref?.();
   }
 
 
@@ -5309,6 +5322,7 @@ export async function startWhatsAppBridge({
       _stopWhisperServer();
       _stopCurlBg();
       if (_cooldownReviveTimer) { clearTimeout(_cooldownReviveTimer); _cooldownReviveTimer = null; }
+      if (_cooldownEarTimer)    { clearInterval(_cooldownEarTimer);   _cooldownEarTimer = null; }
       _drainChatAudioQueues('stop');
       // Phase 2: synchronously flush any pending debounced writes so
       // SIGTERM (e.g. the pidfile takeover handshake) doesn't lose
