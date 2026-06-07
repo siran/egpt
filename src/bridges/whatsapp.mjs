@@ -863,16 +863,42 @@ export async function startWhatsAppBridge({
       // backlog, the bridge stays connected but idle and the OS is free
       // to put us into Modern Standby until the next inbound packet.
       const rs = _socketReadyState();
+      let reconnectScheduled = false;
       if (!_connectionOpen && !reconnectTimer) {
         unhealthySince = 0;
         _scheduleReconnect('recovery: NIC ready');
+        reconnectScheduled = true;
       } else if (_connectionOpen && rs !== 1 && !reconnectTimer) {
         // Silent wedge - connect() tears down the stale socket.
         unhealthySince = 0;
         _scheduleReconnect('recovery: socket wedged (open=true, rs!=1)');
+        reconnectScheduled = true;
       }
       _lastFailedRecoveryAt = 0;   // reset so next tick can attempt freely
       _blog(`recovery: NIC ready after ${Math.round((Date.now()-startMs)/1000)}s, reconnect scheduled`);
+
+      // Hold stay-awake until connection OPEN actually fires, or 30s
+      // timeout, whichever first. (Operator 2026-06-06 nap-test: after
+      // 28-min deep sleep + suspension-detected wake + NIC ready, the
+      // OLD code released stay-awake immediately after scheduling the
+      // reconnect - and the OS suspended us again BEFORE baileys could
+      // complete the WebSocket handshake. Net: we'd reach 'reconnect
+      // scheduled' but never 'connection OPEN', and stay disconnected
+      // until lid-open 23 min later.) By polling _connectionOpen at
+      // 500ms intervals up to 30s, we keep the hold long enough for
+      // DNS lookup + TCP + TLS + WS handshake to actually finish.
+      if (reconnectScheduled) {
+        const RECONNECT_WAIT_MS = 30_000;
+        const waitStart = Date.now();
+        while (!stopped && !_connectionOpen && (Date.now() - waitStart) < RECONNECT_WAIT_MS) {
+          await new Promise(r => setTimeout(r, 500));
+        }
+        if (_connectionOpen) {
+          _blog(`recovery: connection OPEN confirmed after ${Math.round((Date.now()-waitStart)/1000)}s; releasing hold`);
+        } else {
+          _blog(`recovery: timeout (${RECONNECT_WAIT_MS/1000}s) waiting for connection OPEN; releasing hold (next tick or wake will retry)`);
+        }
+      }
     } finally {
       try { releaseHold(); } catch (_) {}
       _recoveryAttemptInProgress = false;
