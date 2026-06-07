@@ -66,7 +66,7 @@ import { waSend as _outboxWaSend } from '../tools/outbox-send.mjs';
 import { MIME_BY_EXT as _MIME_BY_EXT, mediaKind as _mediaKind } from '../media-kind.mjs';
 import { isAuthorizedUser, canonicalUserId } from '../identity.mjs';
 import { createLidMap } from '../lid-map.mjs';
-import { acquireStayAwake, holdStayAwake, setStayAwakeLogger, stayAwakeActive } from '../tools/stay-awake.mjs';
+import { acquireStayAwake, holdStayAwake, initStayAwake, setStayAwakeLogger, stayAwakeActive } from '../tools/stay-awake.mjs';
 
 const AUTH_DIR_DEFAULT = join(homedir(), '.egpt', 'wa-auth');
 
@@ -1985,6 +1985,15 @@ export async function startWhatsAppBridge({
     // (worse) the brain receives a stream of stale messages as if
     // they were live questions.
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Work-lock for the WHOLE upsert batch (operator 2026-06-07). Media
+      // saves / chat-queue / transcribe nest their own holds, but a pure-TEXT
+      // batch had NO hold across the dispatch loop — on a Modern-Standby wake
+      // window the system could descend mid-dispatch and freeze the catch-up.
+      // Acquire here, release in the finally at the bottom; the 30 s linger
+      // plus the backlog brain-turn grace (below) carry the cycle through the
+      // host's reply turn.
+      const _upsertAwake = acquireStayAwake();
+      try {
       // fs-direct upsert trace — the ONLY durable record of what baileys
       // actually hands us (the headless Ink buffer drops lines; the debug
       // log is opt-in). This is the instrument for the offline-backlog
@@ -2140,7 +2149,14 @@ export async function startWhatsAppBridge({
       // ('notify') batches don't fire it — those dispatch per-message as normal.
       if (type !== 'notify') {
         try { onBacklogDelivered?.(); } catch (e) { err(`onBacklogDelivered threw: ${e.message}`); }
+        // Brain-turn grace (operator 2026-06-07): the host's catch-up turn
+        // (LLM call + reply emit) happens AFTER this handler returns and can
+        // take well past the 30 s linger. Hold the work-lock a bounded extra
+        // window so a Modern-Standby wake cycle doesn't descend mid-turn;
+        // send() takes its own hold for the emit tail. Auto-releases.
+        holdStayAwake(120_000);
       }
+      } finally { _upsertAwake(); }
     });
 
     // History sync — baileys delivers chats + their recent messages
@@ -4245,6 +4261,9 @@ export async function startWhatsAppBridge({
   _startConnectivityTick();
   _startCurlBg();
   setStayAwakeLogger((m) => _blog(m));   // route stay-awake telemetry into wa-bridge.log
+  initStayAwake();   // spawn the resident work-lock helper NOW — its ~1-2 s
+                     // powershell boot must be paid while idle, not inside a
+                     // brief Modern-Standby wake window (operator 2026-06-07)
 
   // Lazy group-subject lookup. Uses sock.groupMetadata which caches
   // server-side. Falls back to the bare JID when we can't reach it.
@@ -4903,6 +4922,12 @@ export async function startWhatsAppBridge({
       return { key: msgKey, deleted: autoDelete };
     },
     async send(text, { chatId, deliverEcho = false, _noRelay = false } = {}) {
+      // Work-lock for the emit tail (operator 2026-06-07): a reply landing at
+      // the end of a Modern-Standby wake cycle must actually make it onto the
+      // wire before the system descends. Bounded by _timeBound/SEND_TIMEOUT_MS
+      // per chunk; released in the finally.
+      const _sendAwake = acquireStayAwake();
+      try {
       // NO lastChat fallback. A send with no explicit chatId used to go to
       // whatever chat messaged the bridge last — which leaked shell/brain/@e
       // replies into a stranger's chat, re-firing on every interaction
@@ -4979,6 +5004,7 @@ export async function startWhatsAppBridge({
         }
       }
       return firstResult;
+      } finally { _sendAwake(); }
     },
     // Outbound media — send a file as its native WA attachment. Pass a `path`
     // (read here) or a ready `buffer`. `kind` ('image'|'video'|'audio'|
@@ -5049,6 +5075,17 @@ export async function startWhatsAppBridge({
       // chat would leak it to whoever messaged the bridge last (operator 2026-06-03).
       const target = chatId;
       if (!target || !sock) return null;
+
+      // Work-lock for the WHOLE turn (operator 2026-06-07): a stream opens
+      // when the brain starts producing and closes at finish()/cancel() —
+      // exactly the turn boundary. Holding across it keeps a Modern-Standby
+      // wake cycle runnable through LLM latency + edits + the final send.
+      // Safety-capped at 10 min so an abandoned stream (caller crash, no
+      // finish/cancel) can never pin the machine awake forever.
+      const _turnAwakeRelease = acquireStayAwake();
+      const _turnAwakeCap = setTimeout(_turnAwakeRelease, 600_000);
+      _turnAwakeCap.unref?.();
+      const _endTurnAwake = () => { clearTimeout(_turnAwakeCap); _turnAwakeRelease(); };
 
       let msgKey      = null;
       let pending     = null;
@@ -5224,6 +5261,7 @@ export async function startWhatsAppBridge({
             err(`stream finish: ${e.message}`);
           }
           stopTyping();
+          _endTurnAwake();
         },
         // Did any message actually reach WA? Callers use this after
         // finish() to decide whether to fall back to a plain send.
@@ -5242,13 +5280,14 @@ export async function startWhatsAppBridge({
           pending = null;
           if (editTimer) { clearTimeout(editTimer); editTimer = null; }
           stopTyping();
-          if (!msgKey) return;
+          if (!msgKey) { _endTurnAwake(); return; }
           try {
             await _timeBound(_safeSend(target, { delete: msgKey }), 'stream cancel revoke');
           } catch (e) {
             lastError = e.message;
             err(`stream cancel revoke: ${e.message}`);
           }
+          _endTurnAwake();
         },
       };
     },
