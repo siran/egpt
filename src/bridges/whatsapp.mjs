@@ -1745,6 +1745,44 @@ export async function startWhatsAppBridge({
     fs.appendFile(SENT_LOG, JSON.stringify({ id, ts }) + '\n').catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
   }
 
+  // Provable-persona-reply tracking (operator 2026-06-08, anti-leak rewrite).
+  // _sentIds above is the ECHO-SUPPRESSION set — it holds EVERY bridge send
+  // (persona replies, 👂 transcript acks, oracle/movie animation frames, raw
+  // system send()s, reactions). Keying "this incoming message is a reply to
+  // E" off _sentIds was the backdoor: replying to a 👂 ack (a rendering of a
+  // HUMAN's voice note) or to a system send falsely authorized a persona
+  // reply. _personaReplyIds is the PRECISE set — a message-id lands here IFF
+  // E actually authored it as a persona (startStreamMessage's emit, or a
+  // send() explicitly flagged personaReply). Reply-to-E authorization
+  // (isReplyToUs) keys off THIS set only, so an ack/system/oracle message can
+  // never summon E. The stored value is the persona name, so the reply routes
+  // to the persona that was actually replied to — no quoted-body parsing, no
+  // fallback-to-@e inference. Persisted (mirrors _sentIds) so a reply to an E
+  // message sent before a restart still authorizes.
+  const PERSONA_REPLY_LOG = join(STATE_BRIDGE_DIR, 'wa-persona-replies.jsonl');
+  _migratePathOnce(join(homedir(), '.egpt', 'wa-persona-replies.jsonl'), PERSONA_REPLY_LOG);
+  const _personaReplyIds = new Map();   // id -> persona name
+  try {
+    const raw = readFileSync(PERSONA_REPLY_LOG, 'utf8');
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const { id, persona } = JSON.parse(line);
+        if (id) _personaReplyIds.set(id, persona ?? 'e');
+      } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* skip malformed */ }
+    }
+  } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); /* missing on first run; created lazily */ }
+  // Record a genuine persona reply. Also rememberSent (a persona reply is
+  // still our own echo to suppress). `persona` is the slug E replied AS.
+  function rememberPersonaReply(id, persona) {
+    if (!id) return;
+    rememberSent(id);
+    if (_personaReplyIds.has(id)) return;
+    const name = (typeof persona === 'string' && persona.trim()) ? persona.trim().toLowerCase() : 'e';
+    _personaReplyIds.set(id, name);
+    fs.appendFile(PERSONA_REPLY_LOG, JSON.stringify({ id, persona: name }) + '\n').catch(e => console.error(`!! whatsapp.mjs:[promise-catch] ${e?.message ?? e}`));
+  }
+
   // Override baileys' default auto-extraction of @<digits> patterns
   // from outgoing message text into contextInfo.mentionedJid. Without
   // this, a reply that quotes or echoes any text containing a
@@ -3970,54 +4008,23 @@ export async function startWhatsAppBridge({
     // continuing a thread the bot started. Catches '@e' threading,
     // oracle replies, and follow-ups on any bot reply across chats.
     const ctxInfo = _contextInfo(msg.message);
-    const isReplyToUs = !!ctxInfo?.stanzaId && _sentIds.has(ctxInfo.stanzaId);
-    // Reply-as-mention: when the operator long-press → Replies to one
-    // of our outbound messages, parse the quoted body's leading
-    // persona tag ("🐦 wren: …", "🧠 e: …" per the persona-tag-prefix
-    // convention) and treat the reply as an implicit @<persona>
-    // mention. Without this, every reply defaults to @e even when
-    // the operator clearly meant to address wren — since the daemon
-    // sends from the operator's own WhatsApp account, the persona
-    // prefix in the body is the only identity channel available.
-    let replyPersona = null;
-    if (isReplyToUs && ctxInfo?.quotedMessage) {
-      const quotedBody = _baseTextOf(ctxInfo.quotedMessage);
-      if (quotedBody) {
-        // "<optional non-letter prefix like emoji> <name><sep>" —
-        // the emoji is decorative, the name is what routes. The
-        // separator after the name is either ':' (persona-tag-prefix
-        // convention used by heartbeat / outbox-direct sends) or
-        // whitespace including '\n' (operator-dispatched and
-        // auto_e_chats sends use "<emoji> egpt\n<body>" — no colon).
-        const m = quotedBody.match(/^\s*(?:[^a-z0-9\s]+\s+)?([a-z][a-z0-9]{0,15})(?:[\s:]|$)/i);
-        if (m) {
-          const cand = m[1].toLowerCase();
-          // Only personas room.mjs / interpreter actually route. The
-          // valid set comes from EGPT_CONFIG.siblings (caller-derived,
-          // includes aliases). Unknown prefix falls through to the
-          // existing @e default elsewhere.
-          if (personaNames.includes(cand)) {
-            replyPersona = cand;
-          }
-        }
-      }
-    }
-    // Operator (2026-05-17): "replies should always trigger e. user
-    // doesn't need to do anything special. replies should arrive and
-    // trigger e as normal messages do. do not overcomplicate things."
-    // When the message is a reply to ANY of our prior sends (isReplyToUs
-    // via persisted _sentIds, no 60s cap since a1339c9) and the prefix
-    // parse above couldn't pin a specific persona — quoted body was
-    // truncated, the original was a system message, the prefix shape
-    // didn't match — fall back to 'e' so EVERY reply routes to @e by
-    // default. No format requirement on the user side.
-    let replyPersonaFallback = false;
-    if (isReplyToUs && !replyPersona) {
-      replyPersona = 'e';
-      replyPersonaFallback = true;
-    }
+    // PROVABLE reply-to-E (operator 2026-06-08, anti-leak rewrite). True ONLY
+    // when the quoted target is a message E actually authored as a persona
+    // (tracked in _personaReplyIds at emit time) — NOT any bridge send. This
+    // is the structural fix: replying to a 👂 transcript ack, an oracle/movie
+    // frame, or a raw system send can no longer authorize a reply, because
+    // none of those are in _personaReplyIds. (Echo-suppression still uses the
+    // broader _sentIds elsewhere; the two concerns are now separate.)
+    const isReplyToUs = !!ctxInfo?.stanzaId && _personaReplyIds.has(ctxInfo.stanzaId);
+    // The persona to route to is the one E REPLIED AS, recorded authoritatively
+    // when that message was emitted — no quoted-body parsing, no fallback-to-@e
+    // inference (both were the "recipient inferred as @e" hallucination the
+    // operator flagged). If the id isn't a tracked persona reply, isReplyToUs
+    // is false and replyPersona stays null.
+    const replyPersona = isReplyToUs ? (_personaReplyIds.get(ctxInfo.stanzaId) ?? 'e') : null;
     // Standalone @e/@egpt token (not glued inside a word/email like me@e.com)
-    // OR a reply to one of our messages. mentionStatus does the token check.
+    // OR a PROVABLE reply to one of E's persona messages. mentionStatus does
+    // the token check.
     const isWakeWord = (!!text && mentionStatus(text).atEAnywhere) || isReplyToUs;
 
     // Awareness rules — decide whether this message reaches onIncoming.
@@ -4252,11 +4259,9 @@ export async function startWhatsAppBridge({
       // arrivals (the latter would spam typing for every group
       // message in an auto_e_chats chat).
       replyPersona,
-      // True when replyPersona was assigned via the 36f173a fallback
-      // (any reply to us → @e) rather than via clean prefix parse.
-      // Host surfaces this in the dispatched prompt so @e knows the
-      // intended recipient was inferred, not explicitly tagged.
-      replyPersonaFallback,
+      // replyPersonaFallback retired (operator 2026-06-08): there is no
+      // inference anymore — replyPersona is the authoritative persona E
+      // replied AS (from _personaReplyIds), or null. Nothing is "inferred".
       // Sender display name (pushName-only per
       // [[feedback-wa-pushname-only]]; never the operator's
       // address book). Used by auto_e_chats queueing to render
@@ -4956,7 +4961,12 @@ export async function startWhatsAppBridge({
       }
       return { key: msgKey, deleted: autoDelete };
     },
-    async send(text, { chatId, deliverEcho = false, _noRelay = false } = {}) {
+    async send(text, { chatId, deliverEcho = false, _noRelay = false, personaReply = null } = {}) {
+      // `personaReply` (operator 2026-06-08): the persona slug when this send IS
+      // a genuine persona reply (routed-dispatch / stream-fallback). When set,
+      // the sent id is recorded in _personaReplyIds so a later quote-reply to it
+      // PROVABLY authorizes a reply-to-E. Default null = system/raw send, which
+      // is echo-tracked only and can never summon E.
       // Work-lock for the emit tail (operator 2026-06-07): a reply landing at
       // the end of a Modern-Standby wake cycle must actually make it onto the
       // wire before the system descends. Bounded by _timeBound/SEND_TIMEOUT_MS
@@ -5026,7 +5036,10 @@ export async function startWhatsAppBridge({
       for (let i = 0; i < chunks.length; i++) {
         try {
           const r = await _timeBound(_safeSend(target, { text: chunks[i] }), 'send');
-          if (!deliverEcho) rememberSent(r?.key?.id);
+          if (!deliverEcho) {
+            if (personaReply) rememberPersonaReply(r?.key?.id, personaReply);
+            else rememberSent(r?.key?.id);
+          }
           if (i === 0) firstResult = r;
         } catch (e) {
           err(`send${chunks.length > 1 ? ` (chunk ${i + 1}/${chunks.length})` : ''}: ${e.message}`);
@@ -5095,7 +5108,7 @@ export async function startWhatsAppBridge({
         .then(r => { rememberSent(r?.key?.id); return r; })
         .catch(e => { err(`replyTo: ${e.message}`); return null; });
     },
-    startStreamMessage(initialText, { chatId, quoted: quotedOpt = null } = {}) {
+    startStreamMessage(initialText, { chatId, quoted: quotedOpt = null, persona = null } = {}) {
       // Edit-based streaming, modeled on bridges/telegram.mjs:
       //   1. Send the initial message and capture its key.
       //   2. Each update() debounces an edit (2.5s — WA is more rate-
@@ -5110,6 +5123,15 @@ export async function startWhatsAppBridge({
       // chat would leak it to whoever messaged the bridge last (operator 2026-06-03).
       const target = chatId;
       if (!target || !sock) return null;
+      // `persona` (operator 2026-06-08): the slug E is replying AS. When set,
+      // every message-id this stream mints is recorded as a PROVABLE persona
+      // reply (so a later quote-reply to it authorizes reply-to-E). When null
+      // — e.g. the 👂 voice-transcript stream, which is NOT E speaking — the
+      // ids are echo-tracked only and can never summon E. Opt-in by design:
+      // a stream that forgets to pass persona is fail-safe (just not replyable).
+      const _rememberStreamSend = persona
+        ? (id) => rememberPersonaReply(id, persona)
+        : (id) => rememberSent(id);
 
       // Work-lock for the WHOLE turn (operator 2026-06-07): a stream opens
       // when the brain starts producing and closes at finish()/cancel() —
@@ -5177,7 +5199,7 @@ export async function startWhatsAppBridge({
           const opts = quotedOpt ? { quoted: quotedOpt } : undefined;
           const r = await _timeBound(_safeSend(target, { text }, opts), 'stream initial');
           msgKey = r?.key ?? null;
-          rememberSent(r?.key?.id);
+          _rememberStreamSend(r?.key?.id);
           if (r?.key) { delivered = true; lastSent = text; }
         } catch (e) {
           lastError = e.message;
@@ -5199,7 +5221,7 @@ export async function startWhatsAppBridge({
         }
         _timeBound(_safeSend(target, { edit: msgKey, text }), 'stream edit')
           .then((r) => {
-            rememberSent(r?.key?.id);
+            _rememberStreamSend(r?.key?.id);
             lastSent = text;
             lastEditAt = Date.now();
           })
@@ -5258,7 +5280,7 @@ export async function startWhatsAppBridge({
                   _safeSend(target, { edit: msgKey, text: chunks[0] }),
                   'stream finish edit',
                 );
-                rememberSent(r?.key?.id);
+                _rememberStreamSend(r?.key?.id);
                 lastSent = chunks[0];
                 if (r?.key) delivered = true;
               } else {
@@ -5271,7 +5293,7 @@ export async function startWhatsAppBridge({
                 _safeSend(target, { text: chunks[0] }),
                 'stream finish send',
               );
-              rememberSent(r?.key?.id);
+              _rememberStreamSend(r?.key?.id);
               if (r?.key) { msgKey = r.key; delivered = true; }
             }
             // Continuation chunks (only relevant for long replies).
@@ -5281,7 +5303,7 @@ export async function startWhatsAppBridge({
                   _safeSend(target, { text: chunks[i] }),
                   `stream finish chunk ${i + 1}/${chunks.length}`,
                 );
-                rememberSent(r?.key?.id);
+                _rememberStreamSend(r?.key?.id);
               } catch (e) {
                 lastError = e.message;
                 err(`stream finish chunk ${i + 1}/${chunks.length}: ${e.message}`);

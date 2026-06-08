@@ -102,7 +102,10 @@ describe('dispatch runtime', () => {
     expect(brainCalls).toHaveLength(1);
     expect(brainCalls[0].payload.message).toBe('hello');
     expect(sends).toEqual([
-      { body: '🐶 egpt: done', opts: { chatId: 'chat-a' } },
+      // personaReply marks this as a provable persona reply on the WA bridge
+      // (operator 2026-06-08 anti-leak rewrite) so a later quote-reply to it
+      // authorizes reply-to-E; system/raw sends omit it.
+      { body: '🐶 egpt: done', opts: { chatId: 'chat-a', personaReply: 'egpt' } },
     ]);
     const activity = await readActivity(stateDir);
     expect(activity).toContain('\tRECV\twa/chat-a\t5ch');
