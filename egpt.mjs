@@ -2522,7 +2522,7 @@ function App() {
     if (!trimmed || trimmed === '...' || trimmed === '…') return;
     if (!_eMayReplyToChat(chatId, { replyAllowed })) return;
     // Send E's reply to the receiving group (it lives in their chat history).
-    try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId }); }
+    try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId, personaReply: personaName }); }
     catch (e) { logOut(`!! room ${roomName} → ${chatId}: send E reply: ${e?.message ?? e}`); }
     // Re-enter the room as E. fromId=chatId so the originating group doesn't
     // re-receive its own E reply; _personaReply=true so receiving wa-group
@@ -3772,7 +3772,6 @@ function App() {
             // note)". Every resident reads the transcript.
             isTranscriptFromVoice: !!from.isTranscriptFromVoice,
             replyPersona: from.replyPersona ?? null,
-            replyPersonaFallback: from.replyPersonaFallback ?? false,
             waSenderName: from.senderName ?? null,
             voiceStream: from.voiceStream ?? null,
           };
@@ -4179,7 +4178,7 @@ function App() {
       if (!_eMayReplyToChat(chatId, { replyAllowed: false })) return;   // gate: 'on' & not paused only
       const personaName = EGPT_CONFIG.persona ?? 'e';
       const personaEmoji = (EGPT_CONFIG.siblings ?? {})[personaName]?.body_emoji ?? EGPT_PERSONA_EMOJI;
-      try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId }); }
+      try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId, personaReply: personaName }); }
       catch (e) { sysLog(`!! heartbeat send ${chatId}: ${e?.message ?? e}`); }
     };
 
@@ -6545,7 +6544,7 @@ function App() {
     // the chokepoint re-confirms via the same gate. waChatId here is only set
     // for a chat the gate already permitted.
     const wa = (!noBridge && waChatId)
-      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId, replyAllowed: true })
+      ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId, replyAllowed: true, persona: routedTo })
       : null;
     const tgFmt = (text) => {
       // Show only the trailing ~3500 chars during streaming so it fits in
@@ -7815,7 +7814,7 @@ function App() {
           : null;
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
           ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
-              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
+              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName })
           : null;
         // WA two-message split for thinking models (@l). Operator
         // 2026-05-24: "the thinking response should reply once, after
@@ -7852,7 +7851,7 @@ function App() {
               if (!waSplit) {
                 waSplit = true;
                 waStream.finish(`${waPrefix}${think}`);     // freeze the thinking message
-                waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
+                waAnswerStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName });
               }
               if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
             }

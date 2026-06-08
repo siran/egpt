@@ -336,7 +336,10 @@ export async function deliverBridgeReply({
 
   let result;
   try {
-    result = await bridge.send?.(body, { chatId });
+    // personaReply (operator 2026-06-08): this is a genuine persona reply, so
+    // mark it provable on the WA bridge — a later quote-reply to it authorizes
+    // reply-to-E. (TG bridge ignores the unknown opt.)
+    result = await bridge.send?.(body, { chatId, personaReply: personaName });
   } catch (e) {
     errOut(`!! @e: ${surface.toUpperCase()} reply threw for ${chatId}: ${e?.message ?? e}`);
     await appendActivity({
@@ -402,9 +405,8 @@ export async function dispatchPersonaTurn({
     personaPrompt = formatPersonaPrompt(meta, decision.body);
   }
 
-  if (meta.replyPersonaFallback) {
-    personaPrompt = `[reply-fallback: recipient inferred as @e — quoted body had no persona tag]\n${personaPrompt}`;
-  }
+  // (reply-fallback prompt retired 2026-06-08 — replyPersona is now the
+  // persona E provably replied AS, never an inferred @e default.)
   // Reply-gated chat (mention / mention-direct): prepend the editable mode note
   // so @e knows its replies are logged-not-surfaced unless @mentioned.
   if (meta.modeNote) {
