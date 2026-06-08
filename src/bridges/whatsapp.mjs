@@ -2633,8 +2633,30 @@ export async function startWhatsAppBridge({
       const form = new FormData();
       form.append('file', new Blob([buf], { type: 'audio/wav' }), 'audio.wav');
       if (language) form.append('language', language);
-      form.append('response_format', 'json');
-      const r = await fetch(`${_whisperServerUrl}/inference`, { method: 'POST', body: form });
+      // verbose_json is the ONLY response_format whisper.cpp's server
+      // populates `segments` in — plain `json` returns {text} alone
+      // (empirically confirmed against the live server 2026-06-07). That
+      // was THE bundle bug: every bundle's `if (!result.segments)` check
+      // tripped and fell back to per-clip, so the stitch-once optimization
+      // never actually ran. The bundle needs segment start/end (in SECONDS,
+      // also confirmed) to map the stitched transcript back to per-message
+      // time ranges; the per-clip path only reads text, so it keeps the
+      // lighter plain json.
+      form.append('response_format', wantSegments ? 'verbose_json' : 'json');
+      // Bound the request: a wedged server must not block this chat's
+      // serialized transcription queue forever (the no-timeout fetch could
+      // hang for minutes). Ceiling scales with audio length — 16kHz mono
+      // s16le = 32000 B/s — at ~6x realtime, floored at 120s, capped 600s.
+      const audioSec = Math.max(0, (buf.length - 44) / 32000);
+      const timeoutMs = Math.min(600_000, Math.max(120_000, Math.round(audioSec * 6_000)));
+      let r;
+      try {
+        r = await fetch(`${_whisperServerUrl}/inference`, { method: 'POST', body: form, signal: AbortSignal.timeout(timeoutMs) });
+      } catch (e) {
+        const why = e?.name === 'TimeoutError' ? `timed out after ${Math.round(timeoutMs/1000)}s (audio ${audioSec.toFixed(1)}s)` : (e?.message ?? e);
+        log(`whisper-server: /inference ${why} for ${wavPath.split(/[\\/]/).pop()}`);
+        return null;
+      }
       if (!r.ok) {
         log(`whisper-server: HTTP ${r.status} for ${wavPath.split(/[\\/]/).pop()}`);
         return null;
