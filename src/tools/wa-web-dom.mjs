@@ -39,7 +39,7 @@ const SENSOR_HOOK = `(() => {
 })()`;
 
 export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {} } = {}) {
-  let _ws = null, _nextId = 1, _pending = new Map(), _eventsSeen = 0, _notifTimer = null;
+  let _ws = null, _nextId = 1, _pending = new Map(), _notifTimer = null;
   const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   const _listTargets = () => new Promise((res, rej) => {
@@ -84,11 +84,23 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   // focused — exactly when egpt should attend.
   function onNewMessage(cb, { intervalMs = 1500 } = {}) {
     if (_notifTimer) clearInterval(_notifTimer);
+    // Deliver by TIMESTAMP, not count: only message events that arrive AFTER
+    // this registration (e.t > since). The page hook's __egptEvents persists
+    // across restarts (we never reload), so a count-based prime races with a
+    // message landing during the first poll interval — timestamp gating is
+    // race-free and skips history cleanly. Dedup by jid+t. (page Date.now()
+    // and node Date.now() share the same system clock — directly comparable.)
+    const since = Date.now();
+    const _delivered = new Set();
     _notifTimer = setInterval(async () => {
-      const evs = await _eval(`window.__egptEvents ? window.__egptEvents.slice(${_eventsSeen}) : []`);
+      const evs = await _eval(`window.__egptEvents ? window.__egptEvents.filter(e => e.kind === 'message' && e.t > ${since}) : []`);
       if (!Array.isArray(evs) || !evs.length) return;
-      _eventsSeen += evs.length;
-      for (const e of evs) if (e.kind === 'message') { try { cb({ chatName: e.chatName, jid: e.jid, preview: e.preview, ts: e.t }); } catch (err) { log(`wa-dom: onNewMessage cb threw — ${err?.message ?? err}`); } }
+      for (const e of evs) {
+        const key = `${e.jid || ''}|${e.t}`;
+        if (_delivered.has(key)) continue;
+        _delivered.add(key);
+        try { cb({ chatName: e.chatName, jid: e.jid, preview: e.preview, ts: e.t }); } catch (err) { log(`wa-dom: onNewMessage cb threw — ${err?.message ?? err}`); }
+      }
     }, intervalMs);
     _notifTimer.unref?.();
   }
