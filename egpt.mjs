@@ -3283,7 +3283,12 @@ function App() {
     // Don't auto-pair on first run — would print a QR unprompted.
     // `force` is set by /whatsapp pair to bypass this.
     const authDir = join(EGPT_HOME, 'wa-auth');
-    if (!force && !isBaileysPaired(authDir)) {
+    // The baileys QR-pairing gate only applies to the baileys transport. The
+    // CDP limb (whatsapp.transport: 'cdp') drives the already-logged-in
+    // WhatsApp Web client in egpt's Chrome — there is no baileys auth to pair
+    // (operator 2026-06-09). Skip the gate for cdp.
+    const _isCdp = cfg.transport === 'cdp';
+    if (!_isCdp && !force && !isBaileysPaired(authDir)) {
       pushItem({
         id: Date.now() + Math.random(), author: 'system', _localOnly: true,
         body: 'whatsapp configured but not paired. Run /whatsapp pair to scan a QR with your phone.',
