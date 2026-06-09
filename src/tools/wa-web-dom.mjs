@@ -116,7 +116,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   // auto-read, no badge — which is fine: egpt isn't sitting inside chats.)
   function watchChatList(cb, { intervalMs = 2500 } = {}) {
     if (_watchTimer) clearInterval(_watchTimer);
-    const _prev = new Map();   // chatName -> last unread count
+    const _prev = new Map();   // chatName -> last signature (unread|preview)
     let primed = false;
     _watchTimer = setInterval(async () => {
       const rows = await _eval(`(() => {
@@ -129,12 +129,19 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
         }).filter(r => r.name);
       })()`);
       if (!Array.isArray(rows)) return;
-      if (!primed) { for (const r of rows) _prev.set(r.name, r.unread); primed = true; return; }
+      // Fire on ANY chat-list activity (unread rise OR last-preview change), so
+      // a message in the currently-OPEN chat (auto-read → no badge) is still
+      // caught. The host's gate filters non-@e (and egpt's own replies /
+      // operator messages read-then-silent — no loop). Signature = unread|preview.
       for (const r of rows) {
-        const was = _prev.get(r.name) ?? 0;
-        _prev.set(r.name, r.unread);
-        if (r.unread > was) { try { cb({ chatName: r.name, preview: r.preview, unread: r.unread }); } catch (err) { log(`wa-dom: watch cb threw — ${err?.message ?? err}`); } }
+        const sig = `${r.unread}|${r.preview ?? ''}`;
+        const was = _prev.get(r.name);
+        _prev.set(r.name, sig);
+        if (primed && was !== undefined && sig !== was) {
+          try { cb({ chatName: r.name, preview: r.preview, unread: r.unread }); } catch (err) { log(`wa-dom: watch cb threw — ${err?.message ?? err}`); }
+        }
       }
+      primed = true;
     }, intervalMs);
     _watchTimer.unref?.();
     log('wa-dom: chat-list watcher started (unread-badge scan; no notifications needed)');
