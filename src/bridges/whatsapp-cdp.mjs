@@ -30,16 +30,13 @@ export async function startWhatsAppCdpBridge(opts = {}) {
   const wa = createWaWebDom({ port: _port, log: onLog });
   await wa.attach();
 
-  // jid -> human chat name, learned from notifications, so send() can re-open
-  // the chat by the name openChatByName uses.
-  const _nameByJid = new Map();
-
-  wa.onNewMessage(async (n) => {
-    // n = { chatName, jid, preview, ts }. WA only notifies INCOMING — never our
-    // own sends — so this is always someone else's message.
-    if (n.chatName && n.jid) _nameByJid.set(n.jid, n.chatName);
-    // Open the chat so it renders, then read the actual latest message (the
-    // notification preview can be truncated / "Sender: text").
+  // Afferent: a DOM WATCHER on the chat list (NOT notifications — those are
+  // focus/OS-gated and the operator turns them off). A chat whose unread badge
+  // rises = new incoming. The chat NAME is the opaque handle here (the list
+  // gives no JID); send()/open use the same name.
+  wa.watchChatList(async (n) => {
+    // n = { chatName, preview, unread }. Open the chat so it renders, read the
+    // actual latest message (the list preview is truncated).
     let text = null, sender = null;
     const opened = await wa.openChatByName(n.chatName);
     if (opened) {
@@ -48,24 +45,21 @@ export async function startWhatsAppCdpBridge(opts = {}) {
       if (last) { text = last.text; sender = last.sender; }
     }
     if (text == null) {
-      // fallback: parse the notification preview "Sender: body"
       const m = String(n.preview || '').match(/^(.*?):\s*([\s\S]*)$/);
       if (m) { sender = m[1]; text = m[2]; } else { text = String(n.preview || ''); }
     }
-    const chatType = String(n.jid || '').endsWith('@g.us') ? 'group' : 'private';
     const st = mentionStatus(text || '');
     // replyToBot stays FALSE for now (fail-closed): provable reply-to-persona
-    // tracking (the _personaReplyIds model) is a follow-up. So v1 surfaces a
-    // reply only on an explicit @e — strictly safe.
+    // tracking is a follow-up. v1 surfaces a reply only on an explicit @e.
     const from = {
-      chatId: n.jid,                 // opaque handle (JID)
-      chatName: n.chatName,          // for reply routing (open-by-name)
-      chatType,
-      userId: n.jid,
+      chatId: n.chatName,            // opaque handle = chat name (no JID from list)
+      chatName: n.chatName,
+      chatType: 'private',           // TODO detect group from opened chat
+      userId: n.chatName,
       username: sender || undefined,
       firstName: sender || undefined,
       senderName: sender || null,
-      authorized: true,              // operator's own account context; host gate still applies
+      authorized: true,              // host gate is the real control
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
       replyToBot: false,
@@ -73,6 +67,7 @@ export async function startWhatsAppCdpBridge(opts = {}) {
       isTranscriptFromVoice: false,
       msgKey: null,
     };
+    onLog(`wa-cdp: incoming [${n.chatName}] ${sender}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere})`);
     try { await onIncoming?.(text, from); }
     catch (e) { onLog(`wa-cdp: onIncoming threw — ${e?.message ?? e}`); }
   });
@@ -81,8 +76,8 @@ export async function startWhatsAppCdpBridge(opts = {}) {
     // Efferent. The host names the target by chatName (carried in `from`) or by
     // a jid we've learned. Opens that chat, then types + clicks send.
     async send(text, { chatId, chatName } = {}) {
-      const name = chatName || (chatId && _nameByJid.get(chatId)) || null;
-      if (!name) { onLog(`wa-cdp: send DROPPED — no chatName/known jid for ${chatId}`); return null; }
+      const name = chatName || chatId || null;   // chatId IS the chat name (watcher handle)
+      if (!name) { onLog(`wa-cdp: send DROPPED — no chat name for ${chatId}`); return null; }
       const opened = await wa.openChatByName(name);
       if (!opened) { onLog(`wa-cdp: send DROPPED — could not open "${name}"`); return null; }
       const r = await wa.sendText(text);
@@ -95,7 +90,7 @@ export async function startWhatsAppCdpBridge(opts = {}) {
     // social surface) and send the FINAL text on finish(). Streaming/edit is a
     // future nicety; inert v1 sends once. chatId(jid)→name via the learned map.
     startStreamMessage(initialText, { chatId, chatName, persona } = {}) {
-      const name = chatName || (chatId && _nameByJid.get(chatId)) || null;
+      const name = chatName || chatId || null;   // chatId IS the chat name
       let latest = initialText, finished = false, delivered = false, lastError = null;
       const deliver = async (text) => {
         if (text != null) latest = text;

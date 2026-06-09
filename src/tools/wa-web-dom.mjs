@@ -39,7 +39,7 @@ const SENSOR_HOOK = `(() => {
 })()`;
 
 export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {} } = {}) {
-  let _ws = null, _nextId = 1, _pending = new Map(), _notifTimer = null;
+  let _ws = null, _nextId = 1, _pending = new Map(), _notifTimer = null, _watchTimer = null;
   const _sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   const _listTargets = () => new Promise((res, rej) => {
@@ -103,6 +103,41 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
       }
     }, intervalMs);
     _notifTimer.unref?.();
+  }
+
+  // DOM WATCHER (primary afferent — does NOT depend on notifications, which
+  // are focus-gated/OS-gated and the operator turns off). Polls the chat list
+  // for a chat whose UNREAD badge appeared or increased = new incoming
+  // message(s). With the renderer kept alive by the launch flags, the list
+  // updates even when the window is unfocused, so this fires regardless of
+  // focus. cb({ chatName, preview, unread }). A chat egpt opens to read gets
+  // marked read (unread→0); a fresh message re-raises the badge → re-fires.
+  // (Misses a message that lands while that exact chat is open+focused — it's
+  // auto-read, no badge — which is fine: egpt isn't sitting inside chats.)
+  function watchChatList(cb, { intervalMs = 2500 } = {}) {
+    if (_watchTimer) clearInterval(_watchTimer);
+    const _prev = new Map();   // chatName -> last unread count
+    let primed = false;
+    _watchTimer = setInterval(async () => {
+      const rows = await _eval(`(() => {
+        const pane = document.querySelector('#pane-side'); if (!pane) return [];
+        return [...pane.querySelectorAll('[data-testid="cell-frame-container"]')].map(c => {
+          const t = c.querySelector('[data-testid="cell-frame-title"] span[title]') || c.querySelector('span[title]');
+          const badge = c.querySelector('[data-testid="icon-unread-count"]');
+          const prev = c.querySelector('[data-testid="cell-frame-secondary"] span[title]');
+          return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview: prev ? (prev.getAttribute('title') || prev.innerText) : null };
+        }).filter(r => r.name);
+      })()`);
+      if (!Array.isArray(rows)) return;
+      if (!primed) { for (const r of rows) _prev.set(r.name, r.unread); primed = true; return; }
+      for (const r of rows) {
+        const was = _prev.get(r.name) ?? 0;
+        _prev.set(r.name, r.unread);
+        if (r.unread > was) { try { cb({ chatName: r.name, preview: r.preview, unread: r.unread }); } catch (err) { log(`wa-dom: watch cb threw — ${err?.message ?? err}`); } }
+      }
+    }, intervalMs);
+    _watchTimer.unref?.();
+    log('wa-dom: chat-list watcher started (unread-badge scan; no notifications needed)');
   }
 
   // Open a chat by the NAME a human reads (the notification's title). WA Web
@@ -187,9 +222,9 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   // The header title of the currently open chat (for safety checks).
   async function openChatTitle() { return await _eval(`(() => { const h = document.querySelector('#main header'); return h ? h.innerText.replace(/\\n/g, ' ').slice(0, 60) : null; })()`); }
 
-  function stop() { if (_notifTimer) clearInterval(_notifTimer); try { _ws?.close(); } catch {} _ws = null; }
+  function stop() { if (_notifTimer) clearInterval(_notifTimer); if (_watchTimer) clearInterval(_watchTimer); try { _ws?.close(); } catch {} _ws = null; }
 
-  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, openChatByName, readLatest, sendText, openChatTitle, stop };
+  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, watchChatList, openChatByName, readLatest, sendText, openChatTitle, stop };
 }
 
 // ── read-only self-test ─────────────────────────────────────────────────────
