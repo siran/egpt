@@ -69,6 +69,17 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     // so always opt out of the disable here.
     '--disable-features=ChromeWhatsNewUI,DisableLoadExtensionCommandLineSwitch',
     '--silent-debugger-extension-api',
+    // Keep the renderer ALIVE when the window is occluded / unfocused / on
+    // another virtual desktop. Without these, Chrome throttles & suspends
+    // layout for a backgrounded tab, so CDP DOM ops (getBoundingClientRect,
+    // coordinate clicks, scrollIntoView) silently fail — the WhatsApp-Web
+    // glove's open/read/send break unless the window is foreground (operator
+    // 2026-06-09). visibilityState still reports 'hidden' when unfocused, so
+    // WhatsApp keeps firing notifications — we get the afferent trigger AND
+    // reliable efferent DOM ops at once. (Window must still be non-minimized.)
+    '--disable-backgrounding-occluded-windows',
+    '--disable-background-timer-throttling',
+    '--disable-renderer-backgrounding',
     '--new-window',
   ];
   if (extensionDir) {
