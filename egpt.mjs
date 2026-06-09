@@ -3279,7 +3279,8 @@ function App() {
     if (CLIENT) return false;   // a limb never owns WhatsApp — the spine does
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
-    if (!cfg || cfg.enabled === false) return false;
+    if (!cfg || typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
+    if (cfg.enabled === false) return false;
     // Don't auto-pair on first run — would print a QR unprompted.
     // `force` is set by /whatsapp pair to bypass this.
     const authDir = join(EGPT_HOME, 'wa-auth');
