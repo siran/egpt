@@ -30,6 +30,7 @@ import { startTelegramBridge } from './src/bridges/telegram.mjs';
 import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
+import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
@@ -3349,7 +3350,7 @@ function App() {
         } catch (e) { console.error(`!! confirmMirror: ${e?.message ?? e}`); }
       };
 
-      const bridge = await startBaileysBridge({
+      const _bridgeOpts = {
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
         ...(personaNames ? { personaNames } : {}),
@@ -3938,7 +3939,17 @@ function App() {
           // hot-loop.
           setTimeout(() => { try { process.exit(75); } catch { /* already exiting */ } }, 300);
         },
-      });
+      };
+      // Transport selection (operator 2026-06-09, beta-1.15 WA-CDP pivot):
+      // whatsapp.transport = 'baileys' (default) | 'cdp'. The CDP limb drives
+      // the official WhatsApp Web client in egpt's Chrome and is a drop-in for
+      // the bridge interface ({send, startStreamMessage, stop}). baileys stays
+      // default + selectable so the switch is reversible until CDP is trusted;
+      // excising baileys is a later step. The same opts object feeds both —
+      // the CDP limb uses onIncoming/onLog/cdpPort and ignores baileys-only knobs.
+      const _waTransport = EGPT_CONFIG.whatsapp?.transport === 'cdp' ? 'cdp' : 'baileys';
+      logOut(`whatsapp: transport=${_waTransport}`);
+      const bridge = await (_waTransport === 'cdp' ? startWhatsAppCdpBridge : startBaileysBridge)(_bridgeOpts);
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
       _walog(`waBridgeRef SET (bridge=${!!bridge}) — outbound should now work`);

@@ -16,13 +16,18 @@
 import { createWaWebDom } from '../tools/wa-web-dom.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 
-export async function startWhatsAppCdpBridge({
-  onIncoming,
-  onLog = () => {},
-  port = 9221,
-  allowedUsers = [],          // reserved; host gate is the primary control
-} = {}) {
-  const wa = createWaWebDom({ port, log: onLog });
+export async function startWhatsAppCdpBridge(opts = {}) {
+  // Drop-in for startBaileysBridge: accept the host's full opts object and use
+  // what applies; ignore baileys-only knobs (media/awareness/maxBacklog/etc.).
+  const {
+    onIncoming,
+    onLog = () => {},
+    port = 9221,
+    cdpPort,                  // optional explicit override (whatsapp.cdp_port)
+    allowedUsers = [],        // reserved; host gate is the primary control
+  } = opts;
+  const _port = cdpPort || port || 9221;
+  const wa = createWaWebDom({ port: _port, log: onLog });
   await wa.attach();
 
   // jid -> human chat name, learned from notifications, so send() can re-open
@@ -82,6 +87,31 @@ export async function startWhatsAppCdpBridge({
       if (!opened) { onLog(`wa-cdp: send DROPPED — could not open "${name}"`); return null; }
       const r = await wa.sendText(text);
       return r?.ok ? { ok: true, chatName: name } : null;
+    },
+    // Non-streaming shim for the host's persona-reply path (streamFactory →
+    // makeStream → startStreamMessage). The host's gate has ALREADY decided
+    // this reply may emit (streamFactory returns null otherwise), so here we
+    // just deliver: ignore the intermediate update() frames (no edit-spam on a
+    // social surface) and send the FINAL text on finish(). Streaming/edit is a
+    // future nicety; inert v1 sends once. chatId(jid)→name via the learned map.
+    startStreamMessage(initialText, { chatId, chatName, persona } = {}) {
+      const name = chatName || (chatId && _nameByJid.get(chatId)) || null;
+      let latest = initialText, finished = false, delivered = false, lastError = null;
+      const deliver = async (text) => {
+        if (text != null) latest = text;
+        if (!name) { lastError = 'no target chat'; onLog(`wa-cdp: stream DROPPED — no name for ${chatId}`); return; }
+        const opened = await wa.openChatByName(name);
+        if (!opened) { lastError = `open failed (${name})`; return; }
+        const r = await wa.sendText(latest);
+        delivered = !!r?.ok; if (!delivered) lastError = 'send failed';
+      };
+      return {
+        update(text) { if (!finished && text != null) latest = text; },
+        async finish(text) { if (finished) return; finished = true; await deliver(text); },
+        async cancel() { finished = true; },   // gate said no / silence → never sent
+        get delivered() { return delivered; },
+        get lastError() { return lastError; },
+      };
     },
     isAlive: () => wa.isAlive(),
     stop: () => wa.stop(),
