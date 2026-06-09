@@ -14,6 +14,16 @@
 //   node src/tools/wa-web-dom.mjs --send-self     # also send one line to Self
 import WebSocket from 'ws';
 import http from 'node:http';
+import { readdirSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// Where WA Web's Download-action writes decrypted voice notes (set via CDP
+// Page.setDownloadBehavior at attach). The only way to get the decrypted audio:
+// WA decodes Opus in a WASM/AudioWorklet the page can't hook, but its own
+// "Download" menu writes the plaintext .ogg (validated 2026-06-09).
+const DOWNLOAD_DIR = join(homedir(), '.egpt', 'wa-downloads');
+try { mkdirSync(DOWNLOAD_DIR, { recursive: true }); } catch { /* ignore */ }
 
 // ── Injected sensor hook (document-start AND live). Captures WA's page-level
 // Notification calls into window.__egptEvents. Idempotent. (Confirmed
@@ -67,6 +77,8 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
       _ws.on('message', (buf) => { let m; try { m = JSON.parse(buf.toString()); } catch { return; } if (m.id && _pending.has(m.id)) { _pending.get(m.id)(m); _pending.delete(m.id); } });
     });
     await _send('Page.enable'); await _send('Runtime.enable');
+    // Direct WA's "Download" action to our capture folder (voice-note extraction).
+    try { await _send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR }); } catch { /* older CDP */ }
     // Persist for future (re)loads + install live so we catch messages now.
     await _send('Page.addScriptToEvaluateOnNewDocument', { source: SENSOR_HOOK });
     const live = await _eval(SENSOR_HOOK);
@@ -117,31 +129,42 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   function watchChatList(cb, { intervalMs = 2500 } = {}) {
     if (_watchTimer) clearInterval(_watchTimer);
     const _prev = new Map();   // chatName -> last signature (unread|preview)
-    let primed = false;
+    let primed = false, _busy = false;
     _watchTimer = setInterval(async () => {
-      const rows = await _eval(`(() => {
-        const pane = document.querySelector('#pane-side'); if (!pane) return [];
-        return [...pane.querySelectorAll('[data-testid="cell-frame-container"]')].map(c => {
-          const t = c.querySelector('[data-testid="cell-frame-title"] span[title]') || c.querySelector('span[title]');
-          const badge = c.querySelector('[data-testid="icon-unread-count"]');
-          const prev = c.querySelector('[data-testid="cell-frame-secondary"] span[title]');
-          return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview: prev ? (prev.getAttribute('title') || prev.innerText) : null };
-        }).filter(r => r.name);
-      })()`);
-      if (!Array.isArray(rows)) return;
-      // Fire on ANY chat-list activity (unread rise OR last-preview change), so
-      // a message in the currently-OPEN chat (auto-read → no badge) is still
-      // caught. The host's gate filters non-@e (and egpt's own replies /
-      // operator messages read-then-silent — no loop). Signature = unread|preview.
-      for (const r of rows) {
-        const sig = `${r.unread}|${r.preview ?? ''}`;
-        const was = _prev.get(r.name);
-        _prev.set(r.name, sig);
-        if (primed && was !== undefined && sig !== was) {
-          try { cb({ chatName: r.name, preview: r.preview, unread: r.unread }); } catch (err) { log(`wa-dom: watch cb threw — ${err?.message ?? err}`); }
+      if (_busy) return;   // SERIALIZE: a slow callback (download+transcribe ~25s)
+      _busy = true;        // must finish before the next scan, else concurrent
+      try {                // chat-opens close each other's menus / corrupt state.
+        const rows = await _eval(`(() => {
+          const pane = document.querySelector('#pane-side'); if (!pane) return [];
+          return [...pane.querySelectorAll('[data-testid="cell-frame-container"]')].map(c => {
+            const t = c.querySelector('[data-testid="cell-frame-title"] span[title]') || c.querySelector('span[title]');
+            const badge = c.querySelector('[data-testid="icon-unread-count"]');
+            // Full secondary text (NOT just span[title]) so a voice note —
+            // whose preview is a mic icon + duration with no span[title], and
+            // which creates no unread when it's your own Self message — still
+            // changes the signature and fires the watcher.
+            const sec = c.querySelector('[data-testid="cell-frame-secondary"]');
+            return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview: sec ? (sec.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80) : null };
+          }).filter(r => r.name);
+        })()`);
+        if (!Array.isArray(rows)) return;
+        // Collect changed chats first (signature = unread|preview), update the
+        // baseline, THEN process them one at a time (awaited). Fires on ANY
+        // chat-list activity so a message in the OPEN chat (auto-read → no
+        // badge) is still caught; the host gate filters non-@e.
+        const changed = [];
+        for (const r of rows) {
+          const sig = `${r.unread}|${r.preview ?? ''}`;
+          const was = _prev.get(r.name);
+          _prev.set(r.name, sig);
+          if (primed && was !== undefined && sig !== was) changed.push(r);
         }
-      }
-      primed = true;
+        primed = true;
+        for (const r of changed) {
+          try { await cb({ chatName: r.name, preview: r.preview, unread: r.unread }); }
+          catch (err) { log(`wa-dom: watch cb threw — ${err?.message ?? err}`); }
+        }
+      } finally { _busy = false; }
     }, intervalMs);
     _watchTimer.unref?.();
     log('wa-dom: chat-list watcher started (unread-badge scan; no notifications needed)');
@@ -206,6 +229,52 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
     })()`) ?? [];
   }
 
+  // What kind is the BOTTOMMOST (latest) message in the open chat? 'text'
+  // (has a [data-pre-plain-text]) | 'voice' (a "Play voice message" button) |
+  // 'other'. Used to decide whether to transcribe.
+  async function latestKind() {
+    return await _eval(`(() => {
+      const main = document.querySelector('#main'); if (!main) return 'none';
+      const marks = [...main.querySelectorAll('[data-pre-plain-text], [aria-label="Play voice message"]')];
+      const last = marks[marks.length - 1]; if (!last) return 'none';
+      return last.getAttribute('aria-label') === 'Play voice message' ? 'voice' : 'text';
+    })()`) ?? 'none';
+  }
+
+  // Download the LATEST voice note in the open chat via WA's Download menu
+  // (right-click the bubble → Download). Returns the captured .ogg path or null.
+  async function downloadLatestVoiceNote() {
+    await bringToFront();
+    const before = new Set(readdirSync(DOWNLOAD_DIR));
+    const bubble = await _eval(`(() => {
+      const main = document.querySelector('#main'); if (!main) return null;
+      const play = [...main.querySelectorAll('[aria-label="Play voice message"]')].pop(); if (!play) return null;
+      const row = play.closest('[data-id]') || play.closest('[role="row"]') || play.parentElement.parentElement;
+      row.scrollIntoView({ block: 'center' });
+      const r = row.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!bubble) { log('wa-dom: downloadLatestVoiceNote — no voice note in open chat'); return null; }
+    // right-click → WA message context menu
+    await _send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bubble.x, y: bubble.y });
+    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
+    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
+    await _sleep(700);
+    const dl = await _eval(`(() => {
+      const d = [...document.querySelectorAll('[role="menuitem"], li, div[role="button"]')].find(e => /^download$/i.test((e.innerText||'').trim()));
+      if (!d) return null; const r = d.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!dl) { log('wa-dom: downloadLatestVoiceNote — no Download in menu'); try { await _send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' }); } catch {} return null; }
+    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
+    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
+    for (let i = 0; i < 24; i++) {
+      await _sleep(400);
+      const news = readdirSync(DOWNLOAD_DIR).filter(f => !before.has(f) && !f.endsWith('.crdownload'));
+      if (news.length) { const p = join(DOWNLOAD_DIR, news[0]); log(`wa-dom: voice note downloaded → ${news[0]}`); return p; }
+    }
+    log('wa-dom: downloadLatestVoiceNote — download did not appear'); return null;
+  }
+
   // Type + click the Send button (Enter is ignored by WA's Lexical composer).
   // Returns { ok }. Caller is responsible for having the intended chat open.
   async function sendText(text) {
@@ -231,7 +300,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
 
   function stop() { if (_notifTimer) clearInterval(_notifTimer); if (_watchTimer) clearInterval(_watchTimer); try { _ws?.close(); } catch {} _ws = null; }
 
-  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, watchChatList, openChatByName, readLatest, sendText, openChatTitle, stop };
+  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, watchChatList, openChatByName, readLatest, latestKind, downloadLatestVoiceNote, sendText, openChatTitle, stop };
 }
 
 // ── read-only self-test ─────────────────────────────────────────────────────

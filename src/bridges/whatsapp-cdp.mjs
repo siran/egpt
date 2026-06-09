@@ -14,6 +14,7 @@
 //   node src/bridges/whatsapp-cdp.mjs                       # dry-run: log gate decisions, no sends
 //   WA_TEST_CHAT="Rodz" node src/bridges/whatsapp-cdp.mjs   # also LIVE-reply in that ONE chat
 import { createWaWebDom } from '../tools/wa-web-dom.mjs';
+import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -32,7 +33,9 @@ export async function startWhatsAppCdpBridge(opts = {}) {
     port = 9221,
     cdpPort,                  // optional explicit override (whatsapp.cdp_port)
     allowedUsers = [],        // reserved; host gate is the primary control
+    media = {},               // whatsapp.media — audio_transcribe lives here
   } = opts;
+  const audioCfg = media.audio_transcribe || {};
   // Combined logger: durable file + the host's onLog.
   const onLog = (m) => {
     try { appendFileSync(_CDP_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
@@ -51,12 +54,32 @@ export async function startWhatsAppCdpBridge(opts = {}) {
   wa.watchChatList(async (n) => {
     // n = { chatName, preview, unread }. Open the chat so it renders, read the
     // actual latest message (the list preview is truncated).
-    let text = null, sender = null;
+    let text = null, sender = null, isVoice = false;
     const opened = await wa.openChatByName(n.chatName);
     if (opened) {
-      const msgs = await wa.readLatest(1);
-      const last = msgs[msgs.length - 1];
-      if (last) { text = last.text; sender = last.sender; }
+      const kind = await wa.latestKind();
+      if (kind === 'voice') {
+        // VOICE NOTE — download the decrypted .ogg via WA's menu, transcribe.
+        isVoice = true;
+        const path = await wa.downloadLatestVoiceNote();
+        if (path) {
+          const transcript = await transcribeAudioFile(path, audioCfg, onLog);
+          if (transcript) {
+            text = transcript;
+            onLog(`wa-cdp: voice transcribed [${n.chatName}] → ${JSON.stringify(transcript.slice(0, 80))}`);
+            // Post the transcript in-chat (operator: "like we were doing").
+            // The 👂 reply is text → re-firing the watcher on it reads text →
+            // gate silent → no transcription loop. NOTE (policy refinement):
+            // gate this by chat mode later so it doesn't post in mute/observed
+            // chats — the limb doesn't know modes; the host could.
+            await wa.sendText(`👂 ${transcript}`);
+          } else { text = '[voice note — transcription failed]'; }
+        } else { text = '[voice note]'; }
+      } else {
+        const msgs = await wa.readLatest(1);
+        const last = msgs[msgs.length - 1];
+        if (last) { text = last.text; sender = last.sender; }
+      }
     }
     if (text == null) {
       const m = String(n.preview || '').match(/^(.*?):\s*([\s\S]*)$/);
@@ -78,7 +101,7 @@ export async function startWhatsAppCdpBridge(opts = {}) {
       atEAnywhere: st.atEAnywhere,
       replyToBot: false,
       isReaction: false,
-      isTranscriptFromVoice: false,
+      isTranscriptFromVoice: isVoice,
       msgKey: null,
     };
     onLog(`wa-cdp: incoming [${n.chatName}] ${sender}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere})`);
