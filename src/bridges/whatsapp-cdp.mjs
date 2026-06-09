@@ -15,20 +15,34 @@
 //   WA_TEST_CHAT="Rodz" node src/bridges/whatsapp-cdp.mjs   # also LIVE-reply in that ONE chat
 import { createWaWebDom } from '../tools/wa-web-dom.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
+import { appendFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// Durable limb log (the TUI's headless.log is frame-dumps, useless for tracing
+// the daemon's WA activity). Mirrors what baileys had in wa-bridge.log.
+const _CDP_LOG = join(homedir(), '.egpt', 'logs', 'wa-cdp.log');
 
 export async function startWhatsAppCdpBridge(opts = {}) {
   // Drop-in for startBaileysBridge: accept the host's full opts object and use
   // what applies; ignore baileys-only knobs (media/awareness/maxBacklog/etc.).
   const {
     onIncoming,
-    onLog = () => {},
+    onLog: _onLog = () => {},
     port = 9221,
     cdpPort,                  // optional explicit override (whatsapp.cdp_port)
     allowedUsers = [],        // reserved; host gate is the primary control
   } = opts;
+  // Combined logger: durable file + the host's onLog.
+  const onLog = (m) => {
+    try { appendFileSync(_CDP_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
+    try { _onLog(m); } catch { /* ignore */ }
+  };
   const _port = cdpPort || port || 9221;
+  onLog(`startWhatsAppCdpBridge: ENTRY (port=${_port})`);
   const wa = createWaWebDom({ port: _port, log: onLog });
   await wa.attach();
+  onLog('attached + watcher arming');
 
   // Afferent: a DOM WATCHER on the chat list (NOT notifications — those are
   // focus/OS-gated and the operator turns them off). A chat whose unread badge
