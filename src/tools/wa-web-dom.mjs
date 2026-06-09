@@ -103,25 +103,33 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   async function openChatByName(name) {
     await bringToFront();
     const want = String(name || '');
-    const rect = await _eval(`(() => {
-      const want = ${JSON.stringify(want)};
-      const t = [...document.querySelectorAll('#pane-side span[title]')].find(s => s.getAttribute('title') === want);
-      if (!t) return null;
-      const cell = t.closest('[data-testid="cell-frame-container"]') || t.closest('[role="row"]') || t;
-      cell.scrollIntoView({ block: 'center' });
-      const r = cell.getBoundingClientRect();
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    })()`);
-    if (!rect) { log(`wa-dom: openChatByName("${want}") — not found in (rendered) list`); return false; }
-    await _send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y });
-    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
-    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
-    for (let i = 0; i < 24; i++) {
-      await _sleep(250);
-      const title = await openChatTitle();
-      if (title && title.includes(want.slice(0, 14))) return true;
+    // Retry across the list settling — right after a notification the chat
+    // reorders/scrolls, so the row may not be rendered at the exact instant we
+    // look (observed 2026-06-08: a too-eager search returned not-found, then
+    // succeeded a beat later).
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const rect = await _eval(`(() => {
+        const want = ${JSON.stringify(want)};
+        const t = [...document.querySelectorAll('#pane-side [data-testid="cell-frame-title"] span[title], #pane-side span[title]')].find(s => s.getAttribute('title') === want);
+        if (!t) return null;
+        const cell = t.closest('[data-testid="cell-frame-container"]') || t.closest('[role="row"]') || t;
+        cell.scrollIntoView({ block: 'center' });
+        const r = cell.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      })()`);
+      if (!rect) { await _sleep(400); continue; }   // not rendered yet — let the list settle
+      await _sleep(120);   // let scrollIntoView settle before clicking the coords
+      await _send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: rect.x, y: rect.y });
+      await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+      await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: rect.x, y: rect.y, button: 'left', clickCount: 1 });
+      for (let i = 0; i < 16; i++) {
+        await _sleep(250);
+        const title = await openChatTitle();
+        if (title && title.includes(want.slice(0, 14))) return true;
+      }
+      log(`wa-dom: openChatByName("${want}") — attempt ${attempt + 1} clicked but header didn't confirm`);
     }
-    log(`wa-dom: openChatByName("${want}") — clicked but header didn't confirm (title="${await openChatTitle()}")`);
+    log(`wa-dom: openChatByName("${want}") — gave up after retries (not found / no nav)`);
     return false;
   }
 
