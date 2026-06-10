@@ -1,0 +1,31 @@
+#!/bin/sh
+# pre-push — keep main green without CI (operator 2026-06-10: "no GitHub
+# Actions; small team, low risk, live on the edge"). Runs the vitest suite
+# before every push; a red suite blocks it. This is a LOCAL seatbelt, not a
+# central gate — it only protects clones that opted in, and any push can
+# override it with `git push --no-verify` (you own that consequence).
+#
+# Install once per clone:
+#     git config core.hooksPath .githooks
+#
+# (Versioned here rather than in .git/hooks so the hook ships with the repo
+# and updates on pull. core.hooksPath makes git look here instead.)
+
+echo "pre-push: running npm test ..."
+# `npm test` -> vitest run (~5s). On Windows this runs under git's bundled
+# sh; npm resolves via PATH (npm.cmd). If npm isn't found, don't block the
+# push on a tooling gap — warn and let it through.
+if ! command -v npm >/dev/null 2>&1; then
+  echo "pre-push: npm not on PATH — skipping tests (install Node or run the hook from a shell that has npm)."
+  exit 0
+fi
+
+if npm test; then
+  echo "pre-push: green — pushing."
+  exit 0
+else
+  echo ""
+  echo "pre-push: TESTS FAILED — push blocked."
+  echo "  fix them, or override in a genuine emergency with:  git push --no-verify"
+  exit 1
+fi
