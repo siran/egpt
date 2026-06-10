@@ -128,6 +128,15 @@ describe('beeper bridge', () => {
     expect(incoming.filter((i) => i.text === 'hola')).toHaveLength(1);
   });
 
+  it('same numeric id in DIFFERENT chats is two messages, not a dupe', async () => {
+    // Verified live: Beeper ids are per-chat sequence numbers (e.g. 488).
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: 'chat-a', text: 'from a' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: 'chat-b', text: 'from b' })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.map((i) => i.text).sort()).toEqual(['from a', 'from b']);
+  });
+
   it('backlog gate: messages older than bridge start are never dispatched', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'stale', timestamp: Date.now() - 60_000 })] });
