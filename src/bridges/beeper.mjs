@@ -32,6 +32,17 @@
 //     drops the message (it used to pass).
 //   - WS reconnect backs off 3s→60s (a closed Beeper app was writing a
 //     log line every 3s, ~29k/day) and _sentText sweeps expired entries.
+//
+// Schema facts VERIFIED against a live Beeper Desktop (2026-06-10):
+//   - chatID is a Matrix room id ('!xxx:beeper.local') — NOT a WA jid.
+//     auto_e_chats / chat_id whitelists must enroll these ids for the
+//     beeper transport (the 👂-suppression log prints the id to enroll).
+//   - message.timestamp is an ISO string → the backlog gate is active.
+//   - message.id is a small PER-CHAT sequence number → all dedup keys
+//     are chatID-qualified (see msgKeyOf).
+//   - accountID is 'whatsapp' on both chats and messages.
+//   - subscriptions.set does NOT replay history (live events only); the
+//     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -105,6 +116,12 @@ export async function startBeeperBridge(opts = {}) {
   // forgot what was already handled/sent — and the upserted id can differ
   // from the POST's pendingMessageID, so text-window suppression alone
   // (60s) can't cover a replay.
+  //
+  // Keys are `${chatID}|${id}` — VERIFIED live 2026-06-10: Beeper message
+  // ids are small per-chat sequence numbers (e.g. 488), NOT globally
+  // unique. A bare-id set would collide across chats and silently drop
+  // the second chat's message.
+  const msgKeyOf = (chatID, id) => `${chatID}|${id}`;
   const _sentIds = new Set();
   const _processedIds = new Set();   // incoming ids already handled (message.upserted re-fires on receipts/edits)
   const _seenPath = join(stateDir, 'beeper-seen.jsonl');
@@ -136,10 +153,11 @@ export async function startBeeperBridge(opts = {}) {
       }
     } catch (e) { onLog(`beeper: seen-state persist failed — ${e?.message ?? e}`); }
   }
-  function markProcessed(id) {
+  function markProcessed(chatID, id) {
     if (!id) return;
-    _processedIds.add(id); _capSet(_processedIds, SEEN_PROCESSED_CAP);
-    _persistSeen('p', id);
+    const key = msgKeyOf(chatID, id);
+    _processedIds.add(key); _capSet(_processedIds, SEEN_PROCESSED_CAP);
+    _persistSeen('p', key);
   }
 
   // Echo suppression: ids egpt itself sent (so our own replies / 👂 acks don't
@@ -148,7 +166,7 @@ export async function startBeeperBridge(opts = {}) {
   // suppressed — so the operator can @e themselves.
   const _sentText = new Map();   // `${chatID}|${text}` -> expiry ms
   function rememberSent(id, chatID, text) {
-    if (id) { _sentIds.add(id); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', id); }
+    if (id) { const key = msgKeyOf(chatID, id); _sentIds.add(key); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', key); }
     if (text) {
       const now = Date.now();
       // Sweep expired entries — this map otherwise grows for the life of a
@@ -158,7 +176,7 @@ export async function startBeeperBridge(opts = {}) {
     }
   }
   function isEcho(id, chatID, text) {
-    if (id && _sentIds.has(id)) return true;
+    if (id && _sentIds.has(msgKeyOf(chatID, id))) return true;
     const exp = _sentText.get(`${chatID}|${text}`);   // don't delete — receipts re-fire the same upsert; let it expire
     return !!(exp && exp > Date.now());
   }
@@ -218,7 +236,7 @@ export async function startBeeperBridge(opts = {}) {
     if (isEcho(msg.id, chatID, text)) return;
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
-    if (msg.id) { if (_processedIds.has(msg.id)) return; markProcessed(msg.id); }
+    if (msg.id) { if (_processedIds.has(msgKeyOf(chatID, msg.id))) return; markProcessed(chatID, msg.id); }
 
     const info = await chatInfo(chatID);
     // SCOPE (fail-closed): with a network scope active, a message whose
