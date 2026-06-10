@@ -41,6 +41,7 @@ import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom
 import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
+import { createWarmPool } from './src/warm-sessions.mjs';
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
@@ -6189,6 +6190,24 @@ function App() {
     return _dispatchRuntime.runDefaultBrainTurn(text, onPartial, threadCtx);
   }
 
+  // WARM-SESSION POOL (feat/sibling-reply). Lazily built from EGPT_CONFIG.brains.warm.
+  // Holds persistent claude-sdk streaming sessions so a turn is not a cold start.
+  // Lazy creation avoids module-eval ordering; logOut/EGPT_CONFIG exist at call time.
+  let _warmPoolInstance = null;
+  const _warmEnabled = () => EGPT_CONFIG.brains?.warm?.enabled !== false;   // default ON
+  function _warmPool() {
+    if (_warmPoolInstance) return _warmPoolInstance;
+    const w = EGPT_CONFIG.brains?.warm ?? {};
+    _warmPoolInstance = createWarmPool({
+      max: Number(w.max) || 6,
+      idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
+      idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
+      dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 90_000,
+      onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
+    });
+    return _warmPoolInstance;
+  }
+
   // Run @me / @wren / sibling engineer turns. Claude siblings may use
   // pinned /branch session ids; Codex siblings can start fresh and then
   // persist the Codex thread id back into config for later resumes.
@@ -6367,15 +6386,34 @@ function App() {
         });
         return String(final ?? '').trim() || '...';
       }
-      const result = await brain.stream(
-        // Sessionless brains (e.g. llama @l) have no server-side thread, so
-        // the host supplies the conversation as opts.history — the per-chat
-        // rolling transcript that mimics @e's session memory. Falls back to
-        // the single turn when no history is supplied (engineer turns, etc.).
-        { history: opts.history ?? text, message: text },
-        onPartial,
-        sessionOpts,
-      );
+      // WARM PATH (feat/sibling-reply): an in-process claude-sdk sibling runs on
+      // a persistent pooled session — no per-turn cold start / subprocess spawn.
+      // Keyed per sibling+session so a re-pin opens a fresh one; errors surface
+      // as text so the missing-resume retry below still fires. Other brains
+      // (codex, ccode/CLI, llama) keep the cold stream() path unchanged.
+      let result;
+      if (brainType === 'claude-sdk' && _warmEnabled()) {
+        const _warmKey = `sib:${selectedName}:${mbCfg.session_id ?? 'new'}`;
+        try {
+          const r = await _warmPool().run(_warmKey, text, onPartial, {
+            brainOptions: { ...sessionOpts, allowedTools: mbCfg.allowed_tools ?? 'all' },
+            klass: 'sibling',
+          });
+          result = { text: r.text, optionsPatch: r.sessionId ? { sessionId: r.sessionId } : null };
+        } catch (e) {
+          result = { text: `!! ${e?.message ?? e}`, optionsPatch: null };
+        }
+      } else {
+        result = await brain.stream(
+          // Sessionless brains (e.g. llama @l) have no server-side thread, so
+          // the host supplies the conversation as opts.history — the per-chat
+          // rolling transcript that mimics @e's session memory. Falls back to
+          // the single turn when no history is supplied (engineer turns, etc.).
+          { history: opts.history ?? text, message: text },
+          onPartial,
+          sessionOpts,
+        );
+      }
       const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       if (mbCfg.session_id && !opts._retried && isMissingResumeErrorText(final)) {
         await persistSiblingSession(null);
