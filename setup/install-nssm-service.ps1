@@ -80,11 +80,18 @@ if (-not (Test-Path $node))       { throw "node.exe not found at $node - install
 #        TWO daemons. The XML definition stays in setup/egpt-spine.xml as
 #        the documented fallback path; a user who wants to revert can
 #        re-import it with schtasks /Create /XML setup\egpt-spine.xml. ---
-$existingTask = schtasks /Query /TN egpt-spine /FO LIST 2>$null
-if ($LASTEXITCODE -eq 0) {
+# Use the ScheduledTasks cmdlets, NOT native schtasks. Under
+# $ErrorActionPreference='Stop', schtasks' stderr on a missing task is wrapped
+# in a terminating NativeCommandError, so the old `schtasks /Query ... 2>$null`
+# THREW on a machine that never had the egpt-spine task (a fresh worker),
+# aborting the whole install (operator 2026-06-10). Get-ScheduledTask returns
+# $null (with SilentlyContinue) instead of erroring; existence is the object,
+# not an exit code.
+$existingTask = Get-ScheduledTask -TaskName egpt-spine -ErrorAction SilentlyContinue
+if ($existingTask) {
   Write-Host "Removing legacy egpt-spine Task Scheduler task..." -ForegroundColor Yellow
-  schtasks /End    /TN egpt-spine 2>&1 | Out-Null
-  schtasks /Delete /TN egpt-spine /F 2>&1 | Out-Null
+  try { Stop-ScheduledTask -TaskName egpt-spine -ErrorAction SilentlyContinue } catch {}
+  Unregister-ScheduledTask -TaskName egpt-spine -Confirm:$false -ErrorAction SilentlyContinue
   Write-Host "  (Re-create with: schtasks /Create /XML setup\egpt-spine.xml /TN egpt-spine /RU <user> /RP *)" -ForegroundColor DarkGray
 }
 
@@ -103,8 +110,12 @@ $cred = Get-Credential -UserName $svcUser -Message "Password for $svcUser (the s
 $existing = Get-Service -Name 'egpt-daemon' -ErrorAction SilentlyContinue
 if ($existing) {
   Write-Host "Removing existing egpt-daemon service (clean reinstall)..." -ForegroundColor Yellow
-  & $nssm stop   egpt-daemon confirm 2>&1 | Out-Null
-  & $nssm remove egpt-daemon confirm 2>&1 | Out-Null
+  # No `2>&1`: redirecting native stderr into the PS pipeline wraps it in a
+  # terminating NativeCommandError under $ErrorActionPreference='Stop' (same
+  # class as the schtasks fix above). Plain `| Out-Null` silences stdout;
+  # any nssm stderr just prints to the console, harmless on cleanup.
+  & $nssm stop   egpt-daemon confirm | Out-Null
+  & $nssm remove egpt-daemon confirm | Out-Null
   Start-Sleep -Seconds 1
 }
 
