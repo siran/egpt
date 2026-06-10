@@ -312,3 +312,78 @@ export function stream({ history, message }, onUpdate, options = {}) {
     }
   });
 }
+
+// WARM session (feat/sibling-reply): one open query() in streaming-input mode,
+// reused across turns — no per-turn cold start. The SDK accepts an
+// AsyncIterable<SDKUserMessage> as `prompt`; we keep it open and yield one
+// message per turn, reading messages until that turn's `result`. ONE turn at a
+// time per session (the pool serializes). Returns { sessionId, turn, close }.
+export function createWarmSession(options = {}) {
+  const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
+  const sdkOpts = buildSdkOptions(options);
+  const abortController = new AbortController();
+  sdkOpts.abortController = abortController;
+
+  // Input pump: a generator the SDK pulls from. _push hands it the next turn;
+  // _push(null) closes it (→ query ends).
+  let _waiter = null;
+  const _queue = [];
+  let _closed = false;
+  const _push = (text) => {
+    const item = text === null ? null
+      : { type: 'user', message: { role: 'user', content: String(text) }, parent_tool_use_id: null };
+    if (_waiter) { const w = _waiter; _waiter = null; w(item); } else _queue.push(item);
+  };
+  async function* _input() {
+    while (!_closed) {
+      const next = _queue.length ? _queue.shift() : await new Promise(r => { _waiter = r; });
+      if (next === null) return;
+      yield next;
+    }
+  }
+
+  let _pending = null;          // { resolve, reject, onUpdate, acc }
+  let _readerError = null;
+  let _sessionId = null;
+  const session = { sessionId: null };
+
+  const q = query({ prompt: _input(), options: sdkOpts });
+  (async () => {
+    try {
+      for await (const m of q) {
+        if (typeof m.session_id === 'string' && !_sessionId) { _sessionId = m.session_id; session.sessionId = m.session_id; onLog(`claude-sdk warm: session_id ${_sessionId}`); }
+        if (!_pending) continue;
+        if (m.type === 'stream_event' && m.event?.type === 'content_block_delta') {
+          const d = m.event.delta;
+          if (d?.type === 'text_delta' && typeof d.text === 'string') { _pending.acc += d.text; try { _pending.onUpdate(_pending.acc); } catch {} }
+        } else if (m.type === 'assistant' && m.message?.content) {
+          const text = m.message.content.filter(c => c.type === 'text').map(c => c.text).join('');
+          if (text && !_pending.acc) { _pending.acc = text; try { _pending.onUpdate(_pending.acc); } catch {} }
+        } else if (m.type === 'result') {
+          const p = _pending; _pending = null;
+          if (m.subtype === 'success') p.resolve({ text: (typeof m.result === 'string' && m.result) || p.acc, sessionId: _sessionId });
+          else { try { onLog(`claude-sdk warm: error result ${JSON.stringify(m).slice(0, 400)}`); } catch {} p.reject(new Error(`claude-sdk warm: ${m.subtype ?? 'error'}`)); }
+        }
+      }
+      if (_pending) { _pending.reject(new Error('claude-sdk warm: query ended mid-turn')); _pending = null; }
+    } catch (e) {
+      _readerError = e;
+      if (_pending) { _pending.reject(e); _pending = null; }
+    }
+  })();
+
+  session.turn = (message, onUpdate = () => {}) => {
+    if (_closed) return Promise.reject(new Error('claude-sdk warm: session closed'));
+    if (_readerError) return Promise.reject(_readerError);
+    if (_pending) return Promise.reject(new Error('claude-sdk warm: turn already in progress'));
+    return new Promise((resolve, reject) => { _pending = { resolve, reject, onUpdate, acc: '' }; _push(message); });
+  };
+  session.close = () => {
+    if (_closed) return;
+    _closed = true;
+    _push(null);
+    try { abortController.abort(); } catch {}
+    try { q.return?.(); } catch {}
+  };
+  return session;
+}
