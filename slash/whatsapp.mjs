@@ -1,21 +1,21 @@
-// slash/whatsapp.mjs — manage the baileys bridge: start, pair, disconnect,
+// slash/whatsapp.mjs — manage the WhatsApp bridge (beeper default /
+// cdp fallback; baileys removed 2026-06-10): start, disconnect,
 // allow/revoke specific phone numbers.
 
-import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const EGPT_HOME = join(homedir(), '.egpt');
-const AUTH_DIR  = join(EGPT_HOME, 'wa-auth');
 const CFG_PATH  = join(EGPT_HOME, 'config.json');
 
 export const meta = {
   cmd: '/whatsapp',
   section: 'MISC',
   surface: 'shell',
-  usage: '/whatsapp [start|pair|disconnect|allow <num>|revoke <num>|allowed]',
+  usage: '/whatsapp [start|disconnect|allow <num>|revoke <num>|allowed]',
   desc:
-    'manage whatsapp bridge: start (existing auth), pair (wipe + new QR), ' +
+    'manage whatsapp bridge (beeper default / cdp fallback): start, ' +
     'disconnect, allow/revoke numbers',
 };
 
@@ -25,7 +25,7 @@ export async function run({ arg, ctx }) {
   //   waBridgeRef                      — React ref → bridge instance
   //   clearGlobalWaBridge()            — null out the SIGTERM-flush slot
   //   startWaBridge(forcePair: bool)   — host-side bridge bootstrap
-  const { sysOut, dp, waBridgeRef, clearGlobalWaBridge, startWaBridge } = ctx;
+  const { sysOut, waBridgeRef, clearGlobalWaBridge, startWaBridge } = ctx;
 
   const argParts = arg.trim().split(/\s+/).filter(Boolean);
   const sub = argParts[0];
@@ -37,9 +37,8 @@ export async function run({ arg, ctx }) {
       : 'not running';
     sysOut(
       `whatsapp: ${status}\n` +
-      `\n/whatsapp start               start the bridge with existing auth (use this first)` +
-      `\n/whatsapp pair                ONLY when auth is expired/invalid: wipe + show new QR` +
-      `\n/whatsapp disconnect          stop the bridge (auth preserved)` +
+      `\n/whatsapp start               start the bridge (beeper: needs beeper_token; cdp: needs Chrome WA tab)` +
+      `\n/whatsapp disconnect          stop the bridge` +
       `\n/whatsapp allow <number>      authorize a phone number for commands` +
       `\n/whatsapp revoke <number>     remove authorization` +
       `\n/whatsapp allowed             list authorized numbers`
@@ -50,20 +49,12 @@ export async function run({ arg, ctx }) {
   if (sub === 'start' || sub === 'connect') {
     if (waBridgeRef.current) { sysOut('whatsapp: already running'); return true; }
     const ok = await startWaBridge(false);
-    if (!ok) sysOut('whatsapp: start failed — auth may be missing. Run /whatsapp pair to (re-)pair.');
+    if (!ok) sysOut('whatsapp: start failed — for beeper, set beeper_token in config.local.json (Beeper Desktop → Settings → Developer); for cdp, /chrome + a logged-in WhatsApp Web tab.');
     return true;
   }
 
   if (sub === 'pair') {
-    if (waBridgeRef.current) {
-      try { waBridgeRef.current.stop(); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
-      waBridgeRef.current = null;
-      clearGlobalWaBridge();
-    }
-    try { await rm(AUTH_DIR, { recursive: true, force: true }); }
-    catch (e) { sysOut(`!! couldn't wipe ${AUTH_DIR}: ${e.message}`); return true; }
-    sysOut(`whatsapp: auth wiped at ${dp(AUTH_DIR)}; restarting bridge — QR coming up`);
-    await startWaBridge(true);
+    sysOut('whatsapp: pairing is gone with baileys (removed 2026-06-10). beeper rides your Beeper Desktop login; cdp rides the WhatsApp Web tab in egpt\'s Chrome. Nothing to pair.');
     return true;
   }
 
@@ -72,7 +63,7 @@ export async function run({ arg, ctx }) {
     try { waBridgeRef.current.stop(); } catch (e) { console.error(`!! whatsapp.mjs:[catch] ${e?.message ?? e}`); }
     waBridgeRef.current = null;
     clearGlobalWaBridge();
-    sysOut('whatsapp: disconnected (auth preserved). /whatsapp pair to start over');
+    sysOut('whatsapp: disconnected. /whatsapp start to reconnect');
     return true;
   }
 

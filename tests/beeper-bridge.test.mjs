@@ -23,6 +23,10 @@ async function startFakeBeeper() {
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
         return;
       }
+      if (req.method === 'GET' && req.url === '/v1/chats') {
+        res.end(JSON.stringify({ items: [...chats.entries()].map(([id, c]) => ({ id, ...c })) }));
+        return;
+      }
       const get = req.url.match(/^\/v1\/chats\/([^/]+)$/);
       if (req.method === 'GET' && get) {
         const id = decodeURIComponent(get[1]);
@@ -87,9 +91,13 @@ async function startBridge(extra = {}) {
   return { bridge, incoming };
 }
 
+// Real Beeper chatIDs are Matrix room ids ('!xxx:beeper.local'); tests
+// mirror that so the '!'-prefix fast path in name resolution is exercised
+// the same way as production.
+const CHAT = (n) => `!${n}:beeper.local`;
 const liveMsg = (over = {}) => ({
   id: `m-${Math.random().toString(36).slice(2)}`,
-  chatID: 'chat-1',
+  chatID: CHAT('chat-1'),
   text: 'hola',
   senderName: 'An',
   isSender: true,
@@ -110,7 +118,7 @@ describe('beeper bridge', () => {
 
   it('suppresses the WS echo of its own send (text window, different id)', async () => {
     const { bridge, incoming } = await startBridge();
-    await bridge.send('egpt says hi', { chatId: 'chat-1' });
+    await bridge.send('egpt says hi', { chatId: CHAT('chat-1') });
     await waitFor(() => fake.posts.length === 1);
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'totally-new-id', text: 'egpt says hi' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
@@ -131,8 +139,8 @@ describe('beeper bridge', () => {
   it('same numeric id in DIFFERENT chats is two messages, not a dupe', async () => {
     // Verified live: Beeper ids are per-chat sequence numbers (e.g. 488).
     const { incoming } = await startBridge();
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: 'chat-a', text: 'from a' })] });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: 'chat-b', text: 'from b' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: CHAT('chat-a'), text: 'from a' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 488, chatID: CHAT('chat-b'), text: 'from b' })] });
     await waitFor(() => incoming.length === 2);
     expect(incoming.map((i) => i.text).sort()).toEqual(['from a', 'from b']);
   });
@@ -146,34 +154,66 @@ describe('beeper bridge', () => {
   });
 
   it('network scope is fail-closed: unknown or foreign accountID drops; prefix instance ids pass', async () => {
-    fake.chats.set('chat-unknown', { id: 'chat-unknown', title: 'X', type: 'single', isMuted: false, accountID: null });
-    fake.chats.set('chat-telegram', { id: 'chat-telegram', title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
-    fake.chats.set('chat-wa2', { id: 'chat-wa2', title: 'W', type: 'single', isMuted: false, accountID: 'whatsappgo_2' });
+    fake.chats.set(CHAT('chat-unknown'), { title: 'X', type: 'single', isMuted: false, accountID: null });
+    fake.chats.set(CHAT('chat-telegram'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
+    fake.chats.set(CHAT('chat-wa2'), { title: 'W', type: 'single', isMuted: false, accountID: 'whatsappgo_2' });
     const { incoming } = await startBridge();
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: 'chat-unknown', text: 'no-acct' })] });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: 'chat-telegram', text: 'tg' })] });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: 'chat-wa2', text: 'wa-instance' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-unknown'), text: 'no-acct' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-telegram'), text: 'tg' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-wa2'), text: 'wa-instance' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('wa-instance');
   });
 
   it('👂 ack only in enrolled chats; non-enrolled still dispatches the transcript silently', async () => {
-    const { incoming } = await startBridge({ isEnrolledChat: (id) => id === 'chat-enrolled' });
+    const { incoming } = await startBridge({ isEnrolledChat: (id) => id === CHAT('chat-enrolled') });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     });
-    fake.emit({ type: 'message.upserted', entries: [voice('chat-quiet')] });
-    fake.emit({ type: 'message.upserted', entries: [voice('chat-enrolled')] });
+    fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });
+    fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-enrolled'))] });
     await waitFor(() => incoming.length === 2);
     // Both transcripts reach the engine (E hears everything)…
     expect(incoming.map((i) => i.text)).toEqual(['fake transcript', 'fake transcript']);
     expect(incoming.every((i) => i.from.isTranscriptFromVoice)).toBe(true);
     // …but only the enrolled chat got the in-chat 👂 reply.
     expect(fake.posts).toHaveLength(1);
-    expect(fake.posts[0].chatID).toBe('chat-enrolled');
+    expect(fake.posts[0].chatID).toBe(CHAT('chat-enrolled'));
     expect(fake.posts[0].text).toBe('👂 fake transcript');
     expect(fake.posts[0].replyToMessageID).toBeTruthy();
+  });
+
+  it('👂 gate receives the deterministic name + slug, so enrollment by name works', async () => {
+    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { incoming } = await startBridge({ isEnrolledChat: (_id, { slug } = {}) => slug === 'dando-ruiz' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(fake.posts).toHaveLength(1);   // ack fired on slug match (diacritics stripped)
+    expect(fake.posts[0].chatID).toBe(CHAT('room9'));
+  });
+
+  it('send accepts a deterministic name/slug and resolves it to the room id', async () => {
+    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    const r = await bridge.send('hola por nombre', { chatId: 'dando-ruiz' });
+    expect(r?.ok).toBe(true);
+    expect(fake.posts).toHaveLength(1);
+    expect(fake.posts[0].chatID).toBe(CHAT('room9'));
+
+    // Unresolvable name → dropped, not thrown.
+    expect(await bridge.send('nope', { chatId: 'no-such-contact' })).toBeNull();
+    expect(fake.posts).toHaveLength(1);
+  });
+
+  it('exposes the deterministic-name surface (listChats / getChatName / getChatSlug)', async () => {
+    fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'group', isMuted: true, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    const chats = await bridge.listChats();
+    const r9 = chats.find((c) => c.id === CHAT('room9'));
+    expect(r9).toMatchObject({ name: 'Dándo Ruiz', slug: 'dando-ruiz', isGroup: true, isMuted: true });
+    expect(bridge.getChatName(CHAT('room9'))).toBe('Dándo Ruiz');
+    expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
   });
 
   it('default gate is DENY: no isEnrolledChat wired → no 👂 anywhere', async () => {
