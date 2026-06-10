@@ -3389,6 +3389,19 @@ function App() {
         // Beeper Desktop API token (transport: 'beeper'). config.local.json
         // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
         beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+        // Enrolled-chats rule for bridge-initiated sends (the beeper limb's
+        // 👂 transcript ack) — SAME whitelist as the outbox: auto_e_chats +
+        // self-DM. Reads EGPT_CONFIG live so /config edits apply without a
+        // bridge restart. NOTE (transport=beeper): entries must match the
+        // Beeper chatIDs the limb sees; the suppression log line in
+        // ~/.egpt/logs/beeper.log prints the id to enroll.
+        isEnrolledChat:    (chatId) => {
+          const wa = EGPT_CONFIG.whatsapp ?? {};
+          return new Set([
+            ...(Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : []),
+            wa.chat_id,
+          ].filter(Boolean)).has(chatId);
+        },
         // Override per-chat media destination so files land inside
         // the contact's slug-dir (operator 2026-05-20). Sync callback;
         // bridge falls back to the legacy ~/.egpt/media/<jid>/ path
