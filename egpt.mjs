@@ -56,6 +56,7 @@ import { N2C } from './src/attach/protocol.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
+import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -5032,22 +5033,44 @@ function App() {
     if (!tcfg?.enabled) return;
     const token = EGPT_CONFIG.transcription_token;
     if (!token) { errOut('!! transcriptor enabled but transcription_token unset — refusing to start an unauthenticated server. Set transcription_token (same value as the main spine) in config.local.json.'); return; }
-    let server = null, closed = false;
+    const audioCfg = EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+    const wlog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } };
+    let server = null, whisper = null, closed = false;
     (async () => {
       try {
+        // Resident whisper-server (audio_transcribe.server.enabled): load
+        // the GGUF ONCE instead of per-note. Spawned + supervised here;
+        // the transcriptor's per-request transcribe POSTs to it. Falls
+        // back to the per-note whisper-cli default when not enabled.
+        let transcribe;
+        const scfg = audioCfg.server;
+        if (scfg?.enabled) {
+          whisper = await startWhisperServer({
+            command: scfg.command,
+            model: audioCfg.model_path,
+            host: scfg.host || '127.0.0.1',
+            port: Number(scfg.port) > 0 ? Number(scfg.port) : 8089,
+            language: audioCfg.language,
+            extraArgs: Array.isArray(scfg.extra_args) ? scfg.extra_args : [],
+            onLog: wlog,
+          });
+          if (closed) { whisper.stop(); return; }
+          transcribe = makeWhisperServerTranscriber({ url: whisper.url, ffmpeg: audioCfg.ffmpeg_command, language: audioCfg.language });
+        }
         const s = await startTranscriptorServer({
           port: Number(tcfg.port) > 0 ? Number(tcfg.port) : TRANSCRIPTOR_DEFAULT_PORT,
           bind: tcfg.bind || '127.0.0.1',
           keyB64: token,
-          audioCfg: EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
-          onLog: (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } },
+          audioCfg,
+          transcribe,   // undefined → startTranscriptorServer uses whisper-cli per-note
+          onLog: wlog,
         });
-        if (closed) { s.close(); return; }   // unmounted mid-start
+        if (closed) { s.close(); whisper?.stop(); return; }   // unmounted mid-start
         server = s;
-        sysOut(`transcriptor: worker role up on ${tcfg.bind || '127.0.0.1'}:${s.port} (log: ~/.egpt/logs/transcriptor.log)`);
+        sysOut(`transcriptor: worker role up on ${tcfg.bind || '127.0.0.1'}:${s.port}${scfg?.enabled ? ' (resident whisper-server)' : ' (whisper-cli per-note)'} (log: ~/.egpt/logs/transcriptor.log)`);
       } catch (e) { errOut(`!! transcriptor failed to start: ${e?.message ?? e}`); }
     })();
-    return () => { closed = true; try { server?.close(); } catch (e) { swallow('transcriptor.close', e); } };
+    return () => { closed = true; try { server?.close(); } catch (e) { swallow('transcriptor.close', e); } try { whisper?.stop(); } catch (e) { swallow('whisper-server.stop', e); } };
   }, []);
 
   // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
