@@ -52,6 +52,7 @@ import { clearNucleusInfoSync, readNucleusInfo } from './src/attach/discovery.mj
 import { connectAttachClient } from './src/attach/client.mjs';
 import { N2C } from './src/attach/protocol.mjs';
 import { swallow } from './src/swallow.mjs';
+import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -6747,262 +6748,25 @@ function App() {
     // Voice-streaming branch (operator 2026-05-22). When a WA voice
     // note arrived in streaming mode, the bridge fires onIncoming
     // immediately (before transcription completes) with a handle in
-    // meta.voiceStream. We open a WA stream message NOW showing the
-    // listening state, subscribe to chunk events to update the body
-    // as transcript builds (typewriter), then await the full transcript
-    // before falling through to the normal dispatch path. The reuse
-    // of the SAME stream handle for the brain reply means the recipient
-    // sees one message that evolves: 🎙 listening → 🎙 <transcript> →
-    // 🐶 e: <brain reply>. Modality-mirror of the /movie alien arc.
+    // meta.voiceStream. The whole turn — chunk subscription, per-chunk
+    // brain passes, the evolving WA stream message, the final '.'
+    // marker — lives in src/voice-stream.mjs (Phase C extraction);
+    // this branch just wires the App's live deps into it.
     if (meta.voiceStream && meta.fromWhatsApp) {
-      // Multi-call brain evolution (operator 2026-05-22): the WA message
-      // shows ONLY the brain's reply, never the transcript itself. The
-      // transcript stays internal — the brain re-fires on each new chunk
-      // with the cumulative transcript so far, and its reply streams
-      // into the SAME WA message, EVOLVING as more audio is heard.
-      // Recipient watches the model's understanding form in real time,
-      // not the model parroting their words back.
-      const handle = meta.voiceStream;
       const personaName = 'e';
       const personaCfg = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
-      const personaEmoji = personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI;
-      const waPrefix = `${personaEmoji} ${personaName}\n`;
-      // Lazy stream open (operator 2026-05-22: "is it sending '...' as
-      // a final message?"). Previously we opened a WA stream message
-      // with '…' as the placeholder immediately on voice-note arrival,
-      // then sent partial updates as the brain streamed. Problem: if
-      // every brain pass returned silence (e.g. whisper transcribed
-      // noisy non-speech as '[Música]' placeholders), the partials
-      // still triggered the initial send → recipient saw '…' or the
-      // post-cancel 'deleted' placeholder. Now: only open the stream
-      // when the brain produces actual non-silence content worth
-      // showing. All-silence voice notes leave NO message in the chat.
-      // Per-chat emit gate (operator 2026-05-28): E reads the voice note for
-      // context (the brain still runs below), but in a muted / mention-not-met
-      // chat it must NOT send a reply. Gating the stream-open here suppresses
-      // every voice-path send (all sends go through _ensureStream first), so a
-      // muted chat gets no message while E still hears it.
-      const _voiceMayEmit = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
-      let voiceStream = null;
-      const _ensureStream = () => {
-        if (!_voiceMayEmit) return;
-        if (voiceStream) return;
-        try {
-          voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
-        } catch (e) { console.error(`!! voice-stream lazy open: ${e?.message ?? e}`); }
-      };
-      const _isSilencePartial = (s) => {
-        const t = String(s ?? '').trim();
-        return !t || t === '...' || t === '…';
-      };
-
-      const idStr = String(meta.waChatId ?? '');
-      const chatType = idStr.endsWith('@g.us')
-        ? 'group'
-        : idStr === 'status@broadcast' ? 'status' : 'private';
-      const threadCtx = {
-        threadId: meta.waChatId ?? 'wa-unknown',
-        surface: meta.waClientLabel ?? 'wa',
-        slug: waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? null,
-        name: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-      };
-
-      let cumulativeTranscript = '';
-      let cumulativeOffsetSec = 0;   // audio-internal timestamp of the latest window
-      // Stack of completed brain replies — each pass appends here, and
-      // the WA body shows them all joined by '---' (operator 2026-05-22:
-      // "instead of replacing the whole answer of brain, we append
-      // partial replies"). The recipient sees the model's stream of
-      // consciousness as it hears more, not a snapshot of its current
-      // best guess.
-      const replyStack = [];
-      let brainInFlight = false;
-      let pendingNewChunk = false;
-      const _sep = '\n---\n';
-
-      // Millisecond-precision audio-internal time prefix (operator
-      // 2026-05-22: "running millisecond time ticker"). Format
-      // [M:SS.mmm]. The brain doesn't get told this is voice — it
-      // just sees a ticking clock + a sliding text frame that
-      // replaces with each pass.
-      const _formatAudioTime = (sec) => {
-        const total = Math.max(0, sec);
-        const m = Math.floor(total / 60);
-        const s = Math.floor(total % 60);
-        const ms = Math.floor((total - Math.floor(total)) * 1000);
-        return `[${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}]`;
-      };
-
-      // Audio-side sliding windows (in bridges/whatsapp.mjs) give the
-      // brain a coherent 6-second phrase per pass — no need for a
-      // word-level sub-window on top. Each pass: brain receives the
-      // full transcript of the current audio window as a coherent input.
-      // Operator (2026-05-22): "let's feed the transcription model a
-      // sliding windows of audio... roughly 6 seconds."
-
-      const runBrainPass = async () => {
-        if (brainInFlight) {
-          pendingNewChunk = true;
-          return;
-        }
-        brainInFlight = true;
-        try {
-          while (true) {
-            pendingNewChunk = false;
-            const snapshot = cumulativeTranscript;
-            if (!snapshot) break;
-            // Minimal envelope per operator (2026-05-22): ticker +
-            // sender name + frame. Alien arc had only the canvas
-            // (no envelope), audio analog adds the sender so the
-            // brain knows whose words it's reading without inventing
-            // a chat/surface wrapper around them.
-            //   [0:05.177] An: hola
-            //   [0:06.234] An: hola e como
-            //   [0:08.321] An:    como estas espero
-            const audioStamp = _formatAudioTime(cumulativeOffsetSec);
-            const sender = (typeof meta.waSenderName === 'string' && meta.waSenderName.trim())
-              ? meta.waSenderName.trim()
-              : 'An';
-            const personaPrompt = `${audioStamp} ${sender}: ${snapshot}`;
-            try {
-              const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
-              const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
-                // Gate partial updates on non-silence content so we don't
-                // open the WA stream just to flash an '…' or '...' that
-                // never settles into a real reply. Pure-silence outputs
-                // never trigger an initial send → all-silence voice notes
-                // leave NO message in the chat.
-                if (_isSilencePartial(partial)) return;
-                _ensureStream();
-                try { voiceStream?.update?.(`${prefixBase}${partial}`); }
-                catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
-              }, threadCtx);
-              const trimmed = (reply ?? '').trim();
-              if (trimmed && trimmed !== '...' && trimmed !== '…') {
-                replyStack.push(trimmed);
-                _ensureStream();
-                try { voiceStream?.update?.(`${waPrefix}${replyStack.join(_sep)}`); }
-                catch (e) { console.error(`!! voice-stream pass-end update: ${e?.message ?? e}`); }
-              }
-            } catch (e) {
-              errOut(`!! voice-stream brain pass failed: ${e?.message ?? e}`);
-            }
-            if (!pendingNewChunk) break;
-          }
-        } finally {
-          brainInFlight = false;
-        }
-      };
-
-      // Fire the brain on every chunk. Earlier we buffered 2 chunks to
-      // skip whisper's garbled first-5s with 1s chunks; with 6s windows
-      // the first window is already a coherent phrase, no need to wait.
-      // Crucial for short voices (~3s, single window): no buffer means
-      // the brain fires immediately on the only window we'll have,
-      // rather than waiting for the large-model final pass. Operator
-      // 2026-05-22: "no replies to basic 'are you there?' or it takes
-      // too long, way more than before."
-      // Audio-time synchronized ticker (operator 2026-05-22:
-      // "synchronize the time ticker with a real passage of time, based
-      // on length of audio"). The ticker advances based on:
-      //   - the latest window's endSeconds (audio-internal position), and
-      //   - wall-clock elapsed since that window arrived (to interpolate
-      //     between chunks, so the timer keeps ticking even between
-      //     whisper completing windows).
-      // Always capped at the total audio duration so it can't run past
-      // the end. When no audio_duration known yet, just uses wall-clock
-      // since voice arrival.
-      // Tick at ~/movie's animation frame rate (operator 2026-05-22:
-      // "alien was also ms? make same frequency"). 250ms = 4 fps —
-      // matches the cadence at which alien frames were edited into
-      // the WA message. Brain coalescing limits actual brain calls
-      // (~one per 3s on haiku); but the WA-side updates happen
-      // freely, so the recipient sees the ticker advancing at frame
-      // rate even when the brain hasn't re-fired yet.
-      const VOICE_TICK_MS = 250;
-      const voiceStartMs = Date.now();
-      let lastChunkAudioEndSec = 0;
-      let lastChunkWallMs = voiceStartMs;
-      let audioDurationSec = null;
-      const _refreshOffset = () => {
-        const nowMs = Date.now();
-        const sinceChunkSec = (nowMs - lastChunkWallMs) / 1000;
-        let estimated = lastChunkAudioEndSec + sinceChunkSec;
-        if (audioDurationSec != null && estimated > audioDurationSec) {
-          estimated = audioDurationSec;
-        }
-        cumulativeOffsetSec = Math.max(cumulativeOffsetSec, estimated);
-      };
-      const tickTimer = setInterval(() => {
-        _refreshOffset();
-        // Tick fires brain even when no transcript yet (silence window).
-        // Brain sees `[0:03]      ` (whitespace) — perception of time
-        // passing while listening.
-        runBrainPass().catch(e => console.error(`!! voice-stream tick: ${e?.message ?? e}`));
-      }, VOICE_TICK_MS);
-
-      const onChunk = ({ cumulative, spacedCumulative, endSeconds, audioDuration }) => {
-        // Prefer the spaced representation — silence as whitespace gives
-        // the model a visual map of audio-time position within the window.
-        cumulativeTranscript = (typeof spacedCumulative === 'string' && spacedCumulative.length)
-          ? spacedCumulative
-          : cumulative;
-        if (typeof audioDuration === 'number' && audioDuration > 0) {
-          audioDurationSec = audioDuration;
-        }
-        if (typeof endSeconds === 'number') {
-          lastChunkAudioEndSec = endSeconds;
-          lastChunkWallMs = Date.now();
-        }
-        _refreshOffset();
-        runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
-      };
-      handle.emitter?.on?.('chunk', onChunk);
-
-      try {
-        await handle.donePromise;
-        handle.emitter?.off?.('chunk', onChunk);
-        clearInterval(tickTimer);
-        // No extra brain pass on done — the last window's pass IS the
-        // conclusion. Just drain any in-flight pass and finish.
-        while (brainInFlight) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-      } catch (e) {
-        handle.emitter?.off?.('chunk', onChunk);
-        clearInterval(tickTimer);
-        errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
-      }
-
-      const finalBody = replyStack.join(_sep).trim();
-      if (!finalBody) {
-        // All-silence voice note. With lazy open above, the WA stream
-        // never opened — nothing to send, nothing to revoke. If it
-        // somehow did open (race / edge), revoke it cleanly.
-        if (voiceStream) {
-          try { await voiceStream.cancel?.(); }
-          catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
-        }
-        return;
-      }
-      // Deterministic end-of-processing marker (operator 2026-05-22):
-      // "bridge based... when model ends the final response; this to
-      // know if model ended processing the transcript." A line with
-      // only '.' tells the recipient (and any downstream parser) that
-      // every chunk has been transcribed and the brain has done its
-      // final pass with the accurate large-model transcript. After
-      // this, the WA message body is locked.
-      try { await voiceStream?.finish?.(`${waPrefix}${finalBody}${_sep}.`); }
-      catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
-      try {
-        pushItem({
-          id: Date.now() + Math.random(),
-          author: `egpt@${SURFACE_TAG}`,
-          body: finalBody,
-          _source: 'whatsapp',
-          _sourceChatId: meta.waChatId,
-        });
-      } catch (e) { console.error(`!! voice-stream items push: ${e?.message ?? e}`); }
+      await runVoiceStreamTurn(meta, {
+        personaName,
+        personaEmoji: personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI,
+        eMayReplyToChat: _eMayReplyToChat,
+        openStream: (body, opts) => streamFactoryRef.current?.(body, opts),
+        getChatSlug: (id) => waBridgeRef.current?.getChatSlug?.(id) ?? null,
+        getChatName: (id) => waBridgeRef.current?.getChatName?.(id) ?? null,
+        runDefaultBrainTurn,
+        errOut,
+        pushItem,
+        surfaceTag: SURFACE_TAG,
+      });
       return;
     }
 
