@@ -55,6 +55,7 @@ import { connectAttachClient } from './src/attach/client.mjs';
 import { N2C } from './src/attach/protocol.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
+import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -3435,6 +3436,17 @@ function App() {
             wa.chat_id,
           ].filter(Boolean)).has(chatId);
         },
+        // Remote-first transcription (operator 2026-06-10): when
+        // transcription_endpoint is set, voice notes go to the GPU worker
+        // spine; ANY failure or timeout falls back to local whisper, so a
+        // dead/asleep worker only costs speed. Null endpoint = pure local
+        // (the bridge's own default transcriber).
+        transcribe:        EGPT_CONFIG.transcription_endpoint
+          ? makeRemoteFirstTranscriber({
+              endpoint: EGPT_CONFIG.transcription_endpoint,
+              getKey: () => bus.loadOrCreateBusKey(),
+            })
+          : undefined,
         // Override per-chat media destination so files land inside
         // the contact's slug-dir (operator 2026-05-20). Sync callback;
         // bridge falls back to the legacy ~/.egpt/media/<jid>/ path
@@ -5006,6 +5018,35 @@ function App() {
       } catch (e) { errOut(`!! attach host failed to start: ${e?.message ?? e}`); }
     })();
     return () => { closed = true; try { unsub?.(); } catch {} try { host?.close?.(); } catch {} _globalAttachHost = null; };
+  }, []);
+
+  // Worker role: transcriptor (operator 2026-06-10). When config
+  // `transcriptor.enabled` is true, this spine serves POST /v1/transcribe
+  // for the MAIN spine's voice notes — see src/tools/transcriptor.mjs for
+  // the topology (one main spine owns context + sends; workers compute).
+  // Auth: the shared ~/.egpt/bus.key (copy it from the main spine once).
+  // Default bind 127.0.0.1 — set transcriptor.bind to the LAN ip to expose.
+  useEffect(() => {
+    if (CLIENT) return;   // a worker is an ENGINE in a worker role, not a limb
+    const tcfg = EGPT_CONFIG.transcriptor;
+    if (!tcfg?.enabled) return;
+    let server = null, closed = false;
+    (async () => {
+      try {
+        const keyB64 = await bus.loadOrCreateBusKey();
+        const s = await startTranscriptorServer({
+          port: Number(tcfg.port) > 0 ? Number(tcfg.port) : TRANSCRIPTOR_DEFAULT_PORT,
+          bind: tcfg.bind || '127.0.0.1',
+          keyB64,
+          audioCfg: EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
+          onLog: (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } },
+        });
+        if (closed) { s.close(); return; }   // unmounted mid-start
+        server = s;
+        sysOut(`transcriptor: worker role up on ${tcfg.bind || '127.0.0.1'}:${s.port} (log: ~/.egpt/logs/transcriptor.log)`);
+      } catch (e) { errOut(`!! transcriptor failed to start: ${e?.message ?? e}`); }
+    })();
+    return () => { closed = true; try { server?.close(); } catch (e) { swallow('transcriptor.close', e); } };
   }, []);
 
   // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
