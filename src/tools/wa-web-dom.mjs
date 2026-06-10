@@ -129,7 +129,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
   function watchChatList(cb, { intervalMs = 2500 } = {}) {
     if (_watchTimer) clearInterval(_watchTimer);
     const _prev = new Map();   // chatName -> last signature (unread|preview)
-    let primed = false, _busy = false;
+    let primed = false, _busy = false, _deadTicks = 0;
     _watchTimer = setInterval(async () => {
       if (_busy) return;   // SERIALIZE: a slow callback (download+transcribe ~25s)
       _busy = true;        // must finish before the next scan, else concurrent
@@ -157,7 +157,23 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
             return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview };
           }).filter(r => r.name);
         })()`);
-        if (!Array.isArray(rows)) return;
+        // WATCHDOG: a live WA account ALWAYS has chats. An empty/absent list
+        // means the page is dead — crashed renderer, logged-out, or stuck blank
+        // (operator sees the WA tab black). Auto-recover with a reload after a
+        // few consecutive dead ticks (avoid reloading on a transient load). The
+        // sensor hook re-injects via addScriptToEvaluateOnNewDocument; re-prime
+        // so the post-reload list isn't all flagged "changed".
+        if (!Array.isArray(rows) || rows.length === 0) {
+          if (++_deadTicks >= 4) {
+            log(`wa-dom: chat list empty ${_deadTicks}x — reloading WA Web (recovery)`);
+            try { await _send('Page.reload', {}); } catch (e) { log(`wa-dom: reload failed — ${e?.message ?? e}`); }
+            try { await _send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: DOWNLOAD_DIR }); } catch { /* re-arm dl */ }
+            _deadTicks = 0; primed = false; _prev.clear();
+            await _sleep(9000);   // let WA re-render + re-sync before scanning again
+          }
+          return;
+        }
+        _deadTicks = 0;
         // Collect changed chats first (signature = unread|preview), update the
         // baseline, THEN process them one at a time (awaited). Fires on ANY
         // chat-list activity so a message in the OPEN chat (auto-read → no
