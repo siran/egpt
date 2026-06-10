@@ -111,6 +111,58 @@ export async function startBeeperBridge(opts = {}) {
     return info;
   }
 
+  // Deterministic chat slug (operator 2026-06-10: "conversations should be
+  // a deterministic contact name"). Beeper chatIDs are opaque Matrix room
+  // ids; nobody should have to chase them. The slug of a chat TITLE is the
+  // stable, human-meaningful key: lowercase, diacritics stripped, runs of
+  // non-alphanumerics collapsed to single dashes. 'Dando Ruiz' →
+  // 'dando-ruiz'; config lists may then hold names/slugs instead of ids.
+  function chatSlug(title) {
+    return String(title ?? '')
+      .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  // All chats from the Desktop API, normalized + briefly cached (60s) —
+  // powers /channels-style listings and name→chatID resolution.
+  let _chatList = null, _chatListAt = 0;
+  async function listChats() {
+    if (_chatList && Date.now() - _chatListAt < 60_000) return _chatList;
+    const j = await api('GET', '/v1/chats');
+    const items = j?.items ?? (Array.isArray(j) ? j : []);
+    _chatList = items.map(c => ({
+      id: c.id,
+      name: c.title ?? c.id,
+      slug: chatSlug(c.title ?? c.id),
+      isGroup: c.type === 'group',
+      isMuted: !!c.isMuted,
+      network: c.network ?? c.accountID ?? null,
+      unread: c.unreadCount ?? 0,
+    }));
+    _chatListAt = Date.now();
+    for (const c of _chatList) {
+      if (!_chatCache.has(c.id)) _chatCache.set(c.id, { title: c.name, type: c.isGroup ? 'group' : 'single', isMuted: c.isMuted, accountID: c.network });
+    }
+    return _chatList;
+  }
+
+  // nameOrId → chatID. Accepts a raw room id ('!…'), an exact title, or a
+  // slug. Ambiguity (two chats, same slug) resolves to the first and logs.
+  // Never throws — an unresolvable name returns null and the caller's
+  // send-drop logging explains it.
+  async function resolveChatId(nameOrId) {
+    const s = String(nameOrId ?? '');
+    if (!s) return null;
+    if (s.startsWith('!')) return s;   // already a room id
+    const want = chatSlug(s);
+    let matches = [];
+    try { matches = (await listChats()).filter(c => c.name === s || c.slug === want); }
+    catch (e) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — chat list unavailable: ${e?.message ?? e}`); return null; }
+    if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — no chat matches`); return null; }
+    if (matches.length > 1) onLog(`beeper: resolveChatId(${JSON.stringify(s)}) ambiguous (${matches.length} chats) — using "${matches[0].name}" (${matches[0].id})`);
+    return matches[0].id;
+  }
+
   // --- seen-id persistence (state/beeper-seen.jsonl) ---
   // Both dedup sets reload across restarts. Without this, every restart
   // forgot what was already handled/sent — and the upserted id can differ
@@ -217,8 +269,11 @@ export async function startBeeperBridge(opts = {}) {
   }
 
   // --- send (efferent) ---
-  async function sendMessage(chatID, text, { replyToMessageID } = {}) {
-    if (!chatID || !text) { onLog(`beeper: send DROPPED — chatID=${chatID} textLen=${(text || '').length}`); return null; }
+  // chatID may be a room id, an exact chat title, or a deterministic slug —
+  // one resolution chokepoint so config/outbox entries never need raw ids.
+  async function sendMessage(chatIdOrName, text, { replyToMessageID } = {}) {
+    const chatID = await resolveChatId(chatIdOrName);
+    if (!chatID || !text) { onLog(`beeper: send DROPPED — chat=${JSON.stringify(chatIdOrName)} resolved=${chatID} textLen=${(text || '').length}`); return null; }
     rememberSent(null, chatID, String(text));   // pre-record text BEFORE the POST: the WS echo can arrive before the HTTP response
     try {
       const body = { text: String(text) };
@@ -271,8 +326,9 @@ export async function startBeeperBridge(opts = {}) {
           // 👂 ack is an egpt-initiated SEND — it follows the enrolled-chats
           // rule (auto_e_chats + self-DM), not Beeper's mute flag. In a
           // non-enrolled chat egpt still hears (text continues to dispatch)
-          // but must not reveal itself.
-          if (isEnrolledChat(chatID)) {
+          // but must not reveal itself. The gate receives name + slug too,
+          // so enrollment lists can hold deterministic contact names.
+          if (isEnrolledChat(chatID, { name: info.title, slug: chatSlug(info.title) })) {
             if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply
           } else {
             onLog(`beeper: 👂 ack SUPPRESSED [${info.title}] — chat ${chatID} not enrolled (auto_e_chats/chat_id)`);
@@ -360,8 +416,19 @@ export async function startBeeperBridge(opts = {}) {
   return {
     chatId: null,
     async send(text, { chatId, chatName } = {}) {
-      return await sendMessage(chatId, text, {});
+      return await sendMessage(chatId ?? chatName, text, {});
     },
+    // Deterministic-name surface (operator 2026-06-10): callers and slash
+    // files work with names/slugs; room ids stay an internal detail.
+    listChats,
+    getChatName: (id) => _chatCache.get(id)?.title ?? null,
+    getChatSlug: (id) => { const t = _chatCache.get(id)?.title; return t ? chatSlug(t) : null; },
+    resolveChatId,
+    // Surface parity with slash-file expectations (integrity test):
+    // honest stubs where Beeper has no equivalent yet.
+    myJid: null,   // no jid concept on this transport
+    listEgptPinned: () => [],   // pins were a baileys-side feature
+    setEgptPin: (..._a) => { onLog('beeper: setEgptPin not supported on this transport (yet)'); return null; },
     // Non-streaming shim for the host's persona-reply path: the gate already
     // approved emit (streamFactory returns null otherwise); send the FINAL text
     // on finish(). Ignore intermediate update() frames (no edit-spam).

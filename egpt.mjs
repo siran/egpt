@@ -29,7 +29,7 @@ import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
-import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
+import { startOutboxWatcher, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
 import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
 import { startBeeperBridge } from './src/bridges/beeper.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
@@ -515,16 +515,12 @@ const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 
 // WhatsApp transport resolution (operator 2026-06-10: "baileys never.
-// chrome-cdp is fallback. beeper default and preferred."). Explicit
-// whatsapp.transport wins; unset resolves to beeper when a Beeper token is
-// present anywhere we'd look for one, else legacy baileys (deprecated —
-// the caller warns). Token-gated so a pre-beeper config keeps its working
-// WhatsApp instead of silently booting an inert tokenless beeper bridge.
+// chrome-cdp is fallback. beeper default and preferred." — and later the
+// same day: "remove baileys completely"; it is GONE, not deprecated).
+// beeper is the default; cdp must be chosen explicitly. A config still
+// saying 'baileys' gets beeper + a loud notice rather than a dead bridge.
 function resolveWaTransport(cfg = {}) {
-  const t = cfg.transport;
-  if (t === 'beeper' || t === 'cdp' || t === 'baileys') return t;
-  const tok = EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
-  return tok ? 'beeper' : 'baileys';
+  return cfg.transport === 'cdp' ? 'cdp' : 'beeper';
 }
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
@@ -3210,7 +3206,7 @@ function App() {
     return () => stopTgBridge();
   }, [stopTgBridge]);
 
-  // ── WhatsApp bridge (baileys, personal account) ──────────────────────
+  // ── WhatsApp bridge (beeper default / cdp fallback, personal account) ──
   // Enabled when EGPT_CONFIG.whatsapp.enabled === true (or any truthy
   // whatsapp config block is present). First run shows a QR to scan with
   // your phone; auth state persists at ~/.egpt/wa-auth/.
@@ -3329,21 +3325,9 @@ function App() {
     const cfg = EGPT_CONFIG.whatsapp;
     if (!cfg || typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
     if (cfg.enabled === false) return false;
-    // Don't auto-pair on first run — would print a QR unprompted.
-    // `force` is set by /whatsapp pair to bypass this.
-    const authDir = join(EGPT_HOME, 'wa-auth');
-    // The baileys QR-pairing gate only applies to the baileys transport. The
-    // CDP limb (whatsapp.transport: 'cdp') drives the already-logged-in
-    // WhatsApp Web client in egpt's Chrome — there is no baileys auth to pair
-    // (operator 2026-06-09). Skip the gate for cdp.
-    const _isCdp = resolveWaTransport(cfg) !== 'baileys';   // only baileys uses QR pairing
-    if (!_isCdp && !force && !isBaileysPaired(authDir)) {
-      pushItem({
-        id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-        body: 'whatsapp configured but not paired. Run /whatsapp pair to scan a QR with your phone.',
-      });
-      return false;
-    }
+    // No pairing gate: baileys (and its QR dance) is gone. Both remaining
+    // transports ride an existing login — beeper the Beeper Desktop app,
+    // cdp the logged-in WhatsApp Web tab in egpt's Chrome.
     try {
       // Derive the valid persona-reply names from the sibling registry
       // (canonical names + aliases). cf77999 in the bridge uses this
@@ -3442,12 +3426,15 @@ function App() {
         // bridge restart. NOTE (transport=beeper): entries must match the
         // Beeper chatIDs the limb sees; the suppression log line in
         // ~/.egpt/logs/beeper.log prints the id to enroll.
-        isEnrolledChat:    (chatId) => {
+        // Entries may be chat ids OR deterministic contact names/slugs
+        // (operator 2026-06-10: nobody chases opaque room ids).
+        isEnrolledChat:    (chatId, { name, slug } = {}) => {
           const wa = EGPT_CONFIG.whatsapp ?? {};
-          return new Set([
+          const allowed = new Set([
             ...(Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : []),
             wa.chat_id,
-          ].filter(Boolean)).has(chatId);
+          ].filter(Boolean));
+          return allowed.has(chatId) || (name && allowed.has(name)) || (slug && allowed.has(slug));
         },
         // Remote-first transcription (operator 2026-06-10): when
         // transcription_endpoint is set, voice notes go to the GPU worker
@@ -4021,22 +4008,14 @@ function App() {
           setTimeout(() => { try { process.exit(75); } catch { /* already exiting */ } }, 300);
         },
       };
-      // Transport policy (operator 2026-06-10): beeper is DEFAULT and
-      // preferred, cdp is the fallback, baileys is never the answer for a
-      // new setup (kept selectable for rollback only; excision is a later
-      // step). Explicit whatsapp.transport always wins; when unset, beeper
-      // is chosen if a Beeper token is resolvable — so a legacy config
-      // without a token keeps working (as deprecated baileys, loudly)
-      // instead of booting an inert tokenless beeper bridge and silently
-      // dropping WhatsApp.
+      // Transport policy (operator 2026-06-10): beeper default + preferred,
+      // cdp explicit fallback, baileys REMOVED ("remove baileys completely").
       const _waTransport = resolveWaTransport(EGPT_CONFIG.whatsapp ?? {});
-      logOut(`whatsapp: transport=${_waTransport}${EGPT_CONFIG.whatsapp?.transport ? '' : ' (resolved default)'}`);
-      if (_waTransport === 'baileys') {
-        logOut('whatsapp: baileys is DEPRECATED (operator 2026-06-10: beeper default, cdp fallback, baileys never) — set whatsapp.transport: beeper + beeper_token to cut over');
+      logOut(`whatsapp: transport=${_waTransport}${EGPT_CONFIG.whatsapp?.transport ? '' : ' (default)'}`);
+      if (EGPT_CONFIG.whatsapp?.transport === 'baileys') {
+        logOut('whatsapp: transport "baileys" was REMOVED (operator 2026-06-10) — starting beeper instead. Set whatsapp.transport: beeper (+ beeper_token) or cdp.');
       }
-      const _starter = _waTransport === 'beeper' ? startBeeperBridge
-        : _waTransport === 'cdp' ? startWhatsAppCdpBridge
-        : startBaileysBridge;
+      const _starter = _waTransport === 'cdp' ? startWhatsAppCdpBridge : startBeeperBridge;
       const bridge = await _starter(_bridgeOpts);
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
@@ -8021,7 +8000,15 @@ function App() {
             ...(Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : []),
             waCfg.chat_id,
           ].filter(Boolean));
-      if (!allowed.has(ev.jid)) {
+      // Whitelist entries may be chat ids OR deterministic names/slugs
+      // (operator 2026-06-10). ev.jid is the TARGET chat — match its id,
+      // its display name, and its slug against the list, asking the live
+      // bridge for the latter two. A name the bridge can't resolve simply
+      // fails every comparison → BLOCKED, fail-closed as before.
+      const _jidAllowed = allowed.has(ev.jid)
+        || (wa.getChatName && allowed.has(wa.getChatName(ev.jid)))
+        || (wa.getChatSlug && allowed.has(wa.getChatSlug(ev.jid)));
+      if (!_jidAllowed) {
         const why = ev.from === 'system'
           ? 'a system message may ONLY reach the operator self-DM / debug-bot — never a contact chat'
           : 'not in auto_e_chats or self-DM';
