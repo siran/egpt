@@ -14,15 +14,38 @@
 // Limb contract (drop-in like whatsapp-cdp): { send, startStreamMessage,
 // isAlive, stop, chatId }. No Beeper/Matrix anatomy leaks past this file —
 // `from.chatId` is the opaque Beeper room id, used only to send back.
+//
+// Hardening pass (2026-06-10, review follow-up):
+//   - 👂 transcript acks are gated on isEnrolledChat (host passes the
+//     auto_e_chats + self-DM rule), NOT on Beeper's mute flag. Default
+//     DENY — "leaks are unacceptable" (operator 2026-06-03). Suppressed
+//     acks log the chatID so the operator can enroll it.
+//   - Backlog gate: messages older than bridge start (minus holdGraceMs)
+//     are marked seen but never dispatched — same hold-on-reconnect
+//     semantic as the baileys/TG bridges. Without it, a Beeper replay
+//     after restart would re-answer old messages (and egpt's own echoed
+//     replies come back isSender=true, i.e. authorized — loop fuel).
+//   - Seen-ids persist to state/beeper-seen.jsonl across restarts
+//     (in-memory-only dedup + the pendingMessageID≠final-id gap meant a
+//     restart forgot everything it ever sent or handled).
+//   - Network scope is FAIL-CLOSED: unknown accountID with a scope active
+//     drops the message (it used to pass).
+//   - WS reconnect backs off 3s→60s (a closed Beeper app was writing a
+//     log line every 3s, ~29k/day) and _sentText sweeps expired entries.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const _BEEPER_LOG = join(homedir(), '.egpt', 'logs', 'beeper.log');
+const SEEN_PROCESSED_CAP = 3000;
+const SEEN_SENT_CAP = 500;
+const SEEN_COMPACT_EVERY = 1000;   // appends between jsonl compactions
+const RECONNECT_MIN_MS = 3_000;
+const RECONNECT_MAX_MS = 60_000;
 
 export async function startBeeperBridge(opts = {}) {
   const {
@@ -32,7 +55,17 @@ export async function startBeeperBridge(opts = {}) {
     beeperToken,
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
-    networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats) but we drop messages from other accounts. Set [] / null to process every network.
+    networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats); anything else is dropped. Set [] / null to process every network.
+    // Enrolled-chats gate for the 👂 transcript ack — the SAME rule as every
+    // other egpt-initiated send (auto_e_chats + self-DM), supplied by the
+    // host. Default DENY: a bridge with no gate wired must never announce
+    // egpt's presence in a chat nobody enrolled.
+    isEnrolledChat = () => false,
+    // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
+    // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
+    holdGraceMs = 5_000,
+    stateDir = join(homedir(), '.egpt', 'state'),
+    transcribe = transcribeAudioFile,
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
   const audioCfg = media.audio_transcribe || {};
@@ -42,6 +75,7 @@ export async function startBeeperBridge(opts = {}) {
   };
   if (!token) { onLog('startBeeperBridge: NO TOKEN (set whatsapp.beeper_token / beeper_token / BEEPER_ACCESS_TOKEN) — bridge inert'); }
   onLog(`startBeeperBridge: ENTRY (${baseUrl})`);
+  const bridgeStartMs = Date.now();
 
   // --- REST ---
   async function api(method, path, body) {
@@ -55,7 +89,7 @@ export async function startBeeperBridge(opts = {}) {
     return t ? JSON.parse(t) : null;
   }
 
-  // chatID -> { title, type, isMuted } (cached; refreshed lazily)
+  // chatID -> { title, type, isMuted, accountID } (cached; refreshed lazily)
   const _chatCache = new Map();
   async function chatInfo(chatID) {
     if (_chatCache.has(chatID)) return _chatCache.get(chatID);
@@ -66,21 +100,83 @@ export async function startBeeperBridge(opts = {}) {
     return info;
   }
 
+  // --- seen-id persistence (state/beeper-seen.jsonl) ---
+  // Both dedup sets reload across restarts. Without this, every restart
+  // forgot what was already handled/sent — and the upserted id can differ
+  // from the POST's pendingMessageID, so text-window suppression alone
+  // (60s) can't cover a replay.
+  const _sentIds = new Set();
+  const _processedIds = new Set();   // incoming ids already handled (message.upserted re-fires on receipts/edits)
+  const _seenPath = join(stateDir, 'beeper-seen.jsonl');
+  let _seenAppends = 0;
+  {
+    let lines = [];
+    try { lines = readFileSync(_seenPath, 'utf8').split('\n').filter(Boolean); } catch { /* fresh */ }
+    for (const l of lines.slice(-(SEEN_PROCESSED_CAP + SEEN_SENT_CAP))) {
+      try {
+        const o = JSON.parse(l);
+        if (o.k === 'p') _processedIds.add(o.id);
+        else if (o.k === 's') _sentIds.add(o.id);
+      } catch { /* skip torn line */ }
+    }
+    if (lines.length) onLog(`beeper: seen-state loaded (${_processedIds.size} processed, ${_sentIds.size} sent)`);
+  }
+  function _capSet(set, cap) { while (set.size > cap) set.delete(set.values().next().value); }
+  function _persistSeen(k, id) {
+    if (!id) return;
+    try {
+      mkdirSync(stateDir, { recursive: true });
+      appendFileSync(_seenPath, JSON.stringify({ k, id, ts: Date.now() }) + '\n');
+      if (++_seenAppends % SEEN_COMPACT_EVERY === 0) {
+        const out = [
+          ...[..._processedIds].map(i => JSON.stringify({ k: 'p', id: i })),
+          ...[..._sentIds].map(i => JSON.stringify({ k: 's', id: i })),
+        ].join('\n') + '\n';
+        writeFileSync(_seenPath, out);
+      }
+    } catch (e) { onLog(`beeper: seen-state persist failed — ${e?.message ?? e}`); }
+  }
+  function markProcessed(id) {
+    if (!id) return;
+    _processedIds.add(id); _capSet(_processedIds, SEEN_PROCESSED_CAP);
+    _persistSeen('p', id);
+  }
+
   // Echo suppression: ids egpt itself sent (so our own replies / 👂 acks don't
   // re-trigger), plus a short-lived chatID|text fallback (the upserted id may
   // differ from the POST's pendingMessageID). Operator's OWN messages are NOT
   // suppressed — so the operator can @e themselves.
-  const _sentIds = new Set();
   const _sentText = new Map();   // `${chatID}|${text}` -> expiry ms
-  const _processedIds = new Set();   // incoming ids already dispatched (message.upserted re-fires on receipts/edits)
   function rememberSent(id, chatID, text) {
-    if (id) { _sentIds.add(id); if (_sentIds.size > 500) _sentIds.delete(_sentIds.values().next().value); }
-    if (text) _sentText.set(`${chatID}|${text}`, Date.now() + 60000);
+    if (id) { _sentIds.add(id); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', id); }
+    if (text) {
+      const now = Date.now();
+      // Sweep expired entries — this map otherwise grows for the life of a
+      // 24/7 daemon (entries "expire" logically but were never deleted).
+      if (_sentText.size > 50) { for (const [k, exp] of _sentText) { if (exp < now) _sentText.delete(k); } }
+      _sentText.set(`${chatID}|${text}`, now + 60000);
+    }
   }
   function isEcho(id, chatID, text) {
     if (id && _sentIds.has(id)) return true;
     const exp = _sentText.get(`${chatID}|${text}`);   // don't delete — receipts re-fire the same upsert; let it expire
     return !!(exp && exp > Date.now());
+  }
+
+  // Message timestamp (ms) from the upsert payload, schema-tolerantly:
+  // ISO string or epoch ms/seconds in `timestamp` / `ts` / `date`. null =
+  // unknown (gate inactive for that message; logged once).
+  let _warnedNoTimestamp = false;
+  function _msgTimestampMs(msg) {
+    const v = msg?.timestamp ?? msg?.ts ?? msg?.date ?? null;
+    if (v == null) return null;
+    if (typeof v === 'number') {
+      if (v > 1e12) return v;            // epoch ms
+      if (v > 1e9) return v * 1000;      // epoch seconds
+      return null;
+    }
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : null;
   }
 
   function fileUrlToPath(u) { try { return fileURLToPath(u); } catch { return u.replace(/^file:\/\/\/?/, ''); } }
@@ -121,23 +217,48 @@ export async function startBeeperBridge(opts = {}) {
     let text = msg.text || null, isVoice = false;
     if (isEcho(msg.id, chatID, text)) return;
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
-    // updates). Process each message once.
-    if (msg.id) { if (_processedIds.has(msg.id)) return; _processedIds.add(msg.id); if (_processedIds.size > 3000) _processedIds.delete(_processedIds.values().next().value); }
+    // updates). Process each message once — across restarts (persisted).
+    if (msg.id) { if (_processedIds.has(msg.id)) return; markProcessed(msg.id); }
 
     const info = await chatInfo(chatID);
+    // SCOPE (fail-closed): with a network scope active, a message whose
+    // account can't be determined is DROPPED, not passed. Prefix match so
+    // account-instance ids ('whatsapp', 'whatsappgo_2', …) still scope.
     const acct = msg.accountID || info.accountID;
-    if (networks && networks.length && acct && !networks.includes(acct)) return;   // SCOPE: only act on allowed networks (v1: whatsapp)
+    if (networks && networks.length) {
+      if (!acct) { onLog(`beeper: DROP [${chatID}] — accountID unknown with network scope ${JSON.stringify(networks)} active (fail-closed)`); return; }
+      if (!networks.some(n => String(acct).toLowerCase().startsWith(String(n).toLowerCase()))) return;
+    }
+
+    // Backlog gate: replayed/old messages are recorded as seen (above) but
+    // never dispatched — egpt answers live traffic only, same as the
+    // baileys/TG hold-on-reconnect rule.
+    const tsMs = _msgTimestampMs(msg);
+    if (tsMs == null) {
+      if (!_warnedNoTimestamp) { _warnedNoTimestamp = true; onLog('beeper: message payload has no parseable timestamp — backlog gate INACTIVE (verify schema with tests-manual/beeper-ws-capture.mjs)'); }
+    } else if (tsMs < bridgeStartMs - holdGraceMs) {
+      onLog(`beeper: held backlog message [${info.title}] (${new Date(tsMs).toISOString()} < bridge start) — not dispatched`);
+      return;
+    }
 
     if ((msg.type === 'VOICE' || msg.type === 'AUDIO') && Array.isArray(msg.attachments) && msg.attachments.length) {
       isVoice = true;
       const att = msg.attachments.find(a => a.isVoiceNote || a.type === 'audio') || msg.attachments[0];
       const path = await attachmentToLocalPath(att);
       if (path) {
-        const transcript = await transcribeAudioFile(path, audioCfg, onLog);
+        const transcript = await transcribe(path, audioCfg, onLog);
         if (transcript) {
           text = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-          if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply; skip muted chats
+          // 👂 ack is an egpt-initiated SEND — it follows the enrolled-chats
+          // rule (auto_e_chats + self-DM), not Beeper's mute flag. In a
+          // non-enrolled chat egpt still hears (text continues to dispatch)
+          // but must not reveal itself.
+          if (isEnrolledChat(chatID)) {
+            if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply
+          } else {
+            onLog(`beeper: 👂 ack SUPPRESSED [${info.title}] — chat ${chatID} not enrolled (auto_e_chats/chat_id)`);
+          }
         } else { text = '[voice note — transcription failed]'; }
       } else { text = '[voice note]'; }
     }
@@ -171,6 +292,7 @@ export async function startBeeperBridge(opts = {}) {
 
   // --- WebSocket afferent (subscribe '*', handle message.upserted) ---
   let ws = null, _stopped = false, _wsReady = false, _reconnectTimer = null;
+  let _reconnectMs = RECONNECT_MIN_MS;   // backs off to RECONNECT_MAX_MS while Beeper is down
   let _processing = Promise.resolve();   // serialize dispatch (slow transcribe must not interleave)
 
   function connect() {
@@ -181,6 +303,7 @@ export async function startBeeperBridge(opts = {}) {
       let ev; try { ev = JSON.parse(buf.toString()); } catch { return; }
       if (ev.type === 'ready') {
         _wsReady = true;
+        _reconnectMs = RECONNECT_MIN_MS;   // healthy again — reset backoff
         try { ws.send(JSON.stringify({ type: 'subscriptions.set', requestID: 'egpt', chatIDs: ['*'] })); onLog('beeper: subscribed to all chats'); }
         catch (e) { onLog(`beeper: subscribe failed — ${e?.message ?? e}`); }
         return;
@@ -193,13 +316,25 @@ export async function startBeeperBridge(opts = {}) {
           _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }
       }
-      // chat.upserted → refresh cache (title/mute may change)
+      // chat.upserted → refresh cache (title/mute may change). Preserve the
+      // accountID we already know — the upsert payload may omit it, and the
+      // network scope above fails closed without one.
       if (ev.type === 'chat.upserted' && Array.isArray(ev.entries)) {
-        for (const c of ev.entries) if (c?.id) _chatCache.set(c.id, { title: c.title || c.id, type: c.type || 'single', isMuted: !!c.isMuted });
+        for (const c of ev.entries) {
+          if (!c?.id) continue;
+          const prev = _chatCache.get(c.id);
+          _chatCache.set(c.id, { title: c.title || c.id, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID ?? prev?.accountID ?? null });
+        }
       }
       if (ev.type === 'error') onLog(`beeper: WS error event — ${JSON.stringify(ev).slice(0, 200)}`);
     });
-    ws.on('close', () => { _wsReady = false; if (!_stopped) { onLog('beeper: WS closed — reconnecting in 3s'); _reconnectTimer = setTimeout(connect, 3000); } });
+    ws.on('close', () => {
+      _wsReady = false;
+      if (_stopped) return;
+      onLog(`beeper: WS closed — reconnecting in ${Math.round(_reconnectMs / 1000)}s`);
+      _reconnectTimer = setTimeout(connect, _reconnectMs);
+      _reconnectMs = Math.min(_reconnectMs * 2, RECONNECT_MAX_MS);
+    });
     ws.on('error', (e) => onLog(`beeper: WS error — ${e?.message ?? e}`));
   }
   connect();
@@ -225,7 +360,7 @@ export async function startBeeperBridge(opts = {}) {
       };
     },
     isAlive: () => _wsReady,
-    stop: () => { _stopped = true; if (_reconnectTimer) clearTimeout(_reconnectTimer); try { ws?.close(); } catch {} },
+    stop: () => { _stopped = true; if (_reconnectTimer) clearTimeout(_reconnectTimer); try { ws?.close(); } catch { /* closing */ } },
   };
 }
 
