@@ -1,0 +1,112 @@
+// warm-sessions.mjs — lazy-warm pool of persistent brain sessions.
+//
+// feat/sibling-reply. Holds open `createWarmSession()` instances keyed by a
+// stable key (one per conversation-e thread, system-e, or sibling). Policy
+// (operator 2026-06-10):
+//   - LAZY: a key warms on its FIRST turn; reused (warm) thereafter.
+//   - IDLE-EVICT: after `idleTtl` with no turn, the session is closed — freeing
+//     the Node process + context RAM. Never keep every conversation-e warm.
+//     Per-class TTL: system=persistent (0), conversation=short follow-up window,
+//     sibling=medium. 0 = never idle-evict.
+//   - maxWarm: hard ceiling → LRU-evict the least-recently-used. Memory is
+//     bounded by `max`, NOT by total conversations.
+//   - TIMEOUT: a turn with no result within `dispatchTimeoutMs` fails AND evicts
+//     the session, so a hung/slow resume can never wedge the message queue.
+//   - One turn at a time per key (the warm primitive requires it); turns on the
+//     same key are serialized via a per-entry promise chain.
+//
+// Brain-agnostic over the warm primitive: today only `claude-sdk` is warmable
+// (in-process streaming-input). Callers that want a non-warmable brain just keep
+// using the cold `stream()` path.
+import { createWarmSession } from '../config/brains/claude-sdk.mjs';
+
+export function createWarmPool({
+  max = 6,
+  idleTtlMs = 180_000,
+  idleTtlByClass = {},
+  dispatchTimeoutMs = 90_000,
+  onLog = () => {},
+  makeSession = createWarmSession,   // injectable for tests
+} = {}) {
+  const _s = new Map();   // key -> { session, klass, lastUsed, idleTimer, busy, errored, chain }
+
+  const _ttlFor = (klass) => {
+    const v = idleTtlByClass?.[klass];
+    return v === undefined ? idleTtlMs : v;   // 0 = never idle-evict
+  };
+
+  function _evict(key, why) {
+    const e = _s.get(key);
+    if (!e) return;
+    _s.delete(key);
+    if (e.idleTimer) clearTimeout(e.idleTimer);
+    try { e.session.close(); } catch { /* already closing */ }
+    onLog(`warm: evicted ${key} (${why}); size=${_s.size}/${max}`);
+  }
+
+  function _armIdle(key) {
+    const e = _s.get(key);
+    if (!e) return;
+    if (e.idleTimer) clearTimeout(e.idleTimer);
+    const ttl = _ttlFor(e.klass);
+    if (ttl > 0) { e.idleTimer = setTimeout(() => _evict(key, `idle ${ttl}ms`), ttl); e.idleTimer.unref?.(); }
+  }
+
+  function _lruEvictIfFull(exceptKey) {
+    while (_s.size >= max) {
+      let victim = null, oldest = Infinity;
+      for (const [k, e] of _s) {
+        if (k === exceptKey || e.busy) continue;
+        if (e.lastUsed < oldest) { oldest = e.lastUsed; victim = k; }
+      }
+      if (!victim) break;   // everything is busy — let it grow over `max` briefly
+      _evict(victim, 'maxWarm LRU');
+    }
+  }
+
+  async function _doTurn(key, message, onUpdate, limit) {
+    const e = _s.get(key);
+    if (!e || e.errored) throw new Error('warm: session unavailable');
+    e.busy = true;
+    let timer;
+    try {
+      const res = await Promise.race([
+        e.session.turn(message, onUpdate),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`warm: turn timeout ${limit}ms`)), limit); timer.unref?.(); }),
+      ]);
+      e.lastUsed = Date.now();
+      return res;
+    } catch (err) {
+      e.errored = true;
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      e.busy = false;
+      if (_s.get(key)?.errored) _evict(key, 'turn failed/timeout'); else _armIdle(key);
+    }
+  }
+
+  // Run a turn on the warm session for `key`, opening it lazily. brainOptions is
+  // passed to the warm primitive (model, sessionId/resume, cwd, allowedTools,
+  // confineToDirs, …). klass ∈ {system, conversation, sibling} selects the TTL.
+  function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs } = {}) {
+    let e = _s.get(key);
+    if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
+    if (!e) {
+      _lruEvictIfFull(key);
+      e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve() };
+      _s.set(key, e);
+      onLog(`warm: opened ${key} (klass=${klass}); size=${_s.size}/${max}`);
+    }
+    const p = e.chain.then(() => _doTurn(key, message, onUpdate, timeoutMs ?? dispatchTimeoutMs));
+    e.chain = p.then(() => {}, () => {});   // keep the per-key chain alive across failures
+    return p;
+  }
+
+  function has(key) { return _s.has(key); }
+  function evict(key) { _evict(key, 'manual'); }
+  function close() { for (const k of [..._s.keys()]) _evict(k, 'pool close'); }
+  function stats() { return { size: _s.size, max, keys: [..._s.keys()] }; }
+
+  return { run, has, evict, close, stats };
+}
