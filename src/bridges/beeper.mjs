@@ -32,6 +32,7 @@ export async function startBeeperBridge(opts = {}) {
     beeperToken,
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
+    networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats) but we drop messages from other accounts. Set [] / null to process every network.
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
   const audioCfg = media.audio_transcribe || {};
@@ -58,8 +59,8 @@ export async function startBeeperBridge(opts = {}) {
   const _chatCache = new Map();
   async function chatInfo(chatID) {
     if (_chatCache.has(chatID)) return _chatCache.get(chatID);
-    let info = { title: chatID, type: 'single', isMuted: false };
-    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted }; }
+    let info = { title: chatID, type: 'single', isMuted: false, accountID: null };
+    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null }; }
     catch (e) { onLog(`beeper: chatInfo(${chatID}) failed — ${e?.message ?? e}`); }
     _chatCache.set(chatID, info);
     return info;
@@ -123,6 +124,10 @@ export async function startBeeperBridge(opts = {}) {
     // updates). Process each message once.
     if (msg.id) { if (_processedIds.has(msg.id)) return; _processedIds.add(msg.id); if (_processedIds.size > 3000) _processedIds.delete(_processedIds.values().next().value); }
 
+    const info = await chatInfo(chatID);
+    const acct = msg.accountID || info.accountID;
+    if (networks && networks.length && acct && !networks.includes(acct)) return;   // SCOPE: only act on allowed networks (v1: whatsapp)
+
     if ((msg.type === 'VOICE' || msg.type === 'AUDIO') && Array.isArray(msg.attachments) && msg.attachments.length) {
       isVoice = true;
       const att = msg.attachments.find(a => a.isVoiceNote || a.type === 'audio') || msg.attachments[0];
@@ -132,14 +137,12 @@ export async function startBeeperBridge(opts = {}) {
         if (transcript) {
           text = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-          const info = await chatInfo(chatID);
           if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply; skip muted chats
         } else { text = '[voice note — transcription failed]'; }
       } else { text = '[voice note]'; }
     }
     if (text == null) return;   // non-text, non-voice (image/sticker/etc.) — nothing to route in v1
 
-    const info = await chatInfo(chatID);
     const st = mentionStatus(text || '');
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
@@ -149,7 +152,11 @@ export async function startBeeperBridge(opts = {}) {
       username: msg.senderName || undefined,
       firstName: msg.senderName || undefined,
       senderName: msg.senderName || null,
-      authorized: true,                     // host gate is the real control
+      // OPERATOR-ONLY: isSender === true means the account owner sent it (any
+      // of their devices). Slash/lifecycle commands are gated on this host-side;
+      // a non-operator's @e still reaches the persona via the host's persona-wake
+      // exception. NEVER hardcode true — that authorizes every sender.
+      authorized: !!msg.isSender,
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
       replyToBot: false,                    // provable reply-to-persona is a follow-up
