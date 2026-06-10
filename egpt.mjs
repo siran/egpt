@@ -513,6 +513,19 @@ try {
 }
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
+
+// WhatsApp transport resolution (operator 2026-06-10: "baileys never.
+// chrome-cdp is fallback. beeper default and preferred."). Explicit
+// whatsapp.transport wins; unset resolves to beeper when a Beeper token is
+// present anywhere we'd look for one, else legacy baileys (deprecated —
+// the caller warns). Token-gated so a pre-beeper config keeps its working
+// WhatsApp instead of silently booting an inert tokenless beeper bridge.
+function resolveWaTransport(cfg = {}) {
+  const t = cfg.transport;
+  if (t === 'beeper' || t === 'cdp' || t === 'baileys') return t;
+  const tok = EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
+  return tok ? 'beeper' : 'baileys';
+}
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
@@ -3323,7 +3336,7 @@ function App() {
     // CDP limb (whatsapp.transport: 'cdp') drives the already-logged-in
     // WhatsApp Web client in egpt's Chrome — there is no baileys auth to pair
     // (operator 2026-06-09). Skip the gate for cdp.
-    const _isCdp = cfg.transport === 'cdp' || cfg.transport === 'beeper';   // neither uses baileys QR pairing
+    const _isCdp = resolveWaTransport(cfg) !== 'baileys';   // only baileys uses QR pairing
     if (!_isCdp && !force && !isBaileysPaired(authDir)) {
       pushItem({
         id: Date.now() + Math.random(), author: 'system', _localOnly: true,
@@ -4008,16 +4021,19 @@ function App() {
           setTimeout(() => { try { process.exit(75); } catch { /* already exiting */ } }, 300);
         },
       };
-      // Transport selection (operator 2026-06-09, beta-1.15 WA-CDP pivot):
-      // whatsapp.transport = 'baileys' (default) | 'cdp'. The CDP limb drives
-      // the official WhatsApp Web client in egpt's Chrome and is a drop-in for
-      // the bridge interface ({send, startStreamMessage, stop}). baileys stays
-      // default + selectable so the switch is reversible until CDP is trusted;
-      // excising baileys is a later step. The same opts object feeds both —
-      // the CDP limb uses onIncoming/onLog/cdpPort and ignores baileys-only knobs.
-      const _tCfg = EGPT_CONFIG.whatsapp?.transport;
-      const _waTransport = _tCfg === 'beeper' ? 'beeper' : _tCfg === 'cdp' ? 'cdp' : 'baileys';
-      logOut(`whatsapp: transport=${_waTransport}`);
+      // Transport policy (operator 2026-06-10): beeper is DEFAULT and
+      // preferred, cdp is the fallback, baileys is never the answer for a
+      // new setup (kept selectable for rollback only; excision is a later
+      // step). Explicit whatsapp.transport always wins; when unset, beeper
+      // is chosen if a Beeper token is resolvable — so a legacy config
+      // without a token keeps working (as deprecated baileys, loudly)
+      // instead of booting an inert tokenless beeper bridge and silently
+      // dropping WhatsApp.
+      const _waTransport = resolveWaTransport(EGPT_CONFIG.whatsapp ?? {});
+      logOut(`whatsapp: transport=${_waTransport}${EGPT_CONFIG.whatsapp?.transport ? '' : ' (resolved default)'}`);
+      if (_waTransport === 'baileys') {
+        logOut('whatsapp: baileys is DEPRECATED (operator 2026-06-10: beeper default, cdp fallback, baileys never) — set whatsapp.transport: beeper + beeper_token to cut over');
+      }
       const _starter = _waTransport === 'beeper' ? startBeeperBridge
         : _waTransport === 'cdp' ? startWhatsAppCdpBridge
         : startBaileysBridge;
