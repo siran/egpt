@@ -184,12 +184,28 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].replyToMessageID).toBeTruthy();
   });
 
-  it('👂 gate receives the deterministic name + slug, so enrollment by name works', async () => {
+  it('👂 gate is keyed on the STABLE id — the bridge passes the gate nothing but the id', async () => {
+    // Security guard (operator 2026-06-10): authorization must never rely
+    // on a display name. The bridge calls isEnrolledChat with the room id
+    // and NOTHING else, so a name/slug-based gate can't even be written
+    // against it. A title-matching gate sees undefined → no ack.
     fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
-    const { incoming } = await startBridge({ isEnrolledChat: (_id, { slug } = {}) => slug === 'dando-ruiz' });
+    const seen = [];
+    const { incoming } = await startBridge({
+      isEnrolledChat: (...args) => { seen.push(args); return false; },
+    });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
-    expect(fake.posts).toHaveLength(1);   // ack fired on slug match (diacritics stripped)
+    expect(fake.posts).toHaveLength(0);                 // not enrolled → no ack
+    expect(seen).toEqual([[CHAT('room9')]]);            // gate got the id ALONE — no name/slug to match on
+  });
+
+  it('enrolled by stable id → ack fires regardless of the chat title', async () => {
+    fake.chats.set(CHAT('room9'), { title: 'anything at all', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { incoming } = await startBridge({ isEnrolledChat: (id) => id === CHAT('room9') });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('room9'));
   });
 

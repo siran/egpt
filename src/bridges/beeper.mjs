@@ -326,9 +326,11 @@ export async function startBeeperBridge(opts = {}) {
           // 👂 ack is an egpt-initiated SEND — it follows the enrolled-chats
           // rule (auto_e_chats + self-DM), not Beeper's mute flag. In a
           // non-enrolled chat egpt still hears (text continues to dispatch)
-          // but must not reveal itself. The gate receives name + slug too,
-          // so enrollment lists can hold deterministic contact names.
-          if (isEnrolledChat(chatID, { name: info.title, slug: chatSlug(info.title) })) {
+          // but must not reveal itself. The gate matches the STABLE chatID
+          // ONLY — never the display name (operator 2026-06-10: "for
+          // authorization, never rely on contact names; a stable id must
+          // be used"). A title is attacker-controllable; the room id is not.
+          if (isEnrolledChat(chatID)) {
             if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply
           } else {
             onLog(`beeper: 👂 ack SUPPRESSED [${info.title}] — chat ${chatID} not enrolled (auto_e_chats/chat_id)`);

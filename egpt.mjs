@@ -3426,25 +3426,30 @@ function App() {
         // bridge restart. NOTE (transport=beeper): entries must match the
         // Beeper chatIDs the limb sees; the suppression log line in
         // ~/.egpt/logs/beeper.log prints the id to enroll.
-        // Entries may be chat ids OR deterministic contact names/slugs
-        // (operator 2026-06-10: nobody chases opaque room ids).
-        isEnrolledChat:    (chatId, { name, slug } = {}) => {
+        // Enrollment is an AUTHORIZATION boundary — matched on the STABLE
+        // chat id ONLY, never a display name (operator 2026-06-10: "for
+        // authorization, never rely on contact names; a stable id must be
+        // used"). Chat titles are attacker-controllable (a contact can
+        // rename a chat to impersonate an enrolled one); the Beeper room
+        // id / WA jid is not. Deterministic NAMES are for conversation
+        // storage + display + outbound addressing, never for the gate.
+        isEnrolledChat:    (chatId) => {
           const wa = EGPT_CONFIG.whatsapp ?? {};
-          const allowed = new Set([
+          return new Set([
             ...(Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : []),
             wa.chat_id,
-          ].filter(Boolean));
-          return allowed.has(chatId) || (name && allowed.has(name)) || (slug && allowed.has(slug));
+          ].filter(Boolean)).has(chatId);
         },
         // Remote-first transcription (operator 2026-06-10): when
         // transcription_endpoint is set, voice notes go to the GPU worker
         // spine; ANY failure or timeout falls back to local whisper, so a
-        // dead/asleep worker only costs speed. Null endpoint = pure local
-        // (the bridge's own default transcriber).
-        transcribe:        EGPT_CONFIG.transcription_endpoint
+        // dead/asleep worker only costs speed. Null endpoint (or no token)
+        // = pure local (the bridge's own default transcriber). Auth is the
+        // shared transcription_token, same value on both machines.
+        transcribe:        (EGPT_CONFIG.transcription_endpoint && EGPT_CONFIG.transcription_token)
           ? makeRemoteFirstTranscriber({
               endpoint: EGPT_CONFIG.transcription_endpoint,
-              getKey: () => bus.loadOrCreateBusKey(),
+              getKey: () => EGPT_CONFIG.transcription_token,
             })
           : undefined,
         // Override per-chat media destination so files land inside
@@ -5025,14 +5030,15 @@ function App() {
     if (CLIENT) return;   // a worker is an ENGINE in a worker role, not a limb
     const tcfg = EGPT_CONFIG.transcriptor;
     if (!tcfg?.enabled) return;
+    const token = EGPT_CONFIG.transcription_token;
+    if (!token) { errOut('!! transcriptor enabled but transcription_token unset — refusing to start an unauthenticated server. Set transcription_token (same value as the main spine) in config.local.json.'); return; }
     let server = null, closed = false;
     (async () => {
       try {
-        const keyB64 = await bus.loadOrCreateBusKey();
         const s = await startTranscriptorServer({
           port: Number(tcfg.port) > 0 ? Number(tcfg.port) : TRANSCRIPTOR_DEFAULT_PORT,
           bind: tcfg.bind || '127.0.0.1',
-          keyB64,
+          keyB64: token,
           audioCfg: EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
           onLog: (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } },
         });
@@ -8000,15 +8006,12 @@ function App() {
             ...(Array.isArray(waCfg.auto_e_chats) ? waCfg.auto_e_chats : []),
             waCfg.chat_id,
           ].filter(Boolean));
-      // Whitelist entries may be chat ids OR deterministic names/slugs
-      // (operator 2026-06-10). ev.jid is the TARGET chat — match its id,
-      // its display name, and its slug against the list, asking the live
-      // bridge for the latter two. A name the bridge can't resolve simply
-      // fails every comparison → BLOCKED, fail-closed as before.
-      const _jidAllowed = allowed.has(ev.jid)
-        || (wa.getChatName && allowed.has(wa.getChatName(ev.jid)))
-        || (wa.getChatSlug && allowed.has(wa.getChatSlug(ev.jid)));
-      if (!_jidAllowed) {
+      // The whitelist is matched on the STABLE chat id (ev.jid) ONLY —
+      // never a display name (operator 2026-06-10: authorization must use
+      // a stable id). The outbox is the highest-value leak path; a chat
+      // title is attacker-controllable, so names are deliberately NOT
+      // accepted here even though they're allowed for outbound addressing.
+      if (!allowed.has(ev.jid)) {
         const why = ev.from === 'system'
           ? 'a system message may ONLY reach the operator self-DM / debug-bot — never a contact chat'
           : 'not in auto_e_chats or self-DM';
