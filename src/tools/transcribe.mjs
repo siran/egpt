@@ -9,7 +9,7 @@
 import { spawn } from 'node:child_process';
 import { unlink } from 'node:fs/promises';
 
-function _run(cmd, args, { captureStdout = false } = {}) {
+export function _run(cmd, args, { captureStdout = false } = {}) {
   return new Promise((resolve, reject) => {
     let out = '', err = '';
     let child;
@@ -26,6 +26,18 @@ function _run(cmd, args, { captureStdout = false } = {}) {
 }
 
 /**
+ * Convert any ffmpeg-readable audio (ogg/opus/m4a/mp3/…) to a 16kHz mono
+ * PCM WAV — whisper's required input. Returns the temp wav path; the
+ * caller owns cleanup (unlink). Shared by the whisper-cli path here and
+ * the whisper-server path in whisper-server.mjs.
+ */
+export async function convertToWav16k(audioPath, ffmpeg = 'ffmpeg') {
+  const wav = `${audioPath}.tmp.wav`;
+  await _run(ffmpeg, ['-y', '-i', audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav]);
+  return wav;
+}
+
+/**
  * Transcribe an audio file. Returns the transcript text, or null on failure /
  * disabled. `audioPath` is any ffmpeg-readable file (ogg/opus/m4a/mp3/…).
  */
@@ -35,11 +47,10 @@ export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}) {
   const whisper = cfg.command || 'whisper-cli';
   const model = cfg.model_path;
   if (!model) { log('transcribe: model_path not set — skipping'); return null; }
-  const wav = `${audioPath}.tmp.wav`;
   const t0 = Date.now();
+  let wav;
   try {
-    // opus/ogg/m4a/mp3 → 16kHz mono PCM WAV
-    await _run(ffmpeg, ['-y', '-i', audioPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wav]);
+    wav = await convertToWav16k(audioPath, ffmpeg);
     // whisper-cli prints the transcript to stdout with -nt (no timestamps).
     const args = ['-m', model, '-nt', '-f', wav];
     if (cfg.language) args.push('-l', cfg.language);
@@ -54,7 +65,7 @@ export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}) {
     log(`transcribe: failed for ${audioPath.split(/[\\/]/).pop()} — ${e?.message ?? e}`);
     return null;
   } finally {
-    try { await unlink(wav); } catch { /* ignore */ }
+    if (wav) { try { await unlink(wav); } catch { /* ignore */ } }
   }
 }
 
