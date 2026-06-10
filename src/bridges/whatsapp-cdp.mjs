@@ -51,48 +51,39 @@ export async function startWhatsAppCdpBridge(opts = {}) {
   // focus/OS-gated and the operator turns them off). A chat whose unread badge
   // rises = new incoming. The chat NAME is the opaque handle here (the list
   // gives no JID); send()/open use the same name.
-  wa.watchChatList(async (n) => {
-    // n = { chatName, preview, unread }. Open the chat so it renders, read the
-    // actual latest message (the list preview is truncated).
-    let text = null, sender = null, isVoice = false;
-    const opened = await wa.openChatByName(n.chatName);
-    if (opened) {
-      const kind = await wa.latestKind();
-      if (kind === 'voice') {
-        // VOICE NOTE — download the decrypted .ogg via WA's menu, transcribe.
-        isVoice = true;
-        const path = await wa.downloadLatestVoiceNote();
-        if (path) {
-          const transcript = await transcribeAudioFile(path, audioCfg, onLog);
-          if (transcript) {
-            text = transcript;
-            onLog(`wa-cdp: voice transcribed [${n.chatName}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-            // Post the transcript in-chat (operator: "like we were doing").
-            // The 👂 reply is text → re-firing the watcher on it reads text →
-            // gate silent → no transcription loop. NOTE (policy refinement):
-            // gate this by chat mode later so it doesn't post in mute/observed
-            // chats — the limb doesn't know modes; the host could.
-            await wa.sendText(`👂 ${transcript}`);
-          } else { text = '[voice note — transcription failed]'; }
-        } else { text = '[voice note]'; }
-      } else {
-        const msgs = await wa.readLatest(1);
-        const last = msgs[msgs.length - 1];
-        if (last) { text = last.text; sender = last.sender; }
-      }
-    }
-    if (text == null) {
-      const m = String(n.preview || '').match(/^(.*?):\s*([\s\S]*)$/);
-      if (m) { sender = m[1]; text = m[2]; } else { text = String(n.preview || ''); }
+  // Per-chat "last processed message id" so a BURST of messages is queued and
+  // replayed in order — not collapsed to the latest. The watcher callback is
+  // already serialized (one chat at a time), so this just walks the new tail.
+  const _lastSeenId = new Map();   // chatName -> last processed data-id
+
+  // Dispatch a SINGLE message (text or voice) to the host. Voice → download by
+  // its own id (so each note in a burst is captured) → transcribe → post 👂.
+  async function _dispatchMessage(chatName, msg) {
+    let text = msg.text, sender = msg.sender, isVoice = false;
+    if (msg.kind === 'voice') {
+      isVoice = true;
+      const path = await wa.downloadVoiceNoteById(msg.id);
+      if (path) {
+        const transcript = await transcribeAudioFile(path, audioCfg, onLog);
+        if (transcript) {
+          text = transcript;
+          onLog(`wa-cdp: voice transcribed [${chatName}] → ${JSON.stringify(transcript.slice(0, 80))}`);
+          // Post the transcript in-chat (operator: "like we were doing"). The
+          // 👂 reply is text → re-firing the watcher on it reads text → gate
+          // silent → no transcription loop. NOTE (policy refinement): mode-gate
+          // this so it doesn't post in mute/observed chats — host-side.
+          await wa.sendText(`👂 ${transcript}`);
+        } else { text = '[voice note — transcription failed]'; }
+      } else { text = '[voice note]'; }
     }
     const st = mentionStatus(text || '');
     // replyToBot stays FALSE for now (fail-closed): provable reply-to-persona
     // tracking is a follow-up. v1 surfaces a reply only on an explicit @e.
     const from = {
-      chatId: n.chatName,            // opaque handle = chat name (no JID from list)
-      chatName: n.chatName,
+      chatId: chatName,              // opaque handle = chat name (no JID from list)
+      chatName,
       chatType: 'private',           // TODO detect group from opened chat
-      userId: n.chatName,
+      userId: chatName,
       username: sender || undefined,
       firstName: sender || undefined,
       senderName: sender || null,
@@ -102,11 +93,33 @@ export async function startWhatsAppCdpBridge(opts = {}) {
       replyToBot: false,
       isReaction: false,
       isTranscriptFromVoice: isVoice,
-      msgKey: null,
+      msgKey: msg.id || null,
     };
-    onLog(`wa-cdp: incoming [${n.chatName}] ${sender}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere})`);
+    onLog(`wa-cdp: incoming [${chatName}] ${sender}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere})`);
     try { await onIncoming?.(text, from); }
     catch (e) { onLog(`wa-cdp: onIncoming threw — ${e?.message ?? e}`); }
+  }
+
+  wa.watchChatList(async (n) => {
+    // n = { chatName, preview, unread }. Open the chat so it renders, then read
+    // recent messages and dispatch every NEW one in order (a burst → queued).
+    const opened = await wa.openChatByName(n.chatName);
+    if (!opened) {
+      // Couldn't open — fall back to the truncated list preview as one message.
+      const m = String(n.preview || '').match(/^(.*?):\s*([\s\S]*)$/);
+      const sender = m ? m[1] : null, text = m ? m[2] : String(n.preview || '');
+      return _dispatchMessage(n.chatName, { id: null, kind: 'text', sender, text });
+    }
+    const recent = await wa.readRecent(8);
+    if (!recent.length) return;
+    const lastSeen = _lastSeenId.get(n.chatName);
+    let fresh;
+    if (lastSeen === undefined) fresh = recent.slice(-1);                 // first sight: latest only (don't replay history)
+    else { const i = recent.findIndex(m => m.id === lastSeen); fresh = i >= 0 ? recent.slice(i + 1) : recent.slice(-1); }
+    _lastSeenId.set(n.chatName, recent[recent.length - 1].id);            // advance baseline BEFORE dispatch (slow transcribe; avoid re-pick)
+    if (!fresh.length) return;                                            // change was our own send / nothing new
+    onLog(`wa-cdp: [${n.chatName}] ${fresh.length} new message(s) queued`);
+    for (const msg of fresh) await _dispatchMessage(n.chatName, msg);
   });
 
   return {
