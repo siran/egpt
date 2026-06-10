@@ -68,6 +68,26 @@ brains:
     dispatch_timeout_ms: 90000
 ```
 
+## Status (2026-06-10, Wren)
+BUILT + GREEN on this branch:
+- **Part 1 — warm primitive** `claude-sdk.createWarmSession` (streaming-input,
+  persistent). Live-verified (spike): 2 turns / 1 query, context retained.
+- **Part 1 — warm pool** `src/warm-sessions.mjs` (lazy, per-class idle-evict,
+  maxWarm LRU, per-key serialize). 8 vitest cases green.
+- **Part 2 — live-terminal guard** in `runMetaBrainTurn` (+ `live_terminal:true`
+  on wren). @me/@wren refused a daemon resume → no more wedge.
+- **Part 3 — dispatch timeout** folded into the pool (fail + evict, never wedge).
+
+REMAINING — the WIRING (the hot path, do it fresh + with a live regression):
+1. Instantiate the pool in egpt.mjs from `EGPT_CONFIG.brains.warm`.
+2. Route **siblings** (`runMetaBrainTurn`) through the pool for claude-sdk brains;
+   **switch siblings to `type: claude-sdk`** (jay is claude-code/CLI today — that
+   subprocess spawn is the main lag). Key = sibling name, klass=sibling.
+3. Route **conversation-e / system-e** (`runDefaultBrainTurn` → dispatch.mjs)
+   through the pool. Key = chatId/slug (per-conversation!), klass=conversation;
+   Self = klass=system. THIS TOUCHES THE LIVE @e PATH — regression-test @e first.
+4. Live: `@jay` warm + snappy; confirm claude-sdk resumes `825b`; @e unbroken.
+
 ## Test gate
 Repo has a pre-push hook running the suite. Add unit tests: warm reuse (no
 re-spawn on 2nd turn), idle eviction frees the session, maxWarm LRU, lock refusal,
