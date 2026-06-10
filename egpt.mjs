@@ -53,6 +53,8 @@ import { startAttachHost } from './src/nucleus.mjs';
 import { clearNucleusInfoSync, readNucleusInfo } from './src/attach/discovery.mjs';
 import { connectAttachClient } from './src/attach/client.mjs';
 import { N2C } from './src/attach/protocol.mjs';
+import { swallow } from './src/swallow.mjs';
+import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -64,13 +66,18 @@ const EGPT_HOME = join(homedir(), '.egpt');
 // historical artifacts and can be archived/deleted manually; the daemon
 // won't write to them anymore.
 const EGPT_LOGS = join(EGPT_HOME, 'logs');
-try { mkdirSync(EGPT_LOGS, { recursive: true }); } catch {}
+// If this mkdir fails, EVERY file log below (wa-bridge.log, headless.log,
+// restart.log, swallowed.log) silently dies with it — shout while we still
+// have a console.
+try { mkdirSync(EGPT_LOGS, { recursive: true }); }
+catch (e) { console.error(`!! egpt boot: cannot create ${EGPT_LOGS} — all file logging will fail: ${e?.message ?? e}`); }
 // state subdir holds runtime state files (alive.txt, nucleus.json,
 // restart-announce.json, egpt.pid as of beta-19). Created here at
 // module load so any module-level constants that reference state/
 // can use it without their own mkdir.
 const EGPT_STATE = join(EGPT_HOME, 'state');
-try { mkdirSync(EGPT_STATE, { recursive: true }); } catch {}
+try { mkdirSync(EGPT_STATE, { recursive: true }); }
+catch (e) { console.error(`!! egpt boot: cannot create ${EGPT_STATE} — pidfile/heartbeat/crash.log will fail: ${e?.message ?? e}`); }
 
 // ── One-shot migration on startup (operator 2026-06-05) ──────────
 // beta-18 left a handful of files at the top of ~/.egpt that beta-19
@@ -87,7 +94,7 @@ try { mkdirSync(EGPT_STATE, { recursive: true }); } catch {}
 try {
   // egpt.pid: ~/.egpt/egpt.pid -> ~/.egpt/state/egpt.pid
   const oldPid = join(EGPT_HOME, 'egpt.pid');
-  if (existsSync(oldPid)) { try { unlinkSync(oldPid); } catch {} }
+  if (existsSync(oldPid)) { try { unlinkSync(oldPid); } catch (e) { swallow('boot.migrate-unlink', e); } }
 
   // *.log: ~/.egpt/<name>.log -> ~/.egpt/logs/<name>.log. Includes
   // service-{stdout,stderr}.log which the prior NSSM install kept
@@ -100,9 +107,9 @@ try {
     'egpt-service.out.log', 'egpt-service.err.log',
   ]) {
     const p = join(EGPT_HOME, name);
-    if (existsSync(p)) { try { unlinkSync(p); } catch {} }
+    if (existsSync(p)) { try { unlinkSync(p); } catch (e) { swallow('boot.migrate-unlink', e); } }
   }
-} catch { /* best-effort — never block startup */ }
+} catch (e) { swallow('boot.migrate', e); /* best-effort — never block startup */ }
 
 // Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
 // rendered item flows through this one channel; the Ink renderer subscribes
@@ -192,19 +199,29 @@ const _walog = (m) => { try { appendFileSync(_WA_BRIDGE_LOG, `${new Date().toISO
 // 'interactive' | 'headless' | 'unknown' (legacy bare-number pidfile).
 // Clears the pidfile when the recorded pid is dead.
 function _readLiveIncumbent() {
+  let raw;
+  try { raw = readFileSync(EGPT_PID_PATH, 'utf8').trim(); }
+  catch (e) { swallow('pidfile.read', e, { expect: ['ENOENT'] }); return null; }
+  let pid = NaN, mode = 'unknown';
   try {
-    const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
-    let pid, mode;
     if (raw.startsWith('{')) {
       const o = JSON.parse(raw);
       pid = Number(o.pid); mode = o.mode ?? 'unknown';
     } else {
-      pid = Number(raw); mode = 'unknown';   // legacy format
+      pid = Number(raw);   // legacy format
     }
-    if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return null;
-    try { process.kill(pid, 0); return { pid, mode }; }
-    catch { try { unlinkSync(EGPT_PID_PATH); } catch {} return null; }
-  } catch { return null; }
+  } catch { /* corrupt JSON — falls through to the !isFinite branch below */ }
+  if (pid === process.pid) return null;   // our own pidfile — leave it
+  if (!Number.isFinite(pid) || pid <= 0) {
+    // A corrupt pidfile is worse than a missing one: returning null and
+    // LEAVING it would let every newcomer skip the takeover handshake and
+    // fight the incumbent over the WA pairing. Clear it and shout.
+    console.error(`!! egpt: pidfile ${EGPT_PID_PATH} is corrupt (${JSON.stringify(raw.slice(0, 80))}) — clearing it`);
+    try { unlinkSync(EGPT_PID_PATH); } catch (e) { swallow('pidfile.clear-corrupt', e); }
+    return null;
+  }
+  try { process.kill(pid, 0); return { pid, mode }; }
+  catch { try { unlinkSync(EGPT_PID_PATH); } catch (e) { swallow('pidfile.clear-stale', e); } return null; }
 }
 
 // Cooperative takeover (operator 2026-05-23: "the two supervisors
@@ -225,7 +242,7 @@ async function _waitForRelease(pid) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     try { process.kill(pid, 0); }
-    catch { try { unlinkSync(EGPT_PID_PATH); } catch {} return true; }
+    catch { try { unlinkSync(EGPT_PID_PATH); } catch (e) { swallow('pidfile.clear-released', e); } return true; }
     await new Promise(r => setTimeout(r, 200));
   }
   console.error(`egpt: previous instance (pid ${pid}) did not exit within 10s; continuing anyway`);
@@ -258,7 +275,11 @@ function writePidfile(mode = 'interactive') {
   try {
     mkdirSync(EGPT_HOME, { recursive: true });
     writeFileSync(EGPT_PID_PATH, JSON.stringify({ pid: process.pid, mode }), { mode: 0o600 });
-  } catch {}
+  } catch (e) {
+    // No pidfile = no single-writer handshake: the next process can't see
+    // us and will start a second WA client against the same pairing.
+    console.error(`!! egpt: pidfile write FAILED (${e?.message ?? e}) — takeover handshake is broken; a second instance may fight over WhatsApp`);
+  }
 }
 
 function clearPidfile() {
@@ -266,7 +287,7 @@ function clearPidfile() {
     const raw = readFileSync(EGPT_PID_PATH, 'utf8').trim();
     const pid = raw.startsWith('{') ? Number(JSON.parse(raw).pid) : Number(raw);
     if (pid === process.pid) unlinkSync(EGPT_PID_PATH);
-  } catch {}
+  } catch (e) { swallow('pidfile.clear', e, { expect: ['ENOENT'] }); }
 }
 
 // Heartbeat-to-file aliveness pattern (operator 2026-05-23):
@@ -322,7 +343,7 @@ function _writeAliveNow() {
     // egpt.pid (which can go missing). Format: "<tic|toc> <iso> <pid>".
     const beat = (label) => `${label} ${now} ${process.pid}\n`;
     let content = '';
-    try { content = readFileSync(ALIVE_PATH, 'utf8'); } catch {}
+    try { content = readFileSync(ALIVE_PATH, 'utf8'); } catch (e) { swallow('alive.read', e, { expect: ['ENOENT'] }); }
     if (/^toc /m.test(content)) {
       // toc present → write tic, truncating (erases the rest).
       writeFileSync(ALIVE_PATH, beat('tic'), { mode: 0o600 });
@@ -354,7 +375,7 @@ function startAliveHeartbeat() {
 function stopAliveHeartbeat() {
   if (_aliveTimer) { clearInterval(_aliveTimer); _aliveTimer = null; }
   if (process.env.EGPT_SUPERVISED) {
-    try { unlinkSync(ALIVE_PATH); } catch {}
+    try { unlinkSync(ALIVE_PATH); } catch (e) { swallow('alive.unlink', e, { expect: ['ENOENT'] }); }
   }
 }
 
@@ -481,7 +502,14 @@ function _shallowDeepMerge(base, override) {
 try {
   const local = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8'));
   EGPT_CONFIG = _shallowDeepMerge(EGPT_CONFIG, local);
-} catch {}
+} catch (e) {
+  // Missing overlay is normal; a CORRUPT one silently dropping every
+  // /config-written setting (routing_enabled, …) is the exact bug class
+  // from 2026-05-27 — shout instead of swallowing.
+  if (e?.code !== 'ENOENT') {
+    console.error(`!! egpt boot: ${LOCAL_CONFIG_PATH} unreadable/corrupt — ALL /config overlay settings are dropped this run: ${e?.message ?? e}`);
+  }
+}
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 // dp(path) — display a filesystem path, converting to POSIX style when
@@ -543,14 +571,14 @@ let _showPrompts = EGPT_CONFIG.show_prompts ?? false;
 // none is specified. Persisted to ~/.egpt/default-op.txt.
 const DEFAULT_OP_FILE = join(EGPT_HOME, 'default-op.txt');
 let _defaultOp = null;
-try { _defaultOp = readFileSync(DEFAULT_OP_FILE, 'utf8').trim() || null; } catch {}
+try { _defaultOp = readFileSync(DEFAULT_OP_FILE, 'utf8').trim() || null; } catch (e) { swallow('default-op.read', e, { expect: ['ENOENT'] }); }
 
 function persistDefaultOp(name) {
   try {
     mkdirSync(EGPT_HOME, { recursive: true });
     if (name) writeFileSync(DEFAULT_OP_FILE, name, 'utf8');
-    else { try { unlinkSync(DEFAULT_OP_FILE); } catch {} }
-  } catch {}
+    else { try { unlinkSync(DEFAULT_OP_FILE); } catch (e) { swallow('default-op.clear', e, { expect: ['ENOENT'] }); } }
+  } catch (e) { swallow('default-op.persist', e); }
 }
 
 // Return the operator session name to use for a command:
@@ -1527,7 +1555,7 @@ async function _loadReplyTargets(transcriptFile) {
     const raw = await readFile(_sidecarPath(transcriptFile), 'utf8');
     const obj = JSON.parse(raw);
     return new Map(Object.entries(obj));
-  } catch { return new Map(); }
+  } catch (e) { swallow('reply-targets.load', e, { expect: ['ENOENT'] }); return new Map(); }
 }
 async function _saveReplyTargets(transcriptFile, mapLike) {
   const obj = Object.fromEntries(mapLike);
@@ -1927,7 +1955,7 @@ function _migrateLegacyHistory() {
       writeFileSync(dest, JSON.stringify(trimmed), { mode: 0o600 });
     }
     unlinkSync(legacy);
-  } catch {}
+  } catch (e) { swallow('history.migrate', e, { expect: ['ENOENT'] }); }
 }
 _migrateLegacyHistory();
 
@@ -1938,14 +1966,14 @@ function _loadInputHistory(roomName) {
     const raw = readFileSync(p, 'utf8');
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') : [];
-  } catch { return []; }
+  } catch (e) { swallow('history.load', e, { expect: ['ENOENT'] }); return []; }
 }
 function _saveInputHistory(roomName, arr) {
   try {
     if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
     const trimmed = arr.length > HISTORY_CAP ? arr.slice(-HISTORY_CAP) : arr;
     writeFileSync(_historyPath(roomName), JSON.stringify(trimmed), { mode: 0o600 });
-  } catch {}
+  } catch (e) { swallow('history.save', e); }
 }
 
 // --- multi-line input ---
@@ -2897,7 +2925,7 @@ function App() {
     const id = setInterval(() => {
       if (!existsSync(pauseFile)) return;
       let msg = 'please act in the browser';
-      try { msg = readFileSync(pauseFile, 'utf8').trim() || msg; unlinkSync(pauseFile); } catch {}
+      try { msg = readFileSync(pauseFile, 'utf8').trim() || msg; unlinkSync(pauseFile); } catch (e) { swallow('browser-pause.consume', e); }
       setBrowserWaiting(msg);
     }, 800);
     return () => clearInterval(id);
@@ -2921,11 +2949,11 @@ function App() {
     // attach transport supersedes the file mirror; the writer is vestigial.
     if (CLIENT) return;
     let cursor = 0;
-    try { cursor = readFileSync(SHELL_MIRROR_PATH, 'utf8').length; } catch { cursor = 0; }
+    try { cursor = readFileSync(SHELL_MIRROR_PATH, 'utf8').length; } catch (e) { swallow('shell-mirror.read', e, { expect: ['ENOENT'] }); cursor = 0; }
     let buf = '';
     const id = setInterval(() => {
       let content;
-      try { content = readFileSync(SHELL_MIRROR_PATH, 'utf8'); } catch { return; }
+      try { content = readFileSync(SHELL_MIRROR_PATH, 'utf8'); } catch (e) { swallow('shell-mirror.read', e, { expect: ['ENOENT'] }); return; }
       if (content.length <= cursor) return;
       const chunk = content.slice(cursor);
       cursor = content.length;
@@ -2961,7 +2989,12 @@ function App() {
       try {
         const { readConfig } = await import('./src/tools/config-io.mjs');
         cfg = await readConfig();
-      } catch { return false; }
+      } catch (e) {
+        // Same failure class as the boot readConfigSync SHOUT: a config
+        // read error here means Telegram silently never starts.
+        errOut(`!! telegram: config read failed — bridge NOT started: ${e?.message ?? e}`);
+        return false;
+      }
       tgCfgRef.current = cfg;
     }
     if (!cfg.telegram?.bot_token) return false;
@@ -4864,8 +4897,8 @@ function App() {
       } catch (e) {
         errOut(`welcome-back failed: ${e.message}`);
       }
-      try { resetCountersOnDisk(); } catch {}
-      try { writeLastLogonNow(); } catch {}
+      try { resetCountersOnDisk(); } catch (e) { swallow('logon.reset-counters', e); }
+      try { writeLastLogonNow(); } catch (e) { swallow('logon.write-last', e); }
     })();
   }, [currentRoom]);
   const _saveTimerRef = useRef(null);
@@ -4885,7 +4918,9 @@ function App() {
       const merged = new Map(persistedReplyTargets.current);
       for (const [k, v] of live) merged.set(k, v);
       persistedReplyTargets.current = merged;
-      try { await _saveReplyTargets(transcriptFileForRoom(currentRoom), merged); } catch {}
+      // A persistent save failure here means '@<stable-id>' replies stop
+      // resolving after the next restart — rate-limited trail, not silence.
+      try { await _saveReplyTargets(transcriptFileForRoom(currentRoom), merged); } catch (e) { swallow('reply-targets.save', e); }
     }, 1500);
   };
   // Auto-save whenever items mutate. In-place _replyTarget patches
@@ -4966,7 +5001,7 @@ function App() {
         });
         if (closed) { await h.close(); return; }   // unmounted mid-start
         host = h; _globalAttachHost = h;
-        unsub = outputChannel.subscribe(item => { try { h.pushItem(item); } catch {} });
+        unsub = outputChannel.subscribe(item => { try { h.pushItem(item); } catch (e) { swallow('attach.push-item', e); } });
         sysOut(`attach host on 127.0.0.1:${h.port} — limbs may attach`);
       } catch (e) { errOut(`!! attach host failed to start: ${e?.message ?? e}`); }
     })();
@@ -5642,7 +5677,7 @@ function App() {
     try {
       const j = JSON.parse(readFileSync(_residentPath(chatId), 'utf8'));   // resume from disk
       st = { identity: typeof j.identity === 'string' ? j.identity : null, lines: Array.isArray(j.lines) ? j.lines : [] };
-    } catch { st = { identity: null, lines: [] }; }
+    } catch (e) { swallow('resident.load', e, { expect: ['ENOENT'] }); st = { identity: null, lines: [] }; }
     _residentMem.current.set(chatId, st);
     return st;
   };
@@ -5905,7 +5940,7 @@ function App() {
       // (outside the sandbox; managed via /e path). Keyed by contact slug.
       // Returns { path, access } entries; read-only ones get a write-deny hook.
       grantDirsForContact: async ({ slug } = {}) => {
-        try { return await entriesForSlug(slug); } catch { return []; }
+        try { return await entriesForSlug(slug); } catch (e) { swallow('grants.entries-for-slug', e); return []; }
       },
       findThreadJsonl: conversationsState.findThreadJsonl,
       logger: { error: (msg) => console.error(msg) },
@@ -6322,7 +6357,7 @@ function App() {
         ? path
         : join(APP_DIR, path);
       return await readFile(resolved, 'utf8');
-    } catch { return null; }
+    } catch (e) { swallow('identity.load', e, { expect: ['ENOENT'] }); return null; }
   }
   // Send the identity as a silent setup turn — '... system restarted,
   // new persona installed ...\n\n<content>' framing tells the brain
@@ -6750,262 +6785,25 @@ function App() {
     // Voice-streaming branch (operator 2026-05-22). When a WA voice
     // note arrived in streaming mode, the bridge fires onIncoming
     // immediately (before transcription completes) with a handle in
-    // meta.voiceStream. We open a WA stream message NOW showing the
-    // listening state, subscribe to chunk events to update the body
-    // as transcript builds (typewriter), then await the full transcript
-    // before falling through to the normal dispatch path. The reuse
-    // of the SAME stream handle for the brain reply means the recipient
-    // sees one message that evolves: 🎙 listening → 🎙 <transcript> →
-    // 🐶 e: <brain reply>. Modality-mirror of the /movie alien arc.
+    // meta.voiceStream. The whole turn — chunk subscription, per-chunk
+    // brain passes, the evolving WA stream message, the final '.'
+    // marker — lives in src/voice-stream.mjs (Phase C extraction);
+    // this branch just wires the App's live deps into it.
     if (meta.voiceStream && meta.fromWhatsApp) {
-      // Multi-call brain evolution (operator 2026-05-22): the WA message
-      // shows ONLY the brain's reply, never the transcript itself. The
-      // transcript stays internal — the brain re-fires on each new chunk
-      // with the cumulative transcript so far, and its reply streams
-      // into the SAME WA message, EVOLVING as more audio is heard.
-      // Recipient watches the model's understanding form in real time,
-      // not the model parroting their words back.
-      const handle = meta.voiceStream;
       const personaName = 'e';
       const personaCfg = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
-      const personaEmoji = personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI;
-      const waPrefix = `${personaEmoji} ${personaName}\n`;
-      // Lazy stream open (operator 2026-05-22: "is it sending '...' as
-      // a final message?"). Previously we opened a WA stream message
-      // with '…' as the placeholder immediately on voice-note arrival,
-      // then sent partial updates as the brain streamed. Problem: if
-      // every brain pass returned silence (e.g. whisper transcribed
-      // noisy non-speech as '[Música]' placeholders), the partials
-      // still triggered the initial send → recipient saw '…' or the
-      // post-cancel 'deleted' placeholder. Now: only open the stream
-      // when the brain produces actual non-silence content worth
-      // showing. All-silence voice notes leave NO message in the chat.
-      // Per-chat emit gate (operator 2026-05-28): E reads the voice note for
-      // context (the brain still runs below), but in a muted / mention-not-met
-      // chat it must NOT send a reply. Gating the stream-open here suppresses
-      // every voice-path send (all sends go through _ensureStream first), so a
-      // muted chat gets no message while E still hears it.
-      const _voiceMayEmit = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
-      let voiceStream = null;
-      const _ensureStream = () => {
-        if (!_voiceMayEmit) return;
-        if (voiceStream) return;
-        try {
-          voiceStream = streamFactoryRef.current?.(`${waPrefix}…`, { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
-        } catch (e) { console.error(`!! voice-stream lazy open: ${e?.message ?? e}`); }
-      };
-      const _isSilencePartial = (s) => {
-        const t = String(s ?? '').trim();
-        return !t || t === '...' || t === '…';
-      };
-
-      const idStr = String(meta.waChatId ?? '');
-      const chatType = idStr.endsWith('@g.us')
-        ? 'group'
-        : idStr === 'status@broadcast' ? 'status' : 'private';
-      const threadCtx = {
-        threadId: meta.waChatId ?? 'wa-unknown',
-        surface: meta.waClientLabel ?? 'wa',
-        slug: waBridgeRef.current?.getChatSlug?.(meta.waChatId) ?? null,
-        name: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
-      };
-
-      let cumulativeTranscript = '';
-      let cumulativeOffsetSec = 0;   // audio-internal timestamp of the latest window
-      // Stack of completed brain replies — each pass appends here, and
-      // the WA body shows them all joined by '---' (operator 2026-05-22:
-      // "instead of replacing the whole answer of brain, we append
-      // partial replies"). The recipient sees the model's stream of
-      // consciousness as it hears more, not a snapshot of its current
-      // best guess.
-      const replyStack = [];
-      let brainInFlight = false;
-      let pendingNewChunk = false;
-      const _sep = '\n---\n';
-
-      // Millisecond-precision audio-internal time prefix (operator
-      // 2026-05-22: "running millisecond time ticker"). Format
-      // [M:SS.mmm]. The brain doesn't get told this is voice — it
-      // just sees a ticking clock + a sliding text frame that
-      // replaces with each pass.
-      const _formatAudioTime = (sec) => {
-        const total = Math.max(0, sec);
-        const m = Math.floor(total / 60);
-        const s = Math.floor(total % 60);
-        const ms = Math.floor((total - Math.floor(total)) * 1000);
-        return `[${m}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}]`;
-      };
-
-      // Audio-side sliding windows (in bridges/whatsapp.mjs) give the
-      // brain a coherent 6-second phrase per pass — no need for a
-      // word-level sub-window on top. Each pass: brain receives the
-      // full transcript of the current audio window as a coherent input.
-      // Operator (2026-05-22): "let's feed the transcription model a
-      // sliding windows of audio... roughly 6 seconds."
-
-      const runBrainPass = async () => {
-        if (brainInFlight) {
-          pendingNewChunk = true;
-          return;
-        }
-        brainInFlight = true;
-        try {
-          while (true) {
-            pendingNewChunk = false;
-            const snapshot = cumulativeTranscript;
-            if (!snapshot) break;
-            // Minimal envelope per operator (2026-05-22): ticker +
-            // sender name + frame. Alien arc had only the canvas
-            // (no envelope), audio analog adds the sender so the
-            // brain knows whose words it's reading without inventing
-            // a chat/surface wrapper around them.
-            //   [0:05.177] An: hola
-            //   [0:06.234] An: hola e como
-            //   [0:08.321] An:    como estas espero
-            const audioStamp = _formatAudioTime(cumulativeOffsetSec);
-            const sender = (typeof meta.waSenderName === 'string' && meta.waSenderName.trim())
-              ? meta.waSenderName.trim()
-              : 'An';
-            const personaPrompt = `${audioStamp} ${sender}: ${snapshot}`;
-            try {
-              const prefixBase = waPrefix + (replyStack.length ? replyStack.join(_sep) + _sep : '');
-              const reply = await runDefaultBrainTurn(personaPrompt, (partial) => {
-                // Gate partial updates on non-silence content so we don't
-                // open the WA stream just to flash an '…' or '...' that
-                // never settles into a real reply. Pure-silence outputs
-                // never trigger an initial send → all-silence voice notes
-                // leave NO message in the chat.
-                if (_isSilencePartial(partial)) return;
-                _ensureStream();
-                try { voiceStream?.update?.(`${prefixBase}${partial}`); }
-                catch (e) { console.error(`!! voice-stream brain partial: ${e?.message ?? e}`); }
-              }, threadCtx);
-              const trimmed = (reply ?? '').trim();
-              if (trimmed && trimmed !== '...' && trimmed !== '…') {
-                replyStack.push(trimmed);
-                _ensureStream();
-                try { voiceStream?.update?.(`${waPrefix}${replyStack.join(_sep)}`); }
-                catch (e) { console.error(`!! voice-stream pass-end update: ${e?.message ?? e}`); }
-              }
-            } catch (e) {
-              errOut(`!! voice-stream brain pass failed: ${e?.message ?? e}`);
-            }
-            if (!pendingNewChunk) break;
-          }
-        } finally {
-          brainInFlight = false;
-        }
-      };
-
-      // Fire the brain on every chunk. Earlier we buffered 2 chunks to
-      // skip whisper's garbled first-5s with 1s chunks; with 6s windows
-      // the first window is already a coherent phrase, no need to wait.
-      // Crucial for short voices (~3s, single window): no buffer means
-      // the brain fires immediately on the only window we'll have,
-      // rather than waiting for the large-model final pass. Operator
-      // 2026-05-22: "no replies to basic 'are you there?' or it takes
-      // too long, way more than before."
-      // Audio-time synchronized ticker (operator 2026-05-22:
-      // "synchronize the time ticker with a real passage of time, based
-      // on length of audio"). The ticker advances based on:
-      //   - the latest window's endSeconds (audio-internal position), and
-      //   - wall-clock elapsed since that window arrived (to interpolate
-      //     between chunks, so the timer keeps ticking even between
-      //     whisper completing windows).
-      // Always capped at the total audio duration so it can't run past
-      // the end. When no audio_duration known yet, just uses wall-clock
-      // since voice arrival.
-      // Tick at ~/movie's animation frame rate (operator 2026-05-22:
-      // "alien was also ms? make same frequency"). 250ms = 4 fps —
-      // matches the cadence at which alien frames were edited into
-      // the WA message. Brain coalescing limits actual brain calls
-      // (~one per 3s on haiku); but the WA-side updates happen
-      // freely, so the recipient sees the ticker advancing at frame
-      // rate even when the brain hasn't re-fired yet.
-      const VOICE_TICK_MS = 250;
-      const voiceStartMs = Date.now();
-      let lastChunkAudioEndSec = 0;
-      let lastChunkWallMs = voiceStartMs;
-      let audioDurationSec = null;
-      const _refreshOffset = () => {
-        const nowMs = Date.now();
-        const sinceChunkSec = (nowMs - lastChunkWallMs) / 1000;
-        let estimated = lastChunkAudioEndSec + sinceChunkSec;
-        if (audioDurationSec != null && estimated > audioDurationSec) {
-          estimated = audioDurationSec;
-        }
-        cumulativeOffsetSec = Math.max(cumulativeOffsetSec, estimated);
-      };
-      const tickTimer = setInterval(() => {
-        _refreshOffset();
-        // Tick fires brain even when no transcript yet (silence window).
-        // Brain sees `[0:03]      ` (whitespace) — perception of time
-        // passing while listening.
-        runBrainPass().catch(e => console.error(`!! voice-stream tick: ${e?.message ?? e}`));
-      }, VOICE_TICK_MS);
-
-      const onChunk = ({ cumulative, spacedCumulative, endSeconds, audioDuration }) => {
-        // Prefer the spaced representation — silence as whitespace gives
-        // the model a visual map of audio-time position within the window.
-        cumulativeTranscript = (typeof spacedCumulative === 'string' && spacedCumulative.length)
-          ? spacedCumulative
-          : cumulative;
-        if (typeof audioDuration === 'number' && audioDuration > 0) {
-          audioDurationSec = audioDuration;
-        }
-        if (typeof endSeconds === 'number') {
-          lastChunkAudioEndSec = endSeconds;
-          lastChunkWallMs = Date.now();
-        }
-        _refreshOffset();
-        runBrainPass().catch(e => console.error(`!! voice-stream runBrainPass: ${e?.message ?? e}`));
-      };
-      handle.emitter?.on?.('chunk', onChunk);
-
-      try {
-        await handle.donePromise;
-        handle.emitter?.off?.('chunk', onChunk);
-        clearInterval(tickTimer);
-        // No extra brain pass on done — the last window's pass IS the
-        // conclusion. Just drain any in-flight pass and finish.
-        while (brainInFlight) {
-          await new Promise(r => setTimeout(r, 100));
-        }
-      } catch (e) {
-        handle.emitter?.off?.('chunk', onChunk);
-        clearInterval(tickTimer);
-        errOut(`!! voice-stream transcription failed: ${e?.message ?? e}`);
-      }
-
-      const finalBody = replyStack.join(_sep).trim();
-      if (!finalBody) {
-        // All-silence voice note. With lazy open above, the WA stream
-        // never opened — nothing to send, nothing to revoke. If it
-        // somehow did open (race / edge), revoke it cleanly.
-        if (voiceStream) {
-          try { await voiceStream.cancel?.(); }
-          catch (e) { console.error(`!! voice-stream silence-cancel: ${e?.message ?? e}`); }
-        }
-        return;
-      }
-      // Deterministic end-of-processing marker (operator 2026-05-22):
-      // "bridge based... when model ends the final response; this to
-      // know if model ended processing the transcript." A line with
-      // only '.' tells the recipient (and any downstream parser) that
-      // every chunk has been transcribed and the brain has done its
-      // final pass with the accurate large-model transcript. After
-      // this, the WA message body is locked.
-      try { await voiceStream?.finish?.(`${waPrefix}${finalBody}${_sep}.`); }
-      catch (e) { console.error(`!! voice-stream final finish: ${e?.message ?? e}`); }
-      try {
-        pushItem({
-          id: Date.now() + Math.random(),
-          author: `egpt@${SURFACE_TAG}`,
-          body: finalBody,
-          _source: 'whatsapp',
-          _sourceChatId: meta.waChatId,
-        });
-      } catch (e) { console.error(`!! voice-stream items push: ${e?.message ?? e}`); }
+      await runVoiceStreamTurn(meta, {
+        personaName,
+        personaEmoji: personaCfg.body_emoji ?? EGPT_PERSONA_EMOJI,
+        eMayReplyToChat: _eMayReplyToChat,
+        openStream: (body, opts) => streamFactoryRef.current?.(body, opts),
+        getChatSlug: (id) => waBridgeRef.current?.getChatSlug?.(id) ?? null,
+        getChatName: (id) => waBridgeRef.current?.getChatName?.(id) ?? null,
+        runDefaultBrainTurn,
+        errOut,
+        pushItem,
+        surfaceTag: SURFACE_TAG,
+      });
       return;
     }
 
@@ -8369,7 +8167,7 @@ function App() {
     const post = async (event) => {
       const tid = busTargetIdRef.current;
       if (!tid) return;
-      try { await bus.postEvent(tid, { ts: Date.now(), from: BUS_NODE_ID, ...event }); } catch {}
+      try { await bus.postEvent(tid, { ts: Date.now(), from: BUS_NODE_ID, ...event }); } catch (e) { swallow('bus.post-event', e); }
     };
 
     switch (ev.type) {
