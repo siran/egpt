@@ -31,6 +31,7 @@ import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
 import { startOutboxWatcher, startBaileysBridge, isBaileysPaired, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
 import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
+import { startBeeperBridge } from './src/bridges/beeper.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
 import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
@@ -3288,7 +3289,7 @@ function App() {
     // CDP limb (whatsapp.transport: 'cdp') drives the already-logged-in
     // WhatsApp Web client in egpt's Chrome — there is no baileys auth to pair
     // (operator 2026-06-09). Skip the gate for cdp.
-    const _isCdp = cfg.transport === 'cdp';
+    const _isCdp = cfg.transport === 'cdp' || cfg.transport === 'beeper';   // neither uses baileys QR pairing
     if (!_isCdp && !force && !isBaileysPaired(authDir)) {
       pushItem({
         id: Date.now() + Math.random(), author: 'system', _localOnly: true,
@@ -3385,6 +3386,9 @@ function App() {
         // — every image / video / voice note / document / sticker is
         // saved automatically.
         media:             cfg.media ?? {},
+        // Beeper Desktop API token (transport: 'beeper'). config.local.json
+        // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
+        beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
         // Override per-chat media destination so files land inside
         // the contact's slug-dir (operator 2026-05-20). Sync callback;
         // bridge falls back to the legacy ~/.egpt/media/<jid>/ path
@@ -3953,9 +3957,13 @@ function App() {
       // default + selectable so the switch is reversible until CDP is trusted;
       // excising baileys is a later step. The same opts object feeds both —
       // the CDP limb uses onIncoming/onLog/cdpPort and ignores baileys-only knobs.
-      const _waTransport = EGPT_CONFIG.whatsapp?.transport === 'cdp' ? 'cdp' : 'baileys';
+      const _tCfg = EGPT_CONFIG.whatsapp?.transport;
+      const _waTransport = _tCfg === 'beeper' ? 'beeper' : _tCfg === 'cdp' ? 'cdp' : 'baileys';
       logOut(`whatsapp: transport=${_waTransport}`);
-      const bridge = await (_waTransport === 'cdp' ? startWhatsAppCdpBridge : startBaileysBridge)(_bridgeOpts);
+      const _starter = _waTransport === 'beeper' ? startBeeperBridge
+        : _waTransport === 'cdp' ? startWhatsAppCdpBridge
+        : startBaileysBridge;
+      const bridge = await _starter(_bridgeOpts);
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
       _walog(`waBridgeRef SET (bridge=${!!bridge}) — outbound should now work`);
