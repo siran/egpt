@@ -13,6 +13,7 @@ import { basename, dirname, extname, join } from 'node:path';
 import { parseInput } from './src/interpreter.mjs';
 import { splitEmittedReply } from './src/emitted-commands.mjs';
 import { resolveRoute } from './src/room.mjs';
+import { makeSerialByKey } from './src/serial-by-key.mjs';
 import {
   emptyState,
   ensureContact,
@@ -156,6 +157,13 @@ const _lastTranscriptDate = new Map();   // filePath → 'YYYY-MM-DD' (last writ
 // `## YYYY-MM-DD` but absent from transcript.md after the rewrite) stay
 // in their memories files. Triggered when the date changes on append;
 // fast no-op when no archive needed.
+// All mutations of a given transcript file run ONE AT A TIME through this
+// serializer (keyed by file path). The archive/rotation paths do a
+// read → rewrite-tmp → rename-over; an append landing between the read and
+// the rename goes to the OLD inode and is silently lost. Plain appends are
+// serialized through the same key so they can never straddle a rewrite.
+const _byTranscriptPath = makeSerialByKey();
+
 async function archiveOldTranscriptDays(fs, transcriptPath, todayIso) {
   const today = todayIso.slice(0, 10);
   const cutoff = new Date(today + 'T00:00:00.000Z');
@@ -219,9 +227,19 @@ async function archiveOldTranscriptDays(fs, transcriptPath, todayIso) {
 // day's section starts), or '' if same-day. Caches per-file so we only
 // re-archive on date changes. On the first write to a file in this
 // session, peeks at the file's last section header to seed the cache.
-async function maybePrefixDateHeader(fs, transcriptPath, clock) {
+// Exported for tests (transcript-serialization.test.mjs).
+export async function maybePrefixDateHeader(fs, transcriptPath, clock) {
+  // Fast path outside the serializer: same-day cache hit costs nothing.
   const todayIso = clockIso(clock);
   const today = todayIso.slice(0, 10);
+  if (_lastTranscriptDate.get(transcriptPath) === today) return '';
+  return _byTranscriptPath(transcriptPath, () => _maybePrefixDateHeaderLocked(fs, transcriptPath, todayIso, today));
+}
+
+async function _maybePrefixDateHeaderLocked(fs, transcriptPath, todayIso, today) {
+  // Re-check under the lock: a concurrent caller may have archived and
+  // set the cache while we waited; without this both would prepend a
+  // duplicate `## today` header.
   const cached = _lastTranscriptDate.get(transcriptPath);
   if (cached === today) return '';
 
@@ -272,6 +290,11 @@ async function rotateIfBig(fs, path) {
 // starts a fresh file. Cheap: one stat per append; rename only when
 // the file's mtime date differs from today's.
 async function rotateDailyIfNeeded(fs, filePath, archiveDir, clock) {
+  // Same serializer as the appends: the rename here would misfile a
+  // concurrent append into the archived file.
+  return _byTranscriptPath(filePath, () => _rotateDailyLocked(fs, filePath, archiveDir, clock));
+}
+async function _rotateDailyLocked(fs, filePath, archiveDir, clock) {
   try {
     let st;
     try { st = await fs.stat?.(filePath); }
@@ -291,15 +314,18 @@ async function rotateDailyIfNeeded(fs, filePath, archiveDir, clock) {
   }
 }
 
-async function appendTranscript({ fs, logger, path, body, label }) {
-  try {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await fs.appendFile(path, body, 'utf8');
-    return true;
-  } catch (e) {
-    logger?.error?.(`!! transcript (${label}) ${path}: ${e?.message ?? e}`);
-    return false;
-  }
+// Exported for tests (transcript-serialization.test.mjs).
+export async function appendTranscript({ fs, logger, path, body, label }) {
+  return _byTranscriptPath(path, async () => {
+    try {
+      await fs.mkdir(dirname(path), { recursive: true });
+      await fs.appendFile(path, body, 'utf8');
+      return true;
+    } catch (e) {
+      logger?.error?.(`!! transcript (${label}) ${path}: ${e?.message ?? e}`);
+      return false;
+    }
+  });
 }
 
 export async function deliverBridgeReply({
@@ -1017,7 +1043,10 @@ export function createDispatchRuntime({
         const feedScene = isSystemThread
           ? `## ${nowStamp} — [${threadId}]`
           : `## ${nowStamp} — [${threadCtx.name || threadId}] (${threadId})`;
-        await fs.appendFile(paths.eFeed, [feedScene, '', text, '', `[${personaTag} (${replyClock})]:`, final, '', ''].join('\n'), 'utf8');
+        // Via appendTranscript so the append shares the per-path serializer
+        // with rotateDailyIfNeeded above — a rotation rename between two raw
+        // appends would misfile the second into the archived day.
+        await appendTranscript({ fs, logger, path: paths.eFeed, body: [feedScene, '', text, '', `[${personaTag} (${replyClock})]:`, final, '', ''].join('\n'), label: 'feed' });
       } catch (e) {
         logger?.error?.(`!! transcript (feed) ${paths.eFeed}: ${e?.message ?? e}`);
       }
