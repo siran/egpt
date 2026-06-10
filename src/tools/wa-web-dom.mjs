@@ -136,15 +136,25 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
       try {                // chat-opens close each other's menus / corrupt state.
         const rows = await _eval(`(() => {
           const pane = document.querySelector('#pane-side'); if (!pane) return [];
-          return [...pane.querySelectorAll('[data-testid="cell-frame-container"]')].map(c => {
+          // Keep the most-recent chats (top) rendered regardless of scroll —
+          // WA virtualizes, and a chat scrolled out of view is invisible to us.
+          const list = pane.querySelector('[data-testid="chat-list"]') || pane.querySelector('[role="grid"]');
+          let sc = list; while (sc && sc.scrollHeight <= sc.clientHeight + 10 && sc !== pane) sc = sc.parentElement;
+          if (sc && sc.scrollTop > 0) sc.scrollTop = 0;
+          // Include the Self note-to-self row: it's [data-testid="message-yourself-row"],
+          // NOT a cell-frame-container — so the old selector silently dropped it
+          // and Self was never watched (operator 2026-06-09).
+          return [...pane.querySelectorAll('[data-testid="cell-frame-container"], [data-testid="message-yourself-row"]')].map(c => {
             const t = c.querySelector('[data-testid="cell-frame-title"] span[title]') || c.querySelector('span[title]');
             const badge = c.querySelector('[data-testid="icon-unread-count"]');
-            // Full secondary text (NOT just span[title]) so a voice note —
-            // whose preview is a mic icon + duration with no span[title], and
-            // which creates no unread when it's your own Self message — still
-            // changes the signature and fires the watcher.
+            // Full secondary text (NOT just span[title]) so a voice note (mic +
+            // duration, no span[title], no unread on your own Self msg) still
+            // changes the signature. Strip HH:MM so a per-minute clock tick in
+            // the row innerText fallback can't false-fire (→ re-download loops).
             const sec = c.querySelector('[data-testid="cell-frame-secondary"]');
-            return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview: sec ? (sec.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 80) : null };
+            let preview = (sec ? sec.innerText : c.innerText) || '';
+            preview = preview.replace(/\\b\\d{1,2}:\\d{2}\\b/g, '').replace(/\\s+/g, ' ').trim().slice(0, 80);
+            return { name: t ? t.getAttribute('title') : null, unread: badge ? (parseInt(badge.innerText, 10) || 0) : 0, preview };
           }).filter(r => r.name);
         })()`);
         if (!Array.isArray(rows)) return;
@@ -189,7 +199,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
         const want = ${JSON.stringify(want)};
         const t = [...document.querySelectorAll('#pane-side [data-testid="cell-frame-title"] span[title], #pane-side span[title]')].find(s => s.getAttribute('title') === want);
         if (!t) return null;
-        const cell = t.closest('[data-testid="cell-frame-container"]') || t.closest('[role="row"]') || t;
+        const cell = t.closest('[data-testid="cell-frame-container"]') || t.closest('[data-testid="message-yourself-row"]') || t.closest('[role="row"]') || t;
         cell.scrollIntoView({ block: 'center' });
         const r = cell.getBoundingClientRect();
         return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
