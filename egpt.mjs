@@ -2523,6 +2523,15 @@ function App() {
     const esc = alts.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
     return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
   };
+  // Does the body @mention ANY of these names (a sibling's canonical name OR
+  // aliases)? Drives unified @<sibling> routing: one mention-parser, shared by
+  // every surface, so an addressed sibling reaches its brain through the nucleus
+  // dispatch regardless of which limb delivered the message.
+  const _bodyMentionsAny = (body, names) => {
+    const esc = names.map(a => String(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean).join('|');
+    if (!esc) return false;
+    return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
+  };
   // Deliver one message into a room: append to the shared transcript + fan to
   // members. Groups/shell receive unconditionally; a brain receives only when
   // @mentioned (blind) or marked 'active', and its reply re-circulates into the
@@ -3902,8 +3911,20 @@ function App() {
               // normalizeResidents flattens any of them to the enabled names.
               const _perChatResidents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[from.chatId]);
               const _globalResidents  = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
-              const residents = _perChatResidents.length ? _perChatResidents
+              let residents = _perChatResidents.length ? _perChatResidents
                 : (_globalResidents.length ? _globalResidents : [_personaBeing]);
+              // UNIFIED @<mention> ROUTING (Wren, 2026-06-10): a message that
+              // explicitly @<mention>s a registered sibling NOT already resident
+              // joins THIS turn's dispatch — so @me/@jay/@l2/etc. route through
+              // the SAME nucleus path the shell uses (the limb is a dumb pipe).
+              // Matched by canonical name OR alias; the persona is already a
+              // resident (its @e gate rides baseMeta.replyAllowed).
+              const _mentionedSiblings = [];
+              for (const [_sn, _se] of Object.entries(EGPT_CONFIG.siblings ?? {})) {
+                if (_sn === _personaBeing) continue;
+                if (_bodyMentionsAny(text, [_sn, ...((_se?.aliases) ?? [])])) _mentionedSiblings.push(_sn);
+              }
+              if (_mentionedSiblings.length) residents = [...new Set([...residents, ..._mentionedSiblings])];
               // Debug-mirror telemetry (the /e confirm "Debug: …" lines that
               // deliverEcho posts into the Self DM) must be SEEN by the Self
               // residents but must NOT drive the residents-converse engine —
@@ -3914,9 +3935,14 @@ function App() {
               const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // (@l is stateless — no conversation-L transcript is recorded.)
               for (const being of residents) {
+                // An explicitly-@<mentioned> sibling was ADDRESSED → it may emit;
+                // its reply isn't gated by @e's mention status. Persona +
+                // unmentioned residents keep baseMeta.replyAllowed.
+                const _addressed = _mentionedSiblings.includes(being);
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
+                  ...(_addressed ? { replyAllowed: true } : {}),
                   ...(isDebugMirror ? {} : { _chainDepth: 0 }),
                   // Every resident gets per-chat coalescing backpressure now:
                   // @e via the persona queue, @l (and other siblings) via the
