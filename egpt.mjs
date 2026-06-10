@@ -6231,6 +6231,15 @@ function App() {
     if (!mbCfg) {
       return `!! @${name}: not configured. Add EGPT_CONFIG.siblings.${name}.{session_id, cwd, model?} (preferred) or set EGPT_CONFIG.meta_brain.session_id (legacy single-sibling shape).`;
     }
+    // LIVE-TERMINAL GUARD (feat/sibling-reply): a sibling whose session is a LIVE
+    // claude-code terminal (e.g. @me/@wren = the operator's own running session)
+    // must NOT be daemon-resumed — `claude --resume` on a live session hangs and
+    // wedges the message queue (heartbeat keeps ticking, turns stall). Refuse
+    // immediately and point at the dormant copy. No resume = no wedge.
+    if (mbCfg.live_terminal) {
+      logOut(`@${name}: live-terminal — refusing daemon resume (use the dormant alias)`);
+      return `(@${name} is a live terminal session — I can't resume it from here. Address @jay instead.)`;
+    }
     const brainType = canonicalBrainName(mbCfg.type ?? 'claude-code');
     const brain = brainForName(brainType);
     if (!brain) return `!! @${name}: brain "${brainType}" not found.`;
