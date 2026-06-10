@@ -251,11 +251,68 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
     })()`) ?? 'none';
   }
 
-  // Download the LATEST voice note in the open chat via WA's Download menu
-  // (right-click the bubble → Download). Returns the captured .ogg path or null.
+  // Read recent messages of the OPEN chat in DOM order, each with a STABLE
+  // per-message id (the row's data-id) + kind — so the limb can track "last
+  // seen" per chat and replay only genuinely-new messages in a burst (not just
+  // the latest). Voice rows carry a data-id but no [data-pre-plain-text].
+  async function readRecent(n = 8) {
+    return await _eval(`(() => {
+      const main = document.querySelector('#main'); if (!main) return [];
+      const rows = [...main.querySelectorAll('[data-id]')].filter(r => r.querySelector('[data-pre-plain-text], [aria-label="Play voice message"]'));
+      return rows.slice(-${Math.max(1, n)}).map(r => {
+        const id = r.getAttribute('data-id');
+        const voice = !!r.querySelector('[aria-label="Play voice message"]');
+        const ppt = r.querySelector('[data-pre-plain-text]');
+        const meta = ppt ? (ppt.getAttribute('data-pre-plain-text') || '') : '';
+        const m = meta.match(/^\\[(.*?)\\]\\s*(.*?):\\s*$/);
+        const textEl = ppt ? (ppt.querySelector('.selectable-text') || ppt) : null;
+        return { id, kind: voice ? 'voice' : 'text', sender: m ? m[2] : null, ts: m ? m[1] : null, text: textEl ? textEl.innerText : null };
+      });
+    })()`) ?? [];
+  }
+
+  // Right-click a bubble at {x,y} → click Download → return the captured file
+  // path (polls the download dir for the new, non-.crdownload file).
+  async function _rightClickDownload(bubble, tag) {
+    const before = new Set(readdirSync(DOWNLOAD_DIR));
+    await _send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bubble.x, y: bubble.y });
+    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
+    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
+    await _sleep(700);
+    const dl = await _eval(`(() => {
+      const d = [...document.querySelectorAll('[role="menuitem"], li, div[role="button"]')].find(e => /^download$/i.test((e.innerText||'').trim()));
+      if (!d) return null; const r = d.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!dl) { log(`wa-dom: ${tag} — no Download in menu`); try { await _send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' }); } catch {} return null; }
+    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
+    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
+    for (let i = 0; i < 24; i++) {
+      await _sleep(400);
+      const news = readdirSync(DOWNLOAD_DIR).filter(f => !before.has(f) && !f.endsWith('.crdownload'));
+      if (news.length) { const p = join(DOWNLOAD_DIR, news[0]); log(`wa-dom: voice note downloaded → ${news[0]}`); return p; }
+    }
+    log(`wa-dom: ${tag} — download did not appear`); return null;
+  }
+
+  // Download a SPECIFIC voice note by its message data-id (so a burst of voice
+  // notes each get captured, not just the last). Returns the .ogg path or null.
+  async function downloadVoiceNoteById(id) {
+    await bringToFront();
+    const bubble = await _eval(`(() => {
+      const row = [...document.querySelectorAll('#main [data-id]')].find(r => r.getAttribute('data-id') === ${JSON.stringify(id)});
+      if (!row) return null;
+      const play = row.querySelector('[aria-label="Play voice message"]'); if (!play) return null;
+      row.scrollIntoView({ block: 'center' });
+      const r = row.getBoundingClientRect();
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!bubble) { log('wa-dom: downloadVoiceNoteById — bubble not found'); return null; }
+    return await _rightClickDownload(bubble, 'downloadVoiceNoteById');
+  }
+
+  // Download the LATEST voice note in the open chat (back-compat helper).
   async function downloadLatestVoiceNote() {
     await bringToFront();
-    const before = new Set(readdirSync(DOWNLOAD_DIR));
     const bubble = await _eval(`(() => {
       const main = document.querySelector('#main'); if (!main) return null;
       const play = [...main.querySelectorAll('[aria-label="Play voice message"]')].pop(); if (!play) return null;
@@ -265,24 +322,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
     })()`);
     if (!bubble) { log('wa-dom: downloadLatestVoiceNote — no voice note in open chat'); return null; }
-    // right-click → WA message context menu
-    await _send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bubble.x, y: bubble.y });
-    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
-    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: bubble.x, y: bubble.y, button: 'right', clickCount: 1 });
-    await _sleep(700);
-    const dl = await _eval(`(() => {
-      const d = [...document.querySelectorAll('[role="menuitem"], li, div[role="button"]')].find(e => /^download$/i.test((e.innerText||'').trim()));
-      if (!d) return null; const r = d.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    })()`);
-    if (!dl) { log('wa-dom: downloadLatestVoiceNote — no Download in menu'); try { await _send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' }); } catch {} return null; }
-    await _send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
-    await _send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dl.x, y: dl.y, button: 'left', clickCount: 1 });
-    for (let i = 0; i < 24; i++) {
-      await _sleep(400);
-      const news = readdirSync(DOWNLOAD_DIR).filter(f => !before.has(f) && !f.endsWith('.crdownload'));
-      if (news.length) { const p = join(DOWNLOAD_DIR, news[0]); log(`wa-dom: voice note downloaded → ${news[0]}`); return p; }
-    }
-    log('wa-dom: downloadLatestVoiceNote — download did not appear'); return null;
+    return await _rightClickDownload(bubble, 'downloadLatestVoiceNote');
   }
 
   // Type + click the Send button (Enter is ignored by WA's Lexical composer).
@@ -310,7 +350,7 @@ export function createWaWebDom({ port = 9221, host = '127.0.0.1', log = () => {}
 
   function stop() { if (_notifTimer) clearInterval(_notifTimer); if (_watchTimer) clearInterval(_watchTimer); try { _ws?.close(); } catch {} _ws = null; }
 
-  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, watchChatList, openChatByName, readLatest, latestKind, downloadLatestVoiceNote, sendText, openChatTitle, stop };
+  return { attach, isLoggedIn, isAlive, bringToFront, onNewMessage, watchChatList, openChatByName, readLatest, readRecent, latestKind, downloadLatestVoiceNote, downloadVoiceNoteById, sendText, openChatTitle, stop };
 }
 
 // ── read-only self-test ─────────────────────────────────────────────────────
