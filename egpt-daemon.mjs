@@ -52,12 +52,15 @@ const UPGRADE_EXIT_CODE = 42;
 const RESTART_EXIT_CODE = 43;
 const REWIND_EXIT_CODE  = 44;
 const CLEAN_EXIT_CODE   = 0;
-// git and npm still go through spawnSync with shell:true (the only
-// way to invoke them portably across Windows .cmd shims, msys2,
-// macOS, and Linux). The extension build, however, runs via dynamic
-// import — see buildExtension(). Spawning `node extension/build.mjs`
-// was returning status:null on the user's msys2 Windows for reasons
-// we couldn't pin down; importing the build script in-process side-
+// npm still goes through spawnSync with shell:true (the only way to
+// invoke its .cmd shim portably across Windows, msys2, macOS, and
+// Linux) — but ONLY with a fixed argv string, never with interpolated
+// input. git is a real exe everywhere, so it always uses array args
+// (no shell): nothing read from disk (like the rewind sidecar) may
+// ever reach a shell. The extension build runs via dynamic import —
+// see buildExtension(). Spawning `node extension/build.mjs` was
+// returning status:null on the user's msys2 Windows for reasons we
+// couldn't pin down; importing the build script in-process side-
 // steps the whole spawn / shell / PATH / .cmd resolution mess.
 
 // --headless: pass through to the supervised egpt.mjs child. Used by
@@ -154,14 +157,25 @@ async function runRewind() {
     log('rewind sidecar empty; restarting anyway');
     return false;
   }
+  // The sidecar is a plain file under ~/.egpt — anything that can write it
+  // skips the `git rev-parse --verify` check in slash/lifecycle.mjs. Refuse
+  // anything that doesn't look like a bare ref (branch/tag/sha/HEAD~n), and
+  // never let it near a shell or be parsed as a git option (leading '-').
+  if (ref.startsWith('-') || !/^[\w./^~@-]+$/.test(ref)) {
+    log(`rewind ref ${JSON.stringify(ref)} doesn't look like a git ref; refusing — restarting with current code`);
+    return false;
+  }
   const root = activeRoot();
   log(`rewind requested → git checkout ${ref} && npm install && build:ext${root !== ROOT ? `  [source: ${root}]` : ''}`);
-  for (const cmdline of ['git checkout ' + ref, 'npm install']) {
-    const r = spawnSync(cmdline, { cwd: root, stdio: 'inherit', shell: true });
-    if (r.status !== 0) {
-      log(`rewind step failed (${cmdline})${r.error ? `: ${r.error.message}` : ''}; restarting anyway with current code`);
-      return false;
-    }
+  const co = spawnSync('git', ['checkout', ref], { cwd: root, stdio: 'inherit' });
+  if (co.status !== 0) {
+    log(`rewind step failed (git checkout ${ref})${co.error ? `: ${co.error.message}` : ''}; restarting anyway with current code`);
+    return false;
+  }
+  const ni = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
+  if (ni.status !== 0) {
+    log(`rewind step failed (npm install)${ni.error ? `: ${ni.error.message}` : ''}; restarting anyway with current code`);
+    return false;
   }
   await buildExtension(root);
   log(`rewind to ${ref} complete`);
