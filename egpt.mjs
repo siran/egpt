@@ -6146,6 +6146,7 @@ function App() {
         ...(configAddDirs(dbCfg) ? { addDirs: configAddDirs(dbCfg) } : {}),
         ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
         ...(dbCfg.model ? { model: dbCfg.model } : {}),
+        ...(brainType === 'codex' && dbCfg.service_tier ? { serviceTier: dbCfg.service_tier } : {}),
       }),
       recordDefaultSession: async ({ sessionId, brainType }) => {
         const next = recordSession(readDefaultBrainState(), sessionId, { type: brainType });
@@ -6379,6 +6380,7 @@ function App() {
       ...(configAddDirs(mbCfg)     ? { addDirs: configAddDirs(mbCfg) } : {}),
       ...(_sysPrompt               ? { appendSystemPrompt: _sysPrompt } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
+      ...(brainType === 'codex' && mbCfg.service_tier ? { serviceTier: mbCfg.service_tier } : {}),
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
       // Local CPU brain (@l): a cold prompt-eval of a big conversation-L can be
       // silent for a while; give the stall watchdog room (configurable).
