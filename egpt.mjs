@@ -7914,9 +7914,14 @@ function App() {
         // the chat's transcript.md so a stateless model has recent context
         // (operator 2026-06-11: feed l.md + transcript.md per turn). The legacy
         // conversation-L chat.json is retired — transcript.md is the one source.
-        if (meta.fromWhatsApp && _sibBrain?.sessionless && meta.waChatId) {
+        // Memory is on by default; siblings.<name>.memory:false makes it a clean
+        // stateless chatter again (a 3B handles a short clean tail OK, but it's
+        // not brilliant — the framing tells it to REPLY, not summarise, which is
+        // what a small model defaults to when handed a conversation blob).
+        if (meta.fromWhatsApp && _sibBrain?.sessionless && meta.waChatId
+            && EGPT_CONFIG.siblings?.[sibName]?.memory !== false) {
           const _tail = await _readTranscriptTail(meta.waChatId, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
-          if (_tail) personaPrompt = `Recent conversation in this channel (context, oldest→newest):\n${_tail}\n\n— new message —\n${personaPrompt}`;
+          if (_tail) personaPrompt = `Recent messages in this channel (context only):\n${_tail}\n\nReply to the new message as @${sibName} — one direct chat message, same language, no narration or summary:\n${personaPrompt}`;
         }
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
