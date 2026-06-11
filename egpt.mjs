@@ -3976,7 +3976,18 @@ function App() {
               // replies to debug never re-circulate.
               const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // (@l is stateless — no conversation-L transcript is recorded.)
-              for (const being of residents) {
+              // ORDER: dispatch explicitly-@<mentioned> siblings FIRST so a
+              // direct address (@jay/@me/@l) isn't stuck behind @e's turn —
+              // @e's session is large/slow, and on a sibling-addressed message
+              // @e is usually silent anyway. @e still runs (for context), just
+              // after the addressed sibling has already replied. Serial model
+              // unchanged (safe w.r.t. the residents-converse recirculation);
+              // only the order changes. (operator 2026-06-11: kill the wait.)
+              const _residentOrder = [
+                ...residents.filter((r) => _mentionedSiblings.includes(r)),
+                ...residents.filter((r) => !_mentionedSiblings.includes(r)),
+              ];
+              for (const being of _residentOrder) {
                 // An explicitly-@<mentioned> sibling was ADDRESSED → it may emit;
                 // its reply isn't gated by @e's mention status. Persona +
                 // unmentioned residents keep baseMeta.replyAllowed.
@@ -6336,8 +6347,10 @@ function App() {
     }
     // Sessionless brains (e.g. llama — local llama.cpp) have no --resume:
     // the host must not gate them on a session_id. codex is also exempt
-    // (it auto-creates + persists its own thread on first turn).
-    if (!mbCfg.session_id && brainType !== 'codex' && !brain.sessionless) {
+    // (it auto-creates + persists its own thread on first turn). claude-sdk is
+    // exempt too: with no session_id it starts a FRESH session (the SDK assigns
+    // an id; the warm pool keeps it warm in-process for the daemon's lifetime).
+    if (!mbCfg.session_id && brainType !== 'codex' && brainType !== 'claude-sdk' && !brain.sessionless) {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     // Prompt profile: `system_prompt_file` points to a standalone file
