@@ -3935,11 +3935,13 @@ function App() {
               // replies to debug never re-circulate.
               const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // (@l is stateless — no conversation-L transcript is recorded.)
+              try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()} BROADCAST chat=${from.chatId} residents=[${residents.join(',')}] mentioned=[${_mentionedSiblings.join(',')}] msg=${JSON.stringify(String(text).slice(0, 40))}\n`); } catch { /* trace */ }
               for (const being of residents) {
                 // An explicitly-@<mentioned> sibling was ADDRESSED → it may emit;
                 // its reply isn't gated by @e's mention status. Persona +
                 // unmentioned residents keep baseMeta.replyAllowed.
                 const _addressed = _mentionedSiblings.includes(being);
+                try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()}   → dispatch being=${being} addressed=${_addressed}\n`); } catch { /* trace */ }
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
@@ -6203,7 +6205,7 @@ function App() {
       idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
       idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
       dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 90_000,
-      onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
+      onLog: (m) => { try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()} POOL ${m}\n`); } catch { /* trace */ } try { logOut(m); } catch { /* ignore */ } },
     });
     return _warmPoolInstance;
   }
@@ -6394,6 +6396,7 @@ function App() {
       let result;
       if (brainType === 'claude-sdk' && _warmEnabled()) {
         const _warmKey = `sib:${selectedName}:${mbCfg.session_id ?? 'new'}`;
+        try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()}     WARM-TURN ${_warmKey} warm=${_warmPool().has(_warmKey)} text=${JSON.stringify(String(text).slice(0, 30))}\n`); } catch { /* trace */ }
         try {
           const r = await _warmPool().run(_warmKey, text, onPartial, {
             brainOptions: { ...sessionOpts, allowedTools: mbCfg.allowed_tools ?? 'all' },

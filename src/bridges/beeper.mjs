@@ -435,16 +435,24 @@ export async function startBeeperBridge(opts = {}) {
     // approved emit (streamFactory returns null otherwise); send the FINAL text
     // on finish(). Ignore intermediate update() frames (no edit-spam).
     startStreamMessage(initialText, { chatId, chatName, persona } = {}) {
-      let latest = initialText, finished = false, delivered = false;
+      // The host meta-brain path (egpt.mjs ~7880) skips its fallback send only
+      // when the stream reports `delivered` — so the handle MUST expose
+      // `delivered` (+ `lastError`), else every sibling reply is sent twice
+      // (stream finish + fallback). A local-only `delivered` was the double-@jay bug.
+      let latest = initialText, finished = false;
+      const handle = { delivered: false, lastError: null };
       const deliver = async () => {
-        if (delivered) return; delivered = true;
-        if (latest && latest.trim()) await sendMessage(chatId, latest, {});
+        if (handle.delivered) return;
+        handle.delivered = true;
+        if (latest && latest.trim()) {
+          const r = await sendMessage(chatId, latest, {});
+          if (!r) { handle.delivered = false; handle.lastError = 'send returned null'; }
+        }
       };
-      return {
-        update: (t) => { if (!finished && t) latest = t; },
-        finish: async (t) => { if (t) latest = t; finished = true; await deliver(); },
-        fail: (e) => { finished = true; onLog(`beeper: stream fail — ${e?.message ?? e}`); },
-      };
+      handle.update = (t) => { if (!finished && t) latest = t; };
+      handle.finish = async (t) => { if (t) latest = t; finished = true; await deliver(); };
+      handle.fail = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
+      return handle;
     },
     isAlive: () => _wsReady,
     stop: () => { _stopped = true; if (_reconnectTimer) clearTimeout(_reconnectTimer); try { ws?.close(); } catch { /* closing */ } },

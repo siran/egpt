@@ -88,6 +88,63 @@ REMAINING — the WIRING (the hot path, do it fresh + with a live regression):
    Self = klass=system. THIS TOUCHES THE LIVE @e PATH — regression-test @e first.
 4. Live: `@jay` warm + snappy; confirm claude-sdk resumes `825b`; @e unbroken.
 
+## HANDOFF (2026-06-11, Wren → next agent) — READ THIS FIRST
+
+**What we're doing:** make every brain (conversation-e, system-e, siblings)
+RESPONSIVE by reusing a warm persistent SDK session instead of a cold per-turn
+start. Plus two safety guards (live-terminal, timeout). Parts 1/2/3 are built +
+green; the *wiring* is in progress and has two bugs — one fixed, one open.
+
+**State of the daemon:** running on this branch `feat/sibling-reply` (the daemon
+runs the working-tree checkout — a plain restart picks up edits; do NOT `/upgrade`
+or it jumps to main). Config: `jay.type: claude-sdk` (warmable), `wren.live_terminal: true`.
+
+**Restart + test loop:**
+- Restart (elevated): `sc stop egpt-daemon; taskkill /F /T /IM egpt-service.exe; sc start egpt-daemon` (UAC).
+- Trace file: `~/.egpt/logs/warm-trace.log` (BROADCAST/dispatch/WARM-TURN + POOL lines). headless.log is useless frame-dumps — use the trace.
+- Test: from mobile send `@jay uno` then `@jay dos` (no restart between).
+
+**FIXED — double @jay reply:** the meta path (egpt.mjs ~7880) skips its fallback
+send only when the stream handle reports `delivered`. The Beeper limb's
+`startStreamMessage` had a *local-only* `delivered`, so the fallback always fired
+→ every sibling reply sent twice. Fixed: the handle now exposes `delivered` +
+`lastError` (src/bridges/beeper.mjs). NOTE: whatsapp-cdp.mjs has the SAME shim
+bug — fix it identically before CDP is used for siblings.
+
+**OPEN — warm session not reused (still cold/slow each turn).** Trace signature:
+every `@jay` turn logs `WARM-TURN ... warm=false` then `POOL warm: opened ...
+size=1/6`, and there is **NO `POOL ... evicted` line**. So the pool entry is
+gone by the next turn without _evict being called. Two hypotheses to chase:
+  1. **The SDK streaming-input query ENDS after one `result`** (so the warm
+     primitive is single-use). The fresh-session spike worked across 2 turns
+     ONLY because they were back-to-back; with an 8s gap (real messages) the
+     query may close. Verify by instrumenting createWarmSession's reader loop:
+     does `for await (const m of q)` exit after the first result? If so, the
+     fix is to keep the query genuinely open (the input generator must keep
+     awaiting; confirm the SDK doesn't auto-close on idle, or use
+     `q.streamInput()` / `pushPrompt()` instead of the async-generator prompt).
+  2. **The pool singleton (`_warmPool()`/`_warmPoolInstance` in egpt.mjs) isn't
+     persisting across dispatches.** Less likely (module-scope let), but the
+     "no evict + has=false" pattern could mean a new/empty pool each turn.
+     Verify: log the pool object identity at run().
+  Resolve #1 first — it's the most likely (warm primitive single-use).
+
+**ALSO confirmed:** claude-sdk DOES resume the CLI-created `825b` in the daemon
+(jay replies with context, e.g. it counted uno→dos→tres). The earlier
+"failed to launch" was an MSYS2-dev-shell false-negative ONLY.
+
+**STILL TODO (the bigger win):** wire conversation-e/system-e through the pool in
+`runDefaultBrainTurn` → dispatch.mjs (per-conversation key = chatId/slug,
+klass=conversation; Self=system). HOT @e PATH — regression-test @e first. @e
+already uses claude-sdk + SDK sessions, so no CLI-resume issue there.
+
+**OPERATOR REQUEST:** `@e` should move to **codex-mini** (`default_brain.type:
+codex`, model codex-mini). Arrange that (config + verify the codex brain resumes).
+
+**CLEANUP before merge:** remove the debug traces (the `appendFileSync(... warm-trace.log ...)`
+lines in egpt.mjs at the resident loop + the warm branch, and the file-route in
+the `_warmPool()` onLog). Then squash-review the branch and PR → main.
+
 ## Test gate
 Repo has a pre-push hook running the suite. Add unit tests: warm reuse (no
 re-spawn on 2nd turn), idle eviction frees the session, maxWarm LRU, lock refusal,
