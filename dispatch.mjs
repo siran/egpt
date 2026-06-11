@@ -67,6 +67,17 @@ function isMissingResumeError(text) {
     || /resume failed/i.test(msg);
 }
 
+function isBrainFailureResult(text) {
+  const msg = String(text ?? '').trim();
+  return /^!!\s+/.test(msg)
+    || /^\[(?:codex|claude(?:-sdk|-code)?)\s+(?:exit|timed out)\b/i.test(msg)
+    || /invalid_request_error/i.test(msg)
+    || /model .*not supported/i.test(msg)
+    || /not supported when using Codex/i.test(msg)
+    || /\b(?:401|403|429)\b/.test(msg)
+    || /\b(?:unauthorized|authentication|rate.?limit|quota)\b/i.test(msg);
+}
+
 function registrySurface(threadCtx = {}) {
   const tid = String(threadCtx.threadId ?? '');
   const s = threadCtx.surface ?? '';
@@ -749,8 +760,14 @@ export function createDispatchRuntime({
     const turnBrain = resolved?.brain ?? brain;
     const brainType = resolved?.brainType ?? resolved?.name ?? 'default';
     const dbCfg = resolved?.dbCfg ?? {};
+    const fallbackResolved = resolved?.fallback ?? null;
+    const fallbackBrain = fallbackResolved?.brain ?? null;
+    const fallbackBrainType = fallbackResolved?.brainType ?? fallbackResolved?.name ?? null;
+    const fallbackDbCfg = fallbackResolved?.dbCfg ?? {};
     if (!turnBrain?.stream) {
-      return resolved?.missingMessage ?? `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
+      if (!fallbackBrain?.stream) {
+        return resolved?.missingMessage ?? `!! default brain "${brainType}" not found. /config default_brain {"type":"claude-code"}`;
+      }
     }
     if (resolved?.isUrlBrain || resolved?.isUrl) {
       if (!runUrlBrainTurn) {
@@ -773,6 +790,16 @@ export function createDispatchRuntime({
       ? await sessionOptions({ text, threadCtx, brain: turnBrain, brainType, dbCfg })
       : { ...sessionOptions };
     const sessionOpts = { ...baseSessionOpts };
+    const fallbackBaseSessionOpts = fallbackBrain?.stream && typeof sessionOptions === 'function'
+      ? await sessionOptions({
+          text,
+          threadCtx,
+          brain: fallbackBrain,
+          brainType: fallbackBrainType,
+          dbCfg: fallbackDbCfg,
+          fallbackFor: brainType,
+        })
+      : (fallbackBrain?.stream ? { ...sessionOptions } : null);
 
     const tid = String(threadCtx.threadId ?? '');
     const surface = registrySurface(threadCtx);
@@ -938,13 +965,6 @@ export function createDispatchRuntime({
     const replyClock = nowStamp.slice(11, 16);
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
 
-    const brainFailure = Symbol('brainFailure');
-    const brainPromise = Promise.resolve().then(() => turnBrain.stream(
-      { history: wrappedText, message: wrappedText },
-      onPartial,
-      sessionOpts,
-    )).catch(error => ({ [brainFailure]: true, error }));
-
     const header = !fs.existsSync?.(fpath)
       ? (isSystemThread
           ? `# @e ${threadId} log\n\n`
@@ -993,10 +1013,46 @@ export function createDispatchRuntime({
     }
 
     try {
-      const result = await brainPromise;
-      if (result?.[brainFailure]) throw result.error;
-      const final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
-      const newThreadId = result?.optionsPatch?.sessionId;
+      const applyRuntimeSessionShape = (base, { sameBrainType = true } = {}) => ({
+        ...sessionOpts,
+        ...(base ?? {}),
+        cwd: sessionOpts.cwd,
+        ...(sessionOpts.addDirs ? { addDirs: sessionOpts.addDirs } : {}),
+        ...(sessionOpts.readOnlyDirs ? { readOnlyDirs: sessionOpts.readOnlyDirs } : {}),
+        ...(sessionOpts.confineToDirs ? { confineToDirs: sessionOpts.confineToDirs } : {}),
+        ...(sessionOpts.allowedTools !== undefined ? { allowedTools: sessionOpts.allowedTools } : {}),
+        ...(!sameBrainType && isPerContactDispatch ? { sessionId: null } : {}),
+      });
+
+      const fallbackAttempt = fallbackBrain?.stream
+        ? {
+            brain: fallbackBrain,
+            brainType: fallbackBrainType,
+            dbCfg: fallbackDbCfg,
+            sessionOpts: applyRuntimeSessionShape(fallbackBaseSessionOpts, { sameBrainType: fallbackBrainType === brainType }),
+          }
+        : null;
+
+      const runAttempt = (attempt) => Promise.resolve().then(() => attempt.brain.stream(
+        { history: wrappedText, message: wrappedText },
+        onPartial,
+        attempt.sessionOpts,
+      ));
+
+      let usedAttempt = { brain: turnBrain, brainType, dbCfg, sessionOpts };
+      let result;
+      try {
+        if (!turnBrain?.stream) throw new Error(`default brain "${brainType}" not found`);
+        result = await runAttempt(usedAttempt);
+      } catch (primaryError) {
+        if (!fallbackAttempt || threadCtx._fallbackTried) throw primaryError;
+        const msg = primaryError?.message ?? String(primaryError);
+        logSystem(`@e: ${brainType} failed (${msg.slice(0, 160)}); trying ${fallbackAttempt.brainType} fallback`);
+        result = await runAttempt(fallbackAttempt);
+        usedAttempt = fallbackAttempt;
+      }
+
+      let final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const triedResume = !!(isPerContactDispatch && convSlug && convEntry?.threadId);
       if (triedResume && !threadCtx._retried && isMissingResumeError(final)) {
         await updateState((state) => {
@@ -1012,6 +1068,14 @@ export function createDispatchRuntime({
         logSystem(`@e: stored thread for "${convSlug}" could not be resumed; cleared it and retrying fresh`);
         return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
       }
+      if (usedAttempt.brainType === brainType && fallbackAttempt && !threadCtx._fallbackTried && isBrainFailureResult(final)) {
+        logSystem(`@e: ${brainType} returned failure (${String(final).slice(0, 160)}); trying ${fallbackAttempt.brainType} fallback`);
+        result = await runAttempt(fallbackAttempt);
+        usedAttempt = fallbackAttempt;
+        final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
+      }
+
+      const newThreadId = result?.optionsPatch?.sessionId;
       if (isPerContactDispatch && isNewContact && newThreadId && convSlug) {
         await updateState((state) => {
           const now = clockIso(clock);
@@ -1026,7 +1090,7 @@ export function createDispatchRuntime({
         });
       }
       if (newThreadId && !isPerContactDispatch) {
-        await recordDefaultSession?.({ sessionId: newThreadId, brainType, dbCfg });
+        await recordDefaultSession?.({ sessionId: newThreadId, brainType: usedAttempt.brainType, dbCfg: usedAttempt.dbCfg });
       }
 
       await appendTranscript({

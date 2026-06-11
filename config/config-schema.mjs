@@ -45,6 +45,7 @@ export const CONFIG_SCHEMA = {
   // outside any room — has its own persistent conversation thread.
   // session_id is auto-populated on first @egpt and reused thereafter.
   default_brain: 'default brain (the @egpt persona — same machinery as /attach, just node-global): { type: "codex"|"claude-code" (default "codex"), session_id: "<auto>", cwd?: "...", add_dirs?: ["..."] (extra writable roots; Claude gets --add-dir, Codex gets --add-dir under workspace-write), allowed_tools?: "all" | "<space-sep>" | ["Read",...] (default "all"; Claude maps to allowedTools/bypass, Codex maps all to bypass and restricted values to workspace-write), system_prompt?: "..." (opt-in; absent = brain default), model?: "gpt-5.4-mini"|"<full-model-id>" (default "gpt-5.4-mini" for codex; passed to the selected CLI when supported) }',
+  default_brain_fallback: 'optional fallback for default_brain failures. false disables fallback. When unset, egpt automatically tries claude-sdk/haiku when default_brain is codex, and codex/gpt-5.4-mini when default_brain is claude-sdk/ccode. Object shape matches default_brain.',
   // meta_brain: the @me / @wren engineer co-pilot. A SIBLING of the operator's
   // main Claude Code design conversation (egpt0-branch), created via Claude
   // Code's /branch slash command and resumed from any surface. Same shape as
