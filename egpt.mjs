@@ -3905,6 +3905,12 @@ function App() {
             // resident-broadcast meta dispatches (e.g. @l) bypass observe-only
             // suppression.
             waWhitelisted: isAutoEChat || isSystemContact,
+            // Did the OPERATOR (account owner, any device) send this? isSender
+            // is the only trustworthy operator signal. Lets an operator-typed
+            // @<sibling> bypass observe-only in ANY chat (their deliberate
+            // intent), while a non-operator's @<sibling> stays suppressed in
+            // non-whitelisted chats — so random members can't invoke siblings.
+            authorized: !!from.authorized,
             // Voice transcript marker → envelope hint "(transcript from voice
             // note)". Every resident reads the transcript.
             isTranscriptFromVoice: !!from.isTranscriptFromVoice,
@@ -7442,13 +7448,16 @@ function App() {
     // observe-only UNTIL added to auto_e_chats, but the command to
     // add it is filtered out by the same observe-only gate).
     const isOperatorCommand = decision.kind === 'command' && meta.fromWhatsApp;
-    // An explicit @<being> mention (meta dispatch) inside the operator's
-    // whitelisted spaces (auto_e_chats / self) is deliberate intent —
-    // bypass observe-only suppression, same as operator commands. Without
-    // this, "@l hola" in an auto_e group is SKIP'd as "observe-only meta".
-    // (Observed/non-whitelisted chats still suppress meta, so random
-    // members can't trigger @jay etc. there.) 2026-05-24.
-    const isOperatorBeingMention = decision.kind === 'meta' && meta.fromWhatsApp && !!meta.waWhitelisted;
+    // An explicit @<being> mention (meta dispatch) that is deliberate operator
+    // intent bypasses observe-only suppression, same as operator commands —
+    // either because the chat is whitelisted (auto_e_chats / self) OR because
+    // the OPERATOR themself sent it (authorized = isSender). Without the
+    // operator-authorship clause, "@l hola" the operator types in a plain
+    // observed group (not in auto_e_chats) was SKIP'd as "observe-only meta"
+    // and @l stayed silent (operator 2026-06-11). A NON-operator's @<being> in
+    // a non-whitelisted chat is still suppressed, so random members can't
+    // trigger @jay/@l there. 2026-05-24 / 2026-06-11.
+    const isOperatorBeingMention = decision.kind === 'meta' && meta.fromWhatsApp && (!!meta.waWhitelisted || !!meta.authorized);
     if (meta.observeOnly && decision.kind !== 'persona' && !isOperatorCommand && !isOperatorBeingMention) {
       // Observed chat, no @e mention, not an operator command → no
       // dispatch. Log to activity log so "did @e see my message?" has
