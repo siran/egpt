@@ -2668,6 +2668,41 @@ function App() {
     } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
   };
 
+  // @l (and any sessionless sibling) draws its CHANNEL MEMORY from the chat's
+  // own transcript.md — the single durable record — not a parallel chat.json.
+  // Read the recent tail (capped) to feed as context each turn, and append the
+  // sibling's reply so it persists and @l sees what it just said. Operator
+  // 2026-06-11: "feed l.md + transcript.md per turn"; transcript.md is the one
+  // source of truth. (The legacy conversation-L chat.json store is retired.)
+  const _readTranscriptTail = async (chatId, maxChars = 2000) => {
+    try {
+      const cs = await _loadConvState();
+      const slug = conversationsState.getContact(cs, 'whatsapp', chatId)?.slug;
+      if (!slug) return '';
+      const fpath = join(conversationsState.slugDir('whatsapp', slug), 'transcript.md');
+      const content = await readFile(fpath, 'utf8').catch(() => '');
+      if (content.length <= maxChars) return content.trim();
+      const cut = content.slice(content.length - maxChars);   // start at a line boundary
+      const nl = cut.indexOf('\n');
+      return (nl >= 0 ? cut.slice(nl + 1) : cut).trim();
+    } catch { return ''; }
+  };
+  const _appendSiblingReply = async (chatId, sibName, reply, surfaced) => {
+    try {
+      const text = String(reply ?? '').trim();
+      if (!text || !chatId) return;
+      const cs = await _loadConvState();
+      const slug = conversationsState.getContact(cs, 'whatsapp', chatId)?.slug;
+      if (!slug) return;   // chat not registered yet — the @e turn registers it
+      const fpath = join(conversationsState.slugDir('whatsapp', slug), 'transcript.md');
+      if (!existsSync(fpath)) return;   // the @e turn creates the file + header
+      const d = new Date(); const pad = (n) => String(n).padStart(2, '0');
+      const t = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+      const line = surfaced ? `[@${sibName} (${t})]: ${text}` : `[@${sibName} (${t})]: (not surfaced) ${text}`;
+      await appendFile(fpath, `${line}\n\n`, 'utf8');
+    } catch (e) { errOut(`!! sibling-reply-log ${chatId}: ${e?.message ?? e}`); }
+  };
+
   const _deliverToRoom = async (roomName, { fromId, senderLabel, body, depth = 0, _personaReply = false, logOnly = false }) => {
     let state; try { state = await loadRooms(); } catch { return; }
     const room = state.rooms?.[roomName];
@@ -7853,11 +7888,19 @@ function App() {
         // (chatId), @@… said:]) which mislabels Beeper GROUPS as DMs and which
         // @l parroted back (operator 2026-06-11). chatName resolves the
         // human-readable group/contact name for the bracket.
-        const personaPrompt = meta._personaBodyOverride
+        let personaPrompt = meta._personaBodyOverride
           ? meta._personaBodyOverride                         // drained pile — verbatim combined prompt
           : (meta.fromWhatsApp && (_isResident || _sibBrain?.sessionless))
             ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null })
             : formatPersonaPrompt(meta, decision.body);
+        // Channel MEMORY for sessionless siblings (@l): prepend a capped tail of
+        // the chat's transcript.md so a stateless model has recent context
+        // (operator 2026-06-11: feed l.md + transcript.md per turn). The legacy
+        // conversation-L chat.json is retired — transcript.md is the one source.
+        if (meta.fromWhatsApp && _sibBrain?.sessionless && meta.waChatId) {
+          const _tail = await _readTranscriptTail(meta.waChatId, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
+          if (_tail) personaPrompt = `Recent conversation in this channel (context, oldest→newest):\n${_tail}\n\n— new message —\n${personaPrompt}`;
+        }
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
         // A resident being can self-select OUT of a message by replying with
@@ -7976,6 +8019,12 @@ function App() {
           const _infra = /^!!\s*@/.test(_r.trimStart());
           const _verdict = _silent ? 'DROP:silent' : !_gateOk ? 'DROP:gate' : _infra ? 'DROP:infra' : 'SEND';
           logOut(`@${sibName} emit ${meta.waChatId}: verdict=${_verdict} replyAllowed=${meta.replyAllowed} reply=${JSON.stringify(_r.slice(0, 80))}`);
+          // Record the sibling's reply to the chat transcript — surfaced OR
+          // withheld-by-mode (operator 2026-06-11: log every response, even
+          // non-surfaced). '…'/infra aren't real replies, so they're skipped.
+          if (_verdict === 'SEND' || _verdict === 'DROP:gate') {
+            _appendSiblingReply(meta.waChatId, sibName, _r, _verdict === 'SEND').catch(() => {});
+          }
         }
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
