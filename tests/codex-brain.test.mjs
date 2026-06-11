@@ -71,6 +71,8 @@ describe('codexConfigArgs - model runtime config', () => {
     expect(codexConfigArgs({ reasoningEffort: 'low', serviceTier: 'fast' })).toEqual([
       '-c',
       'model_reasoning_effort="low"',
+      '--enable',
+      'fast_mode',
       '-c',
       'service_tier="fast"',
     ]);

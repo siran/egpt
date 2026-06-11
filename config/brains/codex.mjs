@@ -6,6 +6,7 @@
 //
 // Other addressed messages are passed to `codex exec` non-interactively.
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -120,7 +121,8 @@ function codexServiceTierArgs(options = {}) {
   const tier = raw.trim();
   // Values are passed as TOML via -c. Keep this config surface token-only.
   if (!/^[A-Za-z0-9._-]+$/.test(tier)) return [];
-  return ['-c', `service_tier="${tier}"`];
+  const featureArgs = tier.toLowerCase() === 'fast' ? ['--enable', 'fast_mode'] : [];
+  return [...featureArgs, '-c', `service_tier="${tier}"`];
 }
 
 export function codexConfigArgs(options = {}) {
@@ -252,12 +254,38 @@ async function runShell(command, onUpdate, options) {
 
 function codexSpawn(commandArgs) {
   if (process.platform === 'win32') {
+    const native = findNativeCodexExecutable();
+    if (native) return { command: native, args: commandArgs };
     return {
       command: process.env.ComSpec || 'cmd.exe',
       args: ['/d', '/s', '/c', 'codex.cmd', ...commandArgs],
     };
   }
   return { command: 'codex', args: commandArgs };
+}
+
+function findNativeCodexExecutable() {
+  const candidates = [
+    process.env.EGPT_CODEX_BIN,
+    process.env.CODEX_CLI_PATH,
+    process.env.APPDATA
+      ? join(
+          process.env.APPDATA,
+          'npm',
+          'node_modules',
+          '@openai',
+          'codex',
+          'node_modules',
+          '@openai',
+          process.arch === 'arm64' ? 'codex-win32-arm64' : 'codex-win32-x64',
+          'vendor',
+          process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc',
+          'bin',
+          'codex.exe',
+        )
+      : null,
+  ].filter(Boolean);
+  return candidates.find((p) => existsSync(p)) ?? null;
 }
 
 function extractTextEvent(ev) {
@@ -403,6 +431,9 @@ async function runCodex(turn, onUpdate, options) {
 
   try {
     return await new Promise((resolvePromise, reject) => {
+      const startedAt = Date.now();
+      let firstEventMs = null;
+      let firstTextMs = null;
       const proc = spawn(cmd.command, cmd.args, {
         cwd,
         env: { ...process.env, TERM: process.env.TERM || 'dumb' },
@@ -439,10 +470,12 @@ async function runCodex(turn, onUpdate, options) {
             onUpdate(plainOutput);
             continue;
           }
+          if (firstEventMs === null) firstEventMs = Date.now() - startedAt;
           logLine(logPath, ev);
           if (ev.type === 'thread.started' && ev.thread_id) sessionId = ev.thread_id;
           const text = extractTextEvent(ev);
           if (text) {
+            if (firstTextMs === null) firstTextMs = Date.now() - startedAt;
             assistantText += text;
             onUpdate(assistantText);
           }
@@ -467,7 +500,16 @@ async function runCodex(turn, onUpdate, options) {
         if (!final && stderr.trim()) final = stderr.trim();
         if (timedOut) final = `${final ? final + '\n' : ''}[codex timed out after ${Math.round(timeoutMs / 1000)}s]`;
         else if (code !== 0 && !final) final = `[codex exit ${code}${stderr.trim() ? `: ${stderr.trim()}` : ''}]`;
-        logLine(logPath, { type: 'codex.close', code, timedOut, sessionId, reasoningEffort: effort });
+        logLine(logPath, {
+          type: 'codex.close',
+          code,
+          timedOut,
+          sessionId,
+          reasoningEffort: effort,
+          durationMs: Date.now() - startedAt,
+          firstEventMs,
+          firstTextMs,
+        });
         resolvePromise({
           text: final || '...',
           optionsPatch: {
