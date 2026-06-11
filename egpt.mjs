@@ -42,6 +42,10 @@ import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
+// Warm-session pool singleton at MODULE scope — the _warmPool() helper lives in
+// a per-dispatch closure, so a local `let` reset every turn → a brand-new empty
+// pool each turn (no warm reuse). Module scope persists across dispatches.
+let _warmPoolSingleton = null;
 import { planFanout, roomEnvelope, isRoomEnvelope } from './src/room-routing.mjs';
 import { resolveRoute, planMirrors } from './src/room.mjs';
 import { CONFIG_SCHEMA } from './config/config-schema.mjs';
@@ -3972,13 +3976,11 @@ function App() {
               // replies to debug never re-circulate.
               const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // (@l is stateless — no conversation-L transcript is recorded.)
-              try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()} BROADCAST chat=${from.chatId} residents=[${residents.join(',')}] mentioned=[${_mentionedSiblings.join(',')}] msg=${JSON.stringify(String(text).slice(0, 40))}\n`); } catch { /* trace */ }
               for (const being of residents) {
                 // An explicitly-@<mentioned> sibling was ADDRESSED → it may emit;
                 // its reply isn't gated by @e's mention status. Persona +
                 // unmentioned residents keep baseMeta.replyAllowed.
                 const _addressed = _mentionedSiblings.includes(being);
-                try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()}   → dispatch being=${being} addressed=${_addressed}\n`); } catch { /* trace */ }
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
@@ -6238,19 +6240,18 @@ function App() {
   // WARM-SESSION POOL (feat/sibling-reply). Lazily built from EGPT_CONFIG.brains.warm.
   // Holds persistent claude-sdk streaming sessions so a turn is not a cold start.
   // Lazy creation avoids module-eval ordering; logOut/EGPT_CONFIG exist at call time.
-  let _warmPoolInstance = null;
   const _warmEnabled = () => EGPT_CONFIG.brains?.warm?.enabled !== false;   // default ON
   function _warmPool() {
-    if (_warmPoolInstance) return _warmPoolInstance;
+    if (_warmPoolSingleton) return _warmPoolSingleton;   // module-scope singleton (survives dispatches)
     const w = EGPT_CONFIG.brains?.warm ?? {};
-    _warmPoolInstance = createWarmPool({
+    _warmPoolSingleton = createWarmPool({
       max: Number(w.max) || 6,
       idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
       idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
       dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 90_000,
-      onLog: (m) => { try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()} POOL ${m}\n`); } catch { /* trace */ } try { logOut(m); } catch { /* ignore */ } },
+      onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
     });
-    return _warmPoolInstance;
+    return _warmPoolSingleton;
   }
 
   // Run @me / @wren / sibling engineer turns. Claude siblings may use
@@ -6440,7 +6441,6 @@ function App() {
       let result;
       if (brainType === 'claude-sdk' && _warmEnabled()) {
         const _warmKey = `sib:${selectedName}:${mbCfg.session_id ?? 'new'}`;
-        try { appendFileSync(join(EGPT_HOME, 'logs', 'warm-trace.log'), `${new Date().toISOString()}     WARM-TURN ${_warmKey} warm=${_warmPool().has(_warmKey)} text=${JSON.stringify(String(text).slice(0, 30))}\n`); } catch { /* trace */ }
         try {
           const r = await _warmPool().run(_warmKey, text, onPartial, {
             brainOptions: { ...sessionOpts, allowedTools: mbCfg.allowed_tools ?? 'all' },
