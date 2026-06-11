@@ -20,7 +20,7 @@ while ($sw.Elapsed.TotalSeconds -lt 10) {
   Start-Sleep -Milliseconds 500
 }
 if ((Get-Service egpt-daemon).Status -ne 'Stopped') {
-  Write-Host "stop hung after 10s — killing wrapper + node tree"
+  Write-Host "stop hung after 10s - killing wrapper + node tree"
   taskkill /F /IM egpt-service.exe 2>$null | Out-Null
   Start-Sleep -Seconds 2
 }
