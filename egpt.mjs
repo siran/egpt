@@ -6454,11 +6454,12 @@ function App() {
     }
     // Suppress Qwen3 thinking at the MODEL level. llama-server's --reasoning
     // flag only controls how reasoning is PARSED, not whether the model emits
-    // <think>…</think> — so @l kept reasoning (slow on CPU, and noise). Qwen3
-    // honors a literal /no_think switch in the prompt; append it to the system
-    // prompt. Toggle with local_llm.no_think:false. (operator 2026-05-25:
-    // "best is that there is no thinking and a response.")
-    if (brain.sessionless && EGPT_CONFIG.local_llm?.no_think !== false) {
+    // <think>…</think> — so a Qwen3 @l kept reasoning (slow on CPU, and noise).
+    // Qwen3 honors a literal /no_think switch in the prompt; append it to the
+    // system prompt. Per-sibling siblings.<name>.no_think wins (central L config,
+    // operator 2026-06-11), falling back to local_llm.no_think. Set false for a
+    // NON-thinking model (e.g. Qwen2.5) where /no_think is just dead weight.
+    if (brain.sessionless && (mbCfg.no_think ?? EGPT_CONFIG.local_llm?.no_think) !== false) {
       _sysPrompt = `${_sysPrompt ? _sysPrompt + '\n\n' : ''}/no_think`;
     }
     const sessionOpts = {
