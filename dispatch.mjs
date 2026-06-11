@@ -78,12 +78,19 @@ function isBrainFailureResult(text) {
     || /\b(?:unauthorized|authentication|rate.?limit|quota)\b/i.test(msg);
 }
 
-function registrySurface(threadCtx = {}) {
+export function registrySurface(threadCtx = {}) {   // exported for tests
   const tid = String(threadCtx.threadId ?? '');
   const s = threadCtx.surface ?? '';
   if (s === 'whatsapp' || s === 'wa' || s.startsWith('wa-')) return 'whatsapp';
   if (s === 'telegram' || s === 'tg' || s.startsWith('tg-')) return 'telegram';
-  if (tid.includes('@')) return 'whatsapp';
+  // Infer the WA surface from the thread id when surface isn't set. Baileys
+  // JIDs carry '@' (…@g.us / …@s.whatsapp.net); Beeper room ids do NOT — they
+  // are '!<room>:beeper.local'. Without recognizing Beeper ids here, every
+  // Beeper chat fell through to surface=null → not per-contact → its transcript
+  // was dumped into the _unrouted catch-all instead of its own per-chat folder
+  // (regression from the baileys→Beeper transport move; operator 2026-06-11:
+  // every WA chat MUST keep its own transcript — transcripts are first-class).
+  if (tid.includes('@') || tid.includes(':beeper')) return 'whatsapp';
   return null;
 }
 
