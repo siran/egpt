@@ -2681,8 +2681,24 @@ function App() {
       if (!slug) return '';
       const fpath = join(conversationsState.slugDir('whatsapp', slug), 'transcript.md');
       const content = await readFile(fpath, 'utf8').catch(() => '');
-      if (content.length <= maxChars) return content.trim();
-      const cut = content.slice(content.length - maxChars);   // start at a line boundary
+      if (!content) return '';
+      // Keep only real conversation lines. A small local model REGURGITATES
+      // system noise (transcript headers, mode-notes, '[@e]: …' silences,
+      // 'egpt back!'/restart announces, Debug:) when it's in the context — it
+      // summarised the noise instead of chatting (operator 2026-06-11). Strip it
+      // so the tail is just the human/sibling exchange.
+      const keep = content.split('\n').filter((l) => {
+        const t = l.trim();
+        if (!t) return false;
+        if (t.startsWith('#') || t.startsWith('thread:')) return false;            // header / date section
+        if (t.startsWith('(Chat reply mode')) return false;                        // mode note
+        if (/^\[@\w+[^\]]*\]:\s*(…|\.\.\.|\(No response|$)/.test(t)) return false;  // @e/@l silences
+        if (/egpt back!|restart initiated|respawning|going down|Debug:/.test(t)) return false; // system
+        return true;
+      });
+      const filtered = keep.join('\n');
+      if (filtered.length <= maxChars) return filtered.trim();
+      const cut = filtered.slice(filtered.length - maxChars);   // start at a line boundary
       const nl = cut.indexOf('\n');
       return (nl >= 0 ? cut.slice(nl + 1) : cut).trim();
     } catch { return ''; }
