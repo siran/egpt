@@ -293,7 +293,7 @@ export function stream({ history, message }, onUpdate, options = {}) {
             // result message so the failure is diagnosable (num_turns, is_error,
             // usage, any nested error). Truncated to keep the log sane.
             try { onLog(`claude-sdk: error result = ${JSON.stringify(msg).slice(0, 800)}`); } catch {}
-            return wrapReject(new Error(`claude-sdk: ${parts.join(' — ') || 'error_during_execution'}`));
+            try { const { appendFileSync } = await import('node:fs'); const { homedir } = await import('node:os'); const { join } = await import('node:path'); appendFileSync(join(homedir(), '.egpt', 'logs', 'sdk-errors.log'), `${new Date().toISOString()} model=${sdkOpts.model ?? '?'} cwd=${sdkOpts.cwd ?? '?'} ${JSON.stringify(msg).slice(0, 2000)}\n`); } catch {}
           }
         }
       }
