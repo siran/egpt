@@ -3,7 +3,7 @@
 // correctly to codex's bypass-vs-sandbox flag.
 
 import { describe, it, expect } from 'vitest';
-import { codexPermissionArgs, codexTrustArgs } from '../config/brains/codex.mjs';
+import { codexConfigArgs, codexPermissionArgs, codexTrustArgs } from '../config/brains/codex.mjs';
 
 const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
 
@@ -55,6 +55,32 @@ describe('codexPermissionArgs - workspace-write scope', () => {
     expect(codexPermissionArgs({ allowedTools: 'all', addDirs: ['C:\\work'] }, '0')).toEqual([
       '--sandbox', 'workspace-write',
       '--add-dir', 'C:\\work',
+    ]);
+  });
+});
+
+describe('codexConfigArgs - model runtime config', () => {
+  it('always sets model_reasoning_effort', () => {
+    expect(codexConfigArgs({ reasoningEffort: 'low' })).toEqual([
+      '-c',
+      'model_reasoning_effort="low"',
+    ]);
+  });
+
+  it('passes service_tier when configured', () => {
+    expect(codexConfigArgs({ reasoningEffort: 'low', serviceTier: 'fast' })).toEqual([
+      '-c',
+      'model_reasoning_effort="low"',
+      '-c',
+      'service_tier="fast"',
+    ]);
+  });
+
+  it('accepts YAML-style service_tier but ignores unsafe values', () => {
+    expect(codexConfigArgs({ reasoningEffort: 'low', service_tier: 'priority' })).toContain('service_tier="priority"');
+    expect(codexConfigArgs({ reasoningEffort: 'low', service_tier: 'fast"; sandbox_mode="danger-full-access' })).toEqual([
+      '-c',
+      'model_reasoning_effort="low"',
     ]);
   });
 });

@@ -114,6 +114,23 @@ function codexModelArgs(options = {}) {
   return options.model ? ['-m', String(options.model)] : [];
 }
 
+function codexServiceTierArgs(options = {}) {
+  const raw = options.serviceTier ?? options.service_tier;
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  const tier = raw.trim();
+  // Values are passed as TOML via -c. Keep this config surface token-only.
+  if (!/^[A-Za-z0-9._-]+$/.test(tier)) return [];
+  return ['-c', `service_tier="${tier}"`];
+}
+
+export function codexConfigArgs(options = {}) {
+  const effort = options.reasoningEffort ?? codexReasoningEffort(options);
+  return [
+    '-c', `model_reasoning_effort="${effort}"`,
+    ...codexServiceTierArgs(options),
+  ];
+}
+
 function safeName(name) {
   return String(name || 'codex').replace(/[^A-Za-z0-9._-]+/g, '_');
 }
@@ -347,7 +364,7 @@ async function runCodex(turn, onUpdate, options) {
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
   const permissionArgs = codexPermissionArgs(options, process.env.EGPT_CODEX_TRUST);
-  const configArgs = ['-c', `model_reasoning_effort="${effort}"`];
+  const configArgs = codexConfigArgs({ ...options, reasoningEffort: effort });
   const modelArgs = codexModelArgs(options);
   const args = options.sessionId
     ? [
@@ -379,6 +396,7 @@ async function runCodex(turn, onUpdate, options) {
     cwd,
     resume: options.sessionId ?? null,
     model: options.model ?? null,
+    serviceTier: options.serviceTier ?? options.service_tier ?? null,
     reasoningEffort: effort,
     prompt,
   });
