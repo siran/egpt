@@ -54,6 +54,6 @@ $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries -Do
 
 Register-ScheduledTask -TaskName 'egpt-wake-probe' -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null
 
-Write-Host ("egpt-wake-probe registered: {0} discrete triggers, every {1} min, {2} → {3}" -f `
+Write-Host ("egpt-wake-probe registered: {0} discrete triggers, every {1} min, {2} -> {3}" -f `
   $offsets.Count, $IntervalMinutes, $now.AddMinutes($offsets[0]).ToString('HH:mm:ss'), $now.AddMinutes($offsets[-1]).ToString('HH:mm:ss'))
 Write-Host "Close the lid (on AC) whenever inside that window; any nap length works."
