@@ -68,6 +68,7 @@ async function makeRuntime(opts = {}) {
     recordDefaultSession: opts.recordDefaultSession,
     resolveBrain: opts.resolveBrain,
     selfDmConfig: opts.selfDmConfig,
+    sessionOptions: opts.sessionOptions,
     stateDir,
     sysLog: opts.sysLog,
     systemCwd: opts.systemCwd,
@@ -538,5 +539,80 @@ describe('dispatch runtime', () => {
       waSlug: 'sys-chat',
     });
     expect(sysCalls[0].sessionOpts.allowedTools).toBe('all');
+  });
+
+  it('falls back to the configured default-brain fallback when the primary throws', async () => {
+    const calls = [];
+    const recorded = [];
+    const primary = {
+      stream: async () => {
+        calls.push({ brain: 'primary' });
+        throw new Error('primary down');
+      },
+    };
+    const fallback = {
+      stream: async (_payload, _onPartial, sessionOpts) => {
+        calls.push({ brain: 'fallback', sessionOpts });
+        return { text: 'fallback ok', optionsPatch: { sessionId: 'fallback-thread' } };
+      },
+    };
+    const { runtime } = await makeRuntime({
+      resolveBrain: () => ({
+        brain: primary,
+        brainType: 'codex',
+        dbCfg: { type: 'codex', session_id: 'codex-thread', model: 'gpt-5.4-mini' },
+        fallback: {
+          brain: fallback,
+          brainType: 'claude-sdk',
+          dbCfg: { type: 'claude-sdk', session_id: 'haiku-thread', model: 'haiku' },
+        },
+      }),
+      sessionOptions: ({ dbCfg }) => ({ sessionId: dbCfg.session_id ?? null, model: dbCfg.model }),
+      recordDefaultSession: async (entry) => recorded.push(entry),
+    });
+
+    const reply = await runtime.runDefaultBrainTurn('hello', () => {}, { threadId: 'shell', surface: 'shell' });
+
+    expect(reply).toBe('fallback ok');
+    expect(calls.map(c => c.brain)).toEqual(['primary', 'fallback']);
+    expect(calls[1].sessionOpts.sessionId).toBe('haiku-thread');
+    expect(calls[1].sessionOpts.model).toBe('haiku');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].sessionId).toBe('fallback-thread');
+    expect(recorded[0].brainType).toBe('claude-sdk');
+  });
+
+  it('falls back when the primary returns a failure-looking text result', async () => {
+    const calls = [];
+    const primary = {
+      stream: async () => {
+        calls.push('primary');
+        return { text: '!! primary unavailable' };
+      },
+    };
+    const fallback = {
+      stream: async () => {
+        calls.push('fallback');
+        return { text: 'fallback text' };
+      },
+    };
+    const { runtime } = await makeRuntime({
+      resolveBrain: () => ({
+        brain: primary,
+        brainType: 'claude-sdk',
+        dbCfg: { type: 'claude-sdk', model: 'haiku' },
+        fallback: {
+          brain: fallback,
+          brainType: 'codex',
+          dbCfg: { type: 'codex', model: 'gpt-5.4-mini' },
+        },
+      }),
+      sessionOptions: ({ dbCfg }) => ({ model: dbCfg.model }),
+    });
+
+    const reply = await runtime.runDefaultBrainTurn('hello', () => {}, { threadId: 'shell', surface: 'shell' });
+
+    expect(reply).toBe('fallback text');
+    expect(calls).toEqual(['primary', 'fallback']);
   });
 });

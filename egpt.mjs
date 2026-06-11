@@ -624,6 +624,43 @@ function defaultPersonaBrainConfig(cfg) {
   return out;
 }
 
+function latestDefaultBrainSessionForType(cfg, type) {
+  const want = canonicalBrainName(type);
+  for (const h of (cfg?.history ?? [])) {
+    if (h?.id && canonicalBrainName(h.type) === want) return h.id;
+  }
+  return null;
+}
+
+function defaultPersonaFallbackConfig(primaryCfg) {
+  if (EGPT_CONFIG.default_brain_fallback === false) return null;
+  if (EGPT_CONFIG.default_brain_fallback && typeof EGPT_CONFIG.default_brain_fallback === 'object') {
+    return defaultPersonaBrainConfig(EGPT_CONFIG.default_brain_fallback);
+  }
+
+  const primary = defaultPersonaBrainConfig(primaryCfg);
+  const primaryType = canonicalBrainName(primary.type);
+  if (primaryType === 'codex') {
+    return {
+      type: 'claude-sdk',
+      model: 'haiku',
+      cwd: primary.cwd ?? process.cwd(),
+      allowed_tools: primary.allowed_tools ?? 'all',
+      session_id: latestDefaultBrainSessionForType(primary, 'claude-sdk'),
+    };
+  }
+  if (primaryType === 'claude-sdk' || primaryType === 'ccode') {
+    return {
+      type: 'codex',
+      model: DEFAULT_PERSONA_BRAIN.model,
+      cwd: primary.cwd ?? process.cwd(),
+      allowed_tools: primary.allowed_tools ?? 'all',
+      session_id: latestDefaultBrainSessionForType(primary, 'codex'),
+    };
+  }
+  return null;
+}
+
 function isMissingResumeErrorText(text) {
   const msg = String(text ?? '');
   return /thread\/resume failed/i.test(msg)
@@ -6087,10 +6124,15 @@ function App() {
       resolveBrain: () => {
         const dbCfg = defaultPersonaBrainConfig(EGPT_CONFIG.default_brain);
         const brainType = canonicalBrainName(dbCfg.type ?? DEFAULT_PERSONA_BRAIN.type);
+        const fbCfg = defaultPersonaFallbackConfig(dbCfg);
+        const fbType = fbCfg ? canonicalBrainName(fbCfg.type ?? DEFAULT_PERSONA_BRAIN.type) : null;
         return {
           brain: brainForName(brainType),
           brainType,
           dbCfg,
+          fallback: fbCfg && fbType && !isUrlBrain(fbType)
+            ? { brain: brainForName(fbType), brainType: fbType, dbCfg: fbCfg }
+            : null,
           isUrlBrain: isUrlBrain(brainType),
           missingMessage: `!! default brain "${brainType}" not found. /config default_brain {"type":"codex","model":"gpt-5.4-mini"}`,
         };
@@ -6100,7 +6142,7 @@ function App() {
         cwd: dbCfg.cwd ?? process.cwd(),
         sessionName: 'egpt',
         userName: USER_NAME,
-        ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(['ccode', 'codex', 'claude-sdk'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
         ...(configAddDirs(dbCfg) ? { addDirs: configAddDirs(dbCfg) } : {}),
         ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
         ...(dbCfg.model ? { model: dbCfg.model } : {}),
