@@ -105,6 +105,12 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function boolOption(value) {
+  if (value === true) return true;
+  if (typeof value === 'string') return /^(1|true|yes|on)$/i.test(value.trim());
+  return false;
+}
+
 function codexReasoningEffort(options = {}) {
   const raw = options.reasoningEffort ?? process.env.EGPT_CODEX_REASONING_EFFORT ?? DEFAULT_CODEX_REASONING_EFFORT;
   return raw === 'minimal' || raw === 'minimum' || raw === 'min' ? 'low' : raw;
@@ -332,6 +338,13 @@ export function codexPermissionArgs({ allowedTools, addDirs } = {}, envTrust) {
   return ['--sandbox', 'workspace-write', ...codexAddDirArgs(addDirs)];
 }
 
+export function codexRuntimeArgs(options = {}) {
+  const args = [];
+  if (boolOption(options.ephemeral)) args.push('--ephemeral');
+  if (boolOption(options.ignoreRules ?? options.ignore_rules)) args.push('--ignore-rules');
+  return args;
+}
+
 async function runCodex(turn, onUpdate, options) {
   const cwd = normalizeCwd(options.cwd);
   await assertDirectory(cwd);
@@ -347,6 +360,7 @@ async function runCodex(turn, onUpdate, options) {
   const tempDir = await mkdtemp(join(tmpdir(), 'egpt-codex-'));
   const lastMessagePath = join(tempDir, 'last-message.txt');
   const permissionArgs = codexPermissionArgs(options, process.env.EGPT_CODEX_TRUST);
+  const runtimeArgs = codexRuntimeArgs(options);
   const configArgs = ['-c', `model_reasoning_effort="${effort}"`];
   const modelArgs = codexModelArgs(options);
   const args = options.sessionId
@@ -356,6 +370,7 @@ async function runCodex(turn, onUpdate, options) {
         ...modelArgs,
         ...configArgs,
         '--skip-git-repo-check',
+        ...runtimeArgs,
         '--output-last-message', lastMessagePath,
         ...permissionArgs,
         'resume',
@@ -369,6 +384,7 @@ async function runCodex(turn, onUpdate, options) {
         ...configArgs,
         '--cd', cwd,
         '--skip-git-repo-check',
+        ...runtimeArgs,
         '--output-last-message', lastMessagePath,
         ...permissionArgs,
         '-',

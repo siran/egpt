@@ -3,7 +3,7 @@
 // correctly to codex's bypass-vs-sandbox flag.
 
 import { describe, it, expect } from 'vitest';
-import { codexPermissionArgs, codexTrustArgs } from '../config/brains/codex.mjs';
+import { codexPermissionArgs, codexRuntimeArgs, codexTrustArgs } from '../config/brains/codex.mjs';
 
 const BYPASS = '--dangerously-bypass-approvals-and-sandbox';
 
@@ -56,5 +56,26 @@ describe('codexPermissionArgs - workspace-write scope', () => {
       '--sandbox', 'workspace-write',
       '--add-dir', 'C:\\work',
     ]);
+  });
+});
+
+describe('codexRuntimeArgs - invocation controls', () => {
+  it('adds no runtime flags by default', () => {
+    expect(codexRuntimeArgs({})).toEqual([]);
+  });
+
+  it('maps ephemeral:true to --ephemeral', () => {
+    expect(codexRuntimeArgs({ ephemeral: true })).toEqual(['--ephemeral']);
+  });
+
+  it('accepts string booleans for config-loaded values', () => {
+    expect(codexRuntimeArgs({ ephemeral: 'true', ignore_rules: 'yes' })).toEqual([
+      '--ephemeral',
+      '--ignore-rules',
+    ]);
+  });
+
+  it('maps ignoreRules to --ignore-rules', () => {
+    expect(codexRuntimeArgs({ ignoreRules: true })).toEqual(['--ignore-rules']);
   });
 });
