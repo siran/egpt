@@ -19,6 +19,7 @@ import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
+import { reapPort } from './src/tools/reap-port.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
@@ -2329,6 +2330,7 @@ function App() {
   // its own burst.
   const _llamaGate = (being, meta, body) => {
     if (!_isLlamaBeing(being) || !meta.waChatId) return false;
+    if (!_llamaBusy.current) logOut(`@${being} gate ${meta.waChatId}: CLAIM (replyAllowed=${meta.replyAllowed})`);
     if (_llamaBusy.current) {
       const pile = _llamaPiles.current.get(meta.waChatId) ?? [];
       pile.push({ body, senderName: meta.waSenderName ?? 'someone', ts: Date.now() });
@@ -4001,6 +4003,7 @@ function App() {
                 // its reply isn't gated by @e's mention status. Persona +
                 // unmentioned residents keep baseMeta.replyAllowed.
                 const _addressed = _mentionedSiblings.includes(being);
+                if (_isLlamaBeing(being)) logOut(`@${being} dispatch ${baseMeta.waChatId ?? from.chatId}: addressed=${_addressed}`);
                 await submitRef.current(text, {
                   ...baseMeta,
                   forceTarget: being,
@@ -4208,6 +4211,11 @@ function App() {
     let proc = null, stopped = false, backoff = 2000, stableTimer = null;
     const spawnIt = () => {
       if (stopped) return;
+      // Free :port first — a llama-server orphaned by a soft /restart (Windows
+      // doesn't kill the child with its parent) would still hold it and block
+      // this bind, silently pinning @l to the OLD model. The daemon is elevated
+      // so it can reap it; no manual taskkill. See reap-port.mjs.
+      reapPort(port, logOut);
       logOut(`local_llm: starting llama-server :${port} (${String(model).split(/[\\/]/).pop()})`);
       try {
         proc = spawn(bin, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -5054,17 +5062,30 @@ function App() {
     if (!_suppressTranscriptRef.current) void append('system', body);
   };
 
+  // True file log. The Ink shell only renders logOut/errOut to the headless
+  // frame-dump (overwritten frames — the "don't trust headless.log" problem),
+  // so the daemon's own telemetry + errors were never durably recorded and
+  // had to be debugged with ad-hoc traces. egpt.log is the append-only,
+  // greppable source of truth (operator 2026-06-11: "we need true logs").
+  // Best-effort — logging must never throw or block the engine.
+  const _egptLogFile = join(EGPT_LOGS, 'egpt.log');
+  const _fileLog = (lvl, body) => {
+    try { appendFileSync(_egptLogFile, `${new Date().toISOString()} [${lvl}] ${String(body ?? '').replace(/\r?\n/g, ' ⏎ ')}\n`); } catch { /* never throw from logging */ }
+  };
+
   // logOut is for telemetry/audit lines — bridge connection events,
   // room-state coaching ("the room is empty"), peer announces, debug
   // dumps. They don't belong in the conversation transcript view; the
   // shell hides _log:true items by default and exposes them via /log.
   // sysOut stays for command responses (slash output) which the user
   // explicitly asked for and should see inline.
-  const logOut = body =>
-    pushItem({
+  const logOut = body => {
+    _fileLog('log', body);
+    return pushItem({
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _log: true,
     });
+  };
 
   // errOut is for error/failure lines that the operator needs to see
   // RIGHT NOW — bridge sends that failed, brain dispatch errors, any
@@ -5073,11 +5094,13 @@ function App() {
   // doesn't append to the room md — errors are operational noise, not
   // conversation). _bright marks them for the renderer so they stand
   // out from regular system messages.
-  const errOut = body =>
-    pushItem({
+  const errOut = body => {
+    _fileLog('err', body);
+    return pushItem({
       id: Date.now() + Math.random(), author: 'system', body,
       _localOnly: true, _bright: true,
     });
+  };
 
   // Engine attach host (Phase C — ENGINE-SURFACE-SEPARATION.md). Limbs (the thin
   // TTY client, the extension) attach over loopback TCP. OUTPUT: every item the
@@ -7924,6 +7947,18 @@ function App() {
         // their next prompt, so the reply is echoed there as the formatted
         // string it is prompted to them with.
         _recirculateResidentReply({ being: meta.forceTarget ?? sibName, reply, meta });
+        // @l (sessionless) emit verdict → egpt.log. Localises why a sessionless
+        // sibling stayed quiet: DROP:silent (model self-selected out with '…'),
+        // DROP:gate (chat mode/replyAllowed blocked it), DROP:infra (fetch
+        // error), or SEND. The streaming siblings (claude/codex) don't need it.
+        if (meta.fromWhatsApp && _sibBrain?.sessionless) {
+          const _r = String(reply ?? '');
+          const _silent = _silentReply(_r);
+          const _gateOk = _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction });
+          const _infra = /^!!\s*@/.test(_r.trimStart());
+          const _verdict = _silent ? 'DROP:silent' : !_gateOk ? 'DROP:gate' : _infra ? 'DROP:infra' : 'SEND';
+          logOut(`@${sibName} emit ${meta.waChatId}: verdict=${_verdict} replyAllowed=${meta.replyAllowed} reply=${JSON.stringify(_r.slice(0, 80))}`);
+        }
         if (tgStream) {
           await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
         } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {

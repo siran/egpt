@@ -16,6 +16,7 @@
 import { spawn } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
 import { convertToWav16k } from './transcribe.mjs';
+import { reapPort } from './reap-port.mjs';
 
 const READY_POLL_MS = 500;
 
@@ -42,6 +43,10 @@ export async function startWhisperServer({
     const args = ['-m', model, '--host', host, '--port', String(port)];
     if (language) args.push('-l', String(language));
     args.push(...extraArgs.map(String));
+    // Free the port first: a prior whisper-server orphaned by a soft restart
+    // (Windows doesn't kill the child with the parent) would still hold it and
+    // block this bind. The daemon is elevated, so it can reap it. See reap-port.mjs.
+    reapPort(port, onLog);
     onLog(`whisper-server: spawning ${command} ${args.join(' ')}`);
     proc = spawn(command, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     proc.stdout?.on('data', (d) => { const s = d.toString().trim(); if (s) onLog(`whisper-server: ${s.slice(0, 200)}`); });
