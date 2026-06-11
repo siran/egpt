@@ -216,7 +216,22 @@ export async function startBeeperBridge(opts = {}) {
   // re-trigger), plus a short-lived chatID|text fallback (the upserted id may
   // differ from the POST's pendingMessageID). Operator's OWN messages are NOT
   // suppressed — so the operator can @e themselves.
-  const _sentText = new Map();   // `${chatID}|${text}` -> expiry ms
+  const _sentText = new Map();   // `${chatID}|${normalizedText}` -> expiry ms
+  // Normalize for echo matching: egpt SENDS plain text ("🦙 l\n…") but Beeper
+  // echoes our OWN message back HTML-formatted ("🦙 l<br>…") with a DIFFERENT
+  // final id than the POST's pendingMessageID — so a raw id/text compare misses
+  // it, the echo gets treated as a fresh incoming, and a sibling whose reply
+  // mentions itself (e.g. @l discussing "@l ron") re-dispatches to itself and
+  // loops forever (operator 2026-06-11). Strip tags + entities + collapse
+  // whitespace so the sent and echoed forms compare equal.
+  function _normEcho(t) {
+    return String(t ?? '')
+      .replace(/<br\s*\/?>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>').replace(/&#39;/g, "'").replace(/&quot;/gi, '"')
+      .replace(/\s+/g, ' ').trim();
+  }
   function rememberSent(id, chatID, text) {
     if (id) { const key = msgKeyOf(chatID, id); _sentIds.add(key); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', key); }
     if (text) {
@@ -224,12 +239,12 @@ export async function startBeeperBridge(opts = {}) {
       // Sweep expired entries — this map otherwise grows for the life of a
       // 24/7 daemon (entries "expire" logically but were never deleted).
       if (_sentText.size > 50) { for (const [k, exp] of _sentText) { if (exp < now) _sentText.delete(k); } }
-      _sentText.set(`${chatID}|${text}`, now + 60000);
+      _sentText.set(`${chatID}|${_normEcho(text)}`, now + 60000);
     }
   }
   function isEcho(id, chatID, text) {
     if (id && _sentIds.has(msgKeyOf(chatID, id))) return true;
-    const exp = _sentText.get(`${chatID}|${text}`);   // don't delete — receipts re-fire the same upsert; let it expire
+    const exp = _sentText.get(`${chatID}|${_normEcho(text)}`);   // don't delete — receipts re-fire the same upsert; let it expire
     return !!(exp && exp > Date.now());
   }
 
