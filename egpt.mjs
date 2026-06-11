@@ -5784,17 +5784,19 @@ function App() {
     return `wa.${idStr}`;
   }
 
-  // Format a single auto-dispatched message for e's eyes. Canonical
-  // operator-mandated shape: `[Sender@surface (HH:MM)]: body`.
+  // Format a single auto-dispatched message for a resident's eyes. Canonical
+  // operator-mandated shape: `Sender@[Chat/Group name] (HH:MM): body` — the
+  // human-readable chat/group NAME in brackets so the brain knows WHO is
+  // speaking and WHERE (operator 2026-06-11: "An@[HFM High Frequency
+  // Masturbation] (17:21): quieres ser …").
   //
-  //   group:    [Simon@compren-bitcoin.wa (14:06)]: like tears in the rain
-  //   private:  [Mauricio@wa.5491... (14:06)]: hola
-  //   status:   [Friend@wa.status@broadcast (14:06)]: <body>
+  //   group:    An@[HFM High Frequency Masturbation] (14:06): like tears in the rain
+  //   private:  Mauricio@[Mauricio] (14:06): hola
   //
-  // The same one-line form across all chat types keeps the parser
-  // simple for @e and avoids the sender-vs-chat ambiguity that the
-  // earlier `[in "Chat", Sender at HH:MM]` form introduced.
-  function formatAutoDispatchLine({ senderName, body, ts, surface }) {
+  // Falls back to the surface slug when the chat name isn't resolvable. The
+  // same one-line form across all chat types keeps the parser simple for @e
+  // and avoids the sender-vs-chat ambiguity the verbose envelope introduced.
+  function formatAutoDispatchLine({ senderName, body, ts, surface, chatName }) {
     const d = new Date(ts ?? Date.now());
     const pad = (n) => String(n).padStart(2, '0');
     // UTC — operator (2026-05-21) wants all timestamps consistent. Reply
@@ -5802,7 +5804,8 @@ function App() {
     // there'd be a TZ-offset mismatch in the transcript.
     const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
     const sender = senderName ?? 'someone';
-    return `[${sender}@${surface ?? 'wa'} (${tstr})]: ${body}`;
+    const where = chatName ?? surface ?? 'wa';
+    return `${sender}@[${where}] (${tstr}): ${body}`;
   }
 
   function formatPersonaPrompt(meta, body) {
@@ -7844,10 +7847,16 @@ function App() {
         // non-residents keep the verbose persona prompt.
         const _isResident = (Array.isArray(EGPT_CONFIG.whatsapp?.residents) ? EGPT_CONFIG.whatsapp.residents : [])
           .some(r => String(r).toLowerCase() === String(sibName).toLowerCase());
+        // Sessionless siblings (@l) get the clean speaker-tagged line too, not
+        // just configured residents — without this @l fell through to the
+        // verbose formatPersonaPrompt envelope ([…UTC, in WhatsApp DM "…"
+        // (chatId), @@… said:]) which mislabels Beeper GROUPS as DMs and which
+        // @l parroted back (operator 2026-06-11). chatName resolves the
+        // human-readable group/contact name for the bracket.
         const personaPrompt = meta._personaBodyOverride
           ? meta._personaBodyOverride                         // drained pile — verbatim combined prompt
-          : (meta.fromWhatsApp && _isResident)
-            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) })
+          : (meta.fromWhatsApp && (_isResident || _sibBrain?.sessionless))
+            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null })
             : formatPersonaPrompt(meta, decision.body);
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;

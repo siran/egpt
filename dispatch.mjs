@@ -604,7 +604,7 @@ export function createDispatchRuntime({
     const isSystem = (personality === 'system');
     const tail = isSystem
       ? `Operator's incoming message from their Self DM follows:`
-      : `Live message from the chat follows (the daemon's standard envelope is \`[Sender@chat.surface (HH:MM)]: <body>\`):`;
+      : `Live message from the chat follows (the daemon's standard envelope is \`Sender@[Chat or group name] (HH:MM): <body>\`):`;
     return [
       `You are eGPT — an embodied LLM. Your underlying foundation is`,
       `Claude (Anthropic) or possibly Codex; that substrate is how you`,
@@ -910,7 +910,7 @@ export function createDispatchRuntime({
         let feed = '';
         try { feed = (await loadIdentityFeed(personality)) ?? ''; } catch (e) { logger?.error?.(`!! loadIdentityFeed: ${e?.message ?? e}`); }
         if (feed.trim()) {
-          wrappedText = `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`[Sender@chat (HH:MM)]: body\`):\n${text}`;
+          wrappedText = `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${text}`;
         } else {
           const identity = (await readPersonality(personality)) ?? '';
           let manifest = '';
