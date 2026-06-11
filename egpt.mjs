@@ -2368,6 +2368,15 @@ function App() {
       waSenderName: 'multiple',
       autoDispatched: true,
       forceTarget: being,
+      // ADDRESSED: a pile only ever holds messages that were dispatched to @l,
+      // and @l is dispatched ONLY when explicitly @-mentioned (there are no
+      // configured residents). The ORIGINAL dispatch carried replyAllowed:true
+      // (egpt.mjs ~3998); the drain MUST carry it too. Without it the drained
+      // turn has replyAllowed:undefined, so _dropResident → _eMayReplyToChat in
+      // 'mention' mode → autoMayEmit('mention',{replyAllowed:false}) → DROP: @l
+      // runs the inference then stays SILENT. This is the "@l silent in bursty
+      // groups" bug — a group's burst makes @l busy → pile → drop. (2026-06-11)
+      replyAllowed: true,
       _personaBodyOverride: fullPrompt,
     }).catch(e => errOut(`!! @l pile drain failed (${nextChat}): ${e.message}`));
   };
