@@ -6376,8 +6376,6 @@ function App() {
       sessionName: name,
       userName: USER_NAME,
       ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: mbCfg.allowed_tools ?? 'all' } : {}),
-      ...(brainType === 'codex' && mbCfg.ephemeral !== undefined ? { ephemeral: mbCfg.ephemeral } : {}),
-      ...(brainType === 'codex' && mbCfg.ignore_rules !== undefined ? { ignoreRules: mbCfg.ignore_rules } : {}),
       ...(configAddDirs(mbCfg)     ? { addDirs: configAddDirs(mbCfg) } : {}),
       ...(_sysPrompt               ? { appendSystemPrompt: _sysPrompt } : {}),
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
