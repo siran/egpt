@@ -62,7 +62,9 @@ Lock status of the four:
   on a forgotten flag, reaction-never, AND `paused`=absolute-kill
   (`mayEmitChat`). This is the leak fear — it is test-guarded.
 - **#1 — LOCKED** (transcript record-always: `fanOutDecision`, C1.2).
-- **#3 — logging LOCKED; media REGRESSED** (no test, no save on Beeper — C2).
+- **#3 — logging LOCKED; media-save LOCKED** (recovered 2026-06-12, C2.1/C2.2
+  — `tests/beeper-bridge.test.mjs` + `tests/media-save.test.mjs`; only the
+  revoke→`deleted/` path C2.3 remains TODO).
 - **#4 — LOCKED** (`tests/dispatch-line.test.mjs`; recovered 2026-06-12 — one
   `formatDispatchLine`, node from surface identity not hardcoded, brackets +
   `.{node}` + UTC HH:MM — C7.6).
@@ -83,17 +85,23 @@ Lock status of the four:
 
 ## 2. Media
 - **C2.1** Every media attachment (image, video, voice note, audio, document,
-  sticker) is saved by default. Config: **`whatsapp.media.download`** (`"all"` /
-  `"images_docs"` / `"off"`) — this contract's intent IS already registered in
-  `config-schema.mjs`. ⚠️ **REGRESSED** — the Beeper bridge downloads a voice
-  note only to a cache path to transcribe it, then drops it; no media is saved
-  for Beeper chats (52 baileys-era folders have `media/`; Beeper chats have none).
-  Source: `c02ad18`. NOTE: schema says the legacy target was `~/.egpt/media/
-  <chatJid>/<msgId>.<ext>`, but the per-chat `<slug>/media/` form (what the 52
-  folders use) is the better home — pick one on recovery and write the test.
-- **C2.2** Saved media gets a meaningful filename + a sidecar caption file + an
-  index entry. ⚠️ **REGRESSED** with C2.1. Source: `d4f453c`.
-- **C2.3** Revoked/deleted media moves to `deleted/` (not hard-deleted). ⚠️ **REGRESSED** with C2.1.
+  sticker) is saved by default into the chat's own `<slug>/media/`. Config:
+  **`whatsapp.media.download`** (`"all"` / `"images_docs"` / `"off"`). ✅
+  (recovered 2026-06-12). The Beeper bridge downloads each attachment + gates on
+  the policy (`shouldDownload`), then hands it to the host via `onMedia`;
+  egpt's `_saveIncomingMedia` copies it into `slugDir/media/` (ensuring the
+  contact so a media-first chat doesn't lose the file). Voice notes are saved AND
+  still transcribed — the regression was transcribe-then-drop. Locked by
+  `tests/beeper-bridge.test.mjs` (onMedia called for voice + image, policy
+  honored) + `tests/media-save.test.mjs` (pure helpers). The per-chat
+  `<slug>/media/` form won over the legacy `~/.egpt/media/<jid>/`.
+- **C2.2** Saved media gets a meaningful filename
+  (`<YYYYMMDD-HHMMSS>-<sender>-<kind>[-<msgId>].<ext>`) + a sidecar `.txt`
+  caption (voice → the transcript) + an `index.md` entry. ✅ (recovered
+  2026-06-12, `mediaFileName`/`mediaIndexLine`, `tests/media-save.test.mjs`).
+- **C2.3** Revoked/deleted media moves to `deleted/` (not hard-deleted). ⚠️
+  **TODO** — needs a Beeper message-revoke event handler; the save path (C2.1/2.2)
+  is in, the revoke path is not yet wired.
 
 ## 3. Transcription
 - **C3.1** Every voice/audio note is transcribed (DOLLY GPU whisper-server worker
@@ -175,10 +183,9 @@ Lock status of the four:
 1. ~~**Message-shape (C7.6)**~~ — DONE 2026-06-12 (`src/dispatch-line.mjs` +
    `tests/dispatch-line.test.mjs`). Follow-up: unify the room sender-label
    (egpt.mjs:~3964) onto the same formatter.
-2. **Media-save (C2.1–C2.3)** — re-land "save every attachment into the chat's
-   `media/`, meaningful filename + sidecar caption + index, revoke→`deleted/`" on
-   the Beeper bridge. The bridge has the chatID; it needs a `saveMedia(chatID,
-   path, meta)` callback that egpt.mjs resolves to `slugDir/media/`.
+2. ~~**Media-save (C2.1–C2.2)**~~ — DONE 2026-06-12 (`src/media-save.mjs`,
+   bridge `onMedia`, egpt `_saveIncomingMedia`; tests locked). Remaining: the
+   **revoke→`deleted/`** path (C2.3) needs a Beeper message-revoke handler.
 3. **@l slot-release timeout (C7.5)** — bound a single @l turn so a hang frees the
    slot fast; then re-enable `siblings.l.memory`.
 4. **Audit `❓` items** (C5.2, and cross-check every doc) and add a test per

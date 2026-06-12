@@ -5,9 +5,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { startBeeperBridge } from '../src/bridges/beeper.mjs';
 
 async function startFakeBeeper() {
@@ -76,6 +77,7 @@ afterEach(async () => {
 
 async function startBridge(extra = {}) {
   const incoming = [];
+  const media = [];
   const base = fake.subscribed();   // wait for THIS bridge's subscription, not a predecessor's
   const bridge = await startBeeperBridge({
     beeperToken: 'test-token',
@@ -83,12 +85,21 @@ async function startBridge(extra = {}) {
     wsUrl: `ws://127.0.0.1:${fake.port}/v1/ws`,
     stateDir,
     onIncoming: (text, from) => incoming.push({ text, from }),
+    onMedia: (m) => media.push(m),
     transcribe: async () => 'fake transcript',
     ...extra,
   });
   bridges.push(bridge);
   await waitFor(() => fake.subscribed() > base);
-  return { bridge, incoming };
+  return { bridge, incoming, media };
+}
+
+// A local file standing in for an already-downloaded attachment (srcURL file://
+// passes straight through attachmentToLocalPath — no /v1/assets/download call).
+function fakeAttachment({ name = 'blob.bin', mimeType = '', isVoiceNote = false } = {}) {
+  const p = join(stateDir, name);
+  writeFileSync(p, 'fake-bytes');
+  return { id: `att-${Math.random().toString(36).slice(2)}`, srcURL: pathToFileURL(p).href, fileName: name, mimeType, isVoiceNote };
 }
 
 // Real Beeper chatIDs are Matrix room ids ('!xxx:beeper.local'); tests
@@ -114,6 +125,48 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.authorized).toBe(false);
     expect(incoming[1].from.authorized).toBe(true);
     expect(incoming[1].from.atEStart).toBe(true);
+  });
+
+  // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
+  // handed to onMedia — not transcribed-then-dropped.
+  it('a voice note is transcribed AND its file handed to onMedia (caption = transcript)', async () => {
+    const { incoming, media } = await startBridge();
+    const att = fakeAttachment({ name: 'ptt.ogg', mimeType: 'audio/ogg', isVoiceNote: true });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [att] })] });
+    await waitFor(() => media.length === 1);
+    expect(incoming[0].text).toBe('fake transcript');          // still dispatched as text
+    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'audio', isVoiceNote: true });
+    expect(media[0].localPath).toContain('ptt.ogg');
+    expect(media[0].caption).toBe('fake transcript');          // sidecar caption = transcription
+  });
+
+  // A photo doesn't route to a brain in v1, but its file MUST still be saved.
+  it('a non-voice attachment (image) is handed to onMedia even though text is null', async () => {
+    const { incoming, media } = await startBridge();
+    const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [att] })] });
+    await waitFor(() => media.length === 1);
+    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'image' });
+    expect(incoming).toHaveLength(0);                          // not routed (no text)
+  });
+
+  it('whatsapp.media.download:"off" saves nothing', async () => {
+    const { media } = await startBridge({ media: { download: 'off' } });
+    const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: 'pic', attachments: [att] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });   // ordering barrier
+    await waitFor(() => true);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(media).toHaveLength(0);
+  });
+
+  it('"images_docs" saves an image but skips audio', async () => {
+    const { media } = await startBridge({ media: { download: 'images_docs' } });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [fakeAttachment({ name: 'a.jpg', mimeType: 'image/jpeg' })] })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [fakeAttachment({ name: 'b.ogg', mimeType: 'audio/ogg', isVoiceNote: true })] })] });
+    await waitFor(() => media.length >= 1);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(media.map((m) => m.kind)).toEqual(['image']);      // audio skipped by policy
   });
 
   it('suppresses the WS echo of its own send (text window, different id)', async () => {
