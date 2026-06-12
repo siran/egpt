@@ -185,7 +185,14 @@ export function makeClaudeResumeRunner({
   // Sidecar (latest threaded id) wins over the configured origin — it's where
   // the conversation actually is after prior turns.
   try { const s = readFileSync(sidecar, 'utf8').trim(); if (s) current = s; } catch { /* fresh */ }
-  const tools = Array.isArray(allowedTools) ? allowedTools : String(allowedTools).trim().split(/\s+/).filter(Boolean);
+  // 'all'/'*' must pass through as the literal STRING — that's what the
+  // claude-code brain checks to trigger the permission bypass (full peer). A
+  // list is split to an array; empty/none = chat-only (no allowedTools flag).
+  const isAll = allowedTools === 'all' || allowedTools === '*';
+  const tools = isAll ? 'all'
+    : Array.isArray(allowedTools) ? allowedTools
+    : String(allowedTools ?? '').trim().split(/\s+/).filter(Boolean);
+  const toolsOpt = isAll ? { allowedTools: 'all' } : (tools.length ? { allowedTools: tools } : {});
 
   return async function runTurn(message) {
     const brain = await import('../../config/brains/claude-code.mjs');
@@ -195,7 +202,7 @@ export function makeClaudeResumeRunner({
     const res = await brain.stream(
       current ? { message } : { history: message },
       () => {},
-      { sessionId: current, cwd, ...(tools.length ? { allowedTools: tools } : {}), ...(model ? { model } : {}), onLog },
+      { sessionId: current, cwd, ...toolsOpt, ...(model ? { model } : {}), onLog },
     );
     const next = res?.optionsPatch?.sessionId;
     if (next && next !== current) {
