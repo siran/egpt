@@ -2703,6 +2703,35 @@ function App() {
       return (nl >= 0 ? cut.slice(nl + 1) : cut).trim();
     } catch { return ''; }
   };
+  // Parse the filtered transcript tail into ALTERNATING chat turns for a chat
+  // model — '[@<self> ..]:' lines → assistant, everyone else (humans, @e) →
+  // user. Bodies only (drop the sender@chat (time) prefix), @<self> mentions
+  // stripped so the model doesn't echo its own handle, consecutive same-role
+  // turns merged (chat templates want alternation). The new message is appended
+  // as the final user turn. This is how a chat model wants its history — far
+  // less echo/garble on a small model than one cramped prompt. 2026-06-11.
+  const _buildSiblingTurns = async (chatId, sibName, newBody, maxChars) => {
+    const _strip = (s) => String(s ?? '').replace(new RegExp(`@${sibName}\\b`, 'gi'), '').replace(/[ \t]+/g, ' ').trim();
+    const turns = [];
+    const _push = (role, content) => {
+      const c = _strip(content);
+      if (!c) return;
+      const last = turns[turns.length - 1];
+      if (last && last.role === role) last.content += `\n${c}`;
+      else turns.push({ role, content: c });
+    };
+    const tail = await _readTranscriptTail(chatId, maxChars);
+    for (const line of String(tail).split('\n')) {
+      const t = line.trim();
+      if (!t) continue;
+      const mSelf = t.match(/^\[@(\w+)[^\]]*\]:\s*(.*)$/);              // [@l (..)]: reply / [@e (..)]: …
+      if (mSelf) { _push(mSelf[1].toLowerCase() === String(sibName).toLowerCase() ? 'assistant' : 'user', mSelf[2]); continue; }
+      const mBody = t.match(/\)\s*:\s*(.*)$/);                          // Sender@[chat] (HH:MM): body → body
+      _push('user', mBody ? mBody[1] : t);
+    }
+    _push('user', newBody);
+    return turns;
+  };
   const _appendSiblingReply = async (chatId, sibName, reply, surfaced) => {
     try {
       const text = String(reply ?? '').trim();
@@ -6494,6 +6523,10 @@ function App() {
       ...(brain.sessionless ? {
         stallTimeoutMs: Number(EGPT_CONFIG.local_llm?.stall_timeout_ms) || 300_000,
         hardTimeoutMs:  Number(EGPT_CONFIG.local_llm?.hard_timeout_ms)  || 600_000,
+        // Cap @l's reply to a chat-sized message — a small model otherwise
+        // rambles to the server's max (finish=length). siblings.<name>.max_tokens
+        // overrides; default 256 (~a few sentences). 2026-06-11.
+        maxTokens: Number(mbCfg.max_tokens ?? EGPT_CONFIG.local_llm?.max_tokens ?? 256),
       } : {}),
     };
     try {
@@ -7918,14 +7951,14 @@ function App() {
         // stateless chatter again (a 3B handles a short clean tail OK, but it's
         // not brilliant — the framing tells it to REPLY, not summarise, which is
         // what a small model defaults to when handed a conversation blob).
+        // Build the sessionless sibling's MEMORY as real alternating chat turns
+        // (multi-turn) from the chat transcript — passed via opts.history so the
+        // model gets a proper conversation, not one cramped prompt (operator
+        // 2026-06-11). siblings.<name>.memory:false → stateless one-shot again.
+        let _siblingTurns = null;
         if (meta.fromWhatsApp && _sibBrain?.sessionless && meta.waChatId
             && EGPT_CONFIG.siblings?.[sibName]?.memory !== false) {
-          const _tail = await _readTranscriptTail(meta.waChatId, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
-          // Format the turn as a TRANSCRIPT the model CONTINUES — ending with the
-          // '[@l]:' cue makes it write @l's reply instead of echoing the last
-          // line (a 3B repeats when the prompt ends with the message it must
-          // answer). The persona/voice comes from l.md (system). 2026-06-11.
-          personaPrompt = `You are in a group chat. Continue as @${sibName}, replying to the LAST message — one short, direct chat message in the same language (no narration, no quoting).\n\n${_tail ? _tail + '\n' : ''}${personaPrompt}\n[@${sibName}]:`;
+          _siblingTurns = await _buildSiblingTurns(meta.waChatId, sibName, decision.body, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
         }
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
@@ -8009,7 +8042,7 @@ function App() {
               if (waAnswerStream) waAnswerStream.update(`${waPrefix}${answer || '…'}`);
             }
           }
-        }, sibName, {});   // @l is STATELESS: no history, no per-chat conversation — the prompt IS the turn (persona + this pile)
+        }, sibName, _siblingTurns ? { history: _siblingTurns } : {});   // @l memory: opts.history = multi-turn chat from transcript.md (null ⇒ stateless one-shot)
         // Route <think>…</think> reasoning to the Self DM only (operator
         // 2026-05-25: "if it can't be turned off, send to Self"). Strip it so
         // the chat / memory / re-circulation get JUST the answer; post the

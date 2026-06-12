@@ -26,13 +26,25 @@ export function stream({ history, message }, onUpdate, options = {}) {
   return new Promise(async (resolve, reject) => {
     const onLog = typeof options.onLog === 'function' ? options.onLog : () => {};
     const base = String(options.url || options.baseUrl || DEFAULT_URL).replace(/\/+$/, '');
-    const prompt = String(history ?? message ?? '');
-
     const messages = [];
     if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
       messages.push({ role: 'system', content: options.appendSystemPrompt.trim() });
     }
-    messages.push({ role: 'user', content: prompt });
+    // `history` may be a STRING (a single cramped prompt — engineer turns /
+    // fallback) OR an ARRAY of {role,content} chat turns. The array is how a chat
+    // model WANTS its context — real alternating user/assistant turns — which a
+    // small model handles far better than one giant prompt (no echo/garble of the
+    // last line). The host (egpt) builds the turns from the chat transcript.
+    if (Array.isArray(history) && history.length) {
+      for (const m of history) {
+        if (m && (m.role === 'user' || m.role === 'assistant') && String(m.content ?? '').trim()) {
+          messages.push({ role: m.role, content: String(m.content).trim() });
+        }
+      }
+      if (!messages.some((m) => m.role === 'user')) messages.push({ role: 'user', content: String(message ?? '') });
+    } else {
+      messages.push({ role: 'user', content: String(history ?? message ?? '') });
+    }
 
     const body = {
       messages,
