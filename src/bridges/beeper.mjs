@@ -46,6 +46,8 @@
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
+import { mediaKind } from '../media-kind.mjs';
+import { shouldDownload } from '../media-save.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -61,6 +63,11 @@ const RECONNECT_MAX_MS = 60_000;
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
+    // CONTRACT C2: every attachment is persisted to the chat's media/ folder.
+    // The bridge downloads + decides (whatsapp.media.download); the host's
+    // onMedia copies the local file into slugDir/media/. No gate wired = the
+    // host just doesn't persist (the file is still transcribed for voice).
+    onMedia,
     onLog: _onLog = () => {},
     media = {},
     beeperToken,
@@ -80,6 +87,7 @@ export async function startBeeperBridge(opts = {}) {
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
   const audioCfg = media.audio_transcribe || {};
+  const mediaDownloadPolicy = media.download ?? 'all';   // 'all' | 'images_docs' | 'off'
   const onLog = (m) => {
     try { appendFileSync(_BEEPER_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
     try { _onLog(m); } catch { /* ignore */ }
@@ -283,6 +291,42 @@ export async function startBeeperBridge(opts = {}) {
     return src || null;
   }
 
+  // CONTRACT C2 — hand each attachment to the host's onMedia so it lands in the
+  // chat's media/ folder. Gated by whatsapp.media.download ('off' / 'images_docs'
+  // / 'all'). Re-uses an already-downloaded voice path so a voice note isn't
+  // fetched twice. A failed download of one attachment is logged, never fatal —
+  // it must not block the text dispatch.
+  async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null } = {}) {
+    if (typeof onMedia !== 'function') return;
+    if (mediaDownloadPolicy === 'off') return;
+    const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
+    if (!atts.length) return;
+    const ts = _msgTimestampMs(msg) ?? Date.now();
+    for (const att of atts) {
+      const mime = att?.mimeType || att?.mimetype || att?.mime || '';
+      const extHint = String(att?.fileName || '').split('.').pop();
+      const kind = mediaKind(mime, extHint);
+      if (!shouldDownload(mediaDownloadPolicy, kind)) continue;
+      const localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
+      if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
+      try {
+        await onMedia({
+          chatID: msg.chatID,
+          chatName: info.title,
+          chatType: info.type === 'group' ? 'group' : 'private',
+          msgId: msg.id ?? null,
+          senderName: msg.senderName ?? null,
+          isSender: !!msg.isSender,
+          ts, kind, mime,
+          fileName: att?.fileName ?? null,
+          localPath,
+          caption: (att === voiceAtt) ? voiceCaption : (att?.caption ?? (msg.text || null)),
+          isVoiceNote: !!att?.isVoiceNote,
+        });
+      } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
+    }
+  }
+
   // --- send (efferent) ---
   // chatID may be a room id, an exact chat title, or a deterministic slug —
   // one resolution chokepoint so config/outbox entries never need raw ids.
@@ -329,14 +373,17 @@ export async function startBeeperBridge(opts = {}) {
       return;
     }
 
+    let _voiceAtt = null, _voicePath = null, _voiceCaption = null;
     if ((msg.type === 'VOICE' || msg.type === 'AUDIO') && Array.isArray(msg.attachments) && msg.attachments.length) {
       isVoice = true;
       const att = msg.attachments.find(a => a.isVoiceNote || a.type === 'audio') || msg.attachments[0];
       const path = await attachmentToLocalPath(att);
+      _voiceAtt = att; _voicePath = path;
       if (path) {
         const transcript = await transcribe(path, audioCfg, onLog);
         if (transcript) {
           text = transcript;
+          _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
           // 👂 ack is an egpt-initiated SEND — it follows the enrolled-chats
           // rule (auto_e_chats + self-DM), not Beeper's mute flag. In a
@@ -353,6 +400,13 @@ export async function startBeeperBridge(opts = {}) {
         } else { text = '[voice note — transcription failed]'; }
       } else { text = '[voice note]'; }
     }
+
+    // CONTRACT C2: persist EVERY attachment to the chat's media/ folder BEFORE
+    // the non-text early-return below — a photo / sticker / document must be
+    // saved even though it doesn't route to a brain in v1. Logging/saving is
+    // independent of surfacing, same as transcripts.
+    await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption: _voiceCaption });
+
     if (text == null) return;   // non-text, non-voice (image/sticker/etc.) — nothing to route in v1
 
     const st = mentionStatus(text || '');

@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
 import { PassThrough, Writable } from 'node:stream';
-import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink } from 'node:fs/promises';
+import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink, copyFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,6 +22,7 @@ import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
+import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2670,6 +2671,39 @@ function App() {
     } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
   };
 
+  // CONTRACT C2 — persist an incoming attachment the bridge handed us into the
+  // chat's own media/ folder. The bridge downloaded it + decided to save it
+  // (whatsapp.media.download); here we resolve the chat's slug (ensuring the
+  // contact so a media-first chat doesn't lose the file), copy the file in with
+  // a meaningful name, write a sidecar caption, and append an index line. Copy,
+  // not move — the source is the bridge's own asset cache.
+  const _saveIncomingMedia = async (m) => {
+    try {
+      if (!m?.localPath || !m?.chatID) return;
+      const surface = 'whatsapp';
+      const cs = await _loadConvState();
+      let slug = conversationsState.getContact(cs, surface, m.chatID)?.slug ?? null;
+      if (!slug) {
+        const ens = conversationsState.ensureContact(cs, surface, m.chatID, { pushedName: m.chatName, slugHint: m.chatName });
+        slug = ens?.slug ?? null;
+        if (slug && ens.state !== cs) await _writeConvState(ens.state);
+      }
+      if (!slug) { logOut(`media: no slug for ${m.chatID} — not saved`); return; }
+      const mediaDir = join(conversationsState.slugDir(surface, slug), 'media');
+      await mkdir(mediaDir, { recursive: true });
+      const savedName = mediaFileName({
+        ts: m.ts, senderName: m.senderName, kind: m.kind, msgId: m.msgId, fileName: m.fileName, mime: m.mime,
+      });
+      await copyFile(m.localPath, join(mediaDir, savedName));
+      if (m.caption && String(m.caption).trim()) {
+        await writeFile(join(mediaDir, `${savedName}.txt`), `${String(m.caption).trim()}\n`, 'utf8');
+      }
+      await appendFile(join(mediaDir, 'index.md'),
+        mediaIndexLine({ ts: m.ts, senderName: m.senderName, kind: m.kind, savedName, caption: m.caption }), 'utf8');
+      logOut(`media: saved [${m.chatName ?? m.chatID}] ${savedName} (${m.kind})`);
+    } catch (e) { errOut(`!! media-save ${m?.chatID ?? '?'}: ${e?.message ?? e}`); }
+  };
+
   // @l (and any sessionless sibling) draws its CHANNEL MEMORY from the chat's
   // own transcript.md — the single durable record — not a parallel chat.json.
   // Read the recent tail (capped) to feed as context each turn, and append the
@@ -3564,6 +3598,10 @@ function App() {
         // — every image / video / voice note / document / sticker is
         // saved automatically.
         media:             cfg.media ?? {},
+        // CONTRACT C2: the bridge downloads each attachment + decides (via
+        // whatsapp.media.download), then hands it here to land in the chat's
+        // own media/ folder. Best-effort; never blocks the text dispatch.
+        onMedia:           _saveIncomingMedia,
         // Beeper Desktop API token (transport: 'beeper'). config.local.json
         // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
         beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
