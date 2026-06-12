@@ -63,8 +63,9 @@ Lock status of the four:
   (`mayEmitChat`). This is the leak fear — it is test-guarded.
 - **#1 — LOCKED** (transcript record-always: `fanOutDecision`, C1.2).
 - **#3 — logging LOCKED; media REGRESSED** (no test, no save on Beeper — C2).
-- **#4 — NOT yet locked and DRIFTED** (`.wa` hardcoded instead of `{node}`,
-  3 disagreeing call sites — C7.6 below). Next to recover + test.
+- **#4 — LOCKED** (`tests/dispatch-line.test.mjs`; recovered 2026-06-12 — one
+  `formatDispatchLine`, node from surface identity not hardcoded, brackets +
+  `.{node}` + UTC HH:MM — C7.6).
 
 ---
 
@@ -147,10 +148,11 @@ Lock status of the four:
   `Sender@[chatname/groupname].{node} (HH:MM): body`, where `{node}` is the
   ENTRY POINT (`wa`/`kg`/`chrome`/…), resolved from the client/surface identity,
   NEVER a hardcoded literal. Voice notes inline as `(voice transcription, Ns)
-  body`. One `formatAutoDispatchLine`, used by every call site. ⚠️ **DRIFTED** —
-  `.wa` is hardcoded into the WA surface tag (egpt.mjs:3867) and 3 call sites
-  disagree (`@name.wa` no-brackets vs `@[name]` no-`.wa`). Recover to one shape +
-  test the shape (sender, brackets, node-from-identity, HH:MM, voice inline).
+  body`. One formatter (`src/dispatch-line.mjs` `formatDispatchLine`), wrapped by
+  egpt.mjs `formatAutoDispatchLine` and shared by every call site +
+  dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
+  Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
+  (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
 
 ## 8. Workers (DOLLY)
 - **C8.1** @l = local llama-server; transcriptor = GPU whisper-server. Both
@@ -170,9 +172,9 @@ Lock status of the four:
 ---
 
 ## Open regressions to recover (priority order)
-1. **Message-shape (C7.6)** — unify `formatAutoDispatchLine` to
-   `Sender@[chatname].{node} (HH:MM): body`, `{node}` from client identity (not
-   `.wa`), all call sites; add the shape test. (Low-risk, high-clarity — do first.)
+1. ~~**Message-shape (C7.6)**~~ — DONE 2026-06-12 (`src/dispatch-line.mjs` +
+   `tests/dispatch-line.test.mjs`). Follow-up: unify the room sender-label
+   (egpt.mjs:~3964) onto the same formatter.
 2. **Media-save (C2.1–C2.3)** — re-land "save every attachment into the chat's
    `media/`, meaningful filename + sidecar caption + index, revoke→`deleted/`" on
    the Beeper bridge. The bridge has the chatID; it needs a `saveMedia(chatID,

@@ -21,6 +21,7 @@ import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
+import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2662,7 +2663,8 @@ function App() {
         senderName: from.senderName ?? 'someone',
         body,
         ts: Date.now(),
-        surface: `wa.${chatName}`,
+        chatName,
+        node: 'wa',
       });
       await appendFile(join(dir, 'transcript.md'), `${line}\n\n`, 'utf8');
     } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
@@ -5867,27 +5869,20 @@ function App() {
   }
 
   // Format a single auto-dispatched message for a resident's eyes. Canonical
-  // operator-mandated shape: `Sender@[Chat/Group name] (HH:MM): body` — the
-  // human-readable chat/group NAME in brackets so the brain knows WHO is
-  // speaking and WHERE (operator 2026-06-11: "An@[HFM High Frequency
-  // Masturbation] (17:21): quieres ser …").
+  // operator shape (2026-06-12): `Sender@[Chat/Group name].{node} (HH:MM): body`
+  // — the human-readable chat NAME in brackets, then `.{node}` = the ENTRY POINT
+  // the message came through ('wa'/'kg'/'chrome'), resolved from the surface
+  // identity, never hardcoded.
   //
-  //   group:    An@[HFM High Frequency Masturbation] (14:06): like tears in the rain
-  //   private:  Mauricio@[Mauricio] (14:06): hola
+  //   group:    An@[HFM High Frequency Masturbation].wa (14:06): like tears in the rain
+  //   private:  Mauricio@[Mauricio].wa (14:06): hola
   //
-  // Falls back to the surface slug when the chat name isn't resolvable. The
-  // same one-line form across all chat types keeps the parser simple for @e
-  // and avoids the sender-vs-chat ambiguity the verbose envelope introduced.
-  function formatAutoDispatchLine({ senderName, body, ts, surface, chatName }) {
-    const d = new Date(ts ?? Date.now());
-    const pad = (n) => String(n).padStart(2, '0');
-    // UTC — operator (2026-05-21) wants all timestamps consistent. Reply
-    // envelope (in runDefaultBrainTurn) uses ISO/UTC; if this were local
-    // there'd be a TZ-offset mismatch in the transcript.
-    const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
-    const sender = senderName ?? 'someone';
-    const where = chatName ?? surface ?? 'wa';
-    return `${sender}@[${where}] (${tstr}): ${body}`;
+  // Thin wrapper over the pure, tested src/dispatch-line.mjs (CONTRACT C7.6) so
+  // every call site here AND the by-reference callers (dispatch.mjs,
+  // slash/rules.mjs) share one formatter the shape test guards. `chatType` is
+  // accepted-and-ignored for back-compat with existing call sites.
+  function formatAutoDispatchLine(opts) {
+    return formatDispatchLine(opts);
   }
 
   function formatPersonaPrompt(meta, body) {
@@ -6002,7 +5997,7 @@ function App() {
       // mirrored to the Self/egptbot debug watcher. Forwarding it below (when
       // not an infra error / 2nd-layer silence) fires the recipient's tap as
       // "Debug: E->L", echoing the same reply as the next brain's prompt.
-      const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId) });
+      const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null, node: 'wa', surface: buildWaSurfaceTag(meta.waChatId) });
       confirmMirrorRef.current?.(meta.waChatId, `<-${String(being).toUpperCase()}`, env);
       // Infra errors ("!! @l: llama: fetch failed …") MUST be visible in the
       // debug (operator 2026-05-25) — so they are mirrored above — but they are
