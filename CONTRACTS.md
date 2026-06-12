@@ -167,6 +167,17 @@ Lock status of the four:
   supervised by DOLLY's daemon (crash-respawn), LAN-firewalled. ✅
 - **C8.2** A worker supervisor REAPS the stale port-holder before spawning, so a
   soft restart self-heals the Windows child-orphan (no manual elevated taskkill). ✅ (`91abee3`, `src/tools/reap-port.mjs`)
+- **C8.3** egpt↔egpt over the LAN: a worker egpt exposes a resumable Claude
+  session (`@d`/Don) at `POST /v1/turn` (`src/tools/agent-endpoint.mjs`,
+  HMAC-authed with a SEPARATE `agent_token` because it runs tools; read-only
+  tools first). The spine reaches it as an ordinary sibling — `siblings.<d>.type:
+  don` + `url` → the `don` brain (`config/brains/don.mjs`) dials `postAgentTurn`,
+  so `@d`'s reply rides the SAME gated + logged sibling path as `@l` (surfaces in
+  the chat it was addressed from, lands in that transcript.md). Transport is HTTP
+  (no bot text/media limits). ✅ (DOLLY endpoint merged `01502ad`; REVE `don`
+  adapter `tests/don-brain.test.mjs`, 2026-06-12). The watch-mirror to Telegram
+  (operator observability) is a separate, system-gated follow-up — Telegram is
+  NOT the transport.
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.
