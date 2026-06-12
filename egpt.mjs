@@ -17,6 +17,7 @@ import * as codex from './config/brains/codex.mjs';
 import * as chatgptCdp from './config/brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
+import * as don from './config/brains/don.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
@@ -621,6 +622,7 @@ const BRAINS = {
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
   [llama.name]:      llama,
+  [don.name]:        don,
 };
 
 const DEFAULT_PERSONA_BRAIN = { type: 'codex', model: 'gpt-5.4-mini' };
@@ -6601,6 +6603,14 @@ function App() {
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
       ...(brainType === 'codex' && mbCfg.service_tier ? { serviceTier: mbCfg.service_tier } : {}),
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
+      // @d (Don) — remote agent over the LAN endpoint: thread the shared
+      // agent_token (config.local.json, NOT the sibling block) + a 'from' label
+      // for the endpoint's transcript. The url (the DOLLY endpoint) is the
+      // siblings.<name>.url set just above.
+      ...(brainType === 'don' ? {
+        agentToken: EGPT_CONFIG.agent_token,
+        from: mbCfg.from ?? 'reve',
+      } : {}),
       // Local CPU brain (@l): a cold prompt-eval of a big conversation-L can be
       // silent for a while; give the stall watchdog room (configurable).
       ...(brain.sessionless ? {
