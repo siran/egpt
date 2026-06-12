@@ -5336,9 +5336,10 @@ function App() {
         const runTurn = makeClaudeResumeRunner({
           sessionId: acfg.session_id,
           cwd: acfg.cwd || APP_DIR,
-          // Read-only by default; widen via agent.allowed_tools (space-sep or
-          // array) once the loop is trusted.
-          allowedTools: acfg.allowed_tools ?? ['Read', 'Grep', 'Glob', 'WebFetch'],
+          // CHAT-ONLY by default (step 1) — no tools. The CLI-resume path can't
+          // yet safely confine Read (it bypasses path scoping → ~/.egpt leak),
+          // so tools wait. Set agent.allowed_tools to opt in deliberately.
+          allowedTools: acfg.allowed_tools ?? [],
           model: acfg.model,
           onLog: alog,
         });
@@ -5356,7 +5357,8 @@ function App() {
         if (closed) { s.close(); return; }
         server = s;
         const _viewer = (acfg.transcript === false) ? '' : ` · transcript at http://${acfg.bind || '127.0.0.1'}:${s.port}/`;
-        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id).slice(0, 8)}…, read-only tools${_viewer}; log: ~/.egpt/logs/agent.log)`);
+        const _tools = (acfg.allowed_tools && acfg.allowed_tools.length) ? 'tools:' + (Array.isArray(acfg.allowed_tools) ? acfg.allowed_tools.join('+') : acfg.allowed_tools) : 'chat-only';
+        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id || 'fresh').slice(0, 8)}…, ${_tools}${_viewer}; log: ~/.egpt/logs/agent.log)`);
       } catch (e) { errOut(`!! agent failed to start: ${e?.message ?? e}`); }
     })();
     return () => { closed = true; try { server?.close(); } catch (e) { swallow('agent.close', e); } };
