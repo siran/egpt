@@ -63,6 +63,7 @@ import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
+import { startAgentServer, makeClaudeResumeRunner, AGENT_DEFAULT_PORT } from './src/tools/agent-endpoint.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -5268,6 +5269,49 @@ function App() {
       } catch (e) { errOut(`!! transcriptor failed to start: ${e?.message ?? e}`); }
     })();
     return () => { closed = true; try { server?.close(); } catch (e) { swallow('transcriptor.close', e); } try { whisper?.stop(); } catch (e) { swallow('whisper-server.stop', e); } };
+  }, []);
+
+  // Worker role: agent / Don (@d) — operator 2026-06-11. When config `agent`
+  // is enabled, this worker serves POST /v1/turn for the MAIN spine: it
+  // resumes the pinned Claude session (agent.session_id) and returns the
+  // reply, so @d is a remote room member the spine dials over the LAN — same
+  // topology as the transcriptor, different (more dangerous) endpoint that
+  // runs TOOLS, so a SEPARATE secret (agent_token). Read-only tools by
+  // default. See src/tools/agent-endpoint.mjs.
+  useEffect(() => {
+    if (CLIENT) return;   // worker role belongs to the engine, not a limb
+    const acfg = EGPT_CONFIG.agent;
+    if (!acfg?.enabled) return;
+    const token = EGPT_CONFIG.agent_token;
+    if (!token) { errOut('!! agent enabled but agent_token unset — refusing to start an unauthenticated tool-running endpoint. Set agent_token (same value as the main spine) in config.local.json.'); return; }
+    if (!acfg.session_id) { errOut('!! agent enabled but agent.session_id unset — nothing to resume. Pin Don\'s claude session id.'); return; }
+    const alog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'agent.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('agent.log', e); } };
+    let server = null, closed = false;
+    (async () => {
+      try {
+        const runTurn = makeClaudeResumeRunner({
+          sessionId: acfg.session_id,
+          cwd: acfg.cwd || APP_DIR,
+          // Read-only by default; widen via agent.allowed_tools (space-sep or
+          // array) once the loop is trusted.
+          allowedTools: acfg.allowed_tools ?? ['Read', 'Grep', 'Glob', 'WebFetch'],
+          model: acfg.model,
+          onLog: alog,
+        });
+        const s = await startAgentServer({
+          port: Number(acfg.port) > 0 ? Number(acfg.port) : AGENT_DEFAULT_PORT,
+          bind: acfg.bind || '127.0.0.1',
+          keyB64: token,
+          name: acfg.name || 'don',
+          runTurn,
+          onLog: alog,
+        });
+        if (closed) { s.close(); return; }
+        server = s;
+        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id).slice(0, 8)}…, read-only tools; log: ~/.egpt/logs/agent.log)`);
+      } catch (e) { errOut(`!! agent failed to start: ${e?.message ?? e}`); }
+    })();
+    return () => { closed = true; try { server?.close(); } catch (e) { swallow('agent.close', e); } };
   }, []);
 
   // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
