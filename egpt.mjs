@@ -20,7 +20,7 @@ import * as llama from './config/brains/llama.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
-import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2902,13 +2902,15 @@ function App() {
     // backstop a PAUSED @e still replied to '@e estas?' (operator 2026-06-03,
     // /e auto status = PAUSED). Checked here so NO emit path (text, voice, the
     // mention else-branch) can speak while paused.
-    if (EGPT_CONFIG.whatsapp?.auto_e_paused) {
-      logOut(`auto-mode: E emit to ${chatId} BLOCKED — auto_e_paused (global kill)`);
-      return false;
-    }
+    const paused = !!EGPT_CONFIG.whatsapp?.auto_e_paused;
     const mode = _resolveChatAutoMode(chatId);
-    const ok = autoMayEmit(mode, { replyAllowed, isReaction });
-    if (!ok) logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed}${isReaction ? ', reaction' : ''})`);
+    // Single source of truth (tested in auto-mode.test.mjs): pause-kill layered
+    // over the per-chat mode gate. Keep the two distinct log lines for triage.
+    const ok = autoMayEmitChat({ paused, mode, replyAllowed, isReaction });
+    if (!ok) {
+      if (paused) logOut(`auto-mode: E emit to ${chatId} BLOCKED — auto_e_paused (global kill)`);
+      else logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed}${isReaction ? ', reaction' : ''})`);
+    }
     return ok;
   };
 

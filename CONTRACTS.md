@@ -32,6 +32,42 @@ should cross-reference its schema key where one exists.
 
 ---
 
+## 0. The whole thing, in the operator's words
+egpt is a simple, powerful tool. The entire contract is four sentences. Each
+one is an invariant that a test must keep from regressing; the rest of this file
+just expands them.
+
+1. **All replies are logged unless egpt is `off` for that chat.** Logging is
+   independent of surfacing — a reply withheld by the mode (or a `…` silence) is
+   still written to `transcript.md`, tagged not-sent.
+2. **Every brain/agent reply (E, L, Wren, Don, … — anything non-human) is gated
+   by the chat's mode.** It can only reach the chat via:
+   - **mention** — `@e` appears (never a self-mention)
+   - **mention-direct** — `@e` at the start / a reply to E (never a self-mention)
+   - **on** — the model decides; it may answer `…` to stay silent (not fanned
+     out, still logged)
+   Plus the two hard rules: **`paused` = absolute kill** (overrides every mode),
+   and **a reaction never triggers a reply**. `mute`/`off` never emit.
+3. **Every message sent to a group or room is logged; media goes to the chat's
+   `media/` folder.**
+4. **The model receives well-identified messages:**
+   `Sender@[chatname/groupname].{node} (HH:MM): body` — `{node}` is the ENTRY
+   POINT the message came through (`wa` = WhatsApp, `kg` = the home shell,
+   `chrome` = the extension; never hardcoded). Voice is inlined as
+   `(voice transcription, 26s) body`.
+
+Lock status of the four:
+- **#2 — LOCKED.** `tests/auto-mode.test.mjs` covers mode gating, mention /
+  mention-direct / on, `…`-silence-logged-not-sent, mute/off-never, fail-closed
+  on a forgotten flag, reaction-never, AND `paused`=absolute-kill
+  (`mayEmitChat`). This is the leak fear — it is test-guarded.
+- **#1 — LOCKED** (transcript record-always: `fanOutDecision`, C1.2).
+- **#3 — logging LOCKED; media REGRESSED** (no test, no save on Beeper — C2).
+- **#4 — NOT yet locked and DRIFTED** (`.wa` hardcoded instead of `{node}`,
+  3 disagreeing call sites — C7.6 below). Next to recover + test.
+
+---
+
 ## 1. Conversation folder & transcripts
 - **C1.1** Every chat (group AND DM, every surface) has its own folder
   `~/.egpt/conversations/<surface>/<slug>/`, slug = path-valid `sanitizeSlug`. ✅ (fixed `48fa639` — Beeper ids now resolve to the WA surface; before this every Beeper chat collapsed into `_unrouted`)
@@ -68,10 +104,15 @@ should cross-reference its schema key where one exists.
   the 👂 ack is suppressed. ✅
 
 ## 4. Emit gate & authorization
-- **C4.1** Every model reply to WA is gated at ONE chokepoint (streamFactoryRef),
-  fail-closed; raw bridge.send is system-only. ✅ (memory `egpt-wa-emit-chokepoint`)
-- **C4.2** Per-chat mode (`on/mention/mute/off`) enforced at the send chokepoint,
-  not the model reply. `paused` = absolute @e-emit kill. ✅ (memory `egpt-emit-gate-bridge-controlled`)
+- **C4.1** Every brain/agent reply passes the emit gate (`_eMayReplyToChat` →
+  `mayEmitChat`) before it can reach a chat: streaming replies fail-closed
+  through `streamFactoryRef`; the few non-streaming sends each call the same gate
+  per-call-site. Raw `bridge.send` (no gate) is system/lifecycle-only. The gate
+  itself is **test-locked** — `tests/auto-mode.test.mjs` (`mayEmit`,
+  `mayEmitChat`, `fanOutDecision`). ✅ (memory `egpt-wa-emit-chokepoint`)
+- **C4.2** Per-chat mode (`on/mention/mention-direct/mute/off/accum`) is the gate;
+  `paused` = absolute @e-emit kill that OVERRIDES the mode (pulled into the tested
+  `mayEmitChat` so its removal goes red). ✅ (memory `egpt-emit-gate-bridge-controlled`)
 - **C4.3** Emit authorization keys off `_personaReplyIds` (provable persona
   replies only), never `_sentIds` (echo set). No persona inference/fallback. ✅ (memory `egpt-mention-replytobot-leak`)
 - **C4.4** Authorization uses a STABLE id ONLY, never display names (names are
@@ -102,6 +143,14 @@ should cross-reference its schema key where one exists.
   l.md persona + a bounded tail of that transcript. ⚠️ memory is **off** right now (`siblings.l.memory:false`) — it hung the single slot on the CPU 3B; re-enable needs a per-@l slot-release timeout (see C7.5).
 - **C7.5** A hung worker turn must RELEASE the slot quickly (short per-@l
   timeout), so one bad turn can't freeze @l until the 600s hard-timeout. ⚠️ **TODO** — currently a hung @l turn blocks all @l for up to 600s.
+- **C7.6** Every inbound message a brain SEES is identified as
+  `Sender@[chatname/groupname].{node} (HH:MM): body`, where `{node}` is the
+  ENTRY POINT (`wa`/`kg`/`chrome`/…), resolved from the client/surface identity,
+  NEVER a hardcoded literal. Voice notes inline as `(voice transcription, Ns)
+  body`. One `formatAutoDispatchLine`, used by every call site. ⚠️ **DRIFTED** —
+  `.wa` is hardcoded into the WA surface tag (egpt.mjs:3867) and 3 call sites
+  disagree (`@name.wa` no-brackets vs `@[name]` no-`.wa`). Recover to one shape +
+  test the shape (sender, brackets, node-from-identity, HH:MM, voice inline).
 
 ## 8. Workers (DOLLY)
 - **C8.1** @l = local llama-server; transcriptor = GPU whisper-server. Both
@@ -121,11 +170,14 @@ should cross-reference its schema key where one exists.
 ---
 
 ## Open regressions to recover (priority order)
-1. **Media-save (C2.1–C2.3)** — re-land "save every attachment into the chat's
+1. **Message-shape (C7.6)** — unify `formatAutoDispatchLine` to
+   `Sender@[chatname].{node} (HH:MM): body`, `{node}` from client identity (not
+   `.wa`), all call sites; add the shape test. (Low-risk, high-clarity — do first.)
+2. **Media-save (C2.1–C2.3)** — re-land "save every attachment into the chat's
    `media/`, meaningful filename + sidecar caption + index, revoke→`deleted/`" on
    the Beeper bridge. The bridge has the chatID; it needs a `saveMedia(chatID,
    path, meta)` callback that egpt.mjs resolves to `slugDir/media/`.
-2. **@l slot-release timeout (C7.5)** — bound a single @l turn so a hang frees the
+3. **@l slot-release timeout (C7.5)** — bound a single @l turn so a hang frees the
    slot fast; then re-enable `siblings.l.memory`.
-3. **Audit `❓` items** (C5.2, and cross-check every doc) and add a test per
+4. **Audit `❓` items** (C5.2, and cross-check every doc) and add a test per
    recovered contract.
