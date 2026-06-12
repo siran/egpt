@@ -14,6 +14,22 @@ ENGINE-SURFACE-SEPARATION, LEDGER_PROTOCOL, ROOMS-UNIFICATION, MANUAL, README,
 AGENTS), and the agent memory invariants. This is v1 — expand it by auditing the
 docs above; mark `❓` items as you verify them.
 
+## Relationship to config/config-schema.mjs
+`config-schema.mjs` is the COMPLEMENT to this file, not a duplicate:
+- **config-schema.mjs** = the registry of every `EGPT_CONFIG.<key>` + its
+  description. It is **machine-validated** (`tests/integrity.test.mjs` fails if a
+  key read in egpt.mjs isn't registered), so the config SURFACE can't drift. It
+  is config-centric and dense.
+- **CONTRACTS.md** (this file) = the human-readable BEHAVIOR invariants (many
+  config-independent) + status flags. It is NOT self-validating.
+
+Lesson that motivated this file: the schema already documents the media-save
+contract (`whatsapp.media.download`) — yet the behavior regressed anyway, because
+the integrity test only checks that the KEY is registered, not that the BEHAVIOR
+happens. **Documentation doesn't prevent regressions; a behavior test does.** So
+each contract here should earn a behavior test as it's recovered/verified, and
+should cross-reference its schema key where one exists.
+
 ---
 
 ## 1. Conversation folder & transcripts
@@ -30,7 +46,14 @@ docs above; mark `❓` items as you verify them.
 
 ## 2. Media
 - **C2.1** Every media attachment (image, video, voice note, audio, document,
-  sticker) is saved into the chat's `media/` folder by default. ⚠️ **REGRESSED** — the Beeper bridge downloads a voice note only to a cache path to transcribe it, then drops it; no `media/` folder is created for Beeper chats (52 baileys-era folders have `media/`; Beeper chats have none). Source: `c02ad18`.
+  sticker) is saved by default. Config: **`whatsapp.media.download`** (`"all"` /
+  `"images_docs"` / `"off"`) — this contract's intent IS already registered in
+  `config-schema.mjs`. ⚠️ **REGRESSED** — the Beeper bridge downloads a voice
+  note only to a cache path to transcribe it, then drops it; no media is saved
+  for Beeper chats (52 baileys-era folders have `media/`; Beeper chats have none).
+  Source: `c02ad18`. NOTE: schema says the legacy target was `~/.egpt/media/
+  <chatJid>/<msgId>.<ext>`, but the per-chat `<slug>/media/` form (what the 52
+  folders use) is the better home — pick one on recovery and write the test.
 - **C2.2** Saved media gets a meaningful filename + a sidecar caption file + an
   index entry. ⚠️ **REGRESSED** with C2.1. Source: `d4f453c`.
 - **C2.3** Revoked/deleted media moves to `deleted/` (not hard-deleted). ⚠️ **REGRESSED** with C2.1.
