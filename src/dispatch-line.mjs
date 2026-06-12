@@ -1,0 +1,48 @@
+// The ONE identity line every brain sees for an inbound auto-dispatched message.
+// Operator-mandated shape (2026-06-12):
+//
+//   Sender@[chatname/groupname].{node} (HH:MM): body
+//
+// `{node}` is the ENTRY POINT the message arrived through — the surface/client
+// the human used: 'wa' (WhatsApp), 'kg' (the home shell), 'chrome' (the
+// extension). It is resolved from the client/surface identity, NEVER hardcoded
+// into the template (the bug this replaces: '.wa' baked in, so every line read
+// '.wa' no matter the origin). HH:MM is UTC (operator 2026-05-21: all
+// timestamps consistent, to match the reply envelope). A voice note arrives
+// with its body already prefixed "(voice transcription, Ns) …" by the caller —
+// this formatter is body-agnostic.
+//
+// Pure + exported so tests/dispatch-line.test.mjs locks the shape (CONTRACT
+// C7.6). egpt.mjs `formatAutoDispatchLine` is a thin wrapper over this, and the
+// function is passed by reference into dispatch.mjs / slash/rules.mjs — so the
+// test guards the REAL formatter every surface uses, not a copy.
+
+// A surface tag (egpt's buildWaSurfaceTag) carries the node, but is inconsistent
+// about WHERE the node sits:
+//   '<slug>.wa'      group        -> node 'wa', name '<slug>'   (node LAST)
+//   'status.wa'      status feed  -> node 'wa', name 'status'   (node LAST)
+//   'wa.<jid>'       DM / fallback-> node 'wa', name '<jid>'    (node FIRST)
+//   'kg' / 'chrome'  shell / ext  -> node = the tag, name ''    (bare)
+// So: a leading 'wa.' is the node-first WhatsApp shape; otherwise the LAST
+// dot-segment is the node. This is only a FALLBACK — callers should pass an
+// explicit { chatName, node } and skip the guessing.
+export function splitSurfaceTag(surface) {
+  const s = String(surface ?? '').trim();
+  if (!s) return { name: '', node: '' };
+  const segs = s.split('.').filter(Boolean);
+  if (segs.length <= 1) return { name: '', node: segs[0] ?? '' };
+  if (segs[0] === 'wa') return { name: segs.slice(1).join('.'), node: 'wa' };
+  return { name: segs.slice(0, -1).join('.'), node: segs[segs.length - 1] };
+}
+
+export function formatDispatchLine({ senderName, chatName, node, surface, body, ts } = {}) {
+  const d = new Date(ts ?? Date.now());
+  const pad = (n) => String(n).padStart(2, '0');
+  const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  const sender = (senderName != null && String(senderName).trim()) ? String(senderName).trim() : 'someone';
+  // Explicit { chatName, node } win; the surface tag is only a fallback source.
+  const fromSurface = splitSurfaceTag(surface);
+  const nd = (node != null && String(node).trim()) ? String(node).trim() : (fromSurface.node || 'wa');
+  const nm = (chatName != null && String(chatName).trim()) ? String(chatName).trim() : (fromSurface.name || nd);
+  return `${sender}@[${nm}].${nd} (${tstr}): ${body ?? ''}`;
+}
