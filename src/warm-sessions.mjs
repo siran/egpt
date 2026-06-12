@@ -24,7 +24,7 @@ export function createWarmPool({
   max = 6,
   idleTtlMs = 180_000,
   idleTtlByClass = {},
-  dispatchTimeoutMs = 90_000,
+  dispatchTimeoutMs = 600_000,
   onLog = () => {},
   makeSession = createWarmSession,   // injectable for tests
 } = {}) {
@@ -64,25 +64,26 @@ export function createWarmPool({
     }
   }
 
-  async function _doTurn(key, message, onUpdate, limit) {
+  async function _doTurn(key, message, onUpdate, _limit) {
     const e = _s.get(key);
     if (!e || e.errored) throw new Error('warm: session unavailable');
     e.busy = true;
-    let timer;
     try {
-      const res = await Promise.race([
-        e.session.turn(message, onUpdate),
-        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`warm: turn timeout ${limit}ms`)), limit); timer.unref?.(); }),
-      ]);
+      // NO turn timeout. A warm claude session stays open INDEFINITELY (like the
+      // CLI) — a turn runs as long as it needs: thinking, long answers, slow
+      // models. The old fake timeout guillotined legit turns AND evicted the
+      // warm session (operator 2026-06-12: "claude code cli can be open
+      // indefinitely … this is a fake timeout"). Only a genuine session error
+      // (thrown by .turn) evicts. `_limit` kept for signature compat, unused.
+      const res = await e.session.turn(message, onUpdate);
       e.lastUsed = Date.now();
       return res;
     } catch (err) {
       e.errored = true;
       throw err;
     } finally {
-      clearTimeout(timer);
       e.busy = false;
-      if (_s.get(key)?.errored) _evict(key, 'turn failed/timeout'); else _armIdle(key);
+      if (_s.get(key)?.errored) _evict(key, 'turn failed'); else _armIdle(key);
     }
   }
 

@@ -6,10 +6,11 @@ function fakeFactory() {
   const made = [];
   const makeSession = (opts) => {
     const s = {
-      opts, closed: false, turns: [], hang: false,
+      opts, closed: false, turns: [], hang: false, fail: false,
       close() { this.closed = true; },
       turn(msg) {
         this.turns.push(msg);
+        if (this.fail) return Promise.reject(new Error('session boom'));
         if (this.hang) return new Promise(() => {});   // never resolves
         return Promise.resolve({ text: `echo:${msg}`, sessionId: 'sid' });
       },
@@ -86,26 +87,32 @@ describe('warm-session pool', () => {
     expect(pool.has('self')).toBe(true);
   });
 
-  it('times out a hung turn, fails it, and evicts the session', async () => {
+  // CONTRACT (operator 2026-06-12): a warm claude session can stay open
+  // INDEFINITELY (like the CLI). There is NO turn timeout — a long/thinking turn
+  // is never guillotined, and warmth is never evicted for being slow.
+  it('does NOT time out a long/hung turn — no fake guillotine, warmth survives', async () => {
     const factory = fakeFactory();
     const pool = createWarmPool({
-      dispatchTimeoutMs: 30,
+      dispatchTimeoutMs: 20,   // the OLD pool would have killed + evicted at 20ms
       makeSession: (o) => { const s = factory.makeSession(o); s.hang = true; return s; },
     });
-    await expect(pool.run('k', 'a')).rejects.toThrow(/timeout/);
-    expect(pool.has('k')).toBe(false);                // evicted
-    expect(factory.made[0].closed).toBe(true);        // closed on timeout
+    const turn = pool.run('k', 'a');
+    const state = await Promise.race([
+      turn.then(() => 'settled', () => 'rejected'),
+      sleep(60).then(() => 'pending'),
+    ]);
+    expect(state).toBe('pending');        // no timeout rejection ever fires
+    expect(pool.has('k')).toBe(true);     // session stays WARM — not evicted
   });
 
-  it('reopens a fresh session after a failure', async () => {
+  it('reopens a fresh session after a genuine session error (not a timeout)', async () => {
     const factory = fakeFactory();
     let first = true;
     const pool = createWarmPool({
-      dispatchTimeoutMs: 30,
-      makeSession: (o) => { const s = factory.makeSession(o); if (first) { s.hang = true; first = false; } return s; },
+      makeSession: (o) => { const s = factory.makeSession(o); if (first) { s.fail = true; first = false; } return s; },
     });
-    await expect(pool.run('k', 'a')).rejects.toThrow();   // first hangs → timeout → evict
-    const r = await pool.run('k', 'b');                   // reopens a fresh (non-hanging) one
+    await expect(pool.run('k', 'a')).rejects.toThrow(/boom/);   // real error → evict
+    const r = await pool.run('k', 'b');                         // reopens a fresh one
     expect(r.text).toBe('echo:b');
     expect(factory.made.length).toBe(2);
   });
