@@ -5304,11 +5304,15 @@ function App() {
           keyB64: token,
           name: acfg.name || 'don',
           runTurn,
+          // Show the chatter: the server logs each turn + reply here and serves
+          // it at GET /transcript and / (operator 2026-06-11). Default on.
+          transcriptPath: acfg.transcript === false ? null : (acfg.transcript || join(EGPT_LOGS, 'agent-transcript.md')),
           onLog: alog,
         });
         if (closed) { s.close(); return; }
         server = s;
-        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id).slice(0, 8)}…, read-only tools; log: ~/.egpt/logs/agent.log)`);
+        const _viewer = (acfg.transcript === false) ? '' : ` · transcript at http://${acfg.bind || '127.0.0.1'}:${s.port}/`;
+        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id).slice(0, 8)}…, read-only tools${_viewer}; log: ~/.egpt/logs/agent.log)`);
       } catch (e) { errOut(`!! agent failed to start: ${e?.message ?? e}`); }
     })();
     return () => { closed = true; try { server?.close(); } catch (e) { swallow('agent.close', e); } };

@@ -27,7 +27,7 @@
 
 import { createServer } from 'node:http';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,16 +68,39 @@ export async function startAgentServer({
   keyB64,
   name = 'don',
   runTurn,
+  // transcriptPath: when set, every turn (incoming + Don's reply) is appended
+  // here, and the server SHOWS it — GET /transcript (raw markdown) and GET /
+  // (a dead-simple auto-refreshing view). Operator 2026-06-11: "the server
+  // could be showing transcript.md" — so the Wren<->Don chatter is watchable
+  // in a browser, no surface/bot/WhatsApp needed. The view is UNAUTHENTICATED
+  // (read-only, LAN-firewalled); only /v1/turn (which runs tools) is HMAC-gated.
+  transcriptPath = null,
   onLog = () => {},
 } = {}) {
   if (!keyB64) throw new Error('startAgentServer: keyB64 (agent_token) is required');
   if (typeof runTurn !== 'function') throw new Error('startAgentServer: runTurn is required');
+
+  const logTurn = (who, text) => {
+    if (!transcriptPath) return;
+    try { mkdirSync(dirname(transcriptPath), { recursive: true }); appendFileSync(transcriptPath, `## ${new Date().toISOString()} — ${who}\n${text}\n\n`); }
+    catch (e) { onLog(`agent: transcript append failed — ${e?.message ?? e}`); }
+  };
+  const readTranscript = () => { try { return readFileSync(transcriptPath, 'utf8'); } catch { return '(no turns yet)'; } };
 
   const server = createServer((req, res) => {
     const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
 
     if (req.method === 'GET' && req.url === '/v1/health') {
       return json(200, { ok: true, role: 'agent', name });
+    }
+    // Live transcript view (unauthenticated read-only) — the server showing
+    // transcript.md. GET /transcript = raw; GET / = auto-refreshing page.
+    if (req.method === 'GET' && transcriptPath && (req.url === '/transcript' || req.url === '/')) {
+      const md = readTranscript();
+      if (req.url === '/transcript') { res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' }); return res.end(md); }
+      const esc = md.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><meta charset=utf-8><meta http-equiv=refresh content=3><title>${name} transcript</title><body style="font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap;background:#111;color:#ddd;margin:0;padding:1rem"><pre>${esc}</pre>`);
     }
     if (req.method !== 'POST' || req.url !== '/v1/turn') {
       return json(404, { ok: false, error: 'not found' });
@@ -94,16 +117,18 @@ export async function startAgentServer({
         onLog(`agent: REJECTED unsigned/stale turn from ${req.socket.remoteAddress} (${body.length}b)`);
         return json(401, { ok: false, error: 'bad signature' });
       }
-      let message;
-      try { message = JSON.parse(body.toString('utf8')).message; } catch { return json(400, { ok: false, error: 'bad json' }); }
+      let message, from;
+      try { const o = JSON.parse(body.toString('utf8')); message = o.message; from = typeof o.from === 'string' && o.from.trim() ? o.from.trim() : 'spine'; } catch { return json(400, { ok: false, error: 'bad json' }); }
       if (!message || typeof message !== 'string') return json(400, { ok: false, error: 'missing message' });
 
       const t0 = Date.now();
       try {
+        logTurn(from, message);                 // record the incoming turn before Don answers
         const out = await runTurn(message);
         const text = String(out?.text ?? '').trim();
         const ms = Date.now() - t0;
         if (!text) { onLog(`agent: turn produced no text (${ms}ms)`); return json(422, { ok: false, error: 'empty reply', ms }); }
+        logTurn(name, text);                     // record Don's reply
         onLog(`agent: turn ${message.length}ch -> ${text.length}ch in ${ms}ms for ${req.socket.remoteAddress}`);
         return json(200, { ok: true, text, ms });
       } catch (e) {
@@ -174,8 +199,8 @@ export function makeClaudeResumeRunner({
 // ── spine side ──────────────────────────────────────────────────────────
 // POST one room turn to a Don endpoint, return the reply text. Throws on
 // transport/auth/empty so the caller (the spine's `don` brain) can surface it.
-export async function postAgentTurn(message, { endpoint, keyB64, timeoutMs = 600_000 }, log = () => {}) {
-  const body = Buffer.from(JSON.stringify({ message: String(message ?? '') }), 'utf8');
+export async function postAgentTurn(message, { endpoint, keyB64, from, timeoutMs = 600_000 }, log = () => {}) {
+  const body = Buffer.from(JSON.stringify({ message: String(message ?? ''), ...(from ? { from } : {}) }), 'utf8');
   const ts = Date.now();
   const res = await fetch(`${endpoint.replace(/\/+$/, '')}/v1/turn`, {
     method: 'POST',

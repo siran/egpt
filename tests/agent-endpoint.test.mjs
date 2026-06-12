@@ -3,6 +3,9 @@
 // without the Claude SDK or credentials — the real runner (makeClaudeResumeRunner)
 // is exercised live, not in unit tests.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startAgentServer, postAgentTurn, signBody } from '../src/tools/agent-endpoint.mjs';
 
 const KEY = 'YWdlbnQtdGVzdC1rZXktYWdlbnQtdGVzdC1rZXktMDA';
@@ -71,5 +74,37 @@ describe('agent endpoint', () => {
   it('refuses to start without a key or runner', async () => {
     await expect(startAgentServer({ port: 0, runTurn: async () => ({ text: 'x' }) })).rejects.toThrow(/keyB64/);
     await expect(startAgentServer({ port: 0, keyB64: KEY })).rejects.toThrow(/runTurn/);
+  });
+});
+
+describe('agent endpoint — transcript view', () => {
+  let dir;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'egpt-agent-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('logs the incoming turn + reply and serves them; / returns html', async () => {
+    const transcriptPath = join(dir, 'agent-transcript.md');
+    const { endpoint } = await start(async (m) => ({ text: `re: ${m}` }), { transcriptPath });
+    await postAgentTurn('first ask', { endpoint, keyB64: KEY, from: 'wren' });
+
+    const md = await (await fetch(`${endpoint}/transcript`)).text();
+    expect(md).toContain('— wren\nfirst ask');     // incoming turn, labelled by `from`
+    expect(md).toContain('— don\nre: first ask');  // Don's reply
+
+    const home = await fetch(`${endpoint}/`);
+    expect(home.headers.get('content-type')).toMatch(/text\/html/);
+    expect(await home.text()).toContain('re: first ask');
+  });
+
+  it('transcript routes are unauthenticated (read-only view) but /v1/turn still needs auth', async () => {
+    const transcriptPath = join(dir, 't.md');
+    const { endpoint } = await start(async () => ({ text: 'x' }), { transcriptPath });
+    expect((await fetch(`${endpoint}/transcript`)).status).toBe(200);   // open view
+    expect((await fetch(`${endpoint}/v1/turn`, { method: 'POST', body: '{}' })).status).toBe(401);   // turn still gated
+  });
+
+  it('no transcriptPath -> no view routes (404)', async () => {
+    const { endpoint } = await start(async () => ({ text: 'x' }));
+    expect((await fetch(`${endpoint}/transcript`)).status).toBe(404);
   });
 });
