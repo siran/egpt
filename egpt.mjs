@@ -3191,9 +3191,22 @@ function App() {
       }
       tgCfgRef.current = cfg;
     }
-    if (!cfg.telegram?.bot_token) return false;
+    // bot_token is a SECRET → it lives in config.local.json, which the fresh
+    // readConfig() above does NOT merge (it reads config.yaml only — the local
+    // overlay is folded into EGPT_CONFIG once at boot). Prefer the already-
+    // merged EGPT_CONFIG for the token, same as beeper_token — otherwise a token
+    // in config.local.json silently never starts the bridge (2026-06-12 trap).
+    const botToken = EGPT_CONFIG.telegram?.bot_token ?? cfg.telegram?.bot_token;
+    if (!botToken) {
+      // Loud only when telegram is meant to be on — a bare unconfigured node
+      // stays quiet (startTgBridge is called speculatively on peer events).
+      if (EGPT_CONFIG.telegram?.enabled ?? cfg.telegram?.enabled) {
+        errOut('!! telegram: enabled but no bot_token resolvable (checked config.local.json + config.yaml) — bridge NOT started');
+      }
+      return false;
+    }
     const bridge = startTelegramBridge({
-      botToken:     cfg.telegram.bot_token,
+      botToken,
       nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
       allowedUsers: cfg.telegram.allowed_users ?? [],
       // Hold-on-reconnect grace window. Same semantic as WA:
