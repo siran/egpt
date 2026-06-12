@@ -68,6 +68,12 @@ export function createWarmPool({
     const e = _s.get(key);
     if (!e || e.errored) throw new Error('warm: session unavailable');
     e.busy = true;
+    // NEVER evict while thinking. An idle timer armed after the PREVIOUS turn
+    // must not fire mid-turn and close a busy session (that would end the query
+    // mid-turn). Idle = time since the last turn ENDED, so clear any pending idle
+    // timer now; _armIdle re-arms it in finally once this turn completes. (LRU
+    // already skips busy; the per-turn timeout was removed.)
+    if (e.idleTimer) { clearTimeout(e.idleTimer); e.idleTimer = null; }
     try {
       // NO turn timeout. A warm claude session stays open INDEFINITELY (like the
       // CLI) — a turn runs as long as it needs: thinking, long answers, slow
