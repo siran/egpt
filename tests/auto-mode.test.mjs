@@ -1,7 +1,7 @@
 // Per-chat auto-mode semantics: standalone @e detection (no email false
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
-import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
+import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -170,5 +170,30 @@ describe('mayEmit — outbound backstop', () => {
     expect(mayEmit('mention-direct', { replyAllowed: true, isReaction: true })).toBe(false);
     // non-reactions in 'on' still emit (sanity — flag is opt-in)
     expect(mayEmit('on', { isReaction: false })).toBe(true);
+  });
+});
+
+// CONTRACT: whatsapp.auto_e_paused = absolute @e-emit kill. This is the one gate
+// rule that lives in egpt.mjs `_eMayReplyToChat` (above the mode layer); locking
+// it here guards against its silent removal. The wrapper delegates to this fn,
+// so this IS the real gate, pause included — not a parallel copy.
+describe('mayEmitChat — global pause kill over the mode gate', () => {
+  it('paused BLOCKS every mode — even on, even with replyAllowed', () => {
+    expect(mayEmitChat({ paused: true, mode: 'on' })).toBe(false);
+    expect(mayEmitChat({ paused: true, mode: 'on', replyAllowed: true })).toBe(false);
+    expect(mayEmitChat({ paused: true, mode: 'mention', replyAllowed: true })).toBe(false);
+    expect(mayEmitChat({ paused: true, mode: 'mention-direct', replyAllowed: true })).toBe(false);
+  });
+  it('not paused → identical to the per-chat mode gate (mayEmit)', () => {
+    for (const mode of ['on', 'mute', 'off', 'mention', 'mention-direct', 'accum']) {
+      for (const replyAllowed of [true, false, undefined]) {
+        expect(mayEmitChat({ paused: false, mode, replyAllowed }))
+          .toBe(mayEmit(mode, { replyAllowed }));
+      }
+    }
+  });
+  it('defaults are fail-safe (no args → no emit)', () => {
+    expect(mayEmitChat()).toBe(false);                       // no mode, not paused → mayEmit(undefined) → false
+    expect(mayEmitChat({ mode: 'mention' })).toBe(false);    // mention w/o replyAllowed → fails closed
   });
 });

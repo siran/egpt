@@ -73,6 +73,19 @@ export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } =
   return replyAllowed === true;
 }
 
+// The COMPLETE outbound gate for a chat reply: the operator's global pause kill
+// layered OVER the per-chat mode gate. `paused` is `whatsapp.auto_e_paused` —
+// when true NOTHING emits, overriding mode, mention, even 'on' and an explicit
+// '@e …' (operator 2026-06-03: a PAUSED @e still answered '@e estas?' before
+// this backstop). This is the pure, testable form of egpt.mjs
+// `_eMayReplyToChat`; that wrapper only resolves chatId→mode + reads the config
+// flag, then delegates here — so a test on this function locks the REAL gate,
+// pause-kill included, instead of a parallel copy.
+export function mayEmitChat({ paused = false, mode, replyAllowed = undefined, isReaction = false } = {}) {
+  if (paused) return false;                                  // absolute kill — overrides everything
+  return mayEmit(mode, { replyAllowed, isReaction });
+}
+
 // A reply that is ONLY ellipsis (ASCII '...' or unicode '…') or empty. This is
 // the ONE place a reply's BODY is consulted, and ONLY for the 'on'-mode cosmetic
 // below — E declining to add noise to a chat it's free to post in. It is NEVER
