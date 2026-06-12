@@ -156,15 +156,25 @@ export async function startAgentServer({
 // original and lose intermediate turns) and persists it to a sidecar so an
 // endpoint restart continues the latest, not the pinned origin.
 //
-// READ-ONLY by default: tools confined to Read/Grep/Glob/WebFetch inside the
-// repo, writes + bash denied (buildSdkOptions confinement). The claude-sdk
-// import is LAZY so this module (and its tests) never loads the SDK unless the
-// real runner is actually constructed.
+// Uses the claude-code (CLI) brain — NOT claude-sdk — on purpose: the SDK's
+// query({resume}) re-sends the full conversation history client-side, and a
+// long tool-heavy session (Don / 23dfef93) trips the API on a legacy content
+// block ("Input tag 'fallback'", verified 2026-06-12). The CLI's `--resume`
+// resumes SERVER-SIDE (the server holds the history) and survives. So @d can
+// be a warm pre-existing session, not just a clean one.
+//
+// CHAT-ONLY by default (step 1): no allowedTools passed → the CLI in --print
+// mode refuses every tool. This is deliberately even tighter than read-only,
+// because the CLI's `--allowedTools Read` BYPASSES path scoping (the ~/.egpt
+// secret-read leak the SDK brain's settingSources:[] was built to close — see
+// claude-sdk.mjs). Read tools wait until that confinement is solved on the CLI
+// path (or @d moves to the SDK brain + a clean session). Step 1 only needs Don
+// to talk. The brain import is LAZY so this module/tests never load it unless
+// the real runner is constructed.
 export function makeClaudeResumeRunner({
   sessionId,
   cwd = REPO_DIR,
-  allowedTools = ['Read', 'Grep', 'Glob', 'WebFetch'],
-  confineToDirs = [REPO_DIR],
+  allowedTools = [],
   model,
   onLog = () => {},
   stateDir = join(homedir(), '.egpt', 'state'),
@@ -175,17 +185,25 @@ export function makeClaudeResumeRunner({
   // Sidecar (latest threaded id) wins over the configured origin — it's where
   // the conversation actually is after prior turns.
   try { const s = readFileSync(sidecar, 'utf8').trim(); if (s) current = s; } catch { /* fresh */ }
+  // 'all'/'*' must pass through as the literal STRING — that's what the
+  // claude-code brain checks to trigger the permission bypass (full peer). A
+  // list is split to an array; empty/none = chat-only (no allowedTools flag).
+  const isAll = allowedTools === 'all' || allowedTools === '*';
+  const tools = isAll ? 'all'
+    : Array.isArray(allowedTools) ? allowedTools
+    : String(allowedTools ?? '').trim().split(/\s+/).filter(Boolean);
+  const toolsOpt = isAll ? { allowedTools: 'all' } : (tools.length ? { allowedTools: tools } : {});
 
   return async function runTurn(message) {
-    const sdk = await import('../../config/brains/claude-sdk.mjs');
-    const res = await sdk.stream({ message }, () => {}, {
-      sessionId: current,
-      cwd,
-      allowedTools,
-      confineToDirs,
-      ...(model ? { model } : {}),
-      onLog,
-    });
+    const brain = await import('../../config/brains/claude-code.mjs');
+    // Resume mode sends the new turn as `message`; a fresh start (no session
+    // yet) sends it as `history` (the initial prompt), then threads the
+    // server-assigned id forward.
+    const res = await brain.stream(
+      current ? { message } : { history: message },
+      () => {},
+      { sessionId: current, cwd, ...toolsOpt, ...(model ? { model } : {}), onLog },
+    );
     const next = res?.optionsPatch?.sessionId;
     if (next && next !== current) {
       current = next;
