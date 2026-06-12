@@ -7921,7 +7921,11 @@ function App() {
         if (meta.fromWhatsApp && _sibBrain?.sessionless && meta.waChatId
             && EGPT_CONFIG.siblings?.[sibName]?.memory !== false) {
           const _tail = await _readTranscriptTail(meta.waChatId, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
-          if (_tail) personaPrompt = `Recent messages in this channel (context only):\n${_tail}\n\nReply to the new message as @${sibName} — one direct chat message, same language, no narration or summary:\n${personaPrompt}`;
+          // Format the turn as a TRANSCRIPT the model CONTINUES — ending with the
+          // '[@l]:' cue makes it write @l's reply instead of echoing the last
+          // line (a 3B repeats when the prompt ends with the message it must
+          // answer). The persona/voice comes from l.md (system). 2026-06-11.
+          personaPrompt = `You are in a group chat. Continue as @${sibName}, replying to the LAST message — one short, direct chat message in the same language (no narration, no quoting).\n\n${_tail ? _tail + '\n' : ''}${personaPrompt}\n[@${sibName}]:`;
         }
         const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
