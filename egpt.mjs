@@ -3262,6 +3262,7 @@ function App() {
         // submitInner to post room-utterance and stop, without routing.
         let skipRoute = false;
         let dispatchTgText = text;
+        let _forceTarget = null;
         // System-personality contacts (operator's own bot-DM with themselves,
         // future operator-DMs) auto-dispatch plain text to @e, same as WA
         // Self DM. Operator (2026-05-22): personality='system' is the
@@ -3283,10 +3284,13 @@ function App() {
           const mirror = cfg.telegram?.mirror ?? 'none';
           const canRoute = mirror === 'all' || (mirror === 'allowed' && from.authorized) || (isSystemTgContact && from.authorized);
           skipRoute = !canRoute;
-          const trimmed = text.trimStart();
-          const hasMention = /^@[\w-]+/.test(trimmed);
-          if (canRoute && !hasMention && isSystemTgContact) {
-            dispatchTgText = `@e ${text}`;
+          // NO @e auto-prefix. The bot IS the meta-bot (Wren): the operator's
+          // message routes to the bot's own agent by IDENTITY (forceTarget),
+          // not by mangling text onto creation-E. Skip only when the operator
+          // explicitly @-addresses someone else. agent overridable via
+          // telegram.agent (default 'wren').
+          if (canRoute && from.authorized && !/^@[\w-]+/.test(text.trimStart())) {
+            _forceTarget = cfg.telegram?.agent ?? 'wren';
           }
         }
 
@@ -3295,6 +3299,7 @@ function App() {
           telegramChatId: from.chatId,
           telegramUser: who,
           telegramMessageId: from.tgMessageId ?? null,
+          ...(_forceTarget ? { forceTarget: _forceTarget } : {}),
           skipRoute,
         });
       },
@@ -6480,7 +6485,7 @@ function App() {
       max: Number(w.max) || 6,
       idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
       idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
-      dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 90_000,
+      dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 600_000,
       onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
     });
     return _warmPoolSingleton;
