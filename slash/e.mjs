@@ -75,7 +75,7 @@ export const meta = {
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
     { name: 'identity',   usage: '/e identity [<identity>]',                                 desc: 'reinstall/refresh the identity folder, KEEP the thread — after editing identities/<name>/', example: '/e identity' },
     { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
-    { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats (optional name/jid filter that also finds contacts on the default mode)', example: '/e auto status daniel' },
+    { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>] | show-think on|off [<chat>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats; show-think on/off toggles two-message Telegram mode (thinking stream frozen 💭, final sent as new reply)', example: '/e auto show-think on' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
     { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)', example: '/e source egpt-dev' },
@@ -1013,6 +1013,58 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
 
   if (!wa.auto_e_modes || typeof wa.auto_e_modes !== 'object') wa.auto_e_modes = {};
   const MODES = AUTO_MODES;   // on, accum, mute, mention-direct, mention, off
+
+  // ── /e auto show-think [on|off] [<chat>] ────────────────────────
+  // Per-chat Telegram show-think toggle. When on, the streaming "⌛ thinking…"
+  // message is frozen in place as a 💭 artifact and the clean final reply is
+  // posted as a NEW message (replying to the original user message).
+  // Config key: telegram.show_think_chats (array of chatIds).
+  if (action === 'show-think' || action === 'show-thinking') {
+    const toggle  = tokens[2] ?? null;   // 'on' | 'off' | null → status
+    const chatArg = tokens.slice(3).join(' ').trim() || null;
+
+    // Resolve chat: explicit arg, else current Telegram chat, else fail.
+    let chatId = null;
+    if (chatArg) {
+      const r = await _resolveChatTarget(chatArg, 'telegram');
+      if (r.error) { sysOut(`/e auto show-think: ${r.error}`); return true; }
+      chatId = r.jid;
+    }
+    if (!chatId) chatId = String(dispatchMeta?.telegramChatId ?? dispatchMeta?.waChatId ?? '');
+    if (!chatId) {
+      sysOut('/e auto show-think: no chat context — pass a chat id or run from inside the channel');
+      return true;
+    }
+
+    if (!EGPT_CONFIG.telegram || typeof EGPT_CONFIG.telegram !== 'object') EGPT_CONFIG.telegram = {};
+    if (!Array.isArray(EGPT_CONFIG.telegram.show_think_chats)) EGPT_CONFIG.telegram.show_think_chats = [];
+    const chats = EGPT_CONFIG.telegram.show_think_chats;
+
+    if (!toggle || toggle === 'status') {
+      sysOut(`/e auto show-think: ${chatId} → ${chats.includes(String(chatId)) ? 'on' : 'off'}`);
+      return true;
+    }
+    if (!['on', 'off'].includes(toggle)) {
+      sysOut('usage: /e auto show-think on|off [<chat>]');
+      return true;
+    }
+    const chatIdStr = String(chatId);
+    const next = toggle === 'on'
+      ? chats.includes(chatIdStr) ? chats : [...chats, chatIdStr]
+      : chats.filter(c => c !== chatIdStr);
+    EGPT_CONFIG.telegram.show_think_chats = next;
+    try {
+      const saved = await readConfig();
+      if (!saved.telegram || typeof saved.telegram !== 'object') saved.telegram = {};
+      saved.telegram.show_think_chats = next;
+      await writeConfig(saved);
+    } catch (e) {
+      sysOut(`!! /e auto show-think: persist failed — ${e.message}`);
+      return true;
+    }
+    sysOut(`/e auto show-think ${toggle}: ${chatId} → ${toggle === 'on' ? 'on (thinking stream frozen 💭, final sent as reply)' : 'off (single message, current behaviour)'}`);
+    return true;
+  }
 
   if (action === 'status') {
     // Optional substring filter: `/e auto status <name|jid>` narrows the list

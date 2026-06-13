@@ -6922,8 +6922,9 @@ function App() {
   async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions, callOpts = {}) {
     const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
-    const tgChatId = callOpts.tgChatId ?? null;
-    const waChatId = callOpts.waChatId ?? null;
+    const tgChatId  = callOpts.tgChatId  ?? null;
+    const tgReplyTo = callOpts.tgReplyTo ?? null;
+    const waChatId  = callOpts.waChatId  ?? null;
     // ROOM DISPATCH: when true, this turn produces ONLY a return value — no
     // bridge streams, no committed shell item, no conversation.md append. The
     // caller (_deliverToRoom) mirrors the text to the room's members itself.
@@ -6931,6 +6932,11 @@ function App() {
     // bridge's lastChat — re-introducing the leak class we just removed. Default
     // off, so the normal shell @session path is unchanged.
     const noBridge = !!callOpts.noBridge;
+    // show-think: when true for this TG chat, the streaming "thinking" message
+    // is frozen in place and the clean final reply is posted as a NEW message
+    // (a reply to the original message that triggered the turn).
+    // Toggle via: /e auto show-think on|off
+    const tgShowThink = !!(tgChatId && (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(tgChatId)));
     // Bridge selection rule: when a turn was triggered by an upstream
     // bridge (Telegram OR WhatsApp), only that bridge gets the reply
     // (route back to the chat that asked). For local typing, both
@@ -7137,7 +7143,18 @@ function App() {
       }
       // Finalize the streaming bridge messages with the full text.
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
-      await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
+      if (tgShowThink && tg) {
+        // show-think mode: freeze the in-progress streaming message as the
+        // "thinking" artifact (💭 + the last streamed snapshot), then post
+        // the clean final as a NEW reply to the original message.
+        const snap = lastStreamingText.trim();
+        const snapTail = snap.length > 3500 ? '…' + snap.slice(-3500) : snap;
+        await tg.finish(`💭 ${authorPrefix}\n${escapeHtml(snapTail)}`);
+        bridgeRef.current?.send?.(`${authorPrefix}\n${mdToTgHtml(finalTail)}`,
+          { chatId: tgChatId, replyTo: tgReplyTo ?? undefined });
+      } else {
+        await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
+      }
       await wa?.finish(`${waPrefix}\n${final}`);
       if (!noBridge) {
         pushItem({
@@ -8199,7 +8216,18 @@ function App() {
           }
         }
         if (tgStream) {
-          await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
+          const _tgShowThink = !!(meta.telegramChatId &&
+            (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
+          if (_tgShowThink) {
+            // show-think: freeze the thinking stream, send final as a new reply
+            await tgStream.finish(`💭 ${tgPrefix}(thinking)`);
+            if (!_dropResident(reply)) {
+              bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
+                { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
+            }
+          } else {
+            await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
+          }
         } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
           bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
@@ -8340,7 +8368,8 @@ function App() {
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
-    const tgChatId = meta.fromTelegram ? meta.telegramChatId ?? null : null;
+    const tgChatId  = meta.fromTelegram ? meta.telegramChatId  ?? null : null;
+    const tgReplyTo = meta.fromTelegram ? meta.telegramMessageId ?? null : null;
     // ALL model replies are gated (operator 2026-06-04). runBrainTurn opens its
     // WA stream on waChatId ALONE (no mode gate), so a NAMED brain (cgpt/codex/
     // llama) addressed in a mute/off/paused chat would stream its reply there.
@@ -8352,7 +8381,7 @@ function App() {
       ? _waRaw : null;
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId, waChatId });
+      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId, tgReplyTo, waChatId });
       if (reply !== null) {
         replies.push({ author: recipient, text: reply });
         // Broadcast every brain reply to peer surfaces. The room is
