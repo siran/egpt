@@ -105,6 +105,75 @@ describe('warm-session pool', () => {
     expect(pool.has('k')).toBe(true);     // session stays WARM — not evicted
   });
 
+  // CONTRACT (operator 2026-06-13): a message that arrives while a turn is
+  // already streaming on a key is INJECTED into that running turn (woven in
+  // mid-flight), NOT queued as a fresh turn behind it. The in-flight turn's
+  // single result carries the combined reply; the injected call resolves with
+  // an `injected` marker so the caller emits nothing separately.
+  function injectableFactory() {
+    const made = [];
+    const makeSession = (opts) => {
+      const s = {
+        opts, closed: false, turns: [], injected: [], _resolve: null,
+        close() { this.closed = true; },
+        turn(msg) {
+          this.turns.push(msg);
+          return new Promise((resolve) => { this._resolve = resolve; });   // stays in flight
+        },
+        inject(msg) { if (!this._resolve) return false; this.injected.push(msg); return true; },
+        finish(v) { const r = this._resolve; this._resolve = null; r(v); },
+      };
+      made.push(s);
+      return s;
+    };
+    return { makeSession, made };
+  }
+
+  it('injects a mid-turn message into the running turn (no second turn)', async () => {
+    const { makeSession, made } = injectableFactory();
+    const pool = createWarmPool({ makeSession });
+    const p1 = pool.run('k', 'first');
+    await sleep(2);                                  // let _doTurn start → e.busy
+    const r2 = await pool.run('k', 'second');        // arrives mid-turn
+    expect(r2.injected).toBe(true);                  // woven in, not queued
+    expect(made[0].injected).toEqual(['second']);
+    expect(made[0].turns).toEqual(['first']);        // NOT a second turn
+    made[0].finish({ text: 'first+second', sessionId: 'sid' });
+    expect((await p1).text).toBe('first+second');    // one combined reply
+    expect(made.length).toBe(1);
+  });
+
+  it('does NOT inject when the key is idle — runs a normal turn', async () => {
+    const { makeSession, made } = injectableFactory();
+    const pool = createWarmPool({ makeSession });
+    const p1 = pool.run('k', 'first');
+    await sleep(2);
+    made[0].finish({ text: 'a', sessionId: 'sid' });
+    await p1;                                         // turn ended → key idle
+    const p2 = pool.run('k', 'second');
+    await sleep(2);
+    expect(made[0].turns).toEqual(['first', 'second']);   // a real second turn
+    expect(made[0].injected).toEqual([]);
+    made[0].finish({ text: 'b', sessionId: 'sid' });
+    expect((await p2).text).toBe('b');
+  });
+
+  it('injectWhileBusy:false preserves serialize-behind behavior', async () => {
+    const { makeSession, made } = injectableFactory();
+    const pool = createWarmPool({ makeSession, injectWhileBusy: false });
+    const p1 = pool.run('k', 'first');
+    await sleep(2);
+    const p2 = pool.run('k', 'second');              // queues behind, not injected
+    expect(made[0].injected).toEqual([]);
+    made[0].finish({ text: 'a', sessionId: 'sid' });
+    await sleep(2);
+    made[0].finish({ text: 'b', sessionId: 'sid' }); // second turn now runs
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1.text).toBe('a');
+    expect(r2.text).toBe('b');
+    expect(made[0].turns).toEqual(['first', 'second']);
+  });
+
   it('reopens a fresh session after a genuine session error (not a timeout)', async () => {
     const factory = fakeFactory();
     let first = true;

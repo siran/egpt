@@ -25,6 +25,7 @@ export function createWarmPool({
   idleTtlMs = 180_000,
   idleTtlByClass = {},
   dispatchTimeoutMs = 600_000,
+  injectWhileBusy = true,            // weave a mid-turn message into the live turn
   onLog = () => {},
   makeSession = createWarmSession,   // injectable for tests
 } = {}) {
@@ -99,6 +100,20 @@ export function createWarmPool({
   function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs } = {}) {
     let e = _s.get(key);
     if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
+    // INJECT-INTO-RUNNING-TURN (operator 2026-06-13): if a turn is already
+    // streaming on this key, weave the new message into THAT live turn rather
+    // than serializing a fresh turn behind it. The in-flight turn's single
+    // result carries the combined reply, so this call resolves with an
+    // `injected` marker and the caller emits nothing separately. Falls through
+    // to the normal queued turn when the session can't inject or the turn just
+    // ended (race: busy flipped false between the check and the push).
+    if (injectWhileBusy && e && e.busy && !e.errored && typeof e.session.inject === 'function') {
+      if (e.session.inject(message)) {
+        e.lastUsed = Date.now();
+        onLog(`warm: injected into running turn ${key}`);
+        return Promise.resolve({ injected: true, text: null, sessionId: null });
+      }
+    }
     if (!e) {
       _lruEvictIfFull(key);
       e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve() };

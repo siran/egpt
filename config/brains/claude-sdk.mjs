@@ -378,6 +378,20 @@ export function createWarmSession(options = {}) {
     if (_pending) return Promise.reject(new Error('claude-sdk warm: turn already in progress'));
     return new Promise((resolve, reject) => { _pending = { resolve, reject, onUpdate, acc: '' }; _push(message); });
   };
+  // INJECT-INTO-RUNNING-TURN (operator 2026-06-13): push an EXTRA user message
+  // into the LIVE query while a turn is already streaming, so the SDK's
+  // streaming-input pump delivers it mid-flight and the model weaves it into the
+  // turn it's currently working (the same way Claude Code picks up input typed
+  // while it's thinking). No new _pending is created: the in-flight turn's single
+  // `result` still resolves the original caller, now with the combined reply.
+  // Returns false when there is no turn to inject into (caller should use turn())
+  // or the session is closed/errored — the pool then falls back to a queued turn.
+  session.inject = (message) => {
+    if (_closed || _readerError) return false;
+    if (!_pending) return false;
+    _push(message);
+    return true;
+  };
   session.close = () => {
     if (_closed) return;
     _closed = true;
