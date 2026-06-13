@@ -8143,8 +8143,19 @@ function App() {
           ? _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
           : true;
         const _tgMayEmit = meta.fromTelegram ? (meta.replyAllowed !== false) : true;
+        // show-think: per-chat two-message Telegram mode. The streaming reply
+        // carries the LIVE thinking (marked 💭 …, suffixed "(thinking... 🤔)" so
+        // an in-progress turn is unmistakable); on finish it is FROZEN as the
+        // thinking artifact and the clean final answer is posted as a NEW reply
+        // to the original message — the arriving reply IS the "finished" signal.
+        // Computed once here (not just at finish) so the live updates can mark
+        // the thinking too. Toggle via: /e auto show-think on|off.
+        const _tgShowThink = !!(meta.fromTelegram && meta.telegramChatId &&
+          (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
+        const _tgThinkSuffix = '\n\n(thinking... 🤔)';
         const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
-          ? bridgeRef.current.startStreamMessage(`${tgPrefix}⌛ thinking…`,
+          ? bridgeRef.current.startStreamMessage(
+              _tgShowThink ? `💭 ${tgPrefix}⌛ thinking…` : `${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
@@ -8176,8 +8187,14 @@ function App() {
             ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
           confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
         }
+        let _tgLastPartial = '';   // last streamed snapshot — frozen as the thinking in show-think mode
         let reply = await runMetaBrainTurn(personaPrompt, (partial) => {
-          if (tgStream) tgStream.update(`${tgPrefix}${mdToTgHtml(partial)}`);
+          if (tgStream) {
+            _tgLastPartial = partial;
+            tgStream.update(_tgShowThink
+              ? `💭 ${tgPrefix}${mdToTgHtml(partial)}${_tgThinkSuffix}`
+              : `${tgPrefix}${mdToTgHtml(partial)}`);
+          }
           if (waStream) {
             const { think, answer } = splitThink(partial);
             if (answer === null) {
@@ -8235,11 +8252,18 @@ function App() {
           }
         }
         if (tgStream) {
-          const _tgShowThink = !!(meta.telegramChatId &&
-            (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
           if (_tgShowThink) {
-            // show-think: freeze the thinking stream, send final as a new reply
-            await tgStream.finish(`💭 ${tgPrefix}(thinking... 🤔)`);
+            // show-think: FREEZE the streamed thinking in place (the last
+            // snapshot the operator watched stream, kept as the 💭 artifact),
+            // then post the clean final answer as a NEW reply to the original
+            // message. The arriving reply is the "finished" signal. escapeHtml
+            // (not mdToTgHtml) on the snapshot: a mid-stream tail may have
+            // unbalanced markdown/HTML that would break TG's parser.
+            const _snap = String(_tgLastPartial ?? '').trim();
+            const _snapTail = _snap.length > 3500 ? '…' + _snap.slice(-3500) : _snap;
+            await tgStream.finish(_snapTail
+              ? `💭 ${tgPrefix}${escapeHtml(_snapTail)}${_tgThinkSuffix}`
+              : `💭 ${tgPrefix}⌛ thinking…`);
             if (!_dropResident(reply)) {
               bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
                 { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
