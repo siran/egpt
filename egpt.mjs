@@ -48,6 +48,7 @@ import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
+import { createWarmCliSession } from './src/warm-cli-session.mjs';
 // Warm-session pool singleton at MODULE scope — the _warmPool() helper lives in
 // a per-dispatch closure, so a local `let` reset every turn → a brand-new empty
 // pool each turn (no warm reuse). Module scope persists across dispatches.
@@ -6497,17 +6498,22 @@ function App() {
     return _dispatchRuntime.runDefaultBrainTurn(text, onPartial, threadCtx);
   }
 
-  // WARM-SESSION POOL (feat/sibling-reply). Lazily built from EGPT_CONFIG.brains.warm.
-  // Holds persistent claude-sdk streaming sessions so a turn is not a cold start.
+  // WARM-SESSION POOL (Unit 4). Lazily built from EGPT_CONFIG.brains.warm.
+  // Holds RESIDENT `claude` CLI background agents (createWarmCliSession — one
+  // persistent stream-json process per being) so a turn is warm, not a cold
+  // spawn. The pool owns the residency policy: lazy-warm, idle-evict per class
+  // (`resident`=0 → never evict for Wren/D; `conversation`=5min reap for the
+  // per-chat E's), LRU, per-key serialization. Engine stays the CLI (I11).
   // Lazy creation avoids module-eval ordering; logOut/EGPT_CONFIG exist at call time.
   const _warmEnabled = () => EGPT_CONFIG.brains?.warm?.enabled !== false;   // default ON
   function _warmPool() {
     if (_warmPoolSingleton) return _warmPoolSingleton;   // module-scope singleton (survives dispatches)
     const w = EGPT_CONFIG.brains?.warm ?? {};
     _warmPoolSingleton = createWarmPool({
+      makeSession: createWarmCliSession,   // resident CLI background agent (no SDK — I11)
       max: Number(w.max) || 6,
       idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
-      idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
+      idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, resident: 0, conversation: 300_000, sibling: 300_000 },
       dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 600_000,
       injectWhileBusy: w.inject_while_busy ?? true,
       onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
@@ -6714,15 +6720,17 @@ function App() {
       // WARM PATH (feat/sibling-reply): an in-process claude-sdk sibling runs on
       // a persistent pooled session — no per-turn cold start / subprocess spawn.
       // Keyed per sibling+session so a re-pin opens a fresh one; errors surface
-      // as text so the missing-resume retry below still fires. Other brains
-      // (codex, ccode/CLI, llama) keep the cold stream() path unchanged.
+      // as text so the missing-resume retry below still fires. ccode (the CLI
+      // engine — Wren/D) and the legacy claude-sdk run through the warm pool as
+      // RESIDENT background agents (Unit 4); codex/llama keep the cold path.
+      // siblings.<name>.resident:true → never idle-evict (meta-engineers).
       let result;
-      if (brainType === 'claude-sdk' && _warmEnabled()) {
+      if ((brainType === 'ccode' || brainType === 'claude-sdk') && _warmEnabled()) {
         const _warmKey = `sib:${selectedName}:${mbCfg.session_id ?? 'new'}`;
         try {
           const r = await _warmPool().run(_warmKey, text, onPartial, {
             brainOptions: { ...sessionOpts, allowedTools: mbCfg.allowed_tools ?? 'all' },
-            klass: 'sibling',
+            klass: mbCfg.resident ? 'resident' : 'sibling',
           });
           if (r?.injected) {
             // This message was woven into a turn already streaming on this
