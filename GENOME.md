@@ -274,6 +274,10 @@ Sender@[chatname/groupname].{node} (HH:MM): body
   (display/storage only — NEVER an authorization key; I6).
 - **`transcript.md`** — an 8‑day rolling window; older days archive to
   `memories/transcript-<date>.md`; per‑file serialized appends (no lost writes).
+  Opens with a YAML **front matter** identifying the conversation — `name`,
+  `thread_id`, `surface`, `slug`, `persona`, `notes` (one writer + reader:
+  `src/transcript-meta.mjs`). The collector (planned ⏳) enriches it with
+  `network` / `phone` / `type` / `participants` from the limb's chat metadata.
 - **Heartbeat is per‑entity** — no global `@e` heartbeat; a
   `heartbeat.md` in a conversation's/room's folder is dispatched through the
   gate. `[[egpt-heartbeat-per-entity]]`
