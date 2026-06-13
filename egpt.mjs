@@ -7159,7 +7159,7 @@ function App() {
         // the clean final as a NEW reply to the original message.
         const snap = lastStreamingText.trim();
         const snapTail = snap.length > 3500 ? '…' + snap.slice(-3500) : snap;
-        await tg.finish(`💭 ${authorPrefix}\n${escapeHtml(snapTail)}`);
+        await tg.finish(`💭 ${authorPrefix}\n${escapeHtml(snapTail)}\n\n(thinking... 🤔)`);
         bridgeRef.current?.send?.(`${authorPrefix}\n${mdToTgHtml(finalTail)}`,
           { chatId: tgChatId, replyTo: tgReplyTo ?? undefined });
       } else {
@@ -8230,7 +8230,7 @@ function App() {
             (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
           if (_tgShowThink) {
             // show-think: freeze the thinking stream, send final as a new reply
-            await tgStream.finish(`💭 ${tgPrefix}(thinking)`);
+            await tgStream.finish(`💭 ${tgPrefix}(thinking... 🤔)`);
             if (!_dropResident(reply)) {
               bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
                 { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
