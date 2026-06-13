@@ -3,7 +3,7 @@
 // claude-code CLI argv. This locks the mapping so the move can't silently regress
 // directory access control / tool limitation / settings isolation.
 import { describe, it, expect } from 'vitest';
-import { buildClaudeArgs, BASE_ARGS, FILE_TOOLS } from '../src/claude-args.mjs';
+import { buildClaudeArgs, BASE_ARGS, FILE_TOOLS, WRITE_TOOLS, readOnlyDenyRules } from '../src/claude-args.mjs';
 
 // argv is flat: ['--flag','val','--flag2', ...]. Helpers to read it.
 const valsOf = (args, flag) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
@@ -64,13 +64,32 @@ describe('sandbox (confineToDirs) — directory access control + settings isolat
   });
 });
 
-describe('read-only grants — never silently dropped', () => {
-  it('readOnlyDirs THROWS (write-deny hook not yet wired for CLI — refuse to drop it)', () => {
-    expect(() => buildClaudeArgs({ readOnlyDirs: ['/ro'] })).toThrow(/readOnlyDirs/);
+describe('read-only grants — NATIVE deny rules (Claude permissions, not a hook)', () => {
+  it('readOnlyDenyRules: write-class tools denied under each dir; reads untouched', () => {
+    const rules = readOnlyDenyRules(['/ro', 'C:\\proj\\vendor\\']);   // real Windows path
+    // every write tool × every dir, glob-normalized, trailing slash stripped
+    for (const t of WRITE_TOOLS) {
+      expect(rules).toContain(`${t}(/ro/**)`);
+      expect(rules).toContain(`${t}(C:/proj/vendor/**)`);
+    }
+    expect(rules.some((r) => /^Read\(/.test(r))).toBe(false);   // reads never denied
+    expect(rules.length).toBe(WRITE_TOOLS.length * 2);
   });
-  it('empty/absent readOnlyDirs is fine', () => {
-    expect(() => buildClaudeArgs({ readOnlyDirs: [] })).not.toThrow();
+  it('buildClaudeArgs emits --settings permissions.deny + keeps the dir READABLE (--add-dir)', () => {
+    const a = buildClaudeArgs({ readOnlyDirs: ['/ro'] });
+    expect(valsOf(a, '--add-dir')).toContain('/ro');             // reads work
+    const settings = JSON.parse(valsOf(a, '--settings')[0]);
+    expect(settings.permissions.deny).toEqual(readOnlyDenyRules(['/ro']));
+    expect(settings.permissions.deny).toContain('Write(/ro/**)');
+  });
+  it('--settings deny holds INSIDE the sandbox (loads even with --setting-sources "")', () => {
+    const a = buildClaudeArgs({ readOnlyDirs: ['/ro'], confineToDirs: ['/sb'], allowedTools: ['Read'] });
+    expect(valsOf(a, '--setting-sources')).toEqual(['']);        // no ~/.claude inherit
+    expect(a).toContain('--settings');                          // RO deny still applied
+  });
+  it('absent/empty readOnlyDirs → no --settings, no throw', () => {
     expect(() => buildClaudeArgs({})).not.toThrow();
+    expect(buildClaudeArgs({ readOnlyDirs: [] })).not.toContain('--settings');
   });
 });
 

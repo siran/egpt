@@ -15,11 +15,11 @@
 //   allowedTools 'all'|'*'          → --dangerously-skip-permissions +
 //                                     --permission-mode bypassPermissions (trusted)
 //   allowedTools list               → --allowedTools "<list>"
-//   readOnlyDirs (PreToolUse deny)  → NOT YET — THROWS. The CLI expresses this as a
-//                                     command hook via --settings, whose payload
-//                                     protocol must be verified before we trust it
-//                                     (unit 2). Throwing guarantees a read-only
-//                                     grant can never be SILENTLY dropped here.
+//   readOnlyDirs (write-deny)       → NATIVE permission deny rules via --settings:
+//                                     permissions.deny ["Edit(<dir>/**)","Write(...)",
+//                                     "MultiEdit(...)","NotebookEdit(...)"] — Claude's
+//                                     own engine, NOT a hand-rolled hook. The dir is
+//                                     also --add-dir'd so READS still work.
 //   model   → --model ;  effort → --effort ;  sessionId → --resume ;
 //   appendSystemPrompt → --append-system-prompt
 //
@@ -27,6 +27,23 @@
 // with these args (cwd handled by spawn, not argv).
 
 export const FILE_TOOLS = new Set(['read', 'write', 'edit', 'multiedit', 'notebookedit', 'glob', 'grep']);
+
+// Write-class tools denied under a read-only dir (the CLI mirror of the SDK's
+// PreToolUse write-deny hook). Read/Grep/Glob stay allowed (the dir is readable).
+export const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
+
+// Native Claude permission rules that make each read-only dir write-protected:
+// `Tool(path/**)` deny rules (the documented settings syntax). Paths normalized to
+// forward slashes for glob matching; trailing slash stripped.
+export function readOnlyDenyRules(readOnlyDirs) {
+  const out = [];
+  for (const d of (Array.isArray(readOnlyDirs) ? readOnlyDirs : [])) {
+    if (!d || typeof d !== 'string') continue;
+    const root = d.replace(/[\\/]+$/, '').replace(/\\/g, '/');
+    for (const t of WRITE_TOOLS) out.push(`${t}(${root}/**)`);
+  }
+  return out;
+}
 
 // Base flags for every headless streaming turn (the thinking stream rides here).
 export const BASE_ARGS = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
@@ -38,16 +55,7 @@ function _cleanList(v) {
 export function buildClaudeArgs(options = {}) {
   const args = [...BASE_ARGS];
 
-  // ── read-only grants: refuse to silently drop them ──
   const readOnlyDirs = _cleanList(options.readOnlyDirs);
-  if (readOnlyDirs.length) {
-    throw new Error(
-      'buildClaudeArgs: readOnlyDirs (write-deny grant) is not yet wired for the claude-code path '
-      + '— the CLI PreToolUse command-hook protocol must be verified first. Refusing to drop a '
-      + 'read-only grant silently (would be a confinement regression).',
-    );
-  }
-
   const confineRoots = _cleanList(options.confineToDirs);
   const confined = confineRoots.length > 0;
 
@@ -86,13 +94,23 @@ export function buildClaudeArgs(options = {}) {
     args.push('--effort', options.effort.trim());
   }
 
-  // Allowed dirs = explicit addDirs ∪ confineRoots (deduped, order-stable).
+  // Allowed dirs = explicit addDirs ∪ confineRoots ∪ readOnlyDirs (RO dirs must be
+  // READABLE — their WRITES are denied below). Deduped, order-stable.
   const dirs = [];
   const seen = new Set();
-  for (const d of [..._cleanList(options.addDirs), ...confineRoots]) {
+  for (const d of [..._cleanList(options.addDirs), ...confineRoots, ...readOnlyDirs]) {
     if (!seen.has(d)) { seen.add(d); dirs.push(d); }
   }
   for (const d of dirs) args.push('--add-dir', d);
+
+  // Read-only grants — NATIVE deny rules (operator 2026-06-12: use Claude's CLI
+  // options, NOT a hand-rolled hook). `permissions.deny` blocks the write-class
+  // tools under each RO dir; passed via --settings, which loads even with
+  // --setting-sources '' (explicit additional settings), so the grant holds
+  // inside the sandbox — equivalent to the SDK's programmatic PreToolUse hook.
+  if (readOnlyDirs.length) {
+    args.push('--settings', JSON.stringify({ permissions: { deny: readOnlyDenyRules(readOnlyDirs) } }));
+  }
 
   if (options.sessionId) args.push('--resume', String(options.sessionId));
 
