@@ -273,9 +273,10 @@ Sender@[chatname/groupname].{node} (HH:MM): body
   `heartbeat.md`. `slug` is a deterministic `sanitizeSlug`
   (display/storage only — NEVER an authorization key; I6).
 - **A room is a folder too** — target `conversations/_rooms/<name>/` (`ROOMS_DIR`),
-  same shape as a conversation: `config.yaml`, `transcript.md`,
-  `replytargets.json`, `instructions.md`, `files/`. ⏳ owed: today rooms are flat
-  `<name>.yaml`/`.md` files (`loadAllRooms` scans `*.yaml`); migrate flat → folder.
+  mirroring a conversation folder in part: `transcript.md`, `media/`, `pointers.md`,
+  plus room-specific `config.yaml`, `replytargets.json`, `instructions.md`, `files/`.
+  ⏳ owed: rooms are flat `<name>.yaml`/`.md` files today (`loadAllRooms` scans
+  `*.yaml`); migrate flat → folder.
 - **`transcript.md`** — an 8‑day rolling window; older days archive to
   `memories/transcript-<date>.md`; per‑file serialized appends (no lost writes).
   Opens with a YAML **front matter** identifying the conversation — `name`,
