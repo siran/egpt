@@ -6576,7 +6576,13 @@ function App() {
     // (it auto-creates + persists its own thread on first turn). claude-sdk is
     // exempt too: with no session_id it starts a FRESH session (the SDK assigns
     // an id; the warm pool keeps it warm in-process for the daemon's lifetime).
-    if (!mbCfg.session_id && brainType !== 'codex' && brainType !== 'claude-sdk' && !brain.sessionless) {
+    // codex, claude-sdk, AND ccode (claude-code) all AUTO-CREATE + persist their
+    // own thread on the first turn: the engine mints a session id, the brain
+    // captures it (claude-code.mjs:236 from the stream-json init event) and returns
+    // it in optionsPatch, which the dispatch persists → resumed thereafter. So none
+    // of them need a pinned session_id. (ccode was missing here — the bug that made
+    // a fresh @wren on the CLI engine refuse to run.)
+    if (!mbCfg.session_id && brainType !== 'codex' && brainType !== 'claude-sdk' && brainType !== 'ccode' && !brain.sessionless) {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     // Prompt profile: `system_prompt_file` points to a standalone file
