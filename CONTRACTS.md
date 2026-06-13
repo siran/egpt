@@ -77,7 +77,15 @@ Lock status of the four:
 - **C1.2** Every chat keeps a `transcript.md` recording **every inbound message**
   AND **every @e/@l response — surfaced OR withheld** (mode-gated replies are
   logged tagged "not surfaced"). Logging is independent of surfacing; the
-  auto-mode governs only whether a reply is SENT. ✅ (`48fa639` + `efbcea2`; see memory `egpt-transcripts-first-class`)
+  auto-mode governs only whether a reply is SENT. ✅ **WhatsApp** (`48fa639` +
+  `efbcea2`; memory `egpt-transcripts-first-class`).
+  ⚠️ **NOT limb-agnostic — Telegram conversations are written nowhere** (drift
+  found 2026-06-13). Three causes: the per-chat transcript write is on the
+  default-brain path (`dispatch.mjs`), which the Telegram→Wren `forceTarget`
+  route bypasses; `_appendSiblingReply` is hardcoded to `'whatsapp'`
+  (egpt.mjs:2789); the Telegram dispatch only formats the prompt, never logs the
+  inbound. Fix: log inbound + reply to `conversations/<surface>/<slug>/transcript.md`
+  for EVERY surface + being (E or sibling), surface-aware. Owed.
 - **C1.3** transcript.md is an 8-day rolling window; older days archive to
   `memories/transcript-<date>.md`. Per-file serialized appends (no lost writes). ✅ (`2dda652`)
 - **C1.4** First-class since the **initial commit** — never gate transcripts on
