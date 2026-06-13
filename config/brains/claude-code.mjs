@@ -106,7 +106,11 @@ export function stream({ history, message }, onUpdate, options = {}) {
     const args = buildClaudeArgs(options);
     const isResume = !!options.sessionId;
 
-    const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'] };
+    // windowsHide: don't pop a console window per turn. On Windows a spawned
+    // `claude` subprocess flashes a terminal tab without this — visible now that
+    // @wren runs on the ccode engine (a turn = a claude spawn). Matches codex.mjs
+    // + egpt.mjs spawns.
+    const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true };
     const cwd = normalizeCwd(options.cwd);
     if (cwd) spawnOpts.cwd = cwd;
 
