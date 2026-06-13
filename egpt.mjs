@@ -6623,6 +6623,10 @@ function App() {
       ...(mbCfg.model              ? { model: mbCfg.model                        } : {}),
       ...(brainType === 'codex' && mbCfg.service_tier ? { serviceTier: mbCfg.service_tier } : {}),
       ...(mbCfg.url                ? { url: mbCfg.url                            } : {}),
+      // Reasoning depth for the claude-code CLI engine (--effort) — the lever the
+      // Agent SDK can't set (issues #168/#180/#182). siblings.<name>.effort (e.g.
+      // Wren = xhigh); ignored by non-CLI brains.
+      ...(mbCfg.effort             ? { effort: mbCfg.effort                      } : {}),
       // @d (Don) — remote agent over the LAN endpoint: thread the shared
       // agent_token (config.local.json, NOT the sibling block) + a 'from' label
       // for the endpoint's transcript. The url (the DOLLY endpoint) is the
