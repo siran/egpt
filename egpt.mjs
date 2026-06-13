@@ -17,7 +17,6 @@ import * as codex from './config/brains/codex.mjs';
 import * as chatgptCdp from './config/brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './config/brains/claude-cdp.mjs';
 import * as llama from './config/brains/llama.mjs';
-import * as don from './config/brains/don.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
@@ -69,7 +68,6 @@ import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
-import { startAgentServer, makeClaudeResumeRunner, AGENT_DEFAULT_PORT } from './src/tools/agent-endpoint.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -625,7 +623,6 @@ const BRAINS = {
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
   [llama.name]:      llama,
-  [don.name]:        don,
 };
 
 const DEFAULT_PERSONA_BRAIN = { type: 'codex', model: 'gpt-5.4-mini' };
@@ -5379,54 +5376,8 @@ function App() {
     return () => { closed = true; try { server?.close(); } catch (e) { swallow('transcriptor.close', e); } try { whisper?.stop(); } catch (e) { swallow('whisper-server.stop', e); } };
   }, []);
 
-  // Worker role: agent / Don (@d) — operator 2026-06-11. When config `agent`
-  // is enabled, this worker serves POST /v1/turn for the MAIN spine: it
-  // resumes the pinned Claude session (agent.session_id) and returns the
-  // reply, so @d is a remote room member the spine dials over the LAN — same
-  // topology as the transcriptor, different (more dangerous) endpoint that
-  // runs TOOLS, so a SEPARATE secret (agent_token). Read-only tools by
-  // default. See src/tools/agent-endpoint.mjs.
-  useEffect(() => {
-    if (CLIENT) return;   // worker role belongs to the engine, not a limb
-    const acfg = EGPT_CONFIG.agent;
-    if (!acfg?.enabled) return;
-    const token = EGPT_CONFIG.agent_token;
-    if (!token) { errOut('!! agent enabled but agent_token unset — refusing to start an unauthenticated tool-running endpoint. Set agent_token (same value as the main spine) in config.local.json.'); return; }
-    if (!acfg.session_id) { errOut('!! agent enabled but agent.session_id unset — nothing to resume. Pin Don\'s claude session id.'); return; }
-    const alog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'agent.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('agent.log', e); } };
-    let server = null, closed = false;
-    (async () => {
-      try {
-        const runTurn = makeClaudeResumeRunner({
-          sessionId: acfg.session_id,
-          cwd: acfg.cwd || APP_DIR,
-          // CHAT-ONLY by default (step 1) — no tools. The CLI-resume path can't
-          // yet safely confine Read (it bypasses path scoping → ~/.egpt leak),
-          // so tools wait. Set agent.allowed_tools to opt in deliberately.
-          allowedTools: acfg.allowed_tools ?? [],
-          model: acfg.model,
-          onLog: alog,
-        });
-        const s = await startAgentServer({
-          port: Number(acfg.port) > 0 ? Number(acfg.port) : AGENT_DEFAULT_PORT,
-          bind: acfg.bind || '127.0.0.1',
-          keyB64: token,
-          name: acfg.name || 'don',
-          runTurn,
-          // Show the chatter: the server logs each turn + reply here and serves
-          // it at GET /transcript and / (operator 2026-06-11). Default on.
-          transcriptPath: acfg.transcript === false ? null : (acfg.transcript || join(EGPT_LOGS, 'agent-transcript.md')),
-          onLog: alog,
-        });
-        if (closed) { s.close(); return; }
-        server = s;
-        const _viewer = (acfg.transcript === false) ? '' : ` · transcript at http://${acfg.bind || '127.0.0.1'}:${s.port}/`;
-        const _tools = (acfg.allowed_tools && acfg.allowed_tools.length) ? 'tools:' + (Array.isArray(acfg.allowed_tools) ? acfg.allowed_tools.join('+') : acfg.allowed_tools) : 'chat-only';
-        sysOut(`agent: '${acfg.name || 'don'}' worker up on ${acfg.bind || '127.0.0.1'}:${s.port} (resumes ${String(acfg.session_id || 'fresh').slice(0, 8)}…, ${_tools}${_viewer}; log: ~/.egpt/logs/agent.log)`);
-      } catch (e) { errOut(`!! agent failed to start: ${e?.message ?? e}`); }
-    })();
-    return () => { closed = true; try { server?.close(); } catch (e) { swallow('agent.close', e); } };
-  }, []);
+  // @d/Don LAN agent endpoint REMOVED 2026-06-13 — no bot<->bot backchannel;
+  // agent<->agent is bridge-controlled Telegram only (GENOME I8 / CONTRACTS C8.3).
 
   // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
   // from ~/.egpt/state/nucleus.json + the shared ~/.egpt/bus.key, connects, and
@@ -6680,14 +6631,6 @@ function App() {
       // Agent SDK can't set (issues #168/#180/#182). siblings.<name>.effort (e.g.
       // Wren = xhigh); ignored by non-CLI brains.
       ...(mbCfg.effort             ? { effort: mbCfg.effort                      } : {}),
-      // @d (Don) — remote agent over the LAN endpoint: thread the shared
-      // agent_token (config.local.json, NOT the sibling block) + a 'from' label
-      // for the endpoint's transcript. The url (the DOLLY endpoint) is the
-      // siblings.<name>.url set just above.
-      ...(brainType === 'don' ? {
-        agentToken: EGPT_CONFIG.agent_token,
-        from: mbCfg.from ?? 'reve',
-      } : {}),
       // Local CPU brain (@l): a cold prompt-eval of a big conversation-L can be
       // silent for a while; give the stall watchdog room (configurable).
       ...(brain.sessionless ? {

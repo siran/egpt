@@ -210,8 +210,11 @@ Lock status of the four:
   LAN HTTP agent endpoint — `src/tools/agent-endpoint.mjs` (`POST /v1/turn`,
   HMAC `agent_token`), the `don` brain (`config/brains/don.mjs`), the `agent`
   server config, and `siblings.d`'s LAN form — is **RETIRED**: no invisible
-  bot↔bot backchannel (I8). ⚠️ code removal owed: drop `agent-endpoint.mjs` +
-  `don.mjs` + their tests + the DOLLY `agent` server, re-bind `@d` to Telegram.
+  bot↔bot backchannel (I8). ✅ **REMOVED 2026-06-13** — `agent-endpoint.mjs`,
+  `don.mjs`, their 2 tests, the egpt.mjs wiring, the `agent`/`agent_token` schema
+  keys, and `siblings.d` all deleted (848 green). Remaining: re-bind `@d` via
+  Telegram (egpt_dolly_bot); DOLLY must pull + restart to drop its still-running
+  endpoint (port 23391).
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.
