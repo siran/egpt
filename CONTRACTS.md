@@ -185,6 +185,12 @@ Lock status of the four:
   dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
   Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
   (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
+- **C7.7** Bot↔bot loop-guard (bridge-side). The bridge tracks a bot↔bot exchange
+  per chat (sibling-bot replies with no intervening human turn). **Soft limit**
+  (configurable minutes) → inject `WARNING FROM BRIDGE: …` into the chat. **Hard
+  limit** (configurable) → the bridge stops gate-posting a bot's replies to the
+  other, cutting the loop. Cross-bot analog of `resident_chain_cap`; the routing
+  is the bridge's (Telegram is only transport). ⚠️ **planned**.
 
 ## 8. Workers (DOLLY)
 - **C8.1** @l = local llama-server; transcriptor = GPU whisper-server. Both
