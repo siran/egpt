@@ -91,11 +91,12 @@ in brackets point at the recorded rationale.
   in: bridge‑initiated acks (the `👂` transcript ack) are gated on
   the enrolled‑chats rule, even though the transcript still reaches the model.
   Compartmentalize — never leak one chat's context into another.
-- **I8 — E is gated; meta‑engineers are not.** `E` (the public
-  persona) is always gated. `Wren`/`L`/`D`
-  are ungated, self‑governed engineering selves. Agent↔agent chatter rides a
-  VISIBLE transport (Telegram), never an invisible side channel.
-  `[[egpt-metabot-vs-creation]]`
+- **I8 — E is gated; meta‑engineers are not; no backchannel.** `E` (the public
+  persona) is always gated. `Wren`/`L`/`D` are ungated, self‑governed engineering
+  selves. Agent↔agent chatter rides a VISIBLE transport (Telegram) THROUGH THE
+  BRIDGE — never an invisible side channel. The LAN HTTP agent endpoint
+  (`src/tools/agent-endpoint.mjs`, the `don` brain) is **RETIRED**: no bot↔bot
+  backchannel; `@d` rides Telegram like any being (C8.3). `[[egpt-metabot-vs-creation]]`
 - **I9 — No silent failure.** Errors go to a sink and a durable log; nothing is
   swallowed without a trace. Backpressure and held‑backlog are explicit, not
   accidental drops.
