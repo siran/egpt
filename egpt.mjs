@@ -23,6 +23,7 @@ import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
+import { renderThink } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
@@ -7071,7 +7072,11 @@ function App() {
     // bridge guess. (Removing the legacy /join deleted _waJoinedFirst, which had
     // been masking this lastChat fallback.)
     const tg = (!noBridge && tgChatId)
-      ? bridgeRef.current?.startStreamMessage?.(`${authorPrefix}\n⌛ thinking…`, { chatId: tgChatId })
+      ? bridgeRef.current?.startStreamMessage?.(
+          tgShowThink
+            ? renderThink({ header: `💭 ${authorPrefix}`, body: '', escape: escapeHtml })
+            : `${authorPrefix}\n⌛ thinking…`,
+          { chatId: tgChatId })
       : null;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
     // Named-brain reply: replyAllowed:true because the brain was explicitly
@@ -7096,7 +7101,11 @@ function App() {
         partial => {
           lastStreamingText = partial;
           setStreaming({ author: routedTo, text: partial });
-          tg?.update(tgFmt(partial));
+          // show-think streams the live thinking with the "(thinking... 🤔)"
+          // suffix (HTML-escaped body); otherwise the plain "… ⌛" stream.
+          tg?.update(tgShowThink
+            ? renderThink({ header: `💭 ${authorPrefix}`, body: partial, escape: escapeHtml })
+            : tgFmt(partial));
           // WhatsApp doesn't support edit-streaming the way Telegram
           // does. We only forward update() so the bridge's buffer stays
           // current; finish() does the single send.
@@ -7164,11 +7173,11 @@ function App() {
       const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
       if (tgShowThink && tg) {
         // show-think mode: freeze the in-progress streaming message as the
-        // "thinking" artifact (💭 + the last streamed snapshot), then post
-        // the clean final as a NEW reply to the original message.
+        // "thinking" artifact (💭 + the last streamed snapshot) with the
+        // "(done ✅)" finished signal, then post the clean final as a NEW reply
+        // to the original message.
         const snap = lastStreamingText.trim();
-        const snapTail = snap.length > 3500 ? '…' + snap.slice(-3500) : snap;
-        await tg.finish(`💭 ${authorPrefix}\n${escapeHtml(snapTail)}\n\n(thinking... 🤔)`);
+        await tg.finish(renderThink({ header: `💭 ${authorPrefix}`, body: snap, escape: escapeHtml, done: true }));
         bridgeRef.current?.send?.(`${authorPrefix}\n${mdToTgHtml(finalTail)}`,
           { chatId: tgChatId, replyTo: tgReplyTo ?? undefined });
       } else {
@@ -8152,10 +8161,14 @@ function App() {
         // the thinking too. Toggle via: /e auto show-think on|off.
         const _tgShowThink = !!(meta.fromTelegram && meta.telegramChatId &&
           (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
-        const _tgThinkSuffix = '\n\n(thinking... 🤔)';
         const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
           ? bridgeRef.current.startStreamMessage(
-              _tgShowThink ? `💭 ${tgPrefix}⌛ thinking…` : `${tgPrefix}⌛ thinking…`,
+              // show-think: 💭 header, blank line, then the live thinking body
+              // (renderThink → src/show-think.mjs spaces the statements + adds
+              // the "(thinking... 🤔)" suffix on each update).
+              _tgShowThink
+                ? renderThink({ header: `💭 ${tgPrefix}`, body: '', escape: escapeHtml })
+                : `${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
@@ -8191,8 +8204,12 @@ function App() {
         let reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (tgStream) {
             _tgLastPartial = partial;
+            // show-think body is HTML-ESCAPED, not md-rendered: a partial tail
+            // with an unbalanced ** / <tag> makes Telegram reject the edit, which
+            // is why the "(thinking... 🤔)" suffix wasn't appearing. The clean
+            // final answer (below) is the only md-rendered message.
             tgStream.update(_tgShowThink
-              ? `💭 ${tgPrefix}${mdToTgHtml(partial)}${_tgThinkSuffix}`
+              ? renderThink({ header: `💭 ${tgPrefix}`, body: partial, escape: escapeHtml })
               : `${tgPrefix}${mdToTgHtml(partial)}`);
           }
           if (waStream) {
@@ -8254,16 +8271,12 @@ function App() {
         if (tgStream) {
           if (_tgShowThink) {
             // show-think: FREEZE the streamed thinking in place (the last
-            // snapshot the operator watched stream, kept as the 💭 artifact),
-            // then post the clean final answer as a NEW reply to the original
-            // message. The arriving reply is the "finished" signal. escapeHtml
-            // (not mdToTgHtml) on the snapshot: a mid-stream tail may have
-            // unbalanced markdown/HTML that would break TG's parser.
+            // snapshot the operator watched stream, kept as the 💭 artifact)
+            // with the "(done ✅)" suffix — the finished signal that tells the
+            // operator the turn is over — then post the clean final answer as a
+            // NEW reply to the original message.
             const _snap = String(_tgLastPartial ?? '').trim();
-            const _snapTail = _snap.length > 3500 ? '…' + _snap.slice(-3500) : _snap;
-            await tgStream.finish(_snapTail
-              ? `💭 ${tgPrefix}${escapeHtml(_snapTail)}${_tgThinkSuffix}`
-              : `💭 ${tgPrefix}⌛ thinking…`);
+            await tgStream.finish(renderThink({ header: `💭 ${tgPrefix}`, body: _snap, escape: escapeHtml, done: true }));
             if (!_dropResident(reply)) {
               bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
                 { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
