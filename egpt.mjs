@@ -21,6 +21,7 @@ import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { stripFrontMatter } from './src/transcript-meta.mjs';
+import { transcriptAppend, replyLine } from './src/transcript-log.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink } from './src/show-think.mjs';
@@ -2778,6 +2779,31 @@ function App() {
     _push('user', newBody);
     return turns;
   };
+  // Limb-agnostic transcript line (C1.2/I3): ensure the contact for `surface`,
+  // create the transcript with front matter if new, append the line. Used by the
+  // sibling/forceTarget route (Telegram→Wren) which bypasses runDefaultBrainTurn's
+  // logger. Surface-aware — never assume whatsapp.
+  const _logChatLine = async (surface, chatId, chatName, persona, body) => {
+    try {
+      if (!chatId || !String(body ?? '').trim()) return false;
+      const cs = await _loadConvState();
+      let slug = conversationsState.getContact(cs, surface, chatId)?.slug ?? null;
+      if (!slug) {
+        const ens = conversationsState.ensureContact(cs, surface, chatId, { pushedName: chatName, slugHint: chatName });
+        slug = ens?.slug ?? null;
+        if (slug && ens.state !== cs) await _writeConvState(ens.state);
+      }
+      if (!slug) return false;
+      const dir = conversationsState.slugDir(surface, slug);
+      await mkdir(dir, { recursive: true });
+      const fpath = join(dir, 'transcript.md');
+      await appendFile(fpath, transcriptAppend({
+        existing: existsSync(fpath), body, name: chatName, surface, slug, threadId: chatId, persona,
+      }), 'utf8');
+      return true;
+    } catch (e) { errOut(`!! transcript-log ${surface}/${chatId}: ${e?.message ?? e}`); return false; }
+  };
+
   const _appendSiblingReply = async (chatId, sibName, reply, surfaced) => {
     try {
       const text = String(reply ?? '').trim();
@@ -8275,6 +8301,20 @@ function App() {
         } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
           bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
             { chatId: meta.telegramChatId });
+        }
+        // C1.2/I3: log the Telegram conversation (inbound + reply). The
+        // sibling/forceTarget route (Telegram→Wren) bypasses runDefaultBrainTurn's
+        // logger, so log here, surface-aware. (WhatsApp logs via the default-brain
+        // path.) Inbound logged always; reply logged unless silent/infra-error.
+        if (meta.fromTelegram && meta.telegramChatId != null) {
+          const _tgChat = String(meta.telegramChatId);
+          const _tgName = meta.telegramChatName ?? meta.telegramUser ?? _tgChat;
+          await _logChatLine('telegram', _tgChat, _tgName, sibName, personaPrompt);
+          const _r = String(reply ?? '').trim();
+          if (_r && !_silentReply(_r) && !/^!!\s*@/.test(_r)) {
+            await _logChatLine('telegram', _tgChat, _tgName, sibName,
+              replyLine({ being: sibName, body: _r, surfaced: !_dropResident(reply) }));
+          }
         }
         if (waStream) {
           const { think, answer } = splitThink(reply);
