@@ -6486,6 +6486,7 @@ function App() {
       idleTtlMs: Number(w.idle_ttl_ms) || 180_000,
       idleTtlByClass: w.idle_ttl_by_class ?? { system: 0, conversation: 120_000, sibling: 300_000 },
       dispatchTimeoutMs: Number(w.dispatch_timeout_ms) || 600_000,
+      injectWhileBusy: w.inject_while_busy ?? true,
       onLog: (m) => { try { logOut(m); } catch { /* ignore */ } },
     });
     return _warmPoolSingleton;
@@ -6708,6 +6709,14 @@ function App() {
             brainOptions: { ...sessionOpts, allowedTools: mbCfg.allowed_tools ?? 'all' },
             klass: 'sibling',
           });
+          if (r?.injected) {
+            // This message was woven into a turn already streaming on this
+            // sibling (operator 2026-06-13: "inject into running turn"). That
+            // turn emits the combined reply, so drop this dispatch silently —
+            // '...' is the silence marker the dispatcher treats as "no message".
+            logOut(`@${selectedName}: injected into the running turn (no separate reply)`);
+            return '...';
+          }
           result = { text: r.text, optionsPatch: r.sessionId ? { sessionId: r.sessionId } : null };
         } catch (e) {
           result = { text: `!! ${e?.message ?? e}`, optionsPatch: null };
