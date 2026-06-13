@@ -122,8 +122,11 @@ Lock status of the four:
   `egpt-limb-agnostic-media`).
 
 ## 3. Transcription
-- **C3.1** Every voice/audio note is transcribed (DOLLY GPU whisper-server worker
-  over LAN, HMAC-token auth; local whisper-cli fallback). Unconditional. ✅ (`d6fbbed`, `6bfede3`, `3ed95fc`)
+- **C3.1** Every voice/audio note is transcribed **before the model is prompted** —
+  the model is fed the transcript, NEVER raw audio. Transcription runs at the
+  bridge (the sole entry, I1) for every limb and completes before dispatch (DOLLY
+  GPU whisper-server, HMAC-token; local whisper-cli fallback). Unconditional. ✅
+  (`d6fbbed`, `6bfede3`, `3ed95fc`; shared path C3.4)
 - **C3.2** The `👂 <transcript>` ack is an egpt-initiated SEND → gated on the
   enrolled-chats rule (auto_e_chats / self-DM), NOT a contract. Suppressed in
   non-enrolled chats by design (privacy: don't reveal egpt in others' chats). ✅ (`54f69c3`)
