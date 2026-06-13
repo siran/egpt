@@ -75,17 +75,11 @@ Lock status of the four:
 - **C1.1** Every chat (group AND DM, every surface) has its own folder
   `~/.egpt/conversations/<surface>/<slug>/`, slug = path-valid `sanitizeSlug`. ✅ (fixed `48fa639` — Beeper ids now resolve to the WA surface; before this every Beeper chat collapsed into `_unrouted`)
 - **C1.2** Every chat keeps a `transcript.md` recording **every inbound message**
-  AND **every @e/@l response — surfaced OR withheld** (mode-gated replies are
-  logged tagged "not surfaced"). Logging is independent of surfacing; the
-  auto-mode governs only whether a reply is SENT. ✅ **WhatsApp** (`48fa639` +
-  `efbcea2`; memory `egpt-transcripts-first-class`).
-  ⚠️ **NOT limb-agnostic — Telegram conversations are written nowhere** (drift
-  found 2026-06-13). Three causes: the per-chat transcript write is on the
-  default-brain path (`dispatch.mjs`), which the Telegram→Wren `forceTarget`
-  route bypasses; `_appendSiblingReply` is hardcoded to `'whatsapp'`
-  (egpt.mjs:2789); the Telegram dispatch only formats the prompt, never logs the
-  inbound. Fix: log inbound + reply to `conversations/<surface>/<slug>/transcript.md`
-  for EVERY surface + being (E or sibling), surface-aware. Owed.
+  AND **every E/sibling response — surfaced OR withheld** (mode-gated replies
+  tagged "not surfaced"); logging is independent of surfacing. Must be
+  limb-agnostic: every surface + every being, written surface-aware to
+  `conversations/<surface>/<slug>/transcript.md`. ⚠️ **WhatsApp-only today** —
+  Telegram (and any sibling/`forceTarget` route) is unlogged. `[[egpt-transcripts-first-class]]`
 - **C1.3** transcript.md is an 8-day rolling window; older days archive to
   `memories/transcript-<date>.md`. Per-file serialized appends (no lost writes). ✅ (`2dda652`)
 - **C1.4** First-class since the **initial commit** — never gate transcripts on
@@ -205,16 +199,11 @@ Lock status of the four:
   supervised by DOLLY's daemon (crash-respawn), LAN-firewalled. ✅
 - **C8.2** A worker supervisor REAPS the stale port-holder before spawning, so a
   soft restart self-heals the Windows child-orphan (no manual elevated taskkill). ✅ (`91abee3`, `src/tools/reap-port.mjs`)
-- **C8.3** egpt↔egpt is **bridge-controlled Telegram ONLY**. `@d`/Don is reached
-  as a Telegram-bound being (egpt_dolly_bot), gated + logged like any other. The
-  LAN HTTP agent endpoint — `src/tools/agent-endpoint.mjs` (`POST /v1/turn`,
-  HMAC `agent_token`), the `don` brain (`config/brains/don.mjs`), the `agent`
-  server config, and `siblings.d`'s LAN form — is **RETIRED**: no invisible
-  bot↔bot backchannel (I8). ✅ **REMOVED 2026-06-13** — `agent-endpoint.mjs`,
-  `don.mjs`, their 2 tests, the egpt.mjs wiring, the `agent`/`agent_token` schema
-  keys, and `siblings.d` all deleted (848 green). Remaining: re-bind `@d` via
-  Telegram (egpt_dolly_bot); DOLLY must pull + restart to drop its still-running
-  endpoint (port 23391).
+- **C8.3** egpt↔egpt is **bridge-controlled Telegram only** — `@d`/Don is a
+  Telegram-bound being (egpt_dolly_bot), gated + logged like any other. **No LAN
+  bot↔bot backchannel** (I8): the LAN HTTP agent endpoint was an invisible
+  side-channel and was deleted 2026-06-13. ✅ REVE. ⏳ remaining: re-bind `@d` via
+  Telegram; DOLLY pull+restart to drop its endpoint (port 23391).
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.
