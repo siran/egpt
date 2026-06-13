@@ -75,14 +75,11 @@ Lock status of the four:
 - **C1.1** Every chat (group AND DM, every surface) has its own folder
   `~/.egpt/conversations/<surface>/<slug>/`, slug = path-valid `sanitizeSlug`. ✅ (fixed `48fa639` — Beeper ids now resolve to the WA surface; before this every Beeper chat collapsed into `_unrouted`)
 - **C1.2** Every chat keeps a `transcript.md` recording **every inbound message**
-  AND **every E/sibling response — surfaced OR withheld** (mode-gated replies
-  tagged "not surfaced"); logging is independent of surfacing. **Limb-agnostic**:
-  every surface + every being, written surface-aware to
-  `conversations/<surface>/<slug>/transcript.md`. ⚠️ **REGRESSED 2026-06-12** —
-  the logger lives in `runDefaultBrainTurn`; binding the Telegram bot to Wren via
-  `forceTarget` routes through the sibling path (`runMetaBrainTurn`), bypassing
-  it, so Telegram is unlogged. Restore logging on the sibling/`forceTarget`
-  route. `[[egpt-transcripts-first-class]]`
+  AND **every E/sibling response — surfaced OR withheld** (withheld tagged "not
+  surfaced"); logging is independent of surfacing. **Limb-agnostic** — every
+  surface + every being, surface-aware (`conversations/<surface>/<slug>/`). ✅
+  WhatsApp via the default-brain path; Telegram/sibling via `_logChatLine`
+  (`src/transcript-log.mjs`, `tests/transcript-log.test.mjs`). `[[egpt-transcripts-first-class]]`
 - **C1.3** transcript.md is an 8-day rolling window; older days archive to
   `memories/transcript-<date>.md`. Per-file serialized appends (no lost writes). ✅ (`2dda652`)
 - **C1.4** First-class since the **initial commit** — never gate transcripts on
