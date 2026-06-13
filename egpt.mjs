@@ -67,6 +67,7 @@ import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
+import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { startAgentServer, makeClaudeResumeRunner, AGENT_DEFAULT_PORT } from './src/tools/agent-endpoint.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
@@ -2684,7 +2685,10 @@ function App() {
   const _saveIncomingMedia = async (m) => {
     try {
       if (!m?.localPath || !m?.chatID) return;
-      const surface = 'whatsapp';
+      // Surface-aware (limb-agnostic): WhatsApp/Beeper omit it (default), but a
+      // Telegram (or any future) limb passes its own surface so media lands in
+      // conversations/<surface>/<slug>/media/, not misfiled under whatsapp.
+      const surface = m.surface ?? 'whatsapp';
       const cs = await _loadConvState();
       let slug = conversationsState.getContact(cs, surface, m.chatID)?.slug ?? null;
       if (!slug) {
@@ -2705,6 +2709,10 @@ function App() {
       await appendFile(join(mediaDir, 'index.md'),
         mediaIndexLine({ ts: m.ts, senderName: m.senderName, kind: m.kind, savedName, caption: m.caption }), 'utf8');
       logOut(`media: saved [${m.chatName ?? m.chatID}] ${savedName} (${m.kind})`);
+      // Return the absolute saved path so a limb can reference it in the
+      // dispatch (e.g. "(image) [saved: <path>]") for a vision-capable brain to
+      // Read. Beeper's persistMedia ignores it; the Telegram limb uses it.
+      return join(mediaDir, savedName);
     } catch (e) { errOut(`!! media-save ${m?.chatID ?? '?'}: ${e?.message ?? e}`); }
   };
 
@@ -3210,6 +3218,9 @@ function App() {
       botToken,
       nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
       allowedUsers: cfg.telegram.allowed_users ?? [],
+      // The bot IS the meta-bot (Wren) — let the operator address it by the
+      // egpt handle they know (@wren) and not just the clunky @<bot_username>.
+      agentHandle:  cfg.telegram.agent ?? 'wren',
       // Hold-on-reconnect grace window. Same semantic as WA:
       //   N > 0  grace seconds
       //   N == 0 strict (hold anything older than connectedAt)
@@ -3220,14 +3231,37 @@ function App() {
         ? Number(cfg.telegram.max_backlog_seconds)
         : 5,
       chatId:       cfg.telegram.chat_id ?? null,
+      // Media: the SAME host callbacks the WhatsApp limb uses, so a photo /
+      // voice note / document sent to egpt_reve_bot is processed at the bridge
+      // level (saved to conversations/telegram/<slug>/media/, voice transcribed
+      // + 👂 ack via the shared src/incoming-media.mjs), not dropped. The bot is
+      // Wren — its operator's media always acks; transcripts reach Wren as text.
+      onMedia:      _saveIncomingMedia,
+      audioCfg:     EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
+      transcribe:   (EGPT_CONFIG.transcription_endpoint && EGPT_CONFIG.transcription_token)
+        ? makeRemoteFirstTranscriber({
+            endpoint: EGPT_CONFIG.transcription_endpoint,
+            getKey: () => EGPT_CONFIG.transcription_token,
+          })
+        : transcribeAudioFile,   // local whisper-cli fallback (host is Node — fine to import)
       onIncoming: async (text, from) => {
         const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
         logOut(`(telegram message from ${who}) -> ${text}`);
 
-        const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+        const isSlashCommand = text.trimStart().startsWith('/');
+        const isCommand = isSlashCommand || /^@\S+/.test(text.trimStart());
 
-        if (isCommand && !from.authorized) {
-          bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`);
+        // Authorization gates privileged actions, not whether the agent HEARS
+        // the room. Reject unauthorized slash commands always (host control),
+        // and unauthorized @being directives in a 1:1. But in a GROUP the bot
+        // IS Wren and forwards all chatter to it — non-operators talking in
+        // the room (e.g. reve in DOLLY-REVE) is the whole point, so don't
+        // reject their messages with a noisy "not authorized" reply.
+        const blockedUnauth = !from.authorized && (
+          isSlashCommand || (from.chatType === 'private' && /^@\S+/.test(text.trimStart())));
+        if (blockedUnauth) {
+          bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`,
+            { chatId: from.chatId });
           return;
         }
 
@@ -3283,14 +3317,24 @@ function App() {
         })();
         if (!isCommand && parseInput(text.trim()).type === 'message') {
           const mirror = cfg.telegram?.mirror ?? 'none';
-          const canRoute = mirror === 'all' || (mirror === 'allowed' && from.authorized) || (isSystemTgContact && from.authorized);
+          // An explicit @bot mention / reply-to-bot in a group is addressed
+          // to us by IDENTITY — honor it regardless of the mirror policy,
+          // same as a self-DM. (from.addressedToBot is set by the bridge
+          // only after it has verified the message names this bot.)
+          const canRoute = from.addressedToBot
+            || mirror === 'all' || (mirror === 'allowed' && from.authorized) || (isSystemTgContact && from.authorized);
           skipRoute = !canRoute;
-          // NO @e auto-prefix. The bot IS the meta-bot (Wren): the operator's
-          // message routes to the bot's own agent by IDENTITY (forceTarget),
-          // not by mangling text onto creation-E. Skip only when the operator
-          // explicitly @-addresses someone else. agent overridable via
-          // telegram.agent (default 'wren').
-          if (canRoute && from.authorized && !/^@[\w-]+/.test(text.trimStart())) {
+          // NO @e auto-prefix. The bot IS the meta-bot (Wren): a message
+          // addressed to the bot routes to its own agent by IDENTITY
+          // (forceTarget), not by mangling text onto creation-E. A group
+          // message is addressedToBot regardless of sender (the bot's presence
+          // = Wren's presence), so Wren joins the actual conversation with
+          // everyone, not just the operator; in a 1:1 the operator's own text
+          // still routes here. Skip only when the message explicitly
+          // @-addresses someone else. agent overridable via telegram.agent
+          // (default 'wren').
+          if (canRoute && (from.addressedToBot || from.authorized)
+              && !/^@[\w-]+/.test(text.trimStart())) {
             _forceTarget = cfg.telegram?.agent ?? 'wren';
           }
         }

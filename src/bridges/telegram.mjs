@@ -15,9 +15,11 @@
 //   allowed_users — array of Telegram user IDs authorized for commands.
 //   chat_id       — optional initial outgoing chat target.
 
-import { readFile } from 'node:fs/promises';
-import { extname, basename } from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
+import { extname, basename, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
+import { transcribeVoiceNote } from '../incoming-media.mjs';
 
 const API = (token) => `https://api.telegram.org/bot${token}`;
 
@@ -30,6 +32,13 @@ export function startTelegramBridge({
   nodeName    = 'node',
   allowedUsers = [],
   chatId       = null,
+  // The bot's internal egpt agent handle (e.g. 'wren'). Telegram doesn't
+  // know this name — it's not a real @username — but the operator naturally
+  // types "@wren …" to reach the bot's own agent. We treat an @<agentHandle>
+  // token as an explicit address to the bot in ANY chat type, mark it
+  // addressedToBot, and strip it so the host routes by identity (forceTarget)
+  // instead of dropping the message under the mirror policy. Null disables.
+  agentHandle  = null,
   // Hold-on-reconnect grace window (seconds). Mirrors the WA bridge.
   // After bridge connect, messages whose Telegram-side timestamp
   // (msg.date) is older than (connectedAt - maxBacklogSeconds) are
@@ -47,6 +56,16 @@ export function startTelegramBridge({
   onError,
   onYield,    // called once when 409 forces us to release the polling slot
   onChatId,   // called once when the bridge captures its first chat (host can persist)
+  // Media plumbing — SAME host callbacks the Beeper limb uses, so a photo /
+  // voice note / document arriving at this bot is processed at the bridge
+  // level (limb-agnostic), not re-implemented here. The limb only fetches the
+  // bytes off Telegram (getFile); the host saves to media/ (onMedia) and the
+  // shared processor transcribes voice + posts the 👂 ack. Null = drop media
+  // (legacy text-only behavior).
+  onMedia,                       // (m) => Promise<savedPath> — host _saveIncomingMedia
+  transcribe,                    // host-injected voice transcriber (remote-first); falls back to local
+  audioCfg = {},                 // whatsapp.media.audio_transcribe
+  isEnrolledChat = () => false,  // host gate for the 👂 ack (operator chats); operator sends always ack
 }) {
   if (!botToken) throw new Error('telegram bridge: botToken is required');
 
@@ -60,6 +79,7 @@ export function startTelegramBridge({
   let pollTimer = null;
   let sendChain = Promise.resolve();
   let botUsername = null;  // set by getMe on startup, used to recognize /cmd@us
+  let botId       = null;  // set by getMe; used to recognize replies to our own messages
   // Connect timestamp + held-message queue — same shape as the WA
   // bridge so /tg-pending can mirror /wa-pending's listHeld /
   // dispatchHeld / clearHeld API.
@@ -86,6 +106,23 @@ export function startTelegramBridge({
       throw e;
     }
     return json.result;
+  }
+
+  // Fetch a Telegram file by file_id to a local temp path. getFile returns a
+  // file_path; the bytes live at api.telegram.org/file/bot<token>/<file_path>.
+  // The limb's one transport-specific job for media — only the limb can speak
+  // its own download protocol; everything after the bytes land is host-side.
+  async function downloadTelegramFile(fileId, fileName) {
+    const f = await apiFetch('getFile', { file_id: fileId });
+    const fp = f?.file_path;
+    if (!fp) throw new Error('getFile returned no file_path');
+    const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${fp}`);
+    if (!res.ok) throw new Error(`file download HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    const safe = (fileName || basename(fp) || `tg-${fileId}`).replace(/[^\w.\-]+/g, '_');
+    const dest = join(tmpdir(), `egpt-tg-${Date.now()}-${safe}`);
+    await writeFile(dest, buf);
+    return dest;
   }
 
   // ── Polling loop ──────────────────────────────────────────────
@@ -185,7 +222,13 @@ export function startTelegramBridge({
     }
 
     const msg = upd.message;
-    if (!msg?.text) return;
+    if (!msg) return;
+    // Media (photo/voice/audio/video/document) → one normalized descriptor; its
+    // caption (if any) stands in for text. A message with neither text nor media
+    // is nothing we act on here (reactions are handled above).
+    const mediaSpec = pickTelegramMedia(msg);
+    const rawText = String(msg.text ?? msg.caption ?? '');
+    if (!rawText.trim() && !mediaSpec) return;
 
     // Backlog filter — same shape + intent as the WA bridge: any
     // message whose Telegram-side send timestamp (msg.date, seconds)
@@ -196,23 +239,20 @@ export function startTelegramBridge({
     if (maxBacklogSeconds >= 0 && connectedAt > 0) {
       const msgTsMs = (Number(msg.date) || 0) * 1000;
       if (msgTsMs > 0 && msgTsMs < connectedAt - maxBacklogSeconds * 1000) {
-        // Don't hold our own bot's echoes — bot messages don't carry
-        // msg.from.is_bot reliably across versions, but if msg.via_bot
-        // is set or the from id matches the bot's own id, skip.
-        const text = msg.text.trim();
-        if (text) {
-          _heldMessages.push({
-            chatId: msg.chat?.id ?? null,
-            author: msg.from?.first_name ?? msg.from?.username ?? null,
-            text,
-            ts: msgTsMs,
-            msgId: msg.message_id ?? null,
-            raw: upd,   // kept so dispatchHeld can replay through this
-                        // same handleUpdate path for awareness + brain
-                        // routing — single source of truth.
-          });
-          log(`held pre-connect message from ${msg.chat?.id ?? '?'}: "${text.slice(0, 60)}${text.length > 60 ? '…' : ''}" — /tg-pending to review`);
-        }
+        // Hold text AND media alike — replay re-runs handleUpdate(raw), which
+        // re-downloads media from the (still valid) file_ids. Empty bodies were
+        // filtered above; a media-only message gets a "[kind]" preview.
+        const preview = rawText.trim() || (mediaSpec ? `[${mediaSpec.kind}]` : '');
+        _heldMessages.push({
+          chatId: msg.chat?.id ?? null,
+          author: msg.from?.first_name ?? msg.from?.username ?? null,
+          text: preview,
+          ts: msgTsMs,
+          msgId: msg.message_id ?? null,
+          raw: upd,   // kept so dispatchHeld can replay through this same
+                      // handleUpdate path for awareness + brain routing.
+        });
+        log(`held pre-connect message from ${msg.chat?.id ?? '?'}: "${preview.slice(0, 60)}${preview.length > 60 ? '…' : ''}" — /tg-pending to review`);
         return;
       }
     }
@@ -231,23 +271,101 @@ export function startTelegramBridge({
     }
 
     const authorized = allowedUsers.length > 0 && allowedUsers.includes(userId);
-    let text = msg.text.trim();
+    let text = rawText.trim();
 
-    // In group / supergroup chats, only process messages explicitly
-    // addressed to this bot. Slash commands must carry @<our-username>;
-    // anything else is ignored at the bridge so unrelated group chatter
-    // doesn't reach the room. (1:1 chats are unaffected — every message
-    // is for us by definition.)
+    // Media handling (limb-agnostic): fetch the bytes off Telegram, then hand to
+    // the host. The shared processor transcribes voice + posts the 👂 ack; onMedia
+    // saves every attachment to conversations/telegram/<slug>/media/. A voice note
+    // becomes the dispatch text; an image/doc appends a saved-path note so Wren's
+    // Read tool can open it. The bot IS Wren, so the operator's own media always
+    // gets the 👂 ack (enrolled OR authorized).
+    if (mediaSpec && typeof onMedia === 'function') {
+      try {
+        const localPath = await downloadTelegramFile(mediaSpec.fileId, mediaSpec.fileName);
+        const ts = ((Number(msg.date) || 0) * 1000) || Date.now();
+        if (mediaSpec.kind === 'audio') {
+          const transcript = await transcribeVoiceNote({
+            localPath, transcribe, audioCfg,
+            reply: (t) => sendText(msgChat, t, { replyTo: msg.message_id }),
+            enrolled: authorized || isEnrolledChat(msgChat),
+            muted: false,
+            onLog: (m) => log(`media: ${m}`),
+          });
+          if (transcript) text = text ? `${text}\n${transcript}` : transcript;
+          else if (!text) text = '[voice note — transcription failed]';
+        }
+        const savedPath = await onMedia({
+          surface: 'telegram',
+          chatID: String(msgChat),
+          chatName: msg.chat?.title ?? firstName,
+          chatType,
+          msgId: msg.message_id ?? null,
+          senderName: firstName,
+          isSender: authorized,
+          ts,
+          kind: mediaSpec.kind,
+          mime: mediaSpec.mime,
+          fileName: mediaSpec.fileName,
+          localPath,
+          caption: msg.caption ?? (mediaSpec.kind === 'audio' ? text : null),
+          isVoiceNote: mediaSpec.isVoiceNote,
+        });
+        if (mediaSpec.kind !== 'audio') {
+          text = `${text ? text + ' ' : ''}[${mediaSpec.kind} saved: ${savedPath || localPath}]`;
+        }
+      } catch (e) { err(`media handling failed: ${e.message}`); }
+    }
+    if (!text.trim()) return;   // media-only with no host onMedia wired — nothing to route
+
+    let addressedToBot = false;   // msg explicitly aimed at us (mention/reply/handle)
+
+    // Does the message name the bot's internal egpt agent (@wren)? This is
+    // independent of Telegram's own @username addressing — the operator types
+    // the handle they know. In a group it's an additional way to be addressed
+    // (alongside @<botUsername> and reply-to-us); in a 1:1 it short-circuits
+    // the mirror policy so "@wren …" always reaches the agent.
+    const mentionsAgent = !!agentHandle &&
+      new RegExp(`@${escapeRe(agentHandle)}\\b`, 'i').test(text);
+
+    // The bot IS its egpt agent (Wren is egpt_reve_bot), so any message that
+    // ARRIVES in a group it belongs to is part of Wren's conversation and is
+    // forwarded — no @mention required. Telegram's bot privacy mode is the
+    // operator's filter for WHICH messages arrive: privacy-off delivers every
+    // group message; privacy-on (the BotFather default) delivers only /cmds,
+    // @<botUsername> mentions, and replies-to-us — and those are for us too.
+    // The only thing still gated here is slash commands: a /cmd must carry
+    // @<our-username>, else we'd steal commands meant for other bots (or act
+    // on a bare, ambiguous /cmd). (1:1 chats are unaffected — every message is
+    // for us by definition.)
     if (chatType !== 'private') {
       const m = text.match(/^\/(\S+?)(?:@(\S+))?(\s[\s\S]*)?$/);
-      if (!m) return;                          // not a slash command — ignore
-      const targetBot = m[2];
-      if (!targetBot) return;                  // /cmd with no @bot — ambiguous, ignore
-      if (botUsername && targetBot.toLowerCase() !== botUsername.toLowerCase()) {
-        return;                                // command for some other bot
+      if (m) {
+        const targetBot = m[2];
+        if (!targetBot) return;                  // /cmd with no @bot — ambiguous, ignore
+        if (botUsername && targetBot.toLowerCase() !== botUsername.toLowerCase()) {
+          return;                                // command for some other bot
+        }
+        // Reconstruct without @us so downstream sees a clean /cmd ...
+        text = `/${m[1]}${m[3] ?? ''}`.trim();
+      } else {
+        // Plain group message — forward it to the agent (the bot is Wren).
+        // Strip a leading/inline @<botUsername> so the brain sees clean text.
+        if (botUsername) {
+          text = text.replace(new RegExp(`@${escapeRe(botUsername)}\\b`, 'ig'), '').replace(/\s{2,}/g, ' ').trim();
+        }
+        addressedToBot = true;
       }
-      // Reconstruct without @us so downstream sees a clean /cmd ...
-      text = `/${m[1]}${m[3] ?? ''}`.trim();
+    }
+
+    // Internal agent handle (@wren) — addresses the bot's own agent by name in
+    // ANY chat type. Strip the token and mark addressed so the host routes the
+    // remainder to the agent (forceTarget) rather than dropping it under the
+    // mirror policy. In a 1:1 this is the one explicit way to reach the agent;
+    // in a group every plain message is already addressedToBot (the bot is
+    // Wren), so this just cleans the @wren token out of the forwarded text.
+    if (mentionsAgent) {
+      text = text.replace(new RegExp(`@${escapeRe(agentHandle)}\\b`, 'ig'), '').replace(/\s{2,}/g, ' ').trim();
+      addressedToBot = true;
     }
 
     try {
@@ -257,6 +375,7 @@ export function startTelegramBridge({
       await onIncoming?.(text, {
         userId, username, firstName, chatId: msgChat, chatType, authorized,
         tgMessageId: msg.message_id ?? null,
+        addressedToBot,
       });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
@@ -386,7 +505,8 @@ export function startTelegramBridge({
   // (no /cmd is recognized in groups until we know our username).
   apiFetch('getMe', {}).then((me) => {
     botUsername = me?.username ?? null;
-    if (botUsername) log(`telegram: identified as @${botUsername}`);
+    botId       = me?.id ?? null;
+    if (botUsername) log(`telegram: identified as @${botUsername} (id ${botId})`);
   }).catch(e => err(`getMe failed: ${e.message}`));
   poll();
 
@@ -432,6 +552,28 @@ export function startTelegramBridge({
       return n;
     },
   };
+}
+
+function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Telegram delivers media as distinct message fields (photo[], voice, audio,
+// video, document), usually with no msg.text — the caption lives in msg.caption.
+// Normalize whichever is present into one descriptor the limb can download +
+// hand to the host. Photos arrive as an array of sizes; take the largest.
+export function pickTelegramMedia(msg) {
+  if (Array.isArray(msg.photo) && msg.photo.length) {
+    const p = msg.photo[msg.photo.length - 1];
+    return { fileId: p.file_id, kind: 'image', mime: 'image/jpeg', fileName: `photo-${p.file_unique_id ?? p.file_id}.jpg`, isVoiceNote: false };
+  }
+  if (msg.voice)    return { fileId: msg.voice.file_id, kind: 'audio', mime: msg.voice.mime_type || 'audio/ogg', fileName: `voice-${msg.voice.file_unique_id ?? msg.voice.file_id}.ogg`, isVoiceNote: true };
+  if (msg.audio)    return { fileId: msg.audio.file_id, kind: 'audio', mime: msg.audio.mime_type || 'audio/mpeg', fileName: msg.audio.file_name || `audio-${msg.audio.file_unique_id ?? msg.audio.file_id}.mp3`, isVoiceNote: false };
+  if (msg.video)    return { fileId: msg.video.file_id, kind: 'video', mime: msg.video.mime_type || 'video/mp4', fileName: msg.video.file_name || `video-${msg.video.file_unique_id ?? msg.video.file_id}.mp4`, isVoiceNote: false };
+  if (msg.document) {
+    const mime = msg.document.mime_type || '';
+    const ext = (msg.document.file_name || '').split('.').pop();
+    return { fileId: msg.document.file_id, kind: mediaKind(mime, ext), mime, fileName: msg.document.file_name || `doc-${msg.document.file_unique_id ?? msg.document.file_id}`, isVoiceNote: false };
+  }
+  return null;
 }
 
 function chunkText(text, max) {

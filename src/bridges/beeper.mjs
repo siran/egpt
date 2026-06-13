@@ -45,6 +45,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
+import { transcribeVoiceNote } from '../incoming-media.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -380,23 +381,23 @@ export async function startBeeperBridge(opts = {}) {
       const path = await attachmentToLocalPath(att);
       _voiceAtt = att; _voicePath = path;
       if (path) {
-        const transcript = await transcribe(path, audioCfg, onLog);
+        // Limb-agnostic: the shared processor transcribes + posts the 👂 ack.
+        // The limb supplies only the downloaded file, a quoted-reply mechanism,
+        // and the host's verdicts (enrolled = auto_e_chats/self-DM rule, keyed
+        // on the STABLE chatID never a display name; muted = Beeper's flag). The
+        // transcript reaches the model regardless; enrolled only gates the ack.
+        // See src/incoming-media.mjs.
+        const transcript = await transcribeVoiceNote({
+          localPath: path, transcribe, audioCfg,
+          reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
+          enrolled: isEnrolledChat(chatID),
+          muted: info.isMuted,
+          onLog: (m) => onLog(`beeper: ${m}`),
+        });
         if (transcript) {
           text = transcript;
           _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-          // 👂 ack is an egpt-initiated SEND — it follows the enrolled-chats
-          // rule (auto_e_chats + self-DM), not Beeper's mute flag. In a
-          // non-enrolled chat egpt still hears (text continues to dispatch)
-          // but must not reveal itself. The gate matches the STABLE chatID
-          // ONLY — never the display name (operator 2026-06-10: "for
-          // authorization, never rely on contact names; a stable id must
-          // be used"). A title is attacker-controllable; the room id is not.
-          if (isEnrolledChat(chatID)) {
-            if (!info.isMuted) await sendMessage(chatID, `👂 ${transcript}`, { replyToMessageID: msg.id });   // quoted reply
-          } else {
-            onLog(`beeper: 👂 ack SUPPRESSED [${info.title}] — chat ${chatID} not enrolled (auto_e_chats/chat_id)`);
-          }
         } else { text = '[voice note — transcription failed]'; }
       } else { text = '[voice note]'; }
     }
