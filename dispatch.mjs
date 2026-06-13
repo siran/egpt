@@ -14,6 +14,7 @@ import { parseInput } from './src/interpreter.mjs';
 import { splitEmittedReply } from './src/emitted-commands.mjs';
 import { resolveRoute } from './src/room.mjs';
 import { makeSerialByKey } from './src/serial-by-key.mjs';
+import { renderFrontMatter } from './src/transcript-meta.mjs';
 import {
   emptyState,
   ensureContact,
@@ -975,7 +976,17 @@ export function createDispatchRuntime({
     const header = !fs.existsSync?.(fpath)
       ? (isSystemThread
           ? `# @e ${threadId} log\n\n`
-          : `# @e conversation — ${threadCtx.name ?? threadId}\n\nthread: ${threadId}  ·  surface: ${threadCtx.surface ?? '?'}  ·  slug: ${threadCtx.slug ?? '?'}\n\n`)
+          // YAML front matter: who the transcript is with + the resumable thread
+          // + the persona on it + an operator notes slot. Written once, at
+          // creation. network/phone/type/participants are enriched later by the
+          // collector (GENOME §5); the fields available here are populated now.
+          : renderFrontMatter({
+              name:      threadCtx.name ?? threadId,
+              surface:   threadCtx.surface ?? '?',
+              slug:      threadCtx.slug ?? '?',
+              thread_id: threadId,
+              persona:   isSystemPersonality ? 'system-e' : 'e',
+            }))
       : '';
     // Daily archive for the heartbeat transcript only (other thread
     // types are per-chat or system-e and have their own lifecycle).

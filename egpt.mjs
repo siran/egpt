@@ -21,6 +21,7 @@ import * as don from './config/brains/don.mjs';
 import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
+import { stripFrontMatter } from './src/transcript-meta.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink } from './src/show-think.mjs';
@@ -2735,7 +2736,7 @@ function App() {
       // 'egpt back!'/restart announces, Debug:) when it's in the context — it
       // summarised the noise instead of chatting (operator 2026-06-11). Strip it
       // so the tail is just the human/sibling exchange.
-      const keep = content.split('\n').filter((l) => {
+      const keep = stripFrontMatter(content).split('\n').filter((l) => {
         const t = l.trim();
         if (!t) return false;
         if (t.startsWith('#') || t.startsWith('thread:')) return false;            // header / date section

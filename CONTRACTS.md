@@ -82,6 +82,14 @@ Lock status of the four:
   `memories/transcript-<date>.md`. Per-file serialized appends (no lost writes). ✅ (`2dda652`)
 - **C1.4** First-class since the **initial commit** — never gate transcripts on
   enrollment, observe-only, or mode. ✅ invariant
+- **C1.5** transcript.md opens with a YAML **front-matter** block — `name`
+  (contact/group), `thread_id` (resumable thread, distinct from chat_id),
+  `surface`, `slug`, `persona`, `notes` — written once at creation
+  (`src/transcript-meta.mjs` `renderFrontMatter`, via `dispatch.mjs`). Every
+  reader strips it (`stripFrontMatter`) so front-matter keys never reach a model
+  as turns. ✅ (2026-06-13, `tests/transcript-meta.test.mjs`). Enrichment fields
+  (`network` / `phone` / `type` / `participants` / `account`) are the collector's
+  job (planned) — the block is the stable container.
 
 ## 2. Media
 - **C2.1** Every media attachment (image, video, voice note, audio, document,
