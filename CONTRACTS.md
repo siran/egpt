@@ -102,6 +102,14 @@ Lock status of the four:
 - **C2.3** Revoked/deleted media moves to `deleted/` (not hard-deleted). ⚠️
   **TODO** — needs a Beeper message-revoke event handler; the save path (C2.1/2.2)
   is in, the revoke path is not yet wired.
+- **C2.4** Incoming media is processed in the NUCLEUS, limb-agnostically: a limb's
+  only media job is fetching the bytes off its own transport (Beeper assets,
+  Telegram `getFile`, …); it hands the local file to `onMedia`, and
+  `_saveIncomingMedia` (surface-aware) saves it under
+  `conversations/<surface>/<slug>/media/` and returns the path so a vision brain
+  can `Read` an image. The Telegram limb now downloads photo/voice/audio/document
+  (was text-only). ✅ (2026-06-13; `tests/incoming-media.test.mjs`; memory
+  `egpt-limb-agnostic-media`).
 
 ## 3. Transcription
 - **C3.1** Every voice/audio note is transcribed (DOLLY GPU whisper-server worker
@@ -111,6 +119,14 @@ Lock status of the four:
   non-enrolled chats by design (privacy: don't reveal egpt in others' chats). ✅ (`54f69c3`)
 - **C3.3** The transcript text still dispatches + lands in transcript.md even when
   the 👂 ack is suppressed. ✅
+- **C3.4** Voice transcription + the `👂` ack are ONE shared nucleus service
+  (`src/incoming-media.mjs` `transcribeVoiceNote`), used by EVERY limb — never
+  re-implemented per limb. The limb supplies the downloaded file + a reply
+  mechanism + the host's enrolled/mute verdict; the nucleus transcribes (injected
+  transcriber) and posts the enrolled-gated ack. Telegram now hears voice the same
+  way Beeper does. ✅ (2026-06-13; `tests/incoming-media.test.mjs`). LANDMINE:
+  `telegram.mjs` is browser-bundled, so the transcriber is INJECTED, never
+  imported (no `node:child_process` in a bundled limb).
 
 ## 4. Emit gate & authorization
 - **C4.1** Every brain/agent reply passes the emit gate (`_eMayReplyToChat` →
@@ -187,6 +203,20 @@ Lock status of the four:
 - **C9.2** logOut/errOut append to a durable `~/.egpt/logs/egpt.log` (the headless
   frame-dump is lossy — don't trust it). ✅ (true file logging)
 - **C9.3** No error is ever truly silent — `swallow()` sink + catch triage. ✅ (`2b683f7`)
+
+## 10. Engine & warmth (beings)
+- **C10.1** Every being runs on the Claude Code **CLI** (`ccode` engine / native
+  background agents); the in-process SDK is **RETIRED**. Deliberate contract,
+  chosen from experience: the CLI gives `--effort`, robustness under tool-heavy +
+  large-session turns, the native thinking stream, full tools/MCP, and server-side
+  `--resume` that handles big threads. Do NOT reintroduce the SDK path. ✅
+  (GENOME §7 / invariant I11; memory `egpt-background-agents`).
+- **C10.2** Beings are native **background agents**: revived per message, warm
+  ~5 min then reaped, context via `--resume`, per-being model+effort. BUILT:
+  `ccode` resume-per-turn (`config/brains/claude-code.mjs`) — context is free, but
+  a turn still spawns a process (interim). OWED ("Unit 4"): the resident-warm
+  policy (config-driven always-on; attach-if-warm / revive-if-dead; ~5-min reap)
+  so a turn stops paying a spawn. ⚠️ resident warmth **UNBUILT**.
 
 ---
 

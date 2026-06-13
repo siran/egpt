@@ -69,6 +69,7 @@ export function createWarmPool({
     const e = _s.get(key);
     if (!e || e.errored) throw new Error('warm: session unavailable');
     e.busy = true;
+    e.injectSeq = 0;   // reset the per-turn injection counter (see run/INJECT)
     // NEVER evict while thinking. An idle timer armed after the PREVIOUS turn
     // must not fire mid-turn and close a busy session (that would end the query
     // mid-turn). Idle = time since the last turn ENDED, so clear any pending idle
@@ -90,6 +91,7 @@ export function createWarmPool({
       throw err;
     } finally {
       e.busy = false;
+      e.inFlight = null;
       if (_s.get(key)?.errored) _evict(key, 'turn failed'); else _armIdle(key);
     }
   }
