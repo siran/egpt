@@ -18,6 +18,7 @@
 // `parseConversation()` is exported anyway because /summarize and similar
 // future features need to walk the .md as structured turns.
 import { spawn } from 'node:child_process';
+import { buildClaudeArgs } from '../../src/claude-args.mjs';
 
 export const name = 'ccode';
 export const legacyNames = ['claude-code'];
@@ -94,63 +95,16 @@ function mergeAdjacentSameRole(turns) {
 
 export function stream({ history, message }, onUpdate, options = {}) {
   return new Promise((resolve, reject) => {
-    const args = [
-      '--print',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--include-partial-messages',
-    ];
-    // In --print mode Claude Code can't prompt for tool permission,
-    // so it refuses every tool by default. Without an explicit
-    // allowlist the @egpt persona will hallucinate ("I don't have
-    // web access") instead of fetching. Caller passes
-    // options.allowedTools as either:
-    //   • 'all' / '*'         → --dangerously-skip-permissions
-    //                           AND --permission-mode bypassPermissions
-    //                           (belt + suspenders — different Claude Code
-    //                            builds honor one or the other)
-    //   • space-sep string    → --allowedTools "<list>"
-    //   • array of tool names → --allowedTools "<joined>"
-    if (options.allowedTools) {
-      const at = options.allowedTools;
-      if (at === 'all' || at === '*') {
-        args.push('--dangerously-skip-permissions');
-        args.push('--permission-mode', 'bypassPermissions');
-      } else {
-        const list = Array.isArray(at) ? at.join(' ') : String(at);
-        if (list.trim()) args.push('--allowedTools', list.trim());
-      }
-    }
-    // Nudge the persona toward actually using tools. Even with
-    // bypassPermissions and WebFetch/WebSearch in the tool list, a
-    // bare 'what's the price of bitcoin?' returns 'I don't have
-    // real-time data' from training-time priors instead of a tool
-    // call. The append-system-prompt is the cleanest lever — caller
-    // chooses what to nudge.
-    if (typeof options.appendSystemPrompt === 'string' && options.appendSystemPrompt.trim()) {
-      args.push('--append-system-prompt', options.appendSystemPrompt.trim());
-    }
-    // Model selection — claude CLI accepts the alias names ('haiku',
-    // 'sonnet', 'opus') as well as full model IDs. Default (no flag)
-    // uses whatever claude is configured to use globally. Caller sets
-    // this via options.model; for the @e persona it comes from
-    // EGPT_CONFIG.default_brain.model (a quick latency knob —
-    // 'haiku' is ~2-3x faster first-token than sonnet, useful when
-    // most @e turns are short factual questions).
-    if (typeof options.model === 'string' && options.model.trim()) {
-      args.push('--model', options.model.trim());
-    }
-    // Filesystem scope: --add-dir pins claude's permitted dirs to the
-    // listed paths (combined with cwd, this is the per-thread sandbox
-    // for conversation-e instances). Array of absolute paths; empty
-    // / falsy values dropped.
-    if (Array.isArray(options.addDirs)) {
-      for (const d of options.addDirs) {
-        if (d && typeof d === 'string') args.push('--add-dir', d);
-      }
-    }
+    // argv from the tested confinement mapper (src/claude-args.mjs) — the CLI
+    // mirror of claude-sdk.mjs buildSdkOptions. Maps allowedTools/bypass, the
+    // confineToDirs sandbox (--setting-sources '' + permission-mode default +
+    // path-confined file tools), --add-dir, model, --effort, --resume, and the
+    // append-system nudge; THROWS on readOnlyDirs (never drop a write-deny grant
+    // silently). Locked by tests/claude-args.test.mjs. This CLOSES a real gap:
+    // the old inline build silently ignored confineToDirs/readOnlyDirs, so a
+    // confined turn that landed on ccode ran UNCONFINED.
+    const args = buildClaudeArgs(options);
     const isResume = !!options.sessionId;
-    if (isResume) args.push('--resume', options.sessionId);
 
     const spawnOpts = { stdio: ['pipe', 'pipe', 'pipe'] };
     const cwd = normalizeCwd(options.cwd);
