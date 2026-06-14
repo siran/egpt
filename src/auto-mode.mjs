@@ -15,6 +15,30 @@ export const DEFAULT_AUTO_MODE = 'mention';
 
 export function isAutoMode(m) { return AUTO_MODES.includes(String(m)); }
 
+// PER-BEING per-chat mode (generalizes the E-only mode to EVERY being — E,
+// Wren, Don, L — across every surface). A being's mode in a chat decides whether
+// it RECEIVES that chat's messages and when it REPLIES, exactly like E's mode;
+// the emit gate (mayEmitChat) is unchanged — this only resolves WHICH mode
+// applies to WHICH being in WHICH chat. This is the missing piece that lets a
+// bot's presence in a group = enrollment, tuned per-sibling (operator 2026-06-14).
+//
+// Config (surface-agnostic): EGPT_CONFIG.auto_modes[<chatId>][<being>] = mode,
+// with a per-chat '*' wildcard for "all beings here". Backward-compatible: the
+// legacy whatsapp.auto_e_modes[<chatId>] is E's mode when no per-being entry
+// exists. Resolution order (first match wins):
+//   1. auto_modes[chat][being]        explicit per-being
+//   2. auto_modes[chat]['*']          per-chat "all" wildcard (the /e auto … all form)
+//   3. auto_eModes[chat]   (being==='e' only)  legacy E mode
+//   4. defaultMode                    caller's fallback (E: chat default; sibling: 'mention')
+export function resolveBeingMode({ autoModes = {}, autoEModes = {}, chatId, being, defaultMode = DEFAULT_AUTO_MODE } = {}) {
+  const b = String(being ?? '').toLowerCase();
+  const chat = (autoModes && typeof autoModes === 'object' ? autoModes[chatId] : null) ?? {};
+  if (isAutoMode(chat[b]))   return chat[b];
+  if (isAutoMode(chat['*'])) return chat['*'];
+  if (b === 'e' && autoEModes && isAutoMode(autoEModes[chatId])) return autoEModes[chatId];
+  return isAutoMode(defaultMode) ? defaultMode : DEFAULT_AUTO_MODE;
+}
+
 // E sees the chat at all? (everything except 'off')
 export function receives(mode) { return mode !== 'off'; }
 // Buffer-and-flush-per-heartbeat instead of dispatching each burst?

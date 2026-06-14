@@ -377,6 +377,11 @@ export function startTelegramBridge({
         tgMessageId: msg.message_id ?? null,
         addressedToBot,
         fromBot: !!msg.from?.is_bot,   // loop-guard: a sibling bot's message is a being-turn
+        // EXPLICITLY addressed (not just present in a group): an @agent mention
+        // or a reply to this bot. Distinct from addressedToBot (which a group's
+        // bot-presence sets for every message) — the per-being 'mention' mode
+        // gates on this, so 'on' = all group msgs, 'mention' = only when called.
+        explicitlyAddressed: mentionsAgent || (botId != null && msg.reply_to_message?.from?.id === botId),
       });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
