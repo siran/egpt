@@ -835,11 +835,26 @@ export function createDispatchRuntime({
           entry: r.entry,
           isNew: r.isNew || !r.entry?.threadId,
           slug: r.slug,
+          renamedFrom: r.renamedFrom ?? null,
+          renamedTo: r.renamedTo ?? null,
         };
       });
       convSlug = ensured.slug;
       convEntry = ensured.entry;
       isNewContact = ensured.isNew;
+
+      // Self-heal: a placeholder 'contact-*' folder is renamed on disk to follow
+      // the now-known chat title, so THIS turn's transcript continues in the
+      // named dir (convSlug already points to the new slug). Non-fatal — the
+      // mkdir below recreates the dir if the move couldn't happen.
+      if (ensured.renamedFrom && ensured.renamedTo) {
+        try {
+          await fs.rename(paths.slugDir(surface, ensured.renamedFrom), paths.slugDir(surface, ensured.renamedTo));
+          logSystem(`conversations: re-slugged "${ensured.renamedFrom}" → "${ensured.renamedTo}" (title resolved)`);
+        } catch (e) {
+          if (e?.code !== 'ENOENT') logSystem(`conversations: re-slug rename "${ensured.renamedFrom}"→"${ensured.renamedTo}" failed: ${e?.message ?? e}`);
+        }
+      }
 
       if (isMuted(convEntry)) {
         const skipClock = stamp(clock).slice(11, 16);

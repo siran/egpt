@@ -4124,6 +4124,12 @@ function App() {
           const baseMeta = {
             fromWhatsApp: true,
             waChatId: from.chatId,
+            // The chat's resolved title, captured at receive time. dispatch uses
+            // this to name the contact's slug/folder so it never depends SOLELY
+            // on the live bridge title-cache being warm at dispatch time (which
+            // it isn't for backlog/early-boot — that's how chats got nameless
+            // 'contact-*' folders). The bridge already resolves from.chatName.
+            waChatName: from.chatName ?? null,
             waUser: from.username ? `@${from.username}` : `wa:${from.userId}`,
             waClientLabel,
             waMsgKey: from.msgKey ?? null,
@@ -6415,6 +6421,14 @@ function App() {
               console.error(`conversations: surface-layout migration — ${r.migrated} contacts moved under whatsapp/, ${r.dirsMoved} dirs renamed (${r.missingDirs} missing)`);
             }
           } catch (e) { console.error(`!! surface-layout migration: ${e?.message ?? e}`); }
+        },
+        async () => {
+          try {
+            const r = await conversationsState.migratePlaceholderSlugs();
+            if (r && r.renamed > 0) {
+              console.error(`conversations: re-slugged ${r.renamed} placeholder contact-* folder(s) to their resolved names`);
+            }
+          } catch (e) { console.error(`!! placeholder-slug migration: ${e?.message ?? e}`); }
         },
       ],
       resolveBrain: () => {
