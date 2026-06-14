@@ -130,6 +130,9 @@ Lock status of the four:
 - **C3.2** The `👂 <transcript>` ack is an egpt-initiated SEND → gated on the
   enrolled-chats rule (auto_e_chats / self-DM), NOT a contract. Suppressed in
   non-enrolled chats by design (privacy: don't reveal egpt in others' chats). ✅ (`54f69c3`)
+  ⏳ OPERATOR 2026-06-14: the `👂` shows ONLY in Self today — wants it in groups +
+  Telegram too. NB transcription RUNS everywhere (C3.1); what's Self-only is the
+  SURFACING (the enrolled-ack gate) — broaden the gate / add a per-chat ack toggle.
 - **C3.3** The transcript text still dispatches + lands in transcript.md even when
   the 👂 ack is suppressed. ✅
 - **C3.4** Voice transcription + the `👂` ack are ONE shared nucleus service
@@ -165,6 +168,19 @@ Lock status of the four:
 - **C5.2** `off` = no egpt at all in that chat (no transcript, no command, no @e). ❓ verify under Beeper
 - **C5.3** Echo suppression must recognize egpt's OWN sends even when Beeper
   echoes them back HTML-formatted with a new id (normalize before compare). ✅ (`954823c`)
+- **C5.4** A being's per-chat mode generalizes the E mode to EVERY being
+  (`auto_modes[chatId][being]`, surface-agnostic; resolver `resolveBeingMode`,
+  back-compat with `whatsapp.auto_e_modes` for E + a `'*'` per-chat wildcard). A
+  bot's PRESENCE in a chat = enrollment (= `on`); the mode tunes participation
+  per-sibling (`mention` = only when @addressed). ONE routing decision per being
+  (NO dedup, by construction): `off`/`mute`=no, `on`=yes, `mention`=yes-iff-
+  addressed — the @mention is an INPUT to that gate + priority, not a second
+  delivery. Mode gates PROMPTING; an engineer's reply flows ungated even '…' (I8).
+  ✅ Telegram 2026-06-14 (`c4d5655`, `tests/resolve-being-mode.test.mjs`). ⏳ owed:
+  WhatsApp-sibling modes (dispatch reads the resolver), the `/e auto <mode> <being>`
+  command (today `/e auto` is per-chat-E only), parallel fan-out + recirculate-on-
+  finish across beings, and the "bot-present-in-chat ⇒ don't route from another
+  limb" dedup (uses Telegram group membership).
 
 ## 6. Backlog / catch-up
 - **C6.1** Reconnect/wake backlog drains PACED (as-if-always-on); egpt answers
@@ -190,23 +206,38 @@ Lock status of the four:
   dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
   Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
   (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
-- **C7.7** Bot↔bot loop-guard (bridge-side). The bridge tracks a bot↔bot exchange
-  per chat (sibling-bot replies with no intervening human turn). **Soft limit**
-  (configurable minutes) → inject `WARNING FROM BRIDGE: …` into the chat. **Hard
-  limit** (configurable) → the bridge stops gate-posting a bot's replies to the
-  other, cutting the loop. Cross-bot analog of `resident_chain_cap`; the routing
-  is the bridge's (Telegram is only transport). ⚠️ **planned**.
+- **C7.7** Bot↔bot loop-guard + **STOP kill-switch** (bridge-side). EVERY dispatch
+  flows through `submitInner` — received AND self-generated (heartbeats route
+  through it too) — so the gate there is definite. Operator safe-words `STOP` /
+  `STOP ALL` / `RESUME` / `RESUME ALL` toggle it; a stopped channel never reaches
+  a brain (STRONGER than `auto_e_paused`, which only blocks emit — STOP blocks
+  PROMPTING). Loop-guard: an inbound bot message is a being-turn, a human turn
+  resets; soft → `WARNING FROM BRIDGE` to the channel, hard → auto-STOP. ✅
+  (`3f69f18`, `src/stop-guard.mjs`, `tests/stop-guard.test.mjs`). Calibration ⏳:
+  each spine counts only the OTHER bot's messages (half the exchange), so soft=4
+  trips at ~8 total — tune, or add own-emit counting.
 
 ## 8. Workers (DOLLY)
+- **C8.0** Services are **spine-portable** — a single spine CAN host everything
+  (bridge, beings, `@l` llama, transcriptor), but compute-heavy services are
+  DELEGATED to the apt machine over the LAN. REVE delegates `@l` (llama) and voice
+  transcription to DOLLY (the GPU box). **Config is the seam**: a present
+  `url`/`endpoint` ⇒ remote, absent ⇒ local — `siblings.l.url` (the @l
+  llama-server) and `transcription_endpoint` + HMAC `transcription_token` (the
+  whisper transcriptor; remote-first, local whisper-cli fallback). So the SAME code
+  runs all-in-one OR as a delegated mesh, purely by config. ✅ (REVE→DOLLY live:
+  llama `192.168.1.102:8080`, transcriptor `:23390` healthy).
 - **C8.1** @l = local llama-server; transcriptor = GPU whisper-server. Both
   supervised by DOLLY's daemon (crash-respawn), LAN-firewalled. ✅
 - **C8.2** A worker supervisor REAPS the stale port-holder before spawning, so a
   soft restart self-heals the Windows child-orphan (no manual elevated taskkill). ✅ (`91abee3`, `src/tools/reap-port.mjs`)
 - **C8.3** egpt↔egpt is **bridge-controlled Telegram only** — `@d`/Don is a
-  Telegram-bound being (egpt_dolly_bot), gated + logged like any other. **No LAN
-  bot↔bot backchannel** (I8): the LAN HTTP agent endpoint was an invisible
-  side-channel and was deleted 2026-06-13. ✅ REVE. ⏳ remaining: re-bind `@d` via
-  Telegram; DOLLY pull+restart to drop its endpoint (port 23391).
+  Telegram-bound being (`egpt_dolly_bot`), gated + logged like any other. **No LAN
+  bot↔bot backchannel** (I8): the LAN HTTP agent endpoint was deleted 2026-06-13.
+  ✅ **Don wired 2026-06-14** — DOLLY now runs a FULL spine (telegram bridge +
+  `siblings.don`: ccode, `resident:true`, thread `23dfef93`), upgraded to latest;
+  REVE reaches Don as the bot in the shared group. DOLLY's old `agent:` endpoint
+  config is inert (the code was removed on pull).
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.
@@ -225,11 +256,16 @@ Lock status of the four:
   `--resume` that handles big threads. Do NOT reintroduce the SDK path. ✅
   (GENOME §7 / invariant I11; memory `egpt-background-agents`).
 - **C10.2** Beings are native **background agents**: revived per message, warm
-  ~5 min then reaped, context via `--resume`, per-being model+effort. BUILT:
-  `ccode` resume-per-turn (`config/brains/claude-code.mjs`) — context is free, but
-  a turn still spawns a process (interim). OWED ("Unit 4"): the resident-warm
-  policy (config-driven always-on; attach-if-warm / revive-if-dead; ~5-min reap)
-  so a turn stops paying a spawn. ⚠️ resident warmth **UNBUILT**.
+  ~5 min then reaped, context via `--resume`, per-being model+effort. ✅ RESIDENT
+  warmth **BUILT 2026-06-14** (`src/warm-cli-session.mjs` + the warm pool): a being
+  runs on ONE persistent `claude --print --input-format stream-json --resume <id>`
+  process (verified: turn 2 ~2× faster than the cold turn 1; `--resume`+stream-json
+  continues context). `siblings.<name>.resident:true` → never idle-evict (Wren,
+  Don); else the per-class TTL reaps (~5 min). The pool was already engine-agnostic
+  (injectable `makeSession`); Unit 4 = the CLI primitive + wiring `ccode` through
+  it. `5e7875a`, `tests/warm-cli-session.test.mjs`. ⏳ **E** (the persona /
+  `default_brain`) still runs the cold `dispatch.mjs` `brain.stream()` path —
+  route the per-chat ccode turn through the warm pool next (haiku).
 
 ---
 
