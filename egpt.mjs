@@ -49,6 +49,7 @@ import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
 import { createWarmCliSession } from './src/warm-cli-session.mjs';
+import { createStopGuard, parseStopWord } from './src/stop-guard.mjs';
 // Warm-session pool singleton at MODULE scope — the _warmPool() helper lives in
 // a per-dispatch closure, so a local `let` reset every turn → a brand-new empty
 // pool each turn (no warm reuse). Module scope persists across dispatches.
@@ -3084,6 +3085,12 @@ function App() {
   const submitRef = useRef(null);
   const bridgeRef = useRef(null);
   const wizardRef = useRef(null);
+  // STOP — the bridge's definite kill-switch + bot↔bot loop-guard (C7.7). One
+  // instance, persisted across renders. Every dispatch checks it at submitInner;
+  // self-generated prompts (heartbeats) route through submitInner too, so STOP
+  // is definite. See src/stop-guard.mjs.
+  const _stopGuardRef = useRef(null);
+  if (!_stopGuardRef.current) _stopGuardRef.current = createStopGuard({ onLog: (m) => { try { logOut(`stop-guard: ${m}`); } catch { /* logOut not ready */ } } });
   // Limb (CLIENT) → spine connection handle (set by the attach-client effect).
   // submit() forwards typed lines through this instead of running locally.
   const _attachClientRef = useRef(null);
@@ -3369,6 +3376,8 @@ function App() {
           telegramChatId: from.chatId,
           telegramUser: who,
           telegramMessageId: from.tgMessageId ?? null,
+          operator: !!from.authorized,   // may toggle the STOP safe-word
+          fromBot: !!from.fromBot,       // loop-guard: another bot's message = a being-turn
           ...(_forceTarget ? { forceTarget: _forceTarget } : {}),
           skipRoute,
         });
@@ -4569,8 +4578,16 @@ function App() {
     // replyAllowed:false → _eMayReplyToChat lets it through in 'on' mode only,
     // and NEVER when muted/off/mention(-direct) or auto_e_paused. WhatsApp
     // only — that is where the auto-mode gate + bridge live.
+    // A heartbeat is a self-generated prompt; route it THROUGH the bridge
+    // (submitInner) so the STOP gate is definite for it too (I1). submitInner
+    // delegates to _dispatchConversationHeartbeat AFTER the gate.
     const _fireConversationHeartbeat = async ({ chatId, surface, slug, name, prompt }) => {
       if (surface !== 'whatsapp' && surface !== 'wa') return;
+      await submitRef.current?.(prompt, { _heartbeatConv: { chatId, surface, slug, name } });
+    };
+    // The actual heartbeat dispatch (was the body above). Reached only via
+    // submitInner, after the STOP gate — so a stopped chat never heartbeats.
+    const _dispatchConversationHeartbeat = async (prompt, { chatId, slug, name }) => {
       const reply = await runDefaultBrainTurn(prompt, () => {}, { threadId: chatId, surface: 'wa', slug, name });
       const trimmed = String(reply ?? '').trim();
       if (!trimmed || trimmed === '...' || trimmed === '…') return;
@@ -7285,6 +7302,51 @@ function App() {
   };
 
   const submitInner = async (raw, text, meta = {}) => {
+
+    // ── STOP — the bridge's DEFINITE kill-switch + bot↔bot loop-guard (C7.7).
+    // EVERY dispatch flows through here (received AND self-generated: heartbeats
+    // route through submitInner too), so an operator safe-word here is absolute.
+    // STOP blocks PROMPTING (the brain never runs) — stronger than auto_e_paused,
+    // which only blocks emit. See src/stop-guard.mjs.
+    {
+      const g = _stopGuardRef.current;
+      const ch = meta._heartbeatConv?.chatId ?? meta.telegramChatId ?? meta.waChatId ?? null;
+      const ack = (t) => {
+        if (meta.fromTelegram && meta.telegramChatId) bridgeRef.current?.send?.(t, { chatId: meta.telegramChatId });
+        else if (meta.fromWhatsApp && meta.waChatId) waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
+        else sysOut(t);
+      };
+      // Operator safe-word: STOP / STOP ALL / RESUME / RESUME ALL.
+      if (meta.operator) {
+        const ctl = parseStopWord(text);
+        if (ctl) {
+          g.applyControl(ctl, ch);
+          ack(ctl === 'stop' ? '🛑 stopped (this chat) — RESUME to wake'
+            : ctl === 'stop_all' ? '🛑 STOP ALL — egpt is off everywhere (RESUME ALL to wake)'
+            : ctl === 'resume_all' ? '▶️ resumed (all chats)' : '▶️ resumed (this chat)');
+          return;
+        }
+      }
+      // Definite gate: a stopped channel (or STOP ALL) never reaches a brain.
+      if (g.blocked(ch)) { logOut(`stop-guard: dispatch BLOCKED in ${ch ?? '?'} (STOP active)`); return; }
+      // Loop-guard: a human turn resets; an inbound message from ANOTHER bot is a
+      // being-turn. Consecutive being-turns with no human between → warn (the
+      // channel + the bots, who self-silence), then auto-STOP. (egpt's own emit is
+      // counted at the emit point — wired next.)
+      const inbound = (meta.fromTelegram || meta.fromWhatsApp) && !meta._heartbeatConv && !meta._routedFromRoom;
+      if (inbound) {
+        if (meta.fromBot) {
+          const action = g.noteBeing(ch);
+          if (action === 'warn') ack('⚠️ WARNING FROM BRIDGE: bot↔bot exchange with no human — wind it down.');
+          else if (action === 'stop') { g.stopChannel(ch); ack('🛑 bridge STOP — bot↔bot loop limit hit. RESUME to continue.'); return; }
+        } else {
+          g.noteHuman(ch);
+        }
+      }
+    }
+    // Self-generated heartbeat — enters through the bridge, dispatched AFTER the
+    // STOP gate above, so a stopped chat never heartbeats (I1).
+    if (meta._heartbeatConv) { await _dispatchConversationHeartbeat(text, meta._heartbeatConv); return; }
 
     // Voice-streaming branch (operator 2026-05-22). When a WA voice
     // note arrived in streaming mode, the bridge fires onIncoming
