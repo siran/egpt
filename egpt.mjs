@@ -34,7 +34,7 @@ import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // Phase 2 the keeper runs in its own process and the handler reaches
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
-import { createDispatchRuntime, dispatchPersonaTurn } from './dispatch.mjs';
+import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult } from './dispatch.mjs';
 import { startOutboxWatcher, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
 import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
 import { startBeeperBridge } from './src/bridges/beeper.mjs';
@@ -8249,7 +8249,13 @@ function App() {
           || (meta.fromWhatsApp
               ? !_eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
               : meta.replyAllowed === false)
-          || (_sibBrain?.sessionless && /^!!\s*@/.test(String(r ?? '').trimStart()));
+          // A brain/infra FAILURE ("!! spawn claude ENOENT", "[claude exit 1]",
+          // "!! @l: llama fetch failed") is a tool error, never a chat reply — drop
+          // it for EVERY brain, not just sessionless ones (operator 2026-06-14:
+          // Don's claude-code "spawn claude ENOENT" leaked + looped). Telegram gets
+          // a bridge-attributed notice instead (built just below); other surfaces
+          // stay silent.
+          || isBrainFailureResult(String(r ?? ''));
         // Sessionless residents (@l) don't stream a "thinking…" placeholder —
         // we can't know they'll stay quiet until the reply is in, and a
         // placeholder we'd have to delete is ugly. Collect, then send only if
@@ -8359,11 +8365,24 @@ function App() {
             }
           }
         }
-        // Brains converse: feed this resident's reply (even '…') to the
-        // other residents. The recipient's dispatch tap mirrors it to Self as
-        // their next prompt, so the reply is echoed there as the formatted
-        // string it is prompted to them with.
-        _recirculateResidentReply({ being: meta.forceTarget ?? sibName, reply, meta });
+        // Infra/brain FAILURE (e.g. "!! spawn claude ENOENT", "[claude exit 1]")
+        // is a TOOL error, not the sibling speaking. Emitting it raw leaks
+        // internals AND, in the agent channel, makes the OTHER being answer it →
+        // bot↔bot loop (operator 2026-06-14: Don's "spawn claude ENOENT" looped
+        // because Wren kept replying to it). On Telegram (the sibling/agent
+        // channel) the BRIDGE attributes it so the operator/siblings learn WHY a
+        // sibling went quiet; on other surfaces (WA groups) it stays silent. It is
+        // NEVER recirculated to other residents — that recirculation is the fuel.
+        const _sibForFail = meta.forceTarget ?? sibName;
+        const _infraFail = isBrainFailureResult(reply);
+        if (_infraFail) {
+          const _errSum = String(reply).replace(/^!!\s*/, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+          logOut(`@${_sibForFail}: turn FAILED — ${_errSum} (bridge-attributed; not recirculated)`);
+          reply = meta.fromTelegram ? `⚠️ couldn't answer (bridge): ${_errSum}` : '';
+        }
+        // Brains converse: feed this resident's reply (even '…') to the other
+        // residents — but NEVER an infra failure (that's the loop fuel).
+        if (!_infraFail) _recirculateResidentReply({ being: _sibForFail, reply, meta });
         // @l (sessionless) emit verdict → egpt.log. Localises why a sessionless
         // sibling stayed quiet: DROP:silent (model self-selected out with '…'),
         // DROP:gate (chat mode/replyAllowed blocked it), DROP:infra (fetch

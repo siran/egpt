@@ -4,8 +4,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createDispatchRuntime } from '../dispatch.mjs';
+import { createDispatchRuntime, isBrainFailureResult } from '../dispatch.mjs';
 import { parse, serialize } from '../conversations-state.mjs';
+
+describe('isBrainFailureResult — tool/infra errors are NOT a sibling reply', () => {
+  it('detects the failure shapes that must not be emitted/recirculated', () => {
+    expect(isBrainFailureResult('!! spawn claude ENOENT')).toBe(true);   // the Don loop (2026-06-14)
+    expect(isBrainFailureResult('!! @l: llama: fetch failed')).toBe(true);
+    expect(isBrainFailureResult('[claude exit 1]')).toBe(true);
+    expect(isBrainFailureResult('[codex timed out]')).toBe(true);
+    expect(isBrainFailureResult('boom: invalid_request_error')).toBe(true);
+  });
+  it('treats a real reply OR the bridge failure-notice as NOT a failure (so they still emit)', () => {
+    expect(isBrainFailureResult('¡Hola hermano! Wren aquí.')).toBe(false);
+    expect(isBrainFailureResult('…')).toBe(false);
+    expect(isBrainFailureResult('⚠️ couldn\'t answer (bridge): spawn claude ENOENT')).toBe(false);
+    expect(isBrainFailureResult('')).toBe(false);
+  });
+});
 
 const fixedClock = () => new Date('2026-05-21T12:00:00.000Z');
 
