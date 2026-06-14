@@ -9,7 +9,11 @@ test. An agent that has read this document should be able to extend eGPT without
 drifting from what it is — and, given the reference body, to rebuild any organ
 of it.*
 
-Status: **e0** (seed). Versioned + amended deliberately; see §10.
+Status: **e1** (spine + mesh). Versioned + amended deliberately; see §10. e1
+(2026‑06‑14) added: resident‑warm beings (§7), the bridge **STOP** kill‑switch +
+bot↔bot loop‑guard (C7.7), **Don** wired as a peer on DOLLY (`egpt_dolly_bot`,
+C8.3), the per‑being **mode** (C5.4), the **mesh** (§11), and delegation made
+explicit (C8.0). Next branch: e2.
 
 ---
 
@@ -337,13 +341,14 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 
 
 **Build status (name the half‑state — §10).** The engine is the CLI, full stop —
-no SDK. BUILT: the `ccode` engine (`config/brains/claude-code.mjs`) runs a
-transient `claude -p --resume <id>` per turn (spawn → reply → exit), the interim
-"resume‑per‑turn" form — so a being already has its context for free. OWED: the
-RESIDENT‑warm policy above (config‑driven always‑on agents; attach‑if‑warm,
-revive‑if‑dead, ~5‑min reap) — the prior sessions' "Unit 4." Until it lands a
-turn still pays a process spawn; that is a latency gap to close, NOT an open
-question about the architecture.
+no SDK. ✅ **RESIDENT‑warm is BUILT** (2026‑06‑14): a being runs on ONE persistent
+`claude --print --input‑format stream‑json --resume <id>` process via the warm pool
+(`src/warm-cli-session.mjs`; verified turn‑2 ~2× faster than the cold turn 1).
+`siblings.<name>.resident:true` → never idle‑evict (Wren, Don resident); else the
+per‑class TTL reaps (~5 min). OWED: route **E** (the persona / `default_brain`)
+through the same warm pool — it still takes the cold `dispatch.mjs` `brain.stream()`
+path; do it per‑chat, on haiku. The pool was already engine‑agnostic (injectable
+`makeSession`); Unit 4 = the CLI primitive + wiring `ccode` through it.
 
 
 ---
@@ -411,3 +416,23 @@ unregistered key — the config surface can't drift). High‑level shape:
 > The point of the genome is that the being can grow new senses, new selves, and
 > a mesh of peers — and still be the same trustworthy eGPT. Keep the spine; let
 > everything else evolve.
+
+
+---
+
+
+## 11. The mesh — one router, three transports (e1)
+
+eGPT spans machines + networks as ONE being‑system. The unifying law (a sharpening
+of I1): **everything reaches a being through the bridge; nothing prompts a model
+around it** — including eGPT's own heartbeats (they route through `submitInner`).
+
+- **Three transports to a being, one router:**
+  - **`@alias`** — reach any sibling by name from any controlled network. The default: explicit, cheap.
+  - **bot** — a Telegram bot IS a being on its spine (`egpt_reve_bot`=Wren, `egpt_dolly_bot`=Don); the bot's PRESENCE in a chat = enrollment. A bot is transport/reachability for a being whose spine isn't on the shared network — NOT a separate identity. `egpt_tbot` deprecated.
+  - **impersonation (Beeper)** — eGPT acts AS the operator's own account across networks (WhatsApp, + Telegram once watched). E's natural presence — your voice — not a bot.
+- **Per‑being mode (C5.4)** tunes participation per chat. ONE routing decision per being (no dedup, by construction); E silence‑gated on output, an engineer's reply ungated even '…' (I8).
+- **Routing dynamics:** PARALLEL across beings (the warm pool serializes only *within* a being), SERIAL across ROUNDS — only a COMPLETE reply recirculates to other beings (never the live stream: streaming is for the human; finished messages for bots). Bounded by chain‑cap + the loop‑guard/STOP.
+- **Delegation (C8.0):** a single spine CAN do everything, but compute‑heavy services delegate to the apt machine by config (REVE→DOLLY for `@l` llama + transcription). Same code, all‑in‑one OR mesh.
+- **STOP (C7.7):** an operator safe‑word at the one router halts PROMPTING (stronger than `auto_e_paused`, which only blocks emit); the loop‑guard auto‑fires it. The human override that beats the being's own clock.
+- **Dedup / cross‑spine reach (owed):** a limb routes to a being IFF that being has no dedicated bot already in the chat (Telegram group membership is queryable). Bot present → it delivers directly; bot absent → relay. Resolves the double‑prompt once Beeper watches Telegram, and gives `@don`‑from‑REVE for free.
