@@ -303,10 +303,34 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 
 ## 6. Lifecycle (self‑running, self‑restarting)
 
-- **Self‑restart:** drop `{type:'daemon-restart'}` into `~/.egpt/outbox/`
-  (atomic write); the supervisor respawns the engine from disk — no UAC. Works
-  for the spine AND remote workers over the file share. `/restart` (exit
-  43) is the in‑band equivalent. `[[egpt-self-restart-via-outbox]]`
+- **Supervision (every spine, symmetrical):** each spine (REVE, DOLLY, …) runs the
+  SAME three‑layer stack — an NSSM Windows service `egpt-daemon` (`~/.egpt/bin/
+  egpt-service.exe`) → the supervisor `egpt-daemon.mjs` (sets `EGPT_SUPERVISED`,
+  reads the engine's exit code) → the engine `egpt.mjs`. The engine respawns; the
+  supervisor + NSSM persist. Spines are PEERS, not a hub‑and‑spoke — DOLLY is not
+  "a worker", it is a full spine that ALSO hosts the GPU services (@l llama :8080,
+  whisper transcriptor).
+- **Lifecycle = a distinguished exit code the supervisor reads** (`slash/
+  lifecycle.mjs`): **43** `/restart` (respawn from current disk — picks up an
+  already‑pulled tree, does NOT pull), **42** `/upgrade` (`git pull && npm install
+  && npm run build:ext`, then respawn), **44** `/rewind <ref>` (checkout + install +
+  build + respawn). Exit codes only mean something under the supervisor; a bare
+  `node egpt.mjs` just dies.
+- **Triggering a bounce = drop a slash into the target spine's outbox** (atomic
+  write): `{type:'slash',cmd:'/restart'|'/upgrade'}` into `~/.egpt/outbox/`. The
+  legacy `{type:'daemon-restart'}` (exit 0) still works. `/restart` from a live
+  surface (WA/TG 1:1, operator‑gated) is the in‑band equivalent. No UAC.
+  `[[egpt-self-restart-via-outbox]]`
+- **Cross‑spine deploy (the lever):** a peer spine's `~/.egpt/outbox/` is reachable
+  over the **SMB file share** — from REVE, DOLLY's home is the mapped `N:` drive
+  (`\\DOLLY\Users\an`), so DOLLY's outbox is `N:\.egpt\outbox\` (`/n/.egpt/outbox/`
+  in the Bash tool). So: commit+push on one spine, then drop `/upgrade` into EACH
+  spine's outbox (local for self, the share for the peer) to roll the new commit
+  everywhere. The file share is the DEPLOY channel; Telegram is the CONVERSATION
+  channel (the old LAN agent endpoint is dead — `[[egpt-egpt-agent-channel]]`).
+  GOTCHA: a spine's NSSM SERVICE env ≠ your interactive shell env — brain binaries
+  (e.g. `claude`) must be on the SERVICE PATH or set via `EGPT_CLAUDE_BIN` /
+  `brains.warm.bin`, else `spawn claude ENOENT` (DOLLY's Don, 2026‑06‑14).
 - **Durable logs:** `logOut`/`errOut` append to
   `~/.egpt/logs/`. The headless frame‑dump is lossy — don't trust it; trust the
   file (I9).
