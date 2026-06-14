@@ -376,6 +376,7 @@ export function startTelegramBridge({
         userId, username, firstName, chatId: msgChat, chatType, authorized,
         tgMessageId: msg.message_id ?? null,
         addressedToBot,
+        fromBot: !!msg.from?.is_bot,   // loop-guard: a sibling bot's message is a being-turn
       });
     } catch (e) {
       err(`onIncoming threw: ${e.message}`);
