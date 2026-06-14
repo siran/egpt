@@ -22,7 +22,7 @@ import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { stripFrontMatter } from './src/transcript-meta.mjs';
 import { transcriptAppend, replyLine } from './src/transcript-log.mjs';
-import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus } from './src/auto-mode.mjs';
+import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus, resolveBeingMode } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
@@ -3368,6 +3368,22 @@ function App() {
           if (canRoute && (from.addressedToBot || from.authorized)
               && !/^@[\w-]+/.test(text.trimStart())) {
             _forceTarget = cfg.telegram?.agent ?? 'wren';
+          }
+          // Per-being mode on Telegram (#4): a bot's PRESENCE = enrollment; this
+          // tunes the agent's participation per chat (default 'on' = today's
+          // behavior). off/mute → the agent stays OUT of the chat; mention(-direct)
+          // → prompted ONLY when explicitly @addressed or a reply-to-bot. Mode
+          // gates PROMPTING; an engineer's reply still flows ungated once prompted
+          // (I8). Resolver: EGPT_CONFIG.auto_modes[chatId][being]; see auto-mode.mjs.
+          if (_forceTarget) {
+            const _bm = resolveBeingMode({
+              autoModes: EGPT_CONFIG.auto_modes, chatId: tgChatIdStr,
+              being: _forceTarget, defaultMode: 'on',
+            });
+            if (_bm === 'off' || _bm === 'mute'
+                || ((_bm === 'mention' || _bm === 'mention-direct') && !from.explicitlyAddressed)) {
+              _forceTarget = null; skipRoute = true;
+            }
           }
         }
 
