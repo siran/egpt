@@ -69,7 +69,7 @@ function isMissingResumeError(text) {
     || /resume failed/i.test(msg);
 }
 
-function isBrainFailureResult(text) {
+export function isBrainFailureResult(text) {
   const msg = String(text ?? '').trim();
   return /^!!\s+/.test(msg)
     || /^\[(?:codex|claude(?:-sdk|-code)?)\s+(?:exit|timed out)\b/i.test(msg)

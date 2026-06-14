@@ -41,8 +41,13 @@ export function createWarmCliSession(options = {}) {
     // --resume <sessionId> when set.
     const args = ['--input-format', 'stream-json', ...buildClaudeArgs(options)];
     const cwd = normalizeCwd(options.cwd);
-    onLog(`warm-cli: spawn claude ${args.join(' ')}`);
-    proc = _spawn('claude', args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(cwd ? { cwd } : {}) });
+    // The claude binary. Defaults to bare 'claude' (on PATH), but a spine whose
+    // SERVICE PATH lacks it (operator 2026-06-14: DOLLY's Don → "spawn claude
+    // ENOENT") can point at the full path via config (brains.warm.bin) or the
+    // EGPT_CLAUDE_BIN env var, no code change. NSSM service PATH ≠ interactive PATH.
+    const bin = options.bin || process.env.EGPT_CLAUDE_BIN || 'claude';
+    onLog(`warm-cli: spawn ${bin} ${args.join(' ')}`);
+    proc = _spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(cwd ? { cwd } : {}) });
     proc.stdout?.setEncoding?.('utf8');
     proc.stdout?.on('data', onStdout);
     proc.stderr?.setEncoding?.('utf8');
