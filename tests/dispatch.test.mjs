@@ -199,7 +199,7 @@ describe('dispatch runtime', () => {
     await runtime.submitIncoming('@e hello', {
       fromWhatsApp: true,
       waChatId: 'chat-a',
-      waChatName: 'Alice',
+      waChatName: 'alice',   // matches the pre-seeded slug so name-tracking doesn't re-slug mid-recovery
       waSlug: 'alice',
     });
 
@@ -260,7 +260,7 @@ describe('dispatch runtime', () => {
       fromWhatsApp: true,
       replyAllowed: true,   // this test builds its own runtime (not the wrapped makeRuntime one)
       waChatId: '12345@lid',
-      waChatName: 'Alice',
+      waChatName: 'alice',   // matches the pre-seeded slug so name-tracking doesn't re-slug mid-recovery
       waSlug: 'alice',
     });
 
@@ -297,7 +297,7 @@ describe('dispatch runtime', () => {
     const result = await runtime.submitIncoming('@e hello', {
       fromWhatsApp: true,
       waChatId: 'chat-a',
-      waChatName: 'Alice',
+      waChatName: 'alice',   // matches the pre-seeded slug so name-tracking doesn't re-slug mid-failure
       waSlug: 'alice',
     });
 
@@ -335,8 +335,8 @@ describe('dispatch runtime', () => {
 
     const state = await readConvState(stateDir);
     expect(Object.keys(state.contacts.whatsapp).sort()).toEqual(['chat-a', 'chat-b']);
-    expect(state.contacts.whatsapp['chat-a'].slug).toMatch(/^alice-/);
-    expect(state.contacts.whatsapp['chat-b'].slug).toMatch(/^bob-/);
+    expect(state.contacts.whatsapp['chat-a'].slug).toMatch(/^Alice-/);   // slug preserves the title's case
+    expect(state.contacts.whatsapp['chat-b'].slug).toMatch(/^Bob-/);
   });
 
   it('retries an interrupted migration and recovers idempotently', async () => {

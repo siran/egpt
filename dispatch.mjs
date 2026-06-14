@@ -23,6 +23,7 @@ import {
   isMuted,
   parse as parseConvState,
   patchContact,
+  renameLogLine,
   sanitizeSlug,
   serialize as serializeConvState,
   setSystemThread,
@@ -849,8 +850,12 @@ export function createDispatchRuntime({
       // mkdir below recreates the dir if the move couldn't happen.
       if (ensured.renamedFrom && ensured.renamedTo) {
         try {
-          await fs.rename(paths.slugDir(surface, ensured.renamedFrom), paths.slugDir(surface, ensured.renamedTo));
-          logSystem(`conversations: re-slugged "${ensured.renamedFrom}" → "${ensured.renamedTo}" (title resolved)`);
+          const newDir = paths.slugDir(surface, ensured.renamedTo);
+          await fs.rename(paths.slugDir(surface, ensured.renamedFrom), newDir);
+          // Log the rename inside the conversation folder (operator 2026-06-14).
+          await fs.appendFile(join(newDir, 'renames.log'),
+            renameLogLine(ensured.renamedFrom, ensured.renamedTo, 'name changed'), 'utf8').catch(() => {});
+          logSystem(`conversations: re-slugged "${ensured.renamedFrom}" → "${ensured.renamedTo}" (name changed)`);
         } catch (e) {
           if (e?.code !== 'ENOENT') logSystem(`conversations: re-slug rename "${ensured.renamedFrom}"→"${ensured.renamedTo}" failed: ${e?.message ?? e}`);
         }
