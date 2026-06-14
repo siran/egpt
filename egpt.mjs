@@ -6424,11 +6424,11 @@ function App() {
         },
         async () => {
           try {
-            const r = await conversationsState.migratePlaceholderSlugs();
+            const r = await conversationsState.migrateSlugsToCurrentName();
             if (r && r.renamed > 0) {
-              console.error(`conversations: re-slugged ${r.renamed} placeholder contact-* folder(s) to their resolved names`);
+              console.error(`conversations: re-slugged ${r.renamed} folder(s) to their current contact/group name`);
             }
-          } catch (e) { console.error(`!! placeholder-slug migration: ${e?.message ?? e}`); }
+          } catch (e) { console.error(`!! slug name-tracking migration: ${e?.message ?? e}`); }
         },
       ],
       resolveBrain: () => {

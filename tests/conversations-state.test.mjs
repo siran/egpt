@@ -36,11 +36,27 @@ describe('emptyState / sanitizeSlug basics', () => {
   it('emptyState() has no contacts', () => {
     expect(emptyState()).toEqual({ contacts: {} });
   });
-  it('sanitizeSlug normalizes JIDs and weird chars', () => {
-    expect(sanitizeSlug('26087681749235@lid')).toBe('26087681749235_lid');
-    expect(sanitizeSlug('premise-driven: bitcoin & evolution')).toBe('premise-driven_bitcoin_evolution');
-    expect(sanitizeSlug('  hello world!  ')).toBe('hello_world');
+  it('sanitizeSlug keeps path-friendly chars, substitutes only Windows-illegal ones', () => {
+    // accents + spaces + parens + @ + & + ! are all legal on Windows → kept
+    expect(sanitizeSlug('Tío Jesús Palma')).toBe('Tío Jesús Palma');
+    expect(sanitizeSlug('+1 (646) 821-7865')).toBe('+1 (646) 821-7865');
+    expect(sanitizeSlug('26087681749235@lid')).toBe('26087681749235@lid');
+    expect(sanitizeSlug('  hello world!  ')).toBe('hello world!');   // trimmed, '!' kept
+    // Windows-illegal chars (: / \ < > " | ? *) collapse to a single space
+    expect(sanitizeSlug('premise-driven: bitcoin & evolution')).toBe('premise-driven bitcoin & evolution');
+    expect(sanitizeSlug('a/b\\c:d')).toBe('a b c d');
     expect(sanitizeSlug('')).toBe('');
+  });
+  it('sanitizeSlug enforces the Windows trailing-dot/space + reserved-name rules', () => {
+    expect(sanitizeSlug('weird name.')).toBe('weird name');   // no trailing dot
+    expect(sanitizeSlug('CON')).toBe('CON_');                  // reserved device name
+    expect(sanitizeSlug('nul')).toBe('nul_');
+    expect(sanitizeSlug('...')).toBe('');                      // dots-only → empty
+  });
+  it('sanitizeSlug is idempotent on an already-clean slug', () => {
+    for (const s of ['morgan-2606101622', 'Tío Jesús Palma', '+1 (646) 821-7865', 'a b c d']) {
+      expect(sanitizeSlug(s)).toBe(s);
+    }
   });
   it('KNOWN_SURFACES is the canonical bucket list', () => {
     expect(KNOWN_SURFACES).toContain('whatsapp');
@@ -60,7 +76,8 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(isNew).toBe(true);
     expect(surface).toBe(WA);
     expect(primary).toBe(jid);
-    expect(slug).toMatch(/^diego-\d{10}$/);
+    // slug follows the TITLE (pushedName), path-safe — accents/spaces/parens kept
+    expect(slug).toMatch(/^Diego Pérez \(Koma\)-\d{10}$/);
     expect(entry.slug).toBe(slug);
     expect(entry.personality).toBe('default');
     expect(entry.firstSeenAt).toBeTruthy();
@@ -73,7 +90,8 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     let s = emptyState();
     const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
     s = r1.state;
-    const r2 = ensureContact(s, WA, '584122182178@s.whatsapp.net', { slugHint: 'diego' });
+    // same person's 2nd JID carries the same title → same candidate slug → alias
+    const r2 = ensureContact(s, WA, '584122182178@s.whatsapp.net', { pushedName: 'Diego Pérez (Koma)', slugHint: 'diego' });
     expect(r2.slug).toBe(r1.slug);
     expect(r2.jid).toBe(r1.jid);
     expect(r2.isNew).toBe(false);
@@ -90,16 +108,20 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     expect(r2.state.contacts[TG]['88164392'].slug).toMatch(/^an-tg-\d{10}$/);
   });
 
-  it('re-encountering a known JID refreshes pushedName on the primary', () => {
+  it('re-encountering a known JID with a new name re-slugs to the current name (not frozen)', () => {
     let s = emptyState();
     const r1 = ensureContact(s, WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
     s = r1.state;
+    const suffix = r1.slug.match(/-(\d{10})$/)[1];
     const r2 = ensureContact(s, WA, '26087681749235@lid', { pushedName: 'Diego Pérez (Koma)' });
     expect(r2.jid).toBe(r1.jid);
-    expect(r2.slug).toBe(r1.slug);
     expect(r2.isNew).toBe(false);
     expect(r2.changed).toBe(true);
     expect(r2.entry.pushedName).toBe('Diego Pérez (Koma)');
+    // slug tracks the current name (keeps the firstSeen suffix), thread reset
+    expect(r2.renamedFrom).toBe(r1.slug);
+    expect(r2.slug).toBe(`Diego Pérez (Koma)-${suffix}`);
+    expect(r2.state.contacts[WA]['26087681749235@lid'].threadId).toBe(null);
   });
 
   it('falls back to a contact-<timestamp> slug when no slugHint or pushedName', () => {
@@ -205,6 +227,29 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
     const r = ensureContact(withTaken, WA, ROOM, { pushedName: 'morgan', slugHint: 'morgan' });
     expect(r.renamedTo).toBe(null);            // collision → no rename
     expect(r.slug).toBe(placeholderSlug);      // stays a placeholder until safe
+  });
+
+  it('tracks a RENAME of an already-named contact/group (not frozen)', () => {
+    // morgan exists with a real name + a live thread; the contact/group is renamed.
+    let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'morgan' }).state;
+    s = recordThread(s, WA, ROOM, 'thread-xyz');
+    const before = s.contacts[WA][ROOM].slug;            // morgan-<suffix>
+    const suffix = before.match(/-(\d{10})$/)[1];
+    const r = ensureContact(s, WA, ROOM, { pushedName: 'Mauricio' });
+    expect(r.renamedFrom).toBe(before);
+    expect(r.renamedTo).toBe(`Mauricio-${suffix}`);      // keeps the firstSeen suffix
+    expect(r.entry.pushedName).toBe('Mauricio');
+    expect(r.state.contacts[WA][ROOM].threadId).toBe(null);   // thread reset on rename
+  });
+
+  it('no rename when the name is unchanged (anti-flap / idempotent)', () => {
+    let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'Dando Ruiz' }).state;
+    const before = s.contacts[WA][ROOM].slug;
+    // re-encounter with the same title, plus a lowercase-dash slugHint that must
+    // NOT cause a flap (rename is driven off pushedName only)
+    const r = ensureContact(s, WA, ROOM, { pushedName: 'Dando Ruiz', slugHint: 'dando-ruiz' });
+    expect(r.renamedFrom).toBe(null);
+    expect(r.slug).toBe(before);
   });
 });
 
@@ -412,7 +457,7 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
       '584122182178@s.whatsapp.net',
     ]);
     expect(r.state.contacts.diego.pushedName).toBe('Diego Pérez (Koma)');
-    expect(r.state.contacts['premise-driven_bitcoin_evolution']).toBeTruthy();
+    expect(r.state.contacts['premise-driven bitcoin & evolution']).toBeTruthy();
   });
   it('preserves operator customNameSource flag', () => {
     const json = {

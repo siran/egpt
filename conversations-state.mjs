@@ -16,7 +16,7 @@
 // explicit read/write helpers at the bottom that take paths. Easy to
 // test, easy to call from any host.
 
-import { readFile, writeFile, mkdir, stat, rename } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, rename, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -81,13 +81,30 @@ export function slugTranscriptPath(surface, slug) {
 // migratePlaceholderSlugs). Idempotent + safe: no-op if the source is missing
 // or the target already exists (NEVER clobbers — a name collision must not eat a
 // transcript). Returns true only when a move actually happened.
-export async function renameSlugDir(surface, oldSlug, newSlug) {
+export async function renameSlugDir(surface, oldSlug, newSlug, reason = 'name changed') {
   if (!oldSlug || !newSlug || oldSlug === newSlug) return false;
   const from = slugDir(surface, oldSlug);
   const to = slugDir(surface, newSlug);
   if (!existsSync(from) || existsSync(to)) return false;
-  try { await mkdir(dirname(to), { recursive: true }); await rename(from, to); return true; }
+  try {
+    await mkdir(dirname(to), { recursive: true });
+    await rename(from, to);
+    await appendRenameLog(to, oldSlug, newSlug, reason);
+    return true;
+  }
   catch (e) { console.error(`!! renameSlugDir(${oldSlug} -> ${newSlug}): ${e?.message ?? e}`); return false; }
+}
+
+// Append a rename record into the conversation folder (operator 2026-06-14:
+// "renames can be logged in conversation folder"). One line per rename, so the
+// folder carries its own naming history. Best-effort — never throws into a
+// dispatch/migration path.
+export function renameLogLine(from, to, reason = '') {
+  return `${new Date().toISOString()}  ${from}  →  ${to}${reason ? `  (${reason})` : ''}\n`;
+}
+export async function appendRenameLog(dir, from, to, reason = '') {
+  try { await appendFile(join(dir, 'renames.log'), renameLogLine(from, to, reason), 'utf8'); }
+  catch (e) { console.error(`!! appendRenameLog(${dir}): ${e?.message ?? e}`); }
 }
 
 // Pre-surface-layout slug dir — used only inside the legacy migration
@@ -389,17 +406,20 @@ export async function migrateToSurfaceLayout() {
   return { migrated: Object.keys(flat).length, dirsMoved, missingDirs };
 }
 
-// One-shot repair: every primary contact whose slug is still a PLACEHOLDER
-// (contact-<ts>) but whose title is now known (pushedName set) gets re-slugged —
-// the registry slug + the on-disk folder both follow the name. This heals all
-// the nameless folders that piled up from chats first seen before their Beeper
-// title resolved (operator 2026-06-14: "a bunch of nameless contact").
+// At-rest repair: re-slug every primary contact whose folder name no longer
+// matches its current title (pushedName) — both a nameless 'contact-<ts>'
+// placeholder finally learning its name AND an old aggressively-sanitized slug
+// ('Dando_Ruiz') upgrading to the path-safe title ('Dando Ruiz'). The registry
+// slug + on-disk folder both follow the name (operator 2026-06-14: slugs must
+// track the current name, not stay frozen). This is the batch form of the
+// per-message tracking in ensureContact, for chats not currently messaging.
 //
-// Idempotent: entries with a real slug, or a placeholder with no known name, are
-// left untouched. threadId is nulled on rename (cwd changed ⇒ stale claude
-// session); transcripts move with the folder via renameSlugDir. Surface-layout
-// only — the earlier migrations in the boot chain convert older shapes first.
-export async function migratePlaceholderSlugs() {
+// Idempotent: an entry whose slug base already equals its title is skipped, so a
+// steady state re-runs clean. Entries with no known title are left as-is.
+// threadId is nulled on rename (cwd changed ⇒ stale claude session); transcripts
+// move with the folder via renameSlugDir (which logs the rename). Surface-layout
+// only — the earlier boot migrations convert older shapes first.
+export async function migrateSlugsToCurrentName() {
   if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 'no registry' };
   const state = await readState(CONV_YAML_PATH);
   if (!_isSurfaceLayout(state)) return { renamed: 0, skipped: 'not surface-layout' };
@@ -411,17 +431,17 @@ export async function migratePlaceholderSlugs() {
     let bucketTouched = false;
     for (const [jid, entry] of Object.entries(bucket)) {
       if (!entry || entry.aliasOf || !entry.slug) continue;
-      if (!isPlaceholderSlug(entry.slug)) continue;
-      const realBase = sanitizeSlug(entry.pushedName);
-      if (!realBase || realBase === 'contact') continue;
+      const nameBase = sanitizeSlug(entry.pushedName);
+      if (!nameBase || nameBase === 'contact') continue;            // no title to adopt
+      const curBase = String(entry.slug).replace(/-\d{10}$/, '');
+      if (nameBase === curBase) continue;                            // already current
       const suffix = String(entry.slug).match(/-(\d{10})$/)?.[1]
         || slugSuffix(entry.firstSeenAt ? new Date(entry.firstSeenAt) : new Date());
-      const candidate = suffix ? `${realBase}-${suffix}` : realBase;
+      const candidate = suffix ? `${nameBase}-${suffix}` : nameBase;
       if (candidate === entry.slug) continue;
-      // Collision guard within this (in-progress) bucket — never two contacts on
-      // the same slug.
+      // Collision guard within this (in-progress) bucket — never two on one slug.
       if (_findByslug({ contacts: { [surface]: bucket } }, surface, candidate)) continue;
-      await renameSlugDir(surface, entry.slug, candidate);
+      await renameSlugDir(surface, entry.slug, candidate, 'name changed (boot repair)');
       bucket[jid] = { ...entry, slug: candidate, threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
       bucketTouched = true; renamed++;
     }
@@ -534,15 +554,28 @@ export function isPlaceholderSlug(slug) {
   return base === '' || base === 'contact';
 }
 
-// ── Slug sanitization (filename + YAML-key safe) ───────────────────────────
-
+// ── Slug sanitization (Windows-path-safe) ──────────────────────────────────
+//
+// Operator (2026-06-14): "slugs must substitute ONLY for windows path-unfriendly
+// characters. accents and spaces and more are allowed; slashes etc. can be
+// substituted." So the slug stays as close to the real contact/group NAME as
+// possible — "Tío Jesús Palma", "+1 (646) 821-7865", "premise-driven bitcoin"
+// — and only the characters Windows forbids in a filename are removed:
+//   < > : " / \ | ? *   and the ASCII control range, plus the trailing-dot /
+//   trailing-space rule and the reserved device names (CON, PRN, …).
+// Illegal chars collapse to a single space so tokens don't fuse oddly. Idempotent
+// (re-sanitizing a clean slug is a no-op) so slugDir() can re-apply it freely.
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 export function sanitizeSlug(s) {
-  return String(s ?? '')
-    .replace(/[@:.\\/]/g, '_')
-    .replace(/[^A-Za-z0-9_-]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_|_$/g, '')
-    .slice(0, 80);
+  let out = String(s ?? '')
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')   // Windows-illegal + control → space
+    .replace(/\s+/g, ' ')                       // collapse whitespace runs
+    .replace(/^[.\s]+|[.\s]+$/g, '')            // no leading/trailing dot or space
+    .slice(0, 80)
+    .replace(/[.\s]+$/g, '');                   // re-trim if slice landed on a dot/space
+  if (!out || out === '.' || out === '..') return '';
+  if (WIN_RESERVED.test(out)) out += '_';       // CON → CON_ (reserved device name)
+  return out;
 }
 
 // ── Schema notes ───────────────────────────────────────────────────────────
@@ -731,20 +764,25 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
-    // Self-heal: a chat first seen before its title resolved got a
-    // 'contact-<ts>' slug; once a real name is known, recompute the slug so the
-    // folder is findable by name. KEEP the original -yymmddhhmm suffix (it
-    // encodes firstSeen → preserves ordering + keeps the new slug unique).
+    // Track the CURRENT name (operator 2026-06-14: "the slug must be updated with
+    // the current contact/group name, not frozen"). Whenever the chat's title
+    // (pushedName) changes — including a 'contact-<ts>' placeholder finally
+    // learning its name, OR a group being renamed — recompute the slug so the
+    // folder always follows the name. Driven off pushedName ONLY (the title), so
+    // it can't flap between two slug derivations. KEEP the original -yymmddhhmm
+    // suffix (encodes firstSeen → preserves ordering + keeps the slug unique).
     // Renaming the slug-dir changes conversation-e's cwd, which invalidates the
-    // stored threadId (the claude session id is keyed on cwd) — so null thread
-    // state, the same trade-off migrateToSurfaceLayout makes. The on-disk
-    // transcript is moved by the caller via renameSlugDir, never lost.
+    // stored threadId (a claude session keyed on cwd) — so null thread state, the
+    // same trade-off migrateToSurfaceLayout makes. The on-disk transcript is
+    // moved by the caller (renameSlugDir / dispatch), which also writes a
+    // renames.log entry into the folder.
     let renamedFrom = null, renamedTo = null;
-    const realBase = sanitizeSlug(ctx.slugHint) || sanitizeSlug(ctx.pushedName);
-    if (isPlaceholderSlug(cur.slug) && realBase && realBase !== 'contact') {
+    const nameBase = sanitizeSlug(ctx.pushedName);
+    const curBase = String(cur.slug ?? '').replace(/-\d{10}$/, '');
+    if (nameBase && nameBase !== 'contact' && nameBase !== curBase) {
       const suffix = String(cur.slug).match(/-(\d{10})$/)?.[1]
         || slugSuffix(cur.firstSeenAt ? new Date(cur.firstSeenAt) : new Date());
-      const candidate = suffix ? `${realBase}-${suffix}` : realBase;
+      const candidate = suffix ? `${nameBase}-${suffix}` : nameBase;
       if (candidate !== cur.slug && !_findByslug(state, surface, candidate)) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
@@ -770,8 +808,12 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   //    in this surface whose slug matches our intended slug (within the
   //    same minute)? Same-base-slug + same suffix == same contact → alias.
   const firstSeen = new Date();
-  const baseSlug = sanitizeSlug(ctx.slugHint)
-    || sanitizeSlug(ctx.pushedName)
+  // pushedName (the chat TITLE) drives the slug so a fresh contact is named like
+  // the contact, AND so creation agrees with the name-tracking above (no rename
+  // on the 2nd message). slugHint is a fallback for callers that pass only a slug
+  // (e.g. a slash command), and 'contact' is the last-resort placeholder.
+  const baseSlug = sanitizeSlug(ctx.pushedName)
+    || sanitizeSlug(ctx.slugHint)
     || 'contact';
   const candidateSlug = appendSlugSuffix(baseSlug, firstSeen);
   const slugMatch = _findByslug(state, surface, candidateSlug);
