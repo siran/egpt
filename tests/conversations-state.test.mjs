@@ -13,6 +13,7 @@ import {
   findContactByJid,
   findContactsByName,
   ensureContact,
+  isPlaceholderSlug,
   patchContact,
   recordThread,
   isMuted,
@@ -127,6 +128,83 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
       pushedName: 'self', slugHint: 'self', personality: 'system',
     });
     expect(r.entry.personality).toBe('system');
+  });
+
+  it('a known title produces a named slug, not a placeholder', () => {
+    const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
+    expect(r.slug).toMatch(/^morgan-\d{10}$/);
+    expect(isPlaceholderSlug(r.slug)).toBe(false);
+  });
+});
+
+describe('isPlaceholderSlug — placeholder vs real names', () => {
+  it('treats contact-<ts> / contact / empty as placeholders', () => {
+    expect(isPlaceholderSlug('contact-2606101622')).toBe(true);
+    expect(isPlaceholderSlug('contact')).toBe(true);
+    expect(isPlaceholderSlug('')).toBe(true);
+    expect(isPlaceholderSlug(null)).toBe(true);
+  });
+  it('treats real names (with or without suffix) as NOT placeholders', () => {
+    expect(isPlaceholderSlug('morgan-2606101622')).toBe(false);
+    expect(isPlaceholderSlug('le_moi-2605211521')).toBe(false);
+    expect(isPlaceholderSlug('morgan')).toBe(false);
+    // a base that merely CONTAINS 'contact' is real (only exact 'contact' is the fallback)
+    expect(isPlaceholderSlug('contactos-2605211521')).toBe(false);
+  });
+});
+
+describe('ensureContact — self-heals a placeholder slug when the title resolves', () => {
+  // The Morgan bug (operator 2026-06-14): a chat first seen before its Beeper
+  // title resolved got slug 'contact-<ts>'; later the title was known but the
+  // slug stayed nameless forever because path-1 only refreshed pushedName.
+  const ROOM = '!RdGUTtUiSNnirVXjHgP2:beeper.local';
+  function placeholderState() {
+    const r = ensureContact(emptyState(), WA, ROOM, {});   // no name → contact-<ts>
+    expect(r.slug).toMatch(/^contact-\d{10}$/);
+    // pretend a thread was already spawned at the placeholder cwd
+    return { state: recordThread(r.state, WA, ROOM, 'thread-abc'), placeholderSlug: r.slug };
+  }
+
+  it('renames the slug to the resolved name, keeping the firstSeen suffix', () => {
+    const { state, placeholderSlug } = placeholderState();
+    const suffix = placeholderSlug.match(/-(\d{10})$/)[1];
+    const r = ensureContact(state, WA, ROOM, { pushedName: 'morgan', slugHint: 'morgan' });
+    expect(r.renamedFrom).toBe(placeholderSlug);
+    expect(r.renamedTo).toBe(`morgan-${suffix}`);
+    expect(r.slug).toBe(`morgan-${suffix}`);
+    expect(r.changed).toBe(true);
+    expect(isPlaceholderSlug(r.slug)).toBe(false);
+    // the registry entry moved to the new slug + nulled the now-stale thread
+    expect(r.state.contacts[WA][ROOM].slug).toBe(`morgan-${suffix}`);
+    expect(r.state.contacts[WA][ROOM].threadId).toBe(null);
+  });
+
+  it('does NOT re-slug a contact that already has a real name', () => {
+    let s = ensureContact(emptyState(), WA, '85555832479795@lid', { pushedName: 'le moi', slugHint: 'le moi' }).state;
+    const before = s.contacts[WA]['85555832479795@lid'].slug;
+    const r = ensureContact(s, WA, '85555832479795@lid', { pushedName: 'le moi', slugHint: 'le moi' });
+    expect(r.renamedFrom).toBe(null);
+    expect(r.renamedTo).toBe(null);
+    expect(r.slug).toBe(before);
+  });
+
+  it('leaves a placeholder alone while the name is still unknown', () => {
+    const { state, placeholderSlug } = placeholderState();
+    const r = ensureContact(state, WA, ROOM, {});   // still no name
+    expect(r.renamedFrom).toBe(null);
+    expect(r.slug).toBe(placeholderSlug);
+    expect(isPlaceholderSlug(r.slug)).toBe(true);
+  });
+
+  it('does not collide onto an existing slug', () => {
+    // another contact already holds morgan-<suffix>; the placeholder must not steal it
+    const { state, placeholderSlug } = placeholderState();
+    const suffix = placeholderSlug.match(/-(\d{10})$/)[1];
+    const taken = `morgan-${suffix}`;
+    const withTaken = { ...state, contacts: { ...state.contacts, [WA]: { ...state.contacts[WA], '!other:beeper.local': { slug: taken, personality: 'default' } } } };
+    const r = ensureContact(withTaken, WA, ROOM, { pushedName: 'morgan', slugHint: 'morgan' });
+    expect(r.renamedTo).toBe(null);            // collision → no rename
+    expect(r.slug).toBe(placeholderSlug);      // stays a placeholder until safe
   });
 });
 

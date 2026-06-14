@@ -76,6 +76,20 @@ export function slugTranscriptPath(surface, slug) {
   return join(slugDir(surface, slug), 'transcript.md');
 }
 
+// Move a contact's on-disk slug folder old→new (transcript.md, media/, identity
+// files all ride along). Used by the placeholder self-heal (ensureContact +
+// migratePlaceholderSlugs). Idempotent + safe: no-op if the source is missing
+// or the target already exists (NEVER clobbers — a name collision must not eat a
+// transcript). Returns true only when a move actually happened.
+export async function renameSlugDir(surface, oldSlug, newSlug) {
+  if (!oldSlug || !newSlug || oldSlug === newSlug) return false;
+  const from = slugDir(surface, oldSlug);
+  const to = slugDir(surface, newSlug);
+  if (!existsSync(from) || existsSync(to)) return false;
+  try { await mkdir(dirname(to), { recursive: true }); await rename(from, to); return true; }
+  catch (e) { console.error(`!! renameSlugDir(${oldSlug} -> ${newSlug}): ${e?.message ?? e}`); return false; }
+}
+
 // Pre-surface-layout slug dir — used only inside the legacy migration
 // chain that operates on the flat ~/.egpt/conversations/<slug>/ shape.
 // Once migrateToSurfaceLayout has run, callers use slugDir(surface, slug)
@@ -375,6 +389,48 @@ export async function migrateToSurfaceLayout() {
   return { migrated: Object.keys(flat).length, dirsMoved, missingDirs };
 }
 
+// One-shot repair: every primary contact whose slug is still a PLACEHOLDER
+// (contact-<ts>) but whose title is now known (pushedName set) gets re-slugged —
+// the registry slug + the on-disk folder both follow the name. This heals all
+// the nameless folders that piled up from chats first seen before their Beeper
+// title resolved (operator 2026-06-14: "a bunch of nameless contact").
+//
+// Idempotent: entries with a real slug, or a placeholder with no known name, are
+// left untouched. threadId is nulled on rename (cwd changed ⇒ stale claude
+// session); transcripts move with the folder via renameSlugDir. Surface-layout
+// only — the earlier migrations in the boot chain convert older shapes first.
+export async function migratePlaceholderSlugs() {
+  if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 'no registry' };
+  const state = await readState(CONV_YAML_PATH);
+  if (!_isSurfaceLayout(state)) return { renamed: 0, skipped: 'not surface-layout' };
+  const nextContacts = { ...(state.contacts ?? {}) };
+  let renamed = 0, touched = false;
+  for (const surface of Object.keys(nextContacts)) {
+    if (!KNOWN_SURFACES.includes(surface)) continue;
+    const bucket = { ...(nextContacts[surface] ?? {}) };
+    let bucketTouched = false;
+    for (const [jid, entry] of Object.entries(bucket)) {
+      if (!entry || entry.aliasOf || !entry.slug) continue;
+      if (!isPlaceholderSlug(entry.slug)) continue;
+      const realBase = sanitizeSlug(entry.pushedName);
+      if (!realBase || realBase === 'contact') continue;
+      const suffix = String(entry.slug).match(/-(\d{10})$/)?.[1]
+        || slugSuffix(entry.firstSeenAt ? new Date(entry.firstSeenAt) : new Date());
+      const candidate = suffix ? `${realBase}-${suffix}` : realBase;
+      if (candidate === entry.slug) continue;
+      // Collision guard within this (in-progress) bucket — never two contacts on
+      // the same slug.
+      if (_findByslug({ contacts: { [surface]: bucket } }, surface, candidate)) continue;
+      await renameSlugDir(surface, entry.slug, candidate);
+      bucket[jid] = { ...entry, slug: candidate, threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
+      bucketTouched = true; renamed++;
+    }
+    if (bucketTouched) { nextContacts[surface] = bucket; touched = true; }
+  }
+  if (touched) await writeState(CONV_YAML_PATH, { ...state, contacts: nextContacts });
+  return { renamed };
+}
+
 // Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
 // Idempotent: skips entries that already match the pattern. Only runs
 // for slug-keyed state — once converted to JID-keyed, this is a no-op.
@@ -464,6 +520,18 @@ export function appendSlugSuffix(baseSlug, date = new Date()) {
   const base = sanitizeSlug(baseSlug);
   const suf = slugSuffix(date);
   return suf ? `${base}-${suf}` : base;
+}
+
+// A PLACEHOLDER slug is one whose BASE (slug minus the -yymmddhhmm suffix) is
+// empty or the generic 'contact' fallback — i.e. ensureContact had no name to
+// work with at first contact (Beeper title not resolved yet, etc.). These are
+// meant to self-heal: once the chat's real title is known, the slug — and its
+// on-disk folder — recompute to follow the name. 'contact-2606101622' →
+// placeholder; 'morgan-2606101622' → not. Without this, a chat first seen
+// before its title resolved stays nameless forever (operator 2026-06-14).
+export function isPlaceholderSlug(slug) {
+  const base = String(slug ?? '').replace(/-\d{10}$/, '');
+  return base === '' || base === 'contact';
 }
 
 // ── Slug sanitization (filename + YAML-key safe) ───────────────────────────
@@ -652,23 +720,49 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   const nextBucket = { ...prevBucket };
   const next = { ...state, contacts: { ...(state.contacts ?? {}), [surface]: nextBucket } };
 
-  // 1. JID already known (directly or as alias) → refresh pushedName on primary.
+  // 1. JID already known (directly or as alias) → refresh pushedName on primary,
+  //    and SELF-HEAL a placeholder slug now that a real name may be known.
   const resolved = _resolveByJid(state, surface, jid);
   if (resolved) {
     const cur = resolved.entry;
     let changed = false;
+    let patch = cur;
     if (ctx.pushedName && cur.pushedName !== ctx.pushedName) {
-      nextBucket[resolved.primaryJid] = { ...cur, pushedName: ctx.pushedName };
+      patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
+    // Self-heal: a chat first seen before its title resolved got a
+    // 'contact-<ts>' slug; once a real name is known, recompute the slug so the
+    // folder is findable by name. KEEP the original -yymmddhhmm suffix (it
+    // encodes firstSeen → preserves ordering + keeps the new slug unique).
+    // Renaming the slug-dir changes conversation-e's cwd, which invalidates the
+    // stored threadId (the claude session id is keyed on cwd) — so null thread
+    // state, the same trade-off migrateToSurfaceLayout makes. The on-disk
+    // transcript is moved by the caller via renameSlugDir, never lost.
+    let renamedFrom = null, renamedTo = null;
+    const realBase = sanitizeSlug(ctx.slugHint) || sanitizeSlug(ctx.pushedName);
+    if (isPlaceholderSlug(cur.slug) && realBase && realBase !== 'contact') {
+      const suffix = String(cur.slug).match(/-(\d{10})$/)?.[1]
+        || slugSuffix(cur.firstSeenAt ? new Date(cur.firstSeenAt) : new Date());
+      const candidate = suffix ? `${realBase}-${suffix}` : realBase;
+      if (candidate !== cur.slug && !_findByslug(state, surface, candidate)) {
+        renamedFrom = cur.slug;
+        renamedTo = candidate;
+        patch = { ...patch, slug: candidate, threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
+        changed = true;
+      }
+    }
+    if (changed) nextBucket[resolved.primaryJid] = patch;
     return {
       state: changed ? next : state,
       surface,
       jid: resolved.primaryJid,
-      slug: cur.slug,
-      entry: changed ? nextBucket[resolved.primaryJid] : cur,
+      slug: patch.slug,
+      entry: changed ? patch : cur,
       isNew: false,
       changed,
+      renamedFrom,
+      renamedTo,
     };
   }
 
