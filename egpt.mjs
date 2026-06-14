@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
 import { PassThrough, Writable } from 'node:stream';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink, copyFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -75,6 +75,21 @@ import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+
+// ~/.local/bin (where `claude`, `codex`, … live) must be on PATH for the engine's
+// child spawns — notably warm-cli's `spawn('claude')`. A Windows SERVICE inherits
+// a MINIMAL system PATH, not the interactive login PATH, so on a spine whose
+// egpt-daemon service env lacks ~/.local/bin the engine ENOENTs on claude
+// (operator 2026-06-14: DOLLY's Don → "spawn claude ENOENT"; REVE's service PATH
+// happened to include it, DOLLY's didn't). Prepend it here, idempotently: this
+// rides every /restart, so it self-heals on ALL spines with no service/registry
+// edit and no elevation. Windows form is backslash + ';' (path.join/delimiter
+// give the OS-native shape; verified against REVE's working PATH).
+{
+  const localBin = join(homedir(), '.local', 'bin');
+  const onPath = (process.env.PATH || '').split(delimiter).some((p) => p && p.toLowerCase() === localBin.toLowerCase());
+  if (!onPath) process.env.PATH = localBin + delimiter + (process.env.PATH || '');
+}
 // Logs subdir (operator 2026-06-05 cleanup): wa-bridge.log, headless.log,
 // restart.log, and other rolling traces live here instead of polluting the
 // top of ~/.egpt with a dozen .log files. Code paths that wrote at the old
