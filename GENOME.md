@@ -287,11 +287,22 @@ cheap TEXTUAL part, exactly as it reads in the conversation: a voice note's
 TRANSCRIPT text, or an image's PATH — and that path is **relative to the
 conversation folder** (`media/<file>`), resolvable from the Room via its
 member→folder map. Separately, `rooms/<name>/files/` is the Room's OWN,
-operator‑curated shared space (`/inject`), and a member chat's `conversation‑e` is
-granted read access to it so it can **seek** shared assets there. Cross‑member
-media reads — one member's brain resolving ANOTHER member's `media/` reference —
-stay gated by I7: the owning conversation and the Room's own brain may read; a
-sibling member is shared only when explicit, never by implicit leak.
+operator‑curated shared space, which member chats can read and write.
+
+**Confinement is STRUCTURAL, not policy (I7) — verified.** A `conversation‑e`
+runs with `confineToDirs` = its own `conversations/<surface>/<slug>/` ∪ the
+`rooms/<name>/` of every Room it's a member of (recursive, read‑write) ∪ any
+operator grant — and NOTHING else. The brain's permission engine DENIES every path
+outside that set (`claude-sdk` PreToolUse hook; `ccode` via `--add-dir` +
+`--setting-sources ''`), and with no Bash and no Agent there is no escape hatch. So
+a `conversation‑e` **cannot read or write another conversation's folder — cross‑
+conversation contact is impossible by construction, not by rule.** The ONLY cross‑
+conversation channel is the Room: a member writes a file into its Room's `files/`
+(the Room folder is in its sandbox, RW) and the Room's other members read it there.
+**Meta‑engineers** (Wren/Don/siblings) are deliberately UNconfined — they run at the
+repo with full tools (that's their job). Enforced in `dispatch.mjs`
+(`confineToDirs = addDirs = [own slugDir, roomDirs, grants]`), `config/brains/
+claude-sdk.mjs` (deny hook), `src/claude-args.mjs` (`--add-dir`).
 
 **Status / north star.** Today this lives as TWO half‑implementations:
 `conversations-state` (mature per‑chat persistence/transcript/media) and
