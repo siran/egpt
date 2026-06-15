@@ -33,16 +33,32 @@ import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
 // abstraction; rooms.mjs re-exports them so existing importers are unaffected
 // (and so room-core stays cycle-free — rooms.mjs imports room-core, not vice
 // versa).
-export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active'];
+// The member state IS the per-chat auto-mode (GENOME §2.5; operator 2026-06-15
+// "one gate, zero loss"): the full 6-state enum so a brain member (incl. E) can
+// carry its exact reply behavior. Canonical words keep the room vocabulary
+// (active/muted) with the auto-mode tokens (on/mute) as aliases, so the seeding
+// resolver can normalize an auto_e_mode straight into a member state losslessly:
+//   muted          — nothing it contributes is emitted (still heard/logged)
+//   off            — no participation at all (stronger than muted; cf C5.2)
+//   mention        — replies only when @mentioned
+//   mention-direct — replies only when addressed at the start / a reply to it
+//   active         — replies on every turn ("on")
+//   accum          — accumulate; reply on a batched cadence
+export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active', 'mention-direct', 'off', 'accum'];
 export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain', 'shell', 'extension'];
 export const DEFAULT_MEMBER_STATE = 'muted';
 
 // Operator-friendly aliases for the member state — `on`/`unmute` read more
-// naturally than `active`, but they all mean the same input gate. Unknown → null.
+// naturally than `active`, etc. — all normalize to a canonical state. The
+// auto-mode tokens (on→active, mute→muted) are aliases so an auto_e_mode maps in
+// losslessly. Unknown → null.
 const _MEMBER_STATE_ALIASES = {
   muted:    'muted',  mute:    'muted', silent: 'muted',
   mention:  'mention',
   active:   'active', on:      'active', unmute: 'active', unmuted: 'active', open: 'active',
+  'mention-direct': 'mention-direct', direct: 'mention-direct',
+  off:      'off',
+  accum:    'accum', accumulate: 'accum',
 };
 
 export function normalizeMemberState(token) {
