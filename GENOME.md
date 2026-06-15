@@ -260,14 +260,31 @@ members.** So:
   beings are members of this Room"; `@mention` = a one‑turn join.) Commands flow
   through the one router (I‑spine) — never a per‑surface side path. `[[egpt-bridge-sole-router]]`
 
+**A message can belong to MANY Rooms at once, and fulfils EVERY contract it
+touches (operator 2026‑06‑15).** A chat is always its own Room *and* may be a
+member/host of larger Rooms. So a message sent to a group that is also in a Room is
+recorded in BOTH: it lands in the group's own `conversations/.../transcript.md`
+(the conversation contract) AND in every Room the group belongs to
+(`rooms/<name>/transcript.md` — the room contract), and reaches those Rooms'
+other members. Two write rules, never conflated:
+- **Conversation transcript is UNCONDITIONAL (I3):** every message → the chat's own
+  transcript, always — never gated by mode/enrollment/membership.
+- **Room transcript follows the member's contribution gate:** the chat's messages
+  enter a Room (its transcript + fan‑out to other members) per its member `state`
+  there (`active` = all; `mention` = only @‑mentioning; `muted` = none). A muted
+  member still has every line in its OWN transcript, just nothing in the Room's.
+
+This is why a chat is NOT "moved" into a Room when federated — it stays its own
+Room and is *also referenced* as a host/member. The seam resolves to **reference,
+not move**: a Room has a `hosts[]`/`members[]` list; promotion = name it + add
+members; nobody's transcript is relocated.
+
 **Status / north star.** Today this lives as TWO half‑implementations:
 `conversations-state` (mature per‑chat persistence/transcript/media) and
-`src/rooms.mjs` (membership/state/cross‑surface fan‑out). The work is to **merge
-them into one Room model + one folder shape**, with the two roots above. Open seam
-to decide when we build it: when a single‑host `conversations/…` Room is federated,
-does it *move* to `rooms/<name>/`, or does a `rooms/` Room reference it as a host?
-Decide explicitly; don't grow a third mechanism. Do it as a deliberate migration
-(+tests), not in passing.
+`src/rooms.mjs` (membership/state/cross‑surface fan‑out — already loop‑guarded). The
+work is to **merge them into one Room model + one folder shape** (the two roots
+above), with the dual‑write rule wired so a member chat's contributed lines append
+to each Room's transcript. A deliberate migration (+tests), not in passing.
 
 ---
 
