@@ -21,6 +21,7 @@ import * as cdp from './src/tools/cdp.mjs';
 import * as bus from './src/tools/bus.mjs';
 import { reapPort } from './src/tools/reap-port.mjs';
 import { stripFrontMatter } from './src/transcript-meta.mjs';
+import { configWarnings } from './src/config-validate.mjs';
 import { transcriptAppend, replyLine } from './src/transcript-log.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus, resolveBeingMode } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
@@ -451,6 +452,11 @@ try {
     }));
   } catch (e2) { console.error(`!! egpt boot: alert write failed — ${e2?.message ?? e2}`); }
 }
+// Wiring check: a being whose `cwd` doesn't exist fails EVERY turn with a
+// misleading "spawn … ENOENT" (operator 2026-06-14: DOLLY's Don had a
+// YAML-mangled cwd). Surface it LOUDLY at boot so it's diagnosable up front
+// instead of a cryptic per-turn runtime error.
+for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
 // Post-load sanity check: even if readConfigSync didn't throw, the
 // resulting object might be missing critical keys (operator removed
 // them by accident, file got truncated, etc.). Surface explicitly.

@@ -61,10 +61,15 @@ export function createWarmCliSession(options = {}) {
     // --resume <sessionId> when set.
     const args = ['--input-format', 'stream-json', ...buildClaudeArgs(options)];
     const cwd = normalizeCwd(options.cwd);
-    // The claude binary. Defaults to bare 'claude' (on PATH), but a spine whose
-    // SERVICE PATH lacks it (operator 2026-06-14: DOLLY's Don → "spawn claude
-    // ENOENT") can point at the full path via config (brains.warm.bin) or the
-    // EGPT_CLAUDE_BIN env var, no code change. NSSM service PATH ≠ interactive PATH.
+    // A non-existent cwd makes Node's spawn fail with a MISLEADING `spawn <bin>
+    // ENOENT` — it names the binary, not the missing dir (operator 2026-06-14:
+    // DOLLY's Don had a YAML-mangled cwd `C:Usersansrcegpt` and it cost hours of
+    // chasing PATH/binary ghosts). Check it up front and fail with the real reason.
+    // (The '!!' prefix is added by the caller's catch, so this routes through the
+    // bridge failure-notice path rather than leaking as the sibling's reply.)
+    if (cwd && !existsSync(cwd)) {
+      throw new Error(`warm-cli: cwd does not exist: ${cwd} — check the being's config 'cwd' (a double-quoted backslash YAML path gets mangled; use forward slashes)`);
+    }
     const bin = resolveClaudeBin(options.bin);
     onLog(`warm-cli: spawn ${bin} ${args.join(' ')}`);
     proc = _spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(cwd ? { cwd } : {}) });
