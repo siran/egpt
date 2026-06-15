@@ -65,6 +65,13 @@ anything added to the base flows downstream to both (operator 2026-06-15).
 - **Tests:** dual-write present; muted member contributes nothing to the room; media
   referenced not copied + relative path resolves; loop-guard still holds (no re-dispatch).
 - **Risk:** medium-high (touches routing). Rollback = drop the room-transcript append.
+- **NOTE — bot-member prompting = ROUND ROBIN with an accumulated message (operator
+  2026-06-15, verified the DOLLY-REVE bot chat works):** when a room has multiple bot
+  members, don't fan a separate prompt to each in parallel — prompt them ROUND-ROBIN,
+  each seeing the ACCUMULATED message (the conversation so far + prior members' replies
+  this round), so they build on each other instead of answering the same stale input in
+  isolation. Sharpens GENOME §11 "serial across ROUNDS / parallel across beings" toward
+  serial-within-a-round-with-accumulation. Defer/tune in this phase; "we can adjust later."
 
 ## Phase 3 — Confinement under the unified model (verify, don't regress)
 **Goal:** the structural wall (GENOME §2.5) holds when membership drives `confineToDirs`.
