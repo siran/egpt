@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
+import { sanitizeSlug } from './src/sanitize.mjs';
 
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
@@ -555,28 +556,14 @@ export function isPlaceholderSlug(slug) {
 }
 
 // ── Slug sanitization (Windows-path-safe) ──────────────────────────────────
-//
-// Operator (2026-06-14): "slugs must substitute ONLY for windows path-unfriendly
-// characters. accents and spaces and more are allowed; slashes etc. can be
-// substituted." So the slug stays as close to the real contact/group NAME as
-// possible — "Tío Jesús Palma", "+1 (646) 821-7865", "premise-driven bitcoin"
-// — and only the characters Windows forbids in a filename are removed:
-//   < > : " / \ | ? *   and the ASCII control range, plus the trailing-dot /
-//   trailing-space rule and the reserved device names (CON, PRN, …).
-// Illegal chars collapse to a single space so tokens don't fuse oddly. Idempotent
-// (re-sanitizing a clean slug is a no-op) so slugDir() can re-apply it freely.
-const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-export function sanitizeSlug(s) {
-  let out = String(s ?? '')
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')   // Windows-illegal + control → space
-    .replace(/\s+/g, ' ')                       // collapse whitespace runs
-    .replace(/^[.\s]+|[.\s]+$/g, '')            // no leading/trailing dot or space
-    .slice(0, 80)
-    .replace(/[.\s]+$/g, '');                   // re-trim if slice landed on a dot/space
-  if (!out || out === '.' || out === '..') return '';
-  if (WIN_RESERVED.test(out)) out += '_';       // CON → CON_ (reserved device name)
-  return out;
-}
+// Extracted VERBATIM to the leaf src/sanitize.mjs (Phase 0a of the
+// conversations↔rooms merge, GENOME §2.5) so the Room abstraction can share it
+// without an import cycle. Re-exported here so every existing importer of
+// `sanitizeSlug` from conversations-state.mjs is unaffected. See sanitize.mjs
+// for the operator rationale (keep the slug close to the real name; only strip
+// Windows-illegal chars). Imported at the top so slugDir() below keeps a local
+// binding; re-exported here so importers of conversations-state.sanitizeSlug work.
+export { sanitizeSlug };
 
 // ── Schema notes ───────────────────────────────────────────────────────────
 //
