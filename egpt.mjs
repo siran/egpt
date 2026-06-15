@@ -8401,9 +8401,10 @@ function App() {
           logOut(`@${_sibForFail}: turn FAILED — ${_errSum} (bridge-attributed; not recirculated)`);
           reply = meta.fromTelegram ? `⚠️ couldn't answer (bridge): ${_errSum}` : '';
         }
-        // Brains converse: feed this resident's reply (even '…') to the other
-        // residents — but NEVER an infra failure (that's the loop fuel).
-        if (!_infraFail) _recirculateResidentReply({ being: _sibForFail, reply, meta });
+        // Brains converse: feed this resident's reply to the other residents —
+        // but NEVER a silent '…' self-select (operator 2026-06-14: "we're feeding
+        // him his own '...'") nor an infra failure. Both are loop fuel, not content.
+        if (!_infraFail && !_silentReply(reply)) _recirculateResidentReply({ being: _sibForFail, reply, meta });
         // @l (sessionless) emit verdict → egpt.log. Localises why a sessionless
         // sibling stayed quiet: DROP:silent (model self-selected out with '…'),
         // DROP:gate (chat mode/replyAllowed blocked it), DROP:infra (fetch
@@ -8423,7 +8424,15 @@ function App() {
           }
         }
         if (tgStream) {
-          if (_tgShowThink) {
+          if (_dropResident(reply)) {
+            // Silent ('…') / gated / infra-suppressed → DELETE the "⌛ thinking…"
+            // placeholder and emit NOTHING. Editing it to '…' posts a real message
+            // that fans to the other bots and feeds a bot↔bot loop (operator
+            // 2026-06-14: "make sure '...' is not being fanned out to bots"). The
+            // plain-tgStream branch used to finish('…') unconditionally — that was
+            // the loop driver after Don was fixed.
+            await tgStream.delete();
+          } else if (_tgShowThink) {
             // show-think: FREEZE the streamed thinking in place (the last
             // snapshot the operator watched stream, kept as the 💭 artifact)
             // with the "(done ✅)" suffix — the finished signal that tells the
@@ -8431,10 +8440,8 @@ function App() {
             // NEW reply to the original message.
             const _snap = String(_tgLastPartial ?? '').trim();
             await tgStream.finish(renderThink({ header: `💭 ${tgPrefix}`, body: _snap, escape: escapeHtml, done: true }));
-            if (!_dropResident(reply)) {
-              bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
-                { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
-            }
+            bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
+              { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
           } else {
             await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
           }
