@@ -1,5 +1,5 @@
 // Drives the real beeper bridge against a fake Beeper Desktop API (local
-// HTTP + WS). Covers the hardening contract: enrolled-chat 👂 gating,
+// HTTP + WS). Covers the hardening contract: room-service 👂 gating (posts_back),
 // backlog gate, persisted dedup, fail-closed network scope, echo
 // suppression.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -218,8 +218,8 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('wa-instance');
   });
 
-  it('👂 ack only in enrolled chats; non-enrolled still dispatches the transcript silently', async () => {
-    const { incoming } = await startBridge({ isEnrolledChat: (id) => id === CHAT('chat-enrolled') });
+  it('👂 ack only where posts_back; elsewhere still transcribes silently', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === CHAT('chat-enrolled') }) });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
@@ -227,35 +227,35 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-enrolled'))] });
     await waitFor(() => incoming.length === 2);
-    // Both transcripts reach the engine (E hears everything)…
+    // Both transcripts reach the engine (E hears everything — enabled)…
     expect(incoming.map((i) => i.text)).toEqual(['fake transcript', 'fake transcript']);
     expect(incoming.every((i) => i.from.isTranscriptFromVoice)).toBe(true);
-    // …but only the enrolled chat got the in-chat 👂 reply.
+    // …but only the posts_back chat got the in-chat 👂 reply.
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('chat-enrolled'));
     expect(fake.posts[0].text).toBe('👂 fake transcript');
     expect(fake.posts[0].replyToMessageID).toBeTruthy();
   });
 
-  it('👂 gate is keyed on the STABLE id — the bridge passes the gate nothing but the id', async () => {
+  it('👂 verdict is keyed on the STABLE id — the bridge passes it nothing but the id', async () => {
     // Security guard (operator 2026-06-10): authorization must never rely
-    // on a display name. The bridge calls isEnrolledChat with the room id
-    // and NOTHING else, so a name/slug-based gate can't even be written
+    // on a display name. The bridge calls resolveTranscriptionService with the
+    // room id and NOTHING else, so a name/slug-based gate can't even be written
     // against it. A title-matching gate sees undefined → no ack.
     fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'single', isMuted: false, accountID: 'whatsapp' });
     const seen = [];
     const { incoming } = await startBridge({
-      isEnrolledChat: (...args) => { seen.push(args); return false; },
+      resolveTranscriptionService: async (...args) => { seen.push(args); return { enabled: true, postsBack: false }; },
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
-    expect(fake.posts).toHaveLength(0);                 // not enrolled → no ack
-    expect(seen).toEqual([[CHAT('room9')]]);            // gate got the id ALONE — no name/slug to match on
+    expect(fake.posts).toHaveLength(0);                 // posts_back false → no ack
+    expect(seen).toEqual([[CHAT('room9')]]);            // verdict got the id ALONE — no name/slug to match on
   });
 
-  it('enrolled by stable id → ack fires regardless of the chat title', async () => {
+  it('posts_back by stable id → ack fires regardless of the chat title', async () => {
     fake.chats.set(CHAT('room9'), { title: 'anything at all', type: 'single', isMuted: false, accountID: 'whatsapp' });
-    const { incoming } = await startBridge({ isEnrolledChat: (id) => id === CHAT('room9') });
+    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === CHAT('room9') }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(1);
@@ -285,11 +285,12 @@ describe('beeper bridge', () => {
     expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
   });
 
-  it('default gate is DENY: no isEnrolledChat wired → no 👂 anywhere', async () => {
+  it('default verdict never surfaces: no resolver wired → transcribes but no 👂', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
-    expect(fake.posts).toHaveLength(0);
+    expect(incoming[0].text).toBe('fake transcript');  // enabled by default → E still hears
+    expect(fake.posts).toHaveLength(0);                 // postsBack false by default → silent
   });
 
   it('processed ids survive a restart (beeper-seen.jsonl)', async () => {

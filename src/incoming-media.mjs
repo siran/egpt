@@ -19,14 +19,17 @@
 // by the host (egpt.mjs / the Beeper limb), which run in Node.
 
 /**
- * Transcribe a voice/audio note and (when authorized) post the 👂 ack in-chat.
- * Returns the transcript text, or null when transcription is disabled/failed.
- *
- * Surfacing is independent of hearing: the transcript is RETURNED regardless so
- * the caller can dispatch it to the model; the `enrolled` gate only controls
- * whether the 👂 ack is SENT back to the chat (privacy — don't reveal egpt in a
- * chat it isn't enrolled in). The gate keys on a STABLE id host-side, never a
- * display name.
+ * Run the room's transcription service on a voice/audio note: transcribe it
+ * (when the service is `enabled`) and post the 👂 ack in-chat (when it
+ * `postsBack`). Returns the transcript text, or null when transcription is
+ * disabled/failed. The two gates map onto the GENOME heart (idea #2: everything
+ * is HEARD and recorded; only some is SPOKEN):
+ *   enabled   → HEARD: do the transcription at all (the transcript is RETURNED
+ *               so the caller can dispatch it to the model + log it).
+ *   postsBack → SPOKEN: surface the 👂 <transcript> back into the chat.
+ * So `enabled:true, postsBack:false` transcribes for the model/log but stays
+ * silent. Both verdicts are resolved HOST-side from the entity's config.yaml
+ * (src/transcription-service.mjs), keyed off the entity folder, never a name.
  *
  * @param {object}   o
  * @param {string}   o.localPath   downloaded audio file (any ffmpeg-readable)
@@ -36,7 +39,9 @@
  * @param {object}   [o.audioCfg]  whatsapp.media.audio_transcribe config
  * @param {Function} [o.reply]     (text) => Promise — the limb's send bound to
  *                                  this chat + message (a quoted reply)
- * @param {boolean}  [o.enrolled]  host authorization verdict for the 👂 ack
+ * @param {boolean}  [o.enabled]   service: transcribe at all (default true)
+ * @param {boolean}  [o.postsBack] service: surface the 👂 ack (default false —
+ *                                  fail-closed; the host supplies the real verdict)
  * @param {boolean}  [o.muted]     transport mute → suppress the ack send
  * @param {Function} [o.onLog]
  */
@@ -45,21 +50,23 @@ export async function transcribeVoiceNote({
   transcribe,
   audioCfg = {},
   reply = null,
-  enrolled = false,
+  enabled = true,
+  postsBack = false,
   muted = false,
   onLog = () => {},
 } = {}) {
   if (!localPath) return null;
+  if (!enabled) { onLog('transcription service disabled for this room — voice not transcribed'); return null; }
   if (typeof transcribe !== 'function') { onLog('no transcriber injected — voice not transcribed'); return null; }
   let transcript = null;
   try { transcript = await transcribe(localPath, audioCfg, onLog); }
   catch (e) { onLog(`transcribe threw: ${e?.message ?? e}`); }
   if (!transcript) return null;
-  if (reply && enrolled && !muted) {
+  if (reply && postsBack && !muted) {
     try { await reply(`👂 ${transcript}`); }
     catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }
-  } else if (!enrolled) {
-    onLog(`👂 ack suppressed — chat not enrolled`);
+  } else if (!postsBack) {
+    onLog(`👂 ack withheld — transcription posts_back disabled for this room`);
   }
   return transcript;
 }

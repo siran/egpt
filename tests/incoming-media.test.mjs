@@ -1,8 +1,9 @@
-// Locks the limb-agnostic incoming-media contracts (operator 2026-06-13):
-//   - the 👂 ack is gated on the host's enrolled verdict + transport mute, and
-//     the transcript ALWAYS returns regardless (E hears everything; surfacing
-//     is separate). This is the same privacy rule the Beeper limb enforced
-//     inline, now shared by every limb via src/incoming-media.mjs.
+// Locks the limb-agnostic incoming-media contracts (operator 2026-06-13/15):
+//   - transcription is a ROOM SERVICE with two gates resolved host-side:
+//     `enabled` (transcribe at all — HEARD) + `postsBack` (surface the 👂 —
+//     SPOKEN). The transcript ALWAYS returns when enabled, regardless of
+//     postsBack (E hears everything; surfacing is separate). Shared by every
+//     limb via src/incoming-media.mjs.
 //   - the module is Node-import-free so telegram.mjs (which imports it) still
 //     bundles for the browser extension.
 //   - Telegram's media normalizer maps photo[]/voice/audio/document to one
@@ -13,32 +14,44 @@ import { pickTelegramMedia } from '../src/bridges/telegram.mjs';
 
 const fakeTranscribe = async () => 'hola que tal';
 
-describe('transcribeVoiceNote — shared ack policy', () => {
-  it('enrolled + not muted → transcribes AND posts the 👂 ack', async () => {
+describe('transcribeVoiceNote — room service (enabled + postsBack)', () => {
+  it('enabled + postsBack + not muted → transcribes AND posts the 👂 ack', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({
       localPath: '/tmp/n.ogg', transcribe: fakeTranscribe,
-      reply: (x) => sent.push(x), enrolled: true, muted: false,
+      reply: (x) => sent.push(x), enabled: true, postsBack: true, muted: false,
     });
     expect(t).toBe('hola que tal');
     expect(sent).toEqual(['👂 hola que tal']);
   });
 
-  it('NOT enrolled → transcript still returns, but NO ack (privacy)', async () => {
+  it('postsBack:false → transcript still returns, but NO ack (heard, not spoken)', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({
       localPath: '/tmp/n.ogg', transcribe: fakeTranscribe,
-      reply: (x) => sent.push(x), enrolled: false, muted: false,
+      reply: (x) => sent.push(x), enabled: true, postsBack: false, muted: false,
     });
     expect(t).toBe('hola que tal');     // E hears everything
-    expect(sent).toEqual([]);           // …but doesn't reveal itself
+    expect(sent).toEqual([]);           // …but doesn't surface it
   });
 
-  it('muted → no ack even when enrolled', async () => {
+  it('enabled:false → NOT transcribed (no work), null, no ack', async () => {
+    const sent = [];
+    let called = false;
+    const t = await transcribeVoiceNote({
+      localPath: '/tmp/n.ogg', transcribe: async () => { called = true; return 'x'; },
+      reply: (x) => sent.push(x), enabled: false, postsBack: true,
+    });
+    expect(t).toBeNull();
+    expect(called).toBe(false);         // the service is off — whisper never runs
+    expect(sent).toEqual([]);
+  });
+
+  it('muted → no ack even when postsBack', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({
       localPath: '/tmp/n.ogg', transcribe: fakeTranscribe,
-      reply: (x) => sent.push(x), enrolled: true, muted: true,
+      reply: (x) => sent.push(x), enabled: true, postsBack: true, muted: true,
     });
     expect(t).toBe('hola que tal');
     expect(sent).toEqual([]);
@@ -48,14 +61,14 @@ describe('transcribeVoiceNote — shared ack policy', () => {
     const sent = [];
     const t = await transcribeVoiceNote({
       localPath: '/tmp/n.ogg', transcribe: async () => null,
-      reply: (x) => sent.push(x), enrolled: true,
+      reply: (x) => sent.push(x), enabled: true, postsBack: true,
     });
     expect(t).toBeNull();
     expect(sent).toEqual([]);
   });
 
   it('no transcriber injected → null (module stays Node-import-free)', async () => {
-    const t = await transcribeVoiceNote({ localPath: '/tmp/n.ogg', enrolled: true });
+    const t = await transcribeVoiceNote({ localPath: '/tmp/n.ogg', enabled: true, postsBack: true });
     expect(t).toBeNull();
   });
 });

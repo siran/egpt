@@ -65,7 +65,10 @@ export function startTelegramBridge({
   onMedia,                       // (m) => Promise<savedPath> — host _saveIncomingMedia
   transcribe,                    // host-injected voice transcriber (remote-first); falls back to local
   audioCfg = {},                 // whatsapp.media.audio_transcribe
-  isEnrolledChat = () => false,  // host gate for the 👂 ack (operator chats); operator sends always ack
+  // Host verdict for this chat's transcription service (per-entity ROOM service,
+  // not E — async (chatId) => { enabled, postsBack }; src/transcription-service.mjs).
+  // Default = transcribe but never surface (fail-closed announce).
+  resolveTranscriptionService = async () => ({ enabled: true, postsBack: false }),
 }) {
   if (!botToken) throw new Error('telegram bridge: botToken is required');
 
@@ -274,25 +277,27 @@ export function startTelegramBridge({
     let text = rawText.trim();
 
     // Media handling (limb-agnostic): fetch the bytes off Telegram, then hand to
-    // the host. The shared processor transcribes voice + posts the 👂 ack; onMedia
+    // the host. The shared processor runs the room transcription service; onMedia
     // saves every attachment to conversations/telegram/<slug>/media/. A voice note
     // becomes the dispatch text; an image/doc appends a saved-path note so Wren's
-    // Read tool can open it. The bot IS Wren, so the operator's own media always
-    // gets the 👂 ack (enrolled OR authorized).
+    // Read tool can open it. enabled gates the work, postsBack gates the 👂 — both
+    // from the entity's config (default-on), surface-independent.
     if (mediaSpec && typeof onMedia === 'function') {
       try {
         const localPath = await downloadTelegramFile(mediaSpec.fileId, mediaSpec.fileName);
         const ts = ((Number(msg.date) || 0) * 1000) || Date.now();
         if (mediaSpec.kind === 'audio') {
+          const svc = await resolveTranscriptionService(String(msgChat));
           const transcript = await transcribeVoiceNote({
             localPath, transcribe, audioCfg,
             reply: (t) => sendText(msgChat, t, { replyTo: msg.message_id }),
-            enrolled: authorized || isEnrolledChat(msgChat),
+            enabled: svc.enabled,
+            postsBack: svc.postsBack,
             muted: false,
             onLog: (m) => log(`media: ${m}`),
           });
           if (transcript) text = text ? `${text}\n${transcript}` : transcript;
-          else if (!text) text = '[voice note — transcription failed]';
+          else if (!text) text = svc.enabled ? '[voice note — transcription failed]' : '[voice note]';
         }
         const savedPath = await onMedia({
           surface: 'telegram',
