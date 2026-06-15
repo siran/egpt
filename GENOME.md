@@ -221,6 +221,57 @@ The sibling registry (`EGPT_CONFIG.siblings.<name>`) is the source of truth:
 ---
 
 
+### 2.5 Rooms — the one space abstraction (operator 2026‑06‑15)
+
+**A Room is a host to members, files, media, and a transcript.** A 1:1 or a group —
+on WhatsApp, Telegram, the shell, anywhere — *natively fulfils that contract*, so a
+surface chat IS a Room, not a thing a Room points at. Everything we built "via
+beeper‑egpt" (transcript‑first‑class, media‑save, the `👂` ack, `identity.d`,
+heartbeat, the emit gate) is just a **Room's default services**, attached to the
+Room, not to the surface.
+
+**One implementation, one folder tree, two roots — the unifier.** A Room's on‑disk
+shape is the same wherever it lives; the root only encodes *origin/identity*:
+- `conversations/<surface>/<slug>/` — a Room **born from a surface chat** (auto‑
+  instantiated on first contact; exactly ONE host = that chat).
+- `rooms/<name>/` — a Room **created deliberately** (operator‑named; may federate
+  ≥1 hosts across surfaces — a Telegram group and a WhatsApp group can be two hosts
+  of ONE Room).
+
+Identical tree either way:
+```
+<room>/
+  config.yaml      members[] (+per-member state) · personality · thread · heartbeat · hosts[]
+  transcript.md    first-class, rolling-window (I3)
+  media/           per-room downloads (C2)
+  files/           operator /inject
+  identity.d/      NN-*.md fed to the room's brain(s)
+```
+
+**Members = humans + brains, each with a contribution state** (`muted | mention |
+active` — `src/rooms.mjs`). That single gate IS the per‑chat auto‑mode AND the
+"residents" of a chat, unified: **a chat's residents are simply its `brain`
+members.** So:
+- `whatsapp.residents_per_chat` is a *standalone* config that duplicates Room
+  membership — the parallel‑router smell. It folds into a Room's members.
+- **`/use` (and `/room`) is the router‑level, surface‑agnostic editor of
+  membership** — the live door; config is the declarative seed; both write ONE
+  store. (`/use` lineage: shell "plain text routes to these sessions" → "these
+  beings are members of this Room"; `@mention` = a one‑turn join.) Commands flow
+  through the one router (I‑spine) — never a per‑surface side path. `[[egpt-bridge-sole-router]]`
+
+**Status / north star.** Today this lives as TWO half‑implementations:
+`conversations-state` (mature per‑chat persistence/transcript/media) and
+`src/rooms.mjs` (membership/state/cross‑surface fan‑out). The work is to **merge
+them into one Room model + one folder shape**, with the two roots above. Open seam
+to decide when we build it: when a single‑host `conversations/…` Room is federated,
+does it *move* to `rooms/<name>/`, or does a `rooms/` Room reference it as a host?
+Decide explicitly; don't grow a third mechanism. Do it as a deliberate migration
+(+tests), not in passing.
+
+---
+
+
 ## 3. The life of a message (end‑to‑end)
 
 1. **Limb receives** raw input off its transport. If it carries media, the limb
