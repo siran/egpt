@@ -16,10 +16,11 @@
 // `from.chatId` is the opaque Beeper room id, used only to send back.
 //
 // Hardening pass (2026-06-10, review follow-up):
-//   - 👂 transcript acks are gated on isEnrolledChat (host passes the
-//     auto_e_chats + self-DM rule), NOT on Beeper's mute flag. Default
-//     DENY — "leaks are unacceptable" (operator 2026-06-03). Suppressed
-//     acks log the chatID so the operator can enroll it.
+//   - 👂 transcript acks are gated on isEnrolledChat (the host's verdict —
+//     a transcription-is-a-room-service policy, default-on per conversation;
+//     see src/transcription-ack.mjs), AND on Beeper's mute flag (a muted
+//     chat never acks). Default DENY here so a bridge with no gate wired can
+//     never announce egpt — the host decides the actual policy.
 //   - Backlog gate: messages older than bridge start (minus holdGraceMs)
 //     are marked seen but never dispatched — same hold-on-reconnect
 //     semantic as the baileys/TG bridges. Without it, a Beeper replay
@@ -75,10 +76,10 @@ export async function startBeeperBridge(opts = {}) {
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
     networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats); anything else is dropped. Set [] / null to process every network.
-    // Enrolled-chats gate for the 👂 transcript ack — the SAME rule as every
-    // other egpt-initiated send (auto_e_chats + self-DM), supplied by the
-    // host. Default DENY: a bridge with no gate wired must never announce
-    // egpt's presence in a chat nobody enrolled.
+    // Host verdict for the 👂 transcript ack (a room transcription service,
+    // NOT E enrollment — the host supplies the policy; see
+    // src/transcription-ack.mjs). Generic, fail-closed slot: default DENY so a
+    // bridge with no gate wired can never announce egpt's presence.
     isEnrolledChat = () => false,
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.

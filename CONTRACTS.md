@@ -127,12 +127,17 @@ Lock status of the four:
   bridge (the sole entry, I1) for every limb and completes before dispatch (DOLLY
   GPU whisper-server, HMAC-token; local whisper-cli fallback). Unconditional. ✅
   (`d6fbbed`, `6bfede3`, `3ed95fc`; shared path C3.4)
-- **C3.2** The `👂 <transcript>` ack is an egpt-initiated SEND → gated on the
-  enrolled-chats rule (auto_e_chats / self-DM), NOT a contract. Suppressed in
-  non-enrolled chats by design (privacy: don't reveal egpt in others' chats). ✅ (`54f69c3`)
-  ⏳ OPERATOR 2026-06-14: the `👂` shows ONLY in Self today — wants it in groups +
-  Telegram too. NB transcription RUNS everywhere (C3.1); what's Self-only is the
-  SURFACING (the enrolled-ack gate) — broaden the gate / add a per-chat ack toggle.
+- **C3.2** The `👂 <transcript>` ack is a ROOM transcription service, NOT E
+  (operator 2026-06-15: "transcription service is not E … a fundamental tool of a
+  room — egpt power"). It is DECOUPLED from E enrollment (`auto_e_chats`): every
+  conversation transcribes + posts the `👂` by DEFAULT (auto-enroll), opt-out per
+  conversation via `whatsapp.transcription_ack` (global default on/off) /
+  `whatsapp.transcription_ack_modes` (per-chat override). Keyed on the STABLE chat
+  id, read live; a muted chat still never acks. Both surfaces (Beeper + Telegram).
+  ✅ (2026-06-15, `src/transcription-ack.mjs`, `tests/transcription-ack.test.mjs`).
+  RESOLVED the 2026-06-14 operator ask: the `👂` was Self-only because the ack
+  keyed on `auto_e_chats` and that list was empty — transcription always RAN
+  everywhere (C3.1); only the SURFACING was wrongly bound to E's enrollment.
 - **C3.3** The transcript text still dispatches + lands in transcript.md even when
   the 👂 ack is suppressed. ✅
 - **C3.4** Voice transcription + the `👂` ack are ONE shared nucleus service
