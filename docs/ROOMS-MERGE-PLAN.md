@@ -18,15 +18,26 @@ Target end-state (from §2.5):
 
 ---
 
-## Phase 0 — Room model + folder-tree helpers (pure, no behavior change)
-**Goal:** one module that defines the Room shape and the path helpers both roots share.
-- New `src/room-folder.mjs` (pure): `roomFolder({root, surface?, slug|name})` →
-  the base dir; `transcriptPath / mediaDir / filesDir / identityDir / configPath`
-  derived from it — IDENTICAL shape for `conversations/<surface>/<slug>/` and
-  `rooms/<name>/`. `conversations-state.slugDir` and `rooms.roomDir` re-export from it.
-- **Tests:** both roots yield the same tree; helpers resolve; `slugDir`/`roomDir`
-  unchanged for existing callers (characterization tests).
-- **Risk:** none (pure, re-export). Revert = delete module.
+## Phase 0 — the `Room` ABSTRACTION + two implementations (no behavior change)
+**Goal:** introduce a base `Room` (class/factory) that OWNS the contract + default
+behavior, and two concrete implementations. NOT a shared helper — an abstraction, so
+anything added to the base flows downstream to both (operator 2026-06-15).
+- New module (the abstraction — name TBD; `src/room.mjs` is taken by routing, so e.g.
+  `src/room-core.mjs`, or fold into `src/rooms.mjs`):
+  - **`Room`** (base): `baseDir()` (the one thing subclasses set) → derives
+    `transcriptPath/mediaDir/filesDir/identityDir/configPath`; plus shared behavior:
+    `appendTranscript()`, `saveMedia()`, `loadConfig()/saveConfig()`, `members()`,
+    `addMember/removeMember/memberState()`, `hosts()`, and the confine/emit wiring.
+  - **`ConversationRoom extends Room`** — `baseDir()` = `conversations/<surface>/<slug>/`;
+    one host (the surface chat); knows its surface+slug.
+  - **`NamedRoom extends Room`** — `baseDir()` = `rooms/<name>/`; ≥1 hosts (federation).
+  - Resolver: `Room.forChat(surface, slug)` / `Room.named(name)`.
+- `conversations-state.slugDir` and `rooms.roomDir` DELEGATE to the matching Room's
+  `baseDir()` — same paths, no behavior change.
+- **Tests:** both subclasses satisfy the Room contract (identical tree); **a method
+  added to the base appears on BOTH** (the downstream-inheritance property, asserted);
+  `slugDir`/`roomDir` byte-identical for existing callers (characterization).
+- **Risk:** low (additive + delegation). Revert = drop the module, keep the old fns.
 
 ## Phase 1 — A conversation IS a single-host Room (members + `/use`)
 **Goal:** residents become Room membership, editable at the router.
