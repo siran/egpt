@@ -14,6 +14,9 @@
 // turn at a time. No `inject` is exported — the pool then serializes follow-ups
 // (stream-json treats each user message as a separate query, not a mid-turn weave).
 import { spawn as nodeSpawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { buildClaudeArgs } from './claude-args.mjs';
 
 // MSYS2/Cygwin "/c/Users/.." → "C:/Users/.." for Node spawn cwd on Windows.
@@ -21,6 +24,23 @@ function normalizeCwd(p) {
   if (!p) return p;
   const m = p.match(/^\/([a-zA-Z])\/(.*)$/);
   return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
+}
+
+// Resolve the claude binary to a FULL path. A Windows SERVICE inherits a minimal
+// PATH (not the login PATH), and — verified the hard way (operator 2026-06-14:
+// DOLLY's Don ENOENT survived an `egpt.mjs` PATH prepend) — mutating
+// `process.env.PATH` at runtime does NOT reliably reach libuv's spawn path-search
+// on Windows. So don't rely on PATH: prefer an explicit override
+// (config `bin` / `EGPT_CLAUDE_BIN`), else the known per-user install
+// (`~/.local/bin/claude[.exe]`, where the installer puts it), else fall back to
+// bare `claude` (PATH) for setups that do have it.
+function resolveClaudeBin(explicit) {
+  const override = explicit || process.env.EGPT_CLAUDE_BIN;
+  if (override) return override;
+  const exe = process.platform === 'win32' ? 'claude.exe' : 'claude';
+  const local = join(homedir(), '.local', 'bin', exe);
+  try { if (existsSync(local)) return local; } catch { /* fall through to PATH */ }
+  return 'claude';
 }
 
 export function createWarmCliSession(options = {}) {
@@ -45,7 +65,7 @@ export function createWarmCliSession(options = {}) {
     // SERVICE PATH lacks it (operator 2026-06-14: DOLLY's Don → "spawn claude
     // ENOENT") can point at the full path via config (brains.warm.bin) or the
     // EGPT_CLAUDE_BIN env var, no code change. NSSM service PATH ≠ interactive PATH.
-    const bin = options.bin || process.env.EGPT_CLAUDE_BIN || 'claude';
+    const bin = resolveClaudeBin(options.bin);
     onLog(`warm-cli: spawn ${bin} ${args.join(' ')}`);
     proc = _spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, ...(cwd ? { cwd } : {}) });
     proc.stdout?.setEncoding?.('utf8');
