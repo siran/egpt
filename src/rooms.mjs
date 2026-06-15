@@ -17,6 +17,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
+import { sanitizeName } from './sanitize.mjs';
 
 export const ROOM_MEMBER_STATES = ['muted', 'mention', 'active'];
 export const ROOM_MEMBER_KINDS  = ['wa-group', 'tg-group', 'brain', 'shell', 'extension'];
@@ -51,9 +52,10 @@ export const ROOMS_CONFIG_PATH = join(homedir(), '.egpt', 'rooms', 'config.yaml'
 export const roomDir = (name) => join(homedir(), '.egpt', 'rooms', sanitizeName(name));
 export const roomFilesDir = (name) => join(homedir(), '.egpt', 'rooms', sanitizeName(name), 'files');
 
-export function sanitizeName(name) {
-  return String(name ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'room';
-}
+// sanitizeName moved VERBATIM to the leaf src/sanitize.mjs (Phase 0a) so the
+// Room abstraction can share it without an import cycle; re-exported here so
+// every existing importer of rooms.sanitizeName is unaffected.
+export { sanitizeName };
 
 export function emptyRooms() { return { rooms: {} }; }
 
