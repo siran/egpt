@@ -34,6 +34,20 @@ export const THOUGHT_SUFFIX = '\n\n(done ✅)';
 // for the header + suffix so an edit never bounces on length.
 export const THINK_CLIP = 3500;
 
+// A thinking ARTIFACT is status, not content: the "⌛ thinking…" placeholder, the
+// live "(thinking... 🤔)" stream, or the frozen "(done ✅)" snapshot. Another bot
+// must NOT take one as a prompt — replying to a peer's placeholder is premature
+// (the real answer arrives as its own message) and drives a bot↔bot loop,
+// especially because the Telegram bridge doesn't deliver edits, so a peer only
+// ever SEES the placeholder unless the answer is a separate message (operator
+// 2026-06-14). Used by the dispatch loop-guard to skip these.
+export function isThinkingPlaceholder(text) {
+  const t = String(text ?? '').trimEnd();
+  return t.includes('⌛ thinking…')
+      || t.endsWith('(thinking... 🤔)')
+      || t.endsWith('(done ✅)');
+}
+
 // A blank line between thinking "statements" so the streamed block is evenly
 // spaced (operator 2026-06-13 02:15). Each non-empty line becomes its own
 // statement; whitespace-only lines are dropped and existing blank runs collapse

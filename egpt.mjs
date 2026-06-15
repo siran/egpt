@@ -25,7 +25,7 @@ import { configWarnings } from './src/config-validate.mjs';
 import { transcriptAppend, replyLine } from './src/transcript-log.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus, resolveBeingMode } from './src/auto-mode.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
-import { renderThink } from './src/show-think.mjs';
+import { renderThink, isThinkingPlaceholder } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
@@ -5947,6 +5947,15 @@ function App() {
         brainForUrl,
         isInternalUrl,
         resolveTabId,
+        // Emit text back to the chat the slash was invoked FROM (Telegram/WA),
+        // not just the shell/Self mirror — so e.g. /rules actually shows the rules
+        // in that chat (operator 2026-06-14: "/rules didn't show the rules in the
+        // chat"). Falls back to sysOut when there's no originating bridge chat.
+        replyHere: (t) => {
+          if (meta.fromTelegram && meta.telegramChatId) return bridgeRef.current?.send?.(t, { chatId: meta.telegramChatId });
+          if (meta.fromWhatsApp && meta.waChatId) return waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
+          return sysOut(t);
+        },
       };
       return await entry.run({ cmd, arg, meta, ctx });
     }
@@ -7046,7 +7055,12 @@ function App() {
     // is frozen in place and the clean final reply is posted as a NEW message
     // (a reply to the original message that triggered the turn).
     // Toggle via: /e auto show-think on|off
-    const tgShowThink = !!(tgChatId && (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(tgChatId)));
+    // show-think is DEFAULT-ON for Telegram (operator 2026-06-14: "show_think can
+    // be default"). Beyond the visible 🤔/✅, it's load-bearing for bot↔bot: it
+    // posts the answer as its OWN message, whereas plain mode EDITS the "thinking…"
+    // placeholder — and the bridge doesn't subscribe to edits, so a peer would
+    // never see the answer. Disable globally with telegram.show_think: false.
+    const tgShowThink = !!(tgChatId && EGPT_CONFIG.telegram?.show_think !== false);
     // Bridge selection rule: when a turn was triggered by an upstream
     // bridge (Telegram OR WhatsApp), only that bridge gets the reply
     // (route back to the chat that asked). For local typing, both
@@ -7387,8 +7401,17 @@ function App() {
       const inbound = (meta.fromTelegram || meta.fromWhatsApp) && !meta._heartbeatConv && !meta._routedFromRoom;
       if (inbound) {
         if (meta.fromBot) {
+          // A peer bot's thinking ARTIFACT ("⌛ thinking…" / "(thinking... 🤔)" /
+          // "(done ✅)") is status, not content — never turn on it (premature, and
+          // it drives the loop). The real answer arrives as its own message. Don't
+          // even count it toward the loop-guard. (operator 2026-06-14)
+          if (isThinkingPlaceholder(text)) { logOut(`skip: peer thinking-artifact in ${ch ?? '?'} — not a prompt`); return; }
           const action = g.noteBeing(ch);
-          if (action === 'warn') ack('⚠️ WARNING FROM BRIDGE: bot↔bot exchange with no human — wind it down.');
+          // The warning REMINDS the rule so the beings can self-regulate (operator
+          // 2026-06-14): do NOT answer another bot unless a human is in the loop;
+          // if you've nothing essential to add, your reply must be EXACTLY "..."
+          // (the system reads that as silence and posts nothing). Wait for a human.
+          if (action === 'warn') ack('⚠️ WARNING FROM BRIDGE: bot↔bot exchange with no human — wind it down. RULE: do NOT reply to another bot unless a human has spoken; if you have nothing essential to add, reply exactly "..." (silence). Wait for a human.');
           else if (action === 'stop') { g.stopChannel(ch); ack('🛑 bridge STOP — bot↔bot loop limit hit. RESUME to continue.'); return; }
         } else {
           g.noteHuman(ch);
@@ -8300,8 +8323,12 @@ function App() {
         // to the original message — the arriving reply IS the "finished" signal.
         // Computed once here (not just at finish) so the live updates can mark
         // the thinking too. Toggle via: /e auto show-think on|off.
+        // show-think DEFAULT-ON (operator 2026-06-14): visible 🤔/✅, and the
+        // answer goes out as its OWN message so a peer bot actually receives it
+        // (plain mode edits the placeholder; the bridge ignores edits). Disable
+        // globally with telegram.show_think: false.
         const _tgShowThink = !!(meta.fromTelegram && meta.telegramChatId &&
-          (EGPT_CONFIG.telegram?.show_think_chats ?? []).includes(String(meta.telegramChatId)));
+          EGPT_CONFIG.telegram?.show_think !== false);
         const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
           ? bridgeRef.current.startStreamMessage(
               // show-think: 💭 header, blank line, then the live thinking body

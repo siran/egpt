@@ -65,7 +65,7 @@ export async function run({ arg, meta, ctx }) {
   //   buildWaSurfaceTag(chatId)         — '<slug>.<jid-num>.wa' formatter
   //   formatAutoDispatchLine({...})     — '[Name@surface (HH:MM)]: body' formatter
   //   EGPT_CONFIG                       — read auto_e_chats[0] as fallback target
-  const { append, setItems, computeBrainTurn, sysOut,
+  const { append, setItems, computeBrainTurn, sysOut, replyHere,
           buildWaSurfaceTag, formatAutoDispatchLine, EGPT_CONFIG } = ctx;
 
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
@@ -87,6 +87,10 @@ export async function run({ arg, meta, ctx }) {
   // (1) shell-side emit (transcript + items-mirror to bridges).
   await append('system', finalRules);
   setItems(p => [...p, { id: Date.now() + Math.random(), author: 'system', body: finalRules }]);
+  // …and SHOW the rules in the chat the command was invoked from (Telegram/WA) —
+  // the shell/items mirror only reaches Self, so without this /rules typed in a
+  // group/agent chat showed nothing there (operator 2026-06-14).
+  try { replyHere?.(finalRules); } catch (e) { sysOut?.(`!! /rules: replyHere failed: ${e?.message ?? e}`); }
 
   // (2) inject into @e session as a natural chat message from a
   //     special "Group SysAdmin" sender, formatted exactly like an

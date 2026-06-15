@@ -8,7 +8,24 @@
 import { describe, it, expect } from 'vitest';
 import {
   spaceThinkStatements, renderThink, THINKING_SUFFIX, THOUGHT_SUFFIX, THINK_CLIP,
+  isThinkingPlaceholder,
 } from '../src/show-think.mjs';
+
+describe('isThinkingPlaceholder — a peer bot\'s status, not content', () => {
+  it('flags the placeholder / live-thinking / done-frozen artifacts', () => {
+    expect(isThinkingPlaceholder('🤝 don\n⌛ thinking…')).toBe(true);
+    expect(isThinkingPlaceholder('💭 wren\n\nweighing it\n\n(thinking... 🤔)')).toBe(true);
+    expect(isThinkingPlaceholder('💭 wren\n\nweighed it\n\n(done ✅)')).toBe(true);
+    expect(isThinkingPlaceholder(renderThink({ header: '💭 x', body: 'mid' }))).toBe(true);   // live
+    expect(isThinkingPlaceholder(renderThink({ header: '💭 x', body: 'done', done: true }))).toBe(true);
+  });
+  it('does NOT flag a real answer (so peers still respond to content)', () => {
+    expect(isThinkingPlaceholder('🐦 wren\nYes — I pulled, looks great.')).toBe(false);
+    expect(isThinkingPlaceholder('the answer is 42')).toBe(false);
+    expect(isThinkingPlaceholder('…')).toBe(false);   // silence is handled separately
+    expect(isThinkingPlaceholder('')).toBe(false);
+  });
+});
 
 // Mirror egpt's escapeHtml so the test exercises the real escaping shape.
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
