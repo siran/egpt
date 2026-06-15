@@ -27,7 +27,7 @@ import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoRe
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink, isThinkingPlaceholder } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
-import { mayAckTranscript } from './src/transcription-ack.mjs';
+import { readTranscriptionConfig, DEFAULT_SERVICE as DEFAULT_TRANSCRIPTION_SERVICE } from './src/transcription-service.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -2699,6 +2699,30 @@ function App() {
     } catch (e) { errOut(`!! inbound-log ${from?.chatId ?? '?'}: ${e?.message ?? e}`); }
   };
 
+  // Resolve a chat's transcription SERVICE verdict { enabled, postsBack } —
+  // a per-ENTITY ROOM service (operator 2026-06-15: "transcription is surface
+  // independent … in conversations.yaml or room.yaml"), NOT E enrollment and NOT
+  // a transport concern. Reads the conversation's own config.yaml (the same file
+  // the heartbeat service uses), surface-independent; defaults BOTH ON
+  // (auto-enroll) when there's no slug yet (brand-new chat) or no config block.
+  // Keyed off the entity folder, never a display name. Fail-OPEN to the default
+  // service (the operator's default-on policy), but a muted chat still never acks
+  // (transport mute, handled in transcribeVoiceNote).
+  // TODO (Rooms, GENOME §2.5 / ROOMS-MERGE-PLAN Phase 1+): also union the room
+  // config of every Room this chat is a member of.
+  const _resolveTranscriptionService = async (surface, chatId) => {
+    try {
+      if (!chatId) return { ...DEFAULT_TRANSCRIPTION_SERVICE };
+      const cs = await _loadConvState();
+      const slug = conversationsState.getContact(cs, surface, chatId)?.slug ?? null;
+      if (!slug) return { ...DEFAULT_TRANSCRIPTION_SERVICE };   // new conversation → auto-enroll
+      return await readTranscriptionConfig(conversationsState.slugDir(surface, slug));
+    } catch (e) {
+      logOut(`transcription-service: resolve failed for ${chatId} — ${e?.message ?? e}; using defaults`);
+      return { ...DEFAULT_TRANSCRIPTION_SERVICE };
+    }
+  };
+
   // CONTRACT C2 — persist an incoming attachment the bridge handed us into the
   // chat's own media/ folder. The bridge downloaded it + decided to save it
   // (whatsapp.media.download); here we resolve the chat's slug (ensuring the
@@ -3292,11 +3316,10 @@ function App() {
       // Wren — its operator's media always acks; transcripts reach Wren as text.
       onMedia:      _saveIncomingMedia,
       audioCfg:     EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
-      // 👂 ack verdict — transcription is a ROOM service (default-on, opt-out),
-      // not E (see src/transcription-ack.mjs). The bridge already acks the
-      // operator's own media (authorized); this adds room-service acks for
-      // OTHER chats too, decoupled from E enrollment. Keyed on the stable id.
-      isEnrolledChat: (chatId) => mayAckTranscript(chatId, EGPT_CONFIG.whatsapp ?? {}),
+      // Transcription SERVICE verdict — a per-entity ROOM service (default-on,
+      // opt-out per conversation), not E (src/transcription-service.mjs).
+      // Surface-independent: reads conversations/telegram/<slug>/config.yaml.
+      resolveTranscriptionService: (chatId) => _resolveTranscriptionService('telegram', chatId),
       transcribe:   (EGPT_CONFIG.transcription_endpoint && EGPT_CONFIG.transcription_token)
         ? makeRemoteFirstTranscriber({
             endpoint: EGPT_CONFIG.transcription_endpoint,
@@ -3748,16 +3771,13 @@ function App() {
         // Beeper Desktop API token (transport: 'beeper'). config.local.json
         // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
         beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
-        // Verdict for the beeper limb's 👂 transcription ack. Transcription is a
-        // ROOM SERVICE, not E (operator 2026-06-15: "transcription service is
-        // not E … a fundamental tool of a room — egpt power"), so this is
-        // DECOUPLED from auto_e_chats: a room transcribes by default
-        // (auto-enroll), opt-out per conversation via whatsapp.transcription_ack
-        // / transcription_ack_modes. See src/transcription-ack.mjs. Reads
-        // EGPT_CONFIG live so /config edits apply without a bridge restart.
-        // Keyed on the STABLE chat id ONLY, never a display name (a chat title
-        // is attacker-controllable; the Beeper room id / WA jid is not).
-        isEnrolledChat:    (chatId) => mayAckTranscript(chatId, EGPT_CONFIG.whatsapp ?? {}),
+        // Verdict for this chat's transcription SERVICE (a per-entity ROOM
+        // service, not E — operator 2026-06-15: "transcription is surface
+        // independent … a fundamental tool of a room — egpt power"). Reads the
+        // conversation's own config.yaml ({ transcription: { enabled, posts_back } },
+        // both default-on), keyed on the STABLE chat id never a display name.
+        // src/transcription-service.mjs.
+        resolveTranscriptionService: (chatId) => _resolveTranscriptionService('whatsapp', chatId),
         // Remote-first transcription (operator 2026-06-10): when
         // transcription_endpoint is set, voice notes go to the GPU worker
         // spine; ANY failure or timeout falls back to local whisper, so a

@@ -95,10 +95,12 @@ in brackets point at the recorded rationale.
   forbids (the emit gate, I4/I5) — don't reveal E in a chat it isn't enrolled
   in. Compartmentalize — never leak one chat's context into another. NB the
   `👂` transcription ack is NOT E and is NOT bound by this: transcription is a
-  **Room default service** (default‑on per conversation, opt‑out — operator
-  2026‑06‑15 "transcription is a fundamental tool of a room — egpt power"),
-  decoupled from E enrollment (§2.5). The transport slot stays fail‑closed; the
-  host supplies the room‑service policy (`src/transcription-ack.mjs`).
+  **Room default service** — surface‑independent, configured in the entity's own
+  `config.yaml` (`transcription: { enabled, posts_back }`, both default‑on; the
+  two flags are the heard/spoken split of idea #2), decoupled from E enrollment
+  (§2.5; operator 2026‑06‑15 "transcription is a fundamental tool of a room —
+  egpt power"). The transport slot stays fail‑closed; the host resolves the
+  per‑entity verdict (`src/transcription-service.mjs`).
 - **I8 — E is gated; meta‑engineers are not; no backchannel.** `E` (the public
   persona) is always gated. `Wren`/`L`/`D` are ungated, self‑governed engineering
   selves. Agent↔agent chatter rides a VISIBLE transport (Telegram) THROUGH THE
@@ -349,11 +351,13 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
    downloads the bytes to a local file.
 2. **Media → nucleus:** the limb calls `onMedia(m)`. The nucleus saves the
    file to `conversations/<surface>/<slug>/media/`, and for audio runs the
-   shared `transcribeVoiceNote` (injected transcriber) → the transcript becomes
-   the dispatch text, and a `👂 <transcript>` ack is posted **iff** the chat's
-   transcription‑ack is enabled (a Room service, default‑on per conversation;
-   §2.5, `src/transcription-ack.mjs`) and the chat isn't muted. The transcript
-   reaches the model regardless (I3). For an image, the saved path is surfaced
+   shared `transcribeVoiceNote` (injected transcriber) under the room's
+   transcription service: it transcribes **iff** the entity's `enabled` flag is
+   on (HEARD → the transcript becomes the dispatch text), and posts the
+   `👂 <transcript>` ack **iff** `posts_back` is on (SPOKEN) and the chat isn't
+   muted (a Room service, both default‑on per conversation/room; §2.5,
+   `src/transcription-service.mjs`). When enabled, the transcript reaches the
+   model regardless of `posts_back` (I3). For an image, the saved path is surfaced
    so a vision brain can `Read` it.
 3. **Text → nucleus:** the limb calls `onIncoming(text, from)`.
 4. **Classify** (nucleus): per‑chat mode, mention/mention‑direct, surface
@@ -414,6 +418,13 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 - **Heartbeat is per‑entity** — no global `@e` heartbeat; a
   `heartbeat.md` in a conversation's/room's folder is dispatched through the
   gate. `[[egpt-heartbeat-per-entity]]`
+- **Transcription is a per‑entity Room service** — surface‑independent, a
+  `transcription: { enabled, posts_back }` block in the conversation's/room's own
+  `config.yaml` (same file as heartbeat; both flags default‑on). `enabled` =
+  transcribe at all (heard); `posts_back` = surface the `👂` (spoken). The host
+  resolves the verdict per chat (`src/transcription-service.mjs`); the transport
+  only runs the shared `transcribeVoiceNote`. NOT E enrollment (operator
+  2026‑06‑15).
 - **Media** — every attachment saved by default (`whatsapp.media.download`:
   `all` / `images_docs` / `off`), meaningful filename +
   sidecar caption + `index.md` entry; voice saved AND transcribed.

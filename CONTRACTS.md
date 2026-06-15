@@ -125,29 +125,37 @@ Lock status of the four:
 - **C3.1** Every voice/audio note is transcribed **before the model is prompted** —
   the model is fed the transcript, NEVER raw audio. Transcription runs at the
   bridge (the sole entry, I1) for every limb and completes before dispatch (DOLLY
-  GPU whisper-server, HMAC-token; local whisper-cli fallback). Unconditional. ✅
-  (`d6fbbed`, `6bfede3`, `3ed95fc`; shared path C3.4)
-- **C3.2** The `👂 <transcript>` ack is a ROOM transcription service, NOT E
-  (operator 2026-06-15: "transcription service is not E … a fundamental tool of a
-  room — egpt power"). It is DECOUPLED from E enrollment (`auto_e_chats`): every
-  conversation transcribes + posts the `👂` by DEFAULT (auto-enroll), opt-out per
-  conversation via `whatsapp.transcription_ack` (global default on/off) /
-  `whatsapp.transcription_ack_modes` (per-chat override). Keyed on the STABLE chat
-  id, read live; a muted chat still never acks. Both surfaces (Beeper + Telegram).
-  ✅ (2026-06-15, `src/transcription-ack.mjs`, `tests/transcription-ack.test.mjs`).
-  RESOLVED the 2026-06-14 operator ask: the `👂` was Self-only because the ack
-  keyed on `auto_e_chats` and that list was empty — transcription always RAN
-  everywhere (C3.1); only the SURFACING was wrongly bound to E's enrollment.
+  GPU whisper-server, HMAC-token; local whisper-cli fallback). ✅
+  (`d6fbbed`, `6bfede3`, `3ed95fc`; shared path C3.4). Default-on everywhere
+  (auto-enroll); the room transcription service's `enabled` flag (C3.2) can turn
+  it OFF per conversation/room — when off, the model sees `[voice note]` (no
+  content). So "unconditional" is now "on by default, per-entity opt-out".
+- **C3.2** The `👂 <transcript>` ack is a per-entity ROOM transcription service,
+  NOT E and NOT a transport concern (operator 2026-06-15: "transcription is
+  surface independent … a fundamental tool of a room — egpt power"). Config lives
+  in the entity's OWN `config.yaml` (a conversation slug dir OR `rooms/<name>/`,
+  same file as the heartbeat service) as `transcription: { enabled, posts_back }`,
+  BOTH default-on — the two flags are the heard/spoken split: `enabled` = run the
+  transcription at all (model + transcript.md get it); `posts_back` = surface the
+  `👂` in-chat. Decoupled from E enrollment (`auto_e_chats`). Keyed on the STABLE
+  chat id, resolved host-side; a muted chat still never acks. Both surfaces
+  (Beeper + Telegram). ✅ (2026-06-15, `src/transcription-service.mjs`,
+  `tests/transcription-service.test.mjs`; `transcribeVoiceNote` gates +
+  `tests/incoming-media.test.mjs`). RESOLVED the 2026-06-14 operator ask: the
+  `👂` was Self-only because the surfacing keyed on `auto_e_chats` and that list
+  was empty — transcription always RAN everywhere; only the SURFACING was wrongly
+  bound to E's enrollment.
 - **C3.3** The transcript text still dispatches + lands in transcript.md even when
-  the 👂 ack is suppressed. ✅
+  the 👂 ack is withheld (`posts_back:false`) — heard, not spoken. ✅
 - **C3.4** Voice transcription + the `👂` ack are ONE shared nucleus service
   (`src/incoming-media.mjs` `transcribeVoiceNote`), used by EVERY limb — never
   re-implemented per limb. The limb supplies the downloaded file + a reply
-  mechanism + the host's enrolled/mute verdict; the nucleus transcribes (injected
-  transcriber) and posts the enrolled-gated ack. Telegram now hears voice the same
-  way Beeper does. ✅ (2026-06-13; `tests/incoming-media.test.mjs`). LANDMINE:
-  `telegram.mjs` is browser-bundled, so the transcriber is INJECTED, never
-  imported (no `node:child_process` in a bundled limb).
+  mechanism + the host's `{ enabled, postsBack }` verdict + the transport mute
+  flag; the nucleus transcribes (injected transcriber) and posts the
+  posts_back-gated ack. Telegram hears voice the same way Beeper does. ✅
+  (2026-06-13/15; `tests/incoming-media.test.mjs`). LANDMINE: `telegram.mjs` is
+  browser-bundled, so the transcriber AND the service verdict are INJECTED, never
+  imported (no `node:child_process` / no `node:fs` in a bundled limb).
 
 ## 4. Emit gate & authorization
 - **C4.1** Every brain/agent reply passes the emit gate (`_eMayReplyToChat` →

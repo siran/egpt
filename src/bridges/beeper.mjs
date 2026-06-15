@@ -16,11 +16,12 @@
 // `from.chatId` is the opaque Beeper room id, used only to send back.
 //
 // Hardening pass (2026-06-10, review follow-up):
-//   - 👂 transcript acks are gated on isEnrolledChat (the host's verdict —
-//     a transcription-is-a-room-service policy, default-on per conversation;
-//     see src/transcription-ack.mjs), AND on Beeper's mute flag (a muted
-//     chat never acks). Default DENY here so a bridge with no gate wired can
-//     never announce egpt — the host decides the actual policy.
+//   - voice handling runs the room transcription service via the host's
+//     per-chat verdict (resolveTranscriptionService → { enabled, postsBack };
+//     a per-entity policy, default-on per conversation — see
+//     src/transcription-service.mjs), AND honors Beeper's mute flag (a muted
+//     chat never acks). The verdict defaults to NEVER surface here, so a bridge
+//     with no host wired can never announce egpt — the host decides the policy.
 //   - Backlog gate: messages older than bridge start (minus holdGraceMs)
 //     are marked seen but never dispatched — same hold-on-reconnect
 //     semantic as the baileys/TG bridges. Without it, a Beeper replay
@@ -76,11 +77,12 @@ export async function startBeeperBridge(opts = {}) {
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
     networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats); anything else is dropped. Set [] / null to process every network.
-    // Host verdict for the 👂 transcript ack (a room transcription service,
-    // NOT E enrollment — the host supplies the policy; see
-    // src/transcription-ack.mjs). Generic, fail-closed slot: default DENY so a
-    // bridge with no gate wired can never announce egpt's presence.
-    isEnrolledChat = () => false,
+    // Host verdict for this chat's transcription service (a per-entity ROOM
+    // service, NOT E enrollment — the host reads the conversation/room config
+    // and supplies { enabled, postsBack }; see src/transcription-service.mjs).
+    // async (chatId) => { enabled, postsBack }. Default = transcribe (HEARD) but
+    // never surface (SPOKEN): a bridge with no host wired can never announce egpt.
+    resolveTranscriptionService = async () => ({ enabled: true, postsBack: false }),
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
@@ -382,16 +384,18 @@ export async function startBeeperBridge(opts = {}) {
       const path = await attachmentToLocalPath(att);
       _voiceAtt = att; _voicePath = path;
       if (path) {
-        // Limb-agnostic: the shared processor transcribes + posts the 👂 ack.
-        // The limb supplies only the downloaded file, a quoted-reply mechanism,
-        // and the host's verdicts (enrolled = auto_e_chats/self-DM rule, keyed
-        // on the STABLE chatID never a display name; muted = Beeper's flag). The
-        // transcript reaches the model regardless; enrolled only gates the ack.
-        // See src/incoming-media.mjs.
+        // Limb-agnostic: the shared processor runs the room transcription
+        // service. The limb supplies only the downloaded file, a quoted-reply
+        // mechanism, and the host's verdict for THIS chat ({ enabled, postsBack }
+        // from the conversation/room config, keyed on the STABLE chatID never a
+        // display name; muted = Beeper's flag). The transcript reaches the model
+        // whenever enabled; postsBack only gates the 👂. See src/incoming-media.mjs.
+        const svc = await resolveTranscriptionService(chatID);
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
-          enrolled: isEnrolledChat(chatID),
+          enabled: svc.enabled,
+          postsBack: svc.postsBack,
           muted: info.isMuted,
           onLog: (m) => onLog(`beeper: ${m}`),
         });
@@ -399,7 +403,7 @@ export async function startBeeperBridge(opts = {}) {
           text = transcript;
           _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
-        } else { text = '[voice note — transcription failed]'; }
+        } else { text = svc.enabled ? '[voice note — transcription failed]' : '[voice note]'; }
       } else { text = '[voice note]'; }
     }
 
