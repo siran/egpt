@@ -500,6 +500,20 @@ export function startTelegramBridge({
         flush();
         try { await sendChain; } catch {}
       },
+      // Remove the "⌛ thinking…" placeholder entirely — for a turn that resolved
+      // to nothing (a sibling self-selecting silent with '…'). Editing it to '…'
+      // would post a real message that fans to the other bots and feeds a
+      // bot↔bot loop (operator 2026-06-14). Enqueued so it runs AFTER the initial
+      // sendMessage set msgId; tolerant if the placeholder never sent.
+      async delete() {
+        pending = null;
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        enqueue(async () => {
+          if (!msgId) return;
+          await apiFetch('deleteMessage', { chat_id: targetChat, message_id: msgId });
+        });
+        try { await sendChain; } catch {}
+      },
     };
   }
 
