@@ -91,10 +91,14 @@ in brackets point at the recorded rationale.
   inference/fallback. The operator is identified by a STABLE id
   (`isSender` / allow‑listed id), NEVER a display name (names are
   attacker‑controllable). `[[egpt-mention-replytobot-leak]]`
-- **I7 — Privacy is structural.** Don't reveal eGPT in chats it isn't enrolled
-  in: bridge‑initiated acks (the `👂` transcript ack) are gated on
-  the enrolled‑chats rule, even though the transcript still reaches the model.
-  Compartmentalize — never leak one chat's context into another.
+- **I7 — Privacy is structural.** E's persona never speaks where its mode
+  forbids (the emit gate, I4/I5) — don't reveal E in a chat it isn't enrolled
+  in. Compartmentalize — never leak one chat's context into another. NB the
+  `👂` transcription ack is NOT E and is NOT bound by this: transcription is a
+  **Room default service** (default‑on per conversation, opt‑out — operator
+  2026‑06‑15 "transcription is a fundamental tool of a room — egpt power"),
+  decoupled from E enrollment (§2.5). The transport slot stays fail‑closed; the
+  host supplies the room‑service policy (`src/transcription-ack.mjs`).
 - **I8 — E is gated; meta‑engineers are not; no backchannel.** `E` (the public
   persona) is always gated. `Wren`/`L`/`D` are ungated, self‑governed engineering
   selves. Agent↔agent chatter rides a VISIBLE transport (Telegram) THROUGH THE
@@ -346,10 +350,11 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
 2. **Media → nucleus:** the limb calls `onMedia(m)`. The nucleus saves the
    file to `conversations/<surface>/<slug>/media/`, and for audio runs the
    shared `transcribeVoiceNote` (injected transcriber) → the transcript becomes
-   the dispatch text, and a `👂 <transcript>` ack is posted **iff** the chat is
-   enrolled and not muted (I7). The transcript reaches the model regardless
-   (I3). For an image, the saved path is surfaced so a vision brain can
-   `Read` it.
+   the dispatch text, and a `👂 <transcript>` ack is posted **iff** the chat's
+   transcription‑ack is enabled (a Room service, default‑on per conversation;
+   §2.5, `src/transcription-ack.mjs`) and the chat isn't muted. The transcript
+   reaches the model regardless (I3). For an image, the saved path is surfaced
+   so a vision brain can `Read` it.
 3. **Text → nucleus:** the limb calls `onIncoming(text, from)`.
 4. **Classify** (nucleus): per‑chat mode, mention/mention‑direct, surface
    identity, operator (`authorized`, id‑based). Backlog older than connect −

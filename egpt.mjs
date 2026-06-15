@@ -27,6 +27,7 @@ import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoRe
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink, isThinkingPlaceholder } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
+import { mayAckTranscript } from './src/transcription-ack.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
@@ -3291,6 +3292,11 @@ function App() {
       // Wren — its operator's media always acks; transcripts reach Wren as text.
       onMedia:      _saveIncomingMedia,
       audioCfg:     EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
+      // 👂 ack verdict — transcription is a ROOM service (default-on, opt-out),
+      // not E (see src/transcription-ack.mjs). The bridge already acks the
+      // operator's own media (authorized); this adds room-service acks for
+      // OTHER chats too, decoupled from E enrollment. Keyed on the stable id.
+      isEnrolledChat: (chatId) => mayAckTranscript(chatId, EGPT_CONFIG.whatsapp ?? {}),
       transcribe:   (EGPT_CONFIG.transcription_endpoint && EGPT_CONFIG.transcription_token)
         ? makeRemoteFirstTranscriber({
             endpoint: EGPT_CONFIG.transcription_endpoint,
@@ -3742,26 +3748,16 @@ function App() {
         // Beeper Desktop API token (transport: 'beeper'). config.local.json
         // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
         beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
-        // Enrolled-chats rule for bridge-initiated sends (the beeper limb's
-        // 👂 transcript ack) — SAME whitelist as the outbox: auto_e_chats +
-        // self-DM. Reads EGPT_CONFIG live so /config edits apply without a
-        // bridge restart. NOTE (transport=beeper): entries must match the
-        // Beeper chatIDs the limb sees; the suppression log line in
-        // ~/.egpt/logs/beeper.log prints the id to enroll.
-        // Enrollment is an AUTHORIZATION boundary — matched on the STABLE
-        // chat id ONLY, never a display name (operator 2026-06-10: "for
-        // authorization, never rely on contact names; a stable id must be
-        // used"). Chat titles are attacker-controllable (a contact can
-        // rename a chat to impersonate an enrolled one); the Beeper room
-        // id / WA jid is not. Deterministic NAMES are for conversation
-        // storage + display + outbound addressing, never for the gate.
-        isEnrolledChat:    (chatId) => {
-          const wa = EGPT_CONFIG.whatsapp ?? {};
-          return new Set([
-            ...(Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : []),
-            wa.chat_id,
-          ].filter(Boolean)).has(chatId);
-        },
+        // Verdict for the beeper limb's 👂 transcription ack. Transcription is a
+        // ROOM SERVICE, not E (operator 2026-06-15: "transcription service is
+        // not E … a fundamental tool of a room — egpt power"), so this is
+        // DECOUPLED from auto_e_chats: a room transcribes by default
+        // (auto-enroll), opt-out per conversation via whatsapp.transcription_ack
+        // / transcription_ack_modes. See src/transcription-ack.mjs. Reads
+        // EGPT_CONFIG live so /config edits apply without a bridge restart.
+        // Keyed on the STABLE chat id ONLY, never a display name (a chat title
+        // is attacker-controllable; the Beeper room id / WA jid is not).
+        isEnrolledChat:    (chatId) => mayAckTranscript(chatId, EGPT_CONFIG.whatsapp ?? {}),
         // Remote-first transcription (operator 2026-06-10): when
         // transcription_endpoint is set, voice notes go to the GPU worker
         // spine; ANY failure or timeout falls back to local whisper, so a
