@@ -83,6 +83,7 @@ async function makeRuntime(opts = {}) {
     readPersonalityMeta: opts.readPersonalityMeta,
     recordDefaultSession: opts.recordDefaultSession,
     resolveBrain: opts.resolveBrain,
+    runWarmBrainTurn: opts.runWarmBrainTurn,
     selfDmConfig: opts.selfDmConfig,
     sessionOptions: opts.sessionOptions,
     stateDir,
@@ -148,6 +149,58 @@ describe('dispatch runtime', () => {
     expect(wrappedText).toContain('PERSONALITY BODY');
     expect(wrappedText).toContain('Live message from the chat follows');
     expect(wrappedText).toMatch(/hello\s*$/);
+  });
+
+  it('runs ccode conversation-e through the warm runner and persists the minted thread', async () => {
+    const coldCalls = [];
+    const warmCalls = [];
+    const stateDir = await makeTempDir();
+    const runtime = createDispatchRuntime({
+      brain: {
+        stream: async (...args) => {
+          coldCalls.push(args);
+          throw new Error('cold path should not run');
+        },
+      },
+      clock: fixedClock,
+      logger: { error: () => {} },
+      resolveBrain: () => ({
+        brain: { stream: async () => 'cold' },
+        brainType: 'ccode',
+        dbCfg: { type: 'ccode', model: 'haiku', allowed_tools: 'all' },
+      }),
+      runWarmBrainTurn: async (call) => {
+        warmCalls.push(call);
+        return { text: 'warm hello', optionsPatch: { sessionId: 'warm-e-thread' } };
+      },
+      sessionOptions: ({ dbCfg }) => ({
+        sessionId: dbCfg.session_id ?? null,
+        model: dbCfg.model,
+        allowedTools: dbCfg.allowed_tools,
+      }),
+      stateDir,
+    });
+
+    const reply = await runtime.runDefaultBrainTurn('Alice@[Auge].wa (12:00): hi', () => {}, {
+      threadId: 'wa-chat-1',
+      surface: 'wa',
+      slug: 'auge',
+      name: 'Auge',
+    });
+
+    expect(reply).toBe('warm hello');
+    expect(coldCalls).toHaveLength(0);
+    expect(warmCalls).toHaveLength(1);
+    const state = await readConvState(stateDir);
+    const slug = state.contacts.whatsapp['wa-chat-1'].slug;
+    expect(warmCalls[0]).toMatchObject({
+      key: `e:ccode:whatsapp:${slug}`,
+      klass: 'conversation',
+      brainType: 'ccode',
+      sessionOpts: { sessionId: null, model: 'haiku', allowedTools: 'all' },
+    });
+    expect(warmCalls[0].text).toContain('Alice@[Auge].wa');
+    expect(state.contacts.whatsapp['wa-chat-1'].threadId).toBe('warm-e-thread');
   });
 
   it('auto-elevates configured operator DMs to system personality', async () => {

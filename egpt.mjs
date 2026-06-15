@@ -6488,6 +6488,24 @@ function App() {
         ...(dbCfg.model ? { model: dbCfg.model } : {}),
         ...(brainType === 'codex' && dbCfg.service_tier ? { serviceTier: dbCfg.service_tier } : {}),
       }),
+      runWarmBrainTurn: async ({ key, klass, text, onPartial, sessionOpts, brainType, dbCfg }) => {
+        // E/default_brain joins the same resident pool as Wren/Don when it is
+        // backed by a warmable Claude engine. Codex and URL brains keep their
+        // existing cold dispatch paths.
+        if (!_warmEnabled() || !['ccode', 'claude-sdk'].includes(brainType)) return null;
+        const r = await _warmPool().run(key, text, onPartial, {
+          brainOptions: {
+            ...sessionOpts,
+            allowedTools: sessionOpts.allowedTools ?? dbCfg.allowed_tools ?? 'all',
+          },
+          klass,
+        });
+        if (r?.injected) {
+          logOut('@e: injected into the running warm turn (no separate reply)');
+          return { text: '...', optionsPatch: null };
+        }
+        return { text: r.text, optionsPatch: r.sessionId ? { sessionId: r.sessionId } : null };
+      },
       recordDefaultSession: async ({ sessionId, brainType }) => {
         const next = recordSession(readDefaultBrainState(), sessionId, { type: brainType });
         await persistDefaultBrainState(next);
@@ -6840,7 +6858,7 @@ function App() {
         return runMetaBrainTurn(text, onPartial, selectedName, { ...opts, _retried: true });
       }
       const newSessionId = result?.optionsPatch?.sessionId;
-      if (brainType === 'codex' && newSessionId && newSessionId !== mbCfg.session_id) {
+      if (['codex', 'ccode', 'claude-sdk'].includes(brainType) && newSessionId && newSessionId !== mbCfg.session_id) {
         mbCfg.session_id = newSessionId;
         await persistSiblingSession(newSessionId);
       }
