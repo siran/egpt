@@ -279,6 +279,20 @@ Room and is *also referenced* as a host/member. The seam resolves to **reference
 not move**: a Room has a `hosts[]`/`members[]` list; promotion = name it + add
 members; nobody's transcript is relocated.
 
+**Media is owned by the conversation; the Room references it, never copies it
+(operator 2026‑06‑15).** A media/audio message's BYTES live ONCE, in the
+originating chat's `conversations/.../media/` (C2) — they are NOT duplicated into
+the Rooms the chat belongs to. What crosses into a Room transcript is only the
+cheap TEXTUAL part, exactly as it reads in the conversation: a voice note's
+TRANSCRIPT text, or an image's PATH — and that path is **relative to the
+conversation folder** (`media/<file>`), resolvable from the Room via its
+member→folder map. Separately, `rooms/<name>/files/` is the Room's OWN,
+operator‑curated shared space (`/inject`), and a member chat's `conversation‑e` is
+granted read access to it so it can **seek** shared assets there. Cross‑member
+media reads — one member's brain resolving ANOTHER member's `media/` reference —
+stay gated by I7: the owning conversation and the Room's own brain may read; a
+sibling member is shared only when explicit, never by implicit leak.
+
 **Status / north star.** Today this lives as TWO half‑implementations:
 `conversations-state` (mature per‑chat persistence/transcript/media) and
 `src/rooms.mjs` (membership/state/cross‑surface fan‑out — already loop‑guarded). The
