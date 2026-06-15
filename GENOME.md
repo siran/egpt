@@ -289,20 +289,38 @@ conversation folder** (`media/<file>`), resolvable from the Room via its
 member→folder map. Separately, `rooms/<name>/files/` is the Room's OWN,
 operator‑curated shared space, which member chats can read and write.
 
-**Confinement is STRUCTURAL, not policy (I7) — verified.** A `conversation‑e`
-runs with `confineToDirs` = its own `conversations/<surface>/<slug>/` ∪ the
-`rooms/<name>/` of every Room it's a member of (recursive, read‑write) ∪ any
-operator grant — and NOTHING else. The brain's permission engine DENIES every path
-outside that set (`claude-sdk` PreToolUse hook; `ccode` via `--add-dir` +
-`--setting-sources ''`), and with no Bash and no Agent there is no escape hatch. So
-a `conversation‑e` **cannot read or write another conversation's folder — cross‑
-conversation contact is impossible by construction, not by rule.** The ONLY cross‑
-conversation channel is the Room: a member writes a file into its Room's `files/`
-(the Room folder is in its sandbox, RW) and the Room's other members read it there.
-**Meta‑engineers** (Wren/Don/siblings) are deliberately UNconfined — they run at the
-repo with full tools (that's their job). Enforced in `dispatch.mjs`
-(`confineToDirs = addDirs = [own slugDir, roomDirs, grants]`), `config/brains/
-claude-sdk.mjs` (deny hook), `src/claude-args.mjs` (`--add-dir`).
+**Confinement is STRUCTURAL, not policy (I7) — verified for the Claude engines.** A
+`conversation‑e`'s `confineToDirs` (`dispatch.mjs`) = its own
+`conversations/<surface>/<slug>/` ∪ the `rooms/<name>/` of every Room it's a member
+of (recursive, read‑write) ∪ operator grants — and NOTHING else. With warm enabled
+(default), a `ccode`/`claude-sdk` brain actually runs through the **`ccode` CLI**
+(`_warmPool().run` → `createWarmCliSession`); the in‑process `claude-sdk` is the
+COLD fallback. Either path enforces via the **Claude engine's OWN permission system,
+not a hand‑rolled hook**: `--add-dir <roots>` + `--setting-sources ''` (no
+`~/.claude` bypass) + `--permission-mode default` + file tools deliberately NOT
+pre‑approved (so they stay path‑confined) + no Bash / no Agent (no escape hatch) —
+mirrored 1:1 between `src/claude-args.mjs` (CLI) and `config/brains/claude-sdk.mjs`
+`buildSdkOptions` (SDK). (The PreToolUse deny *hook* is a SEPARATE, narrower thing —
+read‑only write‑deny grants only.) So a `conversation‑e` **cannot read or write
+another conversation's folder — impossible by construction.** The ONLY cross‑
+conversation channel is the Room: write a file into its `rooms/<name>/files/` (in
+the member's sandbox, RW); the Room's other members read it there. **Meta‑engineers**
+(Wren/Don/siblings) run UNconfined by design.
+⚠️ **GAP (verify before relying):** `codex` brains (the `v`/`do` siblings, and the
+`DEFAULT_PERSONA_BRAIN` fallback) do NOT take the warm/confine path
+(`runWarmBrainTurn` returns null for non‑Claude types) — codex confinement under
+`confineToDirs` is UNVERIFIED. Confirm it before a codex brain fronts a gated public
+conversation.
+
+**Who may COMMAND is gated on a deterministic user id (structural).** `from.authorized`
+is derived by the bridge from `<surface>.allowed_users` (the sender's STABLE id —
+never display name or chat). An unauthorized sender's slash command is dropped
+before it executes (`egpt.mjs`: WA `_isSlash → return`, TG `blockedUnauth`); a bare
+`@e` persona‑wake still reaches the persona (a summon, not a command). So a random
+Room member cannot run `/…`. NOTE (verified, contra a common assumption): there is
+currently NO all‑user command — even `/?`/`/help` is **operator‑only** (the help
+menu arms for the authorized owner alone). If some commands should be public
+(e.g. `/?`), that is a carve‑out to ADD, not existing behavior.
 
 **Status / north star.** Today this lives as TWO half‑implementations:
 `conversations-state` (mature per‑chat persistence/transcript/media) and
