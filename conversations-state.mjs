@@ -24,6 +24,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 import { sanitizeSlug } from './src/sanitize.mjs';
+import { Room } from './src/room-core.mjs';
 
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
@@ -71,7 +72,12 @@ export function slugDir(surface, slug) {
   if (!surface || !KNOWN_SURFACES.includes(surface)) {
     throw new Error(`slugDir: unknown surface "${surface}" (expected one of ${KNOWN_SURFACES.join('|')})`);
   }
-  return join(homedir(), '.egpt', 'conversations', surface, sanitizeSlug(slug));
+  // A conversation IS a Room (GENOME §2.5): delegate the path to the
+  // ConversationRoom implementation so this root and the rooms root share ONE
+  // tree definition. Byte-identical to the legacy formula (Phase 0c). The
+  // surface check stays here (the Room API is permissive; slugDir's contract is
+  // to reject unknown surfaces).
+  return Room.forChat(surface, slug).baseDir();
 }
 export function slugTranscriptPath(surface, slug) {
   return join(slugDir(surface, slug), 'transcript.md');
