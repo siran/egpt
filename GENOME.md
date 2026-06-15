@@ -230,13 +230,20 @@ beeper‑egpt" (transcript‑first‑class, media‑save, the `👂` ack, `ident
 heartbeat, the emit gate) is just a **Room's default services**, attached to the
 Room, not to the surface.
 
-**One implementation, one folder tree, two roots — the unifier.** A Room's on‑disk
-shape is the same wherever it lives; the root only encodes *origin/identity*:
-- `conversations/<surface>/<slug>/` — a Room **born from a surface chat** (auto‑
-  instantiated on first contact; exactly ONE host = that chat).
-- `rooms/<name>/` — a Room **created deliberately** (operator‑named; may federate
-  ≥1 hosts across surfaces — a Telegram group and a WhatsApp group can be two hosts
-  of ONE Room).
+**`Room` is the ABSTRACTION; the two roots are two IMPLEMENTATIONS of it — the
+unifier.** NOT "one helper that two callers share" — a base `Room` (class/factory)
+owns the contract + behavior, and a *named room* and a *conversation* are concrete
+implementations that differ ONLY in where they root (and host count). **Anything
+added to the `Room` base flows downstream to both** — that's the whole point.
+- **`ConversationRoom`** → roots at `conversations/<surface>/<slug>/` — born from a
+  surface chat (auto‑instantiated on first contact; exactly ONE host = that chat).
+- **`NamedRoom`** → roots at `rooms/<name>/` — created deliberately (operator‑named;
+  may federate ≥1 hosts across surfaces — a Telegram group and a WhatsApp group can
+  be two hosts of ONE Room).
+
+The base owns the IDENTICAL folder tree + the default services (transcript append,
+media save, members, files, identity, heartbeat, the emit/confine wiring); the two
+subclasses override only `baseDir()` and host semantics (single vs federation).
 
 Identical tree either way:
 ```
