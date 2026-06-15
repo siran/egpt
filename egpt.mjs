@@ -4237,6 +4237,11 @@ function App() {
               const _globalResidents  = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
               let residents = _perChatResidents.length ? _perChatResidents
                 : (_globalResidents.length ? _globalResidents : [_personaBeing]);
+              // A disabled sibling (siblings.<name>.enabled:false) never runs as a
+              // resident either (operator 2026-06-15: codex siblings off for now).
+              // If that empties the set, fall back to the persona so the chat isn't dead.
+              residents = residents.filter((r) => EGPT_CONFIG.siblings?.[r]?.enabled !== false);
+              if (!residents.length) residents = [_personaBeing];
               // UNIFIED @<mention> ROUTING (Wren, 2026-06-10): a message that
               // explicitly @<mention>s a registered sibling NOT already resident
               // joins THIS turn's dispatch — so @me/@jay/@l2/etc. route through
@@ -6657,6 +6662,13 @@ function App() {
     }
     if (!mbCfg) {
       return `!! @${name}: not configured. Add EGPT_CONFIG.siblings.${name}.{session_id, cwd, model?} (preferred) or set EGPT_CONFIG.meta_brain.session_id (legacy single-sibling shape).`;
+    }
+    // Disabled sibling — operator turned it off (siblings.<name>.enabled: false).
+    // Refuse to run it (operator 2026-06-15: codex siblings disabled for now,
+    // pending verified confinement). Clear, reversible: flip enabled: true.
+    if (mbCfg.enabled === false) {
+      logOut(`@${name}: disabled (siblings.${name}.enabled:false) — not run`);
+      return `(@${name} is disabled — set siblings.${name}.enabled: true to re-enable)`;
     }
     // LIVE-TERMINAL GUARD (feat/sibling-reply): a sibling whose session is a LIVE
     // claude-code terminal (e.g. @me/@wren = the operator's own running session)
