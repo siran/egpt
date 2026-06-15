@@ -95,6 +95,23 @@ describe('downstream-inheritance + re-export parity', () => {
   it('rooms.mjs still re-exports the moved member primitives', () => {
     expect(nmsFromRooms('on')).toBe('active');
     expect(statesFromRooms).toEqual(ROOM_MEMBER_STATES);
-    expect(ROOM_MEMBER_STATES).toEqual(['muted', 'mention', 'active']);
+  });
+
+  it('member state IS the full 6-state auto-mode (one gate, zero loss)', () => {
+    expect(ROOM_MEMBER_STATES).toEqual(['muted', 'mention', 'active', 'mention-direct', 'off', 'accum']);
+  });
+});
+
+describe('member state ↔ auto-mode normalization (lossless mapping)', () => {
+  it('every auto_e_mode token maps to a canonical member state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'egpt-rm6-'));
+    const r = new TmpRoom(dir);
+    try {
+      const map = { on: 'active', mute: 'muted', mention: 'mention', 'mention-direct': 'mention-direct', off: 'off', accum: 'accum' };
+      for (const [mode, canon] of Object.entries(map)) {
+        await r.setMember({ id: `m-${mode}`, state: mode });
+        expect(await r.memberState(`m-${mode}`)).toBe(canon);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
