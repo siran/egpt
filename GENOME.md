@@ -369,10 +369,13 @@ no SDK. ✅ **RESIDENT‑warm is BUILT** (2026‑06‑14): a being runs on ONE p
 `claude --print --input‑format stream‑json --resume <id>` process via the warm pool
 (`src/warm-cli-session.mjs`; verified turn‑2 ~2× faster than the cold turn 1).
 `siblings.<name>.resident:true` → never idle‑evict (Wren, Don resident); else the
-per‑class TTL reaps (~5 min). OWED: route **E** (the persona / `default_brain`)
-through the same warm pool — it still takes the cold `dispatch.mjs` `brain.stream()`
-path; do it per‑chat, on haiku. The pool was already engine‑agnostic (injectable
-`makeSession`); Unit 4 = the CLI primitive + wiring `ccode` through it.
+per‑class TTL reaps (~5 min). **E** (the persona / `default_brain`) also routes
+through the same warm pool when backed by `ccode`/`claude-sdk` (2026‑06‑15):
+`dispatch.mjs` owns the transcript/session contract, while `egpt.mjs` injects the
+resident runner and keys each per-chat E as `e:<brainType>:<surface>:<slug>`.
+Codex / URL default brains keep their engine-native paths. The pool was already
+engine‑agnostic (injectable `makeSession`); Unit 4 = the CLI primitive + wiring
+`ccode` through it.
 
 
 ---

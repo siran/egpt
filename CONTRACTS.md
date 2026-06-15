@@ -263,9 +263,12 @@ Lock status of the four:
   continues context). `siblings.<name>.resident:true` → never idle-evict (Wren,
   Don); else the per-class TTL reaps (~5 min). The pool was already engine-agnostic
   (injectable `makeSession`); Unit 4 = the CLI primitive + wiring `ccode` through
-  it. `5e7875a`, `tests/warm-cli-session.test.mjs`. ⏳ **E** (the persona /
-  `default_brain`) still runs the cold `dispatch.mjs` `brain.stream()` path —
-  route the per-chat ccode turn through the warm pool next (haiku).
+  it. `5e7875a`, `tests/warm-cli-session.test.mjs`. ✅ **E** (the persona /
+  `default_brain`) now runs warm too when backed by `ccode`/`claude-sdk`:
+  `dispatch.mjs` accepts an injected warm runner and keys it per conversation
+  (`e:<brainType>:<surface>:<slug>`), so a per-chat E reuses one resident process
+  while still persisting the minted thread id. Locked by `tests/dispatch.test.mjs`
+  (2026-06-15). Codex / URL default brains keep their existing engine paths.
 
 ---
 

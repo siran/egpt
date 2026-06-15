@@ -584,6 +584,7 @@ export function createDispatchRuntime({
   resolveBrain = null,
   routeContext = {},
   runUrlBrainTurn = null,
+  runWarmBrainTurn = null,
   sessionOptions = {},
   selfDmConfig = {},
   stateDir,
@@ -1071,11 +1072,32 @@ export function createDispatchRuntime({
           }
         : null;
 
-      const runAttempt = (attempt) => Promise.resolve().then(() => attempt.brain.stream(
-        { history: wrappedText, message: wrappedText },
-        onPartial,
-        attempt.sessionOpts,
-      ));
+      const warmScope = isPerContactDispatch
+        ? `${surface}:${convSlug ?? threadId}`
+        : `system:${threadId}`;
+      const warmClass = isPerContactDispatch
+        ? (isSystemPersonality ? 'system' : 'conversation')
+        : 'system';
+      const runAttempt = async (attempt) => {
+        if (typeof runWarmBrainTurn === 'function') {
+          const warmResult = await runWarmBrainTurn({
+            key: `e:${attempt.brainType}:${warmScope}`,
+            klass: warmClass,
+            text: wrappedText,
+            onPartial,
+            sessionOpts: attempt.sessionOpts,
+            brainType: attempt.brainType,
+            dbCfg: attempt.dbCfg,
+            threadCtx,
+          });
+          if (warmResult != null) return warmResult;
+        }
+        return attempt.brain.stream(
+          { history: wrappedText, message: wrappedText },
+          onPartial,
+          attempt.sessionOpts,
+        );
+      };
 
       let usedAttempt = { brain: turnBrain, brainType, dbCfg, sessionOpts };
       let result;
