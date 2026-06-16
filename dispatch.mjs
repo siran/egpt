@@ -435,7 +435,15 @@ export async function dispatchPersonaTurn({
   let personaPrompt;
   if (meta._personaBodyOverride) {
     personaPrompt = meta._personaBodyOverride;
+  } else if (meta.inboundLine) {
+    // ONE PATH (operator 2026-06-16): the canonical message unit, built ONCE at
+    // the nucleus entry (egpt.mjs submitInner) with its #id (+ stage-direction
+    // wrapping for a reaction). The SAME string is logged to transcript below and
+    // fed to the brain — no re-derivation here. This is the line the model sees.
+    personaPrompt = meta.inboundLine;
   } else if (meta.autoDispatched && meta.fromWhatsApp && formatAutoDispatchLine) {
+    // Defensive fallback for a direct caller that didn't pre-build the unit (e.g.
+    // a test). Production always sets meta.inboundLine, so this never fires live.
     const idStr = String(meta.waChatId ?? '');
     const chatType = idStr.endsWith('@g.us')
       ? 'group'
@@ -447,9 +455,7 @@ export async function dispatchPersonaTurn({
       surface: buildWaSurfaceTag(meta.waChatId),
       chatType,
       chatName: getWaChatName(meta.waChatId) ?? null,
-      // A reaction is a stage-direction, not an utterance (Phase 2): wrap it in
-      // brackets via the one formatter. The body already carries the action
-      // ("reacted 👍 to #<id> …"); the emit gate (I5 revised) decides surfacing.
+      msgId: meta.waMsgKey,
       stageDirection: !!meta.isReaction,
     });
   } else {

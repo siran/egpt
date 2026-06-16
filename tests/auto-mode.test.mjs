@@ -188,6 +188,10 @@ describe('mayEmitChat — global pause kill over the mode gate', () => {
     expect(mayEmitChat({ paused: true, mode: 'on', replyAllowed: true })).toBe(false);
     expect(mayEmitChat({ paused: true, mode: 'mention', replyAllowed: true })).toBe(false);
     expect(mayEmitChat({ paused: true, mode: 'mention-direct', replyAllowed: true })).toBe(false);
+    // A REACTION must not bypass any gate (operator 2026-06-16 nota bene): paused
+    // kills a reaction-triggered emit too, even in 'on'.
+    expect(mayEmitChat({ paused: true, mode: 'on', isReaction: true })).toBe(false);
+    expect(mayEmitChat({ paused: true, mode: 'on', replyAllowed: true, isReaction: true })).toBe(false);
   });
   it('not paused → identical to the per-chat mode gate (mayEmit)', () => {
     for (const mode of ['on', 'mute', 'off', 'mention', 'mention-direct', 'accum']) {

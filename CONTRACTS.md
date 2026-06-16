@@ -312,6 +312,21 @@ Lock status of the four:
   verified live). ⏳ owed: reaction REMOVAL surfacing; E SENDING reactions
   (`/react` on Beeper — Phase 3).
 
+- **C7.6e** A message is a UNIT, constructed ONCE (operator 2026-06-16, "only one
+  path"). The canonical dispatch line is built a single time at the nucleus entry
+  (`egpt.mjs` `submitInner`, right after the route `decision`), complete with its
+  `#<id>` (and stage-direction wrapping for a reaction), stored as
+  `meta.inboundLine`. Both consumers — the E path (`dispatch.mjs`) and the sibling
+  path (`egpt.mjs`) — CONSUME that one unit; the transcript-append logs the SAME
+  string fed to the brain. No path re-derives the line (the in-module
+  `formatAutoDispatchLine` calls remain ONLY as defensive fallbacks for direct/test
+  callers and never fire in production). The bug this fixed: two builders, only one
+  carrying the id → `#<id>` appeared on a reaction's `to #<id>` reference but not on
+  the message line it pointed at, exposing the duplicate route. Sharpens I1 (one
+  router → one construction). ✅ (2026-06-16; `tests/dispatch-line.test.mjs` locks
+  the `#<id>` rendering; live verification of the transcript line). Completes
+  MESSAGES-FIRST-CLASS-PLAN Phase 1 for the live E path (the msg id now shows).
+
 ## 8. Workers (DOLLY)
 - **C8.0** Services are **spine-portable** — a single spine CAN host everything
   (bridge, beings, `@l` llama, transcriptor), but compute-heavy services are
