@@ -918,8 +918,8 @@ export function resolvePersonalityFile(name, opts = {}) {
 
 // Safe-default tool allowlist for personalities that have no frontmatter
 // or no `allowed_tools` field. File ops (read + write + edit) scoped to
-// the contact's slug-dir via additionalDirectories; no Bash, no Agent,
-// no NotebookEdit, no WebFetch.
+// the contact's slug-dir via additionalDirectories; READ-ONLY web access
+// (WebSearch + WebFetch); no Bash, no Agent, no NotebookEdit.
 //
 // Operator security trail (2026-05-22):
 //   - First pass: "if any of my contacts convince the model to send
@@ -930,7 +930,15 @@ export function resolvePersonalityFile(name, opts = {}) {
 //     contained; absence of Bash blocks self-elevation (no
 //     `chmod +x && ./malicious.sh` path), absence of Agent blocks
 //     spawning sub-agents that could escape the scope.
-export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob'];
+//   - 2026-06-16: grant WebSearch + WebFetch. E kept telling contacts it
+//     "couldn't search the internet" and asking for authorization — the
+//     lineage prelude PROMISES these tools, but the permission layer didn't
+//     grant them (they're non-file tools, so under the confined path they
+//     weren't pre-approved → a headless permission prompt = denied). They are
+//     READ-ONLY network tools: no self-elevation (still no Bash/Agent), no file
+//     escape (file tools stay path-confined). So E can answer "what happened in
+//     X?" without widening its sandbox.
+export const DEFAULT_PERSONALITY_TOOLS = ['Read', 'Write', 'Edit', 'Grep', 'Glob', 'WebSearch', 'WebFetch'];
 
 function _parseFrontmatter(raw) {
   if (typeof raw !== 'string') return { meta: {}, body: '' };
