@@ -157,6 +157,20 @@ Lock status of the four:
   browser-bundled, so the transcriber AND the service verdict are INJECTED, never
   imported (no `node:child_process` / no `node:fs` in a bundled limb).
 
+- **C3.5** A degenerate whisper **repetition loop** (one short phrase repeated N×
+  — "Gracias, Michelle. Michelle. …" ×17, the silence/noise/over-long-segment
+  hallucination) is collapsed to an honest `(transcription unreliable — "…"
+  repeated N×)` marker, keeping one instance for context, BEFORE the transcript
+  reaches the model, transcript.md, or the 👂 ack. A pure post-pass
+  (`src/transcript-repeat-guard.mjs`) run at the shared `transcribeVoiceNote`
+  chokepoint, so every limb + both transcriber backends are covered. Tunable
+  thresholds (default: ≥6 repeats AND ≥60% coverage) keep light human emphasis
+  ("no no no") untouched. Whisper-side flags (`--no-context`/`--entropy-thold`/
+  temperature fallback) are a complementary, build-dependent mitigation — tune via
+  `whatsapp.media.audio_transcribe.extra_args`, never hardcoded (a wrong flag
+  breaks ALL transcription). ✅ (2026-06-16, `tests/transcript-repeat-guard.test.mjs`,
+  operator 2026-06-16 the `morgan` voice-note thread).
+
 ## 4. Emit gate & authorization
 - **C4.1** Every brain/agent reply passes the emit gate (`_eMayReplyToChat` →
   `mayEmitChat`) before it can reach a chat: streaming replies fail-closed
