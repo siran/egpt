@@ -75,9 +75,15 @@ reference a specific message; nothing else changes yet.
 
 ---
 
-## Parenthesis — transcript fidelity (do FIRST, before Phase 2; operator 2026-06-16)
+## Parenthesis — transcript fidelity (✅ DONE 2026-06-16, before Phase 2; operator 2026-06-16)
+All three shipped, each genome→contract→test→fix, green + revertable:
+1. ✅ whisper repeat guard — `src/transcript-repeat-guard.mjs`, GENOME §3 / C3.5.
+2. ✅ inbound HTML→markdown — `src/html-to-markdown.mjs`, GENOME §4 / C7.6c.
+3. ✅ voice marker — `voiceTranscriptBody` (`src/incoming-media.mjs`), C7.6;
+   duration omitted when the attachment carries none (Beeper has no reliable field).
+
 Three real defects seen in a `morgan` voice-note exchange — the transcript
-misrepresents what actually happened:
+misrepresented what actually happened:
 
 1. **Whisper repetition/hallucination.** A voice note transcribed to
    "Gracias, Michelle. Michelle. Michelle. …" (×17) — not what was said. Classic

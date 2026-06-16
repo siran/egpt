@@ -47,7 +47,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
@@ -430,7 +430,13 @@ export async function startBeeperBridge(opts = {}) {
           onLog: (m) => onLog(`beeper: ${m}`),
         });
         if (transcript) {
-          text = transcript;
+          // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
+          // tell a voice note arrived — not an ordinary message. Duration is
+          // opportunistic (Beeper carries none reliably); omitted when unknown.
+          // The bare transcript still feeds the 👂 ack + the media sidecar caption.
+          const durationSec = _voiceAtt?.durationSec ?? _voiceAtt?.duration
+            ?? (_voiceAtt?.durationMs != null ? _voiceAtt.durationMs / 1000 : undefined);
+          text = voiceTranscriptBody(transcript, { durationSec });
           _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
         } else { text = svc.enabled ? '[voice note — transcription failed]' : '[voice note]'; }

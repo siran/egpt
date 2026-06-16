@@ -174,10 +174,22 @@ describe('beeper bridge', () => {
     const att = fakeAttachment({ name: 'ptt.ogg', mimeType: 'audio/ogg', isVoiceNote: true });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [att] })] });
     await waitFor(() => media.length === 1);
-    expect(incoming[0].text).toBe('fake transcript');          // still dispatched as text
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // dispatched as marked audio (no duration available)
     expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'audio', isVoiceNote: true });
     expect(media[0].localPath).toContain('ptt.ogg');
-    expect(media[0].caption).toBe('fake transcript');          // sidecar caption = transcription
+    expect(media[0].caption).toBe('fake transcript');          // sidecar caption = bare transcription (no marker)
+  });
+
+  // GENOME §4 / C7.6: a voice note's body is marked "(voice transcription, Ns)"
+  // so the model can tell audio arrived — with the duration when the attachment
+  // carries one (operator 2026-06-16, the morgan thread: Beeper omitted the marker).
+  it('marks a voice note with its duration when the attachment carries one', async () => {
+    const { incoming } = await startBridge();
+    const p = join(stateDir, 'dur.ogg'); writeFileSync(p, 'fake-bytes');
+    const att = { id: 'a-dur', srcURL: pathToFileURL(p).href, fileName: 'dur.ogg', mimeType: 'audio/ogg', isVoiceNote: true, duration: 8 };
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [att] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription, 8s) fake transcript');
   });
 
   // A photo is saved AND announced to the model (operator 2026-06-16 regression):
@@ -278,8 +290,8 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-enrolled'))] });
     await waitFor(() => incoming.length === 2);
-    // Both transcripts reach the engine (E hears everything — enabled)…
-    expect(incoming.map((i) => i.text)).toEqual(['fake transcript', 'fake transcript']);
+    // Both transcripts reach the engine (E hears everything — enabled), marked as audio…
+    expect(incoming.map((i) => i.text)).toEqual(['(voice transcription) fake transcript', '(voice transcription) fake transcript']);
     expect(incoming.every((i) => i.from.isTranscriptFromVoice)).toBe(true);
     // …but only the posts_back chat got the in-chat 👂 reply.
     expect(fake.posts).toHaveLength(1);
@@ -344,7 +356,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].text).toBe('fake transcript');  // enabled by default → E still hears
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // enabled by default → E still hears (marked audio)
     expect(fake.posts).toHaveLength(0);                 // postsBack false by default → silent
   });
 

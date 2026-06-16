@@ -78,3 +78,18 @@ export async function transcribeVoiceNote({
   }
   return transcript;
 }
+
+/**
+ * Mark a voice/audio transcript AS audio for the dispatch body (GENOME §4 / C7.6):
+ *   "(voice transcription, 8s) <transcript>"
+ * — the duration is omitted when unknown (no transport carries it reliably):
+ *   "(voice transcription) <transcript>"
+ * Kept separate from `transcribeVoiceNote`'s return (the bare transcript) so the
+ * 👂 ack and the media sidecar caption stay un-prefixed — only the body the model
+ * reads carries the marker. Shared so every limb formats the marker identically.
+ */
+export function voiceTranscriptBody(transcript, { durationSec } = {}) {
+  const t = String(transcript ?? '');
+  const dur = (Number.isFinite(durationSec) && durationSec > 0) ? `, ${Math.round(durationSec)}s` : '';
+  return `(voice transcription${dur}) ${t}`;
+}
