@@ -7,7 +7,36 @@
 // optimization. Config: whatsapp.media.audio_transcribe
 //   { command (whisper-cli path), model_path (REQUIRED), language, ffmpeg_command }.
 import { spawn } from 'node:child_process';
-import { unlink } from 'node:fs/promises';
+import { unlink, stat } from 'node:fs/promises';
+
+// A 16kHz · mono · 16-bit PCM WAV (whisper's input, produced by convertToWav16k)
+// has a fixed byte rate, so its duration is exact arithmetic on the file size —
+// no ffprobe/extra process. ffmpeg already runs before whisper, so this is free
+// (operator 2026-06-16: "ffmpeg should give the stats"). Used to mark voice notes
+// "(voice transcription, Ns)" without guessing.
+const WAV16K_BYTES_PER_SEC = 16000 * 1 * 2;
+const WAV_HEADER_BYTES = 44;
+export function wavDurationSec(byteLength) {
+  return Math.max(0, (Number(byteLength) - WAV_HEADER_BYTES) / WAV16K_BYTES_PER_SEC);
+}
+
+// Build the whisper-cli argv. Pure + exported so the anti-repetition defaults are
+// test-locked. Anti-repetition is owned by whisper itself (operator 2026-06-16):
+//   -mc 0  don't carry text-context across segments — the lever against the
+//          "Michelle. Michelle. …" loop (== condition_on_previous_text:false).
+//   -sns   suppress non-speech tokens so silence/music stop hallucinating repeats.
+// Temperature fallback (-tpi) + entropy threshold (-et) stay at whisper's
+// on-by-default. Verified against the live whisper.cpp build (--max-context /
+// --suppress-nst). Defaults FIRST so cfg.extra_args can override; anti_repetition:
+// false opts out. The transcript-repeat-guard post-pass is the backend-agnostic
+// net for whatever still slips through (C3.5).
+export function buildWhisperArgs({ model, wav, language, extra_args, anti_repetition } = {}) {
+  const args = ['-m', model, '-nt', '-f', wav];
+  if (language) args.push('-l', String(language));
+  if (anti_repetition !== false) args.push('-mc', '0', '-sns');
+  if (Array.isArray(extra_args)) args.push(...extra_args.map(String));
+  return args;
+}
 
 export function _run(cmd, args, { captureStdout = false } = {}) {
   return new Promise((resolve, reject) => {
@@ -41,7 +70,7 @@ export async function convertToWav16k(audioPath, ffmpeg = 'ffmpeg') {
  * Transcribe an audio file. Returns the transcript text, or null on failure /
  * disabled. `audioPath` is any ffmpeg-readable file (ogg/opus/m4a/mp3/…).
  */
-export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}) {
+export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}, meta = null) {
   if (cfg.enabled === false) return null;
   const ffmpeg = cfg.ffmpeg_command || 'ffmpeg';
   const whisper = cfg.command || 'whisper-cli';
@@ -51,10 +80,10 @@ export async function transcribeAudioFile(audioPath, cfg = {}, log = () => {}) {
   let wav;
   try {
     wav = await convertToWav16k(audioPath, ffmpeg);
+    // The ffmpeg step we just ran gives the duration for free (#3, op 2026-06-16).
+    if (meta) { try { meta.durationSec = wavDurationSec((await stat(wav)).size); } catch { /* best-effort */ } }
     // whisper-cli prints the transcript to stdout with -nt (no timestamps).
-    const args = ['-m', model, '-nt', '-f', wav];
-    if (cfg.language) args.push('-l', cfg.language);
-    if (Array.isArray(cfg.extra_args)) args.push(...cfg.extra_args.map(String));
+    const args = buildWhisperArgs({ model, wav, language: cfg.language, extra_args: cfg.extra_args, anti_repetition: cfg.anti_repetition });
     const stdout = await _run(whisper, args, { captureStdout: true });
     // whisper-cli may emit a few non-transcript lines; keep printable content,
     // collapse whitespace (whisper splits long output across segment lines).

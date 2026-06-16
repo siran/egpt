@@ -421,6 +421,7 @@ export async function startBeeperBridge(opts = {}) {
         // display name; muted = Beeper's flag). The transcript reaches the model
         // whenever enabled; postsBack only gates the 👂. See src/incoming-media.mjs.
         const svc = await resolveTranscriptionService(chatID);
+        const vmeta = {};
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
@@ -428,15 +429,15 @@ export async function startBeeperBridge(opts = {}) {
           postsBack: svc.postsBack,
           muted: info.isMuted,
           onLog: (m) => onLog(`beeper: ${m}`),
+          meta: vmeta,
         });
         if (transcript) {
           // Mark the body AS audio (GENOME §4 / C7.6) so the model + reader can
-          // tell a voice note arrived — not an ordinary message. Duration is
-          // opportunistic (Beeper carries none reliably); omitted when unknown.
-          // The bare transcript still feeds the 👂 ack + the media sidecar caption.
-          const durationSec = _voiceAtt?.durationSec ?? _voiceAtt?.duration
-            ?? (_voiceAtt?.durationMs != null ? _voiceAtt.durationMs / 1000 : undefined);
-          text = voiceTranscriptBody(transcript, { durationSec });
+          // tell a voice note arrived — not an ordinary message. Duration comes
+          // from the ffmpeg WAV the transcriber already made (vmeta.durationSec),
+          // omitted when unknown. The bare transcript still feeds the 👂 ack + the
+          // media sidecar caption.
+          text = voiceTranscriptBody(transcript, { durationSec: vmeta.durationSec });
           _voiceCaption = transcript;
           onLog(`beeper: voice transcribed [${chatID}] → ${JSON.stringify(transcript.slice(0, 80))}`);
         } else { text = svc.enabled ? '[voice note — transcription failed]' : '[voice note]'; }

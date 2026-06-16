@@ -5514,6 +5514,7 @@ function App() {
             port: Number(scfg.port) > 0 ? Number(scfg.port) : 8089,
             language: audioCfg.language,
             extraArgs: Array.isArray(scfg.extra_args) ? scfg.extra_args : [],
+            antiRepetition: scfg.anti_repetition !== false,   // -mc 0 -sns (op 2026-06-16); set false to opt out
             onLog: wlog,
           });
           if (closed) { whisper.stop(); return; }
