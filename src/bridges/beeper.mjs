@@ -90,6 +90,11 @@ export async function startBeeperBridge(opts = {}) {
     // isSender alone (operator 2026-06-16). Keyed on the stable id, never a
     // display name (I6). Default deny.
     isAllowedUser = () => false,
+    // Display name for the ACCOUNT OWNER's own (isSender) messages. Beeper gives
+    // the self participant NO fullName — only its matrix id — so without this the
+    // operator's own lines read '@anrodriguez:beeper.com' instead of a name
+    // (operator 2026-06-16). Host supplies the configured user_name.
+    userName = null,
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
@@ -436,7 +441,11 @@ export async function startBeeperBridge(opts = {}) {
       userId: msg.senderID || chatID,
       username: msg.senderName || undefined,
       firstName: msg.senderName || undefined,
-      senderName: msg.senderName || null,
+      // The owner's own sends carry no fullName from Beeper (senderName is the
+      // matrix id), so substitute the configured userName; other contacts keep
+      // their real Beeper-provided name. (operator 2026-06-16)
+      senderName: (msg.isSender && userName) ? userName : (msg.senderName || null),
+      isSender: !!msg.isSender,
       // OPERATOR authorization (gates slash/lifecycle commands host-side; a
       // non-operator's @e still reaches the persona via the host's persona-wake
       // exception). Two signals: Beeper's isSender (account owner, any device) OR

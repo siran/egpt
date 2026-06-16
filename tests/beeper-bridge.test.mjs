@@ -141,6 +141,21 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.authorized).toBe(false);   // not allow-listed → unauthorized
   });
 
+  it("self-sent (isSender) messages show the configured userName, not the matrix id", async () => {
+    // Beeper gives the self participant no fullName — senderName is the matrix id
+    // ('@anrodriguez:beeper.com'). The bridge substitutes the configured userName
+    // for the owner's own lines; other contacts keep their real name. (op 2026-06-16)
+    const { incoming } = await startBridge({ userName: 'Andrés' });
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: true, senderName: '@anrodriguez:beeper.com', text: 'mío' }),
+      liveMsg({ isSender: false, senderName: 'Bea', text: 'suyo' }),
+    ] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming[0].from.senderName).toBe('Andrés');   // self → configured name
+    expect(incoming[0].from.isSender).toBe(true);
+    expect(incoming[1].from.senderName).toBe('Bea');      // other → real Beeper name
+  });
+
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
   // handed to onMedia — not transcribed-then-dropped.
   it('a voice note is transcribed AND its file handed to onMedia (caption = transcript)', async () => {
