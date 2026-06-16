@@ -127,6 +127,20 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.atEStart).toBe(true);
   });
 
+  it('authorizes a non-isSender message when its senderID is allow-listed', async () => {
+    // Beeper does not reliably tag the owner's own sends as isSender (fails even
+    // on Self, operator 2026-06-16), so the bridge must authorize from the
+    // delivered senderID against the operator allowlist. Keyed on the STABLE id.
+    const { incoming } = await startBridge({ isAllowedUser: (id) => id === 'op@beeper.local' });
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: false, senderID: 'op@beeper.local', senderName: 'Operator', text: '/e auto on spoiler' }),
+      liveMsg({ isSender: false, senderID: 'rando@beeper.local', senderName: 'Rando' }),
+    ] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming[0].from.authorized).toBe(true);    // allow-listed senderID → authorized despite isSender:false
+    expect(incoming[1].from.authorized).toBe(false);   // not allow-listed → unauthorized
+  });
+
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
   // handed to onMedia — not transcribed-then-dropped.
   it('a voice note is transcribed AND its file handed to onMedia (caption = transcript)', async () => {

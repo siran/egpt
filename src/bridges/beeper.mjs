@@ -83,6 +83,13 @@ export async function startBeeperBridge(opts = {}) {
     // async (chatId) => { enabled, postsBack }. Default = transcribe (HEARD) but
     // never surface (SPOKEN): a bridge with no host wired can never announce egpt.
     resolveTranscriptionService = async () => ({ enabled: true, postsBack: false }),
+    // Authorization: is this STABLE sender id an operator (may emit commands /
+    // mentions)? Host-supplied (reads whatsapp.allowed_users live). Beeper does
+    // NOT reliably tag the owner's OWN sends as isSender — it fails even in the
+    // self-chat — so authorization must derive from the DELIVERED senderID, not
+    // isSender alone (operator 2026-06-16). Keyed on the stable id, never a
+    // display name (I6). Default deny.
+    isAllowedUser = () => false,
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
@@ -424,11 +431,14 @@ export async function startBeeperBridge(opts = {}) {
       username: msg.senderName || undefined,
       firstName: msg.senderName || undefined,
       senderName: msg.senderName || null,
-      // OPERATOR-ONLY: isSender === true means the account owner sent it (any
-      // of their devices). Slash/lifecycle commands are gated on this host-side;
-      // a non-operator's @e still reaches the persona via the host's persona-wake
-      // exception. NEVER hardcode true — that authorizes every sender.
-      authorized: !!msg.isSender,
+      // OPERATOR authorization (gates slash/lifecycle commands host-side; a
+      // non-operator's @e still reaches the persona via the host's persona-wake
+      // exception). Two signals: Beeper's isSender (account owner, any device) OR
+      // the delivered senderID being on the operator allowlist — because Beeper's
+      // isSender is unreliable for the owner's own sends (fails even in the
+      // self-chat, operator 2026-06-16), so we must authorize from the senderID
+      // too. NEVER hardcode true — that authorizes every sender.
+      authorized: !!msg.isSender || isAllowedUser(msg.senderID),
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
       replyToBot: false,                    // provable reply-to-persona is a follow-up
