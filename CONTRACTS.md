@@ -159,17 +159,27 @@ Lock status of the four:
 
 - **C3.5** A degenerate whisper **repetition loop** (one short phrase repeated N×
   — "Gracias, Michelle. Michelle. …" ×17, the silence/noise/over-long-segment
-  hallucination) is collapsed to an honest `(transcription unreliable — "…"
-  repeated N×)` marker, keeping one instance for context, BEFORE the transcript
-  reaches the model, transcript.md, or the 👂 ack. A pure post-pass
-  (`src/transcript-repeat-guard.mjs`) run at the shared `transcribeVoiceNote`
-  chokepoint, so every limb + both transcriber backends are covered. Tunable
-  thresholds (default: ≥6 repeats AND ≥60% coverage) keep light human emphasis
-  ("no no no") untouched. Whisper-side flags (`--no-context`/`--entropy-thold`/
-  temperature fallback) are a complementary, build-dependent mitigation — tune via
-  `whatsapp.media.audio_transcribe.extra_args`, never hardcoded (a wrong flag
-  breaks ALL transcription). ✅ (2026-06-16, `tests/transcript-repeat-guard.test.mjs`,
-  operator 2026-06-16 the `morgan` voice-note thread).
+  hallucination) is mitigated at **two layers** (operator 2026-06-16, "whisper
+  itself should own this"):
+  1. **PRIMARY — whisper's own decoder controls.** Both whisper paths launch with
+     `-mc 0` (no text-context carried across segments — the lever against the
+     loop) + `-sns` (suppress non-speech tokens), with temperature fallback +
+     entropy threshold at whisper's on-by-default. Wired in `buildWhisperArgs`
+     (`src/tools/transcribe.mjs`, whisper-cli) AND the resident server launch
+     (`src/tools/whisper-server.mjs`, the LIVE path) — verified against the
+     build's cli flags (`--max-context`/`--suppress-nst`). Opt out with
+     `audio_transcribe.anti_repetition:false` (cli) / `server.anti_repetition:
+     false` (server). A rejected flag fails server readiness and the spine falls
+     back to local whisper (slower, not broken).
+  2. **NET — a backend-agnostic post-pass.** `flagDegenerateTranscript`
+     (`src/transcript-repeat-guard.mjs`) runs at the shared `transcribeVoiceNote`
+     chokepoint and collapses any loop that still slips through to an honest
+     `(transcription unreliable — "…" repeated N×)` marker (one instance kept),
+     BEFORE the transcript reaches the model, transcript.md, or the 👂 ack.
+     Tunable thresholds (default ≥6 repeats AND ≥60% coverage) leave light human
+     emphasis ("no no no") untouched.
+  ✅ (2026-06-16, `tests/transcript-repeat-guard.test.mjs` +
+  `tests/transcribe-args.test.mjs`; operator 2026-06-16 the `morgan` voice-note thread).
 
 ## 4. Emit gate & authorization
 - **C4.1** Every brain/agent reply passes the emit gate (`_eMayReplyToChat` →
@@ -232,11 +242,16 @@ Lock status of the four:
   egpt.mjs `formatAutoDispatchLine` and shared by every call site +
   dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
   The Beeper voice path now applies the `(voice transcription, Ns)` body marker
-  via the shared `voiceTranscriptBody` helper (`src/incoming-media.mjs`) — the
-  duration is omitted when the attachment carries none (Beeper has no reliable
-  duration field); the bare transcript still feeds the 👂 ack + the media sidecar
-  caption. ✅ (2026-06-16, `tests/beeper-bridge.test.mjs`; before this, beeper.mjs
-  set `text = transcript` raw, so a voice note read like an ordinary message).
+  via the shared `voiceTranscriptBody` helper (`src/incoming-media.mjs`). The
+  duration `N` is read off the 16kHz/mono/16-bit ffmpeg WAV the transcriber
+  already produces (`wavDurationSec` = `(bytes−44)/32000`, exact, no extra
+  process) and rides back to the limb through a `meta` out-param — across the LAN
+  transcriptor too (`durationSec` in the worker JSON), so the live remote path
+  carries it; omitted when unknown. The bare transcript still feeds the 👂 ack +
+  the media sidecar caption. ✅ (2026-06-16, `tests/beeper-bridge.test.mjs` +
+  `tests/transcriptor.test.mjs` + `tests/whisper-server.test.mjs`; before this,
+  beeper.mjs set `text = transcript` raw, so a voice note read like an ordinary
+  message).
   Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
   (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
 - **C7.6b** A being's REPLY is recorded in the SAME member line as inbound — E is

@@ -104,14 +104,16 @@ export async function startTranscriptorServer({
       const t0 = Date.now();
       try {
         await writeFile(tmp, body);
-        const transcript = await transcribe(tmp, audioCfg, onLog);
+        const vmeta = {};
+        const transcript = await transcribe(tmp, audioCfg, onLog, vmeta);
         const ms = Date.now() - t0;
         if (!transcript) {
           onLog(`transcriptor: transcription EMPTY (${body.length}b, ${ms}ms) — caller will fall back`);
           return json(422, { ok: false, error: 'transcription produced nothing', ms });
         }
         onLog(`transcriptor: ${body.length}b → ${transcript.length}ch in ${ms}ms for ${req.socket.remoteAddress}`);
-        return json(200, { ok: true, transcript, ms });
+        // durationSec rides back so the main spine can mark the voice note (#3).
+        return json(200, { ok: true, transcript, durationSec: vmeta.durationSec, ms });
       } catch (e) {
         onLog(`transcriptor: ERROR — ${e?.message ?? e}`);
         return json(500, { ok: false, error: String(e?.message ?? e) });
@@ -137,7 +139,7 @@ export async function startTranscriptorServer({
 // POST one audio file to a worker. Returns the transcript string.
 // Throws on transport/auth/server errors and on empty transcription —
 // every throw is the wrapper's signal to fall back to local whisper.
-export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeoutMs = CLIENT_TIMEOUT_MS }, log = () => {}) {
+export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeoutMs = CLIENT_TIMEOUT_MS }, log = () => {}, meta = null) {
   const body = await readFile(audioPath);
   const ts = Date.now();
   const res = await fetch(`${endpoint.replace(/\/+$/, '')}/v1/transcribe`, {
@@ -154,6 +156,7 @@ export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeo
   if (!res.ok || !j.ok || !j.transcript) {
     throw new Error(`worker ${res.status}: ${j.error ?? 'no transcript'}`);
   }
+  if (meta && Number.isFinite(j.durationSec)) meta.durationSec = j.durationSec;   // duration from the worker's WAV (#3)
   log(`transcribe: remote worker → ${j.transcript.length}ch in ${j.ms ?? '?'}ms`);
   return j.transcript;
 }
@@ -163,15 +166,15 @@ export async function transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeo
 // `getKey` is lazy (async) so callers don't need the bus key at wire-up
 // time. Same (path, cfg, log) signature the bridges already use.
 export function makeRemoteFirstTranscriber({ endpoint, getKey, timeoutMs = CLIENT_TIMEOUT_MS, local = transcribeAudioFile } = {}) {
-  return async function transcribe(audioPath, cfg = {}, log = () => {}) {
+  return async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null) {
     if (endpoint) {
       try {
         const keyB64 = await getKey();
-        return await transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeoutMs }, log);
+        return await transcribeViaEndpoint(audioPath, { endpoint, keyB64, timeoutMs }, log, meta);
       } catch (e) {
         log(`transcribe: remote worker failed (${e?.message ?? e}) — falling back to local whisper`);
       }
     }
-    return local(audioPath, cfg, log);
+    return local(audioPath, cfg, log, meta);
   };
 }

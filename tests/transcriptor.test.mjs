@@ -44,6 +44,16 @@ describe('transcriptor server', () => {
     expect(Buffer.compare(calls[0], readFileSync(audioPath))).toBe(0);
   });
 
+  it('round-trips durationSec from the worker (the ffmpeg WAV) to the client meta', async () => {
+    const { endpoint } = await startServer({
+      transcribe: async (_p, _cfg, _log, meta) => { if (meta) meta.durationSec = 3.5; return 'hola'; },
+    });
+    const meta = {};
+    const t = await transcribeViaEndpoint(audioPath, { endpoint, keyB64: KEY }, () => {}, meta);
+    expect(t).toBe('hola');
+    expect(meta.durationSec).toBe(3.5);   // #3: duration survives the LAN round-trip
+  });
+
   it('rejects missing, wrong-key, and stale signatures', async () => {
     const { endpoint } = await startServer();
     const body = readFileSync(audioPath);

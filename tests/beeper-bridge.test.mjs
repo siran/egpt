@@ -181,12 +181,14 @@ describe('beeper bridge', () => {
   });
 
   // GENOME §4 / C7.6: a voice note's body is marked "(voice transcription, Ns)"
-  // so the model can tell audio arrived — with the duration when the attachment
-  // carries one (operator 2026-06-16, the morgan thread: Beeper omitted the marker).
-  it('marks a voice note with its duration when the attachment carries one', async () => {
-    const { incoming } = await startBridge();
-    const p = join(stateDir, 'dur.ogg'); writeFileSync(p, 'fake-bytes');
-    const att = { id: 'a-dur', srcURL: pathToFileURL(p).href, fileName: 'dur.ogg', mimeType: 'audio/ogg', isVoiceNote: true, duration: 8 };
+  // so the model can tell audio arrived — with the duration the transcriber reads
+  // off the ffmpeg WAV (operator 2026-06-16, the morgan thread: Beeper omitted the
+  // marker; duration comes from ffmpeg, not the Beeper attachment).
+  it('marks a voice note with the duration the transcriber reports', async () => {
+    const { incoming } = await startBridge({
+      transcribe: async (_p, _cfg, _log, meta) => { if (meta) meta.durationSec = 8; return 'fake transcript'; },
+    });
+    const att = fakeAttachment({ name: 'dur.ogg', mimeType: 'audio/ogg', isVoiceNote: true });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [att] })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription, 8s) fake transcript');

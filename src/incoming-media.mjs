@@ -46,6 +46,10 @@ import { flagDegenerateTranscript } from './transcript-repeat-guard.mjs';
  *                                  fail-closed; the host supplies the real verdict)
  * @param {boolean}  [o.muted]     transport mute → suppress the ack send
  * @param {Function} [o.onLog]
+ * @param {object}   [o.meta]      out-param: the transcriber fills `durationSec`
+ *                                 (from the ffmpeg WAV) so the limb can mark the
+ *                                 body "(voice transcription, Ns)". String return
+ *                                 is unchanged — duration rides the out-param.
  */
 export async function transcribeVoiceNote({
   localPath,
@@ -56,14 +60,17 @@ export async function transcribeVoiceNote({
   postsBack = false,
   muted = false,
   onLog = () => {},
+  meta = null,
 } = {}) {
   if (!localPath) return null;
   if (!enabled) { onLog('transcription service disabled for this room — voice not transcribed'); return null; }
   if (typeof transcribe !== 'function') { onLog('no transcriber injected — voice not transcribed'); return null; }
   let transcript = null;
-  try { transcript = await transcribe(localPath, audioCfg, onLog); }
+  const innerMeta = {};
+  try { transcript = await transcribe(localPath, audioCfg, onLog, innerMeta); }
   catch (e) { onLog(`transcribe threw: ${e?.message ?? e}`); }
   if (!transcript) return null;
+  if (meta && Number.isFinite(innerMeta.durationSec)) meta.durationSec = innerMeta.durationSec;
   // Fidelity post-pass: collapse a degenerate whisper repetition loop
   // ("Michelle. Michelle. …") into an honest "(transcription unreliable)" marker
   // before it reaches the model, the transcript, OR the 👂 ack. Runs for every

@@ -15,7 +15,7 @@
 // reason to hold a resident model there).
 import { spawn } from 'node:child_process';
 import { readFile, unlink } from 'node:fs/promises';
-import { convertToWav16k } from './transcribe.mjs';
+import { convertToWav16k, wavDurationSec } from './transcribe.mjs';
 import { reapPort } from './reap-port.mjs';
 
 const READY_POLL_MS = 500;
@@ -29,6 +29,7 @@ export async function startWhisperServer({
   port = 8089,
   language,                // optional ISO 639-1 default (-l); per-request can override
   extraArgs = [],
+  antiRepetition = true,   // -mc 0 -sns at launch (the server owns the loop, op 2026-06-16)
   readyTimeoutMs = 120_000,
   onLog = () => {},
 } = {}) {
@@ -42,6 +43,12 @@ export async function startWhisperServer({
     if (stopped) return;
     const args = ['-m', model, '--host', host, '--port', String(port)];
     if (language) args.push('-l', String(language));
+    // Anti-repetition at the resident server (the LIVE path, op 2026-06-16): same
+    // flags as the whisper-cli builder — -mc 0 (no cross-segment context) + -sns
+    // (suppress non-speech tokens). Verified on the build's cli; if the server
+    // rejected one it would fail readiness and the spine falls back to local
+    // whisper (slower, not broken). extraArgs after, so config can override.
+    if (antiRepetition) args.push('-mc', '0', '-sns');
     args.push(...extraArgs.map(String));
     // Free the port first: a prior whisper-server orphaned by a soft restart
     // (Windows doesn't kill the child with the parent) would still hold it and
@@ -97,12 +104,13 @@ export async function startWhisperServer({
 // Converts to 16kHz WAV first (whisper's required input), POSTs multipart,
 // returns the transcript text (or null on empty). Throws on transport/HTTP
 // error so the caller can fall back.
-export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffmpeg', language, timeoutMs = 120_000, convert = convertToWav16k }, log = () => {}) {
+export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffmpeg', language, timeoutMs = 120_000, convert = convertToWav16k }, log = () => {}, meta = null) {
   const t0 = Date.now();
   let wav;
   try {
     wav = await convert(audioPath, ffmpeg);
     const bytes = await readFile(wav);
+    if (meta) meta.durationSec = wavDurationSec(bytes.length);   // duration from the WAV we just made (#3)
     const form = new FormData();
     form.append('file', new Blob([bytes], { type: 'audio/wav' }), 'audio.wav');
     form.append('response_format', 'json');
@@ -128,7 +136,7 @@ export async function transcribeViaWhisperServer(audioPath, { url, ffmpeg = 'ffm
 // running server. Errors return null so the worker reports a 422 (and the
 // main spine falls back to its local whisper), never a 500 storm.
 export function makeWhisperServerTranscriber({ url, ffmpeg, language, timeoutMs, convert }) {
-  return async function transcribe(audioPath, cfg = {}, log = () => {}) {
+  return async function transcribe(audioPath, cfg = {}, log = () => {}, meta = null) {
     try {
       return await transcribeViaWhisperServer(audioPath, {
         url,
@@ -136,7 +144,7 @@ export function makeWhisperServerTranscriber({ url, ffmpeg, language, timeoutMs,
         language: cfg.language ?? language,
         timeoutMs,
         convert,
-      }, log);
+      }, log, meta);
     } catch (e) {
       log(`whisper-server: transcribe failed — ${e?.message ?? e}`);
       return null;

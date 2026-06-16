@@ -371,11 +371,14 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
    `👂 <transcript>` ack **iff** `posts_back` is on (SPOKEN) and the chat isn't
    muted (a Room service, both default‑on per conversation/room; §2.5,
    `src/transcription-service.mjs`). When enabled, the transcript reaches the
-   model regardless of `posts_back` (I3). A fidelity post-pass at the same
-   chokepoint collapses a degenerate whisper **repetition loop** ("Michelle.
-   Michelle. …") into an honest `(transcription unreliable …)` marker before it
-   reaches the model, the transcript, or the ack (`src/transcript-repeat-guard.mjs`,
-   C3.5). For an image, the saved path is surfaced so a vision brain can `Read` it.
+   model regardless of `posts_back` (I3). A degenerate whisper **repetition
+   loop** ("Michelle. Michelle. …") is mitigated first by whisper's OWN decoder
+   controls (`-mc 0` + `-sns` on both the cli and the resident server) and, as a
+   backend-agnostic net, a post-pass at the same chokepoint that flags any
+   survivor `(transcription unreliable …)` before it reaches the model, the
+   transcript, or the ack (`src/transcript-repeat-guard.mjs`, C3.5). The voice
+   marker's duration is read off the ffmpeg WAV the transcriber already makes
+   (C7.6). For an image, the saved path is surfaced so a vision brain can `Read` it.
 3. **Text → nucleus:** the limb calls `onIncoming(text, from)`.
 4. **Classify** (nucleus): per‑chat mode, mention/mention‑direct, surface
    identity, operator (`authorized`, id‑based). Backlog older than connect −

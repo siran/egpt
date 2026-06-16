@@ -49,6 +49,20 @@ describe('transcribeViaWhisperServer', () => {
     expect(inferenceCalls[0]).toBeGreaterThan(0);   // multipart body carried the audio
   });
 
+  it('reports durationSec via the meta out-param (from the converted WAV)', async () => {
+    ({ s: server, url } = await startFakeInference((res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ text: 'hola' }));
+    }));
+    // convert yields a 1-second 16kHz mono s16le WAV-sized buffer path stand-in:
+    // the function reads the file it gets back, so point it at a sized temp file.
+    const wav = join(dir, 'one-sec.wav'); writeFileSync(wav, Buffer.alloc(44 + 32000));
+    const meta = {};
+    const t = await transcribeViaWhisperServer(audio, { url, convert: async () => wav }, () => {}, meta);
+    expect(t).toBe('hola');
+    expect(meta.durationSec).toBe(1);
+  });
+
   it('empty text → null', async () => {
     ({ s: server, url } = await startFakeInference((res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
