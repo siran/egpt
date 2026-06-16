@@ -36,8 +36,24 @@ reference a specific message; nothing else changes yet.
   the live WA inbound line carries the msg id.
 - **Risk:** low (additive optional field). Rollback = drop the param.
 
-## Phase 2 — reactions ingested + surfaced (depends on P1)
+## Phase 2 — reactions ingested + surfaced (✅ DONE 2026-06-16)
 **Goal:** a 👍 reaches E as a stage-direction; E can react back.
+**Shipped (one commit):** detect reactions at the Beeper bridge → bracketed
+stage-direction `[ Name@[chat].wa (HH:MM): reacted 👍 to #<id> "snippet" ]`
+(`formatDispatchLine` `stageDirection` + `reactionAction`, GENOME §2.5 / C7.8);
+logged (I3); I5 REVERSED so E may respond via the normal mode gate (C4.6).
+**Wire-shape correction (verified live 2026-06-16, the plan's assumption was wrong):**
+a reaction is TWO events — a bare `type:'REACTION'` (reactor + `linkedMessageID`
+target, but **NO emoji/text**) AND a re-upsert of the TARGET carrying
+`reactions[]` = `[{participantID, reactionKey:'👍'}]`. The emoji (`reactionKey`) +
+snippet (target text) live on the target re-upsert, so we read THAT and skip the
+bare event. Flood-safe by **baseline-on-first-sight** (I10), not the timestamp gate
+(the target re-upsert carries the message's OLD timestamp, not the reaction time).
+- E SENDING reactions (`/react` on Beeper) is NOT done — `slash/react.mjs` is
+  baileys-era (`wa.react` with WA keys); the Beeper bridge exposes no `react()`.
+  That's Phase 3 (member actions). Reaction REMOVAL surfacing also owed.
+
+**Original notes (kept for context — the bridge detail above supersedes "text=emoji"):**
 - Beeper delivers reactions as `message.upserted` events (type reaction; `text`=
   emoji, `senderID`=reactor, `linkedMessageID`=target). The bridge currently
   hardcodes `isReaction:false` + dedups them — detect them instead.

@@ -84,8 +84,12 @@ in brackets point at the recorded rationale.
   (`on` / `mention` / `mention-direct` / `mute` /
   `off` / `accum`) is the single source of truth for reply
   behavior. `paused` is an absolute @e‑emit kill that OVERRIDES the
-  mode. A reaction never triggers a reply. `mute`/`off`
-  never emit. `[[egpt-emit-gate-bridge-controlled]]`
+  mode. A reaction follows the SAME mode gate as a message
+  (**revised 2026‑06‑16**, was "never triggers a reply"): it now arrives as an
+  intelligible **stage‑direction** (`[ … reacted 👍 to #<id> "…" ]`, §2.5), so E
+  MAY answer where the mode permits — `on` may, `mention(-direct)` only if it
+  @‑mentions E (a reaction can't, so it stays silent), `mute`/`off`
+  never. `mute`/`off` never emit. `[[egpt-emit-gate-bridge-controlled]]`
 - **I6 — Authorization is provable and id‑based.** Emit authorization keys off
   genuine persona replies (`_personaReplyIds`), never the echo set; no persona
   inference/fallback. The operator is identified by a STABLE id
@@ -286,6 +290,21 @@ not by mangling the line). The bug this kills: E's reply was special‑cased
 (emoji, sent) diverged from its transcript path (bracketed, no emoji) — proving
 two paths where there must be one. One reply block; one formatter; the gate is a
 filter on the surface step only.
+
+**A message is a first‑class, id‑addressable unit; meta‑events are
+stage‑directions (operator 2026‑06‑16, MESSAGES‑FIRST‑CLASS‑PLAN).** The
+theater‑play model, one formatter (`formatDispatchLine`, C7.6):
+- **Utterance** — a message or a being's reply: `Name@[chat].{node} (HH:MM)
+  #<id>: body` (the `#<id>` makes each line addressable so any member can react /
+  reply / quote it).
+- **Stage‑direction** — a meta‑event (reaction, and later edit/delete): the same
+  identity line wrapped in OUTER brackets, the body carrying the action that
+  references a target id — `[ Name@[chat].{node} (HH:MM): reacted 👍 to #<id>
+  "…snippet…" ]`. Recorded ALWAYS (I3); the emit gate (I5) decides only whether E
+  responds. A **reaction** is ingested at the bridge from the target message's
+  re‑upsert (`reactions[]` = the emoji + the snippet; the bare `type:REACTION`
+  event carries no emoji), surfaced flood‑safe by baseline‑on‑first‑sight (I10 —
+  a reconnect re‑sync of old reactions is a baseline, never replayed).
 
 **A message can belong to MANY Rooms at once, and fulfils EVERY contract it
 touches (operator 2026‑06‑15).** A chat is always its own Room *and* may be a

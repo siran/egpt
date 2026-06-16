@@ -87,11 +87,14 @@ export function replyAllowed(mode, status = {}) {
 //      `replyAllowed` gate already passed. Fail-closed when the flag is absent.
 // `mode` is the chat's resolved auto-mode; `replyAllowed` is the per-turn flag.
 export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } = {}) {
-  // A reaction is never a turn that warrants a reply — in ANY mode, including
-  // 'on'. WhatsApp/Beeper render a reaction as "<who> reacted <emoji> to …";
-  // letting @e answer it produced the "no reaccioné, boludo" embarrassment
-  // (operator 2026-06-03). Hard-block here so no mode can leak a reply to one.
-  if (isReaction) return false;
+  // I5 REVISED (operator 2026-06-16, MESSAGES-FIRST-CLASS-PLAN Phase 2): a reaction
+  // is no longer hard-blocked. It flows through the SAME mode gate as any message,
+  // because it now arrives as an intelligible stage-direction ("<who> reacted 👍
+  // to #<id> \"<snippet>\""), not the raw confusing notification that caused the
+  // "no reaccioné, boludo" embarrassment (operator 2026-06-03 — the reason for the
+  // old hard-block). So: 'on' → E may answer a reaction; 'mention'/'mention-direct'
+  // → only if it @-mentions E (a reaction can't, so it stays silent there);
+  // 'mute'/'off' → never. `isReaction` is kept for telemetry (the emit log).
   if (mode === 'mute' || mode === 'off') return false;
   if (mode === 'on') return true;
   return replyAllowed === true;

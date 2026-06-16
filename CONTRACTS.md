@@ -46,8 +46,11 @@ just expands them.
    - **mention-direct** — `@e` at the start / a reply to E (never a self-mention)
    - **on** — the model decides; it may answer `…` to stay silent (not fanned
      out, still logged)
-   Plus the two hard rules: **`paused` = absolute kill** (overrides every mode),
-   and **a reaction never triggers a reply**. `mute`/`off` never emit.
+   Plus the hard rule: **`paused` = absolute kill** (overrides every mode).
+   `mute`/`off` never emit. (A reaction USED to be a second hard rule — "never
+   triggers a reply" — but that was REVISED 2026-06-16: a reaction now follows the
+   same mode gate as a message, because it arrives as an intelligible
+   stage-direction. See C4.6 / C7.8.)
 3. **Every message sent to a group or room is logged; media goes to the chat's
    `media/` folder.**
 4. **The model receives well-identified messages:**
@@ -197,6 +200,14 @@ Lock status of the four:
   attacker-controllable). Operator = `isSender`. ✅ (`3ed95fc`, `fae6034`)
 - **C4.5** Operator-sent `@<sibling>` bypasses observe-only in ANY chat; a
   non-operator's does not. ✅ (`3906d76`)
+- **C4.6** A reaction follows the SAME mode gate as a message (I5 **revised**
+  2026-06-16, MESSAGES-FIRST-CLASS-PLAN Phase 2) — it is NO LONGER hard-blocked.
+  `mayEmit('on', {isReaction})` → true; `mention(-direct)` → only when
+  `replyAllowed` (a reaction can't @-mention E, so it stays silent there);
+  `mute`/`off` → never. The old hard-block (a reaction NEVER replies, operator
+  2026-06-03 "no reaccioné, boludo") is removed BECAUSE the reaction now reaches E
+  as an intelligible stage-direction (C7.8), not a raw notification. `isReaction`
+  is kept only for the emit-log telemetry. ✅ (`tests/auto-mode.test.mjs`).
 
 ## 5. Auto-mode / surfaces
 - **C5.1** The per-chat auto-mode (`on/mention/mute/off/accum`) is the SINGLE
@@ -283,6 +294,23 @@ Lock status of the four:
   (`3f69f18`, `src/stop-guard.mjs`, `tests/stop-guard.test.mjs`). Calibration ⏳:
   each spine counts only the OTHER bot's messages (half the exchange), so soft=4
   trips at ~8 total — tune, or add own-emit counting.
+
+- **C7.8** A **reaction** is ingested + surfaced as a **stage-direction**
+  (MESSAGES-FIRST-CLASS-PLAN Phase 2). Theater-play model, one formatter
+  (`formatDispatchLine` `stageDirection:true`): `[ Name@[chat].{node} (HH:MM):
+  reacted 👍 to #<targetId> "<snippet>" ]` — outer brackets mark a meta-event, not
+  an utterance; the body (`reactionAction`) references the target id. Recorded
+  ALWAYS (I3); the emit gate (C4.6) decides whether E responds. The Beeper bridge
+  reads the emoji (`reactionKey`) + snippet (target text) off the TARGET message's
+  re-upsert `reactions[]` (the bare `type:REACTION` event carries reactor + target
+  but NO emoji, so it's skipped). Flood-safe by **baseline-on-first-sight** (I10):
+  every message upsert records its reaction set; only reactions ADDED after a
+  message's first sight this session surface — a reconnect re-sync of pre-existing
+  reactions is a baseline, never replayed. Reactor name resolved from prior
+  messages (owner → `user_name`). ✅ (2026-06-16,
+  `tests/dispatch-line.test.mjs` + `tests/beeper-bridge.test.mjs`; wire shape
+  verified live). ⏳ owed: reaction REMOVAL surfacing; E SENDING reactions
+  (`/react` on Beeper — Phase 3).
 
 ## 8. Workers (DOLLY)
 - **C8.0** Services are **spine-portable** — a single spine CAN host everything

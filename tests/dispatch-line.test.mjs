@@ -4,7 +4,7 @@
 // identity, NEVER hardcoded. This test is what keeps the shape from drifting
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
-import { formatDispatchLine, splitSurfaceTag } from '../src/dispatch-line.mjs';
+import { formatDispatchLine, splitSurfaceTag, reactionAction } from '../src/dispatch-line.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
 const TS = Date.UTC(2026, 5, 11, 17, 21, 0);
@@ -48,6 +48,32 @@ describe('formatDispatchLine — canonical shape', () => {
 
   it('fail-safe defaults: missing sender -> someone, missing node -> wa', () => {
     expect(formatDispatchLine({ chatName: 'c', body: 'x', ts: TS })).toBe('someone@[c].wa (17:21): x');
+  });
+});
+
+describe('formatDispatchLine — stage-direction (reactions etc.)', () => {
+  // MESSAGES-FIRST-CLASS-PLAN Phase 2: a meta-event is wrapped in outer brackets
+  // (theater-play model) so it reads as a stage-direction, not an utterance.
+  it('wraps the body in [ … ] and carries no #<id> tag (the id is in the action)', () => {
+    expect(formatDispatchLine({
+      senderName: 'An', chatName: 'HFM', node: 'wa', ts: TS, msgId: '142379',
+      stageDirection: true, body: reactionAction({ emoji: '👍', targetId: '142378', snippet: 'ron is bold person' }),
+    })).toBe('[ An@[HFM].wa (17:21): reacted 👍 to #142378 "ron is bold person" ]');
+  });
+});
+
+describe('reactionAction — reaction stage-direction body', () => {
+  it('renders "reacted <emoji> to #<id> \"<snippet>\""', () => {
+    expect(reactionAction({ emoji: '👍', targetId: '142378', snippet: 'hola mundo' }))
+      .toBe('reacted 👍 to #142378 "hola mundo"');
+  });
+  it('omits the quote when there is no snippet, collapses whitespace, trims length', () => {
+    expect(reactionAction({ emoji: '❤️', targetId: '7' })).toBe('reacted ❤️ to #7');
+    expect(reactionAction({ emoji: '😂', targetId: '7', snippet: '  a\n b   c ' })).toBe('reacted 😂 to #7 "a b c"');
+    expect(reactionAction({ emoji: '👍', targetId: '7', snippet: 'x'.repeat(80) })).toContain('"' + 'x'.repeat(60) + '"');
+  });
+  it('falls back to ❓ when the emoji is missing', () => {
+    expect(reactionAction({ targetId: '7', snippet: 'hi' })).toBe('reacted ❓ to #7 "hi"');
   });
 });
 

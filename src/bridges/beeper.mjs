@@ -49,6 +49,7 @@ import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote, voiceTranscriptBody } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
+import { reactionAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -373,9 +374,87 @@ export async function startBeeperBridge(opts = {}) {
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); return null; }
   }
 
+  // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
+  // Beeper delivers a reaction as TWO events (verified live 2026-06-16): a bare
+  // type:'REACTION' event (reactor + linkedMessageID, but NO emoji), and a
+  // re-upsert of the TARGET message carrying reactions[] = [{participantID,
+  // reactionKey}] — that's where the emoji + the snippet (the target's text) live.
+  // So we read reactions off the target re-upsert, not the bare event.
+  //
+  // Flood-safe by BASELINE-ON-FIRST-SIGHT (I10 — catch up, don't replay): every
+  // message upsert records its current reaction set; we emit only reactions ADDED
+  // after a message's FIRST sight this session. On reconnect, re-synced messages
+  // are "first seen" with their existing reactions → recorded, never surfaced; a
+  // genuinely live reaction diffs against the baseline and emits. No timestamps,
+  // no event correlation.
+  const _idToName = new Map();         // senderID -> last-seen senderName (reactor naming)
+  const _seenReactions = new Map();    // msgId -> Set of `${reactor} ${emoji}`
+  const REACTION_CAP = 4000;
+  function _capMap(m, cap) { while (m.size > cap) m.delete(m.keys().next().value); }
+  function _reactorName(id) {
+    if (!id) return 'someone';
+    if (isAllowedUser(id) && userName) return userName;   // the owner → configured name
+    return _idToName.get(id) || id;
+  }
+  // Sync diff: update the per-message baseline, return the reactions ADDED since
+  // last sight (empty on first sight, so a baseline is never surfaced).
+  function _freshReactions(msg) {
+    if (msg.type === 'REACTION') return [];   // bare event carries no emoji — skip
+    const msgId = msg.id;
+    if (!msgId) return [];
+    const list = Array.isArray(msg.reactions) ? msg.reactions : [];
+    const cur = new Set();
+    for (const r of list) {
+      const reactor = r?.participantID || r?.id;
+      const emoji = (typeof r?.reactionKey === 'string' && r.reactionKey) || null;
+      if (reactor && emoji) cur.add(`${reactor} ${emoji}`);
+    }
+    const first = !_seenReactions.has(msgId);
+    const prev = _seenReactions.get(msgId) || new Set();
+    _seenReactions.set(msgId, cur);
+    _capMap(_seenReactions, REACTION_CAP);
+    if (first) return [];   // baseline — record, never surface (don't replay)
+    const fresh = [];
+    for (const key of cur) if (!prev.has(key)) { const [reactor, emoji] = key.split(' '); fresh.push({ reactor, emoji }); }
+    return fresh;
+  }
+  // Surface each newly-added reaction as a stage-direction through the ONE router
+  // (onIncoming), flagged isReaction:true so the host wraps it in brackets and the
+  // mode gate (I5 revised) decides whether E answers.
+  async function _maybeEmitReactions(msg) {
+    const fresh = _freshReactions(msg);
+    if (!fresh.length) return;
+    const info = await chatInfo(msg.chatID);
+    const snippet = htmlToMarkdown(msg.text) || '';
+    for (const { reactor, emoji } of fresh) {
+      const name = _reactorName(reactor);
+      const body = reactionAction({ emoji, targetId: msg.id, snippet });
+      onLog(`beeper: reaction ${emoji} by ${name} → #${msg.id} [${info.title}]`);
+      const from = {
+        chatId: msg.chatID, chatName: info.title,
+        chatType: info.type === 'group' ? 'group' : 'private',
+        userId: reactor, username: undefined, firstName: name, senderName: name,
+        isSender: false, authorized: isAllowedUser(reactor),
+        atEStart: false, atEAnywhere: false, replyToBot: false,
+        isReaction: true, isTranscriptFromVoice: false,
+        msgKey: msg.id || null,   // the reacted-to message id (referenced as #id in the body)
+      };
+      try { await onIncoming?.(body, from); }
+      catch (e) { onLog(`beeper: reaction onIncoming threw — ${e?.message ?? e}`); }
+    }
+  }
+
   // --- dispatch one incoming message ---
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
+    // Remember sender display names for reactor resolution (reactions[] only
+    // carries the participant id, not a name).
+    if (msg.senderID && msg.senderName) _idToName.set(msg.senderID, msg.senderName);
+    // REACTIONS (Phase 2): handle BEFORE echo/dedup — a reaction rides the TARGET
+    // message's re-upsert, and that target may be E's OWN message (an echo) or an
+    // already-processed message (deduped); both must still surface the reaction.
+    await _maybeEmitReactions(msg);
+    if (msg.type === 'REACTION') return;   // bare reaction event: no body to route
     // Echo suppression compares the RAW wire text (its own _normEcho strips HTML,
     // C5.3) — so check it BEFORE converting. Beeper delivers text as HTML; convert
     // it to markdown so the model + transcript see prose, not markup (the inbound
