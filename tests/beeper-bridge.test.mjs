@@ -169,14 +169,25 @@ describe('beeper bridge', () => {
     expect(media[0].caption).toBe('fake transcript');          // sidecar caption = transcription
   });
 
-  // A photo doesn't route to a brain in v1, but its file MUST still be saved.
-  it('a non-voice attachment (image) is handed to onMedia even though text is null', async () => {
+  // A photo is saved AND announced to the model (operator 2026-06-16 regression):
+  // the saved path is surfaced so E sees the media arrived and a vision brain can
+  // Read it — it used to route to disk only and never reach E.
+  it('a non-voice attachment (image) is saved AND announced to the model with its path', async () => {
     const { incoming, media } = await startBridge();
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [att] })] });
-    await waitFor(() => media.length === 1);
+    await waitFor(() => incoming.length === 1);
     expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'image' });
-    expect(incoming).toHaveLength(0);                          // not routed (no text)
+    expect(incoming[0].text).toMatch(/\(image[^)]*\) \[saved: /);   // path announced to E
+  });
+
+  it('an image WITH a caption surfaces both the caption and the saved path', async () => {
+    const { incoming } = await startBridge();
+    const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: 'miren esto', attachments: [att] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toContain('miren esto');
+    expect(incoming[0].text).toMatch(/\[saved: /);
   });
 
   it('whatsapp.media.download:"off" saves nothing', async () => {

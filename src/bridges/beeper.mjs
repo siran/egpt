@@ -318,11 +318,16 @@ export async function startBeeperBridge(opts = {}) {
   // / 'all'). Re-uses an already-downloaded voice path so a voice note isn't
   // fetched twice. A failed download of one attachment is logged, never fatal —
   // it must not block the text dispatch.
+  // Returns the saved descriptors [{ kind, savedPath, fileName, isVoiceNote }] so
+  // the caller can ANNOUNCE non-voice media to the model (the saved path) — a
+  // photo/gif/video/doc must reach E, not just disk (operator 2026-06-16: this
+  // regressed; onMedia's returned path was discarded here).
   async function persistMedia(msg, info, { voiceAtt = null, voicePath = null, voiceCaption = null } = {}) {
-    if (typeof onMedia !== 'function') return;
-    if (mediaDownloadPolicy === 'off') return;
+    const saved = [];
+    if (typeof onMedia !== 'function') return saved;
+    if (mediaDownloadPolicy === 'off') return saved;
     const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
-    if (!atts.length) return;
+    if (!atts.length) return saved;
     const ts = _msgTimestampMs(msg) ?? Date.now();
     for (const att of atts) {
       const mime = att?.mimeType || att?.mimetype || att?.mime || '';
@@ -332,7 +337,7 @@ export async function startBeeperBridge(opts = {}) {
       const localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
       if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
       try {
-        await onMedia({
+        const savedPath = await onMedia({
           chatID: msg.chatID,
           chatName: info.title,
           chatType: info.type === 'group' ? 'group' : 'private',
@@ -345,8 +350,10 @@ export async function startBeeperBridge(opts = {}) {
           caption: (att === voiceAtt) ? voiceCaption : (att?.caption ?? (msg.text || null)),
           isVoiceNote: !!att?.isVoiceNote,
         });
+        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote });
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
+    return saved;
   }
 
   // --- send (efferent) ---
@@ -429,9 +436,20 @@ export async function startBeeperBridge(opts = {}) {
     // the non-text early-return below — a photo / sticker / document must be
     // saved even though it doesn't route to a brain in v1. Logging/saving is
     // independent of surfacing, same as transcripts.
-    await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption: _voiceCaption });
+    const _savedMedia = await persistMedia(msg, info, { voiceAtt: _voiceAtt, voicePath: _voicePath, voiceCaption: _voiceCaption });
 
-    if (text == null) return;   // non-text, non-voice (image/sticker/etc.) — nothing to route in v1
+    // Surface non-voice media to the model (operator 2026-06-16 regression): a
+    // photo / gif / video / document must be ANNOUNCED so E sees it arrived and a
+    // vision brain can Read the saved file. Voice is already in `text` (the
+    // transcript), and audio is the transcribe path — skip both here. Without
+    // this, media was saved to disk but the bridge returned before onIncoming, so
+    // E never knew (e.g. "puedes ver lo que posteó ron?").
+    const _mediaLines = _savedMedia
+      .filter((m) => m.savedPath && !m.isVoiceNote && m.kind !== 'audio')
+      .map((m) => `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${m.savedPath}]`);
+    if (_mediaLines.length) text = [text, ..._mediaLines].filter(Boolean).join('\n');
+
+    if (text == null) return;   // nothing to route — no text, no announceable media
 
     const st = mentionStatus(text || '');
     const from = {
