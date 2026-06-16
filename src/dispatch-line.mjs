@@ -35,7 +35,7 @@ export function splitSurfaceTag(surface) {
   return { name: segs.slice(0, -1).join('.'), node: segs[segs.length - 1] };
 }
 
-export function formatDispatchLine({ senderName, chatName, node, surface, body, ts } = {}) {
+export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId } = {}) {
   const d = new Date(ts ?? Date.now());
   const pad = (n) => String(n).padStart(2, '0');
   const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
@@ -44,5 +44,9 @@ export function formatDispatchLine({ senderName, chatName, node, surface, body, 
   const fromSurface = splitSurfaceTag(surface);
   const nd = (node != null && String(node).trim()) ? String(node).trim() : (fromSurface.node || 'wa');
   const nm = (chatName != null && String(chatName).trim()) ? String(chatName).trim() : (fromSurface.name || nd);
-  return `${sender}@[${nm}].${nd} (${tstr}): ${body ?? ''}`;
+  // Message id (Beeper msg.id) — makes each line addressable so the model can
+  // /react / /reply it and reactions can reference it (#<id>). Optional →
+  // omitted when absent (back-compat). (MESSAGES-FIRST-CLASS-PLAN Phase 1)
+  const idTag = (msgId != null && String(msgId).trim()) ? ` #${String(msgId).trim()}` : '';
+  return `${sender}@[${nm}].${nd} (${tstr})${idTag}: ${body ?? ''}`;
 }

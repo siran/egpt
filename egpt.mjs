@@ -8369,7 +8369,7 @@ function App() {
         let personaPrompt = meta._personaBodyOverride
           ? meta._personaBodyOverride                         // drained pile — verbatim combined prompt
           : (meta.fromWhatsApp && (_isResident || _sibBrain?.sessionless))
-            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null })
+            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null, msgId: meta.waMsgKey })
             : formatPersonaPrompt(meta, decision.body);
         // Channel MEMORY for sessionless siblings (@l): prepend a capped tail of
         // the chat's transcript.md so a stateless model has recent context

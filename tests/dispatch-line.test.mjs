@@ -10,6 +10,17 @@ import { formatDispatchLine, splitSurfaceTag } from '../src/dispatch-line.mjs';
 const TS = Date.UTC(2026, 5, 11, 17, 21, 0);
 
 describe('formatDispatchLine — canonical shape', () => {
+  // MESSAGES-FIRST-CLASS-PLAN Phase 1: an optional msg id makes the line
+  // addressable (#<id>) for /react · /reply · reaction references.
+  it('renders #<id> when msgId is given, and is unchanged when absent', () => {
+    expect(formatDispatchLine({ senderName: 'Ron', chatName: 'HFM', node: 'wa', body: 'hola', ts: TS, msgId: '142006' }))
+      .toBe('Ron@[HFM].wa (17:21) #142006: hola');
+    expect(formatDispatchLine({ senderName: 'Ron', chatName: 'HFM', node: 'wa', body: 'hola', ts: TS }))
+      .toBe('Ron@[HFM].wa (17:21): hola');
+    expect(formatDispatchLine({ senderName: 'Ron', chatName: 'HFM', node: 'wa', body: 'x', ts: TS, msgId: '' }))
+      .toBe('Ron@[HFM].wa (17:21): x');   // empty id → omitted
+  });
+
   it('is exactly Sender@[chatname].{node} (HH:MM): body', () => {
     expect(formatDispatchLine({
       senderName: 'An', chatName: 'HFM High Frequency', node: 'wa', body: 'hola', ts: TS,
