@@ -163,13 +163,18 @@ describe('mayEmit — outbound backstop', () => {
     expect(mayEmit('mention', {})).toBe(false);
     expect(mayEmit('mention-direct', {})).toBe(false);
   });
-  it('a reaction NEVER emits — in any mode, even on / even with replyAllowed', () => {
-    expect(mayEmit('on',      { isReaction: true })).toBe(false);
-    expect(mayEmit('on',      { replyAllowed: true, isReaction: true })).toBe(false);
-    expect(mayEmit('mention', { replyAllowed: true, isReaction: true })).toBe(false);
-    expect(mayEmit('mention-direct', { replyAllowed: true, isReaction: true })).toBe(false);
-    // non-reactions in 'on' still emit (sanity — flag is opt-in)
-    expect(mayEmit('on', { isReaction: false })).toBe(true);
+  // I5 REVISED (operator 2026-06-16, Phase 2): a reaction now follows the SAME
+  // mode gate as any message — no longer hard-blocked, because it arrives as an
+  // intelligible stage-direction. 'on' → E may answer; 'mention(-direct)' → only if
+  // @-mentioned (a reaction can't, so replyAllowed stays false → silent);
+  // 'mute'/'off' → never. (Was: a reaction NEVER emitted in any mode.)
+  it('a reaction follows the normal mode gate (I5 revised) — no longer hard-blocked', () => {
+    expect(mayEmit('on',      { isReaction: true })).toBe(true);                       // 'on' → may answer
+    expect(mayEmit('on',      { replyAllowed: true, isReaction: true })).toBe(true);
+    expect(mayEmit('mention', { isReaction: true })).toBe(false);                     // not mentioned → silent
+    expect(mayEmit('mention', { replyAllowed: true, isReaction: true })).toBe(true);  // mentioned → may answer
+    expect(mayEmit('mute',    { replyAllowed: true, isReaction: true })).toBe(false); // mute always silent
+    expect(mayEmit('off',     { replyAllowed: true, isReaction: true })).toBe(false);
   });
 });
 

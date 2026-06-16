@@ -35,7 +35,7 @@ export function splitSurfaceTag(surface) {
   return { name: segs.slice(0, -1).join('.'), node: segs[segs.length - 1] };
 }
 
-export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId } = {}) {
+export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, stageDirection = false } = {}) {
   const d = new Date(ts ?? Date.now());
   const pad = (n) => String(n).padStart(2, '0');
   const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
@@ -44,9 +44,26 @@ export function formatDispatchLine({ senderName, chatName, node, surface, body, 
   const fromSurface = splitSurfaceTag(surface);
   const nd = (node != null && String(node).trim()) ? String(node).trim() : (fromSurface.node || 'wa');
   const nm = (chatName != null && String(chatName).trim()) ? String(chatName).trim() : (fromSurface.name || nd);
+  // Stage-direction (theater-play model, MESSAGES-FIRST-CLASS-PLAN): a meta-event
+  // (a reaction/edit/delete) is NOT an utterance — wrap it in outer brackets so
+  // the reader/model can tell it apart from speech. The body carries the action
+  // ("reacted 👍 to #<id> …") which references its own target id, so no #<id> tag.
+  if (stageDirection) return `[ ${sender}@[${nm}].${nd} (${tstr}): ${body ?? ''} ]`;
   // Message id (Beeper msg.id) — makes each line addressable so the model can
   // /react / /reply it and reactions can reference it (#<id>). Optional →
   // omitted when absent (back-compat). (MESSAGES-FIRST-CLASS-PLAN Phase 1)
   const idTag = (msgId != null && String(msgId).trim()) ? ` #${String(msgId).trim()}` : '';
   return `${sender}@[${nm}].${nd} (${tstr})${idTag}: ${body ?? ''}`;
+}
+
+// The body of a reaction stage-direction (MESSAGES-FIRST-CLASS-PLAN Phase 2):
+//   reacted 👍 to #<targetId> "<snippet>"
+// `snippet` is the target message's text (pre-cleaned to markdown by the caller),
+// trimmed to a short quote; omitted when empty. Pure + exported so the shape is
+// test-locked alongside formatDispatchLine.
+export function reactionAction({ emoji, targetId, snippet } = {}) {
+  const e = String(emoji ?? '').trim() || '❓';
+  const id = String(targetId ?? '').trim();
+  const snip = String(snippet ?? '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  return `reacted ${e} to #${id}${snip ? ` "${snip}"` : ''}`;
 }

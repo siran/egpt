@@ -127,6 +127,43 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.atEStart).toBe(true);
   });
 
+  // MESSAGES-FIRST-CLASS-PLAN Phase 2: a reaction rides the TARGET message's
+  // re-upsert (reactions[] = [{participantID, reactionKey}]); the bare type:REACTION
+  // event carries no emoji and is skipped. Baseline-on-first-sight (I10): only a
+  // reaction ADDED after the message's first sight this session surfaces.
+  it('surfaces a NEW reaction as a stage-direction (reactor + emoji + target + snippet)', async () => {
+    const { incoming } = await startBridge();
+    const tgt = `${Math.floor(Math.random() * 1e6)}`;
+    // 1) the target message arrives first → baseline (no reactions yet)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: tgt, text: '<strong>ron</strong> is bold', senderName: 'An' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === tgt));
+    const before = incoming.length;
+    // 2) someone reacts → the target re-upserts carrying reactions[] (+ the bare REACTION event)
+    fake.emit({ type: 'message.upserted', entries: [
+      { id: '999001', chatID: CHAT('chat-1'), type: 'REACTION', text: '', senderID: 'bea@beeper.local', senderName: 'Bea', linkedMessageID: tgt, timestamp: Date.now() },
+      { id: tgt, chatID: CHAT('chat-1'), type: 'TEXT', text: '<strong>ron</strong> is bold', senderName: 'An',
+        timestamp: Date.now(), reactions: [{ participantID: 'bea@beeper.local', emoji: true, reactionKey: '👍' }] },
+    ] });
+    await waitFor(() => incoming.length > before);
+    const react = incoming[incoming.length - 1];
+    expect(react.from.isReaction).toBe(true);
+    expect(react.text).toBe('reacted 👍 to #' + tgt + ' "**ron** is bold"');   // emoji + target + snippet (markdown preserved)
+    expect(react.from.senderName).toBe('Bea');   // reactor resolved from prior message
+  });
+
+  it('does not surface a pre-existing reaction on a message first seen this session (I10)', async () => {
+    const { incoming } = await startBridge();
+    const tgt = `${Math.floor(Math.random() * 1e6)}`;
+    // first sight ALREADY carries a reaction (reconnect re-sync) → baseline, no emit
+    fake.emit({ type: 'message.upserted', entries: [
+      { id: tgt, chatID: CHAT('chat-1'), type: 'TEXT', text: 'hola', senderName: 'An', timestamp: Date.now(),
+        reactions: [{ participantID: 'bea@beeper.local', reactionKey: '👍' }] },
+    ] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.some((i) => i.from.isReaction)).toBe(false);   // the pre-existing 👍 was a baseline, not replayed
+  });
+
   it('converts inbound HTML message text to markdown before dispatch', async () => {
     // Beeper delivers text as HTML; the model + transcript must see prose/markdown,
     // not markup (operator 2026-06-16, the morgan thread).

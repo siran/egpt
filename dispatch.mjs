@@ -447,6 +447,10 @@ export async function dispatchPersonaTurn({
       surface: buildWaSurfaceTag(meta.waChatId),
       chatType,
       chatName: getWaChatName(meta.waChatId) ?? null,
+      // A reaction is a stage-direction, not an utterance (Phase 2): wrap it in
+      // brackets via the one formatter. The body already carries the action
+      // ("reacted 👍 to #<id> …"); the emit gate (I5 revised) decides surfacing.
+      stageDirection: !!meta.isReaction,
     });
   } else {
     personaPrompt = formatPersonaPrompt(meta, decision.body);
