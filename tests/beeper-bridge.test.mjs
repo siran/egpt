@@ -295,6 +295,10 @@ describe('beeper bridge', () => {
     const chats = await bridge.listChats();
     const r9 = chats.find((c) => c.id === CHAT('room9'));
     expect(r9).toMatchObject({ name: 'Dándo Ruiz', slug: 'dando-ruiz', isGroup: true, isMuted: true });
+    // jid MUST alias the room id — the whole chat-resolution layer keys on `.jid`
+    // (assignWaIndex/resolveChatTarget); without it /channels shows @wanull and
+    // name-resolution sees a phantom undefined-jid duplicate (operator 2026-06-16).
+    expect(r9.jid).toBe(CHAT('room9'));
     expect(bridge.getChatName(CHAT('room9'))).toBe('Dándo Ruiz');
     expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
   });
