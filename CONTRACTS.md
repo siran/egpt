@@ -231,6 +231,12 @@ Lock status of the four:
   body`. One formatter (`src/dispatch-line.mjs` `formatDispatchLine`), wrapped by
   egpt.mjs `formatAutoDispatchLine` and shared by every call site +
   dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
+  The Beeper voice path now applies the `(voice transcription, Ns)` body marker
+  via the shared `voiceTranscriptBody` helper (`src/incoming-media.mjs`) — the
+  duration is omitted when the attachment carries none (Beeper has no reliable
+  duration field); the bare transcript still feeds the 👂 ack + the media sidecar
+  caption. ✅ (2026-06-16, `tests/beeper-bridge.test.mjs`; before this, beeper.mjs
+  set `text = transcript` raw, so a voice note read like an ordinary message).
   Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
   (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
 - **C7.6b** A being's REPLY is recorded in the SAME member line as inbound — E is
