@@ -46,6 +46,8 @@ import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
+import { Room } from './src/room-core.mjs';
+import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
 import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
@@ -2723,6 +2725,23 @@ function App() {
     }
   };
 
+  // The explicit members[] for a chat — the unified Room store (GENOME §2.5):
+  // conversations/<surface>/<slug>/config.yaml members[]. Empty array when the
+  // chat has no slug yet (brand-new) or no members[] block, in which case the
+  // caller seeds from the legacy roster. Fail-safe to [] (→ legacy behavior).
+  const _explicitMembersForChat = async (surface, chatId) => {
+    try {
+      if (!chatId) return [];
+      const cs = await _loadConvState();
+      const slug = conversationsState.getContact(cs, surface, chatId)?.slug ?? null;
+      if (!slug) return [];
+      return await Room.forChat(surface, slug).members();
+    } catch (e) {
+      logOut(`members: resolve failed for ${chatId} — ${e?.message ?? e}; seeding from legacy roster`);
+      return [];
+    }
+  };
+
   // CONTRACT C2 — persist an incoming attachment the bridge handed us into the
   // chat's own media/ folder. The bridge downloaded it + decided to save it
   // (whatsapp.media.download); here we resolve the chat's slug (ensuring the
@@ -4242,21 +4261,28 @@ function App() {
               // is mirrored to Self by the watcher tap. _chainDepth:0 marks
               // these as broadcast turns — replies re-circulate to the other
               // residents (see _recirculateResidentReply) up to the cap.
-              // Resident list for THIS chat: a per-chat override
-              // (whatsapp.residents_per_chat[jid]) wins, else the global
-              // residents list, else the persona alone. Lets a chat run @l-only
-              // (drop @e there to spare the Claude plan's 5h window) or @e-only.
-              // residents accepts a plain list (["e","l"]), a list of toggles
-              // ([{e:true},{l:false}]), or an enable-map ({e:true,l:false}) —
-              // normalizeResidents flattens any of them to the enabled names.
-              const _perChatResidents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[from.chatId]);
-              const _globalResidents  = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
-              let residents = _perChatResidents.length ? _perChatResidents
-                : (_globalResidents.length ? _globalResidents : [_personaBeing]);
-              // A disabled sibling (siblings.<name>.enabled:false) never runs as a
-              // resident either (operator 2026-06-15: codex siblings off for now).
-              // If that empties the set, fall back to the persona so the chat isn't dead.
-              residents = residents.filter((r) => EGPT_CONFIG.siblings?.[r]?.enabled !== false);
+              // Resident list for THIS chat — UNIFIED via the Room members store
+              // (GENOME §2.5, Phase 1b-iii). An explicit
+              // conversations/<surface>/<slug>/config.yaml members[] WINS: the
+              // residents are its brain members that RECEIVE (every state but
+              // 'off'; muted still receives + lurks). With no members[] block —
+              // the case for every chat until /use writes one — we SEED from the
+              // legacy roster (residents_per_chat > global > persona, minus
+              // disabled siblings), which is byte-identical to the pre-merge
+              // behavior. resolveRoster reproduces that logic exactly; the seed
+              // path keeps the resident list un-mode-filtered (per-message reply
+              // gating stays downstream via baseMeta.replyAllowed, unchanged).
+              // See src/conversation-members.mjs.
+              const _explicitMembers = await _explicitMembersForChat('whatsapp', from.chatId);
+              let residents = _explicitMembers.length
+                ? residentsFromMembers(_explicitMembers)
+                : resolveRoster({
+                    chatId:           from.chatId,
+                    residentsPerChat: EGPT_CONFIG.whatsapp?.residents_per_chat,
+                    globalResidents:  EGPT_CONFIG.whatsapp?.residents,
+                    personaBeing:     _personaBeing,
+                    siblings:         EGPT_CONFIG.siblings,
+                  });
               if (!residents.length) residents = [_personaBeing];
               // UNIFIED @<mention> ROUTING (Wren, 2026-06-10): a message that
               // explicitly @<mention>s a registered sibling NOT already resident
