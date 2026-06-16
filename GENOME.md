@@ -408,6 +408,10 @@ Sender@[chatname/groupname].{node} (HH:MM): body
   (extension), `tg` (Telegram) — resolved from the client/surface
   identity, NEVER hardcoded.
 - Voice notes inline as `(voice transcription, Ns) body`.
+- `body` is prose/markdown, never transport markup: a limb whose wire format is
+  HTML (Beeper) normalizes it to markdown (`src/html-to-markdown.mjs`) before it
+  becomes `body` — links/emphasis preserved, the inbound complement of the
+  outbound md→HTML path. Decoding the wire format is a limb job (I2). (C7.6c.)
 - One formatter only: `src/dispatch-line.mjs` `formatDispatchLine`, wrapped by
   the nucleus and shared by every call site. (Contract C7.6.)
 

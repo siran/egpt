@@ -48,6 +48,7 @@
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote } from '../incoming-media.mjs';
+import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -347,7 +348,7 @@ export async function startBeeperBridge(opts = {}) {
           ts, kind, mime,
           fileName: att?.fileName ?? null,
           localPath,
-          caption: (att === voiceAtt) ? voiceCaption : (att?.caption ?? (msg.text || null)),
+          caption: (att === voiceAtt) ? voiceCaption : (htmlToMarkdown(att?.caption) || htmlToMarkdown(msg.text) || null),
           isVoiceNote: !!att?.isVoiceNote,
         });
         saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote });
@@ -375,8 +376,12 @@ export async function startBeeperBridge(opts = {}) {
   // --- dispatch one incoming message ---
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
-    let text = msg.text || null, isVoice = false;
-    if (isEcho(msg.id, chatID, text)) return;
+    // Echo suppression compares the RAW wire text (its own _normEcho strips HTML,
+    // C5.3) — so check it BEFORE converting. Beeper delivers text as HTML; convert
+    // it to markdown so the model + transcript see prose, not markup (the inbound
+    // complement of the outbound md→HTML path; src/html-to-markdown.mjs).
+    if (isEcho(msg.id, chatID, msg.text)) return;
+    let text = htmlToMarkdown(msg.text) || null, isVoice = false;
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
     if (msg.id) { if (_processedIds.has(msgKeyOf(chatID, msg.id))) return; markProcessed(chatID, msg.id); }

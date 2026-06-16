@@ -242,6 +242,16 @@ Lock status of the four:
   collapsed to one. ✅ (2026-06-16, `dispatch.mjs` reply-append via
   `formatDispatchLine`; `tests/dispatch.test.mjs`). Heartbeat/shell system logs
   (not per-contact) keep their own `[@e]:` shape.
+- **C7.6c** A brain sees `body` as prose/**markdown**, never transport markup. A
+  limb whose wire format is HTML (Beeper delivers `<p>…</p>`, `<a href…>`)
+  converts it to markdown (`src/html-to-markdown.mjs`: links→`[t](u)`,
+  `<strong>`→`**`, `<br>`/`</p>`→newline, entities unescaped) BEFORE the text
+  reaches the dispatch line OR transcript.md — the inbound complement of the
+  outbound md→HTML path. Decoding the wire format is a limb job (I2), like
+  downloading attachment bytes. The echo-suppression compare-key keeps its own
+  lossy `_normEcho` HTML-strip (C5.3) and runs on the RAW text, before this
+  conversion. ✅ (2026-06-16, `tests/html-to-markdown.test.mjs` +
+  `tests/beeper-bridge.test.mjs`; operator 2026-06-16 the `morgan` thread).
 - **C7.7** Bot↔bot loop-guard + **STOP kill-switch** (bridge-side). EVERY dispatch
   flows through `submitInner` — received AND self-generated (heartbeats route
   through it too) — so the gate there is definite. Operator safe-words `STOP` /
