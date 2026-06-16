@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDispatchRuntime, isBrainFailureResult } from '../dispatch.mjs';
 import { parse, serialize } from '../conversations-state.mjs';
+import { resolveRoute } from '../src/room.mjs';
+import { parseInput } from '../src/interpreter.mjs';
 
 describe('isBrainFailureResult — tool/infra errors are NOT a sibling reply', () => {
   it('detects the failure shapes that must not be emitted/recirculated', () => {
@@ -487,6 +489,49 @@ describe('dispatch runtime', () => {
     expect(result.kind).toBe('silence');
     expect(brainCalls).toHaveLength(1);
     expect(sends).toHaveLength(0);
+  });
+
+  // ── Regression locks (operator 2026-06-16) ──────────────────────────────
+  // The SPOILER confusion — "did E get prompted in 'on' mode, and are its '…'
+  // declines recorded?" — turned out to WORK, but nothing guarded it. These two
+  // tests lock the behavior so it can't silently regress (GENOME §0 idea #2 +
+  // I3: silence is a valid, LOGGED answer; logging is independent of surfacing).
+  it("forceTarget routes a plain (no-@e) message to the persona — the 'on'-mode broadcast path", () => {
+    // This is WHY E is prompted on every message in 'on' mode without a mention:
+    // egpt.mjs broadcasts each message to its residents via forceTarget (no @e
+    // text injected), and resolveRoute sends a forced persona target down the
+    // persona path. The runtime's submitIncoming alone (mention-routed) does NOT
+    // prompt E for a plain message — the forceTarget broadcast does. Locks the
+    // mechanism the SPOILER confusion hinged on (operator 2026-06-16).
+    const decision = resolveRoute(parseInput('hola equipo'), 'hola equipo', { forceTarget: 'e', personaName: 'e' });
+    expect(decision.kind).toBe('persona');
+    expect(decision.body).toBe('hola equipo');
+    // A non-persona forceTarget routes to that sibling (meta), not the persona.
+    const sib = resolveRoute(parseInput('hola'), 'hola', { forceTarget: 'l', personaName: 'e' });
+    expect(sib.kind).toBe('meta');
+    expect(sib.name).toBe('l');
+  });
+
+  it("records a '…' decline to transcript.md (logged-not-sent, I3)", async () => {
+    // E is prompted (brain runs), declines with '…' (not surfaced), and that
+    // decline is STILL written to the chat transcript — logging is independent of
+    // surfacing (GENOME §0 idea #2 / I3). This is the line that was actually
+    // present but invisible in the operator's stale screenshot.
+    const { brainCalls, runtime, sends, stateDir } = await makeRuntime({ reply: '…' });
+    const result = await runtime.submitIncoming('@e hola equipo', {
+      fromWhatsApp: true,
+      waChatId: 'chat-on',
+      waChatName: 'Grupo',
+      waSlug: 'grupo',
+    });
+    expect(result.kind).toBe('silence');
+    expect(brainCalls).toHaveLength(1);   // E WAS prompted
+    expect(sends).toHaveLength(0);        // declined → not surfaced
+    const state = await readConvState(stateDir);
+    const slug = state.contacts.whatsapp['chat-on'].slug;
+    const transcript = await realFs.readFile(
+      join(stateDir, 'conversations', 'whatsapp', slug, 'transcript.md'), 'utf8');
+    expect(transcript).toMatch(/\]:\s*…/);   // the '…' decline reply line IS logged
   });
 
   it('the MODE GATE is authoritative: a non-silence reply is suppressed when replyAllowed is not true (no leak)', async () => {
