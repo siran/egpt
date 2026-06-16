@@ -273,6 +273,20 @@ members.** So:
   beings are members of this Room"; `@mention` = a one‑turn join.) Commands flow
   through the one router (I‑spine) — never a per‑surface side path. `[[egpt-bridge-sole-router]]`
 
+**A being's reply is a MEMBER CONTRIBUTION — E is not special‑cased (operator
+2026‑06‑16).** After a being (E included) is prompted, its reply is wrapped ONCE
+in the single member line — `formatDispatchLine`: `Name@[chat].{node} (HH:MM):
+<body_emoji> body` (C7.6) — and recorded to the transcript ALWAYS (I3), exactly
+like every other member's message. The emit gate (I4/I5) then decides only
+whether that same wrapped block SURFACES; it NEVER changes the format or the
+logging. So a withheld reply is byte‑identical in the transcript to a sent one —
+it just wasn't delivered (the surfacing decision is recorded in the activity log,
+not by mangling the line). The bug this kills: E's reply was special‑cased
+(bracketed `[@e (HH:MM)]: …`, no identity, no body emoji) and its surface path
+(emoji, sent) diverged from its transcript path (bracketed, no emoji) — proving
+two paths where there must be one. One reply block; one formatter; the gate is a
+filter on the surface step only.
+
 **A message can belong to MANY Rooms at once, and fulfils EVERY contract it
 touches (operator 2026‑06‑15).** A chat is always its own Room *and* may be a
 member/host of larger Rooms. So a message sent to a group that is also in a Room is

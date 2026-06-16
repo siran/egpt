@@ -15,6 +15,7 @@ import { splitEmittedReply } from './src/emitted-commands.mjs';
 import { resolveRoute } from './src/room.mjs';
 import { makeSerialByKey } from './src/serial-by-key.mjs';
 import { renderFrontMatter } from './src/transcript-meta.mjs';
+import { formatDispatchLine } from './src/dispatch-line.mjs';
 import {
   emptyState,
   ensureContact,
@@ -1153,11 +1154,26 @@ export function createDispatchRuntime({
         await recordDefaultSession?.({ sessionId: newThreadId, brainType: usedAttempt.brainType, dbCfg: usedAttempt.dbCfg });
       }
 
+      // A being's reply is a MEMBER CONTRIBUTION (GENOME §2.5 / C7.6b): for a
+      // per-chat conversation, record it in the ONE member line — exactly like
+      // inbound (formatDispatchLine + the body emoji) — so E is not special-cased.
+      // System/heartbeat logs (not per-contact) keep the [@e]: shape. Logging is
+      // uniform (I3); the emit gate (the caller) filters only surfacing, never
+      // the format. (operator 2026-06-16)
+      const replyLine = isPerContactDispatch
+        ? formatDispatchLine({
+            senderName: personaName,
+            chatName: threadCtx.name ?? convSlug ?? threadId,
+            surface: threadCtx.surface,
+            body: `${personaEmoji} ${final}`,
+            ts: clockMs(clock),
+          })
+        : `[${personaTag} (${replyClock})]: ${final}`;
       await appendTranscript({
         fs,
         logger,
         path: fpath,
-        body: `[${personaTag} (${replyClock})]: ${final}\n\n`,
+        body: `${replyLine}\n\n`,
         label: 'reply',
       });
       try {

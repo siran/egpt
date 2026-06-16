@@ -512,11 +512,18 @@ describe('dispatch runtime', () => {
     expect(sib.name).toBe('l');
   });
 
-  it("records a '…' decline to transcript.md (logged-not-sent, I3)", async () => {
-    // E is prompted (brain runs), declines with '…' (not surfaced), and that
-    // decline is STILL written to the chat transcript — logging is independent of
-    // surfacing (GENOME §0 idea #2 / I3). This is the line that was actually
-    // present but invisible in the operator's stale screenshot.
+  async function readChatTranscript(stateDir, chatId) {
+    const state = await readConvState(stateDir);
+    const slug = state.contacts.whatsapp[chatId].slug;
+    return realFs.readFile(join(stateDir, 'conversations', 'whatsapp', slug, 'transcript.md'), 'utf8');
+  }
+
+  it("logs E's decline to transcript.md in the UNIFIED MEMBER format (not special-cased)", async () => {
+    // E is prompted, declines '…' (not surfaced), and the decline is recorded in
+    // the SAME member line as any other member — Name@[chat].{node} (HH:MM):
+    // <body_emoji> body — NOT a bracketed [@e]: … special case (operator
+    // 2026-06-16, GENOME §2.5 / C7.6b). Logging is uniform (I3); the gate filters
+    // only surfacing.
     const { brainCalls, runtime, sends, stateDir } = await makeRuntime({ reply: '…' });
     const result = await runtime.submitIncoming('@e hola equipo', {
       fromWhatsApp: true,
@@ -527,11 +534,21 @@ describe('dispatch runtime', () => {
     expect(result.kind).toBe('silence');
     expect(brainCalls).toHaveLength(1);   // E WAS prompted
     expect(sends).toHaveLength(0);        // declined → not surfaced
-    const state = await readConvState(stateDir);
-    const slug = state.contacts.whatsapp['chat-on'].slug;
-    const transcript = await realFs.readFile(
-      join(stateDir, 'conversations', 'whatsapp', slug, 'transcript.md'), 'utf8');
-    expect(transcript).toMatch(/\]:\s*…/);   // the '…' decline reply line IS logged
+    const transcript = await readChatTranscript(stateDir, 'chat-on');
+    expect(transcript).toMatch(/egpt@\[Grupo\]\.wa \(\d\d:\d\d\): 🐶 …/);   // member format + emoji
+    expect(transcript).not.toContain('[@e');                                // no special-case brackets
+  });
+
+  it("logs E's SENT reply to transcript.md in the same member format (incl. body emoji)", async () => {
+    const { runtime, sends, stateDir } = await makeRuntime({ reply: 'claro, equipo' });
+    await runtime.submitIncoming('@e hola', {
+      fromWhatsApp: true, waChatId: 'chat-on', waChatName: 'Grupo', waSlug: 'grupo',
+    });
+    expect(sends).toHaveLength(1);   // surfaced
+    const transcript = await readChatTranscript(stateDir, 'chat-on');
+    // The surfaced reply and the transcript record are the SAME wrapped block.
+    expect(transcript).toMatch(/egpt@\[Grupo\]\.wa \(\d\d:\d\d\): 🐶 claro, equipo/);
+    expect(transcript).not.toContain('[@e');
   });
 
   it('the MODE GATE is authoritative: a non-silence reply is suppressed when replyAllowed is not true (no leak)', async () => {
