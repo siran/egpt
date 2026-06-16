@@ -676,7 +676,12 @@ export function findContactsByName(state, term, surface = null) {
 // never the only feedback ([[feedback-verify-wa-chat-name]]).
 export async function resolveChatTarget(term, { waBridge = null, surface = 'whatsapp', statePath = CONV_YAML_PATH } = {}) {
   if (!term) return {};
-  if (String(term).includes('@')) {
+  // A JID/room-id (not a fuzzy name): a WA jid carries '@'; a Beeper room id is
+  // '!<room>:beeper.local' (no '@'). Recognize BOTH — else a Beeper id falls to
+  // the fuzzy-name path and never resolves (operator 2026-06-16: `/e auto status`
+  // showed raw `!…:beeper.local` ids because getChatName was never consulted).
+  const _t = String(term);
+  if (_t.includes('@') || _t.startsWith('!') || _t.includes(':beeper')) {
     const live = waBridge?.getChatName?.(term) ?? null;
     if (live) return { jid: term, name: live };
     const cs = await readState(statePath);
@@ -688,15 +693,22 @@ export async function resolveChatTarget(term, { waBridge = null, surface = 'what
     const chats = await waBridge?.listChats?.({ all: true, limit: 2000, messagesPerChat: 0, includeStatus: false }) ?? [];
     for (const c of chats) {
       const nm = String(c.name ?? '');
-      if (nm && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);
+      if (nm && c.jid && nm.toLowerCase().includes(needle)) hits.set(c.jid, nm);
     }
   } catch { /* bridge optional */ }
-  try {
-    const cs = await readState(statePath);
-    for (const m of findContactsByName(cs, term, surface)) {
-      if (!hits.has(m.jid)) hits.set(m.jid, m.pushedName || m.slug || m.jid);
-    }
-  } catch { /* conv-state optional */ }
+  // The LIVE chat list is AUTHORITATIVE. Only consult the registry when NO live
+  // chat matched (e.g. an archived chat the bridge no longer lists) — otherwise
+  // stale/duplicate registry entries (a renamed or baileys→Beeper-migrated jid
+  // for the SAME group) create phantom "matches N" ambiguity for what is really
+  // one live chat (operator 2026-06-16: `/e auto on HFM` → "matches 2").
+  if (!hits.size) {
+    try {
+      const cs = await readState(statePath);
+      for (const m of findContactsByName(cs, term, surface)) {
+        if (!hits.has(m.jid)) hits.set(m.jid, m.pushedName || m.slug || m.jid);
+      }
+    } catch { /* conv-state optional */ }
+  }
   const arr = [...hits.entries()];
   if (!arr.length) return { error: `no chat matches "${term}" — try /channels to see exact names, or pass the @-jid` };
   if (arr.length > 1) {

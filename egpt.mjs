@@ -48,6 +48,7 @@ import { buildMenu, initState, view as helpView, step as helpStep, searchView as
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
 import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
+import { loadAnnouncedModes, saveAnnouncedModes } from './src/announced-modes.mjs';
 import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
@@ -79,6 +80,9 @@ import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
+// Persisted "last reply-mode announced to E per chat" — survives restarts so the
+// mode note is shown only on a real mode change, not on every boot (2026-06-16).
+const ANNOUNCED_MODES_PATH = join(EGPT_HOME, 'state', 'announced-modes.json');
 
 // ~/.local/bin (where `claude`, `codex`, … live) must be on PATH for the engine's
 // child spawns — notably warm-cli's `spawn('claude')`. A Windows SERVICE inherits
@@ -2595,7 +2599,11 @@ function App() {
     off:              '(Chat reply mode: off.)',
   };
   const _modeNote = (mode) => _MODE_NOTES[mode] ?? _MODE_NOTES.mention;
-  const _announcedMode = useRef(new Map());   // chatId -> last auto-mode announced to @e
+  // chatId -> last auto-mode announced to @e. Lazy-loaded from disk ONCE so the
+  // mode note isn't re-announced after every restart (E resumes its thread and
+  // already knows; only a genuine mode change should re-announce). Saved on set.
+  const _announcedMode = useRef(null);
+  if (_announcedMode.current === null) _announcedMode.current = loadAnnouncedModes(ANNOUNCED_MODES_PATH);
 
   // Room fan-out (operator 2026-05-26). SAFETY: gated behind
   // rooms.routing_enabled (default OFF) — a loop bug here would spam real
@@ -4164,7 +4172,10 @@ function App() {
           // Announce the reply mode to @e only when it CHANGED (or first contact
           // this run) — E remembers; no need to repeat it every turn.
           const _modeChanged = _announcedMode.current.get(from.chatId) !== _autoMode;
-          if (_modeChanged) _announcedMode.current.set(from.chatId, _autoMode);
+          if (_modeChanged) {
+            _announcedMode.current.set(from.chatId, _autoMode);
+            saveAnnouncedModes(ANNOUNCED_MODES_PATH, _announcedMode.current);   // persist so a restart doesn't re-announce
+          }
           // Room fan-out (independent of the per-chat auto-mode dispatch below).
           // Gated + loop-safe; no-op unless this chat is a contributing room member.
           // Route every inbound — execution (the bridge's own command handling)
