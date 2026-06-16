@@ -15,6 +15,7 @@ import { splitEmittedReply } from './src/emitted-commands.mjs';
 import { resolveRoute } from './src/room.mjs';
 import { makeSerialByKey } from './src/serial-by-key.mjs';
 import { renderFrontMatter } from './src/transcript-meta.mjs';
+import { seedPointers } from './src/pointers.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import {
   emptyState,
@@ -893,6 +894,12 @@ export function createDispatchRuntime({
       const isSystemPersonality = convEntry?.personality === 'system';
       const sluggedDir = paths.slugDir(surface, convSlug);
       await fs.mkdir(sluggedDir, { recursive: true });
+      // Seed ./pointers.md into the chat's own folder (inside E's sandbox) so the
+      // prelude's "read ./pointers.md" actually resolves — the old root-level
+      // ~/.egpt/e-pointers.md was unreachable, leaving E lost (operator 2026-06-16).
+      // Write-if-missing, so a customized card is never clobbered; backfills
+      // existing folders on their next dispatch.
+      await seedPointers(fs, sluggedDir);
       if (isSystemPersonality) {
         const stateNow = await updateState((state) => ({ state, write: false }));
         const sysThread = getSystemThread(stateNow.state) ?? {};
