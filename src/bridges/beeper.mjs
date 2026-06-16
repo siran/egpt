@@ -151,6 +151,12 @@ export async function startBeeperBridge(opts = {}) {
     const items = j?.items ?? (Array.isArray(j) ? j : []);
     _chatList = items.map(c => ({
       id: c.id,
+      // jid is the STABLE chat-id key the whole resolution layer is built on
+      // (assignWaIndex / waListToStableCache / resolveChatTarget all read `.jid`).
+      // On Beeper that id IS the Matrix room id; alias it so /channels numbers
+      // chats (`@waN`, was `@wanull`) and name-resolution doesn't see a phantom
+      // undefined-jid duplicate ("spoiler matches 2"). operator 2026-06-16.
+      jid: c.id,
       name: c.title ?? c.id,
       slug: chatSlug(c.title ?? c.id),
       isGroup: c.type === 'group',
