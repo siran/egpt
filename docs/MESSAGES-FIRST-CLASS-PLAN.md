@@ -75,6 +75,34 @@ reference a specific message; nothing else changes yet.
 
 ---
 
+## Parenthesis — transcript fidelity (do FIRST, before Phase 2; operator 2026-06-16)
+Three real defects seen in a `morgan` voice-note exchange — the transcript
+misrepresents what actually happened:
+
+1. **Whisper repetition/hallucination.** A voice note transcribed to
+   "Gracias, Michelle. Michelle. Michelle. …" (×17) — not what was said. Classic
+   whisper.cpp loop (silence/music/noise → repeated token). Mitigate via
+   whisper-cli flags (`--no-context`/`condition_on_previous_text false`,
+   temperature fallback, `--max-len`, or an `--entropy-thold`/repetition guard)
+   AND/OR a post-pass: detect a single phrase repeated N× → flag as
+   "(transcription unreliable)" instead of surfacing garbage. Investigate the
+   whisper.cpp build's flags in `whatsapp.media.audio_transcribe`.
+2. **HTML leaks into the transcript.** Beeper delivers message text as HTML
+   (`<p>te entiendo</p>`, `<a href…>`). The bridge stores it RAW → the model and
+   transcript see markup. Convert HTML→plain text at the bridge (strip tags,
+   unescape entities, `<br>`/`</p>`→newline) BEFORE dispatch/transcript. There is
+   an md→TG-HTML path (outbound); this is the missing INBOUND html→text.
+3. **Voice notes aren't marked as audio.** The Beeper bridge sets `text =
+   transcript` raw (beeper.mjs ~421) — no `(voice transcription, Ns)` prefix, so
+   the line reads like an ordinary message and the reader/model can't tell an
+   AUDIO arrived (GENOME §4 / C7.6 mandate the marker; the TG/host path has it,
+   Beeper doesn't). Add the `(voice transcription, <dur>s)` prefix + the msg id
+   (Phase 1) so it reads e.g. `morgan@[morgan].wa (16:34) #<id>: (voice
+   transcription, 8s) …`.
+
+Each gets a test (whisper-repeat guard is pure + unit-testable; html→text pure;
+voice-marker via the beeper-bridge test).
+
 ## Cross-cutting
 - **GENOME first:** amend §2.5 / C7.6b with the id-line + stage-direction
   conventions before Phase 2, then contract, then test (anti-drift §10).
