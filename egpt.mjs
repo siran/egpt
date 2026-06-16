@@ -3790,6 +3790,16 @@ function App() {
         // Beeper Desktop API token (transport: 'beeper'). config.local.json
         // beeper_token, or whatsapp.beeper_token, or BEEPER_ACCESS_TOKEN env.
         beeperToken:       EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+        // Operator authorization for the Beeper limb (reads whatsapp.allowed_users
+        // LIVE). The owner's own sends aren't reliably isSender via Beeper (fails
+        // even on Self, operator 2026-06-16), so the bridge also authorizes a
+        // delivered senderID that's on this allowlist. STABLE id only, never a
+        // name (I6).
+        isAllowedUser: (senderId) => {
+          if (!senderId) return false;
+          const list = EGPT_CONFIG.whatsapp?.allowed_users;
+          return Array.isArray(list) && list.some((u) => String(u) === String(senderId));
+        },
         // Verdict for this chat's transcription SERVICE (a per-entity ROOM
         // service, not E — operator 2026-06-15: "transcription is surface
         // independent … a fundamental tool of a room — egpt power"). Reads the
