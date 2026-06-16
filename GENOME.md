@@ -434,8 +434,20 @@ Sender@[chatname/groupname].{node} (HH:MM): body
   HTML (Beeper) normalizes it to markdown (`src/html-to-markdown.mjs`) before it
   becomes `body` — links/emphasis preserved, the inbound complement of the
   outbound md→HTML path. Decoding the wire format is a limb job (I2). (C7.6c.)
+- `#<id>` — each line carries its source message id, so any member can act ON a
+  specific message (react/reply/quote) and a reaction can reference it.
 - One formatter only: `src/dispatch-line.mjs` `formatDispatchLine`, wrapped by
   the nucleus and shared by every call site. (Contract C7.6.)
+- **One CONSTRUCTION, not just one formatter (operator 2026‑06‑16).** A message is
+  a UNIT package: the canonical line is built ONCE, at the single dispatch entry
+  (`submitInner`), complete with its `#<id>` — BEFORE it is logged to
+  transcript, inspected, or routed. That same unit (`meta.inboundLine`) is then
+  CONSUMED by every being (E + siblings) and by the transcript append — no
+  downstream path re‑derives it. This sharpens I1: not just one router, but one
+  construction of the thing the router carries. (The bug it killed: dispatch.mjs
+  and the sibling path each rebuilt the line and only one carried the id, so
+  `#<id>` showed on a reaction but not on the message it referenced — proof of a
+  duplicate route, now extinguished. C7.6e.)
 
 
 ---

@@ -7950,6 +7950,27 @@ function App() {
       forceTarget: meta.forceTarget ?? null,
     });
 
+    // ── ONE PATH: construct the message as a UNIT, here, ONCE (operator
+    // 2026-06-16). A message is a unit package — built complete (with its #id)
+    // BEFORE it is logged to transcript, inspected, or routed. This single
+    // canonical line is then CONSUMED by every being (E + siblings) and by the
+    // transcript log — no downstream path re-derives it. (Was: dispatch.mjs and
+    // the sibling path each rebuilt the line, and only one carried the msg id —
+    // so #<id> showed on a reaction but not on the message it referenced, proving
+    // the duplicate route this extinguishes.) Built for the live WA auto-dispatch;
+    // batched piles carry their own _personaBodyOverride and are left untouched.
+    if (meta.fromWhatsApp && !meta._personaBodyOverride) {
+      meta.inboundLine = formatAutoDispatchLine({
+        senderName: meta.waSenderName,
+        body: decision.body,
+        ts: Date.now(),
+        surface: buildWaSurfaceTag(meta.waChatId),
+        chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
+        msgId: meta.waMsgKey,
+        stageDirection: !!meta.isReaction,   // a reaction is a stage-direction (Phase 2)
+      });
+    }
+
     // Observed chats: egpt only acts on @<persona> wake-words. Any
     // other decision kind (commands, brain turns, peer-mentions, even
     // contextual hints) is suppressed — the user didn't ask egpt to
@@ -8369,9 +8390,11 @@ function App() {
         // human-readable group/contact name for the bracket.
         let personaPrompt = meta._personaBodyOverride
           ? meta._personaBodyOverride                         // drained pile — verbatim combined prompt
-          : (meta.fromWhatsApp && (_isResident || _sibBrain?.sessionless))
-            ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null, msgId: meta.waMsgKey })
-            : formatPersonaPrompt(meta, decision.body);
+          : meta.inboundLine                                  // ONE unit, built once at submitInner (carries #id)
+            ? meta.inboundLine
+            : (meta.fromWhatsApp && (_isResident || _sibBrain?.sessionless))   // defensive fallback (direct/test callers)
+              ? formatAutoDispatchLine({ senderName: meta.waSenderName, body: decision.body, ts: Date.now(), surface: buildWaSurfaceTag(meta.waChatId), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null, msgId: meta.waMsgKey })
+              : formatPersonaPrompt(meta, decision.body);
         // Channel MEMORY for sessionless siblings (@l): prepend a capped tail of
         // the chat's transcript.md so a stateless model has recent context
         // (operator 2026-06-11: feed l.md + transcript.md per turn). The legacy
