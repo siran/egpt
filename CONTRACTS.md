@@ -219,6 +219,15 @@ Lock status of the four:
   dispatch.mjs/slash. ✅ (recovered 2026-06-12 `tests/dispatch-line.test.mjs`).
   Note: the room sender-label at egpt.mjs:~3964 still hand-rolls a `@name.wa`
   (no brackets) for room ENVELOPES — separate consumer, follow-up to unify.
+- **C7.6b** A being's REPLY is recorded in the SAME member line as inbound — E is
+  not special-cased (operator 2026-06-16, GENOME §2.5). A conversation E reply in
+  `transcript.md` is `Name@[chat].{node} (HH:MM): <body_emoji> body` via the one
+  `formatDispatchLine`, logged ALWAYS (I3); the emit gate decides only surfacing,
+  never the format. Was bracketed `[@e (HH:MM)]: …` with no identity/emoji, and
+  the surface path carried the emoji while the transcript path didn't — two paths
+  collapsed to one. ✅ (2026-06-16, `dispatch.mjs` reply-append via
+  `formatDispatchLine`; `tests/dispatch.test.mjs`). Heartbeat/shell system logs
+  (not per-contact) keep their own `[@e]:` shape.
 - **C7.7** Bot↔bot loop-guard + **STOP kill-switch** (bridge-side). EVERY dispatch
   flows through `submitInner` — received AND self-generated (heartbeats route
   through it too) — so the gate there is definite. Operator safe-words `STOP` /
