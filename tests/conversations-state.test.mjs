@@ -542,6 +542,11 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     }
     expect(DEFAULT_PERSONALITY_TOOLS).toContain('Read');
     expect(DEFAULT_PERSONALITY_TOOLS).toContain('Write');
+    // 2026-06-16: READ-ONLY web access IS granted (E kept claiming it couldn't
+    // search). These are not self-elevation primitives — no Bash/Agent, no file
+    // escape — so they stay in the safe default.
+    expect(DEFAULT_PERSONALITY_TOOLS).toContain('WebSearch');
+    expect(DEFAULT_PERSONALITY_TOOLS).toContain('WebFetch');
   });
 
   // Cleanup — was `expect(true).toBe(true)` (tautology audit 2026-05-29).
