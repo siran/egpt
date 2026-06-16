@@ -18,6 +18,8 @@
 // needs node:child_process) would break that build. The transcriber is INJECTED
 // by the host (egpt.mjs / the Beeper limb), which run in Node.
 
+import { flagDegenerateTranscript } from './transcript-repeat-guard.mjs';
+
 /**
  * Run the room's transcription service on a voice/audio note: transcribe it
  * (when the service is `enabled`) and post the 👂 ack in-chat (when it
@@ -62,6 +64,12 @@ export async function transcribeVoiceNote({
   try { transcript = await transcribe(localPath, audioCfg, onLog); }
   catch (e) { onLog(`transcribe threw: ${e?.message ?? e}`); }
   if (!transcript) return null;
+  // Fidelity post-pass: collapse a degenerate whisper repetition loop
+  // ("Michelle. Michelle. …") into an honest "(transcription unreliable)" marker
+  // before it reaches the model, the transcript, OR the 👂 ack. Runs for every
+  // limb + both transcriber backends, since they all funnel through here.
+  const flagged = flagDegenerateTranscript(transcript);
+  if (flagged !== transcript) { onLog(`transcription flagged unreliable (repetition loop): ${JSON.stringify(transcript.slice(0, 80))}`); transcript = flagged; }
   if (reply && postsBack && !muted) {
     try { await reply(`👂 ${transcript}`); }
     catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }
