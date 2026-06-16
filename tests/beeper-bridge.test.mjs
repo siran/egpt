@@ -127,6 +127,17 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.atEStart).toBe(true);
   });
 
+  it('converts inbound HTML message text to markdown before dispatch', async () => {
+    // Beeper delivers text as HTML; the model + transcript must see prose/markdown,
+    // not markup (operator 2026-06-16, the morgan thread).
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ text: '<p>te entiendo <strong>An</strong>, mira <a href="https://x.com/p">aquí</a></p>' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('te entiendo **An**, mira [aquí](https://x.com/p)');
+  });
+
   it('authorizes a non-isSender message when its senderID is allow-listed', async () => {
     // Beeper does not reliably tag the owner's own sends as isSender (fails even
     // on Self, operator 2026-06-16), so the bridge must authorize from the
