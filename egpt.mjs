@@ -5753,6 +5753,21 @@ function App() {
     const [cmd, ...rest] = text.split(/\s+/);
     const arg = rest.join(' ').trim();
 
+    // Surface feedback (operator 2026-06-16): a command issued from a SURFACE
+    // (WhatsApp / Telegram) mirrors its sysOut output BACK to that chat, so the
+    // operator gets feedback on their phone — not only in the shell. Before this,
+    // ONLY lifecycle commands (which post their own WA ack) gave any feedback;
+    // `/e auto …`, `/e auto status`, etc. ran SILENTLY (their sysOut reached the
+    // shell alone), so a fuzzy-name miss like "spoiler" was invisible. Shell-
+    // issued commands stay shell-only. A mirror-send failure never breaks the
+    // command. File-commands read ctx.sysOut (this); the legacy inline if-chain
+    // still uses the shell sysOut — a follow-up to route too.
+    const _cmdSysOut = (meta?.fromWhatsApp && meta.waChatId && waBridgeRef.current)
+      ? (body) => { sysOut(body); try { waBridgeRef.current.send(String(body), { chatId: meta.waChatId }); } catch (e) { errOut(`cmd-reply wa: ${e?.message ?? e}`); } }
+      : (meta?.fromTelegram && meta.telegramChatId && bridgeRef.current)
+      ? (body) => { sysOut(body); try { bridgeRef.current.send(String(body), { chatId: meta.telegramChatId }); } catch (e) { errOut(`cmd-reply tg: ${e?.message ?? e}`); } }
+      : sysOut;
+
     // File-command dispatch lane. Any cmd registered by a slash/*.mjs
     // file takes precedence over the inline if-chain below. ctx is
     // the syscall table — closures + refs the file commands need.
@@ -5764,7 +5779,7 @@ function App() {
       // chatId/userId). /config uses it for bridge-context key inference.
       // Other files can read it via { meta } in their run signature.
       const ctx = {
-        sysOut,
+        sysOut: _cmdSysOut,   // surface-aware: WA/TG-issued commands echo to the chat
         // Auto-dispatch helpers — slash commands (notably /rules) need
         // these to format synthesized messages that enter e's session
         // in the SAME shape as real auto_e_chats arrivals, so e
