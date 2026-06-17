@@ -6,7 +6,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   emptyState,
   sanitizeSlug,
@@ -521,6 +522,19 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     const body = await readPersonality('p', { operatorDir, shippedDir: operatorDir });
     expect(body).toBe('\n# Body starts here.\n');
     expect(body).not.toContain('allowed_tools');
+  });
+
+  it('the shipped default personality grants WebSearch + WebFetch (the real per-chat scope)', async () => {
+    // The bug: default.md explicitly lists allowed_tools, which OVERRIDES the
+    // DEFAULT_PERSONALITY_TOOLS fallback — and it was missing WebSearch, so E kept
+    // telling contacts it couldn't search (operator 2026-06-16). Lock the real
+    // shipped file, not just the fallback constant.
+    const shippedDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'config', 'personalities');
+    const meta = await readPersonalityMeta('default', { operatorDir: join(tmpdir(), 'no-such-op-dir-egpt'), shippedDir });
+    expect(meta.allowed_tools).toContain('WebSearch');
+    expect(meta.allowed_tools).toContain('WebFetch');
+    expect(meta.allowed_tools).not.toContain('Bash');     // still no self-destruct primitives
+    expect(meta.allowed_tools).not.toContain('Agent');
   });
 
   it('DEFAULT_PERSONALITY_TOOLS bans self-elevation primitives', () => {
