@@ -10,7 +10,6 @@ import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as ccode from './config/brains/claude-code.mjs';
-import * as claudeSdk from './config/brains/claude-sdk.mjs';
 import * as codex from './config/brains/codex.mjs';
 import * as chatgptCdp from './config/brains/chatgpt-cdp.mjs';
 import * as claudeCdp from './config/brains/claude-cdp.mjs';
@@ -648,7 +647,6 @@ function resolveOperatorSession(explicit, sessions) {
 
 const BRAINS = {
   [ccode.name]: ccode,
-  [claudeSdk.name]: claudeSdk,
   [codex.name]: codex,
   [chatgptCdp.name]: chatgptCdp,
   [claudeCdp.name]:  claudeCdp,
@@ -682,14 +680,14 @@ function defaultPersonaFallbackConfig(primaryCfg) {
   const primaryType = canonicalBrainName(primary.type);
   if (primaryType === 'codex') {
     return {
-      type: 'claude-sdk',
+      type: 'ccode',
       model: 'haiku',
       cwd: primary.cwd ?? process.cwd(),
       allowed_tools: primary.allowed_tools ?? 'all',
-      session_id: latestDefaultBrainSessionForType(primary, 'claude-sdk'),
+      session_id: latestDefaultBrainSessionForType(primary, 'ccode'),
     };
   }
-  if (primaryType === 'claude-sdk' || primaryType === 'ccode') {
+  if (primaryType === 'ccode') {
     return {
       type: 'codex',
       model: DEFAULT_PERSONA_BRAIN.model,
@@ -719,7 +717,6 @@ const BRAIN_PREFIX = {
   'chatgpt-cdp': 'cgpt',
   'claude-cdp':  'claude',
   'ccode':       'ccode',
-  'claude-sdk':  'csdk',
   'codex':       'codex',
   'llama':       'l',
 };
@@ -6521,7 +6518,7 @@ function App() {
         cwd: dbCfg.cwd ?? process.cwd(),
         sessionName: 'egpt',
         userName: USER_NAME,
-        ...(['ccode', 'codex', 'claude-sdk'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
+        ...(['ccode', 'codex'].includes(brainType) ? { allowedTools: dbCfg.allowed_tools ?? 'all' } : {}),
         ...(configAddDirs(dbCfg) ? { addDirs: configAddDirs(dbCfg) } : {}),
         ...(dbCfg.system_prompt ? { appendSystemPrompt: dbCfg.system_prompt } : {}),
         ...(dbCfg.model ? { model: dbCfg.model } : {}),
@@ -6529,9 +6526,9 @@ function App() {
       }),
       runWarmBrainTurn: async ({ key, klass, text, onPartial, sessionOpts, brainType, dbCfg }) => {
         // E/default_brain joins the same resident pool as Wren/Don when it is
-        // backed by a warmable Claude engine. Codex and URL brains keep their
+        // backed by the ccode CLI engine. Codex and URL brains keep their
         // existing cold dispatch paths.
-        if (!_warmEnabled() || !['ccode', 'claude-sdk'].includes(brainType)) return null;
+        if (!_warmEnabled() || brainType !== 'ccode') return null;
         const r = await _warmPool().run(key, text, onPartial, {
           brainOptions: {
             ...sessionOpts,
@@ -6744,16 +6741,14 @@ function App() {
     }
     // Sessionless brains (e.g. llama — local llama.cpp) have no --resume:
     // the host must not gate them on a session_id. codex is also exempt
-    // (it auto-creates + persists its own thread on first turn). claude-sdk is
-    // exempt too: with no session_id it starts a FRESH session (the SDK assigns
-    // an id; the warm pool keeps it warm in-process for the daemon's lifetime).
-    // codex, claude-sdk, AND ccode (claude-code) all AUTO-CREATE + persist their
-    // own thread on the first turn: the engine mints a session id, the brain
-    // captures it (claude-code.mjs:236 from the stream-json init event) and returns
-    // it in optionsPatch, which the dispatch persists → resumed thereafter. So none
-    // of them need a pinned session_id. (ccode was missing here — the bug that made
-    // a fresh @wren on the CLI engine refuse to run.)
-    if (!mbCfg.session_id && brainType !== 'codex' && brainType !== 'claude-sdk' && brainType !== 'ccode' && !brain.sessionless) {
+    // (it auto-creates + persists its own thread on first turn). Both codex AND
+    // ccode (claude-code) AUTO-CREATE + persist their own thread on the first
+    // turn: the engine mints a session id, the brain captures it
+    // (claude-code.mjs:236 from the stream-json init event) and returns it in
+    // optionsPatch, which the dispatch persists → resumed thereafter. So neither
+    // needs a pinned session_id. (ccode was missing here — the bug that made a
+    // fresh @wren on the CLI engine refuse to run.)
+    if (!mbCfg.session_id && brainType !== 'codex' && brainType !== 'ccode' && !brain.sessionless) {
       return `!! @${name}: session_id missing in ${source}. After running Claude Code /branch in the source conversation, paste the new session id into the config.`;
     }
     // Prompt profile: `system_prompt_file` points to a standalone file
@@ -6858,15 +6853,14 @@ function App() {
         });
         return String(final ?? '').trim() || '...';
       }
-      // WARM PATH (feat/sibling-reply): an in-process claude-sdk sibling runs on
-      // a persistent pooled session — no per-turn cold start / subprocess spawn.
-      // Keyed per sibling+session so a re-pin opens a fresh one; errors surface
-      // as text so the missing-resume retry below still fires. ccode (the CLI
-      // engine — Wren/D) and the legacy claude-sdk run through the warm pool as
-      // RESIDENT background agents (Unit 4); codex/llama keep the cold path.
-      // siblings.<name>.resident:true → never idle-evict (meta-engineers).
+      // WARM PATH: a ccode (CLI) sibling runs on a persistent pooled session —
+      // no per-turn cold start / subprocess spawn. Keyed per sibling+session so
+      // a re-pin opens a fresh one; errors surface as text so the missing-resume
+      // retry below still fires. ccode (the CLI engine — Wren/D) runs through the
+      // warm pool as a RESIDENT CLI background agent (Unit 4); codex/llama keep
+      // the cold path. siblings.<name>.resident:true → never idle-evict.
       let result;
-      if ((brainType === 'ccode' || brainType === 'claude-sdk') && _warmEnabled()) {
+      if (brainType === 'ccode' && _warmEnabled()) {
         const _warmKey = `sib:${selectedName}:${mbCfg.session_id ?? 'new'}`;
         try {
           const r = await _warmPool().run(_warmKey, text, onPartial, {
@@ -6904,7 +6898,7 @@ function App() {
         return runMetaBrainTurn(text, onPartial, selectedName, { ...opts, _retried: true });
       }
       const newSessionId = result?.optionsPatch?.sessionId;
-      if (['codex', 'ccode', 'claude-sdk'].includes(brainType) && newSessionId && newSessionId !== mbCfg.session_id) {
+      if (['codex', 'ccode'].includes(brainType) && newSessionId && newSessionId !== mbCfg.session_id) {
         mbCfg.session_id = newSessionId;
         await persistSiblingSession(newSessionId);
       }
