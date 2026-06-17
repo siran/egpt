@@ -3,6 +3,7 @@
 // chokepoint + the attach HOST (engine↔surface boundary) + input routing.
 import { describe, it, expect, vi } from 'vitest';
 import { createEngine } from '../src/engine/index.mjs';
+import { mayEmitChat } from '../src/auto-mode.mjs';
 
 // A fake attach host that captures onInput so a test can simulate a limb typing,
 // and records pushed output items.
@@ -92,6 +93,34 @@ describe('createEngine — output + attach host seam', () => {
     await expect(engine.startAttach()).resolves.toBeNull();
     expect(errs.some((m) => /port in use/.test(m))).toBe(true);
     expect(seen.some((i) => /attach host failed/.test(i.body))).toBe(true);
+  });
+
+  it('the emit gate (I4) is fail-CLOSED until configured', () => {
+    const engine = createEngine({ logger: { error() {} } });
+    // No configureGate yet → resolver defaults to 'off' → autoMayEmitChat denies.
+    expect(engine.mayEmit('chatX', { replyAllowed: true })).toBe(false);
+  });
+
+  it('engine.mayEmit honors the wired pause source + chat-mode resolver (matches the canonical gate)', () => {
+    const logs = [];
+    const engine = createEngine({ logger: { error() {} } });
+    let paused = false;
+    let mode = 'on';
+    engine.configureGate({ resolveChatMode: () => mode, isPaused: () => paused, log: (m) => logs.push(m) });
+
+    // Verdict tracks the canonical autoMayEmitChat for the wired mode/pause.
+    expect(engine.mayEmit('c', { replyAllowed: true }))
+      .toBe(mayEmitChat({ paused: false, mode: 'on', replyAllowed: true }));
+
+    // 'off' mode → hard block, logged with the mode line.
+    mode = 'off';
+    expect(engine.mayEmit('c', { replyAllowed: true })).toBe(false);
+    expect(logs.some((m) => /BLOCKED \(mode=off/.test(m))).toBe(true);
+
+    // paused → absolute kill, logged with the pause line (overrides mode).
+    paused = true; mode = 'on';
+    expect(engine.mayEmit('c', { replyAllowed: true })).toBe(false);
+    expect(logs.some((m) => /auto_e_paused \(global kill\)/.test(m))).toBe(true);
   });
 
   it('stop() closes the host and stops fanning output to it', async () => {
