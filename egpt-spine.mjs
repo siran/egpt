@@ -65,6 +65,7 @@ import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createEngine } from './src/engine/index.mjs';
 import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from './src/dispatch-helpers.mjs';
+import { createJoinedChats } from './src/wa-joined.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -3604,34 +3605,24 @@ function App() {
   //   'out'             — outgoing only: shell→chat, chat's own
   //                       arrivals do NOT render in shell
   // Empty / null means "no WA binding".
-  const waJoinedRef = useRef(null);
-  // Helpers — keep callers from special-casing the empty / single /
-  // multi cases everywhere.
-  const _waJoinedAll = () =>
-    waJoinedRef.current ? [...waJoinedRef.current.values()] : [];
-  // Direction filters. Outgoing-targets = chats that should receive
-  // shell-typed text. Incoming-allowed = chats whose arrivals
-  // should render in shell (and bridge to other joined chats).
-  const _waJoinedOutgoing = () => _waJoinedAll().filter(e => (e.dir ?? 'both') !== 'in');
-  const _waJoinedIncomingAllowed = (jid) => {
-    const e = waJoinedRef.current?.get(jid);
-    if (!e) return false;
-    return (e.dir ?? 'both') !== 'out';
-  };
-  const _waJoinedFirst = () =>
-    waJoinedRef.current && waJoinedRef.current.size > 0
-      ? waJoinedRef.current.values().next().value
-      : null;
-  const _waJoinedHas = (jid) =>
-    !!(waJoinedRef.current && waJoinedRef.current.has(jid));
+  // The joined/bound WA chat set now lives in src/wa-joined.mjs; the bridge-sync
+  // side-effect (_syncBypassToBridge) stays here and is injected into it.
+  const _joined = createJoinedChats({ syncBypass: () => _syncBypassToBridge() });
+  const _waJoinedAll = _joined.all;
+  const _waJoinedOutgoing = _joined.outgoing;
+  const _waJoinedIncomingAllowed = _joined.incomingAllowed;
+  const _waJoinedFirst = _joined.first;
+  const _waJoinedHas = _joined.has;
+  const _waJoinedSize = _joined.size;
+  const _waJoinedAdd = _joined.add;
+  const _waJoinedRemove = _joined.remove;
+  const _waJoinedClear = _joined.clear;
   const _syncBypassToBridge = () => {
-    // Keep the WA bridge's awareness-bypass set aligned with chats
-    // we want EVERY message from, not just @-tagged ones:
-    //   - joined chats (/use, /join binds)
-    //   - auto_e_chats (operator-configured @e participation groups)
-    // Without this, a group with the default 'mentions' awareness
-    // would drop the operator's own fromMe posts AND every non-
-    // mentioned member message before reaching auto_e_chats dispatch.
+    // Keep the WA bridge's awareness-bypass set aligned with chats we want EVERY
+    // message from, not just @-tagged ones: joined chats (/use, /join) +
+    // auto_e_chats (operator-configured @e groups). Without this, a group with
+    // the default 'mentions' awareness would drop the operator's own fromMe posts
+    // AND every non-mentioned member message before auto_e_chats dispatch.
     // Operator (2026-05-17): "obviously do not skip my own messages."
     const wa = waBridgeRef.current;
     if (!wa || typeof wa.setBypassChats !== 'function') return;
@@ -3641,23 +3632,6 @@ function App() {
       : [];
     wa.setBypassChats([...new Set([...joined, ...auto])]);
   };
-  const _waJoinedAdd = (entry) => {
-    if (!waJoinedRef.current) waJoinedRef.current = new Map();
-    waJoinedRef.current.set(entry.jid, entry);
-    _syncBypassToBridge();
-  };
-  const _waJoinedRemove = (jid) => {
-    if (!waJoinedRef.current) return false;
-    const removed = waJoinedRef.current.delete(jid);
-    if (waJoinedRef.current.size === 0) waJoinedRef.current = null;
-    _syncBypassToBridge();
-    return removed;
-  };
-  const _waJoinedClear = () => {
-    waJoinedRef.current = null;
-    _syncBypassToBridge();
-  };
-  const _waJoinedSize = () => waJoinedRef.current?.size ?? 0;
   const startWaBridge = useCallback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
