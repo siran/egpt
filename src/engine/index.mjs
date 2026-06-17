@@ -3,8 +3,9 @@
 // Goal (ENGINE-SURFACE-SEPARATION.md): a central engine that owns transports
 // (WhatsApp/Telegram), state (conversation files, rooms, sessions), and brain
 // dispatch — with thin SURFACES (the Ink shell, the extension) attaching to it.
-// Today the engine logic still lives inside the Ink App in egpt.mjs; this module
-// is where it gets carved out, one seam at a time, so nothing breaks at once.
+// Today most engine logic still lives in the legacy spine entry
+// (egpt-spine.mjs); this module is where it gets carved out, one seam at a
+// time, so nothing breaks at once.
 //
 // ── The Engine interface (contract we are growing into) ─────────────────────
 //
