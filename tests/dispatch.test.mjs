@@ -721,8 +721,8 @@ describe('dispatch runtime', () => {
         dbCfg: { type: 'codex', session_id: 'codex-thread', model: 'gpt-5.4-mini' },
         fallback: {
           brain: fallback,
-          brainType: 'claude-sdk',
-          dbCfg: { type: 'claude-sdk', session_id: 'haiku-thread', model: 'haiku' },
+          brainType: 'ccode',
+          dbCfg: { type: 'ccode', session_id: 'haiku-thread', model: 'haiku' },
         },
       }),
       sessionOptions: ({ dbCfg }) => ({ sessionId: dbCfg.session_id ?? null, model: dbCfg.model }),
@@ -737,7 +737,7 @@ describe('dispatch runtime', () => {
     expect(calls[1].sessionOpts.model).toBe('haiku');
     expect(recorded).toHaveLength(1);
     expect(recorded[0].sessionId).toBe('fallback-thread');
-    expect(recorded[0].brainType).toBe('claude-sdk');
+    expect(recorded[0].brainType).toBe('ccode');
   });
 
   it('falls back when the primary returns a failure-looking text result', async () => {
@@ -757,8 +757,8 @@ describe('dispatch runtime', () => {
     const { runtime } = await makeRuntime({
       resolveBrain: () => ({
         brain: primary,
-        brainType: 'claude-sdk',
-        dbCfg: { type: 'claude-sdk', model: 'haiku' },
+        brainType: 'ccode',
+        dbCfg: { type: 'ccode', model: 'haiku' },
         fallback: {
           brain: fallback,
           brainType: 'codex',

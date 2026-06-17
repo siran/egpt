@@ -15,10 +15,10 @@
 //   - One turn at a time per key (the warm primitive requires it); turns on the
 //     same key are serialized via a per-entry promise chain.
 //
-// Brain-agnostic over the warm primitive: today only `claude-sdk` is warmable
-// (in-process streaming-input). Callers that want a non-warmable brain just keep
-// using the cold `stream()` path.
-import { createWarmSession } from '../config/brains/claude-sdk.mjs';
+// Brain-agnostic over the warm primitive: the session factory is INJECTED. egpt
+// wires `createWarmCliSession` — a resident `claude` CLI background agent (no
+// SDK — I11). Callers that want a non-warmable brain keep using the cold
+// `stream()` path.
 
 export function createWarmPool({
   max = 6,
@@ -27,8 +27,11 @@ export function createWarmPool({
   dispatchTimeoutMs = 600_000,
   injectWhileBusy = true,            // weave a mid-turn message into the live turn
   onLog = () => {},
-  makeSession = createWarmSession,   // injectable for tests
+  makeSession,                       // REQUIRED: the warm-session factory (injected)
 } = {}) {
+  if (typeof makeSession !== 'function') {
+    throw new Error('createWarmPool: makeSession factory is required (e.g. createWarmCliSession)');
+  }
   const _s = new Map();   // key -> { session, klass, lastUsed, idleTimer, busy, errored, chain }
 
   const _ttlFor = (klass) => {

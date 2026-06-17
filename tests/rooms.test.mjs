@@ -95,11 +95,11 @@ describe('brain members carry their session (sessions→members unification)', (
     let s = createRoom(emptyRooms(), 'r');
     s = addMember(s, 'r', { kind: 'wa-group', id: 'g1' });                                  // skipped (not a session)
     s = addMember(s, 'r', { kind: 'brain', id: 'cgpt1', brain: 'chatgpt-cdp', options: { targetId: 'T1' }, emoji: '🦊' });
-    s = addMember(s, 'r', { kind: 'brain', id: 'e', brain: 'claude-sdk', options: {} });
+    s = addMember(s, 'r', { kind: 'brain', id: 'e', brain: 'ccode', options: {} });
     const map = sessionsMapFromMembers(s, 'r');
     expect(Object.keys(map).sort()).toEqual(['cgpt1', 'e']);
     expect(map.cgpt1).toEqual({ brain: 'chatgpt-cdp', options: { targetId: 'T1' }, emoji: '🦊' });
-    expect(map.e).toEqual({ brain: 'claude-sdk', options: {} });
+    expect(map.e).toEqual({ brain: 'ccode', options: {} });
   });
 
   it('sessionsMapFromMembers returns {} for an unknown room', () => {
