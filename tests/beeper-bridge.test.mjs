@@ -243,6 +243,21 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toMatch(/\(image[^)]*\) \[saved: /);   // path announced to E
   });
 
+  // ROUTE A (operator 2026-06-16): a video is handed to E with keyframes (Read
+  // them) + the audio transcript — onMedia (the host) returns the augmented
+  // descriptor; the bridge announces frames + transcript on the dispatch line.
+  it('a video surfaces host-extracted frames + the audio transcript to the model', async () => {
+    const { incoming } = await startBridge({
+      onMedia: async () => ({ savedPath: '/m/clip.mp4', framePaths: ['/m/clip-frame-01.jpg', '/m/clip-frame-02.jpg'], transcript: 'hola desde el video' }),
+    });
+    const att = fakeAttachment({ name: 'clip.mp4', mimeType: 'video/mp4' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VIDEO', text: null, attachments: [att] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toContain('(video clip.mp4) [saved: /m/clip.mp4]');
+    expect(incoming[0].text).toContain('frames (Read these): /m/clip-frame-01.jpg  /m/clip-frame-02.jpg');
+    expect(incoming[0].text).toContain('(video transcription) hola desde el video');
+  });
+
   it('an image WITH a caption surfaces both the caption and the saved path', async () => {
     const { incoming } = await startBridge();
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });

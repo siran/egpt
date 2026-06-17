@@ -339,7 +339,7 @@ export async function startBeeperBridge(opts = {}) {
       const localPath = (att === voiceAtt && voicePath) ? voicePath : await attachmentToLocalPath(att);
       if (!localPath) { onLog(`beeper: media download failed [${info.title}] att=${att?.id ?? '?'}`); continue; }
       try {
-        const savedPath = await onMedia({
+        const r = await onMedia({
           chatID: msg.chatID,
           chatName: info.title,
           chatType: info.type === 'group' ? 'group' : 'private',
@@ -352,7 +352,13 @@ export async function startBeeperBridge(opts = {}) {
           caption: (att === voiceAtt) ? voiceCaption : (htmlToMarkdown(att?.caption) || htmlToMarkdown(msg.text) || null),
           isVoiceNote: !!att?.isVoiceNote,
         });
-        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote });
+        // onMedia returns the saved path (string) OR, for a video (Route A), an
+        // augmented descriptor { savedPath, framePaths, transcript } — the host
+        // extracted keyframes + transcribed the audio so we can hand them to E.
+        const savedPath = (r && typeof r === 'object') ? r.savedPath : r;
+        const framePaths = (r && typeof r === 'object' && Array.isArray(r.framePaths)) ? r.framePaths : [];
+        const vTranscript = (r && typeof r === 'object') ? (r.transcript ?? null) : null;
+        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, framePaths, transcript: vTranscript });
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
     return saved;
@@ -537,7 +543,17 @@ export async function startBeeperBridge(opts = {}) {
     // E never knew (e.g. "puedes ver lo que posteó ron?").
     const _mediaLines = _savedMedia
       .filter((m) => m.savedPath && !m.isVoiceNote && m.kind !== 'audio')
-      .map((m) => `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${m.savedPath}]`);
+      .map((m) => {
+        let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${m.savedPath}]`;
+        // ROUTE A: a video is handed to E on a silver platter — keyframes the
+        // host already extracted (Read them with your vision) + the audio
+        // transcript. E never had to run anything.
+        if (m.kind === 'video') {
+          if (Array.isArray(m.framePaths) && m.framePaths.length) line += `\nframes (Read these): ${m.framePaths.join('  ')}`;
+          if (m.transcript) line += `\n(video transcription) ${m.transcript}`;
+        }
+        return line;
+      });
     if (_mediaLines.length) text = [text, ..._mediaLines].filter(Boolean).join('\n');
 
     if (text == null) return;   // nothing to route — no text, no announceable media

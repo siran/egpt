@@ -124,6 +124,21 @@ Lock status of the four:
   (was text-only). ✅ (2026-06-13; `tests/incoming-media.test.mjs`; memory
   `egpt-limb-agnostic-media`).
 
+- **C2.5** A **video** is handed to E on a silver platter (Route A, operator
+  2026-06-16) — the same nucleus treatment a voice note gets (I2). On a saved
+  video, the HOST (`_saveIncomingMedia`, outside E's chroot) extracts a few
+  keyframes (`src/video-frames.mjs` `extractKeyframes` — evenly-spaced via ffprobe
+  duration, one ffmpeg `-ss` seek per frame) INTO the chat's `media/` (inside E's
+  sandbox, so E's vision can `Read` them) AND transcribes the audio track (the
+  shared remote-first transcriber; convertToWav16k reads video containers too).
+  Both are surfaced on the dispatch line: `(video <name>) [saved: …]\nframes (Read
+  these): …\n(video transcription) …`. E never runs ffmpeg (no Bash in its chroot).
+  WhatsApp-only in v1 (where videos are shared); other surfaces keep the plain
+  saved-path announce. ✅ (2026-06-16, `tests/video-frames.test.mjs` +
+  `tests/beeper-bridge.test.mjs`). ⏳ owed: E requesting MORE frames on demand (an
+  emitted command, e.g. `/frames #<id> <timestamps>` → host runs ffmpeg); Telegram
+  video frames.
+
 ## 3. Transcription
 - **C3.1** Every voice/audio note is transcribed **before the model is prompted** —
   the model is fed the transcript, NEVER raw audio. Transcription runs at the

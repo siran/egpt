@@ -76,6 +76,7 @@ import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
+import { extractKeyframes } from './src/video-frames.mjs';
 
 const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -2756,6 +2757,14 @@ function App() {
   // contact so a media-first chat doesn't lose the file), copy the file in with
   // a meaningful name, write a sidecar caption, and append an index line. Copy,
   // not move — the source is the bridge's own asset cache.
+  // Host transcriber for media processed in _saveIncomingMedia (a video's audio,
+  // Route A): remote-first to the worker spine when configured (same as the voice
+  // path), else local whisper-cli. convertToWav16k reads video containers too, so
+  // the same transcriber handles a video's audio track.
+  const _mediaTranscribe = (EGPT_CONFIG.transcription_endpoint && EGPT_CONFIG.transcription_token)
+    ? makeRemoteFirstTranscriber({ endpoint: EGPT_CONFIG.transcription_endpoint, getKey: () => EGPT_CONFIG.transcription_token })
+    : transcribeAudioFile;
+
   const _saveIncomingMedia = async (m) => {
     try {
       if (!m?.localPath || !m?.chatID) return;
@@ -2783,10 +2792,31 @@ function App() {
       await appendFile(join(mediaDir, 'index.md'),
         mediaIndexLine({ ts: m.ts, senderName: m.senderName, kind: m.kind, savedName, caption: m.caption }), 'utf8');
       logOut(`media: saved [${m.chatName ?? m.chatID}] ${savedName} (${m.kind})`);
+      const savedPath = join(mediaDir, savedName);
+      // ROUTE A (operator 2026-06-16): a video gets the audio-note treatment —
+      // the HOST (outside E's chroot) extracts keyframes + transcribes the audio,
+      // dropping the .jpg frames INTO this chat's media/ (inside E's sandbox) so
+      // E's vision can Read them, and handing the transcript on the dispatch line.
+      // E never runs ffmpeg. WhatsApp-only in v1 (where videos are shared); other
+      // surfaces keep the plain string return. The augmented descriptor flows to
+      // the limb's announce.
+      if (m.kind === 'video' && surface === 'whatsapp') {
+        const audioCfg = EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+        const ffmpeg = audioCfg.ffmpeg_command || 'ffmpeg';
+        const base = savedName.replace(/\.[^.]+$/, '');
+        let framePaths = [];
+        try {
+          framePaths = await extractKeyframes(savedPath, { ffmpeg, outDir: mediaDir, baseName: base, count: 3, log: (x) => logOut(`media: ${x}`) });
+        } catch (e) { errOut(`!! video frames ${m.chatID}: ${e?.message ?? e}`); }
+        let transcript = null;
+        try { transcript = await _mediaTranscribe(savedPath, audioCfg, (x) => logOut(`media: video-transcribe: ${x}`)); }
+        catch (e) { errOut(`!! video transcribe ${m.chatID}: ${e?.message ?? e}`); }
+        return { savedPath, framePaths, transcript };
+      }
       // Return the absolute saved path so a limb can reference it in the
       // dispatch (e.g. "(image) [saved: <path>]") for a vision-capable brain to
       // Read. Beeper's persistMedia ignores it; the Telegram limb uses it.
-      return join(mediaDir, savedName);
+      return savedPath;
     } catch (e) { errOut(`!! media-save ${m?.chatID ?? '?'}: ${e?.message ?? e}`); }
   };
 
