@@ -989,6 +989,24 @@ export function createDispatchRuntime({
           logger?.error?.(`!! personality meta lookup: ${e?.message ?? e}`);
         }
       }
+      // Tell E its CURRENT tools, every turn (operator 2026-06-16). The lineage
+      // prelude is first-turn-only and a resumed thread is stale, so E kept saying
+      // "no tengo acceso a internet" even though WebSearch was in --allowedTools.
+      // Derive a concise capabilities line from the resolved scope and ship it as
+      // --append-system-prompt (sent on EVERY spawn → always accurate).
+      const _scoped = Array.isArray(sessionOpts.allowedTools) ? sessionOpts.allowedTools : [];
+      if (_scoped.length) {
+        const _bins = _scoped.map((t) => /^Bash\(([^:)\s]+)/.exec(String(t))?.[1]).filter(Boolean);
+        const _named = _scoped.filter((t) => !String(t).startsWith('Bash('));
+        const _caps = [
+          _named.includes('WebSearch')
+            ? 'You HAVE WebSearch + WebFetch — real and ready. When asked anything you are not sure of (a result/score, who sang a song, news, a fact, a definition), call WebSearch IMMEDIATELY and answer from the results. NEVER tell the user you "lack internet / live access" — you have WebSearch; only a literal live video feed is unavailable.'
+            : '',
+          _named.length ? `Your tools this turn: ${_named.join(', ')} (file tools work only inside this chat's own folder).` : '',
+          _bins.length ? `You may also RUN these binaries (via Bash, inside this folder): ${_bins.join(', ')}. Just use them; don't ask permission.` : '',
+        ].filter(Boolean).join(' ');
+        if (_caps) sessionOpts.appendSystemPrompt = [sessionOpts.appendSystemPrompt, _caps].filter(Boolean).join('\n\n');
+      }
     }
 
     const startMs = clockMs(clock);

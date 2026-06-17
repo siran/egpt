@@ -205,6 +205,33 @@ describe('dispatch runtime', () => {
     expect(state.contacts.whatsapp['wa-chat-1'].threadId).toBe('warm-e-thread');
   });
 
+  it('tells E its CURRENT tools every spawn via appendSystemPrompt (WebSearch + binaries)', async () => {
+    // Regression: E kept saying "no tengo acceso a internet" even though WebSearch
+    // was in --allowedTools — because nothing reminded it per-turn (resumed thread
+    // is stale). Derive a capabilities line from the resolved scope (operator
+    // 2026-06-16).
+    const warmCalls = [];
+    const stateDir = await makeTempDir();
+    const runtime = createDispatchRuntime({
+      clock: fixedClock,
+      logger: { error: () => {} },
+      resolveBrain: () => ({ brain: { stream: async () => 'x' }, brainType: 'ccode', dbCfg: { type: 'ccode', model: 'haiku' } }),
+      runWarmBrainTurn: async (call) => { warmCalls.push(call); return { text: 'ok', optionsPatch: {} }; },
+      sessionOptions: ({ dbCfg }) => ({ sessionId: null, model: dbCfg.model }),
+      readPersonalityMeta: async () => ({ allowed_tools: ['Read', 'Write', 'Grep', 'WebFetch', 'WebSearch', 'Bash(ffmpeg:*)', 'Bash(yt-dlp:*)'] }),
+      stateDir,
+    });
+    await runtime.runDefaultBrainTurn('Bea@[chat].wa (12:00): qué canción es?', () => {}, {
+      threadId: 'wa-chat-x', surface: 'wa', slug: 'bea', name: 'Bea',
+    });
+    expect(warmCalls).toHaveLength(1);
+    const sys = warmCalls[0].sessionOpts.appendSystemPrompt;
+    expect(sys).toContain('WebSearch');
+    expect(sys).toMatch(/never tell the user you/i);
+    expect(sys).toContain('ffmpeg');   // the runnable binaries are named
+    expect(sys).toContain('yt-dlp');
+  });
+
   it('auto-elevates configured operator DMs to system personality', async () => {
     const stateDir = await makeTempDir();
     await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
