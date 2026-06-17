@@ -66,6 +66,7 @@ import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createEngine } from './src/engine/index.mjs';
 import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from './src/dispatch-helpers.mjs';
 import { createJoinedChats } from './src/wa-joined.mjs';
+import { loadReplyTargets as _loadReplyTargets, saveReplyTargets as _saveReplyTargets, stableIdForItem as _stableIdForItem } from './src/reply-targets.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -1625,25 +1626,6 @@ const ts = () => _stamp(new Date());
 // Default-room transcript writer. Named rooms shadow this with a
 // component-local `append` that targets ~/.egpt/rooms/<name>.md.
 const append = (who, body) => appendFile(FILE, `## ${ts()} — ${who}\n${body}\n\n`);
-// Sidecar path for reply-target persistence (per transcript file).
-// Living next to the transcript keeps room↔sidecar coupling obvious
-// and lets multiple rooms coexist without collision.
-function _sidecarPath(transcriptFile) {
-  return transcriptFile.replace(/\.md$/i, '') + '.replytargets.json';
-}
-async function _loadReplyTargets(transcriptFile) {
-  try {
-    const raw = await readFile(_sidecarPath(transcriptFile), 'utf8');
-    const obj = JSON.parse(raw);
-    return new Map(Object.entries(obj));
-  } catch (e) { swallow('reply-targets.load', e, { expect: ['ENOENT'] }); return new Map(); }
-}
-async function _saveReplyTargets(transcriptFile, mapLike) {
-  const obj = Object.fromEntries(mapLike);
-  const path = _sidecarPath(transcriptFile);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(obj, null, 2));
-}
 // FIFO queue for transcript writes so multiple fire-and-forget
 // appends (from sysOut) can't race each other and land out of order.
 let _transcriptQueue = Promise.resolve();
@@ -2255,35 +2237,6 @@ function MultiLineInput({ onSubmit, currentRoom }) {
         h(Text, { inverse: true }, at),
         onChar ? line.slice(c + 1) : '');
     }));
-}
-
-// Stable id alphabet — no 1/l/I/0/O ambiguity in case the operator
-// has to type one. Short random ids for non-bridge items.
-const _STABLE_ALPHA = 'abcdefghijkmnpqrstuvwxyz23456789';
-function _randStableSuffix() {
-  let s = '';
-  for (let i = 0; i < 6; i++) s += _STABLE_ALPHA[Math.floor(Math.random() * _STABLE_ALPHA.length)];
-  return s;
-}
-// Stable id assignment for an item: prefer bridge-given id (WA stanza
-// id, TG chat+msg pair) when available — those survive across
-// restarts because the underlying wire id doesn't change. Fall back
-// to '<kind>-<random6>' by author kind. Used by '@<stable-id> body'
-// for cross-restart replies via the persisted sidecar.
-function _stableIdForItem(item, sessions) {
-  if (item._stableId) return item._stableId;
-  // Already-known bridge keys (set on bridge-arrived echo or after a
-  // /use direct-send / /mirror succeeded).
-  if (item._replyTarget) {
-    const rt = Array.isArray(item._replyTarget) ? item._replyTarget[0] : item._replyTarget;
-    if (rt?.kind === 'wa' && rt.key?.id) return `wa-${rt.key.id}`;
-    if (rt?.kind === 'tg' && rt.msgId)   return `tg-${rt.chatId}-${rt.msgId}`;
-  }
-  if (item.author === 'system') return `s-${_randStableSuffix()}`;
-  if (item.author === 'You')    return `u-${_randStableSuffix()}`;
-  const bare = String(item.author ?? '').split('@')[0];
-  if (sessions?.[bare]) return `b-${_randStableSuffix()}`;
-  return `p-${_randStableSuffix()}`;
 }
 
 // --- main app ---
