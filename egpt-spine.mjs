@@ -64,8 +64,7 @@ import { buildWelcomeBack, resetCountersOnDisk, writeLastLogonNow } from './src/
 import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bindings.mjs';
 import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
-import { createOutputChannel } from './src/engine/output.mjs';
-import { startAttachHost } from './src/nucleus.mjs';
+import { createEngine } from './src/engine/index.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -149,14 +148,21 @@ try {
 // Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
 // rendered item flows through this one channel. The spine's headless lifecycle
 // subscribes internally, and attached limbs subscribe through the attach host.
-// Module-scope for now; it moves into the engine module when the engine is
-// extracted from the legacy component-shaped lifecycle (Phase C).
-const outputChannel = createOutputChannel();
-const pushItem = (item) => outputChannel.emit(item);
-// The engine attach host (Phase C) — limbs (the thin TTY client, the extension)
-// connect here over loopback TCP. Module-scope handle so the process 'exit'
-// handler can clear its discovery sidecar. Set by the App's host-start effect.
-let _globalAttachHost = null;
+// Durable error logger for the engine (module-scope twin of the App's _fileLog;
+// the engine is constructed before the App, so it can't borrow that one).
+const _engineFileLog = (lvl, body) => {
+  try { appendFileSync(join(EGPT_LOGS, 'egpt.log'), `${new Date().toISOString()} [${lvl}] ${String(body ?? '').replace(/\r?\n/g, ' ⏎ ')}\n`); } catch { /* never throw from logging */ }
+};
+// The ENGINE (ENGINE-SURFACE-SEPARATION.md, Phase C): it owns the OUTPUT
+// chokepoint AND the attach HOST (the engine↔surface boundary), carved out of
+// the legacy component-shaped lifecycle. The App + the headless spine log
+// subscribe to it; a limb's input is routed back through the handler the App
+// registers (submitRef). pushItem stays as the legacy module-scope emit alias.
+const engine = createEngine({
+  logger: { error: (m) => _engineFileLog('err', m) },
+  loadBusKey: () => bus.loadOrCreateBusKey(),
+});
+const pushItem = (item) => engine.emit(item);
 
 // slash/*.mjs file-command registry. Each file in slash/ exports a
 // `meta` (object or array of objects, one per cmd it registers) and
@@ -2284,13 +2290,13 @@ function _stableIdForItem(item, sessions) {
 // --- main app ---
 function App() {
   const [items, setItems] = useState([]);
-  // Render every item the engine output channel emits (Phase B). The flow is
-  // pushItem(x) → outputChannel.emit(x) → this subscriber → setItems append.
+  // Render every item the engine emits (Phase C). The flow is
+  // pushItem(x) → engine.emit(x) → this subscriber → setItems append.
   // This is the sole render sink; Phase D adds attached-client subscribers
   // alongside it. subscribe() returns its unsubscribe, used as effect cleanup.
   // NB: uses prev.concat (not [...prev, item]) so it is NOT itself a
   // "setItems append" — pushItem must never feed back into pushItem.
-  useEffect(() => outputChannel.subscribe(item => setItems(prev => prev.concat(item))), []);
+  useEffect(() => engine.subscribe(item => setItems(prev => prev.concat(item))), []);
   const [streaming, setStreaming] = useState(null);
   const [busy, setBusy] = useState(false);
   // Custom spinner label per operation; defaults to 'thinking…' for
@@ -5464,34 +5470,16 @@ function App() {
     });
   };
 
-  // Engine attach host (Phase C — ENGINE-SURFACE-SEPARATION.md). Limbs (the thin
-  // TTY client, the extension) attach over loopback TCP. OUTPUT: every item the
-  // engine emits is fanned to attached limbs (outputChannel → host.pushItem).
-  // INPUT: a limb's typed line goes straight into submit, exactly like local
-  // shell input. The host advertises its port in ~/.egpt/state/nucleus.json.
-  // The attach HOST — limbs (the Ink shell, the extension) connect to it.
-  // Started once; closed on unmount. Spine-only: a limb attaches here, it
-  // never hosts one.
+  // Register this App's dispatch entry as the engine's input handler: a limb's
+  // typed line (over the attach HOST the engine owns) routes through submit,
+  // exactly like local shell input. Read lazily via submitRef so it stays
+  // current across renders. (Phase C: the attach host itself now lives in the
+  // engine and is started at boot — see createEngine / engine.startAttach.)
   useEffect(() => {
-    let host = null, unsub = null, closed = false;
-    (async () => {
-      try {
-        const keyB64 = await bus.loadOrCreateBusKey();
-        const h = await startAttachHost({
-          keyB64,
-          onInput: ({ text }) => {
-            try { submitRef.current?.(String(text ?? '')); }
-            catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
-          },
-          logger: { error: (m) => { try { errOut(String(m)); } catch {} } },
-        });
-        if (closed) { await h.close(); return; }   // unmounted mid-start
-        host = h; _globalAttachHost = h;
-        unsub = outputChannel.subscribe(item => { try { h.pushItem(item); } catch (e) { swallow('attach.push-item', e); } });
-        sysOut(`attach host on 127.0.0.1:${h.port} — limbs may attach`);
-      } catch (e) { errOut(`!! attach host failed to start: ${e?.message ?? e}`); }
-    })();
-    return () => { closed = true; try { unsub?.(); } catch {} try { host?.close?.(); } catch {} _globalAttachHost = null; };
+    engine.setInputHandler((text) => {
+      try { submitRef.current?.(String(text ?? '')); }
+      catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
+    });
   }, []);
 
   // Worker role: transcriptor (operator 2026-06-10). When config
@@ -9781,7 +9769,7 @@ function startSpineOutputLog() {
   try {
     appendFileSync(EGPT_HEADLESS_LOG, `\n[${new Date().toISOString()}] egpt spine starting (pid ${process.pid}, file ${FILE})\n`, { mode: 0o600 });
   } catch {}
-  return outputChannel.subscribe((item) => {
+  return engine.subscribe((item) => {
     if (item?._log) return;
     try {
       rotateIfBig();
@@ -9797,7 +9785,11 @@ console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
 console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
 console.log();
 render(h(App), { exitOnCtrlC: false });
-process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); });
+// The App has mounted (the headless runtime renders synchronously, so the
+// engine's input handler is registered); now boot the attach HOST so limbs can
+// connect — the engine owns it, not an App effect anymore (Phase C).
+await engine.startAttach();
+process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); engine.stop(); });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
 // lost to the inherited TTY). Persist the stack to ~/.egpt/state/

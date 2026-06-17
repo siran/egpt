@@ -1,33 +1,104 @@
-// src/engine/index.mjs — the egpt ENGINE module (Phase B seam).
+// src/engine/index.mjs — the egpt ENGINE module (ENGINE-SURFACE-SEPARATION.md).
 //
-// Goal (ENGINE-SURFACE-SEPARATION.md): a central engine that owns transports
-// (WhatsApp/Telegram), state (conversation files, rooms, sessions), and brain
-// dispatch — with thin SURFACES (the Ink shell, the extension) attaching to it.
-// Today most engine logic still lives in the legacy spine entry
-// (egpt-spine.mjs); this module is where it gets carved out, one seam at a
-// time, so nothing breaks at once.
+// Goal: a central engine that owns transports (WhatsApp/Telegram), state
+// (conversation files, rooms, sessions), and brain dispatch — with thin
+// SURFACES (the Ink shell, the extension) attaching to it. Most engine logic
+// still lives in the legacy spine entry (egpt-spine.mjs); this module is where
+// it gets carved out of the component-shaped lifecycle, ONE SEAM AT A TIME, so
+// nothing breaks at once (Phase C).
 //
 // ── The Engine interface (contract we are growing into) ─────────────────────
 //
-//   const engine = createEngine({ config, home, file, logger });
+//   const engine = createEngine({ logger, loadBusKey });
 //
-//   engine.submit({ surfaceId, chatId, text, meta })   // feed one input line
-//   engine.subscribe(listener)                          // output items → surfaces
-//   engine.attachSurface(surface) / detachSurface(id)   // wa/tg owned; shell/ext attach
-//   engine.rooms.list() / get(name) / ...               // queries /room etc. use
-//   engine.sessions.list() / ...
-//   engine.start() / engine.stop()
+//   engine.emit(item)                 // engine → surfaces (the output chokepoint)
+//   engine.subscribe(listener)        // a surface renders emitted items
+//   engine.setInputHandler(fn)        // surfaces' input → the dispatch entry
+//   engine.startAttach()              // boot the attach HOST (limbs connect here)
+//   engine.stop()
 //
-// Implemented so far:
-//   - the OUTPUT chokepoint (createOutputChannel): the engine→surface boundary
-//     every rendered item flows through. The App subscribes its renderer to it
-//     and emits items instead of calling setItems directly.
+// Carved out so far:
+//   - OUTPUT chokepoint (createOutputChannel): every rendered item flows through
+//     one channel; surfaces subscribe and render.
+//   - the engine↔surface BOUNDARY: the attach HOST (limbs attach over loopback
+//     TCP) — was an App useEffect, now owned by the engine. INPUT from a limb is
+//     routed to the registered input handler (the dispatch entry); OUTPUT is
+//     fanned to every attached limb.
 //
-// Planned (later phases):
-//   - Phase C: submit/dispatch/rooms/transports extracted out of the Ink App
-//     behind this interface (the App becomes a consumer).
-//   - Phase D: the attach transport (salvaged src/attach/*) lets the Ink shell
-//     and extension subscribe as remote surfaces; the shell stops importing the
-//     engine entirely.
+// Still in the App (later seams): submit/dispatch, the emit gate, transport
+// ownership (WA/TG), rooms, sessions, the interpreter. Framework-free — no Ink,
+// no React — so the engine runs headless and is unit-testable.
+
+import { createOutputChannel } from './output.mjs';
+import { startAttachHost as _defaultStartAttachHost } from '../nucleus.mjs';
+
+let _seq = 0;
+const _itemId = () => `eng-${Date.now()}-${(_seq = (_seq + 1) % 1_000_000)}`;
+
+export function createEngine({ logger = console, loadBusKey, startAttachHost = _defaultStartAttachHost } = {}) {
+  const output = createOutputChannel({ logger });
+  let inputHandler = null;
+  let host = null;
+  let unsubOutput = null;
+  let stopped = false;
+
+  const emit = (item) => output.emit(item);
+  const subscribe = (listener) => output.subscribe(listener);
+  const setInputHandler = (fn) => { inputHandler = fn; };
+
+  const _sys = (body, extra = {}) =>
+    emit({ id: _itemId(), author: 'system', body, _localOnly: true, ...extra });
+
+  // Boot the attach HOST — limbs (the Ink shell, the extension) connect over
+  // loopback TCP. OUTPUT: every emitted item is fanned to attached limbs. INPUT:
+  // a limb's typed line is handed to the registered handler (the dispatch entry),
+  // exactly like local shell input. Advertises its port in state/nucleus.json.
+  async function startAttach() {
+    if (host || stopped) return host;
+    if (typeof loadBusKey !== 'function') {
+      throw new Error('createEngine: loadBusKey is required to start the attach host');
+    }
+    try {
+      const keyB64 = await loadBusKey();
+      const h = await startAttachHost({
+        keyB64,
+        onInput: ({ text }) => {
+          try { inputHandler?.(String(text ?? '')); }
+          catch (e) { logger?.error?.(`attach input: ${e?.message ?? e}`); }
+        },
+        logger: { error: (m) => logger?.error?.(String(m)) },
+      });
+      if (stopped) { try { await h.close(); } catch { /* race: stopped mid-start */ } return null; }
+      host = h;
+      // A wedged limb must never block emit to the others (same isolation as the
+      // output channel's own fan-out).
+      unsubOutput = output.subscribe((item) => { try { h.pushItem(item); } catch { /* drop to one limb */ } });
+      _sys(`attach host on 127.0.0.1:${h.port} — limbs may attach`);
+      return h;
+    } catch (e) {
+      logger?.error?.(`attach host failed to start: ${e?.message ?? e}`);
+      _sys(`!! attach host failed to start: ${e?.message ?? e}`, { _bright: true });
+      return null;
+    }
+  }
+
+  async function stop() {
+    stopped = true;
+    try { unsubOutput?.(); } catch { /* best effort */ }
+    try { await host?.close?.(); } catch { /* best effort */ }
+    host = null;
+  }
+
+  return {
+    emit,
+    subscribe,
+    setInputHandler,
+    startAttach,
+    stop,
+    get attachPort() { return host?.port ?? null; },
+    // exposed for the few module-scope subscribers that predate the seam
+    output,
+  };
+}
 
 export { createOutputChannel } from './output.mjs';
