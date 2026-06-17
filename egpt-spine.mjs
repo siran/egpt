@@ -39,7 +39,6 @@ import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
 import { startBeeperBridge } from './src/bridges/beeper.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
-import { emojiForAuthor as _emojiForAuthor } from './author-emoji.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
@@ -67,6 +66,7 @@ import { createEngine } from './src/engine/index.mjs';
 import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from './src/dispatch-helpers.mjs';
 import { createJoinedChats } from './src/wa-joined.mjs';
 import { loadReplyTargets as _loadReplyTargets, saveReplyTargets as _saveReplyTargets, stableIdForItem as _stableIdForItem } from './src/reply-targets.mjs';
+import { mdToTgHtml, formatItemForTelegram as _formatItemForTelegram, formatItemForWhatsApp as _formatItemForWhatsApp } from './src/item-format.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -1852,33 +1852,6 @@ function nextEmoji(sessions) {
 // HTML-safe version of arbitrary text for Telegram parse_mode='HTML'.
 const escapeHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Convert Markdown to Telegram HTML (parse_mode: HTML).
-// Strategy: HTML-escape the source first (so < > & become entities and are safe
-// inside tags), then apply markdown patterns — the markdown characters * _ ` [ ]
-// are not HTML-special so they survive the escaping untouched.
-// Fenced code blocks are handled before inline patterns to avoid double-processing.
-function mdToTgHtml(text) {
-  const s = String(text ?? '');
-  // Split on fenced code blocks so we don't mangle markdown-like chars inside them.
-  const parts = s.split(/(```[\w]*\n?[\s\S]*?```)/g);
-  return parts.map((part, i) => {
-    if (i % 2 === 1) {
-      const inner = part.replace(/^```[\w]*\n?/, '').replace(/```$/, '');
-      return `<pre>${escapeHtml(inner.trim())}</pre>`;
-    }
-    let r = escapeHtml(part);
-    r = r
-      .replace(/\*\*([^*\n]+)\*\*/g,         '<b>$1</b>')
-      .replace(/__([^_\n]+)__/g,              '<b>$1</b>')
-      .replace(/\*([^*\n]+)\*/g,              '<i>$1</i>')
-      .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g,  '<i>$1</i>')
-      .replace(/`([^`\n]+)`/g,               '<code>$1</code>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g,   '<a href="$2">$1</a>')
-      .replace(/^#{1,6}\s+(.+)$/gm,          '<b>$1</b>');
-    return r;
-  }).join('');
-}
-
 // Pick an emoji for an item author when mirroring to a bridge.
 //   'system'         → EGPT_EMOJI (egpt's status/hint voice)
 //   'You'            → USER_EMOJI
@@ -1897,57 +1870,22 @@ const _AUTHOR_EMOJI_OPTS = {
   persona_emoji: EGPT_PERSONA_EMOJI,
   human_emoji:   HUMAN_EMOJI,
 };
-function emojiForAuthor(author, sessions) {
-  return _emojiForAuthor(author, sessions, _AUTHOR_EMOJI_OPTS);
-}
-
 // Render an item for the Telegram chat. Uses HTML parse_mode.
 // System messages render italic; brain/session bodies get markdown rendered.
-function formatItemForTelegram(item, sessions) {
-  if (item.author === 'system') {
-    if (item._tgBody) return item._tgBody;
-    return `${EGPT_EMOJI} <b>egpt@${SURFACE_TAG}</b>\n<i>${escapeHtml(item.body)}</i>`;
-  }
-  if (item.author === 'You') return `${USER_EMOJI} <b>${escapeHtml(USER_NAME)}@${SURFACE_TAG}</b>\n${escapeHtml(item.body)}`;
-  // Peer brain replies arrive with author already tagged ('codex1@shell-3232'
-  // from the mention-reply dispatcher) — preserve that. Local sessions get
-  // the local SURFACE_TAG appended.
-  const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
-  const emoji = emojiForAuthor(item.author, sessions);
-  return `${emoji} <b>${escapeHtml(tagged)}</b>\n${mdToTgHtml(item.body)}`;
+function itemFormatOptions() {
+  return {
+    egptEmoji: EGPT_EMOJI,
+    userEmoji: USER_EMOJI,
+    userName: USER_NAME,
+    surfaceTag: SURFACE_TAG,
+    mirrorHeaders: EGPT_CONFIG.whatsapp?.mirror_headers ?? 'all',
+    authorEmojiOptions: _AUTHOR_EMOJI_OPTS,
+  };
 }
-
-// Same shape, plain text. WhatsApp bodies don't support HTML so we
-// just emit author + content separated by a newline.
-//
-// Header policy (whatsapp.mirror_headers in config):
-//   'all'        — every item carries its 'handle@surface' header (default)
-//   'brain_only' — only brain/persona/system items carry headers; messages
-//                  authored by the user (You, peer-user tags like An@moto)
-//                  go without — the WA recipient just sees the text, no
-//                  device or bridge tell-tale. This is what most operators
-//                  want for groups: brain replies are tagged for context,
-//                  the user's own typing looks like a normal message
-//                  regardless of where they sent it from.
-//   'none'       — no headers at all
-function isBrainAuthor(item, sessions) {
-  if (item.author === 'system') return true;
-  const bare = String(item.author ?? '').split('@')[0];
-  if (bare === 'egpt' || bare === 'e') return true;
-  if (sessions?.[bare]) return true;
-  return false;
-}
-function formatItemForWhatsApp(item, sessions) {
-  const headerPolicy = EGPT_CONFIG.whatsapp?.mirror_headers ?? 'all';
-  const keepHeader = headerPolicy === 'all'
-    || (headerPolicy === 'brain_only' && isBrainAuthor(item, sessions));
-  if (!keepHeader) return item.body;
-  if (item.author === 'system') return `${EGPT_EMOJI} egpt@${SURFACE_TAG}\n${item.body}`;
-  if (item.author === 'You')    return `${USER_EMOJI} ${USER_NAME}@${SURFACE_TAG}\n${item.body}`;
-  const tagged = item.author.includes('@') ? item.author : `${item.author}@${SURFACE_TAG}`;
-  const emoji = emojiForAuthor(item.author, sessions);
-  return `${emoji} ${tagged}\n${item.body}`;
-}
+const formatItemForTelegram = (item, sessions) =>
+  _formatItemForTelegram(item, sessions, itemFormatOptions());
+const formatItemForWhatsApp = (item, sessions) =>
+  _formatItemForWhatsApp(item, sessions, itemFormatOptions());
 
 // Parse messages.md back into objects (for /last).
 function parseMessages(text) {
