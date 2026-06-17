@@ -1,5 +1,21 @@
 # Engine ↔ Surface Separation
 
+## Current branch status
+
+The executable split has started:
+
+- `egpt.mjs` is now a role launcher. It does not import Ink or the legacy
+  engine at module load.
+- `egpt-spine.mjs` is the legacy spine entry while the engine is extracted out
+  of the old monolith. It still contains the historical Ink-backed runtime
+  internally, but it is no longer the public launcher.
+- `src/shell/ink-limb.mjs` is the local terminal shell as a thin limb: it imports
+  Ink plus the attach client, renders nucleus frames, and forwards typed input.
+
+This is an intermediate state. The visible shell is now a limb, but the spine
+still needs the remaining engine extraction work before the engine path is free
+of legacy Ink internals.
+
 > Design reference. Status: **planning** (2026-05-31). Sequenced **before** the
 > rooms↔sessions unification (process topology is more foundational). Build
 > against this; it weighs salvage vs rebuild and records the lessons from why the

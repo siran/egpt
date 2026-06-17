@@ -13,7 +13,9 @@ import { COMMANDS } from '../src/interpreter.mjs';
 import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SHELL_SRC = readFileSync(join(ROOT, 'egpt.mjs'), 'utf8');
+const LAUNCHER_SRC = readFileSync(join(ROOT, 'egpt.mjs'), 'utf8');
+const SHELL_SRC = readFileSync(join(ROOT, 'egpt-spine.mjs'), 'utf8');
+const SHELL_LIMB_SRC = readFileSync(join(ROOT, 'src/shell/ink-limb.mjs'), 'utf8');
 const EXT_SRC   = readFileSync(join(ROOT, 'extension/src/tab/App.jsx'), 'utf8');
 
 // slash/*.mjs file-command registry — collected at test time so the
@@ -35,6 +37,28 @@ try {
 
 // ── /config schema integrity ───────────────────────────────────────────────
 
+describe('launcher / shell-limb boundary', () => {
+  it('public launcher stays Ink-free', () => {
+    expect(LAUNCHER_SRC).not.toMatch(/\bfrom\s+['"]ink['"]/);
+    expect(LAUNCHER_SRC).not.toMatch(/\bfrom\s+['"]react['"]/);
+  });
+
+  it('Ink shell limb depends on attach transport, not spine internals', () => {
+    expect(SHELL_LIMB_SRC).toMatch(/\bfrom\s+['"]ink['"]/);
+    for (const forbidden of [
+      'egpt-spine.mjs',
+      '../bridges/',
+      '../engine/',
+      '../room',
+      '../rooms',
+      '../../dispatch.mjs',
+      '../../conversations-state.mjs',
+    ]) {
+      expect(SHELL_LIMB_SRC, `shell limb must not import ${forbidden}`).not.toContain(forbidden);
+    }
+  });
+});
+
 describe('/config schema vs. EGPT_CONFIG references', () => {
   // Every top-level key the shell reads off EGPT_CONFIG must be in the
   // schema; otherwise /config rejects the key as 'unknown'. node_name was
@@ -51,7 +75,7 @@ describe('/config schema vs. EGPT_CONFIG references', () => {
 
   for (const key of [...referencedKeys].sort()) {
     it(`EGPT_CONFIG.${key} is registered in CONFIG_SCHEMA`, () => {
-      expect(CONFIG_SCHEMA, `${key} read in egpt.mjs but not in CONFIG_SCHEMA`).toHaveProperty(key);
+      expect(CONFIG_SCHEMA, `${key} read in egpt-spine.mjs but not in CONFIG_SCHEMA`).toHaveProperty(key);
     });
   }
 });
@@ -82,7 +106,7 @@ describe('every command in COMMANDS has a dispatch site on its surface', () => {
 
     for (const surface of surfaces) {
       const src = surface === 'shell' ? SHELL_SRC : EXT_SRC;
-      const file = surface === 'shell' ? 'egpt.mjs' : 'extension/src/tab/App.jsx';
+      const file = surface === 'shell' ? 'egpt-spine.mjs' : 'extension/src/tab/App.jsx';
       it(`${entry.cmd} is dispatched on ${surface} (${file})`, () => {
         expect(
           hasDispatch(src, entry.cmd, surface),
