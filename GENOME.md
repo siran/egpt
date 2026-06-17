@@ -398,6 +398,12 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
    transcript, or the ack (`src/transcript-repeat-guard.mjs`, C3.5). The voice
    marker's duration is read off the ffmpeg WAV the transcriber already makes
    (C7.6). For an image, the saved path is surfaced so a vision brain can `Read` it.
+   For a **video**, the nucleus hands E the cooked result on a silver platter
+   (Route A, operator 2026‑06‑16): the HOST — outside E's sandbox — extracts a few
+   keyframes (`src/video-frames.mjs`) INTO the chat's `media/` (inside the sandbox,
+   Read‑able by E's vision) AND transcribes the audio track, surfacing both on the
+   dispatch line. E never runs `ffmpeg` (it has no shell in its chroot); media gets
+   the same nucleus treatment as a voice note (I2). (C2.5.)
 3. **Text → nucleus:** the limb calls `onIncoming(text, from)`.
 4. **Classify** (nucleus): per‑chat mode, mention/mention‑direct, surface
    identity, operator (`authorized`, id‑based). Backlog older than connect −
