@@ -267,6 +267,17 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toMatch(/\[saved: /);
   });
 
+  // A shared AUDIO FILE (an .mp3 that is NOT a voice note) must be announced so E
+  // knows it arrived — it used to be silently dropped (kind==='audio' filter),
+  // never even logged (operator 2026-06-16: "not even in transcript").
+  it('a non-voice audio file (.mp3) is announced to the model (not silently dropped)', async () => {
+    const { incoming } = await startBridge();
+    const att = fakeAttachment({ name: 'song.mp3', mimeType: 'audio/mpeg' });   // isVoiceNote:false
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'FILE', text: null, attachments: [att] })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toMatch(/\(audio song\.mp3\) \[saved: /);
+  });
+
   it('whatsapp.media.download:"off" saves nothing', async () => {
     const { media } = await startBridge({ media: { download: 'off' } });
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
