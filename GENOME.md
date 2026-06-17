@@ -353,8 +353,8 @@ of (recursive, read‑write) ∪ operator grants — and NOTHING else. With warm
 COLD fallback. Either path enforces via the **Claude engine's OWN permission system,
 not a hand‑rolled hook**: `--add-dir <roots>` + `--setting-sources ''` (no
 `~/.claude` bypass) + `--permission-mode default` + file tools deliberately NOT
-pre‑approved (so they stay path‑confined) + no Bash / no Agent (no escape hatch) —
-mirrored 1:1 between `src/claude-args.mjs` (CLI) and `config/brains/claude-sdk.mjs`
+pre‑approved (so they stay path‑confined) + no `Agent` and no BARE `Bash` (no
+escape hatch) — mirrored 1:1 between `src/claude-args.mjs` (CLI) and `config/brains/claude-sdk.mjs`
 `buildSdkOptions` (SDK). (The PreToolUse deny *hook* is a SEPARATE, narrower thing —
 read‑only write‑deny grants only.) So a `conversation‑e` **cannot read or write
 another conversation's folder — impossible by construction.** The ONLY cross‑

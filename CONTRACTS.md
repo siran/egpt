@@ -342,21 +342,24 @@ Lock status of the four:
   the `#<id>` rendering; live verification of the transcript line). Completes
   MESSAGES-FIRST-CLASS-PLAN Phase 1 for the live E path (the msg id now shows).
 
-- **C2.6** (Route B, ⏳ FOUNDATION ONLY — not yet wired) conversation-e may
-  EXECUTE a small allowlist of vetted, immutable binaries (the chroot read-only
-  `/bin`) — "all powerful, but can't destroy itself or the host" (operator
-  2026-06-16, model chosen: raw binary + arg validation). `src/exec-policy.mjs`:
-  run via `execFile` (NEVER a shell → no `;`/`&&`/`$()`/glob), binary on the
-  allowlist (ffmpeg/ffprobe/magick/pdftotext/pdfinfo/pandoc/jq/qrencode/zbarimg +
-  net: yt-dlp/curl/wget), every file-path arg pinned INSIDE the chat sandbox (no
-  abs-outside, no `..`), URLs only for `net` binaries, per-binary deny-flags for
-  the escape vectors (protocol readers, alt output sinks, config/file-read).
-  Excludes every interpreter/shell (no self-elevation). ✅ policy + tests
-  (`tests/exec-policy.test.mjs`), DORMANT. ⚠️ arg-validation is best-effort, NOT a
-  true sandbox — WIRING it live to the public persona is a SEPARATE reviewed step,
-  and a fully-public deployment should add OS-level isolation (Job Object /
-  restricted token / container). ⏳ owed: the invocation surface (how E calls it)
-  + the OS-isolation layer.
+- **C2.6** (Route B) conversation-e may EXECUTE a small allowlist of vetted,
+  immutable binaries (the chroot read-only `/bin`) — "all powerful, but can't
+  destroy itself or the host" (operator 2026-06-16). **Mechanism (operator-chosen,
+  the simple native one): SCOPED Bash.** The `default` personality's `allowed_tools`
+  carries `Bash(<bin>:*)` rules for the allowlist (ffmpeg/ffprobe/magick/pdftotext/
+  pdfinfo/pandoc/jq/qrencode/zbarimg + net: yt-dlp/curl/wget); under
+  `--permission-mode default` each rule auto-approves ONLY that binary and any
+  other Bash command is denied (headless = no approver). Still **no bare `Bash`**
+  (arbitrary shell) and **no `Agent`** — no self-elevation. The model knows how to
+  drive the binaries. ✅ (2026-06-16, `config/personalities/default.md`;
+  `tests/conversations-state.test.mjs` + `tests/claude-args.test.mjs` lock the
+  scoped rules + the no-bare-Bash invariant). ⚠️ Scoping is on the BINARY, not its
+  file-path ARGS — a vetted binary can still be pointed at a host path. Acceptable
+  for the operator's own use; before a PUBLIC launch, **pin args to the sandbox**
+  via `src/exec-policy.mjs` (a tested `execFile`/allowlist/sandbox-path validator,
+  shipped DORMANT) wired as a **PreToolUse hook**, and/or OS-level isolation (Job
+  Object / restricted token / container). ⏳ owed: that hardening + the binaries'
+  install on each spine.
 
 ## 8. Workers (DOLLY)
 - **C8.0** Services are **spine-portable** — a single spine CAN host everything
