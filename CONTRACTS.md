@@ -132,7 +132,11 @@ Lock status of the four:
   sandbox, so E's vision can `Read` them) AND transcribes the audio track (the
   shared remote-first transcriber; convertToWav16k reads video containers too).
   Both are surfaced on the dispatch line: `(video <name>) [saved: …]\nframes (Read
-  these): …\n(video transcription) …`. E never runs ffmpeg (no Bash in its chroot).
+  these): …\n(video transcription) …`. The `[saved: …]` + frame paths are
+  **relative to the conversation folder** (`media/<file>`), NEVER the absolute host
+  path — E reads them from its sandbox root (GENOME §2.5); the descriptor keeps the
+  absolute path internally, only the dispatch text is relativized
+  (`src/bridges/beeper.mjs` `_mediaRel`). E never runs ffmpeg (no Bash in its chroot).
   WhatsApp-only in v1 (where videos are shared); other surfaces keep the plain
   saved-path announce. ✅ (2026-06-16, `tests/video-frames.test.mjs` +
   `tests/beeper-bridge.test.mjs`). ⏳ owed: E requesting MORE frames on demand (an

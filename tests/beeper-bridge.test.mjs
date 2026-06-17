@@ -279,9 +279,14 @@ describe('beeper bridge', () => {
     const att = fakeAttachment({ name: 'clip.mp4', mimeType: 'video/mp4' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VIDEO', text: null, attachments: [att] })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].text).toContain('(video clip.mp4) [saved: /m/clip.mp4]');
-    expect(incoming[0].text).toContain('frames (Read these): /m/clip-frame-01.jpg  /m/clip-frame-02.jpg');
+    // Paths are surfaced RELATIVE to the conversation folder (`media/<file>`),
+    // never the absolute host path — E reads them from its sandbox root (GENOME
+    // §2.5). The descriptor still carries the absolute path internally; only the
+    // dispatch text is relativized.
+    expect(incoming[0].text).toContain('(video clip.mp4) [saved: media/clip.mp4]');
+    expect(incoming[0].text).toContain('frames (Read these): media/clip-frame-01.jpg  media/clip-frame-02.jpg');
     expect(incoming[0].text).toContain('(video transcription) hola desde el video');
+    expect(incoming[0].text).not.toContain('/m/clip.mp4');   // no absolute host path leaks to E
   });
 
   it('an image WITH a caption surfaces both the caption and the saved path', async () => {
