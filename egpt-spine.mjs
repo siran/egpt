@@ -3056,28 +3056,14 @@ function App() {
     if (autoIsMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
     return DEFAULT_AUTO_MODE;
   };
-  // The outbound backstop: may E SEND a reply to this WA chat right now? Every
-  // E-emit path (text, voice, emitted-command, future) funnels through here so
-  // 'mute'/'off' is a HARD block independent of any per-path flag — reception
-  // stays unconditional, only emission is vetted. Logs every block.
-  const _eMayReplyToChat = (chatId, { replyAllowed, isReaction = false } = {}) => {
-    // Global pause is an ABSOLUTE @e emit kill — it overrides mode/mention. The
-    // dispatch-side autoPaused gate only stops the AUTO broadcast; an explicit
-    // '@e …' still reaches @e via the submit() else-branch, so without this
-    // backstop a PAUSED @e still replied to '@e estas?' (operator 2026-06-03,
-    // /e auto status = PAUSED). Checked here so NO emit path (text, voice, the
-    // mention else-branch) can speak while paused.
-    const paused = !!EGPT_CONFIG.whatsapp?.auto_e_paused;
-    const mode = _resolveChatAutoMode(chatId);
-    // Single source of truth (tested in auto-mode.test.mjs): pause-kill layered
-    // over the per-chat mode gate. Keep the two distinct log lines for triage.
-    const ok = autoMayEmitChat({ paused, mode, replyAllowed, isReaction });
-    if (!ok) {
-      if (paused) logOut(`auto-mode: E emit to ${chatId} BLOCKED — auto_e_paused (global kill)`);
-      else logOut(`auto-mode: E emit to ${chatId} BLOCKED (mode=${mode}, replyAllowed=${replyAllowed}${isReaction ? ', reaction' : ''})`);
-    }
-    return ok;
-  };
+  // The outbound backstop (I4): may E SEND a reply to this WA chat right now?
+  // The gate logic now lives in the ENGINE (engine.mayEmit — pause-kill over the
+  // per-chat mode gate, the tested autoMayEmitChat). This stays as a thin alias
+  // so every existing call site is unchanged; reception stays unconditional,
+  // only emission is vetted, every block is logged (engine-side). The gate's
+  // deps (chat-mode resolver + pause source + logger) are wired via
+  // engine.configureGate in the engine-wiring effect below.
+  const _eMayReplyToChat = (chatId, opts = {}) => engine.mayEmit(chatId, opts);
 
   const _maybeRouteToRooms = async ({ memberId, senderLabel, body }) => {
     if (!EGPT_CONFIG.rooms?.routing_enabled) return;
@@ -5476,6 +5462,14 @@ function App() {
     engine.setSubmit((text, meta) => {
       try { submitRef.current?.(String(text ?? ''), meta); }
       catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
+    });
+    // Wire the emit gate (I4) deps: the per-chat mode resolver + the global
+    // pause source + the block logger. The gate DECISION lives in the engine
+    // (engine.mayEmit); this only hands it what it needs to resolve verdicts.
+    engine.configureGate({
+      resolveChatMode: _resolveChatAutoMode,
+      isPaused: () => !!EGPT_CONFIG.whatsapp?.auto_e_paused,
+      log: logOut,
     });
   }, []);
 
