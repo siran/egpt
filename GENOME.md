@@ -306,14 +306,17 @@ theater‑play model, one formatter (`formatDispatchLine`, C7.6):
 - **Utterance** — a message or a being's reply: `Name@[chat].{node} (HH:MM)
   #<id>: body` (the `#<id>` makes each line addressable so any member can react /
   reply / quote it).
-- **Stage‑direction** — a meta‑event (reaction, and later edit/delete): the same
+- **Stage‑direction** — a meta‑event (reaction · edit; delete later): the same
   identity line wrapped in OUTER brackets, the body carrying the action that
   references a target id — `[ Name@[chat].{node} (HH:MM): reacted 👍 to #<id>
-  "…snippet…" ]`. Recorded ALWAYS (I3); the emit gate (I5) decides only whether E
-  responds. A **reaction** is ingested at the bridge from the target message's
-  re‑upsert (`reactions[]` = the emoji + the snippet; the bare `type:REACTION`
-  event carries no emoji), surfaced flood‑safe by baseline‑on‑first‑sight (I10 —
-  a reconnect re‑sync of old reactions is a baseline, never replayed).
+  "…snippet…" ]` / `[ … edited #<id> "old" → "new" ]`. Recorded ALWAYS (I3); the
+  emit gate (I5) decides only whether E responds. Both are ingested at the bridge
+  from the target message's re‑upsert and surfaced flood‑safe by
+  baseline‑on‑first‑sight (I10 — a reconnect re‑sync isn't replayed; keys are
+  chat‑qualified, Beeper ids being per‑chat): a **reaction** from `reactions[]`
+  (emoji + snippet; the bare `type:REACTION` event carries no emoji), an **edit**
+  from a re‑upsert whose text CHANGED vs the per‑message baseline (append‑only —
+  the original line stays, the edit records the correction). (C7.8 / C7.8b.)
 
 **A message can belong to MANY Rooms at once, and fulfils EVERY contract it
 touches (operator 2026‑06‑15).** A chat is always its own Room *and* may be a

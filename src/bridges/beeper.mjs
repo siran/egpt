@@ -49,7 +49,7 @@ import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
 import { transcribeVoiceNote, voiceTranscriptBody } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
-import { reactionAction } from '../dispatch-line.mjs';
+import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
@@ -397,6 +397,7 @@ export async function startBeeperBridge(opts = {}) {
   // no event correlation.
   const _idToName = new Map();         // senderID -> last-seen senderName (reactor naming)
   const _seenReactions = new Map();    // msgId -> Set of `${reactor} ${emoji}`
+  const _seenText = new Map();         // msgId -> last cleaned text (edit detection, baseline-on-first-sight)
   const REACTION_CAP = 4000;
   function _capMap(m, cap) { while (m.size > cap) m.delete(m.keys().next().value); }
   function _reactorName(id) {
@@ -408,8 +409,8 @@ export async function startBeeperBridge(opts = {}) {
   // last sight (empty on first sight, so a baseline is never surfaced).
   function _freshReactions(msg) {
     if (msg.type === 'REACTION') return [];   // bare event carries no emoji — skip
-    const msgId = msg.id;
-    if (!msgId) return [];
+    if (!msg.id) return [];
+    const msgId = msgKeyOf(msg.chatID, msg.id);   // chat-qualified: Beeper ids are per-chat
     const list = Array.isArray(msg.reactions) ? msg.reactions : [];
     const cur = new Set();
     for (const r of list) {
@@ -452,6 +453,39 @@ export async function startBeeperBridge(opts = {}) {
     }
   }
 
+  // EDITS (MESSAGES-FIRST-CLASS-PLAN): an edit re-upserts the message with NEW
+  // text. Detect a text CHANGE vs the per-message baseline (same flood-safe
+  // baseline-on-first-sight as reactions: first sight records, never surfaces, so a
+  // reconnect re-sync of already-edited text isn't replayed). Emit an append-only
+  // stage-direction; the original line stays in the transcript. Shape-agnostic —
+  // works off the re-upsert's text, no edit-marker field required.
+  async function _maybeEmitEdits(msg) {
+    if (!msg?.id || msg.type === 'REACTION') return;
+    const key = msgKeyOf(msg.chatID, msg.id);   // chat-qualified: Beeper ids are per-chat
+    const cur = htmlToMarkdown(msg.text) || '';
+    const first = !_seenText.has(key);
+    const prev = _seenText.get(key);
+    _seenText.set(key, cur);
+    _capMap(_seenText, REACTION_CAP);
+    if (first || !cur || prev === cur) return;   // baseline / empty / unchanged → not an edit
+    const info = await chatInfo(msg.chatID);
+    const editor = (msg.isSender && userName) ? userName : (msg.senderName || _idToName.get(msg.senderID) || 'someone');
+    const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
+    onLog(`beeper: edit #${msg.id} by ${editor} [${info.title}]: ${JSON.stringify(prev.slice(0, 40))} → ${JSON.stringify(cur.slice(0, 40))}`);
+    const from = {
+      chatId: msg.chatID, chatName: info.title,
+      chatType: info.type === 'group' ? 'group' : 'private',
+      userId: msg.senderID || msg.chatID, username: msg.senderName || undefined,
+      firstName: editor, senderName: editor,
+      isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID),
+      atEStart: false, atEAnywhere: false, replyToBot: false,
+      isReaction: false, isStageDirection: true, isTranscriptFromVoice: false,
+      msgKey: msg.id || null,
+    };
+    try { await onIncoming?.(body, from); }
+    catch (e) { onLog(`beeper: edit onIncoming threw — ${e?.message ?? e}`); }
+  }
+
   // --- dispatch one incoming message ---
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
@@ -462,6 +496,7 @@ export async function startBeeperBridge(opts = {}) {
     // message's re-upsert, and that target may be E's OWN message (an echo) or an
     // already-processed message (deduped); both must still surface the reaction.
     await _maybeEmitReactions(msg);
+    await _maybeEmitEdits(msg);   // a re-upsert with changed text → an edit stage-direction (before dedup)
     if (msg.type === 'REACTION') return;   // bare reaction event: no body to route
     // Echo suppression compares the RAW wire text (its own _normEcho strips HTML,
     // C5.3) — so check it BEFORE converting. Beeper delivers text as HTML; convert

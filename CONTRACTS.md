@@ -326,6 +326,17 @@ Lock status of the four:
   `tests/dispatch-line.test.mjs` + `tests/beeper-bridge.test.mjs`; wire shape
   verified live). ⏳ owed: reaction REMOVAL surfacing; E SENDING reactions
   (`/react` on Beeper — Phase 3).
+- **C7.8b** A message **EDIT** is likewise a stage-direction: `[ Name@[chat].{node}
+  (HH:MM): edited #<id> "old" → "new" ]` (`editAction` + `stageDirection`). The
+  Beeper bridge detects it **shape-agnostically** — a re-upsert of the same id with
+  CHANGED (markdown-cleaned) text, vs a per-message text baseline; same flood-safe
+  baseline-on-first-sight as reactions (a reconnect re-sync of already-edited text
+  isn't replayed), and the key is chat-qualified (`msgKeyOf` — Beeper ids are
+  per-chat). Append-only: the ORIGINAL line stays in the transcript; the edit
+  records the correction (so E sees "imbécil" softened to "pobrecito"). Flagged
+  `isStageDirection` (not `isReaction`); recorded ALWAYS (I3); the emit gate decides
+  whether E responds. ✅ (2026-06-17, `tests/dispatch-line.test.mjs` +
+  `tests/beeper-bridge.test.mjs`). ⏳ owed: message DELETE (the third stage-direction).
 
 - **C7.6e** A message is a UNIT, constructed ONCE (operator 2026-06-16, "only one
   path"). The canonical dispatch line is built a single time at the nucleus entry
