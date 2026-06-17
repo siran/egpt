@@ -1,11 +1,9 @@
 #!/usr/bin/env node
-// egpt.mjs — file IS the conversation; Ink shell; sessions = named participants
-import React from 'react';
-import { render, Box, Text, Static, useInput, useApp } from 'ink';
+// egpt-spine.mjs — file IS the conversation; spine owns engine/bridges
+import { createElement as h, Fragment, render, Box, Text, Static, useInput, useApp, useState, useEffect, useRef, useCallback } from './src/spine/headless-runtime.mjs';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, createWriteStream, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
-import { PassThrough, Writable } from 'node:stream';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink, copyFile } from 'node:fs/promises';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -78,7 +76,6 @@ import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/wh
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
 
-const { createElement: h, useState, useEffect, useRef, useCallback, Fragment } = React;
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
 // Persisted "last reply-mode announced to E per chat" — survives restarts so the
@@ -152,11 +149,10 @@ try {
 } catch (e) { swallow('boot.migrate', e); /* best-effort — never block startup */ }
 
 // Engine OUTPUT chokepoint (Phase B — ENGINE-SURFACE-SEPARATION.md). Every
-// rendered item flows through this one channel; the Ink renderer subscribes
-// (see the App mount effect) and code emits via pushItem() instead of calling
-// setItems() directly. That decoupling is what lets Phase D's attached clients
-// subscribe to the same output stream. Module-scope for now; it moves into the
-// engine module when the engine is extracted from the App (Phase C).
+// rendered item flows through this one channel. The spine's headless lifecycle
+// subscribes internally, and attached limbs subscribe through the attach host.
+// Module-scope for now; it moves into the engine module when the engine is
+// extracted from the legacy component-shaped lifecycle (Phase C).
 const outputChannel = createOutputChannel();
 const pushItem = (item) => outputChannel.emit(item);
 // The engine attach host (Phase C) — limbs (the thin TTY client, the extension)
@@ -217,10 +213,8 @@ function _mergedHelpCommands() {
 // the old process, polls until it exits, then takes over. Cleared on
 // clean exit (signal handler + process.exit). See takeoverIfRunning().
 const EGPT_PID_PATH = join(EGPT_STATE, 'egpt.pid');
-// Headless mode log: Ink renders nowhere visible (no tty), so any
-// console.log / sysOut that would have hit the terminal lands here for
-// post-mortem. Bridges + room.md are still the canonical record;
-// this is auxiliary.
+// Headless mode log: spine output items land here for post-mortem. Bridges +
+// room.md are still the canonical record; this is auxiliary.
 const EGPT_HEADLESS_LOG = join(EGPT_LOGS, 'headless.log');
 // fs-direct host-side trace into the SAME wa-bridge.log the bridge writes, so
 // the bridge lifecycle (bridge side) and the host's waBridgeRef set/clear +
@@ -1467,8 +1461,8 @@ async function findSessionJsonl(sessionIdOrPrefix) {
   return null;
 }
 
-// --headless: run the bridges + bus + room logging without mounting the
-// Ink terminal UI. Designed for Windows Task Scheduler "Run whether user
+// --headless: run the bridges + bus + room logging without a terminal UI.
+// Designed for Windows Task Scheduler "Run whether user
 // is logged on or not" / launchd / systemd --user — eGPT keeps capturing
 // WhatsApp / Telegram traffic to disk while no operator is signed in.
 // When a real shell starts later, it SIGTERMs the headless process via
@@ -1477,17 +1471,14 @@ async function findSessionJsonl(sessionIdOrPrefix) {
 // transfers cleanly via signal + poll instead of a live socket attach.
 const _rawCliArgs = process.argv.slice(2);
 const HEADLESS = _rawCliArgs.includes('--headless');
-// --client: run as a LIMB that attaches to a running spine over loopback TCP
-// instead of being the engine. Full Ink UI, but it starts NONE of the engine
-// subsystems (WA/TG bridges, control-plane bus, CDP, outbox/inbox, attach host)
-// — input is forwarded to the spine, output is rendered from it, so a limb can
-// never contend for the WhatsApp pairing. (Phase D; becomes the default once
-// auto-detect — "attach if a spine exists, else become one" — lands.)
+// --client is ignored by this spine entry. The client/shell limb lives in
+// src/shell/ink-limb.mjs and is launched by egpt.mjs.
 // Role: --client forces a limb; --spine/--engine (or --headless) forces the
 // spine. With neither, the role is AUTO-DETECTED at boot (see spineIsLive() and
 // the boot section below): attach as a limb if a live spine answers, else
 // become the spine. `let` because auto-detect refines it before the App renders.
-const LAUNCHED_AS_SPINE = process.env.EGPT_LAUNCHED_AS_SPINE === '1';
+const LAUNCHED_AS_SPINE = process.env.EGPT_LAUNCHED_AS_SPINE === '1'
+  || basename(process.argv[1] ?? '') === 'egpt-spine.mjs';
 let CLIENT = !LAUNCHED_AS_SPINE && _rawCliArgs.includes('--client');
 const FORCE_SPINE = LAUNCHED_AS_SPINE || _rawCliArgs.includes('--spine') || _rawCliArgs.includes('--engine');
 const cliArgs = _rawCliArgs.filter(a => !['--headless', '--client', '--spine', '--engine'].includes(a));
@@ -9885,107 +9876,40 @@ if (!CLIENT) {
 // couldn't register reply-target ids in the sidecar (the sidecar
 // lives inside App state), so /recap-style reply-by-id only worked
 // after the operator ran /recap manually. By dispatching the welcome-
-// back from inside the App we get reply-able rows on the very first
-// frame, and Ink owns the screen end-to-end.
+// back from inside the legacy lifecycle we get reply-able rows on the very
+// first frame, and attached limbs receive them through the output channel.
 
-if (HEADLESS) {
-  // Ink wants tty-like stdin/stdout. Stub both so the render call
-  // doesn't crash on setRawMode() / cursor positioning. Ink emits
-  // ANSI escape sequences (cursor save/restore, clear-line, alt-screen
-  // mode) on every redraw — when the destination is a plain file these
-  // pollute the log AND trip VS Code's ambiguous-unicode warning.
-  // Strip them on the way out + collapse the consecutive duplicate
-  // lines Ink's churn produces. Operator (2026-05-21).
-  //
-  // Size-based rotation (operator 2026-05-22): when headless.log
-  // exceeds HEADLESS_LOG_MAX_BYTES, rotate to .log.1 (replacing any
-  // previous backup) and open a fresh .log. Check happens at startup
-  // AND periodically during runs (every Nth write). Keeps logs
-  // bounded without external logrotate.
-  const HEADLESS_LOG_MAX_BYTES = 500 * 1024;          // 500 KB (operator 2026-05-22: "shouldn't be more than 5k, at most... why keep it so long")
+function startSpineOutputLog() {
+  const HEADLESS_LOG_MAX_BYTES = 500 * 1024;
   const HEADLESS_LOG_BACKUP = EGPT_HEADLESS_LOG + '.1';
-  const ROTATE_CHECK_EVERY_WRITES = 200;
-  const _rotateIfBig = () => {
+  const rotateIfBig = () => {
     try {
       const st = statSync(EGPT_HEADLESS_LOG);
-      if (st.size <= HEADLESS_LOG_MAX_BYTES) return false;
-      try { unlinkSync(HEADLESS_LOG_BACKUP); } catch (e) { /* no prior backup — fine */ }
+      if (st.size <= HEADLESS_LOG_MAX_BYTES) return;
+      try { unlinkSync(HEADLESS_LOG_BACKUP); } catch {}
       renameSync(EGPT_HEADLESS_LOG, HEADLESS_LOG_BACKUP);
-      return true;
-    } catch (e) { return false; }
+    } catch {}
   };
-  // Startup rotation: if log is already huge from a prior session.
-  _rotateIfBig();
-  let rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
-  let _writeCount = 0;
-  const _maybeRotateDuringRun = () => {
-    _writeCount++;
-    if (_writeCount % ROTATE_CHECK_EVERY_WRITES !== 0) return;
-    if (!_rotateIfBig()) return;
-    try { rawFile.end(); } catch (e) { /* swallow — about to replace */ }
-    rawFile = createWriteStream(EGPT_HEADLESS_LOG, { flags: 'a' });
-  };
-  // CSI sequences (\x1b[...letter), OSC (\x1b]...\x07 or \x1b\\), and
-  // 2-char designation escapes (\x1b(B etc.).
-  const ANSI_REGEX = /\x1b\[[\d;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z]/g;
-  let _lastNonEmptyLine = '';
-  let _pendingTail = '';
-  const stdoutLog = new Writable({
-    write(chunk, enc, cb) {
-      const str = (typeof chunk === 'string') ? chunk : chunk.toString('utf8');
-      const cleaned = (_pendingTail + str).replace(ANSI_REGEX, '');
-      // Buffer the final partial line so we don't dedupe mid-write.
-      const lastNl = cleaned.lastIndexOf('\n');
-      const complete = lastNl >= 0 ? cleaned.slice(0, lastNl + 1) : '';
-      _pendingTail = lastNl >= 0 ? cleaned.slice(lastNl + 1) : cleaned;
-      if (!complete) { cb(); return; }
-      const lines = complete.split('\n');
-      const out = [];
-      // Spinner/progress lines from the Ink "thinking…" indicator —
-      // every animation frame is a unique line (rotating braille char +
-      // monotonically-advancing seconds), so the dedup below can't
-      // suppress them. These are pure UI noise; the headless.log
-      // shouldn't carry per-frame thinking ticks. Drop entirely.
-      // Operator 2026-05-22: "headless shouldn't be more than 5k...
-      // we only log final transcript and the final reply."
-      const SPINNER_RE = /[⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏⠐⠑⠒⠓⠔⠕⠖⠗⠘⠙⠚⠛⠜⠝⠞⠟⠠⠡⠢⠣⠤⠥⠦⠧⠨⠩⠪⠫⠬⠭⠮⠯⠰⠱⠲⠳⠴⠵⠶⠷⠸⠹⠺⠻⠼⠽⠾⠿]\s*thinking…\s*\d+(?:\.\d+)?s/;
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (i === lines.length - 1 && line === '') { out.push(''); continue; }
-        if (line !== '' && SPINNER_RE.test(line)) continue;
-        // Suppress consecutive identical non-empty lines (Ink redraw churn).
-        if (line !== '' && line === _lastNonEmptyLine) continue;
-        out.push(line);
-        if (line !== '') _lastNonEmptyLine = line;
-      }
-      _maybeRotateDuringRun();
-      rawFile.write(out.join('\n'), cb);
-    },
-    final(cb) {
-      if (_pendingTail) rawFile.write(_pendingTail);
-      rawFile.end(cb);
-    },
+  rotateIfBig();
+  try {
+    appendFileSync(EGPT_HEADLESS_LOG, `\n[${new Date().toISOString()}] egpt spine starting (pid ${process.pid}, file ${FILE})\n`, { mode: 0o600 });
+  } catch {}
+  return outputChannel.subscribe((item) => {
+    if (item?._log) return;
+    try {
+      rotateIfBig();
+      const author = item?.author ?? 'system';
+      const body = String(item?.body ?? '').trimEnd();
+      appendFileSync(EGPT_HEADLESS_LOG, `[${new Date().toISOString()}] ${author}: ${body}` + '\n', { mode: 0o600 });
+    } catch {}
   });
-  stdoutLog.isTTY = true;
-  stdoutLog.columns = 120;
-  stdoutLog.rows = 40;
-  const stdinNull = new PassThrough();
-  stdinNull.isTTY = true;
-  stdinNull.setRawMode = () => stdinNull;
-  stdinNull.ref = () => {};
-  stdinNull.unref = () => {};
-  stdoutLog.write(`\n[${new Date().toISOString()}] egpt --headless starting (pid ${process.pid}, file ${FILE})\n`);
-  render(h(App), {
-    stdin: stdinNull,
-    stdout: stdoutLog,
-    stderr: stdoutLog,
-    exitOnCtrlC: false,
-  });
-} else {
-  console.log(`egpt | ${FILE}${CLIENT ? ' (limb — attached to spine)' : ' (spine)'}`);
-  console.log('Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help for commands\n');
-  render(h(App), { exitOnCtrlC: false });
 }
+
+startSpineOutputLog();
+console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
+console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
+console.log();
+render(h(App), { exitOnCtrlC: false });
 process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
