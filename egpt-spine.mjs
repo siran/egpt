@@ -64,7 +64,7 @@ import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bind
 import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createEngine } from './src/engine/index.mjs';
-import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny } from './src/dispatch-helpers.mjs';
+import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from './src/dispatch-helpers.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -2346,10 +2346,7 @@ function App() {
   // a raw [voice note].
   const _llamaBusy  = useRef(false);            // is an @l inference in flight?
   const _llamaPiles = useRef(new Map());        // chatId -> [{body, senderName, ts}]
-  const _isLlamaBeing = (being) => {
-    const t = String((EGPT_CONFIG.siblings ?? {})[String(being).toLowerCase()]?.type ?? '').toLowerCase();
-    return t === 'llama' || t === 'llamacpp' || t === 'llama-cpp' || t === 'local';
-  };
+  const _isLlamaBeing = (being) => isLlamaBeing(EGPT_CONFIG.siblings, being);   // moved to src/dispatch-helpers.mjs
   // Gate an @l turn. Returns true if the message was PILED (caller must return),
   // false to run it now. Only @l (the single local slot) is gated; other meta
   // beings (engineers) run inline. Piling is per-chat, so each chat coalesces
@@ -3024,23 +3021,7 @@ function App() {
   // body (not @e-specific), so WA and TG route identically.
   // Resolve a WA chat's auto-mode the same way onIncoming does — the single
   // source of truth, callable from any emit path. (operator 2026-05-28)
-  const _resolveChatAutoMode = (chatId) => {
-    const waCfg = EGPT_CONFIG.whatsapp ?? {};
-    // (Used to short-circuit to 'on' for system-personality chats so the
-    // operator's Self DM was always responsive. Removed 2026-06-05: it
-    // overrode explicit auto_e_modes config — operator caught a leak
-    // where a Self DM they had configured as 'mention' kept getting
-    // @e replies. Now the precedence is purely: explicit entry > auto_e_chats
-    // membership > auto_e_default_mode > DEFAULT_AUTO_MODE. To keep the
-    // old "Self always responsive" behavior, add an explicit entry, e.g.
-    //   auto_e_modes:
-    //     34836563681438@lid: on)
-    const modes = waCfg.auto_e_modes;
-    if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
-    if (Array.isArray(waCfg.auto_e_chats) && waCfg.auto_e_chats.includes(chatId)) return 'on';
-    if (autoIsMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
-    return DEFAULT_AUTO_MODE;
-  };
+  const _resolveChatAutoMode = (chatId) => resolveChatAutoMode(EGPT_CONFIG.whatsapp, chatId);   // moved to src/dispatch-helpers.mjs
   // The outbound backstop (I4): may E SEND a reply to this WA chat right now?
   // The gate logic now lives in the ENGINE (engine.mayEmit — pause-kill over the
   // per-chat mode gate, the tested autoMayEmitChat). This stays as a thin alias

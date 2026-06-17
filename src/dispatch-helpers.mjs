@@ -1,8 +1,10 @@
 // src/dispatch-helpers.mjs — pure, closure-free dispatch helpers lifted out of
 // egpt-spine.mjs's App component (Phase C: shrinking the App toward an engine
-// module, one cohesive unit at a time). No refs, no config, no React — just
-// message/mode string logic, so they import cleanly into the App today and the
-// engine tomorrow.
+// module, one cohesive unit at a time). No refs, no React, no module-scope
+// config reads — config is passed in as an argument — so they import cleanly
+// into the App today and the engine tomorrow.
+
+import { DEFAULT_AUTO_MODE, isAutoMode } from './auto-mode.mjs';
 
 // The per-mode coaching note prepended to E's prompt so it knows how its replies
 // are surfaced for this chat (CONTRACTS auto-mode).
@@ -28,4 +30,24 @@ export const bodyMentionsAny = (body, names) => {
   const esc = names.map(a => String(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean).join('|');
   if (!esc) return false;
   return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
+};
+
+// Resolve a WA chat's auto-mode from the whatsapp config block. Precedence:
+// explicit auto_e_modes entry > auto_e_chats membership ('on') >
+// auto_e_default_mode > DEFAULT_AUTO_MODE. (Self-DM "always on" is gone — add an
+// explicit auto_e_modes entry to get it; removed 2026-06-05 after a leak where a
+// Self DM configured 'mention' still got @e replies.)
+export const resolveChatAutoMode = (waConfig, chatId) => {
+  const waCfg = waConfig ?? {};
+  const modes = waCfg.auto_e_modes;
+  if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
+  if (Array.isArray(waCfg.auto_e_chats) && waCfg.auto_e_chats.includes(chatId)) return 'on';
+  if (isAutoMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
+  return DEFAULT_AUTO_MODE;
+};
+
+// Is <being> configured as a llama sibling (the local @l slot)?
+export const isLlamaBeing = (siblings, being) => {
+  const t = String((siblings ?? {})[String(being).toLowerCase()]?.type ?? '').toLowerCase();
+  return t === 'llama' || t === 'llamacpp' || t === 'llama-cpp' || t === 'local';
 };

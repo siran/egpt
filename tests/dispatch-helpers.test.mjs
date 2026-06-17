@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny } from '../src/dispatch-helpers.mjs';
+import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from '../src/dispatch-helpers.mjs';
 
 describe('dispatch-helpers (pure, lifted out of the App — Phase C strangler)', () => {
   it('modeNote returns the per-mode note, defaulting to mention', () => {
@@ -21,5 +21,20 @@ describe('dispatch-helpers (pure, lifted out of the App — Phase C strangler)',
     expect(bodyMentionsAny('hi @llama there', ['l', 'llama'])).toBe(true);
     expect(bodyMentionsAny('hi there', ['l'])).toBe(false);
     expect(bodyMentionsAny('x', [])).toBe(false);
+  });
+
+  it('resolveChatAutoMode follows explicit > auto_e_chats > default > DEFAULT', () => {
+    expect(resolveChatAutoMode({ auto_e_modes: { c1: 'mention' }, auto_e_chats: ['c1'] }, 'c1')).toBe('mention'); // explicit wins
+    expect(resolveChatAutoMode({ auto_e_chats: ['c1'] }, 'c1')).toBe('on');                                      // membership → on
+    expect(resolveChatAutoMode({ auto_e_default_mode: 'mute' }, 'c9')).toBe('mute');                             // default mode
+    expect(resolveChatAutoMode({}, 'c9')).toBe('mention');                                                       // DEFAULT_AUTO_MODE
+    expect(resolveChatAutoMode(undefined, 'c9')).toBe('mention');                                                // null-safe
+  });
+
+  it('isLlamaBeing recognizes a llama sibling by type', () => {
+    expect(isLlamaBeing({ l: { type: 'llama' } }, 'l')).toBe(true);
+    expect(isLlamaBeing({ l: { type: 'local' } }, 'L')).toBe(true);    // case-insensitive being
+    expect(isLlamaBeing({ wren: { type: 'ccode' } }, 'wren')).toBe(false);
+    expect(isLlamaBeing({}, 'nobody')).toBe(false);
   });
 });
