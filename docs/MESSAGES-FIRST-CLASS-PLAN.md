@@ -32,6 +32,19 @@ reference a specific message; nothing else changes yet.
   piles) carry no single id — leave them id-less for now.
 - E's own reply line: id added when the send returns a `pendingMessageID`/id
   (optional; declines have none) — a later refinement.
+  - **⏳ OWED (operator 2026-06-17, verified live): E's reply lines carry NO #id.**
+    Inbound lines do (the one-path fix), but a sent reply doesn't, because Beeper
+    assigns the id ON SEND and the reply is LOGGED before/separately from the send.
+    Today: `dispatch.mjs:~1210` builds + appends `replyLine` (`formatDispatchLine`,
+    C7.6b) WITHOUT `msgId`, INSIDE `runDefaultBrainTurn`; the actual send happens
+    LATER in `egpt.mjs` (the `streamFactory` / `bridge.send`, which returns
+    `pendingMessageID`). FIX (operator's instinct — "write transcript AFTER
+    successfully sending"): unify send→log so the reply line is appended with its
+    `#<id>` once the send confirms it. Withheld replies (gate said no) still log
+    (I3), id-less (they have none). This is a real reply-path restructure (the log
+    is intertwined with e-feed/e-prompts/activity/thread-update in dispatch.mjs;
+    the send + its id live in egpt.mjs) — do it fresh, not at the tail of a
+    marathon. Unlocks reacting/replying/editing E's OWN messages by id.
 - **Tests:** dispatch-line renders `#<id>` when present, unchanged when absent;
   the live WA inbound line carries the msg id.
 - **Risk:** low (additive optional field). Rollback = drop the param.
