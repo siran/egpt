@@ -5476,8 +5476,8 @@ function App() {
   // current across renders. (Phase C: the attach host itself now lives in the
   // engine and is started at boot — see createEngine / engine.startAttach.)
   useEffect(() => {
-    engine.setInputHandler((text) => {
-      try { submitRef.current?.(String(text ?? '')); }
+    engine.setSubmit((text, meta) => {
+      try { submitRef.current?.(String(text ?? ''), meta); }
       catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
     });
   }, []);
