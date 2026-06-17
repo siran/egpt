@@ -4,7 +4,7 @@
 // identity, NEVER hardcoded. This test is what keeps the shape from drifting
 // back to a baked-in '.wa' or to bracket-less / node-less variants.
 import { describe, it, expect } from 'vitest';
-import { formatDispatchLine, splitSurfaceTag, reactionAction } from '../src/dispatch-line.mjs';
+import { formatDispatchLine, splitSurfaceTag, reactionAction, editAction } from '../src/dispatch-line.mjs';
 
 // 2026-06-11 17:21 UTC — fixed so the HH:MM (UTC) assertion is deterministic.
 const TS = Date.UTC(2026, 5, 11, 17, 21, 0);
@@ -74,6 +74,17 @@ describe('reactionAction — reaction stage-direction body', () => {
   });
   it('falls back to ❓ when the emoji is missing', () => {
     expect(reactionAction({ targetId: '7', snippet: 'hi' })).toBe('reacted ❓ to #7 "hi"');
+  });
+});
+
+describe('editAction — edit stage-direction body', () => {
+  it('renders the old → new change', () => {
+    expect(editAction({ targetId: '142438', oldText: 'imbécil', newText: 'pobrecito' }))
+      .toBe('edited #142438 "imbécil" → "pobrecito"');
+  });
+  it('collapses whitespace and trims long text', () => {
+    expect(editAction({ targetId: '7', oldText: '  a\n b ', newText: 'c   d' })).toBe('edited #7 "a b" → "c d"');
+    expect(editAction({ targetId: '7', oldText: 'x'.repeat(80), newText: 'y' })).toContain('"' + 'x'.repeat(50) + '"');
   });
 });
 

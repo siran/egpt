@@ -164,6 +164,32 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.isReaction)).toBe(false);   // the pre-existing 👍 was a baseline, not replayed
   });
 
+  // MESSAGES-FIRST-CLASS-PLAN: an EDIT (re-upsert with changed text) surfaces as a
+  // stage-direction; an unchanged re-upsert (receipt/seen) does not.
+  it('surfaces a message EDIT as a stage-direction (old → new)', async () => {
+    const { incoming } = await startBridge();
+    const id = `${Math.floor(Math.random() * 1e6)}`;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text: 'imbécil', senderName: 'An' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'imbécil'));
+    const before = incoming.length;
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id, text: 'pobrecito', senderName: 'An' })] });   // edit: same id, new text
+    await waitFor(() => incoming.length > before);
+    const edit = incoming[incoming.length - 1];
+    expect(edit.from.isStageDirection).toBe(true);
+    expect(edit.from.isReaction).toBe(false);
+    expect(edit.text).toBe('edited #' + id + ' "imbécil" → "pobrecito"');
+  });
+
+  it('does NOT emit an edit when a message re-upserts UNCHANGED (receipt/seen)', async () => {
+    const { incoming } = await startBridge();
+    const m = liveMsg({ id: `${Math.floor(Math.random() * 1e6)}`, text: 'hola' });
+    fake.emit({ type: 'message.upserted', entries: [m] });
+    fake.emit({ type: 'message.upserted', entries: [m] });   // identical re-upsert
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
+  });
+
   it('converts inbound HTML message text to markdown before dispatch', async () => {
     // Beeper delivers text as HTML; the model + transcript must see prose/markdown,
     // not markup (operator 2026-06-16, the morgan thread).

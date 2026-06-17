@@ -4249,6 +4249,8 @@ function App() {
             // A reaction notification — E may read it for context but must NEVER
             // reply to it, in ANY mode (mayEmit hard-blocks on this).
             isReaction: !!from.isReaction,
+            // A meta-event (reaction OR edit) — wrapped as a stage-direction line.
+            isStageDirection: !!from.isStageDirection || !!from.isReaction,
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
@@ -7997,7 +7999,7 @@ function App() {
         surface: buildWaSurfaceTag(meta.waChatId),
         chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null,
         msgId: meta.waMsgKey,
-        stageDirection: !!meta.isReaction,   // a reaction is a stage-direction (Phase 2)
+        stageDirection: !!meta.isStageDirection || !!meta.isReaction,   // reaction OR edit → bracketed stage-direction
       });
     }
 
