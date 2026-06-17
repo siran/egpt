@@ -19,10 +19,25 @@ The executable split has started:
   Ink plus the attach client, renders nucleus frames, and forwards typed input.
   It is the ONLY client now — there is no shared dual-mode App anymore.
 
+- `src/engine/index.mjs` `createEngine()` is the real engine object, and it now
+  owns the **four dispatch chokepoints**, each carved out of the App and unit-tested
+  (`tests/engine.test.mjs`): **input** (`submit`/`setSubmit` — the dispatch entry),
+  **output** (`emit`/`subscribe` — the one render channel), the **surface host**
+  (`startAttach` — limbs connect over loopback TCP), and the **EMIT GATE**
+  (`mayEmit` + `configureGate` — the I4 backstop: pause-kill over the per-chat mode
+  gate, the tested `autoMayEmitChat`; fail-CLOSED until configured). The brains are
+  **ccode-only** now — the in-process `claude-sdk` engine was deleted (I11); the warm
+  pool stays as the resident `claude` CLI background-agent manager.
+
 This is an intermediate state. The visible shell is a limb, the spine is Ink-free,
-and the engine/client split is structural (no role gating). What remains is the
-real engine EXTRACTION — carving the subsystems out of the component-shaped
-lifecycle into a plain engine object (Phase C, the dominant work below).
+the engine/client split is structural (no role gating), and the engine owns every
+dispatch chokepoint. What remains is the **last** Phase C step: the ~1200-line
+`submitInner` orchestration (and the App refs/effects it couples to — essentially
+the whole ~6000-line component) physically relocating into `createEngine()`, then
+DELETING the `App` and dropping the headless-runtime shim. It is pure MECHANICAL
+relocation (zero behavior change — every chokepoint is already extracted), but the
+largest single diff, on the live being — stage it, verify each step with a real E
+turn, never big-bang. See `docs/HANDOFF-2026-06-17-e7.md`.
 
 > Design reference. Status: **planning** (2026-05-31). Sequenced **before** the
 > rooms↔sessions unification (process topology is more foundational). Build
