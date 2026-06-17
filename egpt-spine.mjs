@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // egpt-spine.mjs — file IS the conversation; spine owns engine/bridges
-import { createElement as h, Fragment, render, Box, Text, Static, useInput, useApp, useState, useEffect, useRef, useCallback } from './src/spine/headless-runtime.mjs';
+import { createElement as h, Fragment, render, Box, Text, Static, useState, useEffect, useRef, useCallback } from './src/spine/headless-runtime.mjs';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
@@ -1904,278 +1904,7 @@ function parseMessages(text) {
   return out;
 }
 
-// Persistent input history — the up-arrow recall ring. Per-room file
-// at ~/.egpt/history/<room>.json. Rooms scope sessions, brain context
-// and transcripts already, so the up-arrow recall stays inside the
-// room the operator is currently in (a quick "@e qué tal" up-arrow
-// in room A doesn't surface a /upgrade typed in room B).
-//
-// 500-entry cap per room is mostly belt-and-suspenders — keeps the
-// disk footprint bounded (~100KB worst case per room) without ever
-// biting in practice since recall almost never reaches past 50.
-// Writes are tiny so we don't bother debouncing. Concurrent shells
-// in the same room last-write-wins each other's submissions; that's
-// acceptable for the typical one-shell-per-room setup.
-// Shell input history per room (operator 2026-05-22 declutter — moved
-// into state/ since the operator never edits these directly). Migrate
-// the old root-level history/ on first boot.
-const HISTORY_DIR = join(EGPT_HOME, 'state', 'history');
-(function _migrateHistoryDir() {
-  try {
-    const old = join(EGPT_HOME, 'history');
-    if (existsSync(old) && !existsSync(HISTORY_DIR)) {
-      mkdirSync(dirname(HISTORY_DIR), { recursive: true });
-      renameSync(old, HISTORY_DIR);
-    }
-  } catch (e) { /* best effort */ }
-})();
-const HISTORY_CAP = 500;
-function _historyPath(roomName) {
-  const safe = (roomName || 'default').replace(/[^A-Za-z0-9._-]/g, '_');
-  return join(HISTORY_DIR, `${safe}.json`);
-}
-// One-shot migration: the brief global-history window (commit 4901b74)
-// wrote ~/.egpt/input-history.json before the per-room layout shipped.
-// If that file is still on disk when the default room loads, fold it
-// into history/default.json so the operator doesn't lose the hour's
-// worth of recalls. Idempotent (deletes the source after the merge).
-function _migrateLegacyHistory() {
-  try {
-    const legacy = join(EGPT_HOME, 'input-history.json');
-    if (!existsSync(legacy)) return;
-    const raw = readFileSync(legacy, 'utf8');
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length) {
-      const dest = _historyPath('default');
-      if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
-      const existing = existsSync(dest)
-        ? JSON.parse(readFileSync(dest, 'utf8'))
-        : [];
-      const merged = [...existing, ...arr].filter(s => typeof s === 'string');
-      const trimmed = merged.length > HISTORY_CAP ? merged.slice(-HISTORY_CAP) : merged;
-      writeFileSync(dest, JSON.stringify(trimmed), { mode: 0o600 });
-    }
-    unlinkSync(legacy);
-  } catch (e) { swallow('history.migrate', e, { expect: ['ENOENT'] }); }
-}
-_migrateLegacyHistory();
-
-function _loadInputHistory(roomName) {
-  try {
-    const p = _historyPath(roomName);
-    if (!existsSync(p)) return [];
-    const raw = readFileSync(p, 'utf8');
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') : [];
-  } catch (e) { swallow('history.load', e, { expect: ['ENOENT'] }); return []; }
-}
-function _saveInputHistory(roomName, arr) {
-  try {
-    if (!existsSync(HISTORY_DIR)) mkdirSync(HISTORY_DIR, { recursive: true });
-    const trimmed = arr.length > HISTORY_CAP ? arr.slice(-HISTORY_CAP) : arr;
-    writeFileSync(_historyPath(roomName), JSON.stringify(trimmed), { mode: 0o600 });
-  } catch (e) { swallow('history.save', e); }
-}
-
-// --- multi-line input ---
-function MultiLineInput({ onSubmit, currentRoom }) {
-  const [lines, setLines] = useState(['']);
-  const [r, setR] = useState(0);
-  const [c, setC] = useState(0);
-  // input history: list of submitted entries; hIdx counts from 0=now, +N=N steps back.
-  // Lazy initializer reads the current room's persisted file once on
-  // mount; useEffect below swaps history when the operator switches
-  // rooms so up-arrow recall scopes to the room they're in.
-  const [history, setHistory] = useState(() => _loadInputHistory(currentRoom));
-  const [hIdx, setHIdx] = useState(0);
-  useEffect(() => {
-    setHistory(_loadInputHistory(currentRoom));
-    setHIdx(0);
-  }, [currentRoom]);
-
-  const loadEntry = (text) => {
-    const lns = text.split('\n');
-    setLines(lns);
-    setR(lns.length - 1);
-    setC(lns[lns.length - 1].length);
-  };
-
-  // Draft snapshot: when the operator starts typing then up-arrows into
-  // history, the in-progress text used to vanish — down-arrowing back
-  // to hIdx=0 reset to an empty input. We now save the draft on the
-  // first up-arrow leaving hIdx=0, and restore it when returning. The
-  // ref is cleared on submit (Ctrl+D) since the draft is no longer
-  // "in progress" at that point.
-  const draftRef = useRef(null);
-  const recall = (delta) => {
-    const newIdx = hIdx + delta;
-    if (newIdx < 0 || newIdx > history.length) return;
-    // Snapshot the draft on the first step out of hIdx=0 so the round
-    // trip back returns the operator to exactly what they were typing.
-    if (hIdx === 0 && newIdx > 0) {
-      draftRef.current = lines.join('\n');
-    }
-    setHIdx(newIdx);
-    if (newIdx === 0) {
-      if (draftRef.current != null) {
-        loadEntry(draftRef.current);
-        draftRef.current = null;
-      } else {
-        setLines(['']); setR(0); setC(0);
-      }
-    } else {
-      loadEntry(history[history.length - newIdx]);
-    }
-  };
-
-  // Ink 7 surfaces key.home / key.end / key.pageUp / key.pageDown as
-  // first-class flags AND fires key.ctrl + key.leftArrow/rightArrow
-  // for Ctrl+Arrow, so every special-key dispatch we used to do
-  // through a parallel stdin listener now lives inside useInput
-  // below. The old internal_eventEmitter listener was carrying our
-  // Ink 5 workaround for non-alphanumeric keys (input='' there,
-  // raw chunk needed to recover the sequence); it's gone in this
-  // branch.
-
-  useInput((input, key) => {
-    if (key.ctrl && input === 'd') {
-      const text = lines.join('\n');
-      if (text.trim()) {
-        // Append + persist. closure-captured `history` is the current
-        // render's value; useInput re-binds each render so it's not
-        // stale at submit time. Cap inline so the in-memory state and
-        // the saved file stay in lockstep.
-        const next = [...history, text];
-        const capped = next.length > HISTORY_CAP ? next.slice(-HISTORY_CAP) : next;
-        setHistory(capped);
-        _saveInputHistory(currentRoom, capped);
-      }
-      // Submitting clears the draft snapshot — the in-progress text
-      // just became "submitted" and recall(-1) back to hIdx=0 should
-      // land on a fresh empty line, not the just-sent message.
-      draftRef.current = null;
-      setHIdx(0); setLines(['']); setR(0); setC(0);
-      onSubmit(text); return;
-    }
-    if (key.return) {
-      const next = [...lines]; const tail = next[r].slice(c);
-      next[r] = next[r].slice(0, c); next.splice(r + 1, 0, tail);
-      setLines(next); setR(r + 1); setC(0); return;
-    }
-    if (key.backspace || key.delete) {
-      const next = [...lines];
-      if (c > 0) { next[r] = next[r].slice(0, c - 1) + next[r].slice(c); setLines(next); setC(c - 1); }
-      else if (r > 0) {
-        const pl = next[r - 1].length;
-        next[r - 1] += next[r]; next.splice(r, 1);
-        setLines(next); setR(r - 1); setC(pl);
-      }
-      return;
-    }
-    if (key.upArrow) {
-      if (r > 0) { const nr = r - 1; setR(nr); setC(Math.min(c, lines[nr].length)); }
-      else recall(+1); // older
-      return;
-    }
-    if (key.downArrow) {
-      if (r < lines.length - 1) { const nr = r + 1; setR(nr); setC(Math.min(c, lines[nr].length)); }
-      else recall(-1); // newer (or back to now)
-      return;
-    }
-    // Ctrl+Left / Ctrl+Right — word-wise motion within the current row.
-    // Branches above plain leftArrow / rightArrow so ctrl+arrow doesn't
-    // first slip into the single-char move. Doesn't cross row
-    // boundaries — "fix this line" intent, not bash-readline behavior.
-    // Standard "skip whitespace then skip word" semantics. Ink 7 sets
-    // both key.leftArrow + key.ctrl on Ctrl+Left, so the native flags
-    // drive the dispatch — the raw-chunk fallback we used to keep is
-    // gone.
-    if (key.ctrl && key.leftArrow) {
-      const cur = lines[r] ?? '';
-      let i = c;
-      while (i > 0 && /\s/.test(cur[i - 1])) i--;
-      while (i > 0 && !/\s/.test(cur[i - 1])) i--;
-      setC(i);
-      return;
-    }
-    if (key.ctrl && key.rightArrow) {
-      const cur = lines[r] ?? '';
-      let i = c;
-      while (i < cur.length && !/\s/.test(cur[i])) i++;
-      while (i < cur.length && /\s/.test(cur[i])) i++;
-      setC(i);
-      return;
-    }
-    if (key.leftArrow) {
-      if (c > 0) setC(c - 1);
-      else if (r > 0) { setR(r - 1); setC(lines[r - 1].length); }
-      return;
-    }
-    if (key.rightArrow) {
-      if (c < lines[r].length) setC(c + 1);
-      else if (r < lines.length - 1) { setR(r + 1); setC(0); }
-      return;
-    }
-    if (key.ctrl && input === 'a') { setC(0); return; }
-    if (key.ctrl && input === 'e') { setC(lines[r].length); return; }
-    // Home / End. Different terminals surface these differently:
-    //   - Ink may parse and expose key.home / key.end (Windows
-    //     Terminal often, modern xterm sometimes).
-    //   - Or the raw escape sequence arrives in `input`:
-    //       \x1b[H / \x1b[F    xterm CSI
-    //       \x1b[1~ / \x1b[4~  Linux console / urxvt
-    //       \x1b[7~ / \x1b[8~  rxvt / putty
-    //       \x1bOH / \x1bOF    VT100 application mode
-    // Ctrl+Home / Ctrl+End jump to start / end of the multi-line input.
-    if (key.home || input === '\x1b[H' || input === '\x1b[1~' || input === '\x1b[7~' || input === '\x1bOH') {
-      if (key.ctrl) { setR(0); setC(0); }
-      else setC(0);
-      return;
-    }
-    if (key.end || input === '\x1b[F' || input === '\x1b[4~' || input === '\x1b[8~' || input === '\x1bOF') {
-      if (key.ctrl) { setR(lines.length - 1); setC(lines[lines.length - 1].length); }
-      else setC(lines[r].length);
-      return;
-    }
-    if (input === '\x1b[1;5H') { setR(0); setC(0); return; }
-    if (input === '\x1b[1;5F') { setR(lines.length - 1); setC(lines[lines.length - 1].length); return; }
-    if (input && !key.ctrl && !key.meta) {
-      const next = [...lines];
-      // Multi-line paste: split on \n, splice into the lines array, set cursor
-      // to the end of the last pasted line. Without this, an embedded \n would
-      // render weirdly inside a single Ink Text component.
-      if (input.includes('\n') || input.includes('\r')) {
-        const chunks = input.replace(/\r\n?/g, '\n').split('\n');
-        const before = next[r].slice(0, c);
-        const after = next[r].slice(c);
-        next[r] = before + chunks[0];
-        for (let i = 1; i < chunks.length; i++) {
-          next.splice(r + i, 0, chunks[i]);
-        }
-        const last = r + chunks.length - 1;
-        next[last] += after;
-        setLines(next);
-        setR(last);
-        setC(chunks[chunks.length - 1].length);
-      } else {
-        next[r] = next[r].slice(0, c) + input + next[r].slice(c);
-        setLines(next); setC(c + input.length);
-      }
-    }
-  });
-
-  return h(Box, { flexDirection: 'column' },
-    lines.map((line, i) => {
-      const pre = i === 0 ? '› ' : '  ';
-      if (i !== r) return h(Text, { key: i }, pre + line);
-      const onChar = c < line.length;
-      const at = onChar ? line[c] : ' ';
-      return h(Text, { key: i },
-        pre + line.slice(0, c),
-        h(Text, { inverse: true }, at),
-        onChar ? line.slice(c + 1) : '');
-    }));
-}
+// Local terminal input lives in src/shell/ink-limb.mjs.
 
 // --- main app ---
 function App() {
@@ -3013,7 +2742,7 @@ function App() {
   const [now, setNow] = useState(Date.now());
   // Banner shown when an operator calls browser.waitForHuman() — pauses until /continue.
   const [browserWaiting, setBrowserWaiting] = useState(null);
-  const { exit } = useApp();
+  const exit = (code = 0) => process.exit(code);
 
   // Refs so background bridges (Telegram) can call submit() and forward new
   // items without depending on render closures. submitRef updated each render.
@@ -5073,22 +4802,7 @@ function App() {
     };
   }, []);
 
-  // Top-level hotkeys. Ctrl+C exits cleanly (raw-mode means SIGINT never fires
-  // when exitOnCtrlC:false, so we handle it here instead). Ctrl+R force-resets.
-  useInput((input, key) => {
-    if (key.ctrl && input === 'c') {
-      _exitClean(0);
-      return;
-    }
-    if (key.ctrl && input === 'r' && (busy || streaming)) {
-      setBusy(false);
-      setStreaming(null);
-      pushItem({
-        id: Date.now() + Math.random(), author: 'system',
-        body: '(reset by Ctrl+R — any in-flight brain stream is abandoned; the underlying tab/process may still be running)',
-      });
-    }
-  });
+  // Local terminal hotkeys live in src/shell/ink-limb.mjs.
 
   // outputSinkRef tracks where this submit's responses should land:
   // 'local' (shell only, _localOnly=true) or a specific bridge name
@@ -9497,8 +9211,7 @@ function App() {
       error && h(Text, { color: T.error }, '!! ' + error),
       !busy && h(Box, { flexDirection: 'column' },
         h(Text, { color: T.hint },
-          'Enter=newline · Ctrl+D=send · Ctrl+C=exit · /help'),
-        h(MultiLineInput, { onSubmit: submit, currentRoom }))));
+          'Attach with node egpt.mjs --client for the shell limb'))));
 }
 
 // Module-level bridge references so SIGINT/SIGHUP/SIGTERM handlers can
