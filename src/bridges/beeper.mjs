@@ -53,6 +53,7 @@ import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
 import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
+import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -579,12 +580,8 @@ export async function startBeeperBridge(opts = {}) {
     // this, media was saved to disk but the bridge returned before onIncoming, so
     // E never knew (e.g. "puedes ver lo que posteó ron?").
     // Surface media paths RELATIVE to the chat's conversation folder
-    // (`media/<file>`), NEVER the absolute host path — E's sandbox roots at the
-    // conversation dir and Reads `media/...` from there (GENOME §2.5). Every
-    // saved file (the attachment + Route-A frames) lives directly under
-    // `media/`, so the last path segment is enough. Separator-agnostic so a
-    // Windows backslash path collapses to the same `media/<name>`.
-    const _mediaRel = (p) => 'media/' + String(p ?? '').split(/[\\/]/).pop();
+    // (`media/<file>`), NEVER the absolute host path (GENOME §2.5; shared
+    // `relMediaPath`). Applies to the saved attachment AND the Route-A frames.
     const _mediaLines = _savedMedia
       // Announce every saved attachment EXCEPT the voice note already in `text`.
       // (Was: `m.kind !== 'audio'` — which silently dropped a shared AUDIO FILE
@@ -593,12 +590,12 @@ export async function startBeeperBridge(opts = {}) {
       // transcribed voice note, so non-voice audio files surface like any media.)
       .filter((m) => m.savedPath && !m.isVoiceNote && !m.inText)
       .map((m) => {
-        let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${_mediaRel(m.savedPath)}]`;
+        let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${relMediaPath(m.savedPath)}]`;
         // ROUTE A: a video is handed to E on a silver platter — keyframes the
         // host already extracted (Read them with your vision) + the audio
         // transcript. E never had to run anything.
         if (m.kind === 'video') {
-          if (Array.isArray(m.framePaths) && m.framePaths.length) line += `\nframes (Read these): ${m.framePaths.map(_mediaRel).join('  ')}`;
+          if (Array.isArray(m.framePaths) && m.framePaths.length) line += `\nframes (Read these): ${m.framePaths.map(relMediaPath).join('  ')}`;
           if (m.transcript) line += `\n(video transcription) ${m.transcript}`;
         }
         return line;

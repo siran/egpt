@@ -20,6 +20,7 @@ import { extname, basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
 import { transcribeVoiceNote } from '../incoming-media.mjs';
+import { relMediaPath } from '../media-path.mjs';
 
 const API = (token) => `https://api.telegram.org/bot${token}`;
 
@@ -316,7 +317,13 @@ export function startTelegramBridge({
           isVoiceNote: mediaSpec.isVoiceNote,
         });
         if (mediaSpec.kind !== 'audio') {
-          text = `${text ? text + ' ' : ''}[${mediaSpec.kind} saved: ${savedPath || localPath}]`;
+          // Surface the path RELATIVE to the conversation folder (`media/<file>`),
+          // never the absolute host path — E reads it from its sandbox root
+          // (GENOME §2.5; shared `relMediaPath`, pure JS so this browser-bundled
+          // limb can import it). No savedPath ⇒ save failed; keep the localPath
+          // fallback unchanged.
+          const shown = savedPath ? relMediaPath(savedPath) : localPath;
+          text = `${text ? text + ' ' : ''}[${mediaSpec.kind} saved: ${shown}]`;
         }
       } catch (e) { err(`media handling failed: ${e.message}`); }
     }
