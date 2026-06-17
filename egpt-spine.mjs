@@ -66,9 +66,7 @@ import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createOutputChannel } from './src/engine/output.mjs';
 import { startAttachHost } from './src/nucleus.mjs';
-import { clearNucleusInfoSync, readNucleusInfo } from './src/attach/discovery.mjs';
-import { connectAttachClient } from './src/attach/client.mjs';
-import { N2C } from './src/attach/protocol.mjs';
+import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
 import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
@@ -1471,16 +1469,11 @@ async function findSessionJsonl(sessionIdOrPrefix) {
 // transfers cleanly via signal + poll instead of a live socket attach.
 const _rawCliArgs = process.argv.slice(2);
 const HEADLESS = _rawCliArgs.includes('--headless');
-// --client is ignored by this spine entry. The client/shell limb lives in
-// src/shell/ink-limb.mjs and is launched by egpt.mjs.
-// Role: --client forces a limb; --spine/--engine (or --headless) forces the
-// spine. With neither, the role is AUTO-DETECTED at boot (see spineIsLive() and
-// the boot section below): attach as a limb if a live spine answers, else
-// become the spine. `let` because auto-detect refines it before the App renders.
-const LAUNCHED_AS_SPINE = process.env.EGPT_LAUNCHED_AS_SPINE === '1'
-  || basename(process.argv[1] ?? '') === 'egpt-spine.mjs';
-let CLIENT = !LAUNCHED_AS_SPINE && _rawCliArgs.includes('--client');
-const FORCE_SPINE = LAUNCHED_AS_SPINE || _rawCliArgs.includes('--spine') || _rawCliArgs.includes('--engine');
+// This entry is ALWAYS the spine/engine. The visible client/shell is a separate
+// limb (src/shell/ink-limb.mjs), launched by egpt.mjs — it never runs this file.
+// So there is no in-process CLIENT mode here: the spine owns the bridges, the
+// attach HOST, dispatch, rooms, and state unconditionally. (--client/--spine/
+// --engine are accepted-and-stripped for back-compat; --headless selects no-UI.)
 const cliArgs = _rawCliArgs.filter(a => !['--headless', '--client', '--spine', '--engine'].includes(a));
 if (cliArgs[0] === 'profile' || cliArgs[0] === 'profile-url') {
   try {
@@ -3186,9 +3179,6 @@ function App() {
   // is definite. See src/stop-guard.mjs.
   const _stopGuardRef = useRef(null);
   if (!_stopGuardRef.current) _stopGuardRef.current = createStopGuard({ onLog: (m) => { try { logOut(`stop-guard: ${m}`); } catch { /* logOut not ready */ } } });
-  // Limb (CLIENT) → spine connection handle (set by the attach-client effect).
-  // submit() forwards typed lines through this instead of running locally.
-  const _attachClientRef = useRef(null);
   const sentItemsCountRef = useRef(0);
   // Where sysOut output should land. 'local' = mark items _localOnly so
   // they don't bounce to Telegram or peers; 'remote' = let them through.
@@ -3277,7 +3267,6 @@ function App() {
     // in a limb double-renders every fanned room message (operator 2026-06-01:
     // writing in eGPT3 appeared twice in the limb). Engine-side only now — the
     // attach transport supersedes the file mirror; the writer is vestigial.
-    if (CLIENT) return;
     let cursor = 0;
     try { cursor = readFileSync(SHELL_MIRROR_PATH, 'utf8').length; } catch (e) { swallow('shell-mirror.read', e, { expect: ['ENOENT'] }); cursor = 0; }
     let buf = '';
@@ -3312,7 +3301,6 @@ function App() {
   const tgCfgRef = useRef(null);
 
   const startTgBridge = useCallback(async () => {
-    if (CLIENT) return false;   // a limb never owns Telegram — the spine does
     if (bridgeRef.current) return true;
     let cfg = tgCfgRef.current;
     if (!cfg) {
@@ -3716,7 +3704,6 @@ function App() {
   };
   const _waJoinedSize = () => waJoinedRef.current?.size ?? 0;
   const startWaBridge = useCallback(async (force = false) => {
-    if (CLIENT) return false;   // a limb never owns WhatsApp — the spine does
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
     if (!cfg || typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
@@ -4616,7 +4603,7 @@ function App() {
   // dispatchWaSend goes through the ref so this useEffect doesn't
   // re-mount on every change.
   useEffect(() => {
-    if (CLIENT) return;   // outbox is a spine-side WA-send queue, not a limb's job
+    // outbox is the spine-side WA-send queue.
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
@@ -4648,7 +4635,7 @@ function App() {
   // env var, TBD), this onEvent gets replaced with real dispatch
   // via the extracted processWaIncoming function.
   useEffect(() => {
-    if (CLIENT) return;   // inbox is a spine-side WA-inbound watcher
+    // inbox is the spine-side WA-inbound watcher.
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
@@ -5092,7 +5079,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (CLIENT) return;   // Chrome/CDP discovery + the control-plane bus are spine-side
+    // Chrome/CDP discovery + the control-plane bus are spine-side.
     let cancelled = false;
     let pollHandle = null;
     let lastNoticeBody = null;
@@ -5482,10 +5469,10 @@ function App() {
   // engine emits is fanned to attached limbs (outputChannel → host.pushItem).
   // INPUT: a limb's typed line goes straight into submit, exactly like local
   // shell input. The host advertises its port in ~/.egpt/state/nucleus.json.
-  // Started once; closed on unmount. (A future thin-client limb won't run this —
-  // it attaches instead; the engine-vs-client gate lands with Phase D.)
+  // The attach HOST — limbs (the Ink shell, the extension) connect to it.
+  // Started once; closed on unmount. Spine-only: a limb attaches here, it
+  // never hosts one.
   useEffect(() => {
-    if (CLIENT) return;   // a limb attaches to the spine's host; it doesn't host one
     let host = null, unsub = null, closed = false;
     (async () => {
       try {
@@ -5514,7 +5501,6 @@ function App() {
   // Auth: the shared ~/.egpt/bus.key (copy it from the main spine once).
   // Default bind 127.0.0.1 — set transcriptor.bind to the LAN ip to expose.
   useEffect(() => {
-    if (CLIENT) return;   // a worker is an ENGINE in a worker role, not a limb
     const tcfg = EGPT_CONFIG.transcriptor;
     if (!tcfg?.enabled) return;
     const token = EGPT_CONFIG.transcription_token;
@@ -5562,53 +5548,6 @@ function App() {
 
   // @d/Don LAN agent endpoint REMOVED 2026-06-13 — no bot<->bot backchannel;
   // agent<->agent is bridge-controlled Telegram only (GENOME I8 / CONTRACTS C8.3).
-
-  // Limb (CLIENT): attach to the running spine over loopback TCP. Reads the port
-  // from ~/.egpt/state/nucleus.json + the shared ~/.egpt/bus.key, connects, and
-  // renders the spine's output frames through the SAME pushItem sink the local
-  // renderer already subscribes to. INPUT flows the other way (submit →
-  // handle.input). Reconnects on drop / spine restart. With the engine
-  // subsystems all gated off, this is the limb's only live wire.
-  useEffect(() => {
-    if (!CLIENT) return;
-    let handle = null, stopped = false, retryTimer = null;
-    const renderFrame = (frame) => {
-      if (frame.t === N2C.ITEM) { const { t, ...item } = frame; pushItem(item); }
-      else if (frame.t === N2C.SYS) pushItem({ id: Date.now() + Math.random(), author: 'system', body: frame.body, _localOnly: true });
-      else if (frame.t === N2C.BYE) sysOut(`spine going down (${frame.reason ?? 'bye'}) — will reattach`);
-      // STREAM / STREAM_END (live-typing partials): the engine output channel
-      // only fans finalized items today, so they don't arrive here yet; the
-      // final reply still lands as an ITEM. Streaming over attach is a TODO.
-    };
-    const connect = async () => {
-      if (stopped) return;
-      let info = null;
-      try { info = await readNucleusInfo(); } catch {}
-      if (!info?.port) {
-        errOut('no spine found (no nucleus.json) — start the engine; this limb will attach once it is up');
-        retryTimer = setTimeout(connect, 2000); return;
-      }
-      try {
-        const keyB64 = await bus.loadOrCreateBusKey();
-        handle = await connectAttachClient({
-          host: info.host ?? '127.0.0.1', port: info.port, keyB64, kind: 'shell',
-          cols: process.stdout?.columns ?? null, rows: process.stdout?.rows ?? null,
-          onFrame: renderFrame,
-          onClose: () => {
-            _attachClientRef.current = null;
-            if (!stopped) { sysOut('spine connection closed — reattaching…'); retryTimer = setTimeout(connect, 1000); }
-          },
-        });
-        _attachClientRef.current = handle;
-        sysOut(`attached to spine on ${info.host ?? '127.0.0.1'}:${info.port} (pid ${handle.welcome?.nucleusPid ?? '?'})`);
-      } catch (e) {
-        _attachClientRef.current = null;
-        if (!stopped) { errOut(`attach failed (${e?.message ?? e}) — retrying`); retryTimer = setTimeout(connect, 1500); }
-      }
-    };
-    connect();
-    return () => { stopped = true; if (retryTimer) clearTimeout(retryTimer); try { handle?.close?.(); } catch {} _attachClientRef.current = null; };
-  }, []);
 
   async function injectSummary(name, target = null, sessionMap = sessions) {
     const path = summaryPath(name);
@@ -7445,19 +7384,6 @@ function App() {
   const submit = async (raw, meta = {}) => {
     const text = raw.trim();
     if (!text) return;
-
-    // Limb (CLIENT): forward the typed line to the spine over the socket and
-    // stop. The spine runs the interpreter and echoes the input + any reply
-    // back as ITEM frames, which the attach-client effect renders — so a limb
-    // never runs the engine pipeline locally (no double-dispatch, no local
-    // room/state writes). Bridge-arrival / re-dispatch metas don't exist on a
-    // limb (those subsystems are gated off), so this covers all limb input.
-    if (CLIENT) {
-      const h = _attachClientRef.current;
-      if (h?.connected) h.input(text);
-      else errOut('not attached to a spine yet — is the engine running? retrying…');
-      return;
-    }
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
     // re-dispatch) goes through the interactive help menu first.
@@ -9823,53 +9749,14 @@ process.on('SIGINT',  () => { _exitClean(0); });
 process.on('SIGHUP',  () => { _exitClean(0); });
 process.on('SIGTERM', () => { _exitClean(0); });
 
-// Auto-detect the role (D3): does a live spine already answer on the port in
-// nucleus.json? A successful signed handshake means yes → run as a limb. A
-// missing/stale sidecar, or a refused/timed-out connect, means no → become the
-// spine. The probe connects then immediately closes; the App's attach-client
-// effect makes the real, persistent connection.
-async function spineIsLive() {
-  let info = null;
-  try { info = await readNucleusInfo(); } catch { return false; }
-  if (!info?.port) return false;
-  try {
-    const keyB64 = await bus.loadOrCreateBusKey();
-    const probe = await connectAttachClient({
-      host: info.host ?? '127.0.0.1', port: info.port, keyB64, kind: 'shell',
-      onFrame: () => {}, onClose: () => {},
-    });
-    try { probe.close(); } catch {}
-    return true;
-  } catch { return false; }
-}
-
-// Unless a role was forced (--client / --spine / --engine / --headless), decide
-// now: attach to a live spine if one answers, else become the spine ourselves.
-// This is "just run egpt and it does the right thing" — a second `node egpt.mjs`
-// now ATTACHES instead of taking the helm from the running one.
-if (!CLIENT && !FORCE_SPINE && !HEADLESS) {
-  CLIENT = await spineIsLive();
-  console.log(CLIENT
-    ? 'egpt: a spine is already running — attaching as a limb'
-    : 'egpt: no spine found — becoming the spine');
-}
-
-// Pidfile handshake: if an older instance is running (most commonly the
-// headless engine from Task Scheduler / systemd / launchd), ask it to
-// exit, wait for it to release the WA pairing, then take ownership.
-// Same code path for interactive AND headless mode — both honor the
-// single-writer invariant. Symmetric: a headless process started while
-// an interactive shell is up will also take over (rare but valid).
+// Pidfile handshake: if an older spine is already running (most commonly the
+// headless engine from the service), ask it to exit, wait for it to release the
+// WA pairing, then take ownership. Same path for interactive AND headless — both
+// honor the single-writer invariant.
 const _egptMode = HEADLESS ? 'headless' : 'interactive';
-// A limb (client) never enters the WA-helm handshake: it attaches to the spine
-// over the socket, owns no WhatsApp pairing, and must NOT SIGTERM the running
-// spine (takeoverIfRunning) nor claim the owner pidfile. The takeover/pidfile/
-// heartbeat dance is strictly the engine's.
-if (!CLIENT) {
-  await takeoverIfRunning(_egptMode);
-  writePidfile(_egptMode);
-  startAliveHeartbeat();
-}
+await takeoverIfRunning(_egptMode);
+writePidfile(_egptMode);
+startAliveHeartbeat();
 
 // "while you were away" summary moved into the App mount effect (see
 // _welcomeBackEffect below). The previous pre-mount console.log path

@@ -9,13 +9,20 @@ The executable split has started:
 - `egpt-spine.mjs` is the legacy spine entry while the engine is extracted out
   of the old monolith. It no longer imports Ink/React; the old component-shaped
   lifecycle runs on `src/spine/headless-runtime.mjs` until the real engine
-  object is carved out.
+  object is carved out. It is now **unambiguously spine-only**: the in-process
+  `CLIENT` mode is gone (the dual-mode App + its `if (CLIENT) return` gates, the
+  in-spine attach-client effect, the input-forwarding branch, and the
+  `spineIsLive()` role auto-detect were deleted — this entry always owns the
+  bridges, the attach HOST, dispatch, rooms, and state). This kills the
+  `CLIENT_MODE` gating the design doc flagged as the smell (Phase D).
 - `src/shell/ink-limb.mjs` is the local terminal shell as a thin limb: it imports
   Ink plus the attach client, renders nucleus frames, and forwards typed input.
+  It is the ONLY client now — there is no shared dual-mode App anymore.
 
-This is an intermediate state. The visible shell is now a limb and the spine is
-Ink-free, but the spine still needs the remaining engine extraction work before
-the engine path is free of the legacy component-shaped lifecycle.
+This is an intermediate state. The visible shell is a limb, the spine is Ink-free,
+and the engine/client split is structural (no role gating). What remains is the
+real engine EXTRACTION — carving the subsystems out of the component-shaped
+lifecycle into a plain engine object (Phase C, the dominant work below).
 
 > Design reference. Status: **planning** (2026-05-31). Sequenced **before** the
 > rooms↔sessions unification (process topology is more foundational). Build
