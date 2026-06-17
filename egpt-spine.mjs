@@ -64,6 +64,7 @@ import { waListToStableCache as _waListToStableCache } from './src/tools/wa-bind
 import { summonGenie as _summonGenieFromBridge } from './src/tools/genie.mjs';
 import { buildMoviePayload as _buildMoviePayload } from './slash/movie.mjs';
 import { createEngine } from './src/engine/index.mjs';
+import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny } from './src/dispatch-helpers.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -2579,15 +2580,8 @@ function App() {
   // We track the last mode announced per chat; the note is injected only when
   // it differs (or on the first dispatch to that chat). Covers every mode, not
   // just the gated ones, so E always knows its current engagement contract.
-  const _MODE_NOTES = {
-    on:               '(Chat reply mode: all. You can reply at will, and your replies are surfaced to the chat.)',
-    accum:            '(Chat reply mode: accum. Messages are batched and shown to you together; you reply only when @mentioned, and that reply carries the batch.)',
-    mute:             '(Chat reply mode: mute. You receive messages for context, but your replies are never surfaced.)',
-    'mention-direct': '(Chat reply mode: mention-direct. You can reply at will, but a reply is only surfaced when @e starts a message or someone replies to you.)',
-    mention:          '(Chat reply mode: mention. You can reply at will, but a reply is only surfaced when you are @mentioned.)',
-    off:              '(Chat reply mode: off.)',
-  };
-  const _modeNote = (mode) => _MODE_NOTES[mode] ?? _MODE_NOTES.mention;
+  const _MODE_NOTES = MODE_NOTES;          // moved to src/dispatch-helpers.mjs
+  const _modeNote = modeNote;
   // chatId -> last auto-mode announced to @e. Lazy-loaded from disk ONCE so the
   // mode note isn't re-announced after every restart (E resumes its thread and
   // already knows; only a genuine mode change should re-announce). Saved on set.
@@ -2599,21 +2593,12 @@ function App() {
   // groups, so live fan-out stays dark until the operator enables it on a test
   // room. All surfaces are first-class peers.
   const _ROOM_CHAIN_CAP = 4;
-  // Does the body @mention a brain by name (@e/@egpt for 'e', else @<id>)?
-  const _bodyMentionsBrain = (body, id) => {
-    const alts = (id === 'e' || id === 'egpt') ? ['e', 'egpt'] : [String(id)];
-    const esc = alts.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-    return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
-  };
+  const _bodyMentionsBrain = bodyMentionsBrain;   // moved to src/dispatch-helpers.mjs
   // Does the body @mention ANY of these names (a sibling's canonical name OR
   // aliases)? Drives unified @<sibling> routing: one mention-parser, shared by
   // every surface, so an addressed sibling reaches its brain through the nucleus
   // dispatch regardless of which limb delivered the message.
-  const _bodyMentionsAny = (body, names) => {
-    const esc = names.map(a => String(a).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).filter(Boolean).join('|');
-    if (!esc) return false;
-    return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
-  };
+  const _bodyMentionsAny = bodyMentionsAny;   // moved to src/dispatch-helpers.mjs
   // Deliver one message into a room: append to the shared transcript + fan to
   // members. Groups/shell receive unconditionally; a brain receives only when
   // @mentioned (blind) or marked 'active', and its reply re-circulates into the
