@@ -45,15 +45,26 @@ describe('createEngine — output + attach host seam', () => {
     expect(fake.pushed.some((i) => i.body === 'to-limb')).toBe(true);
   });
 
-  it("a limb's input routes to the registered handler; input before registration is a no-op", async () => {
+  it("a limb's input routes to the registered submit; input before registration is a no-op", async () => {
     const fake = fakeHostFactory();
     const engine = createEngine({ loadBusKey: async () => 'k', startAttachHost: fake.startAttachHost });
     await engine.startAttach();
-    expect(() => fake.sendInput('before')).not.toThrow();   // no handler yet → swallowed
+    expect(() => fake.sendInput('before')).not.toThrow();   // no submit yet → swallowed
     const got = [];
-    engine.setInputHandler((t) => got.push(t));
+    engine.setSubmit((t) => got.push(t));
     fake.sendInput('hello');
     expect(got).toEqual(['hello']);
+  });
+
+  it('engine.submit carries (text, meta) to the registered dispatch entry and isolates throws', () => {
+    const engine = createEngine({ logger: { error() {} } });
+    const calls = [];
+    engine.setSubmit((text, meta) => { calls.push([text, meta]); });
+    engine.submit('hola', { surface: 'wa', chatId: 'c1' });
+    expect(calls).toEqual([['hola', { surface: 'wa', chatId: 'c1' }]]);
+    // a throwing dispatch entry must not escape submit()
+    engine.setSubmit(() => { throw new Error('boom'); });
+    expect(() => engine.submit('x')).not.toThrow();
   });
 
   it('startAttach is idempotent (one host)', async () => {

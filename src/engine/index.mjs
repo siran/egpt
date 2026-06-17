@@ -13,7 +13,8 @@
 //
 //   engine.emit(item)                 // engine → surfaces (the output chokepoint)
 //   engine.subscribe(listener)        // a surface renders emitted items
-//   engine.setInputHandler(fn)        // surfaces' input → the dispatch entry
+//   engine.submit(text, meta)         // a surface's input → the dispatch entry
+//   engine.setSubmit(fn)              // register the dispatch entry (the App's submit)
 //   engine.startAttach()              // boot the attach HOST (limbs connect here)
 //   engine.stop()
 //
@@ -37,14 +38,22 @@ const _itemId = () => `eng-${Date.now()}-${(_seq = (_seq + 1) % 1_000_000)}`;
 
 export function createEngine({ logger = console, loadBusKey, startAttachHost = _defaultStartAttachHost } = {}) {
   const output = createOutputChannel({ logger });
-  let inputHandler = null;
+  let submitHandler = null;
   let host = null;
   let unsubOutput = null;
   let stopped = false;
 
   const emit = (item) => output.emit(item);
   const subscribe = (listener) => output.subscribe(listener);
-  const setInputHandler = (fn) => { inputHandler = fn; };
+
+  // The INPUT boundary (mirror of emit/subscribe on the output side): a surface
+  // hands one line to submit(); it reaches the registered dispatch entry. Today
+  // the App registers its legacy submit; later seams move dispatch itself here.
+  const setSubmit = (fn) => { submitHandler = fn; };
+  const submit = (text, meta) => {
+    try { return submitHandler?.(String(text ?? ''), meta); }
+    catch (e) { logger?.error?.(`engine.submit: ${e?.message ?? e}`); }
+  };
 
   const _sys = (body, extra = {}) =>
     emit({ id: _itemId(), author: 'system', body, _localOnly: true, ...extra });
@@ -62,10 +71,7 @@ export function createEngine({ logger = console, loadBusKey, startAttachHost = _
       const keyB64 = await loadBusKey();
       const h = await startAttachHost({
         keyB64,
-        onInput: ({ text }) => {
-          try { inputHandler?.(String(text ?? '')); }
-          catch (e) { logger?.error?.(`attach input: ${e?.message ?? e}`); }
-        },
+        onInput: ({ text, meta }) => submit(text, meta),
         logger: { error: (m) => logger?.error?.(String(m)) },
       });
       if (stopped) { try { await h.close(); } catch { /* race: stopped mid-start */ } return null; }
@@ -92,7 +98,8 @@ export function createEngine({ logger = console, loadBusKey, startAttachHost = _
   return {
     emit,
     subscribe,
-    setInputHandler,
+    submit,
+    setSubmit,
     startAttach,
     stop,
     get attachPort() { return host?.port ?? null; },
