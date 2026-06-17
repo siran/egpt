@@ -57,6 +57,17 @@ describe('sandbox (confineToDirs) — directory access control + settings isolat
     expect(allow).toContain('Bash');
     for (const ft of ['Read', 'Grep']) expect(allow).not.toContain(ft);   // path-confined, not allow-listed
   });
+  it('Route B: scoped Bash rules (Bash(ffmpeg:*)) pass through pre-approved', () => {
+    const b = buildClaudeArgs({
+      allowedTools: ['Read', 'WebSearch', 'Bash(ffmpeg:*)', 'Bash(yt-dlp:*)'],
+      confineToDirs: ['/sandbox'],
+    });
+    const allow = valsOf(b, '--allowedTools')[0].split(' ');
+    expect(allow).toContain('Bash(ffmpeg:*)');
+    expect(allow).toContain('Bash(yt-dlp:*)');
+    expect(allow).toContain('WebSearch');
+    expect(allow).not.toContain('Read');   // file tool stays path-confined
+  });
   it('confine roots + addDirs both land in --add-dir (deduped)', () => {
     expect(addDirs(a)).toEqual(expect.arrayContaining(['/sandbox', '/extra']));
     const dd = buildClaudeArgs({ confineToDirs: ['/x'], addDirs: ['/x'] });

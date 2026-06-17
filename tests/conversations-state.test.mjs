@@ -533,7 +533,11 @@ describe('personality frontmatter / allowed_tools (security scoping)', () => {
     const meta = await readPersonalityMeta('default', { operatorDir: join(tmpdir(), 'no-such-op-dir-egpt'), shippedDir });
     expect(meta.allowed_tools).toContain('WebSearch');
     expect(meta.allowed_tools).toContain('WebFetch');
-    expect(meta.allowed_tools).not.toContain('Bash');     // still no self-destruct primitives
+    // Route B: SCOPED Bash to vetted binaries (the model drives them).
+    expect(meta.allowed_tools).toContain('Bash(ffmpeg:*)');
+    expect(meta.allowed_tools).toContain('Bash(yt-dlp:*)');
+    // …but NO bare Bash (arbitrary shell) and NO Agent — no self-elevation.
+    expect(meta.allowed_tools).not.toContain('Bash');
     expect(meta.allowed_tools).not.toContain('Agent');
   });
 
