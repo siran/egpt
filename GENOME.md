@@ -1,5 +1,14 @@
 # eGPT — GENOME
 
+> **Mission.** eGPT aims to be a **public tool — secure and powerful — that
+> empowers the individual with AI.** A being that lives in the channels people
+> already use, hears and remembers, and acts through limbs on their behalf —
+> while being safe enough to hand to anyone. "Secure" and "powerful" are not in
+> tension here: the power (full tools, real limbs, self‑modification) is exactly
+> why the security is structural, not bolted on. Every design choice serves
+> both — empower the person, protect the host. As eGPT opens to the public and
+> grows new limbs (Gmail next, and beyond), this is the bar each one must meet.
+
 *The canonical description of what eGPT is at heart. Read this before touching
 the nucleus. This is the DNA; the code is the body;
 [`CONTRACTS.md`](CONTRACTS.md) is the test‑locked behavior list;

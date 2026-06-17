@@ -358,7 +358,9 @@ export async function startBeeperBridge(opts = {}) {
         const savedPath = (r && typeof r === 'object') ? r.savedPath : r;
         const framePaths = (r && typeof r === 'object' && Array.isArray(r.framePaths)) ? r.framePaths : [];
         const vTranscript = (r && typeof r === 'object') ? (r.transcript ?? null) : null;
-        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, framePaths, transcript: vTranscript });
+        // inText: this attachment is the one the voice branch already transcribed
+        // into `text` — don't ALSO announce its path (avoids a double mention).
+        saved.push({ kind, savedPath: savedPath ?? localPath, fileName: att?.fileName ?? null, isVoiceNote: !!att?.isVoiceNote, inText: att === voiceAtt, framePaths, transcript: vTranscript });
       } catch (e) { onLog(`beeper: onMedia threw — ${e?.message ?? e}`); }
     }
     return saved;
@@ -542,7 +544,12 @@ export async function startBeeperBridge(opts = {}) {
     // this, media was saved to disk but the bridge returned before onIncoming, so
     // E never knew (e.g. "puedes ver lo que posteó ron?").
     const _mediaLines = _savedMedia
-      .filter((m) => m.savedPath && !m.isVoiceNote && m.kind !== 'audio')
+      // Announce every saved attachment EXCEPT the voice note already in `text`.
+      // (Was: `m.kind !== 'audio'` — which silently dropped a shared AUDIO FILE
+      // like an .mp3 that wasn't a voice note, so E never knew it arrived and it
+      // wasn't even logged — operator 2026-06-16. `inText` now excludes only the
+      // transcribed voice note, so non-voice audio files surface like any media.)
+      .filter((m) => m.savedPath && !m.isVoiceNote && !m.inText)
       .map((m) => {
         let line = `(${m.kind}${m.fileName ? ` ${m.fileName}` : ''}) [saved: ${m.savedPath}]`;
         // ROUTE A: a video is handed to E on a silver platter — keyframes the
