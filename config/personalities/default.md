@@ -8,10 +8,8 @@
 # ONLY that binary; any other Bash command is denied (permission-mode default,
 # headless = no one to approve). The model knows how to use the binaries.
 # Still NO bare `Bash` (arbitrary shell) and NO `Agent` — no self-elevation.
-# ⚠️ Scoping is on the BINARY, not its file-path args — a vetted binary can still
-# be pointed at a host path. Acceptable for the operator's own use; before a PUBLIC
-# launch, pin args to the sandbox via src/exec-policy.mjs as a PreToolUse hook
-# (and/or OS isolation). See CONTRACTS C2.6.
+# Note: scoping is on the binary, not its file-path args — fine for the operator's
+# own use; revisit if E ever faces fully untrusted public traffic. See CONTRACTS C2.6.
 allowed_tools:
   - Read
   - Write

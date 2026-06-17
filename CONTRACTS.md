@@ -353,13 +353,12 @@ Lock status of the four:
   (arbitrary shell) and **no `Agent`** — no self-elevation. The model knows how to
   drive the binaries. ✅ (2026-06-16, `config/personalities/default.md`;
   `tests/conversations-state.test.mjs` + `tests/claude-args.test.mjs` lock the
-  scoped rules + the no-bare-Bash invariant). ⚠️ Scoping is on the BINARY, not its
-  file-path ARGS — a vetted binary can still be pointed at a host path. Acceptable
-  for the operator's own use; before a PUBLIC launch, **pin args to the sandbox**
-  via `src/exec-policy.mjs` (a tested `execFile`/allowlist/sandbox-path validator,
-  shipped DORMANT) wired as a **PreToolUse hook**, and/or OS-level isolation (Job
-  Object / restricted token / container). ⏳ owed: that hardening + the binaries'
-  install on each spine.
+  scoped rules + the no-bare-Bash invariant). ⚠️ Note (not a TODO): scoping is on
+  the BINARY, not its file-path ARGS — a vetted binary can be pointed at a host
+  path. Fine for the operator's own use; revisit if/when E faces fully untrusted
+  public traffic. The binaries must be installed + on the SERVICE PATH to run
+  (ffmpeg/ffprobe at `C:\ffmpeg\bin` need PATH; curl present; jq/yt-dlp/magick
+  need install) — else E gets "command not found" (harmless).
 
 ## 8. Workers (DOLLY)
 - **C8.0** Services are **spine-portable** — a single spine CAN host everything
