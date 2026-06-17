@@ -37,10 +37,12 @@ try {
 
 // ── /config schema integrity ───────────────────────────────────────────────
 
-describe('launcher / shell-limb boundary', () => {
-  it('public launcher stays Ink-free', () => {
-    expect(LAUNCHER_SRC).not.toMatch(/\bfrom\s+['"]ink['"]/);
-    expect(LAUNCHER_SRC).not.toMatch(/\bfrom\s+['"]react['"]/);
+describe('launcher / spine / shell-limb boundary', () => {
+  it('public launcher and spine stay Ink-free', () => {
+    for (const [label, src] of [['launcher', LAUNCHER_SRC], ['spine', SHELL_SRC]]) {
+      expect(src, `${label} must not import Ink`).not.toMatch(/\bfrom\s+['"]ink['"]/);
+      expect(src, `${label} must not import React`).not.toMatch(/\bfrom\s+['"]react['"]/);
+    }
   });
 
   it('Ink shell limb depends on attach transport, not spine internals', () => {
