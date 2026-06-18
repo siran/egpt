@@ -1884,7 +1884,15 @@ function startSpineRuntime() {
   const callback = (fn) => fn;
   const applyState = (prev, next) => (typeof next === 'function' ? next(prev) : next);
   const addCleanup = (cleanup) => { if (typeof cleanup === 'function') cleanups.push(cleanup); };
-  const startEffect = (fn) => { addCleanup(fn()); };
+  // Run-once starters are DEFERRED and flushed AFTER the whole startSpineRuntime
+  // body has initialized (see the flush just before the return) — mirroring React
+  // useEffect, which the App-delete replaced with this shim. Running a starter
+  // INLINE (the App-delete's behavior) hits the temporal dead zone of consts
+  // declared lower in this function (logOut/errOut ~5051/5066, _fileLog ~5041):
+  // it silently broke the whatsapp/beeper and local_llm starters on configs that
+  // enable them (`Cannot access 'logOut' before initialization`).
+  const _deferredStarters = [];
+  const startEffect = (fn) => { _deferredStarters.push(fn); };
 
   let items = [];
   let _scheduleReplyTargetSave = () => {};
@@ -4181,13 +4189,7 @@ function startSpineRuntime() {
       });
       stableTimer = setTimeout(() => { if (proc && !stopped) backoff = 2000; }, 60000);
     };
-    // Defer the first spawn one tick. This run-once starter runs SYNCHRONOUSLY
-    // inside startSpineRuntime, but spawnIt() uses logOut/errOut (and passes logOut
-    // to reapPort) which are const-declared later in this same function — calling it
-    // inline hits their temporal dead zone (ReferenceError) whenever local_llm is
-    // enabled AND the binary exists (e.g. DOLLY; REVE returns early above, so it
-    // never surfaced). One tick lets the synchronous boot finish declaring them.
-    setTimeout(spawnIt, 0);
+    spawnIt();
     return () => { stopped = true; if (stableTimer) clearTimeout(stableTimer); try { proc?.kill(); } catch {} _globalLlamaProc = null; };
   }, []);
 
@@ -8954,6 +8956,10 @@ function startSpineRuntime() {
   };
 
   assignVisibleItemIds();
+  // Flush deferred run-once starters now that every declaration above exists
+  // (TDZ-safe). Registration order preserved; each starter's cleanup is collected
+  // into `cleanups` for the stop handle below.
+  for (const fn of _deferredStarters) addCleanup(fn());
   return () => {
     for (const cleanup of cleanups.splice(0).reverse()) {
       try { cleanup?.(); } catch {}
