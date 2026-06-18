@@ -1,411 +1,140 @@
 # BEING-MESH IMPLEMENTATION PLAN
 
-Status: **PLAN - not implemented yet.**
+Status: **PLAN - not implemented yet.** Implements `docs/BEING-MESH.md`.
 
-This distills `docs/BEING-MESH.md` into implementation slices. The goal is to
-prove mesh relay over visible Rooms without depending on platform-specific bot
-features.
+## Principle: KISS
 
-## Decisions
+Each slice earns its complexity. Start with the case that needs almost nothing -
+co-present beings in a shared Room - and add machinery only when a later case
+forces it. No crypto, no tail, no capability layer, no routing until something
+actually breaks without them.
 
-- eGPT is the virtual bot. Platform bots/accounts are limbs.
-- Beeper is the preferred first limb because it exposes many networks as Rooms.
-- Signal does not need a bot model. Use Signal through Beeper first; fall back to
-  signal-cli as account-as-limb.
-- No full path trace in v1. Use request ids, quote/reply correlation, replay
-  caches, and hop budget.
-- Sign canonical payloads, not rendered chat formatting.
-- UTF text can be signed. Normalize text to NFC, encode canonical JSON as UTF-8,
-  and sign those bytes.
+The order:
 
-## 0. Vocabulary And Boundaries
+| Slice | Adds | Needs crypto? | Needs routing? |
+| --- | --- | --- | --- |
+| 0 - co-present loop | name parsing + in-Room reply | no | no |
+| 1 - routed relay (same owner) | relay sibling, route, correlation, ttl | no | yes |
+| 2 - cross-owner trust | signing + grants/attenuation | yes | yes |
+| 3 - capabilities + shared effects | capability surface + HRW | - | - |
 
-Define these concepts before touching dispatch:
+## Slice 0 - Co-present loop
 
-- `NodeId`: local spine name, e.g. `reve`, `morgan`.
-- `BeingId`: fully-qualified name, e.g. `don.morgan`.
-- `RoomAddress`: `{ limb, roomId, label? }`.
-- `RoomMessage`: normalized inbound message from any limb.
-- `RoomReplyRef`: stable reference to a message if the limb provides one.
-- `RoomCapabilities`: stable ids, quote/reply support, hidden metadata support,
-  edit support, media support.
-- `MeshRequest`: derived view over a Room message.
-- `MeshReply`: derived view over a reply Room message.
+The cheapest possible proof of the whole architecture.
 
-Acceptance:
+When `morgan` and `reve` both sit in HFM and An types `@don.morgan here?`, the
+message is **already visible to Morgan**. Nothing is relayed. Morgan's spine just
+answers when one of its own beings is addressed in a Room it observes, and the
+reply lands in that same Room.
 
-- Pure unit tests for name parsing, fully-qualified ids, and address validation.
-- No bridge/network dependency.
+Pieces:
 
-## 1. Room Capability Surface
+1. `src/mesh/names.mjs` - parse and resolve `@name.node` (pure; no I/O).
+2. Receiver hook in dispatch: if a Room message addresses one of **this node's**
+   beings (`don.morgan` here, or bare `@don` when unambiguous), dispatch that
+   being and reply in the same Room (quote-reply when the limb supports it).
 
-Add a small capability layer above limbs. It should not replace existing bridges;
-it should describe what each bridge can prove or preserve.
+That is the loop. The Room message **is** the request (sender = origin, room =
+return path, text = prompt); the reply is just posted back where everyone sees it.
 
-Minimum shape:
+Deliberately omitted: relay sibling, routing, machine tail, signing, grants,
+capability surface, correlation tracking (the reply is in-Room and visible).
 
-```js
-{
-  limb: 'beeper',
-  stableMessageId: true,
-  quoteReply: true,
-  hiddenMetadata: false,
-  senderStableId: true,
-}
-```
+Acceptance (fake limb only):
 
-First targets:
+- `@don.morgan here?` in a fake Room dispatches fake Don on the `morgan` spine.
+- The reply quotes the request in the same Room.
+- A message addressed to another node is ignored.
+- Ambiguous bare `@don` returns a clear error.
 
-- fake limb for tests
-- Beeper
-- Telegram bridge
+## Slice 1 - Routed relay (same owner)
 
-Acceptance:
+Now the target is **not** in the origin Room - e.g. `@don.dolly` in HFM, where
+DOLLY is not in HFM. REVE must forward to a Room DOLLY does see (a route Room),
+collect Don's reply, and post it back into HFM. This is the slice that makes
+`@don.dolly` work from HFM. Both machines are An's, so still no crypto, no grants.
 
-- Fake limb can send, receive, quote-reply, and expose stable ids.
-- Beeper and Telegram adapters report conservative capabilities.
-- Tests prove fallback when quote-reply is unavailable.
+Adds:
 
-## 2. Mesh Envelope View
+- `type: relay` sibling: resolve `to`, pick a route Room shared with the target
+  node, send the prompt. Because the route Room is not the origin Room, the
+  message carries a return address and a `request id`.
+- Target receiver path for routed requests (vs. Slice 0's in-Room case).
+- Correlation: prefer quote/reply; fall back to the `request id`. The origin posts
+  the matched reply back into the origin Room as the being.
+- Loop/replay control: `ttl` (decrement per routed hop, drop at zero) + a
+  short-lived seen cache keyed by `{limb, roomId, messageId}` or `request id`.
+- Visible timeout: if no reply lands, surface a clear "don.dolly did not answer."
 
-Implement envelope construction/parsing as a view over Room messages.
+Modules: `src/mesh/envelope.mjs` (routed request/reply view), `src/mesh/registry.mjs`
+(static routes), the relay send path, the correlation store.
 
-Co-present case:
+Acceptance (fake limbs):
 
-- Human writes `@don.morgan here?`.
-- Target spine observes the same Room.
-- The Room message itself supplies sender, room, text, and message id.
-- Reply quotes the request when the limb supports quote/reply.
+- Routed request crosses a fake route Room; reply correlates back to the origin.
+- `ttl` decrement/drop covered.
+- Replayed request id is dropped.
+- No reply within the deadline surfaces a visible timeout.
 
-Routed case:
+## Slice 2 - Cross-owner trust
 
-- Origin sends to a route Room shared with the target node.
-- Message must carry return address and request id because the route Room is not
-  the origin Room.
+Only when a **different owner's** spine joins. Until then a routed message's limb
+sender is the relaying bot, not the original human - so to attest who really asked,
+machine-routed payloads get signed, and the gate consults grants.
 
-V1 request fields:
+Adds:
 
-```yaml
-kind: mesh.request
-version: 1
-id: "<uuid>"
-to: "don.morgan"
-from: "an.reve"
-origin_room: { node: reve, limb: beeper, room_id: "<id>" }
-ttl: 2
-body: "here?"
-```
-
-V1 reply fields:
-
-```yaml
-kind: mesh.reply
-version: 1
-in_reply_to: "<request-id-or-room-message-id>"
-from: "don.morgan"
-to_room: { node: reve, limb: beeper, room_id: "<id>" }
-body: "yes, here"
-```
-
-Do not require a full trace.
-
-Loop/replay controls:
-
-- `ttl` for routed relays.
-- seen cache keyed by `{limb, roomId, messageId}` when available.
-- seen cache keyed by `request.id` when message ids are unavailable.
-- seen cache keyed by signature as a last resort.
+- `src/mesh/signing.mjs` - asymmetric per-node keys; registry stores peer public
+  keys. Canonical payload: drop `sig`, sort keys recursively, normalize strings to
+  NFC, JSON-stringify, UTF-8 bytes, sign, base64url. (UTF text signs fine under
+  this rule.)
+- The compact visible tail `[egpt-mesh:v1:<b64url-json>:<b64url-sig>]` - needed
+  only now, for routed/signed messages. Human body stays first; tail is stripped
+  before the being sees it. No invisible Unicode control characters.
+- Grants + attenuation: `{ subject, target, verbs:[ask], rate, expires }`. Keep
+  only `root` (who asked) and `via` (who relayed); a chain takes the **weakest**
+  grant. Scoped, expiring, revocable.
 
 Acceptance:
 
-- Parser recognizes `@name.node` and derives a request from a fake RoomMessage.
-- Routed request serialization includes return address.
-- Replay cache drops repeated request ids.
-- TTL decrement/drop is covered by tests.
+- Tampered payload fails verification; wrong/added/removed key fails.
+- Unauthorized root blocked; expired grant blocked; `via` cannot escalate beyond
+  root; rate limit enforced.
 
-## 3. Machine Tail And Metadata
+## Slice 3 - Capabilities + shared effects
 
-Prefer limb metadata if available, but assume most messaging apps do not preserve
-arbitrary hidden metadata.
-
-V1 should support two encodings:
-
-1. **Derived-only:** no visible tail. Used when target is co-present and the limb
-   provides stable sender/message/reply data.
-2. **Compact tail:** a short visible final line for routed or signed relays.
-
-Example tail:
-
-```text
-@don.morgan here?
-
-[egpt-mesh:v1:<base64url-json>:<base64url-sig>]
-```
-
-The human-visible body is still the first part. The tail is machine-readable and
-can be hidden later for limbs that support metadata.
-
-Do not use invisible Unicode control characters in v1. Many clients strip,
-normalize, or copy them unpredictably.
+- Capability surface: formalize per-limb facts (stable ids, quote/reply, hidden
+  metadata). It earns its abstraction when the **second** real limb's quirks
+  diverge - not before.
+- Shared visible effects (HRW): present capable-peer set, rendezvous-hash owner,
+  debounce window, backup failover, idempotent marker keyed on the **message-id
+  set** (never the text). See `BEING-MESH.md` §7.
 
 Acceptance:
 
-- Tail parser ignores ordinary messages.
-- Tail parser rejects malformed base64/json.
-- Tail can round-trip UTF text.
-- Human body extraction removes the tail before dispatching to a being.
+- Two fake spines observing one Room pick one transcript owner.
+- Backup posts after a primary miss.
+- Duplicate visible posts suppressed by the marker.
 
-## 4. Signing
+## First PR (tiny)
 
-Signatures answer: "did this machine envelope come from a trusted node, and was it
-tampered with?"
+Slice 0 only:
 
-They do not replace limb identity. Human-authored co-present messages can rely on
-the limb sender identity and grants. Machine-routed messages should be signed.
+- `src/mesh/names.mjs`
+- target-side recognition hook in dispatch
+- fake-Room test harness
+- tests
 
-Use asymmetric node signatures for mesh. HMAC is fine for local/internal bus
-events, but cross-owner mesh should not require sharing a secret with every peer.
+No relay, no routing, no crypto, no grants, no real bridge changes. It proves the
+one thing worth learning first: *a spine answers its being when addressed in a
+shared Room.* Everything else layers on once that loop is real.
 
-Canonical payload rules:
+## Kept from the fuller plan
 
-- Remove `sig` before signing.
-- Sort object keys recursively.
-- Normalize all strings to Unicode NFC.
-- JSON stringify the canonical object.
-- Encode with UTF-8.
-- Sign the bytes.
-- Store signatures as base64url.
+These are right - just deferred to the slice that needs them:
 
-UTF characters can be signed safely under this rule. Emojis, accents, CJK, and
-mixed-language text are just UTF-8 bytes after normalization.
-
-Implementation targets:
-
-- `src/mesh/signing.mjs`
-- `canonicalizeMeshPayload(value)`
-- `signMeshPayload(payload, privateKey)`
-- `verifyMeshPayload(payload, publicKey)`
-
-Key model:
-
-- node has a private signing key
-- registry stores peer public keys
-- signed payload carries `node`, `key_id`, `sig_v`, `sig`
-
-Acceptance:
-
-- UTF payloads sign/verify after JSON round-trip.
-- Tampered text fails verification.
-- Added/removed keys fail verification.
-- Different key fails verification.
-- Signature tail round-trips through fake limb text.
-
-## 5. Static Registry And Resolver
-
-Start with static config. No gossip yet.
-
-Example:
-
-```yaml
-mesh:
-  node: reve
-  keys:
-    active: reve-2026-06
-  nodes:
-    morgan:
-      public_keys:
-        morgan-2026-06: "<public-key>"
-      beings: [don]
-      routes:
-        - limb: beeper
-          room_id: "<route-room>"
-```
-
-Resolver behavior:
-
-- `don.morgan` resolves directly.
-- bare `don` resolves only if unambiguous.
-- local beings resolve before peers unless explicitly qualified.
-- ambiguous bare names return a clear error.
-
-Acceptance:
-
-- Unit tests for direct, bare, local, ambiguous, missing, and malformed names.
-
-## 6. Relay Sibling Type
-
-Add `type: relay` sibling handling.
-
-Example:
-
-```yaml
-siblings:
-  don:
-    type: relay
-    to: don.morgan
-    preferred_limb: beeper
-```
-
-Dispatch behavior:
-
-- A relay sibling does not start a local brain.
-- It resolves `to`.
-- It chooses a route.
-- It sends a mesh request through a Room-capable limb.
-- It records pending request state if the reply will return asynchronously.
-- It times out visibly.
-
-Acceptance:
-
-- Fake dispatch of `@don` emits one mesh request.
-- Timeout emits a clear system message.
-- Unsupported route/capability reports a clear error.
-- No real Beeper/Telegram/network in tests.
-
-## 7. Target-Side Receiver
-
-Target-side receiver converts inbound Room messages into local dispatches.
-
-Steps:
-
-1. Ignore messages without mesh addressing/tail.
-2. Parse request.
-3. Drop if replayed.
-4. Drop if ttl expired.
-5. Verify signature when present/required.
-6. Resolve target local being.
-7. Check grant.
-8. Dispatch local being or fake handler in first slice.
-9. Reply by quote when possible, otherwise by request id.
-
-Acceptance:
-
-- Fake Room request to `don.morgan` dispatches fake Don.
-- Wrong target is ignored.
-- Replay is ignored.
-- Missing required signature is rejected for routed machine messages.
-- Unauthorized origin is rejected visibly or logged according to gate policy.
-
-## 8. Reply Correlation
-
-Correlation should prefer Room-native structure.
-
-Priority:
-
-1. quote/reply ref points to original request
-2. explicit `in_reply_to` request id in tail/metadata
-3. short pending window fallback only for manual testing
-
-Avoid "next message from peer" as a core protocol. It is too easy to misattribute
-in busy rooms.
-
-Acceptance:
-
-- Quote reply resolves pending request.
-- Explicit `in_reply_to` resolves pending request without quote support.
-- Unknown reply id is logged and ignored.
-- Duplicate reply is ignored.
-
-## 9. Grants And Attenuation
-
-Do this after a fake end-to-end relay works.
-
-Grant input:
-
-- root subject: original human/being identity
-- via subject: relay node/being if delegated
-- target: local being
-- verb: `ask` initially
-- expiry/rate
-
-No full path trace is required. For attenuation, retain only the identities that
-matter:
-
-- `root`: who ultimately asked
-- `via`: who is relaying or delegating
-- optional `delegation_id` if we later need signed delegation chains
-
-Acceptance:
-
-- Allowed root can ask target.
-- Denied root is blocked.
-- Expired grant is blocked.
-- Via cannot escalate beyond root grant.
-- Rate limit is enforced.
-
-## 10. Beeper First End-To-End Harness
-
-After fake limbs pass, add a Beeper-shaped harness without contacting real
-Beeper:
-
-- fake Beeper room ids
-- fake sender ids
-- fake quote/reply metadata
-- fake room send API
-
-Acceptance:
-
-- REVE fake Beeper room -> MORGAN fake receiver -> fake Don -> REVE reply.
-- UTF body survives the full route.
-- Signature verifies over the routed payload.
-
-## 11. Native Telegram And Signal Paths
-
-Only after Beeper-shaped relay works:
-
-- Telegram Bot API can use bot chats and bot-to-bot where convenient.
-- Signal should be account-as-limb through Beeper first.
-- signal-cli fallback should be a limb adapter, not special mesh logic.
-
-Acceptance:
-
-- The mesh core does not import Telegram or Signal modules directly.
-- Native adapters conform to the Room capability interface.
-
-## 12. Shared Visible Effects
-
-Defer until basic relay is stable.
-
-Implement:
-
-- present capable peer set
-- rendezvous hash owner selection
-- debounce window
-- backup failover
-- idempotent visible post marker
-
-Acceptance:
-
-- Two fake spines observing one Room choose one owner for a transcript post.
-- Backup posts after primary miss.
-- Duplicate visible posts are suppressed by message-id-set marker.
-
-## Suggested Order
-
-1. `src/mesh/names.mjs`
-2. `src/mesh/envelope.mjs`
-3. `src/mesh/signing.mjs`
-4. `src/mesh/registry.mjs`
-5. fake Room limb test harness
-6. relay sibling send path
-7. target receiver with fake local handler
-8. reply correlation
-9. static grants
-10. Beeper-shaped harness
-11. real Beeper adapter
-12. HRW shared effects
-
-## First PR Scope
-
-Keep the first implementation PR small:
-
-- names
-- envelope view
-- signing canonicalization
-- fake Room harness
-- static resolver
-- no real bridge changes
-- no gossip
-- no grants beyond stubs
-
-This gives a testable base before wiring into dispatch.
+- `ttl` + seen-cache for loops/replay (Slice 1).
+- Quote-reply as primary correlation, `request id` fallback, never "next message".
+- NFC + sorted-key signing canonicalization (Slice 2).
+- The mesh core imports no platform (Telegram/Signal) modules; limbs adapt to it.
+- HRW shared-effects deferred until basic relay is stable (Slice 3).
