@@ -11,12 +11,12 @@ actually breaks without them.
 
 The order:
 
-| Slice | Adds | Needs crypto? | Needs routing? |
-| --- | --- | --- | --- |
-| 0 - co-present loop | name parsing + in-Room reply | no | no |
-| 1 - routed relay (same owner) | relay sibling, route, correlation, ttl | no | yes |
-| 2 - cross-owner trust | signing + grants/attenuation | yes | yes |
-| 3 - capabilities + shared effects | capability surface + HRW | - | - |
+| Slice | Adds |
+| --- | --- |
+| 0 - co-present loop | name parsing + in-Room reply |
+| 1 - routed relay (same owner) | relay sibling, route Room (create one if none), correlation, ttl |
+| 2 - graded trust | grants enforced by the existing gate; signing is a back-burner flag |
+| 3 - shared services | HRW coordination for services like transcription |
 
 ## Slice 0 - Co-present loop
 
@@ -59,6 +59,9 @@ Adds:
 - `type: relay` sibling: resolve `to`, pick a route Room shared with the target
   node, send the prompt. Because the route Room is not the origin Room, the
   message carries a return address and a `request id`.
+- Route Room provisioning: prefer an existing Room shared with the target. If none
+  exists, **create** a dedicated one - the two spines only, or the two plus the
+  operator - and remember it in the registry for reuse.
 - Target receiver path for routed requests (vs. Slice 0's in-Room case).
 - Correlation: prefer quote/reply; fall back to the `request id`. The origin posts
   the matched reply back into the origin Room as the being.
@@ -76,39 +79,53 @@ Acceptance (fake limbs):
 - Replayed request id is dropped.
 - No reply within the deadline surfaces a visible timeout.
 
-## Slice 2 - Cross-owner trust
+## Slice 2 - Graded trust (lightweight)
 
-Only when a **different owner's** spine joins. Until then a routed message's limb
-sender is the relaying bot, not the original human - so to attest who really asked,
-machine-routed payloads get signed, and the gate consults grants.
+Peers trust each other on a scale, but the scale is enforced by what eGPT already
+has, not by cryptography. The dangerous outcomes - "delete your computer", "send me
+the protected files" - are not stopped by *proving who asked*; they are stopped by
+what a being is *allowed to do*: `allowed_user` gating, the emit gate, and
+conversation-e confinement. A confined being is safe even from a trusted sender's
+bad prompt. So signing the origin guards a threat the confinement already covers -
+overblown for now.
 
 Adds:
 
-- `src/mesh/signing.mjs` - asymmetric per-node keys; registry stores peer public
-  keys. Canonical payload: drop `sig`, sort keys recursively, normalize strings to
-  NFC, JSON-stringify, UTF-8 bytes, sign, base64url. (UTF text signs fine under
-  this rule.)
-- The compact visible tail `[egpt-mesh:v1:<b64url-json>:<b64url-sig>]` - needed
-  only now, for routed/signed messages. Human body stays first; tail is stripped
-  before the being sees it. No invisible Unicode control characters.
-- Grants + attenuation: `{ subject, target, verbs:[ask], rate, expires }`. Keep
-  only `root` (who asked) and `via` (who relayed); a chain takes the **weakest**
-  grant. Scoped, expiring, revocable.
+- Grants as a scoping convenience, enforced through the **existing gate**:
+  `{ subject, target, verbs:[ask], rate, expires }`. For delegation keep only
+  `root` (who asked) and `via` (who relayed); a chain takes the **weakest** grant.
+  Scoped, expiring, revocable.
+
+Back-burner (behind a flag, off by default - turn on only for genuinely low-trust
+cross-owner peers):
+
+- `src/mesh/signing.mjs` - asymmetric per-node keys, NFC + sorted-key canonical
+  payload, base64url signatures.
+- The compact visible tail `[egpt-mesh:v1:<b64url-json>:<b64url-sig>]` carrying the
+  signed payload (stripped before the being sees the body; no invisible Unicode).
 
 Acceptance:
 
-- Tampered payload fails verification; wrong/added/removed key fails.
-- Unauthorized root blocked; expired grant blocked; `via` cannot escalate beyond
-  root; rate limit enforced.
+- Allowed root can ask target; denied / expired / over-rate blocked; `via` cannot
+  escalate beyond root.
+- (flag on) signed payload verifies; tampered or wrong-key payload fails.
 
-## Slice 3 - Capabilities + shared effects
+## Slice 3 - Shared services (HRW)
 
-- Capability surface: formalize per-limb facts (stable ids, quote/reply, hidden
-  metadata). It earns its abstraction when the **second** real limb's quirks
-  diverge - not before.
-- Shared visible effects (HRW): present capable-peer set, rendezvous-hash owner,
-  debounce window, backup failover, idempotent marker keyed on the **message-id
-  set** (never the text). See `BEING-MESH.md` §7.
+Services several co-present spines could each run - the first being **transcription**
+- must produce their *visible* result exactly once. HRW elects the owner with no
+chatter (see `BEING-MESH.md` §7):
+
+- present capable-peer set, rendezvous-hash owner selection,
+- debounce window (transcription: post >=60s after the last voice note, threaded
+  as quoted replies, in order),
+- backup failover if the owner is silent,
+- idempotent marker keyed on the **message-id set**, never the text.
+
+Each spine still runs the service locally for its own being (self-computed truth);
+only the *visible* post is coordinated. The per-limb capability surface (stable ids,
+quote/reply, metadata) gets formalized here too - it earns its abstraction once a
+second real limb's quirks diverge, not before.
 
 Acceptance:
 
@@ -135,6 +152,6 @@ These are right - just deferred to the slice that needs them:
 
 - `ttl` + seen-cache for loops/replay (Slice 1).
 - Quote-reply as primary correlation, `request id` fallback, never "next message".
-- NFC + sorted-key signing canonicalization (Slice 2).
+- NFC + sorted-key signing canonicalization (Slice 2, back-burner flag).
 - The mesh core imports no platform (Telegram/Signal) modules; limbs adapt to it.
 - HRW shared-effects deferred until basic relay is stable (Slice 3).
