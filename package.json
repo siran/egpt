@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build:ext": "node extension/build.mjs",
+    "setup:gmail": "node setup/gmail-oauth.mjs",
     "watch:ext": "node extension/build.mjs --watch",
     "test": "vitest run",
     "test:watch": "vitest"

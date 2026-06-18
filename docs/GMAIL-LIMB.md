@@ -68,6 +68,58 @@ Useful commands:
 /gmail poll
 ```
 
+## OAuth Setup
+
+Do not put a Gmail password in eGPT. Gmail access is OAuth-only. The selected
+Google account is bound to the refresh token; the bridge calls Gmail as
+`users/me`.
+
+The helper script opens Google consent in a browser, catches the localhost
+callback, exchanges the authorization code, verifies the Gmail profile, backs up
+the old local config, and writes the `gmail` block to
+`~/.egpt/config.local.json`:
+
+```powershell
+npm run setup:gmail
+```
+
+Non-interactive form:
+
+```powershell
+npm run setup:gmail -- --client-id "..." --client-secret "..."
+```
+
+Useful flags:
+
+```text
+--login-hint you@example.com   preselect an account in Google consent
+--compose                      request draft permissions and set create_drafts=true
+--no-compose                   readonly triage only
+--notify-all                   notify every matching message for smoke testing
+--no-browser                   print the consent URL instead of opening it
+```
+
+Where to get the client ID and secret:
+
+1. Open Google Cloud Console: https://console.cloud.google.com/
+2. Create or select a project.
+3. Go to APIs & Services -> Library, search for "Gmail API", and enable it.
+4. Go to APIs & Services -> OAuth consent screen. For a personal test app,
+   External + Testing is fine, but add your Gmail account as a test user.
+5. Go to APIs & Services -> Credentials -> Create credentials -> OAuth client ID.
+6. Choose "Desktop app". Copy the Client ID and Client secret.
+7. Run `npm run setup:gmail`, paste those values, and approve the browser
+   consent screen.
+
+Notes:
+
+- If the OAuth consent screen is External + Testing, Google refresh tokens for
+  Gmail scopes expire after seven days. For longer-lived personal use, move the
+  OAuth app to production when ready.
+- If you first authorize readonly and later enable `--compose`, run the setup
+  again so the refresh token contains the compose scope.
+- The script never sends mail. `--compose` only lets eGPT create Gmail drafts.
+
 ## API Notes
 
 This first cut uses polling/list sync rather than Gmail push notifications.
