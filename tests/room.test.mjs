@@ -32,7 +32,7 @@ const brainForName = (n) => BRAINS[canonicalBrainName(n)] ?? null;
 
 // Helper: build a routing context from arrays so each test stays readable.
 // `siblings` mirrors the registry shape — each entry is [name, {kind, aliases?}].
-function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEngineer, personaName } = {}) {
+function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEngineer, personaName, nodeName } = {}) {
   return {
     sessions: new Map(sessions.map(([name, brainName]) => [name, { brainName }])),
     peerSessions: new Map(
@@ -44,6 +44,7 @@ function ctx({ sessions = [], peers = [], activeSessions = [], siblings, mainEng
     ...(siblings ? { siblings: new Map(siblings) } : {}),
     ...(mainEngineer ? { mainEngineer } : {}),
     ...(personaName ? { personaName } : {}),
+    ...(nodeName ? { nodeName } : {}),
   };
 }
 
@@ -92,6 +93,59 @@ describe('resolveRoute — @egpt persona', () => {
   it("persona alias '@e' takes precedence over a session named 'e'", () => {
     const c = ctx({ sessions: [['e', 'codex']] });
     expect(route('@e hi', c)).toEqual({ kind: 'persona', body: 'hi' });
+  });
+});
+
+describe('resolveRoute - mesh co-present addresses', () => {
+  const REGISTRY = [
+    ['e', {}],
+    ['don', {}],
+  ];
+
+  it('routes @name.node to a local sibling when node matches this spine', () => {
+    const c = ctx({ siblings: REGISTRY, nodeName: 'morgan' });
+    expect(route('@don.morgan ship it', c)).toEqual({
+      kind: 'meta',
+      body: 'ship it',
+      name: 'don',
+    });
+  });
+
+  it('preserves the persona path for a fully-qualified local persona', () => {
+    const c = ctx({ siblings: REGISTRY, personaName: 'don', nodeName: 'morgan' });
+    expect(route('@don.morgan hello', c)).toEqual({
+      kind: 'persona',
+      body: 'hello',
+      name: 'don',
+    });
+  });
+
+  it('returns a no-op foreign mesh decision when the node differs', () => {
+    const c = ctx({ siblings: REGISTRY, nodeName: 'morgan' });
+    expect(route('@don.reve look here', c)).toEqual({
+      kind: 'mesh-foreign',
+      target: 'don.reve',
+      name: 'don',
+      node: 'reve',
+      body: 'look here',
+    });
+  });
+
+  it('does not route a same-node qualified miss to a peer with the same bare name', () => {
+    const c = ctx({
+      siblings: REGISTRY,
+      nodeName: 'morgan',
+      peers: [['shell-other', [['jay', 'codex']]]],
+    });
+    const r = route('@jay.morgan hello', c);
+    expect(r.kind).toBe('error');
+    expect(r.message).toContain('@jay.morgan targets this node');
+  });
+
+  it('leaves fully-qualified mentions on legacy installs unchanged without nodeName', () => {
+    const r = route('@don.morgan hello', ctx({ siblings: REGISTRY }));
+    expect(r.kind).toBe('error');
+    expect(r.message).toContain('@don.morgan');
   });
 });
 

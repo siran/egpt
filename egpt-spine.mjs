@@ -7471,6 +7471,7 @@ function startSpineRuntime() {
       // Resolved in resolveRoute, NOT via a per-sibling aliases:[me]
       // (which collides if two profiles both claim "me").
       mainEngineer: EGPT_CONFIG.main_engineer ?? null,
+      nodeName: BUS_NODE_ID,
       // persona names which being is the public chat voice (routes to
       // the persona path). A top-level role pointer, not a per-being
       // 'kind' tag. Default 'e'.
@@ -7638,6 +7639,9 @@ function startSpineRuntime() {
     }
     if (decision.kind === 'error') {
       sysOut(`!! ${decision.message}`);
+      return;
+    }
+    if (decision.kind === 'mesh-foreign') {
       return;
     }
     if (decision.kind === 'empty') {
