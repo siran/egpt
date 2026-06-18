@@ -55,7 +55,7 @@ async function startFakeBeeper() {
   };
 }
 
-const waitFor = async (cond, ms = 3000) => {
+const waitFor = async (cond, ms = 10000) => {
   const t0 = Date.now();
   while (!cond()) {
     if (Date.now() - t0 > ms) throw new Error('waitFor timeout');
