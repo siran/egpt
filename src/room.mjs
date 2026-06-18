@@ -20,6 +20,11 @@
 //       The @-target isn't local but exactly one peer node owns it. Caller
 //       posts a 'mention' event on the bus to `toNode`.
 //
+//   { kind: 'mesh-foreign', target, name, node, body }
+//       The @name.node target is syntactically valid but belongs to another
+//       node. Slice 0 callers intentionally no-op; a later relay slice can
+//       route this decision across the mesh.
+//
 //   { kind: 'error', message }
 //       Unknown session, ambiguous match, etc. Caller displays `message`.
 //
@@ -49,6 +54,8 @@
 //
 // The room module never touches React state, files, or networks. The caller
 // owns the side effects.
+
+import { parseMeshAddress, sameMeshNode } from './mesh/names.mjs';
 
 /**
  * @typedef {object} LocalSession
@@ -159,15 +166,29 @@ export function resolveRoute(parsed, fullText, ctx) {
     // hardcoded list — egpt / e → persona, me / wren → meta — keeps
     // existing tests + pre-registry installs working unchanged.
     const rawLower = token.toLowerCase();
+    const meshAddress = parseMeshAddress(rawLower);
+    const localQualifiedTarget = !!(meshAddress?.qualified && ctx?.nodeName &&
+      sameMeshNode(meshAddress.node, ctx.nodeName));
+    if (meshAddress?.qualified && ctx?.nodeName && !localQualifiedTarget) {
+      return {
+        kind: 'mesh-foreign',
+        target: meshAddress.fqid,
+        name: meshAddress.name,
+        node: meshAddress.node,
+        body,
+      };
+    }
+    const routeToken = localQualifiedTarget ? meshAddress.name : token;
+    const routeLower = localQualifiedTarget ? meshAddress.name : rawLower;
     // @me is a PRONOUN, not a profile. It maps to whatever profile
     // ctx.mainEngineer names (operator 2026-05-23: "me: name1 ...
     // profiles are brains that can be mentioned"). Resolve the pronoun
     // to its target BEFORE the registry lookup, so the canonical
     // sibling answers. This replaces the old per-sibling aliases:[me]
     // pattern, which collided when two profiles both claimed "me".
-    const lower = (rawLower === 'me' && ctx.mainEngineer)
+    const lower = (routeLower === 'me' && ctx.mainEngineer)
       ? String(ctx.mainEngineer).toLowerCase()
-      : rawLower;
+      : routeLower;
     const sib = resolveSibling(lower, ctx.siblings);
     if (sib) {
       // Who talks in chat is a ROLE named by a top-level pointer
@@ -187,20 +208,20 @@ export function resolveRoute(parsed, fullText, ctx) {
     }
 
     // 1. Direct hit on a local session name.
-    if (ctx.sessions.has(token)) {
-      return { kind: 'turn', recipients: [token], payload: body, broadcast: false };
+    if (ctx.sessions.has(routeToken)) {
+      return { kind: 'turn', recipients: [routeToken], payload: body, broadcast: false };
     }
 
     // 2. Token is a brain alias. Two sub-cases: local operator vs CDP brain.
-    const brain = ctx.brainForName(token);
+    const brain = ctx.brainForName(routeToken);
     if (brain) {
-      const brainCanonical = ctx.canonicalBrainName(token);
+      const brainCanonical = ctx.canonicalBrainName(routeToken);
 
       if (!brain.urlMatch) {
         // Local operator (codex, ccode) — auto-open a fresh session.
         return {
           kind: 'auto-open', brainName: brainCanonical, payload: body,
-          originalToken: token,
+          originalToken: routeToken,
         };
       }
 
@@ -215,27 +236,34 @@ export function resolveRoute(parsed, fullText, ctx) {
       if (matches.length > 1) {
         return {
           kind: 'error',
-          message: `@${token} is ambiguous; address one of: ${matches.join(', ')}`,
+          message: `@${routeToken} is ambiguous; address one of: ${matches.join(', ')}`,
         };
       }
       return {
         kind: 'error',
-        message: `no ${token} session; /open ${token} [name]`,
+        message: `no ${routeToken} session; /open ${routeToken} [name]`,
+      };
+    }
+
+    if (localQualifiedTarget) {
+      return {
+        kind: 'error',
+        message: `@${meshAddress.fqid} targets this node, but no local participant @${routeToken} has joined the room - /sessions to see who's here`,
       };
     }
 
     // 3. Peer routing. Find which peer nodes have a session with this name.
     const peerMatches = [];
     for (const [nodeId, sessions] of ctx.peerSessions) {
-      if (sessions.some(s => s.name === token)) peerMatches.push(nodeId);
+      if (sessions.some(s => s.name === routeToken)) peerMatches.push(nodeId);
     }
     if (peerMatches.length === 1) {
-      return { kind: 'peer-mention', target: token, toNode: peerMatches[0], body };
+      return { kind: 'peer-mention', target: routeToken, toNode: peerMatches[0], body };
     }
     if (peerMatches.length > 1) {
       return {
         kind: 'error',
-        message: `@${token} is ambiguous across peers: ${peerMatches.join(', ')}`,
+        message: `@${routeToken} is ambiguous across peers: ${peerMatches.join(', ')}`,
       };
     }
 
@@ -245,7 +273,7 @@ export function resolveRoute(parsed, fullText, ctx) {
     //    have misremembered a session name. /sessions tells the truth.
     return {
       kind: 'error',
-      message: `no participant @${token} has joined the room — /sessions to see who's here`,
+      message: `no participant @${routeToken} has joined the room — /sessions to see who's here`,
     };
   }
 
