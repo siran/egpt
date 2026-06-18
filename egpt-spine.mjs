@@ -4181,7 +4181,13 @@ function startSpineRuntime() {
       });
       stableTimer = setTimeout(() => { if (proc && !stopped) backoff = 2000; }, 60000);
     };
-    spawnIt();
+    // Defer the first spawn one tick. This run-once starter runs SYNCHRONOUSLY
+    // inside startSpineRuntime, but spawnIt() uses logOut/errOut (and passes logOut
+    // to reapPort) which are const-declared later in this same function — calling it
+    // inline hits their temporal dead zone (ReferenceError) whenever local_llm is
+    // enabled AND the binary exists (e.g. DOLLY; REVE returns early above, so it
+    // never surfaced). One tick lets the synchronous boot finish declaring them.
+    setTimeout(spawnIt, 0);
     return () => { stopped = true; if (stableTimer) clearTimeout(stableTimer); try { proc?.kill(); } catch {} _globalLlamaProc = null; };
   }, []);
 
