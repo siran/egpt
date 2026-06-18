@@ -73,6 +73,7 @@ import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAU
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
+import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -443,20 +444,14 @@ try {
   EGPT_CONFIG = readConfigSync();
 } catch (e) {
   // eslint-disable-next-line no-console
-  console.error(`!! egpt boot: readConfigSync FAILED — ${e?.stack ?? e?.message ?? e}\n!! EGPT_CONFIG will be empty; auto_e_chats / allowed_users / chat_id undefined → every chat will observe-only-SKIP and every brain outbound send will BLOCK.`);
+  console.error(configLoadFailureConsoleMessage(e));
   // Best-effort operator alert: write a wa-send event targeting the
   // OPERATOR's hard-coded Self DM jid (we can't read it from config
   // since config didn't load). Comm-handler picks this up the next
   // time it sweeps the outbox; the operator sees a Self DM warning
   // even if the bridge boots into a broken state.
   try {
-    const _bootAlertJid = '34836563681438@lid';   // operator's WA Self DM lid form
-    const _id = Date.now() + '-bootfail';
-    writeFileSync(join(homedir(), '.egpt', 'outbox', `${_id}.json`), JSON.stringify({
-      type: 'wa-send', from: 'system', ts: Date.now(),
-      jid: _bootAlertJid,
-      body: `⚠ egpt boot warning: config load FAILED — ${(e?.message ?? String(e)).slice(0, 200)}. Bridge running with empty config; every chat is observe-only. Restart after fixing.`,
-    }));
+    writeConfigLoadFailureAlertSync({ egptHome: EGPT_HOME, error: e });
   } catch (e2) { console.error(`!! egpt boot: alert write failed — ${e2?.message ?? e2}`); }
 }
 // Wiring check: a being whose `cwd` doesn't exist fails EVERY turn with a
@@ -468,14 +463,7 @@ for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
 // resulting object might be missing critical keys (operator removed
 // them by accident, file got truncated, etc.). Surface explicitly.
 (() => {
-  const wa = EGPT_CONFIG?.whatsapp;
-  const missing = [];
-  if (!wa || typeof wa !== 'object') missing.push('whatsapp (whole section)');
-  else {
-    if (!wa.chat_id) missing.push('whatsapp.chat_id');
-    if (!Array.isArray(wa.allowed_users)) missing.push('whatsapp.allowed_users');
-    if (!Array.isArray(wa.auto_e_chats)) missing.push('whatsapp.auto_e_chats');
-  }
+  const missing = missingWhatsappConfigKeys(EGPT_CONFIG);
   if (missing.length) {
     // eslint-disable-next-line no-console
     console.error(`!! egpt boot sanity: config loaded but missing required keys: ${missing.join(', ')}`);
@@ -534,24 +522,14 @@ for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
 // into src/egpt/.egpt vs src/egpt-dev/.egpt and silently "lost" settings
 // (routing_enabled) across restarts (operator 2026-05-27).
 const LOCAL_CONFIG_PATH = join(EGPT_HOME, 'config.local.json');
-function _isPlainObject(v) { return v && typeof v === 'object' && !Array.isArray(v); }
-function _shallowDeepMerge(base, override) {
-  if (!_isPlainObject(override)) return override;
-  const out = { ...base };
-  for (const [k, v] of Object.entries(override)) {
-    out[k] = _isPlainObject(v) && _isPlainObject(base?.[k]) ? { ...base[k], ...v } : v;
-  }
-  return out;
-}
-try {
-  const local = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8'));
-  EGPT_CONFIG = _shallowDeepMerge(EGPT_CONFIG, local);
-} catch (e) {
+{
+  const overlay = applyLocalConfigOverlaySync(EGPT_CONFIG, LOCAL_CONFIG_PATH);
+  EGPT_CONFIG = overlay.config;
   // Missing overlay is normal; a CORRUPT one silently dropping every
   // /config-written setting (routing_enabled, …) is the exact bug class
   // from 2026-05-27 — shout instead of swallowing.
-  if (e?.code !== 'ENOENT') {
-    console.error(`!! egpt boot: ${LOCAL_CONFIG_PATH} unreadable/corrupt — ALL /config overlay settings are dropped this run: ${e?.message ?? e}`);
+  if (overlay.error) {
+    console.error(`!! egpt boot: ${LOCAL_CONFIG_PATH} unreadable/corrupt — ALL /config overlay settings are dropped this run: ${overlay.error?.message ?? overlay.error}`);
   }
 }
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
