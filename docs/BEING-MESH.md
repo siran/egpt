@@ -28,10 +28,8 @@ origin spine -> visible Room message -> target spine observes it -> local being 
 
 eGPT is the virtual bot. Platform bots are only one possible limb shape.
 
-Telegram bot-to-bot is useful when using the native Telegram Bot API directly,
-but it is not an architectural dependency. With Beeper, no bot-to-bot support is
-needed: Beeper already exposes Telegram, Signal, WhatsApp, and other networks as
-rooms eGPT can read and write.
+Telegram bot-to-bot is one option, not a dependency: Beeper already exposes
+Telegram, Signal, WhatsApp, and other networks as rooms eGPT reads and writes.
 
 The mesh has no central server. Each spine owns its local beings, identities,
 trust decisions, and limbs. Peers learn about one another through shared Rooms
@@ -116,6 +114,21 @@ corr:     "<uuid>"
 body:     "yes, here"
 ```
 
+### Envelope as a view, not a blob
+
+Most of the envelope is already implicit in an ordinary Room message, so it is
+never dumped as visible YAML (which would turn a chat into protocol noise):
+
+- `corr`        the quote-reply relationship (the reply quotes the request)
+- `origin.who`  the message sender (provable by the limb)
+- `origin.room` the room it was sent in
+- `prompt`      the text
+
+Only `kind`, `version`, and `trace` need an explicit machine tail - a short token
+line, or limb metadata where supported. The human sees "@don.morgan here?" and
+Don's reply; the protocol rides the message's natural structure. Correlation is
+then trivial: a quote-reply *is* the `corr` match.
+
 ## 4. Relay Flow
 
 Example: An is in HFM on REVE and invokes `@don.morgan`.
@@ -139,6 +152,14 @@ REVE:
   matches corr
   posts Don's answer into HFM
 ```
+
+Two cases hide in "a Room visible to MORGAN":
+
+- Target co-present in the origin Room (Morgan is also in HFM): request and reply
+  happen in HFM, visibly - no separate relay Room. The default; needs almost no
+  machinery.
+- Target not present: route via a Room both nodes share (a registry route), then
+  carry the reply back to the origin Room. The harder path.
 
 A local config entry should make this a sibling kind:
 
@@ -336,8 +357,6 @@ feature.
 ## 11. Open Questions
 
 - What is the minimal stable identity shape Beeper exposes for each network?
-- Should envelopes be visible YAML/JSON in the Room, or hidden in a structured
-  sidecar when the limb supports one?
 - What is the operator UX for grants?
 - What is the timeout/retry policy for `corr`?
 - How fresh must presence be before HRW failover risks duplicate posts?
