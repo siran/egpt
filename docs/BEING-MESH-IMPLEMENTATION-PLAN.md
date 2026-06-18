@@ -1,6 +1,9 @@
 # BEING-MESH IMPLEMENTATION PLAN
 
-Status: **PLAN - not implemented yet.** Implements `docs/BEING-MESH.md`.
+Status: **IN PROGRESS.** Slice 0 is implemented. Slice 1 now has same-owner
+bus relay for `@name.node` requests, with request ids, TTL, replay suppression,
+origin timeouts, and Telegram/WhatsApp return addressing. Route-Room provisioning
+is still future work.
 
 ## Principle: KISS
 
@@ -68,6 +71,19 @@ Adds:
 - Loop/replay control: `ttl` (decrement per routed hop, drop at zero) + a
   short-lived seen cache keyed by `{limb, roomId, messageId}` or `request id`.
 - Visible timeout: if no reply lands, surface a clear "don.dolly did not answer."
+
+Implemented first (bus-relay subset):
+
+- The existing signed bus is used as the same-owner route channel.
+- `@name.node` on the origin spine emits a mesh request envelope to `to_node`.
+- The target spine dispatches configured siblings from `EGPT_CONFIG.siblings`.
+- Replies carry the request id back to the origin and clear the timeout.
+- Telegram and WhatsApp-originated requests return to the originating chat.
+
+Still pending:
+
+- Route Room selection/provisioning in real limbs.
+- Quote-reply correlation when a limb supports it.
 
 Modules: `src/mesh/envelope.mjs` (routed request/reply view), `src/mesh/registry.mjs`
 (static routes), the relay send path, the correlation store.

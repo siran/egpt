@@ -75,6 +75,7 @@ import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
+import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -2777,6 +2778,9 @@ function startSpineRuntime() {
   // /sessions surfaces them; @<name> falls through to peer lookup; /telegram
   // <node> uses this to route handoff.
   const peerNodesRef = ref(new Map());
+  const meshSeenRef = ref(null);
+  if (!meshSeenRef.current) meshSeenRef.current = createMeshSeenCache();
+  const meshPendingRef = ref(new Map());
   let peersRev = 0;
   const setPeersRev = (next) => {
     peersRev = applyState(peersRev, next);
@@ -7642,6 +7646,58 @@ function startSpineRuntime() {
       return;
     }
     if (decision.kind === 'mesh-foreign') {
+      const returnTo = returnAddressForMeta(meta);
+      const notifyOrigin = async (body) => {
+        if (returnTo.surface === 'telegram' && bridgeRef.current) {
+          bridgeRef.current.send(`${EGPT_EMOJI} <i>${escapeHtml(body)}</i>`, { chatId: returnTo.chat_id });
+          return;
+        }
+        if (returnTo.surface === 'whatsapp' && waBridgeRef.current) {
+          await waBridgeRef.current.send(body, { chatId: returnTo.chat_id });
+          return;
+        }
+        sysOut(body);
+      };
+      const tid = busTargetIdRef.current;
+      if (!tid) {
+        await notifyOrigin(`!! mesh relay: bus not joined - cannot reach @${decision.target}`);
+        return;
+      }
+      if (!peerNodesRef.current.has(decision.node)) {
+        await notifyOrigin(`!! mesh relay: node ${decision.node} is not online - cannot reach @${decision.target}`);
+        return;
+      }
+      const ttl = Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL;
+      const event = buildMeshMention({
+        fromNode: BUS_NODE_ID,
+        decision,
+        user: meta.telegramUser ?? meta.waUser ?? USER_NAME,
+        returnTo,
+        ttl,
+      });
+      if (meta.fromTelegram && meta.telegramChatId) event.tg_chat_id = meta.telegramChatId;
+      if (meta.fromWhatsApp && meta.waChatId) event.wa_chat_id = meta.waChatId;
+
+      const requestId = event.request_id;
+      const timeoutMs = Math.max(1000, Number(EGPT_CONFIG.mesh?.timeout_ms ?? 60_000) || 60_000);
+      const timer = setTimeout(() => {
+        const pending = meshPendingRef.current.get(requestId);
+        if (!pending) return;
+        meshPendingRef.current.delete(requestId);
+        notifyOrigin(`!! ${decision.target} did not answer within ${Math.round(timeoutMs / 1000)}s`)
+          .catch(e => swallow('mesh-timeout-notify', e));
+      }, timeoutMs);
+      timer.unref?.();
+      meshPendingRef.current.set(requestId, { timer, target: decision.target, returnTo });
+
+      try {
+        await bus.postEvent(tid, { from: BUS_NODE_ID, ts: Date.now(), ...event });
+        if (returnTo.surface === 'shell') sysOut(`@${decision.target} -> ${decision.node} via mesh`);
+      } catch (e) {
+        clearTimeout(timer);
+        meshPendingRef.current.delete(requestId);
+        await notifyOrigin(`!! mesh relay failed for @${decision.target}: ${e.message}`);
+      }
       return;
     }
     if (decision.kind === 'empty') {
@@ -8613,6 +8669,43 @@ function startSpineRuntime() {
       if (!tid) return;
       try { await bus.postEvent(tid, { ts: Date.now(), from: BUS_NODE_ID, ...event }); } catch (e) { swallow('bus.post-event', e); }
     };
+    const resolveBusBeingTarget = (target) => {
+      const raw = String(target ?? '').toLowerCase();
+      if (!raw) return null;
+      const personaName = String(EGPT_CONFIG.persona ?? 'e').toLowerCase();
+      if (raw === 'egpt') return { kind: 'persona', name: personaName, replyTarget: 'egpt' };
+
+      const mainEngineer = EGPT_CONFIG.main_engineer ? String(EGPT_CONFIG.main_engineer).toLowerCase() : null;
+      const lower = raw === 'me' && mainEngineer ? mainEngineer : raw;
+      const sibs = (EGPT_CONFIG.siblings && typeof EGPT_CONFIG.siblings === 'object')
+        ? EGPT_CONFIG.siblings
+        : null;
+      if (sibs && Object.keys(sibs).length > 0) {
+        if (sibs[lower] && typeof sibs[lower] === 'object') {
+          return {
+            kind: lower === personaName ? 'persona' : 'meta',
+            name: lower,
+            replyTarget: lower,
+          };
+        }
+        for (const [name, entry] of Object.entries(sibs)) {
+          if (entry?.aliases?.some(a => String(a).toLowerCase() === lower)) {
+            const canonical = String(name).toLowerCase();
+            return {
+              kind: canonical === personaName ? 'persona' : 'meta',
+              name: canonical,
+              replyTarget: canonical,
+            };
+          }
+        }
+      }
+
+      if (!sibs || Object.keys(sibs).length === 0) {
+        if (lower === 'e') return { kind: 'persona', name: 'e', replyTarget: 'egpt' };
+        if (lower === 'me' || lower === 'wren') return { kind: 'meta', name: 'wren', replyTarget: 'wren' };
+      }
+      return null;
+    };
 
     switch (ev.type) {
       case 'egpt-thread': {
@@ -8692,6 +8785,28 @@ function startSpineRuntime() {
       }
       case 'mention': {
         if (ev.to_node !== BUS_NODE_ID) return;
+        const requestId = meshRequestId(ev);
+        const replyContext = meshReplyContext(ev, { fromNode: BUS_NODE_ID });
+        const makeMentionReply = (payload = {}, chainDepth = 0) => ({
+          type: 'mention-reply',
+          to_node: ev.from,
+          target: payload.target ?? ev.target,
+          chain_depth: chainDepth,
+          ...replyContext,
+          ...payload,
+        });
+        if (requestId) {
+          if (meshSeenRef.current.checkAndMark(requestId)) {
+            log(`mesh: replay dropped ${requestId} from ${ev.from}`);
+            return;
+          }
+          if (meshTtl(ev) <= 0) {
+            await post(makeMentionReply({
+              error: `mesh request ${requestId} expired before reaching ${BUS_NODE_ID}`,
+            }));
+            return;
+          }
+        }
         // Chain-depth guard: a mention that itself originated as a
         // reply-cascade past the room.max_chain limit returns "…"
         // (the polite no-reply convention) instead of calling the
@@ -8711,6 +8826,36 @@ function startSpineRuntime() {
           return;
         }
         const nextChain = incomingChain + 1;
+        const busBeing = resolveBusBeingTarget(ev.target);
+        if (busBeing) {
+          const label = busBeing.kind === 'persona' ? `@${busBeing.replyTarget}` : `@${busBeing.name}`;
+          log(`bus: running ${label} for ${ev.from}${ev.user ? ` (${ev.user})` : ''} (chain ${nextChain}/${maxChain})`);
+          try {
+            const prompt = `[${ev.user ?? 'remote'}]: ${ev.body}`;
+            const reply = busBeing.kind === 'persona'
+              ? await runDefaultBrainTurn(prompt)
+              : await runMetaBrainTurn(prompt, () => {}, busBeing.name);
+            await post(makeMentionReply({
+              target: busBeing.replyTarget,
+              body: reply ?? '',
+            }, nextChain));
+            if (reply !== null && reply !== undefined) {
+              await post({
+                type: 'room-reply',
+                role: 'shell',
+                session: busBeing.replyTarget,
+                body: reply,
+                chain_depth: nextChain,
+              });
+            }
+          } catch (e) {
+            await post(makeMentionReply({
+              target: busBeing.replyTarget,
+              error: e.message,
+            }, nextChain));
+          }
+          return;
+        }
         // 'egpt' is the node-global persona, not a /attach session —
         // route to runDefaultBrainTurn so peers (like the extension)
         // can address @egpt and the shell does the brain work on
@@ -8750,10 +8895,9 @@ function startSpineRuntime() {
           return;
         }
         if (!sessions[ev.target]) {
-          await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: `no session "${ev.target}" on this node`,
-            chain_depth: nextChain,
-            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
+          await post(makeMentionReply({
+            error: `no session "${ev.target}" on this node`,
+          }, nextChain));
           return;
         }
         log(`bus: running ${ev.target} for ${ev.from}${ev.user ? ` (${ev.user})` : ''} (chain ${nextChain}/${maxChain})`);
@@ -8762,9 +8906,7 @@ function startSpineRuntime() {
           // Directed reply to the asker (may carry error). Echo
           // tg_chat_id back so the asker can route to the originating
           // Telegram chat instead of the asker's lastChat.
-          await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, body: reply ?? '', chain_depth: nextChain,
-            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
+          await post(makeMentionReply({ body: reply ?? '' }, nextChain));
           // Broadcast reply to the whole room so every peer sees it.
           // The asker also receives this in addition to the directed
           // mention-reply — by design, rooms don't filter messages.
@@ -8773,14 +8915,20 @@ function startSpineRuntime() {
               session: ev.target, body: reply, chain_depth: nextChain });
           }
         } catch (e) {
-          await post({ type: 'mention-reply', to_node: ev.from,
-            target: ev.target, error: e.message,
-            ...(ev.tg_chat_id ? { tg_chat_id: ev.tg_chat_id } : {}) });
+          await post(makeMentionReply({ error: e.message }, nextChain));
         }
         return;
       }
       case 'mention-reply': {
         if (ev.to_node !== BUS_NODE_ID) return;
+        const replyRequestId = meshRequestId(ev);
+        if (replyRequestId) {
+          const pending = meshPendingRef.current.get(replyRequestId);
+          if (pending) {
+            clearTimeout(pending.timer);
+            meshPendingRef.current.delete(replyRequestId);
+          }
+        }
         const target = ev.target ?? ev.from;
         // Tag the brain reply with the peer's BUS_NODE_ID directly.
         // Auto-generated IDs already carry the role prefix
@@ -8794,15 +8942,19 @@ function startSpineRuntime() {
             const formatted = `${EGPT_EMOJI} <i>!! ${escapeHtml(`${author}: ${ev.error}`)}</i>`;
             bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
           }
+          if (ev.wa_chat_id && waBridgeRef.current) {
+            await waBridgeRef.current.send(`!! ${author}: ${ev.error}`, { chatId: ev.wa_chat_id });
+          }
         } else {
           // tg_chat_id means the original request came from a Telegram
           // chat; route the reply back there directly. Mark the item
           // _localOnly so items-flush doesn't ALSO send it (which would
           // hit lastChat — possibly a different chat).
           const tgRouted = ev.tg_chat_id != null;
+          const waRouted = ev.wa_chat_id != null;
           pushItem({
             id: Date.now() + Math.random(), author, body: ev.body ?? '(empty)',
-            _node: ev.from, _localOnly: tgRouted,
+            _node: ev.from, _localOnly: tgRouted || waRouted,
           });
           await append(author, ev.body ?? '');
           if (tgRouted && bridgeRef.current) {
@@ -8810,6 +8962,9 @@ function startSpineRuntime() {
             const emoji = sess?.emoji ?? '❓';
             const formatted = `${emoji} <b>${escapeHtml(author)}</b>\n${mdToTgHtml(ev.body ?? '')}`;
             bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
+          }
+          if (waRouted && waBridgeRef.current) {
+            await waBridgeRef.current.send(`${author}\n${ev.body ?? ''}`, { chatId: ev.wa_chat_id });
           }
         }
         return;
