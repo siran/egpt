@@ -120,7 +120,7 @@ describe('resolveRoute - mesh co-present addresses', () => {
     });
   });
 
-  it('returns a no-op foreign mesh decision when the node differs', () => {
+  it('returns a relayable foreign mesh decision when the node differs', () => {
     const c = ctx({ siblings: REGISTRY, nodeName: 'morgan' });
     expect(route('@don.reve look here', c)).toEqual({
       kind: 'mesh-foreign',
