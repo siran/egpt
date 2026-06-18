@@ -43,6 +43,9 @@ describe('launcher / spine / shell-limb boundary', () => {
       expect(src, `${label} must not import Ink`).not.toMatch(/\bfrom\s+['"]ink['"]/);
       expect(src, `${label} must not import React`).not.toMatch(/\bfrom\s+['"]react['"]/);
     }
+    expect(SHELL_SRC, 'spine must not import the deleted headless hook runtime').not.toContain('headless-runtime');
+    expect(SHELL_SRC, 'spine must not reintroduce a React-shaped App component').not.toMatch(/\bfunction\s+App\b/);
+    expect(SHELL_SRC, 'spine must not use React-style hooks').not.toMatch(/\buse(State|Effect|Ref|Callback)\s*\(/);
   });
 
   it('Ink shell limb depends on attach transport, not spine internals', () => {
