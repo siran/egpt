@@ -1,0 +1,132 @@
+// Human-first mesh relay: the carrier is a VISIBLE Room message, never a hidden
+// bus/RPC hop. A request is posted as a normal chat message into a Room both
+// nodes share (the route Room), the target spine observes it there, runs its
+// local being, and posts the reply back into the SAME Room. The origin spine
+// observes that reply and surfaces it into the chat the human asked from.
+//
+// Everything a human could watch is a real Room message. The only machine bit
+// is a single compact tail line appended in the inter-spine route Room (so the
+// request/reply can be correlated). The human's own chat (the origin Room) only
+// ever sees the clean body — surface() strips the protocol.
+//
+// This module is carrier-agnostic: send/surface/runBeing/resolveRoute are
+// injected, so the whole loop is unit-testable with fake Rooms and never
+// touches a real network.
+
+import {
+  makeMeshRequestId,
+  normalizeMeshTtl,
+  createMeshSeenCache,
+  DEFAULT_MESH_TTL,
+} from './envelope.mjs';
+
+// Compact, visible tail carried only in the route Room. Human body stays first;
+// this single line rides after it. No invisible Unicode — a plain bracket tag.
+const TAIL_RE = /\[egpt-mesh:(req|rep):([a-z0-9._-]+):(\d+)\]\s*$/i;
+const ADDR_RE = /(^|\s)@([a-z0-9_-]+)\.([a-z0-9_-]+)\b/i;
+
+export function encodeMeshTail({ kind, id, ttl }) {
+  const k = kind === 'reply' ? 'rep' : 'req';
+  return `[egpt-mesh:${k}:${id}:${normalizeMeshTtl(ttl)}]`;
+}
+
+export function parseMeshTail(text) {
+  const raw = String(text ?? '');
+  const m = TAIL_RE.exec(raw);
+  if (!m) return null;
+  return {
+    kind: m[1].toLowerCase() === 'rep' ? 'reply' : 'request',
+    id: m[2],
+    ttl: normalizeMeshTtl(m[3]),
+    body: raw.replace(TAIL_RE, '').trimEnd(),
+  };
+}
+
+export function createMeshRelay({
+  node,                                   // this spine's node name
+  send,                                   // (route, text) => Promise — post into a Room (the carrier)
+  surface = async () => {},               // (returnTo, text) => Promise — deliver to the origin chat
+  runBeing = async () => '',              // (name, prompt) => Promise<string> — dispatch a local being
+  resolveRoute = () => null,              // (node) => route | null — registry: how to reach a node
+  isLocalBeing = () => false,             // (name) => bool
+  seen = createMeshSeenCache(),
+  ttl = DEFAULT_MESH_TTL,
+  timeoutMs = 60_000,
+  log = () => {},
+  now = Date.now,
+  random = Math.random,
+} = {}) {
+  const pending = new Map();   // request_id -> { returnTo, timer, target }
+
+  // ── ORIGIN: relay an outbound @name.node that targets another node ──
+  async function relayOut({ name, toNode, body = '', returnTo = null, target = null } = {}) {
+    const label = target ?? `${name}.${toNode}`;
+    const route = resolveRoute(toNode);
+    if (!route) { await surface(returnTo, `!! mesh: no route to ${toNode} (set mesh.nodes.${toNode}.routes)`); return null; }
+
+    const id = makeMeshRequestId({ node, now, random });
+    const text = `@${name}.${toNode} ${body}`.trimEnd() + `\n${encodeMeshTail({ kind: 'request', id, ttl })}`;
+
+    const timer = setTimeout(() => {
+      if (!pending.has(id)) return;
+      pending.delete(id);
+      surface(returnTo, `!! ${label} did not answer within ${Math.round(timeoutMs / 1000)}s`).catch(() => {});
+    }, timeoutMs);
+    timer.unref?.();
+    pending.set(id, { returnTo, timer, target: label });
+
+    try {
+      await send(route, text);
+    } catch (e) {
+      clearTimeout(timer);
+      pending.delete(id);
+      await surface(returnTo, `!! mesh relay failed for ${label}: ${e?.message ?? e}`);
+      return null;
+    }
+    return id;
+  }
+
+  // ── INBOUND: a message observed in a route Room. Returns true iff it was a
+  //    mesh message this relay consumed (caller should then skip normal handling). ──
+  async function onRoomMessage({ route, text } = {}) {
+    const tail = parseMeshTail(text);
+    if (!tail) return false;
+
+    // Replies dedupe via the pending map (deleted on first match), so they need
+    // no seen-cache — and must NOT share the request's seen entry (same id).
+    if (tail.kind === 'reply') {
+      const p = pending.get(tail.id);
+      if (!p) { log(`mesh: reply for unknown/handled request ${tail.id}`); return true; }
+      clearTimeout(p.timer);
+      pending.delete(tail.id);
+      await surface(p.returnTo, tail.body);
+      return true;
+    }
+
+    // kind === 'request' — ignore (without polluting our seen-cache) anything
+    // not addressed to this node; the origin sees its own request fly by here.
+    const addr = ADDR_RE.exec(tail.body);
+    if (!addr) return true;
+    const name = addr[2].toLowerCase();
+    const toNode = addr[3].toLowerCase();
+    if (toNode !== String(node).toLowerCase()) return true;
+
+    if (seen.checkAndMark(tail.id)) { log(`mesh: replay dropped ${tail.id}`); return true; }
+    if (tail.ttl <= 0) { log(`mesh: ttl expired before ${node} (${tail.id})`); return true; }
+
+    const replyTtl = tail.ttl - 1;
+    if (!isLocalBeing(name)) {
+      await send(route, `@${name}.${node} is not here\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl })}`);
+      return true;
+    }
+
+    const prompt = tail.body.replace(ADDR_RE, ' ').trim();
+    let reply;
+    try { reply = await runBeing(name, prompt); }
+    catch (e) { reply = `(@${name}.${node} error: ${e?.message ?? e})`; }
+    await send(route, `${String(reply ?? '').trim()}\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl })}`);
+    return true;
+  }
+
+  return { relayOut, onRoomMessage, pending };
+}
