@@ -76,6 +76,7 @@ import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
+import { createMeshRelay, parseMeshTail } from './src/mesh/relay.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -7014,6 +7015,44 @@ function startSpineRuntime() {
     }
   };
 
+  // ── Mesh relay (human-first). Relays travel as VISIBLE Room messages over the
+  // registry route, never the control-plane bus (BEING-MESH invariant #1; and it
+  // works cross-owner, where no shared bus exists). Inert until
+  // EGPT_CONFIG.mesh.nodes.<node>.routes is set: with no route room ids the
+  // inbound hook never matches and relayOut just reports "no route".
+  const _meshRouteRoomIds = new Set(
+    Object.values(EGPT_CONFIG.mesh?.nodes ?? {})
+      .flatMap(n => (n?.routes ?? []).map(r => (r?.room_id != null ? String(r.room_id) : null)))
+      .filter(Boolean),
+  );
+  const meshRelay = createMeshRelay({
+    node: BUS_NODE_ID,
+    resolveRoute: (toNode) => {
+      const routes = EGPT_CONFIG.mesh?.nodes?.[toNode]?.routes;
+      return Array.isArray(routes) && routes.length ? routes[0] : null;
+    },
+    isLocalBeing: (name) => !!resolveBusBeingTarget(name),
+    send: async (route, textOut) => {
+      const limb = String(route?.limb ?? '').toLowerCase();
+      if ((limb === 'telegram' || limb === 'tg') && bridgeRef.current) { bridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
+      if (waBridgeRef.current) { await waBridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
+      throw new Error(`mesh: no limb available for route ${route?.limb}`);
+    },
+    surface: async (returnTo, textOut) => {
+      if (returnTo?.surface === 'telegram' && bridgeRef.current) { bridgeRef.current.send(`${EGPT_EMOJI} <i>${escapeHtml(textOut)}</i>`, { chatId: returnTo.chat_id }); return; }
+      if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) { await waBridgeRef.current.send(textOut, { chatId: returnTo.chat_id }); return; }
+      sysOut(textOut);
+    },
+    runBeing: async (name, prompt) => {
+      const t = resolveBusBeingTarget(name);
+      if (t && t.kind !== 'persona') return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, t.name);
+      return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
+    },
+    ttl: Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL,
+    timeoutMs: Math.max(1000, Number(EGPT_CONFIG.mesh?.timeout_ms ?? 60_000) || 60_000),
+    log: (m) => logOut(m),
+  });
+
   const submitInner = async (raw, text, meta = {}) => {
 
     // ── STOP — the bridge's DEFINITE kill-switch + bot↔bot loop-guard (C7.7).
@@ -7042,6 +7081,17 @@ function startSpineRuntime() {
       }
       // Definite gate: a stopped channel (or STOP ALL) never reaches a brain.
       if (g.blocked(ch)) { logOut(`stop-guard: dispatch BLOCKED in ${ch ?? '?'} (STOP active)`); return; }
+      // Mesh relay (human-first): a message in a configured route Room carrying a
+      // mesh tail is relay traffic, not chat — handle it via the Room relay and
+      // stop. Inert unless mesh.nodes.*.routes are configured (empty route-id set
+      // → never matches → zero effect on normal dispatch). Never the bus.
+      {
+        const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
+        if (_meshChat != null && _meshRouteRoomIds.has(String(_meshChat)) && parseMeshTail(text)) {
+          const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: String(_meshChat) };
+          if (await meshRelay.onRoomMessage({ route: _route, text })) return;
+        }
+      }
       // Loop-guard: a human turn resets; an inbound message from ANOTHER bot is a
       // being-turn. Consecutive being-turns with no human between → warn (the
       // channel + the bots, who self-silence), then auto-STOP. (egpt's own emit is
@@ -7646,58 +7696,20 @@ function startSpineRuntime() {
       return;
     }
     if (decision.kind === 'mesh-foreign') {
+      // Human-first relay over a VISIBLE Room (the registry route), never the
+      // control-plane bus. meshRelay posts the request as a Room message, the
+      // target node answers in that Room, and the reply is surfaced back to the
+      // chat the human asked from. Inert (clear "no route" message) until
+      // EGPT_CONFIG.mesh.nodes.<node>.routes is configured.
       const returnTo = returnAddressForMeta(meta);
-      const notifyOrigin = async (body) => {
-        if (returnTo.surface === 'telegram' && bridgeRef.current) {
-          bridgeRef.current.send(`${EGPT_EMOJI} <i>${escapeHtml(body)}</i>`, { chatId: returnTo.chat_id });
-          return;
-        }
-        if (returnTo.surface === 'whatsapp' && waBridgeRef.current) {
-          await waBridgeRef.current.send(body, { chatId: returnTo.chat_id });
-          return;
-        }
-        sysOut(body);
-      };
-      const tid = busTargetIdRef.current;
-      if (!tid) {
-        await notifyOrigin(`!! mesh relay: bus not joined - cannot reach @${decision.target}`);
-        return;
-      }
-      if (!peerNodesRef.current.has(decision.node)) {
-        await notifyOrigin(`!! mesh relay: node ${decision.node} is not online - cannot reach @${decision.target}`);
-        return;
-      }
-      const ttl = Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL;
-      const event = buildMeshMention({
-        fromNode: BUS_NODE_ID,
-        decision,
-        user: meta.telegramUser ?? meta.waUser ?? USER_NAME,
+      await meshRelay.relayOut({
+        name: decision.name,
+        toNode: decision.node,
+        body: decision.body ?? '',
         returnTo,
-        ttl,
+        target: decision.target,
       });
-      if (meta.fromTelegram && meta.telegramChatId) event.tg_chat_id = meta.telegramChatId;
-      if (meta.fromWhatsApp && meta.waChatId) event.wa_chat_id = meta.waChatId;
-
-      const requestId = event.request_id;
-      const timeoutMs = Math.max(1000, Number(EGPT_CONFIG.mesh?.timeout_ms ?? 60_000) || 60_000);
-      const timer = setTimeout(() => {
-        const pending = meshPendingRef.current.get(requestId);
-        if (!pending) return;
-        meshPendingRef.current.delete(requestId);
-        notifyOrigin(`!! ${decision.target} did not answer within ${Math.round(timeoutMs / 1000)}s`)
-          .catch(e => swallow('mesh-timeout-notify', e));
-      }, timeoutMs);
-      timer.unref?.();
-      meshPendingRef.current.set(requestId, { timer, target: decision.target, returnTo });
-
-      try {
-        await bus.postEvent(tid, { from: BUS_NODE_ID, ts: Date.now(), ...event });
-        if (returnTo.surface === 'shell') sysOut(`@${decision.target} -> ${decision.node} via mesh`);
-      } catch (e) {
-        clearTimeout(timer);
-        meshPendingRef.current.delete(requestId);
-        await notifyOrigin(`!! mesh relay failed for @${decision.target}: ${e.message}`);
-      }
+      if (returnTo.surface === 'shell') sysOut(`@${decision.target} -> ${decision.node} via Room relay`);
       return;
     }
     if (decision.kind === 'empty') {
