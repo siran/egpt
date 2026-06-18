@@ -1,8 +1,8 @@
 // Bridge item formatting for Telegram and WhatsApp mirrors.
 //
 // Pure helpers: callers pass the resolved node/user/config values instead of
-// reading spine globals. This keeps item-append mirror logic movable into the
-// engine without dragging the App-shaped spine along with it.
+// reading spine globals. This keeps item-append mirror logic runtime-safe
+// without dragging UI surfaces along with it.
 
 import { emojiForAuthor } from '../author-emoji.mjs';
 

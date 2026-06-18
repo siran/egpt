@@ -1,16 +1,17 @@
 # App Delete Plan
 
-Status: active plan for branch `app-delete`.
+Status: implemented on branch `app-delete`; keep this as the rationale and
+verification checklist for the App deletion.
 
 ## Purpose
 
 Finish Phase C of `ENGINE-SURFACE-SEPARATION.md` by removing the remaining
 React-shaped lifecycle from the spine.
 
-The engine/spine no longer imports React or Ink, but `egpt-spine.mjs` still
-runs a large `function App()` through `src/spine/headless-runtime.mjs`. That
-local shim is now only scaffolding. The goal is to move the App body into the
-plain engine runtime, delete the App, and delete the shim.
+The engine/spine no longer imports React, Ink, or the temporary
+`src/spine/headless-runtime.mjs` hook shim. `egpt-spine.mjs` now starts a plain
+imperative runtime, registers the engine input/output/attach/gate wiring, and
+owns cleanup explicitly.
 
 ## Product Shape
 
@@ -49,10 +50,14 @@ Already landed on `main`:
   - surface host: `engine.startAttach()`
   - outbound safety gate: `engine.mayEmit()` / `engine.configureGate()`
 
-Already in progress on `app-delete`:
+Completed on `app-delete`:
 
 - pure dispatch helpers moved to `src/dispatch-helpers.mjs`
 - WA joined/bound chat set moved to `src/wa-joined.mjs`
+- reply-target helpers moved to `src/reply-targets.mjs`
+- bridge item formatters moved to `src/item-format.mjs`
+- local shell UI deleted from the spine
+- `function App()` and `src/spine/headless-runtime.mjs` deleted
 
 ## Non-Goals
 

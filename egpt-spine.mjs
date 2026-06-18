@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 // egpt-spine.mjs — file IS the conversation; spine owns engine/bridges
-import { createElement as h, render, useState, useEffect, useRef, useCallback } from './src/spine/headless-runtime.mjs';
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
@@ -1879,48 +1878,71 @@ function parseMessages(text) {
 // Local terminal input lives in src/shell/ink-limb.mjs.
 
 // --- main app ---
-function App() {
-  const [items, setItems] = useState([]);
+function startSpineRuntime() {
+  const cleanups = [];
+  const ref = (current) => ({ current });
+  const callback = (fn) => fn;
+  const applyState = (prev, next) => (typeof next === 'function' ? next(prev) : next);
+  const addCleanup = (cleanup) => { if (typeof cleanup === 'function') cleanups.push(cleanup); };
+  const startEffect = (fn) => { addCleanup(fn()); };
+
+  let items = [];
+  let _scheduleReplyTargetSave = () => {};
+  const setItems = (next) => {
+    const prev = items;
+    items = applyState(items, next);
+    onItemsChanged(prev);
+  };
+  const sentItemsCountRef = ref(0);
+  const sentToWaItemsCountRef = ref(0);
   // Render every item the engine emits (Phase C). The flow is
   // pushItem(x) → engine.emit(x) → this subscriber → setItems append.
   // This is the sole render sink; Phase D adds attached-client subscribers
   // alongside it. subscribe() returns its unsubscribe, used as effect cleanup.
   // NB: uses prev.concat (not [...prev, item]) so it is NOT itself a
   // "setItems append" — pushItem must never feed back into pushItem.
-  useEffect(() => engine.subscribe(item => setItems(prev => prev.concat(item))), []);
-  const [streaming, setStreaming] = useState(null);
-  const [busy, setBusy] = useState(false);
+  startEffect(() => engine.subscribe(item => setItems(prev => prev.concat(item))), []);
+  let streaming = null;
+  const setStreaming = (next) => { streaming = applyState(streaming, next); };
+  let busy = false;
+  const setBusy = (next) => {
+    const prev = busy;
+    busy = applyState(busy, next);
+    if (prev !== busy) onBusyChanged();
+  };
   // Custom spinner label per operation; defaults to 'thinking…' for
   // brain turns. Set alongside setBusy(true), cleared in the finally.
-  const [busyLabel, setBusyLabel] = useState(null);
-  const [error, setError] = useState(null);
+  let busyLabel = null;
+  const setBusyLabel = (next) => { busyLabel = applyState(busyLabel, next); };
+  let error = null;
+  const setError = (next) => { error = applyState(error, next); };
   // Short message ids — 'm<N>' assigned to each visible item in
   // insertion order. Lets the operator type '@m42 <body>' to reply
   // to a specific message and route through the originating bridge.
   // Per-session: counter resets on shell restart.
-  const _shortIdCounter = useRef(0);
-  const shortIdByItemId = useRef(new Map());
-  const itemByShortId = useRef(new Map());
+  const _shortIdCounter = ref(0);
+  const shortIdByItemId = ref(new Map());
+  const itemByShortId = ref(new Map());
   // Stable ids — survive restart. Bridge-derived (wa-<key>, tg-<chat>-<msg>)
   // when an item has bridge provenance, random short otherwise (b-<rnd>,
   // u-<rnd>, s-<rnd>, p-<rnd> by author kind). Displayed alongside [m<N>]
   // so the operator can read it off any message and use '@<stable-id>'
   // later (including after a restart, where m-ids start over but the
   // stable id was persisted in the sidecar map below).
-  const stableIdByItemId = useRef(new Map());
-  const itemByStableId = useRef(new Map());
+  const stableIdByItemId = ref(new Map());
+  const itemByStableId = ref(new Map());
   // Persisted reply-target map (loaded from sidecar on mount). Keyed
   // by stableId. '@<stable-id> body' falls back to this when the
   // referenced item is no longer in the in-memory items array (e.g.
   // post-restart).
-  const persistedReplyTargets = useRef(new Map());
+  const persistedReplyTargets = ref(new Map());
   // auto_e_chats per-chat busy/queue state. Keyed by chatId (WA JID).
   // Each entry: { inFlight: boolean, queue: [{body, senderName, ts}] }.
   // While e is mid-turn for a chat in auto_e_chats, additional arrivals
   // pile in `queue`; on turn-completion the pile drains as one combined
   // dispatch formatted "<name>: <body> [HH:MM]" per line, so e can issue
   // a joint reply. See [[project-egpt-auto-e-chats]] semantics.
-  const _personaChatQueues = useRef(new Map());
+  const _personaChatQueues = ref(new Map());
   // Per (being, chat) coalescing queue for the META dispatch path (@l and any
   // other resident sibling). Mirrors the persona queue above, but @l is the
   // one that actually needs it: it's slow (local CPU inference, one slot), so
@@ -1937,8 +1959,8 @@ function App() {
   // carries no history: a turn is persona + that pile only. Voice notes are
   // transcribed upstream before a message reaches a pile, so a pile never holds
   // a raw [voice note].
-  const _llamaBusy  = useRef(false);            // is an @l inference in flight?
-  const _llamaPiles = useRef(new Map());        // chatId -> [{body, senderName, ts}]
+  const _llamaBusy  = ref(false);            // is an @l inference in flight?
+  const _llamaPiles = ref(new Map());        // chatId -> [{body, senderName, ts}]
   const _isLlamaBeing = (being) => isLlamaBeing(EGPT_CONFIG.siblings, being);   // moved to src/dispatch-helpers.mjs
   // Gate an @l turn. Returns true if the message was PILED (caller must return),
   // false to run it now. Only @l (the single local slot) is gated; other meta
@@ -2002,7 +2024,7 @@ function App() {
   // flush them as ONE combined turn on the heartbeat. Cheaper than 'mention'
   // (≤1 invocation per chat per heartbeat). Reply only if the batch was
   // mentioned (mention semantics), carrying the accumulated context.
-  const _accumBuffers = useRef(new Map());   // chatId -> { msgs:[{body,senderName,ts}], mentioned, meta }
+  const _accumBuffers = ref(new Map());   // chatId -> { msgs:[{body,senderName,ts}], mentioned, meta }
   const _accumPush = (chatId, msg, status, baseMeta) => {
     let b = _accumBuffers.current.get(chatId);
     if (!b) { b = { msgs: [], mentioned: false, meta: null }; _accumBuffers.current.set(chatId, b); }
@@ -2063,7 +2085,7 @@ function App() {
   // hold (acquireStayAwake while `busy`) cover the burst, and the 30s stay-awake
   // release-linger cushions the handoff + leaves a grace window for any
   // follow-up after the catch-up posts (operator 2026-06-04).
-  const _backlogBuffers = useRef(new Map());   // chatId -> { msgs:[{body,senderName,ts}], replyAllowed, meta, firstTs }
+  const _backlogBuffers = ref(new Map());   // chatId -> { msgs:[{body,senderName,ts}], replyAllowed, meta, firstTs }
   const _backlogFlush = () => {
     if (!submitRef.current) return;
     for (const [chatId, b] of [..._backlogBuffers.current.entries()]) {
@@ -2121,8 +2143,8 @@ function App() {
   // arm a per-chat menu (operator-only) and feed the owner's numbers/text into
   // it, replying on the originating surface. `/h <term>` is a one-shot fuzzy
   // list (no arm); `/help all` prints the legacy full wall.
-  const _helpMenuRef = useRef(null);
-  const _helpMode = useRef(new Map());   // chatKey -> { state, ts }
+  const _helpMenuRef = ref(null);
+  const _helpMode = ref(new Map());   // chatKey -> { state, ts }
   const _HELP_TTL_MS = 3 * 60 * 1000;
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
@@ -2175,7 +2197,7 @@ function App() {
   // chatId -> last auto-mode announced to @e. Lazy-loaded from disk ONCE so the
   // mode note isn't re-announced after every restart (E resumes its thread and
   // already knows; only a genuine mode change should re-announce). Saved on set.
-  const _announcedMode = useRef(null);
+  const _announcedMode = ref(null);
   if (_announcedMode.current === null) _announcedMode.current = loadAnnouncedModes(ANNOUNCED_MODES_PATH);
 
   // Room fan-out (operator 2026-05-26). SAFETY: gated behind
@@ -2655,13 +2677,14 @@ function App() {
   // kept out of the persistent transcript, it flips this on for the
   // duration of its run. Restored in a finally so a crashing handler
   // doesn't leak the suppression to later commands.
-  const _suppressTranscriptRef = useRef(false);
+  const _suppressTranscriptRef = ref(false);
   // /storm toggle — every WA arrival renders, awareness gates
   // bypassed. The bridge owns its own _storm flag (set via
   // setStorm). This ref mirrors it for host-side reads (media
   // notify filtering, observeOnly override).
-  const _stormRef = useRef(false);
-  const [, setThemeRev] = useState(0);
+  const _stormRef = ref(false);
+  let themeRev = 0;
+  const setThemeRev = (next) => { themeRev = applyState(themeRev, next); };
   // sessions: map of participant-name → { brain: brainName, options: {...} }
   // The room starts empty — egpt is the host, not a participant. Use /open
   // or /attach to bring brains in. Auto-attach at startup picks up CDP tabs
@@ -2678,9 +2701,32 @@ function App() {
   // brain code: read = current room's session map, write = update under
   // current room key. So /open, /attach, runBrainTurn, etc. don't need to
   // know about rooms — they always operate on the current one.
-  const [roomSessionsMap, setRoomSessionsMap] = useState({ default: {} });
-  const [currentRoom, setCurrentRoom] = useState('default');
-  const sessions = roomSessionsMap[currentRoom] ?? {};
+  let roomSessionsMap = { default: {} };
+  let currentRoom = 'default';
+  // currentRoom mirrored as a ref so the long-lived bus polling closure
+  // can read the latest value without a stale capture.
+  const currentRoomRef = ref('default');
+  // Latest sessions snapshot accessible from bus event handlers.
+  const sessionsLatestRef = ref({});
+  let sessions = roomSessionsMap[currentRoom] ?? {};
+  const refreshSessions = () => {
+    sessions = roomSessionsMap[currentRoom] ?? {};
+    sessionsLatestRef.current = sessions;
+  };
+  const setRoomSessionsMap = (next) => {
+    roomSessionsMap = applyState(roomSessionsMap, next);
+    refreshSessions();
+    onRoomSessionsMapChanged();
+    onSessionsChanged();
+  };
+  const setCurrentRoom = (next) => {
+    const prev = currentRoom;
+    currentRoom = applyState(currentRoom, next);
+    currentRoomRef.current = currentRoom;
+    refreshSessions();
+    if (prev !== currentRoom) onCurrentRoomChanged();
+    onSessionsChanged();
+  };
   const setSessions = (updater) => {
     setRoomSessionsMap(rs => {
       const cur = rs[currentRoom] ?? {};
@@ -2690,44 +2736,44 @@ function App() {
   };
   // Track which room state is already on disk so we can auto-save only
   // changed rooms and clean up deleted ones. Set is mutated in place.
-  const persistedRoomsRef = useRef(new Set());
+  const persistedRoomsRef = ref(new Set());
   // True after the on-disk rooms have been merged in. Auto-save effect
   // waits for this to avoid wiping the disk with empty initial state.
-  const roomsLoadedRef = useRef(false);
-  // currentRoom mirrored as a ref so the long-lived bus polling closure
-  // can read the latest value without a stale capture.
-  const currentRoomRef = useRef('default');
+  const roomsLoadedRef = ref(false);
   currentRoomRef.current = currentRoom;
   // One-time hint when auto-attach finds tabs but we're in the lobby.
-  const defaultRoomHintShown = useRef(false);
+  const defaultRoomHintShown = ref(false);
   // activeSessions: brains that plain-text input routes to (no @-mention
   // needed). Set with `/use a,b,c` for multi-AI broadcast or `/use a` to
   // switch to one. Cleared with `/use clear`. Without any active
   // sessions, plain text stays in the room (mirrored to peers via
   // room-utterance) but never auto-broadcasts to brains.
-  const [activeSessions, setActiveSessions] = useState([]);
+  let activeSessions = [];
+  const setActiveSessions = (next) => { activeSessions = applyState(activeSessions, next); };
   // Elapsed-time tracking so the user has progress feedback during the
   // brain's pre-generation "thinking" phase (which can be 5-15s for a long
   // conversation file). When busy goes true we record the start; an interval
   // bumps `now` every 250ms to drive re-renders.
-  const [busyStart, setBusyStart] = useState(null);
-  const [now, setNow] = useState(Date.now());
+  let busyStart = null;
+  const setBusyStart = (next) => { busyStart = applyState(busyStart, next); };
+  let now = Date.now();
+  const setNow = (next) => { now = applyState(now, next); };
   // Banner shown when an operator calls browser.waitForHuman() — pauses until /continue.
-  const [browserWaiting, setBrowserWaiting] = useState(null);
+  let browserWaiting = null;
+  const setBrowserWaiting = (next) => { browserWaiting = applyState(browserWaiting, next); };
   const exit = (code = 0) => process.exit(code);
 
   // Refs so background bridges (Telegram) can call submit() and forward new
   // items without depending on render closures. submitRef updated each render.
-  const submitRef = useRef(null);
-  const bridgeRef = useRef(null);
-  const wizardRef = useRef(null);
+  const submitRef = ref(null);
+  const bridgeRef = ref(null);
+  const wizardRef = ref(null);
   // STOP — the bridge's definite kill-switch + bot↔bot loop-guard (C7.7). One
   // instance, persisted across renders. Every dispatch checks it at submitInner;
   // self-generated prompts (heartbeats) route through submitInner too, so STOP
   // is definite. See src/stop-guard.mjs.
-  const _stopGuardRef = useRef(null);
+  const _stopGuardRef = ref(null);
   if (!_stopGuardRef.current) _stopGuardRef.current = createStopGuard({ onLog: (m) => { try { logOut(`stop-guard: ${m}`); } catch { /* logOut not ready */ } } });
-  const sentItemsCountRef = useRef(0);
   // Where sysOut output should land. 'local' = mark items _localOnly so
   // they don't bounce to Telegram or peers; 'remote' = let them through.
   // The submit handler flips this to 'remote' when meta.fromTelegram so
@@ -2735,60 +2781,74 @@ function App() {
   // 'local' — most sysOut calls (startup status, bus dispatcher logs,
   // local slash commands) are operational noise that doesn't belong in
   // the conversation feed.
-  const outputSinkRef = useRef('local');
+  const outputSinkRef = ref('local');
   // Bus (control-plane CDP tab) state: targetId + subscription handle.
-  const busTargetIdRef = useRef(null);
-  const busSubRef = useRef(null);
+  const busTargetIdRef = ref(null);
+  const busSubRef = ref(null);
   // Peer nodes seen on the bus. nodeId -> { role, sessions:[{name,brain}], polling, lastSeen }.
   // These are "zombie" sessions: registered as participants but owned elsewhere.
   // /sessions surfaces them; @<name> falls through to peer lookup; /telegram
   // <node> uses this to route handoff.
-  const peerNodesRef = useRef(new Map());
-  const [peersRev, setPeersRev] = useState(0);
+  const peerNodesRef = ref(new Map());
+  let peersRev = 0;
+  const setPeersRev = (next) => {
+    peersRev = applyState(peersRev, next);
+    scheduleTelegramBootAttempt();
+  };
   // Whether THIS node currently owns Telegram polling. Broadcast on change.
-  const [tgPolling, setTgPolling] = useState(false);
-  // Latest sessions snapshot accessible from bus event handlers (which run in
-  // a closure with stale state). Updated each render.
-  const sessionsLatestRef = useRef({});
+  let tgPolling = false;
+  const setTgPolling = (next) => {
+    const prev = tgPolling;
+    tgPolling = applyState(tgPolling, next);
+    if (prev !== tgPolling) onTelegramPollingChanged();
+  };
   // Bus event dispatcher — populated each render with the current closure
   // so bus events always read fresh state. Keeps the bus subscription
-  // useEffect's [] deps stable.
-  const handleBusEventRef = useRef(null);
+  // startup effect's dependencies stable.
+  const handleBusEventRef = ref(null);
   // Shared wa-send dispatcher. Set each render (closes over the latest
   // waBridgeRef + setItems); called by the 'wa-send' bus case AND by the
   // outbox file watcher. Returns true iff the send was issued — the
   // watcher uses that to leave the file in place when no bridge is up
   // (retry on the next sweep instead of losing the message).
-  const dispatchWaSendRef = useRef(null);
+  const dispatchWaSendRef = ref(null);
   // Stream factory ref — set when the WA bridge starts (twin-soul
   // phase 2b). makeStream(initialText, {chatId}) is the proxy-aware
   // replacement for waBridgeRef.current.startStreamMessage. Today
   // it's an in-process wrapper around bridge.startStreamMessage;
   // when the keeper runs in its own process the same call site
   // gets a file-IPC implementation, transparent to callers.
-  const streamFactoryRef = useRef(null);
+  const streamFactoryRef = ref(null);
 
-  useEffect(() => {
+  let busyTimer = null;
+  let busyWakeCleanup = null;
+  function onBusyChanged() {
+    if (busyTimer) {
+      clearInterval(busyTimer);
+      busyTimer = null;
+    }
+    try { busyWakeCleanup?.(); } catch {}
+    busyWakeCleanup = null;
     if (!busy) { setBusyStart(null); return; }
     setBusyStart(Date.now());
     setNow(Date.now());
-    const id = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(id);
-  }, [busy]);
+    busyTimer = setInterval(() => setNow(Date.now()), 250);
+    busyWakeCleanup = acquireStayAwake();
+  }
 
   // Keep the host awake while the engine is BUSY (a brain turn / processing is
   // in flight), so a scheduled wake can finish its work before the machine
   // idle-sleeps. Reference-counted in stay-awake.mjs, so this nests with the
   // bridge's post-wake + transcription holds; released the moment we go idle.
-  useEffect(() => {
-    if (!busy) return;
-    return acquireStayAwake();
-  }, [busy]);
+  addCleanup(() => {
+    if (busyTimer) clearInterval(busyTimer);
+    try { busyWakeCleanup?.(); } catch {}
+  });
 
   // Poll for ~/.egpt/browser-pause.txt — written by browser.waitForHuman() inside
   // an operator script. When found, show a banner prompting the user to act in
   // the browser and type /continue.
-  useEffect(() => {
+  startEffect(() => {
     const pauseFile = join(EGPT_HOME, 'browser-pause.txt');
     const id = setInterval(() => {
       if (!existsSync(pauseFile)) return;
@@ -2809,7 +2869,7 @@ function App() {
   // interval (operator 2026-05-29: eGPT3 message was in the file but the
   // tail never picked it up). Just read the whole content every poll and
   // diff against our cursor — the file is tiny, this is cheap.
-  useEffect(() => {
+  startEffect(() => {
     // A limb receives ALL room/engine output over the attach socket already;
     // shell-mirror.jsonl is the PRE-ATTACH cross-process mirror, so reading it
     // in a limb double-renders every fanned room message (operator 2026-06-01:
@@ -2846,9 +2906,9 @@ function App() {
   // Telegram bridge management. Auto-starts if ~/.egpt/config.json has a
   // bot_token; /telegram <node> stops this node's bridge and hands polling to
   // a peer over the bus; the named peer's startTgBridge() picks it up.
-  const tgCfgRef = useRef(null);
+  const tgCfgRef = ref(null);
 
-  const startTgBridge = useCallback(async () => {
+  const startTgBridge = callback(async () => {
     if (bridgeRef.current) return true;
     let cfg = tgCfgRef.current;
     if (!cfg) {
@@ -3072,7 +3132,7 @@ function App() {
     return true;
   }, []);
 
-  const stopTgBridge = useCallback(() => {
+  const stopTgBridge = callback(() => {
     if (!bridgeRef.current) return false;
     bridgeRef.current.stop();
     bridgeRef.current = null;
@@ -3102,11 +3162,14 @@ function App() {
   // → peer announce → 2s timer → start → 409 → ... — exactly the
   // race the user called out as wrong (the right semantic is "saw
   // 409, somebody else is polling, stop").
-  const tgBootAttempted = useRef(false);
-  useEffect(() => {
+  const tgBootAttempted = ref(false);
+  let tgBootTimer = null;
+  function scheduleTelegramBootAttempt() {
     if (tgBootAttempted.current) return;
     if (bridgeRef.current) return;
-    const t = setTimeout(() => {
+    if (tgBootTimer) clearTimeout(tgBootTimer);
+    tgBootTimer = setTimeout(() => {
+      tgBootTimer = null;
       if (tgBootAttempted.current) return;
       tgBootAttempted.current = true;
       if (bridgeRef.current) return;
@@ -3130,11 +3193,16 @@ function App() {
       }
       startTgBridge();
     }, 2000);
-    return () => clearTimeout(t);
-  }, [peersRev, startTgBridge]);
+  }
+  startEffect(() => {
+    scheduleTelegramBootAttempt();
+    return () => {
+      if (tgBootTimer) clearTimeout(tgBootTimer);
+    };
+  }, []);
 
   // Stop the bridge on unmount regardless of who started it.
-  useEffect(() => {
+  startEffect(() => {
     return () => stopTgBridge();
   }, [stopTgBridge]);
 
@@ -3145,7 +3213,7 @@ function App() {
   // Brain Chrome PID — captured at spawn time so OS-level focus
   // theft (chrome.focus_on_dispatch) can target the right window
   // rather than 'some Chrome with the matching title'.
-  const _chromeBrainPidRef = useRef(null);
+  const _chromeBrainPidRef = ref(null);
   // OS-level Chrome focus — Target.activateTarget + Page.bringToFront
   // do their best at the CDP layer, but Windows / X11 / macOS each
   // have anti-focus-stealing rules that can leave Chrome behind the
@@ -3177,14 +3245,14 @@ function App() {
       ps.on('error', () => {});
     }
   };
-  const waBridgeRef = useRef(null);
+  const waBridgeRef = ref(null);
   // /e confirm watcher — set in startWaBridge, called from the broadcast
   // (incoming) tap and the per-being dispatch taps (persona + meta handlers).
-  const confirmMirrorRef = useRef(null);
+  const confirmMirrorRef = ref(null);
   // Cache the most recent /channels output so @waN can resolve N to a
   // chat by the index the user just saw. Reset every /channels so the
   // numbers always line up with the freshest view.
-  const _waChannelsCacheRef = useRef([]);
+  const _waChannelsCacheRef = ref([]);
   // /use @waN and /join @waN populate this set. plain shell-typed
   // text fans out to every chat in it; WA-arriving messages from a
   // chat in the set get mirrored to every OTHER chat in the set
@@ -3224,7 +3292,7 @@ function App() {
       : [];
     wa.setBypassChats([...new Set([...joined, ...auto])]);
   };
-  const startWaBridge = useCallback(async (force = false) => {
+  const startWaBridge = callback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
     if (!cfg || typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
@@ -4039,7 +4107,7 @@ function App() {
     }
   }, []);
 
-  const stopWaBridge = useCallback(() => {
+  const stopWaBridge = callback(() => {
     if (!waBridgeRef.current) return false;
     _walog('waBridgeRef CLEARED (stopWaBridge called) — outbound will now drop until re-set');
     waBridgeRef.current.stop();
@@ -4050,7 +4118,7 @@ function App() {
     return true;
   }, []);
 
-  useEffect(() => {
+  startEffect(() => {
     startWaBridge();
     return () => stopWaBridge();
   }, [startWaBridge, stopWaBridge]);
@@ -4064,7 +4132,7 @@ function App() {
   // daemon supervises (interactive shells must not spawn a duplicate that
   // would fight for the port). Config: EGPT_CONFIG.local_llm
   // { enabled, bin, cwd?, model_path, port, threads, extra_args }.
-  useEffect(() => {
+  startEffect(() => {
     if (!HEADLESS) return;
     const cfg = EGPT_CONFIG.local_llm;
     // OPT-IN: the local llama-server only starts when local_llm.enabled is
@@ -4121,9 +4189,9 @@ function App() {
   // step of the twin-soul split (see projects/egpt/play.md). Still
   // in-process this commit; future phases move it to its own process
   // and add inbox-side WA inbound delivery via the same file IPC.
-  // dispatchWaSend goes through the ref so this useEffect doesn't
+  // dispatchWaSend goes through the ref so this watcher doesn't
   // re-mount on every change.
-  useEffect(() => {
+  startEffect(() => {
     // outbox is the spine-side WA-send queue.
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
@@ -4155,7 +4223,7 @@ function App() {
   // When the operator flips the handler-side gate (config flag or
   // env var, TBD), this onEvent gets replaced with real dispatch
   // via the extracted processWaIncoming function.
-  useEffect(() => {
+  startEffect(() => {
     // inbox is the spine-side WA-inbound watcher.
     const sysLog = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
@@ -4182,7 +4250,7 @@ function App() {
   // Periodic background ticks: accum-mode flush, the (confined) per-contact
   // heartbeat scanner, and the play.md rotator. There is deliberately NO
   // global @e heartbeat here anymore — see the note in `tick` below.
-  useEffect(() => {
+  startEffect(() => {
     const HEARTBEAT_MS = 5 * 60 * 1000;
 
     // sysLog → visible system line (errors / notable events). Routine per-tick
@@ -4371,25 +4439,25 @@ function App() {
 
   // Broadcast our local sessions to the bus on change. Peers use this to
   // know which @<name> they can forward our way. No-op until the bus is joined.
-  useEffect(() => {
+  function onSessionsChanged() {
     const tid = busTargetIdRef.current;
     if (!tid) return;
     bus.postEvent(tid, {
       type: 'sessions-update', from: BUS_NODE_ID, ts: Date.now(),
       sessions: Object.entries(sessions).map(([n, s]) => ({ name: n, brain: s.brain })),
     }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-  }, [sessions]);
+  }
 
   // Broadcast our polling state on change so /telegram (no arg) on peers
   // can show a fresh picture without round-trips.
-  useEffect(() => {
+  function onTelegramPollingChanged() {
     const tid = busTargetIdRef.current;
     if (!tid) return;
     bus.postEvent(tid, {
       type: 'telegram-status', from: BUS_NODE_ID, ts: Date.now(),
       polling: tgPolling,
     }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-  }, [tgPolling]);
+  }
 
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
   // bulk additions (/last replays) flush all of them, not just the tail.
@@ -4402,7 +4470,7 @@ function App() {
   // slot). That avoids a backlog flood + duplicate-with-peer-mirror when we
   // later reclaim: items typed during the yield should be carried to telegram
   // by whichever peer holds the slot at that moment, not retroactively by us.
-  useEffect(() => {
+  function mirrorNewTelegramItems() {
     const b = bridgeRef.current;
     while (sentItemsCountRef.current < items.length) {
       const item = items[sentItemsCountRef.current++];
@@ -4415,7 +4483,7 @@ function App() {
       if (item._target && item._target !== 'telegram') continue;
       if (b) b.send(formatItemForTelegram(item, sessions));
     }
-  }, [items.length]);
+  }
 
   // Symmetric mirror to WhatsApp. Default target is the user's
   // 'Message Yourself' chat (selfDmJid, derived from the bridge's
@@ -4423,8 +4491,7 @@ function App() {
   // string), or 'none' to disable. _localOnly items stay out, same
   // as Telegram — the (whatsapp message from X) arrival note and
   // user-echo would just get echoed back to the same chat.
-  const sentToWaItemsCountRef = useRef(0);
-  useEffect(() => {
+  function mirrorNewWhatsAppItems() {
     const wa = waBridgeRef.current;
     if (!wa) return;
     const opt = EGPT_CONFIG.whatsapp?.mirror_chat_id;
@@ -4468,12 +4535,39 @@ function App() {
         wa.send(formatted, { chatId: t });
       }
     }
-  }, [items.length]);
+  }
+
+  function assignVisibleItemIds() {
+    const visibleItems = items.filter(item => !item._log);
+
+    // Short + stable message ids: assigned in insertion order on first
+    // sight. Short m-id is convenience (resets on spine restart); stable id
+    // is for cross-restart references.
+    for (const item of visibleItems) {
+      if (!shortIdByItemId.current.has(item.id)) {
+        const shortId = `m${++_shortIdCounter.current}`;
+        shortIdByItemId.current.set(item.id, shortId);
+        itemByShortId.current.set(shortId, item);
+        if (!stableIdByItemId.current.has(item.id)) {
+          const stableId = _stableIdForItem(item, sessions);
+          stableIdByItemId.current.set(item.id, stableId);
+          itemByStableId.current.set(stableId, item);
+        }
+      }
+    }
+  }
+
+  function onItemsChanged(prev = []) {
+    assignVisibleItemIds();
+    mirrorNewTelegramItems();
+    mirrorNewWhatsAppItems();
+    if (items.length !== prev.length) _scheduleReplyTargetSave();
+  }
 
   // Load persisted rooms from disk on mount. Default room is in-memory
   // only and not loaded. After load, mark roomsLoadedRef so the
   // auto-save effect starts running.
-  useEffect(() => {
+  startEffect(() => {
     (async () => {
       const loaded = await loadAllRooms();
       const names = Object.keys(loaded);
@@ -4489,9 +4583,12 @@ function App() {
   // Auto-save rooms whenever the per-room session map changes. Default
   // room is skipped (lobby — never persisted). Save is per-room so
   // unrelated rooms aren't rewritten on every keystroke.
-  useEffect(() => {
+  let roomSaveTimer = null;
+  function onRoomSessionsMapChanged() {
     if (!roomsLoadedRef.current) return;
-    const t = setTimeout(() => {
+    if (roomSaveTimer) clearTimeout(roomSaveTimer);
+    roomSaveTimer = setTimeout(() => {
+      roomSaveTimer = null;
       (async () => {
         const seen = new Set();
         for (const [name, sess] of Object.entries(roomSessionsMap)) {
@@ -4529,8 +4626,10 @@ function App() {
         } catch (e) { sysOut(`!! membership brain-member sync: ${e?.message ?? e}`); }
       })().catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
     }, 500);
-    return () => clearTimeout(t);
-  }, [roomSessionsMap]);
+  }
+  addCleanup(() => {
+    if (roomSaveTimer) clearTimeout(roomSaveTimer);
+  });
 
   // Startup: auto-start CDP proxy if Chrome is on :9221 but proxy not yet on
   // :9222, then auto-attach any chatgpt/claude tabs already open. Does
@@ -4599,7 +4698,7 @@ function App() {
     }
   };
 
-  useEffect(() => {
+  startEffect(() => {
     // Chrome/CDP discovery + the control-plane bus are spine-side.
     let cancelled = false;
     let pollHandle = null;
@@ -4807,8 +4906,8 @@ function App() {
   // a shell restart. Debounced save (1.5s) so frequent items churn
   // doesn't beat the disk; load runs once on mount per the effect
   // further down.
-  const _welcomeBackRanRef = useRef(false);
-  useEffect(() => {
+  const _welcomeBackRanRef = ref(false);
+  function onCurrentRoomChanged() {
     // One-time load at mount + on room switch. Wraps in a try because
     // a missing sidecar is expected for fresh rooms.
     (async () => {
@@ -4877,9 +4976,12 @@ function App() {
       try { resetCountersOnDisk(); } catch (e) { swallow('logon.reset-counters', e); }
       try { writeLastLogonNow(); } catch (e) { swallow('logon.write-last', e); }
     })();
-  }, [currentRoom]);
-  const _saveTimerRef = useRef(null);
-  const _scheduleReplyTargetSave = () => {
+  }
+  startEffect(() => {
+    onCurrentRoomChanged();
+  }, []);
+  const _saveTimerRef = ref(null);
+  _scheduleReplyTargetSave = () => {
     if (_saveTimerRef.current) clearTimeout(_saveTimerRef.current);
     _saveTimerRef.current = setTimeout(async () => {
       // Build the live map from current items, then merge with
@@ -4903,8 +5005,7 @@ function App() {
   // Auto-save whenever items mutate. In-place _replyTarget patches
   // (the /use direct-send loop, /mirror after-send) don't change
   // items.length, so those paths call _scheduleReplyTargetSave()
-  // directly. The effect handles the common 'item added' path.
-  useEffect(() => { _scheduleReplyTargetSave(); }, [items.length]);
+  // directly. onItemsChanged handles the common 'item added' path.
   const sysOut = (body, extras = {}) => {
     const sink = outputSinkRef.current;
     const meta = sink === 'local'
@@ -4975,7 +5076,7 @@ function App() {
   // exactly like local shell input. Read lazily via submitRef so it stays
   // current across renders. (Phase C: the attach host itself now lives in the
   // engine and is started at boot — see createEngine / engine.startAttach.)
-  useEffect(() => {
+  startEffect(() => {
     engine.setSubmit((text, meta) => {
       try { submitRef.current?.(String(text ?? ''), meta); }
       catch (e) { errOut(`!! attach input: ${e?.message ?? e}`); }
@@ -4996,7 +5097,7 @@ function App() {
   // the topology (one main spine owns context + sends; workers compute).
   // Auth: the shared ~/.egpt/bus.key (copy it from the main spine once).
   // Default bind 127.0.0.1 — set transcriptor.bind to the LAN ip to expose.
-  useEffect(() => {
+  startEffect(() => {
     const tcfg = EGPT_CONFIG.transcriptor;
     if (!tcfg?.enabled) return;
     const token = EGPT_CONFIG.transcription_token;
@@ -5291,7 +5392,7 @@ function App() {
           _currentTheme = name;
           setThemeRev(n => n + 1);
         },
-        // Snapshots of mutable bindings — sessions is React state,
+        // Snapshots of mutable bindings — sessions is runtime state,
         // USER_NAME is a module-level let. handleSlash is invoked
         // once per command, so capturing them as values at call
         // time is sufficient for read-only consumers.
@@ -5318,7 +5419,7 @@ function App() {
         setFile: (p) => { FILE = p; },               // /conversation mutates FILE
         sentItemsCountRef,                           // reset on conversation swap
         // Batch 5 additions
-        setSessions,                                 // mutate sessions React state
+        setSessions,                                 // mutate sessions runtime state
         writeBrainProfileState,                      // persist a session to disk
         handleSlashRecurse: (t) => handleSlash(t, meta),  // re-enter dispatcher
         // Batch 6 additions
@@ -5678,7 +5779,7 @@ function App() {
   // oldest lines roll off. The /confirm watcher shows only the per-turn delta —
   // this is the invisible, durable memory.
   const _residentDir = join(EGPT_HOME, 'agent', 'l');
-  const _residentMem = useRef(new Map());   // chatId -> { identity, lines }
+  const _residentMem = ref(new Map());   // chatId -> { identity, lines }
   const _residentSan = (id) => String(id).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
   const _residentPath = (chatId) => join(_residentDir, `${_residentSan(chatId)}.json`);
   const _residentState = (chatId) => {
@@ -5920,7 +6021,7 @@ function App() {
   // Dispatch owns the state queue, migrations, transcript/activity
   // writes, lineage prelude, cwd recovery, and operator-failure notice.
   let _convStateCache = null;
-  const _dispatchRuntimeRef = useRef(null);
+  const _dispatchRuntimeRef = ref(null);
   if (!_dispatchRuntimeRef.current) {
     _dispatchRuntimeRef.current = createDispatchRuntime({
       stateDir: EGPT_HOME,
@@ -8370,7 +8471,7 @@ function App() {
   // on transient failure (retry on next sweep). Permanent failures
   // (not admin, malformed jid) log + return truthy to unlink — we
   // don't loop forever on rejection.
-  const dispatchWaGroupSubjectRef = useRef(null);
+  const dispatchWaGroupSubjectRef = ref(null);
   dispatchWaGroupSubjectRef.current = async (ev, source = 'outbox') => {
     const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
@@ -8395,13 +8496,13 @@ function App() {
   };
 
   // wa-group-members dispatcher — fetch group members and log them
-  const dispatchWaGroupMembersRef = useRef(null);
+  const dispatchWaGroupMembersRef = ref(null);
   // Butler-task dispatcher (C4). Conversation-e (or operator) drops
   // { type: 'butler-task', from, prompt, relayToSlug?, model?,
   //   allowedTools? } in outbox. Butler is an ephemeral haiku
   // subprocess: no --resume (no session memory), default all-tools.
   // Output optionally relays back to a contact thread.
-  const dispatchButlerTaskRef = useRef(null);
+  const dispatchButlerTaskRef = ref(null);
   dispatchButlerTaskRef.current = async (ev, source = 'outbox') => {
     const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
@@ -8467,7 +8568,7 @@ function App() {
   // command without round-tripping through a bridge. Operator
   // (2026-05-19) needed this when /identity-via-self-DM failed
   // because the bridge dedupes its own sent messages.
-  const dispatchSlashRef = useRef(null);
+  const dispatchSlashRef = ref(null);
   dispatchSlashRef.current = async (ev, source = 'outbox') => {
     const log = (msg) => pushItem({
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
@@ -8846,36 +8947,19 @@ function App() {
     }
   };
 
-  // Hide log items (telemetry, room hints, debug) from the conversation
-  // transcript. They're still in `items` and reachable via /log.
-  const visibleItems = items.filter(item => !item._log);
-
-  // Short + stable message ids: assigned in insertion order on first
-  // sight, persisted in refs so they survive React's re-render cycles.
-  // Short m-id is convenience (resets on shell restart); stable id is
-  // for cross-restart reference — bridge-derived when we have a key,
-  // random short otherwise. Both shown in the author line; @<either>
-  // resolves to the same reply path.
-  for (const item of visibleItems) {
-    if (!shortIdByItemId.current.has(item.id)) {
-      const shortId = `m${++_shortIdCounter.current}`;
-      shortIdByItemId.current.set(item.id, shortId);
-      itemByShortId.current.set(shortId, item);
-      if (!stableIdByItemId.current.has(item.id)) {
-        const stableId = _stableIdForItem(item, sessions);
-        stableIdByItemId.current.set(item.id, stableId);
-        itemByStableId.current.set(stableId, item);
-      }
+  assignVisibleItemIds();
+  return () => {
+    for (const cleanup of cleanups.splice(0).reverse()) {
+      try { cleanup?.(); } catch {}
     }
-  }
-  return null;
+  };
 }
 
 // Module-level bridge references so SIGINT/SIGHUP/SIGTERM handlers can
 // abort long-poll fetches and flush per-bridge state (chats-cache,
 // reaction-counts) synchronously before the process exits. Two slots
 // because the bridges are independent — TG and WA each register the
-// instance they own. React refs aren't reachable from a top-level
+// instance they own. Runtime refs aren't reachable from a top-level
 // signal handler, so this is the seam.
 let _globalBridge = null;       // telegram bridge
 let _globalWaBridge = null;     // whatsapp bridge — owns the logon-summary counters
@@ -8973,12 +9057,11 @@ startSpineOutputLog();
 console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
 console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
 console.log();
-render(h(App), { exitOnCtrlC: false });
-// The App has mounted (the headless runtime renders synchronously, so the
-// engine's input handler is registered); now boot the attach HOST so limbs can
-// connect — the engine owns it, not an App effect anymore (Phase C).
+const stopSpineRuntime = startSpineRuntime();
+// The runtime has started and registered the input handler; now boot the
+// attach HOST so limbs can connect.
 await engine.startAttach();
-process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); engine.stop(); });
+process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); stopSpineRuntime?.(); engine.stop(); });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
 // lost to the inherited TTY). Persist the stack to ~/.egpt/state/

@@ -1,8 +1,7 @@
 // Reply-target sidecars and stable ids.
 //
 // This module is deliberately engine-safe: no React/Ink, no config globals, and
-// no spine-local refs. It supports the current App-shaped spine today and the
-// plain engine runtime after the App is deleted.
+// no spine-local refs. The plain spine runtime owns wiring and persistence.
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
