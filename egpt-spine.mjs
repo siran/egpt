@@ -74,6 +74,7 @@ import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/wh
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
+import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -9047,11 +9048,22 @@ startSpineOutputLog();
 console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
 console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
 console.log();
-const stopSpineRuntime = startSpineRuntime();
-// The runtime has started and registered the input handler; now boot the
-// attach HOST so limbs can connect.
-await engine.startAttach();
-process.on('exit', (code) => { _globalBridge?.stop(); _globalWaBridge?.stop(); try { clearNucleusInfoSync(); } catch {} if (code !== 0) { try { _globalLlamaProc?.kill(); } catch {} } clearPidfile(); stopAliveHeartbeat(); stopSpineRuntime?.(); engine.stop(); });
+await bootSpineRuntime({
+  engine,
+  startSpineRuntime,
+  processObj: process,
+  onExit: (code, stopSpineRuntime) => stopSpineRuntimeOnExit({
+    code,
+    bridge: _globalBridge,
+    waBridge: _globalWaBridge,
+    clearNucleusInfoSync,
+    clearPidfile,
+    stopAliveHeartbeat,
+    stopSpineRuntime,
+    engine,
+    llamaProc: _globalLlamaProc,
+  }),
+});
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
 // lost to the inherited TTY). Persist the stack to ~/.egpt/state/

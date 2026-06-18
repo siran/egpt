@@ -28,7 +28,33 @@ import { startCdpProxy } from '../src/tools/cdp-proxy.mjs';
 // contains 'localhost:<chromePort>' so the proxy's URL rewrite is
 // observable.
 
-function startMockChrome() {
+const BAD_FETCH_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697,
+  10080,
+]);
+
+function freeSafeHttpPort() {
+  return new Promise((resolve, reject) => {
+    const tryOnce = () => {
+      const probe = createServer();
+      probe.once('error', reject);
+      probe.listen(0, '127.0.0.1', () => {
+        const port = probe.address().port;
+        probe.close(() => {
+          if (BAD_FETCH_PORTS.has(port)) tryOnce();
+          else resolve(port);
+        });
+      });
+    };
+    tryOnce();
+  });
+}
+
+function startMockChrome(port = 0) {
   return new Promise((resolve) => {
     let upgradeWaiter = null;
     const server = createServer((req, res) => {
@@ -68,7 +94,7 @@ function startMockChrome() {
     // Returns a Promise that resolves with the next upgrade request's
     // captured fields. Arm it BEFORE triggering the WS to avoid races.
     server.nextUpgrade = () => new Promise(r => { upgradeWaiter = r; });
-    server.listen(0, '127.0.0.1', () => resolve(server));
+    server.listen(port, '127.0.0.1', () => resolve(server));
   });
 }
 
@@ -99,12 +125,13 @@ function rawWsUpgrade(host, port, path, extraHeaders = {}) {
 let mockChrome, proxy, baseUrl, token;
 
 beforeAll(async () => {
-  mockChrome = await startMockChrome();
+  mockChrome = await startMockChrome(await freeSafeHttpPort());
   const chromePort = mockChrome.address().port;
-  // proxyPort = 0 lets the OS pick a free port; we read it back below.
+  // Avoid WHATWG/browsers' bad-port list: Node fetch enforces it even for
+  // localhost, and an OS-assigned 6000/6667/etc. makes this suite flaky.
   proxy = await startCdpProxy({
     token: 'test-token-deadbeef',
-    proxyPort: 0,
+    proxyPort: await freeSafeHttpPort(),
     chromePort,
     proxyHost: '127.0.0.1',
     onLog: () => {},  // silence
