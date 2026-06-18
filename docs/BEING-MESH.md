@@ -80,14 +80,14 @@ version: 1
 kind: mesh.request
 to:       { kind: being, id: don.morgan }
 handle:   don
+id:       "<uuid>"
 origin:
   who:    { kind: human|being, id: an.reve }
   room:   { node: reve, id: "!6ljZ...", label: HFM }
 via:
   node:   reve
   limb:   beeper
-trace:    ["an.reve:HFM", "don.morgan"]
-corr:     "<uuid>"
+ttl:      2
 prompt:   "here?"
 ```
 
@@ -97,11 +97,14 @@ Rules:
 - `origin.who` is the auth subject. It must be stable and provable enough for
   the limb, never a display name.
 - `origin.room` is the return address.
-- `trace` is mandatory. Drop if a hop repeats or depth exceeds the configured
-  limit.
-- `corr` is mandatory. Replies and timeouts key off it.
+- `id` is mandatory when quote/reply metadata is unavailable or when the request
+  crosses a route Room.
+- `ttl` is mandatory for routed relays. Decrement at each routed hop; drop at
+  zero.
+- Receivers keep a short-lived seen cache keyed by message id / request id /
+  signature to stop loops and replay.
 
-Replies use the same correlation:
+Replies use quote/reply metadata where available, otherwise the same request id:
 
 ```yaml
 version: 1
@@ -109,8 +112,7 @@ kind: mesh.reply
 to:       { kind: room, node: reve, id: "!6ljZ..." }
 from:     { kind: being, id: don.morgan }
 origin:   { kind: human|being, id: an.reve }
-trace:    ["an.reve:HFM", "don.morgan"]
-corr:     "<uuid>"
+in_reply_to: "<uuid-or-room-message-id>"
 body:     "yes, here"
 ```
 
@@ -119,15 +121,19 @@ body:     "yes, here"
 Most of the envelope is already implicit in an ordinary Room message, so it is
 never dumped as visible YAML (which would turn a chat into protocol noise):
 
-- `corr`        the quote-reply relationship (the reply quotes the request)
+- correlation   the quote-reply relationship (the reply quotes the request)
 - `origin.who`  the message sender (provable by the limb)
 - `origin.room` the room it was sent in
 - `prompt`      the text
 
-Only `kind`, `version`, and `trace` need an explicit machine tail - a short token
-line, or limb metadata where supported. The human sees "@don.morgan here?" and
-Don's reply; the protocol rides the message's natural structure. Correlation is
-then trivial: a quote-reply *is* the `corr` match.
+Only fields the limb cannot derive need an explicit machine tail or limb metadata:
+usually `kind`, `version`, `id`, `ttl`, and a signature. The human sees
+"@don.morgan here?" and Don's reply; the protocol rides the message's natural
+structure. Correlation is trivial when quote-reply survives the limb.
+
+There is no full path `trace` in v1. Loops are handled with `ttl` plus the seen
+cache. Delegated authorization uses `root` / `via` provenance when needed, not a
+complete hop list.
 
 ## 4. Relay Flow
 
@@ -140,16 +146,16 @@ HFM on REVE:
 REVE:
   resolve don.morgan
   choose a limb and target Room visible to MORGAN
-  send mesh.request with corr=<uuid>
+  send mesh.request with a request id, or rely on quote-reply if co-present
 
 MORGAN:
   observes request in that Room
-  validates trace and grant
+  validates identity, replay guard, ttl, and grant
   dispatches local being don
-  sends mesh.reply with the same corr
+  sends mesh.reply quoting or referencing the request
 
 REVE:
-  matches corr
+  matches the quote or request id
   posts Don's answer into HFM
 ```
 
@@ -298,7 +304,8 @@ not.
 3. Bot-to-bot support is optional transport capability, not a mesh dependency.
 4. Stable identity only; never authorize on display names.
 5. The wire carries resolved identity, not only a local alias.
-6. Every relay carries `trace` and `corr`.
+6. Every routed relay carries a correlation strategy, replay guard, and hop
+   budget. A full path trace is not required.
 7. Grants are scoped, expiring, revocable, and attenuating across chains.
 8. Local truth is self-computed; peer output is display unless attested.
 9. Visible shared effects are exactly-once; local effects are redundant and
@@ -329,7 +336,7 @@ Not built:
 - `type: relay` siblings.
 - `<name>.<node>` resolver.
 - mesh request/reply envelope.
-- `corr` tracking and timeout/retry handling.
+- request id / quote-reply correlation and timeout/retry handling.
 - route selection across limbs.
 - peer registry/gossip.
 - cross-node grants and attenuation.
@@ -347,7 +354,7 @@ Start with one narrow path:
 3. Emit a `mesh.request` into a chosen Room via Beeper or Telegram.
 4. Have the target spine recognize the envelope and dispatch a fake local
    handler.
-5. Send `mesh.reply` with the same `corr`.
+5. Send `mesh.reply` quoting or referencing the request.
 6. Origin posts the reply back into the original Room.
 7. Add tests with fake limbs and fake Rooms.
 
@@ -358,6 +365,6 @@ feature.
 
 - What is the minimal stable identity shape Beeper exposes for each network?
 - What is the operator UX for grants?
-- What is the timeout/retry policy for `corr`?
+- What is the timeout/retry policy for pending request ids?
 - How fresh must presence be before HRW failover risks duplicate posts?
 - Which peer artifacts deserve cryptographic attestation?
