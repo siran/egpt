@@ -53,7 +53,7 @@ export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations.yaml');
 // Known surfaces — used as the first dir level under conversations/
 // and the first key level under contacts: in the YAML. Adding a new
 // surface = add it here + wire its bridge in egpt.mjs.
-export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'shell', 'signal'];
+export const KNOWN_SURFACES = ['whatsapp', 'telegram', 'gmail', 'shell', 'signal'];
 
 // Per-conversation directory. Each contact gets its own folder; that
 // folder is the only filesystem location conversation-e is given

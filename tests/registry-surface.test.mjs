@@ -22,6 +22,7 @@ describe('registrySurface — every WA chat resolves to a surface (transcript in
     expect(registrySurface({ surface: 'wa', threadId: 'whatever' })).toBe('whatsapp');
     expect(registrySurface({ surface: 'tg', threadId: 'x' })).toBe('telegram');
     expect(registrySurface({ surface: 'telegram', threadId: 'x' })).toBe('telegram');
+    expect(registrySurface({ surface: 'gmail', threadId: '18d3f' })).toBe('gmail');
   });
 
   it('non-chat / system threads stay null (→ not per-contact)', () => {

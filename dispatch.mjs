@@ -87,6 +87,7 @@ export function registrySurface(threadCtx = {}) {   // exported for tests
   const s = threadCtx.surface ?? '';
   if (s === 'whatsapp' || s === 'wa' || s.startsWith('wa-')) return 'whatsapp';
   if (s === 'telegram' || s === 'tg' || s.startsWith('tg-')) return 'telegram';
+  if (s === 'gmail' || s.startsWith('gmail-')) return 'gmail';
   // Infer the WA surface from the thread id when surface isn't set. Baileys
   // JIDs carry '@' (…@g.us / …@s.whatsapp.net); Beeper room ids do NOT — they
   // are '!<room>:beeper.local'. Without recognizing Beeper ids here, every

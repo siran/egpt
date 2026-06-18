@@ -62,6 +62,7 @@ describe('emptyState / sanitizeSlug basics', () => {
   it('KNOWN_SURFACES is the canonical bucket list', () => {
     expect(KNOWN_SURFACES).toContain('whatsapp');
     expect(KNOWN_SURFACES).toContain('telegram');
+    expect(KNOWN_SURFACES).toContain('gmail');
     expect(KNOWN_SURFACES).toContain('shell');
   });
 });

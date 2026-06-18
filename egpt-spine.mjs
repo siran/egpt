@@ -27,6 +27,7 @@ import { readTranscriptionConfig, DEFAULT_SERVICE as DEFAULT_TRANSCRIPTION_SERVI
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
+import { startGmailBridge, buildGmailTriagePrompt, formatGmailNotification, extractDraftText } from './src/bridges/gmail.mjs';
 // Baileys init goes through egpt-comm-handler.mjs — the keeper side
 // of the twin-soul split. Today it's a thin in-process wrapper; in
 // Phase 2 the keeper runs in its own process and the handler reaches
@@ -2767,6 +2768,7 @@ function startSpineRuntime() {
   // items without depending on render closures. submitRef updated each render.
   const submitRef = ref(null);
   const bridgeRef = ref(null);
+  const gmailBridgeRef = ref(null);
   const wizardRef = ref(null);
   // STOP — the bridge's definite kill-switch + bot↔bot loop-guard (C7.7). One
   // instance, persisted across renders. Every dispatch checks it at submitInner;
@@ -5091,6 +5093,84 @@ function startSpineRuntime() {
     });
   }, []);
 
+  async function notifyGmailOperator(body) {
+    const wa = waBridgeRef.current;
+    const chatId = EGPT_CONFIG.gmail?.notify_chat_id
+      ?? EGPT_CONFIG.gmail?.notifyChatId
+      ?? EGPT_CONFIG.whatsapp?.chat_id
+      ?? wa?.selfDmJid
+      ?? null;
+    if (wa?.send && chatId) {
+      try {
+        await wa.send(String(body), { chatId });
+        return true;
+      } catch (e) {
+        errOut(`!! gmail notify wa: ${e?.message ?? e}`);
+      }
+    }
+    sysOut(String(body));
+    return false;
+  }
+
+  async function handleImportantGmail(mail, helpers) {
+    const verdict = helpers.verdict ?? {};
+    logOut(`gmail: important ${mail.fromEmail || mail.from || '?'} "${mail.subject}" (${mail.threadId})`);
+    let draftText = '';
+    let draft = null;
+    if (helpers.config?.proposeResponse) {
+      const releaseAwake = acquireStayAwake();
+      try {
+        const triage = await runDefaultBrainTurn(
+          buildGmailTriagePrompt(mail, verdict),
+          () => {},
+          {
+            threadId: mail.threadId,
+            surface: 'gmail',
+            slug: `gmail-${mail.threadId}`,
+            name: mail.subject || mail.from || `gmail ${mail.threadId}`,
+            bypassAutoWrap: true,
+          },
+        );
+        draftText = extractDraftText(triage);
+      } catch (e) {
+        errOut(`!! gmail triage: ${e?.message ?? e}`);
+      } finally {
+        try { releaseAwake(); } catch {}
+      }
+    }
+    if (helpers.config?.createDrafts && draftText) {
+      try {
+        draft = await helpers.createDraft(draftText);
+      } catch (e) {
+        errOut(`!! gmail draft: ${e?.message ?? e}`);
+      }
+    }
+    await notifyGmailOperator(formatGmailNotification(mail, { verdict, draftText, draft }));
+  }
+
+  startEffect(() => {
+    const cfg = EGPT_CONFIG.gmail;
+    if (!cfg?.enabled) return;
+    try {
+      const bridge = startGmailBridge({
+        config: cfg,
+        statePath: join(EGPT_STATE, 'gmail.json'),
+        onImportant: handleImportantGmail,
+        onLog: logOut,
+        onError: errOut,
+      });
+      if (!bridge) return;
+      gmailBridgeRef.current = bridge;
+      logOut(`gmail bridge enabled (query: ${bridge.status().query})`);
+      return () => {
+        try { bridge.stop(); } catch {}
+        gmailBridgeRef.current = null;
+      };
+    } catch (e) {
+      errOut(`!! gmail: ${e?.message ?? e}`);
+    }
+  }, []);
+
   // Worker role: transcriptor (operator 2026-06-10). When config
   // `transcriptor.enabled` is true, this spine serves POST /v1/transcribe
   // for the MAIN spine's voice notes — see src/tools/transcriptor.mjs for
@@ -5413,6 +5493,7 @@ function startSpineRuntime() {
         outputSinkRef,                               // for /help to respect sink
         brainNamesForHelp,                           // help template substitutions
         tgBridgeRef:           bridgeRef,            // for /status
+        gmailBridgeRef,
         listConversationFiles,                       // for /conversations
         CONVERSATION_DIRS,                           // search-dir constants
         resolveConversationSpec,                     // name/path → absolute
