@@ -88,7 +88,7 @@ describe('mesh relay - human-first visible Room loop', () => {
   it('drops a request whose ttl has run out (no reply, no being run)', async () => {
     const run = vi.fn(async () => 'should not run');
     const h = harness({ donReply: run });
-    const text = `@don.dolly x\n${encodeMeshTail({ kind: 'request', id: 'mesh-x', ttl: 0 })}`;
+    const text = `@don.dolly x\n${encodeMeshTail({ kind: 'request', id: 'mesh-x', ttl: 0, target: 'don.dolly' })}`;
     const consumed = await h.dolly.onRoomMessage({ route: h.routes.dolly, text });
     expect(consumed).toBe(true);
     expect(run).not.toHaveBeenCalled();
@@ -110,7 +110,7 @@ describe('mesh relay - human-first visible Room loop', () => {
     // The loop regression: the origin observes its OWN relayed request (e.g. via
     // a second bridge in the same group). It must consume it, not re-relay.
     const h = harness();
-    const text = `@don.dolly hi\n${encodeMeshTail({ kind: 'request', id: 'mesh-z', ttl: 3 })}`;
+    const text = `@don.dolly hi\n${encodeMeshTail({ kind: 'request', id: 'mesh-z', ttl: 3, target: 'don.dolly' })}`;
     const consumed = await h.reve.onRoomMessage({ route: h.routes.reve, text });
     expect(consumed).toBe(true);          // treated as relay traffic
     expect(h.room).toHaveLength(0);       // reve sent nothing (no re-relay)
