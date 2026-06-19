@@ -41,24 +41,39 @@ export function encodeMesh({ by = '', body = '', from = '', to = '', re = '' } =
   return `${head}\n\n---\n\`\`\`\n${lines.join('\n')}\n\`\`\``;
 }
 
-// Tolerant of bridge transmutation: fences may arrive literal, re-rendered, or
-// stripped; the divider and trailing `key: value` lines are what we trust.
+// A bridge may deliver our own echo RENDERED as HTML — the 2026-06-19 loop was
+// exactly this: "<p>An: hi <a href='http://don.do'>@don</a></p><hr><pre>from: …"
+// went unrecognised, so the message was re-relayed forever (each pass prepending
+// another "An:"). Strip the markup first.
+function stripRender(s) {
+  return String(s ?? '')
+    .replace(/<\s*(?:br|hr|p|div)\s*\/?\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+// Tolerant of bridge transmutation (HTML, mangled/stripped fences, no divider):
+// we trust the trailing run of `key: value` provenance lines, found by scanning
+// UP from the end — so we ALWAYS recognise our own relayed message (and never
+// re-relay it), divider or no divider.
 export function parseMesh(text) {
-  const raw = String(text ?? '');
-  const parts = raw.split(DIVIDER);
-  if (parts.length < 2) return null;
-  const tail = parts[parts.length - 1].replace(/`{1,3}/g, '').trim();
+  const lines = stripRender(text).split(/\r?\n/);
   const prov = {};
-  let any = false;
-  for (const line of tail.split(/\r?\n/)) {
-    const kv = line.match(/^[ \t>*_~-]*([a-zA-Z]+)[ \t]*:[ \t]*(.+?)[ \t]*$/);
-    if (kv && PROV_KEYS.has(kv[1].toLowerCase())) { prov[kv[1].toLowerCase()] = kv[2]; any = true; }
+  let i = lines.length - 1;
+  let provStart = lines.length;
+  while (i >= 0) {
+    const line = lines[i];
+    const kv = line.match(/^[ \t>*_~`-]*([a-zA-Z]+)[ \t]*:[ \t]*(.+?)[ \t]*$/);
+    if (kv && PROV_KEYS.has(kv[1].toLowerCase())) { prov[kv[1].toLowerCase()] = kv[2]; provStart = i; i--; continue; }
+    if (line.trim() === '' || /^-{3,}$/.test(line.trim()) || /^`+$/.test(line.trim())) { i--; continue; }
+    break;
   }
-  if (!any) return null;
-  let body = parts.slice(0, -1).join('\n---\n').trim();
+  if (Object.keys(prov).length === 0) return null;
+  let body = lines.slice(0, provStart).join('\n').replace(/[`\-\s]+$/, '').trim();
   if (prov.by) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    body = body.replace(new RegExp('^' + esc + '[ \\t]*:[ \\t]*', 'i'), '').trim();
+    body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();  // also peels accumulated "An: An: "
   }
   return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '' };
 }
@@ -84,12 +99,36 @@ export function createMeshRelay({
   const mark = (k) => { seen.add(k); if (seen.size > SEEN_CAP) seen.delete(seen.values().next().value); };
   const notify = ack || surface;
 
+  // CIRCUIT BREAKER — a hard, mesh-local bound that no parse bug can defeat: cap
+  // mesh sends per channel per window. If the cap trips, mesh sends to that
+  // channel STOP (logged loudly). This is the fail-safe the bot↔bot loop-guard
+  // could NOT provide (the mesh path runs before it AND posts as the operator, so
+  // the guard never saw it). Belt to the parser's suspenders.
+  const _sendLog = new Map();   // routeKey -> [ts]
+  const SEND_CAP = 5, SEND_WINDOW = 20_000;
+  async function guardedSend(route, text) {
+    const key = String(route?.room_id ?? route?.chat ?? JSON.stringify(route ?? null));
+    const t = Date.now();
+    const arr = (_sendLog.get(key) || []).filter((x) => t - x < SEND_WINDOW);
+    if (arr.length >= SEND_CAP) {
+      _sendLog.set(key, arr);
+      log(`mesh: ⛔ CIRCUIT BREAKER tripped — ${arr.length}+ sends in ${SEND_WINDOW / 1000}s to ${key}; mesh sends PAUSED (loop guard)`);
+      return false;
+    }
+    arr.push(t); _sendLog.set(key, arr);
+    await send(route, text);
+    return true;
+  }
+
   // ── ORIGIN: relay a human's @being message to the channel where its node listens ──
   async function relayOut({ being, toNode, body = '', origin = null, sender = '' } = {}) {
     const route = resolveRoute(toNode);
     if (!route) { await surface(origin, `!! mesh: no route to ${toNode}`); return false; }
     const fromName = (origin && origin.name) || '';
-    try { await send(route, encodeMesh({ by: sender || 'someone', body, from: fromName, to: toNode })); }
+    try {
+      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, to: toNode }));
+      if (!ok) { await surface(origin, `!! mesh: too many sends to ${being}.${toNode}'s channel — paused (loop guard)`); return false; }
+    }
     catch (e) { await surface(origin, `!! mesh relay to ${being}.${toNode} failed: ${e?.message ?? e}`); return false; }
     if (fromName && origin) awaiting.set(fromName, origin);
     // honest status — we relayed and are waiting; we do NOT claim the being is "thinking".
@@ -122,7 +161,7 @@ export function createMeshRelay({
     if (target) {
       if (target !== String(node).toLowerCase()) return true;
       if (!isLocalBeing(being)) {
-        await send(route, encodeMesh({ by: `${being}.${node}`, body: `no ${being}.${node} here`, re: prov.from }));
+        await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: `no ${being}.${node} here`, re: prov.from }));
         return true;
       }
     } else if (!isLocalBeing(being)) {
@@ -138,7 +177,7 @@ export function createMeshRelay({
     try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
     catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    await send(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim(), from: '', re: prov.from }));
+    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim(), from: '', re: prov.from }));
     return true;
   }
 

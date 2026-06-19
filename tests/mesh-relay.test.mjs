@@ -99,4 +99,33 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(mentionedBeing('hi @don how are you')).toBe('don');
     expect(mentionedBeing('no mention here')).toBeNull();
   });
+
+  // ── fail-safes (the 2026-06-19 re-relay loop) ──
+  it('recognises its own echo even when a bridge renders it as HTML (no re-relay loop)', () => {
+    const echo = '<p>An: hi <a href="http://don.do" rel="noopener">@don</a></p>\n<hr>\n<pre>from: HFM\nby: An\nto: do</pre>';
+    const p = parseMesh(echo);
+    expect(p).not.toBeNull();              // recognised as mesh traffic → consumed, never re-relayed
+    expect(p).toMatchObject({ to: 'do', by: 'An', from: 'HFM' });
+  });
+
+  it('peels an accumulated "An: An: …" prefix (the loop signature) back to the body', () => {
+    const p = parseMesh('An: An: An: hi @don\n\n---\n```\nfrom: HFM\nby: An\nto: do\n```');
+    expect(p.body).toBe('hi @don');
+  });
+
+  it('CIRCUIT BREAKER: a runaway is capped — mesh sends to a channel stop after the cap', async () => {
+    const sends = [];
+    const relay = createMeshRelay({
+      node: 'do',
+      send: async (_r, t) => { sends.push(t); },
+      isLocalBeing: () => true,
+      runBeing: async () => 'ok',
+      resolveRoute: () => ({ room_id: 'C' }),
+      log: () => {},
+    });
+    for (let i = 0; i < 20; i++) {
+      await relay.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: `hi @don ${i}`, from: 'HFM', to: 'do' }) });
+    }
+    expect(sends.length).toBeLessThanOrEqual(5);   // 20 requests, but the breaker halts the flood
+  });
 });
