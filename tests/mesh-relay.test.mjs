@@ -106,6 +106,17 @@ describe('mesh relay - human-first visible Room loop', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('consumes (never re-relays) a tailed request addressed to another node', async () => {
+    // The loop regression: the origin observes its OWN relayed request (e.g. via
+    // a second bridge in the same group). It must consume it, not re-relay.
+    const h = harness();
+    const text = `@don.dolly hi\n${encodeMeshTail({ kind: 'request', id: 'mesh-z', ttl: 3 })}`;
+    const consumed = await h.reve.onRoomMessage({ route: h.routes.reve, text });
+    expect(consumed).toBe(true);          // treated as relay traffic
+    expect(h.room).toHaveLength(0);       // reve sent nothing (no re-relay)
+    expect(h.surfaced.reve).toHaveLength(0);
+  });
+
   it('ignores ordinary messages and round-trips the tail', () => {
     expect(parseMeshTail('just a normal chat message')).toBeNull();
     expect(parseMeshTail(`hi ${encodeMeshTail({ kind: 'request', id: 'mesh-a', ttl: 3 })}`))
