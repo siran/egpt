@@ -113,7 +113,7 @@ export function createMeshRelay({
     // human it's working, once, so silence never reads as a dead request.
     if (noticeMs > 0) {
       entry.noticeTimer = setTimeout(() => {
-        if (pending.has(id)) surface(returnTo, `🧠 ${label} is thinking…`).catch(() => {});
+        if (pending.has(id)) surface(returnTo, `💭 ${label} is thinking…`).catch(() => {});
       }, noticeMs);
       entry.noticeTimer.unref?.();
     }
