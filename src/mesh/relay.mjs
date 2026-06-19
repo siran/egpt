@@ -27,17 +27,23 @@
 
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig']);
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
 // `to` (target node) is what makes "never silence" work without a chorus: only
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
-export function encodeMesh({ by = '', body = '', from = '', to = '', re = '' } = {}) {
+export function encodeMesh({ by = '', body = '', from = '', to = '', re = '', emoji = '' } = {}) {
   const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
   if (from) lines.push(`from: ${from}`);
   if (by) lines.push(`by: ${by}`);
+  // `emoji` is the responding being's body_emoji (e.g. don.do → 🤝). It rides the
+  // provenance so the RELAYING spine — which may not host the being and so can't
+  // look its emoji up — can stamp the surfaced reply with the being's identity. In
+  // a self-chat (HFM) this is what stops a being's reply from reading as the
+  // operator's own typing (An, 2026-06-19).
+  if (emoji) lines.push(`emoji: ${emoji}`);
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
   // Fence the ENTIRE payload so the transport delivers it VERBATIM — no HTML
@@ -81,7 +87,7 @@ export function parseMesh(text) {
   const bodyLines = lines.slice(0, provStart);
   // edge = fence / divider / blank / a stray EMPTY provenance key ("from:") — none
   // of which belong in the surfaced body.
-  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig)\s*:\s*)$/i.test(String(l).trim());
+  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|emoji)\s*:\s*)$/i.test(String(l).trim());
   while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
   while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
   let body = bodyLines.join('\n').trim();
@@ -89,7 +95,7 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '' };
+  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', emoji: prov.emoji || '' };
 }
 
 export function mentionedBeing(text) {
@@ -103,6 +109,7 @@ export function createMeshRelay({
   surface = async () => {},          // (returnTo, text) => Promise — deliver to an origin chat
   ack = null,                        // (origin, text) => Promise — status on the origin msg; defaults to surface
   runBeing = async () => '',         // (being, prompt, ctx) => Promise<string>
+  beingEmoji = () => '',             // (being) => body_emoji — rides the reply so the relayer can identify it
   resolveRoute = () => null,         // (toNode) => route | null
   isLocalBeing = () => false,        // (being) => bool
   log = () => {},
@@ -159,7 +166,9 @@ export function createMeshRelay({
     // A REPLY (carries `re:`) — surface home if we're the origin awaiting it.
     if (prov.re) {
       const back = awaiting.get(prov.re);
-      if (back) { awaiting.delete(prov.re); await surface(back, prov.body); }
+      // Carry the being's identity (by + emoji) so the surfacer can stamp it — a
+      // bare body would read as the operator's own message in a self-chat.
+      if (back) { awaiting.delete(prov.re); await surface(back, prov.body, { by: prov.by, emoji: prov.emoji }); }
       else log(`mesh: reply re:${prov.re} not awaited here`);
       return true;                                 // consume either way (never re-relay)
     }
@@ -191,7 +200,9 @@ export function createMeshRelay({
     try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
     catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim(), from: '', re: prov.from }));
+    // Stamp the being's emoji into the reply so the relaying spine can surface it
+    // AS the being (it may not host the being and can't look the emoji up itself).
+    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim(), from: '', re: prov.from, emoji: beingEmoji(being) }));
     return true;
   }
 

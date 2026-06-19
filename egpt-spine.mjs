@@ -7079,11 +7079,20 @@ function startSpineRuntime() {
       if (waBridgeRef.current) { await waBridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
       throw new Error(`mesh: no limb available for route ${route?.limb}`);
     },
-    surface: async (returnTo, textOut) => {
-      if (returnTo?.surface === 'telegram' && bridgeRef.current) { bridgeRef.current.send(`${EGPT_EMOJI} <i>${escapeHtml(textOut)}</i>`, { chatId: returnTo.chat_id }); return; }
-      if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) { await waBridgeRef.current.send(textOut, { chatId: returnTo.chat_id }); return; }
-      sysOut(textOut);
+    surface: async (returnTo, textOut, info = {}) => {
+      // A mesh REPLY (info.by set) is a remote BEING speaking, not the operator. In
+      // a self-chat (HFM) a bare body reads exactly like An's own typing — the
+      // 2026-06-19 leak. Stamp the being's body_emoji (it rides in from the
+      // responder via info.emoji; fall back to a local sibling lookup, then a
+      // neutral mesh marker) so the reply is unmistakably the being's voice.
+      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
+      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
+      if (returnTo?.surface === 'telegram' && bridgeRef.current) { bridgeRef.current.send(`${tag || EGPT_EMOJI} <i>${escapeHtml(textOut)}</i>`, { chatId: returnTo.chat_id }); return; }
+      const waBody = tag ? `${tag} ${textOut}` : textOut;
+      if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) { await waBridgeRef.current.send(waBody, { chatId: returnTo.chat_id }); return; }
+      sysOut(waBody);
     },
+    beingEmoji: (name) => (EGPT_CONFIG.siblings?.[String(name).toLowerCase()]?.body_emoji) ?? '',
     runBeing: async (name, prompt) => {
       const n = String(name).toLowerCase();
       const persona = String(EGPT_CONFIG.persona ?? EGPT_CONFIG.persona_name ?? 'e').toLowerCase();

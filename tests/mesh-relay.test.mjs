@@ -3,7 +3,7 @@ import { createMeshRelay, encodeMesh, parseMesh, mentionedBeing } from '../src/m
 
 // A shared relay channel (the 1:1) observed by both spines, plus captures of what
 // each surfaced home and acked. No network — just visible text.
-function harness({ donReply = async () => 'yes, here' } = {}) {
+function harness({ donReply = async () => 'yes, here', emojis = { don: '🤝' } } = {}) {
   const channel = [];
   const surfaced = { kg: [], do: [] };
   const acks = { kg: [], do: [] };
@@ -12,9 +12,10 @@ function harness({ donReply = async () => 'yes, here' } = {}) {
   const mk = (node, beings, run) => createMeshRelay({
     node,
     send: async (_r, text) => { channel.push(text); },
-    surface: async (origin, text) => { surfaced[node].push({ origin, text }); },
+    surface: async (origin, text, info = {}) => { surfaced[node].push({ origin, text, info }); },
     ack: async (origin, text) => { acks[node].push({ origin, text }); },
     runBeing: run,
+    beingEmoji: (b) => emojis[b] || '',
     resolveRoute: () => route,
     isLocalBeing: (b) => beings.includes(b),
   });
@@ -34,6 +35,14 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
     expect(w).toBe('```\nhi @don\n\n---\nfrom: HFM\nby: An\n```');   // whole payload fenced
     expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });
+  });
+
+  it('carries a being emoji in the provenance and round-trips it (body stays clean)', () => {
+    const w = encodeMesh({ by: 'don.do', body: 'Jaja, me pillaste', re: 'HFM', emoji: '🤝' });
+    expect(w).toMatch(/\nemoji: 🤝\n/);
+    const p = parseMesh(w);
+    expect(p.body).toBe('Jaja, me pillaste');     // emoji stays in provenance, not baked into body
+    expect(p).toMatchObject({ by: 'don.do', re: 'HFM', emoji: '🤝' });
   });
 
   it('a reply omits empty keys and surfaces a CLEAN body (no leaked from: or ---)', () => {
@@ -69,15 +78,29 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(h.acks.kg[0].text).toMatch(/relayed to don\.do — waiting/);
     expect(h.acks.kg[0].text).not.toMatch(/thinking/i);
 
-    // both observe; only `do` owns don → it runs (mention stripped) and replies
+    // both observe; only `do` owns don → it runs (mention stripped) and replies,
+    // stamping its OWN body_emoji into the provenance so the relayer can identify it
     await h.deliver(h.channel[0]);
     expect(h.channel).toHaveLength(2);
-    expect(parseMesh(h.channel[1])).toMatchObject({ by: 'don.do', re: 'HFM', body: 'you said: hi' });
+    expect(parseMesh(h.channel[1])).toMatchObject({ by: 'don.do', re: 'HFM', body: 'you said: hi', emoji: '🤝' });
 
-    // both observe the reply; kg correlates via re:HFM and surfaces home
+    // both observe the reply; kg correlates via re:HFM and surfaces home — WITH the
+    // being's identity (by + emoji) so it can't read as the operator's own typing
     await h.deliver(h.channel[1]);
-    expect(h.surfaced.kg).toEqual([{ origin: { chat_id: 'HFM-id', name: 'HFM' }, text: 'you said: hi' }]);
+    expect(h.surfaced.kg).toEqual([
+      { origin: { chat_id: 'HFM-id', name: 'HFM' }, text: 'you said: hi', info: { by: 'don.do', emoji: '🤝' } },
+    ]);
     expect(h.surfaced.do).toHaveLength(0);
+  });
+
+  it('a relayed reply surfaces home identified by the being (emoji + by), never bare', async () => {
+    const h = harness({ donReply: async () => 'Jaja, me pillaste' });
+    await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    await h.deliver(h.channel[h.channel.length - 1]);    // do answers, stamps 🤝
+    await h.deliver(h.channel[h.channel.length - 1]);    // kg surfaces home
+    const s = h.surfaced.kg.at(-1);
+    expect(s.text).toBe('Jaja, me pillaste');             // body itself stays clean (no emoji baked in)
+    expect(s.info).toMatchObject({ by: 'don.do', emoji: '🤝' });   // identity rides alongside → surfacer stamps it
   });
 
   it('answers "no <being>.<node> here" — never silence — when the peer lacks it', async () => {
