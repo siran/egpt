@@ -77,6 +77,7 @@ import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWh
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMeshTail } from './src/mesh/relay.mjs';
+import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -7090,6 +7091,27 @@ function startSpineRuntime() {
         if (_meshChat != null && _meshRouteRoomIds.has(String(_meshChat)) && parseMeshTail(text)) {
           const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: String(_meshChat) };
           if (await meshRelay.onRoomMessage({ route: _route, text })) return;
+        }
+      }
+      // Outbound mesh relay: a @being mention whose being lives on a PEER node is
+      // relayed there over a visible Room - even in auto_e chats, which otherwise
+      // forceTarget straight to E and never reach the mention path. Inert without
+      // EGPT_CONFIG.mesh.nodes. Local @mentions fall through to normal dispatch.
+      if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed) {
+        const _mm = /(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/i.exec(text);
+        if (_mm) {
+          const _addr = resolveMeshAddress(_mm[2], {
+            localNode: BUS_NODE_ID,
+            localNames: meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}),
+            peerNodes: EGPT_CONFIG.mesh.nodes,
+          });
+          if (_addr.kind === 'foreign') {
+            const _body = text.replace(/(^|\s)@[a-z0-9_.-]+\b/i, ' ').trim();
+            const _returnTo = returnAddressForMeta(meta);
+            await meshRelay.relayOut({ name: _addr.name, toNode: _addr.node, body: _body, returnTo: _returnTo, target: _addr.fqid ?? `${_addr.name}.${_addr.node}` });
+            if (_returnTo.surface === 'shell') sysOut(`@${_addr.name}.${_addr.node} -> via Room relay`);
+            return;
+          }
         }
       }
       // Loop-guard: a human turn resets; an inbound message from ANOTHER bot is a
