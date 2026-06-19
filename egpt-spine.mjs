@@ -7526,6 +7526,8 @@ function startSpineRuntime() {
       // (which collides if two profiles both claim "me").
       mainEngineer: EGPT_CONFIG.main_engineer ?? null,
       nodeName: BUS_NODE_ID,
+      // mesh registry of peer nodes → lets a BARE @don resolve to don.<peer>.
+      meshNodes: EGPT_CONFIG.mesh?.nodes ?? null,
       // persona names which being is the public chat voice (routes to
       // the persona path). A top-level role pointer, not a per-being
       // 'kind' tag. Default 'e'.

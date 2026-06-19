@@ -245,6 +245,25 @@ export function resolveRoute(parsed, fullText, ctx) {
       };
     }
 
+    // Bare @name that is not local but IS a being on exactly one known peer node
+    // (the mesh registry) → relay to that node. Qualified @name.node took the
+    // mesh-foreign path above; this lets a bare @don reach don.<peer>.
+    if (meshAddress && !meshAddress.qualified && ctx?.meshNodes) {
+      const peers = [];
+      for (const [peerNode, info] of Object.entries(ctx.meshNodes)) {
+        if (ctx.nodeName && sameMeshNode(peerNode, ctx.nodeName)) continue;
+        if ((info?.beings ?? []).some(b => String(b).toLowerCase() === meshAddress.name)) {
+          peers.push(String(peerNode).toLowerCase());
+        }
+      }
+      if (peers.length === 1) {
+        return { kind: 'mesh-foreign', target: `${meshAddress.name}.${peers[0]}`, name: meshAddress.name, node: peers[0], body };
+      }
+      if (peers.length > 1) {
+        return { kind: 'error', message: `@${meshAddress.name} is on multiple nodes (${peers.join(', ')}) — qualify it, e.g. @${meshAddress.name}.${peers[0]}` };
+      }
+    }
+
     if (localQualifiedTarget) {
       return {
         kind: 'error',
