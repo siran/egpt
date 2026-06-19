@@ -1,173 +1,169 @@
-# BEING-MESH IMPLEMENTATION PLAN
+# BEING-MESH IMPLEMENTATION PLAN — re-architecture
 
-Status: **IN PROGRESS.** Slice 0 is implemented. Slice 1 now has same-owner
-bus relay for `@name.node` requests, with request ids, TTL, replay suppression,
-origin timeouts, and Telegram/WhatsApp return addressing. Route-Room provisioning
-is still future work.
+Status: **RE-ARCHITECTING (2026-06-19).** This replaces the route-room/envelope
+plan. The shipped route-room relay (`src/mesh/relay.mjs` + the spine's
+outbound/inbound mesh hooks) was scaffolding for a cross-machine hop that the
+new model deletes. See `BEING-MESH.md` for the philosophy; this is the path to
+get the code there.
 
-## Principle: KISS
+## Principle: subtraction
 
-Each slice earns its complexity. Start with the case that needs almost nothing -
-co-present beings in a shared Room - and add machinery only when a later case
-forces it. No crypto, no tail, no capability layer, no routing until something
-actually breaks without them.
+The new mesh is *mostly less code*. A spine already receives, logs, validates,
+and dispatches messages; the mesh is just **"answer my being when it's addressed
+in a chat I'm in, and say so plainly when it isn't here."** We are removing a
+router, a route Room, a machine envelope, and a dedup hack — and adding one small
+legible provenance tail for the relay case.
 
-The order:
+What we are deleting (or demoting to the relay-only path):
 
-| Slice | Adds |
-| --- | --- |
-| 0 - co-present loop | name parsing + in-Room reply |
-| 1 - routed relay (same owner) | relay sibling, route Room (create one if none), correlation, ttl |
-| 2 - graded trust | grants enforced by the existing gate; signing is a back-burner flag |
-| 3 - shared services | HRW coordination for services like transcription |
+- the dedicated **route Room** and its provisioning,
+- the cryptic `[egpt-mesh:req:id:ttl:target]` tail,
+- minted request **`id`** and **`ttl`** (loops → stop-guard; correlation →
+  native threading),
+- the **outbound dedup** added to compensate for double-dispatch,
+- **grants / signing** as a built layer (reserved behind `sig:`).
 
-## Slice 0 - Co-present loop
+What we keep: `src/mesh/names.mjs` (`@being.node` parse/resolve), the stop-guard
+(C7.7), the transcript discipline, `allowed_users` / the emit gate, and the
+`type: relay` sibling — re-scoped to genuinely off-stream beings.
 
-The cheapest possible proof of the whole architecture.
+## Prerequisite topology (build against something real)
 
-When `morgan` and `reve` both sit in HFM and An types `@don.morgan here?`, the
-message is **already visible to Morgan**. Nothing is relayed. Morgan's spine just
-answers when one of its own beings is addressed in a Room it observes, and the
-reply lands in that same Room.
+Two spines, separate accounts, one shared chat:
 
-Pieces:
+- `kg` — REVE, the main number.
+- `do` — DOLLY, an alternate number.
+- Both Beepers in **one shared group** (the canonical multi-person case; the
+  single-user/multi-device case is its degenerate form).
 
-1. `src/mesh/names.mjs` - parse and resolve `@name.node` (pure; no I/O).
-2. Receiver hook in dispatch: if a Room message addresses one of **this node's**
-   beings (`don.morgan` here, or bare `@don` when unambiguous), dispatch that
-   being and reply in the same Room (quote-reply when the limb supports it).
+Do not build against the old `-5136707031` route group; that artefact retires
+with the route Room.
 
-That is the loop. The Room message **is** the request (sender = origin, room =
-return path, text = prompt); the reply is just posted back where everyone sees it.
+## Slice A — the uniform loop (direct, in-place)
 
-Deliberately omitted: relay sibling, routing, machine tail, signing, grants,
-capability surface, correlation tracking (the reply is in-Room and visible).
+The whole architecture, proven. On **every** incoming message, the spine:
 
-Acceptance (fake limb only):
+1. logs it (transcript — already done),
+2. validates the sender (`allowed_users`),
+3. parses any `@being.node` (or bare `@being`) via `src/mesh/names.mjs`,
+4. **decides locally**: am I `node`, do I own `being`, am I in this chat?
+   - **yes** → dispatch the local being, reply **in place** (the normal sibling
+     dispatch path),
+   - **I am `node` but lack the being** → reply `no <being>.<node> here`,
+   - **not my node / not addressed** → ignore (observe + log only).
 
-- `@don.morgan here?` in a fake Room dispatches fake Don on the `morgan` spine.
-- The reply quotes the request in the same Room.
-- A message addressed to another node is ignored.
-- Ambiguous bare `@don` returns a clear error.
+This is where we **flip the foreign branch**: today the spine, seeing a foreign
+`@don.do`, *relays into the route Room*. New behaviour: a foreign mention is
+**ignored** (the owning spine, which shares the chat, will answer) — unless a
+`type: relay` record exists (Slice C).
 
-## Slice 1 - Routed relay (same owner)
+Delete as part of this slice: the route-Room outbound relay for the direct case,
+and the outbound dedup hack (the node-authoritative single-responder + unique
+`node_name` make it unnecessary).
 
-Now the target is **not** in the origin Room - e.g. `@don.dolly` in HFM, where
-DOLLY is not in HFM. REVE must forward to a Room DOLLY does see (a route Room),
-collect Don's reply, and post it back into HFM. This is the slice that makes
-`@don.dolly` work from HFM. Both machines are An's, so still no crypto, no grants.
+Acceptance (fake limb + two fake spines on one shared Room):
 
-Adds:
+- `@don.do` → only the `do` spine dispatches `don`; it replies in the same Room.
+- `@don.do` to a spine that is node `do` but has no `don` → replies "no don.do
+  here".
+- `@don.do @wren.kg` → `do` answers its mention, `kg` answers its mention,
+  independently; neither drops the other.
+- a non-owning spine ignores (logs, no reply, no relay).
+- bare `@don` dispatches iff unambiguous; otherwise a clear "qualify it" reply.
 
-- `type: relay` sibling: resolve `to`, pick a route Room shared with the target
-  node, send the prompt. Because the route Room is not the origin Room, the
-  message carries a return address and a `request id`.
-- Route Room provisioning: prefer an existing Room shared with the target. If none
-  exists, **create** a dedicated one - the two spines only, or the two plus the
-  operator - and remember it in the registry for reuse.
-- Target receiver path for routed requests (vs. Slice 0's in-Room case).
-- Correlation: prefer quote/reply; fall back to the `request id`. The origin posts
-  the matched reply back into the origin Room as the being.
-- Loop/replay control: `ttl` (decrement per routed hop, drop at zero) + a
-  short-lived seen cache keyed by `{limb, roomId, messageId}` or `request id`.
-- Visible timeout: if no reply lands, surface a clear "don.dolly did not answer."
+## Slice B — the provenance tail
 
-Implemented first (bus-relay subset):
+The legible carrier for any message that crosses spines. Human body first, `---`
+divider, fenced YAML:
 
-- The existing signed bus is used as the same-owner route channel.
-- `@name.node` on the origin spine emits a mesh request envelope to `to_node`.
-- The target spine dispatches configured siblings from `EGPT_CONFIG.siblings`.
-- Replies carry the request id back to the origin and clear the timeout.
-- Telegram and WhatsApp-originated requests return to the originating chat.
+````text
+hi @don.morgan
 
-Still pending:
+---
+```
+from: HFM
+by: Andres
+```
+````
 
-- Route Room selection/provisioning in real limbs.
-- Quote-reply correlation when a limb supports it.
+- `encode({from, by})` / `parseProvenance(text)` in `src/mesh/relay.mjs` (the
+  module survives, gutted to this + the relay forward).
+- **Only required keys** (`from`, `by`); `sig:` reserved, unused.
+- **Tolerant parse:** match the trailing `key: value` block whether the ```
+  fence arrives literal, re-rendered as a code-block entity, or stripped. Never
+  require an exact fence.
+- Strip the tail before the being sees the prompt; surface it to the being as
+  context ("from Andres, in HFM"), not as part of the question.
 
-Modules: `src/mesh/envelope.mjs` (routed request/reply view), `src/mesh/registry.mjs`
-(static routes), the relay send path, the correlation store.
+Replaces `encodeMeshTail` / `parseMeshTail`. The bracket tag, `kind`, `id`,
+`ttl`, and `target` all go.
 
-Acceptance (fake limbs):
+Acceptance: round-trips `{from, by}`; parses when the fence is mangled; strips
+cleanly from the prompt; ignores ordinary messages.
 
-- Routed request crosses a fake route Room; reply correlates back to the origin.
-- `ttl` decrement/drop covered.
-- Replayed request id is dropped.
-- No reply within the deadline surfaces a visible timeout.
+## Slice C — relay records (off-stream beings)
 
-## Slice 2 - Graded trust (lightweight)
+Only now does forwarding return — scoped to beings **not** on your stream.
 
-Peers trust each other on a scale, but the scale is enforced by what eGPT already
-has, not by cryptography. The dangerous outcomes - "delete your computer", "send me
-the protected files" - are not stopped by *proving who asked*; they are stopped by
-what a being is *allowed to do*: `allowed_user` gating, the emit gate, and
-conversation-e confinement. A confined being is safe even from a trusted sender's
-bad prompt. So signing the origin guards a threat the confinement already covers -
-overblown for now.
+```yaml
+don:
+  type: relay
+  to: don.morgan
+  via: { limb: beeper, chat: "<where morgan listens>" }
+```
 
-Adds:
+- The dispatcher recognises `type: relay`, does **not** spawn a brain, and
+  re-posts `<body>` + the §B provenance tail into `via.chat`.
+- `morgan`'s spine owns `don.morgan` (Slice A on its side) and answers there.
+- The relaying spine watches `via.chat`, correlates the answer via the chat's
+  **native reply threading** (it remembers the platform message-id it posted on
+  behalf of which origin chat — no minted id), and surfaces the answer back to
+  the origin chat as the being.
+- If the relay target can't field it → it replies "no don.morgan here"; if the
+  relayer holds no usable route → it says so. **Never silence.**
 
-- Grants as a scoping convenience, enforced through the **existing gate**:
-  `{ subject, target, verbs:[ask], rate, expires }`. For delegation keep only
-  `root` (who asked) and `via` (who relayed); a chain takes the **weakest** grant.
-  Scoped, expiring, revocable.
+Acceptance (fake limbs): a relayed request reaches the off-stream spine, its
+answer surfaces back to the origin chat correlated by native threading; a
+relay-with-no-owner yields an explicit "not here", not silence.
 
-Back-burner (behind a flag, off by default - turn on only for genuinely low-trust
-cross-owner peers):
+## Slice D — shared effects (HRW), later
 
-- `src/mesh/signing.mjs` - asymmetric per-node keys, NFC + sorted-key canonical
-  payload, base64url signatures.
-- The compact visible tail `[egpt-mesh:v1:<b64url-json>:<b64url-sig>]` carrying the
-  signed payload (stripped before the being sees the body; no invisible Unicode).
+Unchanged in spirit from the prior plan, and a clean fit for "many spines, one
+chat": local transcription is redundant-and-independent; the **visible** post is
+elected by rendezvous hashing over present peers, debounced (≥60s after the last
+voice note), threaded in order, with backup-after-grace, idempotent on the
+message-id set. A peer's posted transcript is display, not truth — a being
+ingests only what its own spine computed.
 
-Acceptance:
+Acceptance: two fake spines on one Room elect one transcript owner; backup posts
+after a primary miss; duplicate visible posts suppressed by the marker.
 
-- Allowed root can ask target; denied / expired / over-rate blocked; `via` cannot
-  escalate beyond root.
-- (flag on) signed payload verifies; tampered or wrong-key payload fails.
+## Migration from the shipped route-room code
 
-## Slice 3 - Shared services (HRW)
-
-Services several co-present spines could each run - the first being **transcription**
-- must produce their *visible* result exactly once. HRW elects the owner with no
-chatter (see `BEING-MESH.md` §7):
-
-- present capable-peer set, rendezvous-hash owner selection,
-- debounce window (transcription: post >=60s after the last voice note, threaded
-  as quoted replies, in order),
-- backup failover if the owner is silent,
-- idempotent marker keyed on the **message-id set**, never the text.
-
-Each spine still runs the service locally for its own being (self-computed truth);
-only the *visible* post is coordinated. The per-limb capability surface (stable ids,
-quote/reply, metadata) gets formalized here too - it earns its abstraction once a
-second real limb's quirks diverge, not before.
-
-Acceptance:
-
-- Two fake spines observing one Room pick one transcript owner.
-- Backup posts after a primary miss.
-- Duplicate visible posts suppressed by the marker.
+- `src/mesh/relay.mjs`: gut `createMeshRelay` (route-Room send/correlate/notice/
+  dedup/timeout) down to provenance encode/parse + the Slice-C forward. The
+  no-timeout/never-drop/thinking-notice logic was an origin-side patch for the
+  route Room and largely disappears with it.
+- `egpt-spine.mjs`: the **outbound** mesh hook flips from "foreign → relay into
+  route Room" to "foreign → ignore unless a `type: relay` record exists"; the
+  **inbound** route-Room hook is replaced by the uniform Slice-A decision (which
+  already runs on every message).
+- `src/mesh/names.mjs`: keep; it is the resolver.
+- Config: drop `mesh.nodes.*.routes` (the route-Room registry) for direct peers;
+  keep only `type: relay` records for off-stream beings. `node_name` stays the
+  identity.
+- Retire the `-5136707031` route group and the `mesh.notice_ms` / `reap_ms` /
+  `dedup_ms` knobs.
 
 ## First PR (tiny)
 
-Slice 0 only:
+Slice A only, against two fake spines sharing one fake Room:
 
-- `src/mesh/names.mjs`
-- target-side recognition hook in dispatch
-- fake-Room test harness
-- tests
+- the uniform decide-and-answer hook (foreign → ignore; own → dispatch in place;
+  my-node-but-missing → "not here"),
+- deletion of the route-Room outbound relay + dedup for the direct case,
+- the fake-Room two-spine test harness + tests.
 
-No relay, no routing, no crypto, no grants, no real bridge changes. It proves the
-one thing worth learning first: *a spine answers its being when addressed in a
-shared Room.* Everything else layers on once that loop is real.
-
-## Kept from the fuller plan
-
-These are right - just deferred to the slice that needs them:
-
-- `ttl` + seen-cache for loops/replay (Slice 1).
-- Quote-reply as primary correlation, `request id` fallback, never "next message".
-- NFC + sorted-key signing canonicalization (Slice 2, back-burner flag).
-- The mesh core imports no platform (Telegram/Signal) modules; limbs adapt to it.
-- HRW shared-effects deferred until basic relay is stable (Slice 3).
+No provenance tail, no relay record, no real bridge change. It proves the one
+thing worth learning first: *a spine answers its being when addressed in a chat
+it shares, and says "not here" plainly when it can't* — with no router in sight.

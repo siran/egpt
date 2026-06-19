@@ -396,6 +396,17 @@ Lock status of the four:
   `siblings.don`: ccode, `resident:true`, thread `23dfef93`), upgraded to latest;
   REVE reaches Don as the bot in the shared group. DOLLY's old `agent:` endpoint
   config is inert (the code was removed on pull).
+- **C8.4** Federated being-mesh — `@being.node` across spines. **DESIGN,
+  re-architected 2026-06-19 (`docs/BEING-MESH.md`).** Decentralised: *a shared
+  chat is the shared stream* — the spine that OWNS `@being.node` answers IN PLACE
+  (no route Room, no central router, no dedup); each spine decides locally;
+  addressed ⇒ MUST answer or "no `<being>.<node>` here" — never silence.
+  Off-stream beings forward via a `type: relay` record carrying a legible
+  fenced-YAML provenance tail (`from`/`by`) — upholds I8 (bot↔bot always
+  human-visible); loops bound by STOP (C7.7), correlation by native threading, no
+  minted id/ttl. Invite-only; `allowed_users` + confinement is the guard, not
+  crypto. Supersedes the route-Room/envelope prototype (`src/mesh/relay.mjs`,
+  retiring). ⏳
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.
