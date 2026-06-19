@@ -94,6 +94,7 @@ function namesFromPeerValue(value) {
   if (Array.isArray(value)) return normalizeNameSet(value);
   if (value instanceof Map) return meshNamesFromSiblings(value);
   if (typeof value === 'object') {
+    if (value.beings) return normalizeNameSet(value.beings);
     if (value.siblings) return meshNamesFromSiblings(value.siblings);
     if (value.names) return normalizeNameSet(value.names);
     if (value.sessions) return normalizeNameSet(value.sessions);
