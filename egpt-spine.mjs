@@ -7051,7 +7051,8 @@ function startSpineRuntime() {
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, name);
     },
     ttl: Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL,
-    timeoutMs: Math.max(1000, Number(EGPT_CONFIG.mesh?.timeout_ms ?? 60_000) || 60_000),
+    noticeMs: (Number.isFinite(Number(EGPT_CONFIG.mesh?.notice_ms)) ? Math.max(0, Number(EGPT_CONFIG.mesh?.notice_ms)) : 12_000),
+    reapMs:   (Number.isFinite(Number(EGPT_CONFIG.mesh?.reap_ms))   ? Math.max(0, Number(EGPT_CONFIG.mesh?.reap_ms))   : 30 * 60_000),
     log: (m) => logOut(m),
   });
 
