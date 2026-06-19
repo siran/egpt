@@ -7053,6 +7053,7 @@ function startSpineRuntime() {
     ttl: Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL,
     noticeMs: (Number.isFinite(Number(EGPT_CONFIG.mesh?.notice_ms)) ? Math.max(0, Number(EGPT_CONFIG.mesh?.notice_ms)) : 12_000),
     reapMs:   (Number.isFinite(Number(EGPT_CONFIG.mesh?.reap_ms))   ? Math.max(0, Number(EGPT_CONFIG.mesh?.reap_ms))   : 30 * 60_000),
+    dedupMs:  (Number.isFinite(Number(EGPT_CONFIG.mesh?.dedup_ms))  ? Math.max(0, Number(EGPT_CONFIG.mesh?.dedup_ms))  : 8_000),
     log: (m) => logOut(m),
   });
 
@@ -7105,20 +7106,39 @@ function startSpineRuntime() {
       // forceTarget straight to E and never reach the mention path. Inert without
       // EGPT_CONFIG.mesh.nodes. Local @mentions fall through to normal dispatch.
       if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed && !parseMeshTail(text)) {
-        const _mm = /(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/i.exec(text);
-        if (_mm) {
-          const _addr = resolveMeshAddress(_mm[2], {
-            localNode: BUS_NODE_ID,
-            localNames: meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}),
-            peerNodes: EGPT_CONFIG.mesh.nodes,
-          });
-          if (_addr.kind === 'foreign') {
-            const _body = text.replace(/(^|\s)@[a-z0-9_.-]+\b/i, ' ').trim();
-            const _returnTo = returnAddressForMeta(meta);
-            await meshRelay.relayOut({ name: _addr.name, toNode: _addr.node, body: _body, returnTo: _returnTo, target: _addr.fqid ?? `${_addr.name}.${_addr.node}` });
-            if (_returnTo.surface === 'shell') sysOut(`@${_addr.name}.${_addr.node} -> via Room relay`);
-            return;
+        const _meshCtx = {
+          localNode: BUS_NODE_ID,
+          localNames: meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}),
+          peerNodes: EGPT_CONFIG.mesh.nodes,
+        };
+        // Handle EVERY @mention, not just the first: relay each FOREIGN being once,
+        // and let LOCAL ones fall through to normal dispatch. ("@don? @wren?" must
+        // relay @don AND still run @wren here — the old first-match+return dropped
+        // @wren entirely and fed @don a garbage body.)
+        const _foreign = [];
+        let _anyLocal = false;
+        for (const _m of text.matchAll(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi)) {
+          const _a = resolveMeshAddress(_m[2], _meshCtx);
+          if (_a.kind === 'foreign') _foreign.push(_a);
+          else if (_a.kind === 'local') _anyLocal = true;
+        }
+        if (_foreign.length) {
+          // Body relayed to a peer being = the message with EVERY @mention stripped.
+          const _relayBody = text.replace(/(^|\s)@[a-z0-9_.-]+\b/gi, ' ').replace(/\s+/g, ' ').trim();
+          const _returnTo = returnAddressForMeta(meta);
+          const _sent = new Set();
+          for (const _a of _foreign) {
+            const _target = _a.fqid ?? `${_a.name}.${_a.node}`;
+            if (_sent.has(_target)) continue;      // one message, repeated @mention → relay once
+            _sent.add(_target);
+            await meshRelay.relayOut({ name: _a.name, toNode: _a.node, body: _relayBody, returnTo: _returnTo, target: _target });
+            if (_returnTo.surface === 'shell') sysOut(`@${_target} -> via Room relay`);
           }
+          if (!_anyLocal) return;                  // every mention was foreign — fully handled
+          // Mixed: strip ONLY the foreign mentions so the dispatch below still runs
+          // the local being(s) (e.g. @wren) in this chat with the original message.
+          text = text.replace(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi, (full, pre, tok) =>
+            resolveMeshAddress(tok, _meshCtx).kind === 'foreign' ? pre : full);
         }
       }
       // Loop-guard: a human turn resets; an inbound message from ANOTHER bot is a
