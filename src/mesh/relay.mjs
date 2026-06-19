@@ -48,6 +48,16 @@ export function parseMeshTail(text) {
   };
 }
 
+// Strip ANY mesh tail tag(s) from a body — defensively, before re-relaying. The
+// 2026-06-19 retry storm was one self-test re-relaying its OWN growing body ~30×
+// in 3s, each pass appending another [egpt-mesh:req:…] (parseMeshTail only reads
+// the LAST tail, so earlier ones survived and piled up). Stripping here keeps a
+// re-relayed body clean so tails can never accumulate.
+const ANY_TAIL_RE = /\s*\[egpt-mesh:(?:req|rep):[a-z0-9._-]+:\d+(?::[a-z0-9._-]*)?\]/gi;
+export function stripMeshTails(text) {
+  return String(text ?? '').replace(ANY_TAIL_RE, '').trim();
+}
+
 export function createMeshRelay({
   node,                                   // this spine's node name
   send,                                   // (route, text) => Promise — post into a Room (the carrier)
@@ -66,6 +76,7 @@ export function createMeshRelay({
 
   // ── ORIGIN: relay an outbound @name.node that targets another node ──
   async function relayOut({ name, toNode, body = '', returnTo = null, target = null } = {}) {
+    body = stripMeshTails(body);   // never let a re-relayed body accumulate mesh tails (storm guard)
     const label = target ?? `${name}.${toNode}`;
     const route = resolveRoute(toNode);
     if (!route) { await surface(returnTo, `!! mesh: no route to ${toNode} (set mesh.nodes.${toNode}.routes)`); return null; }
