@@ -1,173 +1,102 @@
-import { describe, it, expect, vi } from 'vitest';
-import { createMeshRelay, encodeMeshTail, parseMeshTail, stripMeshTails } from '../src/mesh/relay.mjs';
-import { createMeshSeenCache } from '../src/mesh/envelope.mjs';
+import { describe, it, expect } from 'vitest';
+import { createMeshRelay, encodeMesh, parseMesh, mentionedBeing } from '../src/mesh/relay.mjs';
 
-// A shared fake route Room observed by both spines, plus a capture of what each
-// spine surfaced into its origin chat. No network, no bus - just visible text.
+// A shared relay channel (the 1:1) observed by both spines, plus captures of what
+// each surfaced home and acked. No network — just visible text.
 function harness({ donReply = async () => 'yes, here' } = {}) {
-  const room = [];
-  const surfaced = { reve: [], dolly: [] };
-  const routes = { reve: { room: 'R1' }, dolly: { room: 'R1' } };
+  const channel = [];
+  const surfaced = { kg: [], do: [] };
+  const acks = { kg: [], do: [] };
+  const route = { chat: 'C' };
 
   const mk = (node, beings, run) => createMeshRelay({
     node,
-    send: async (_route, text) => { room.push(text); },
-    surface: async (returnTo, text) => { surfaced[node].push({ returnTo, text }); },
+    send: async (_r, text) => { channel.push(text); },
+    surface: async (origin, text) => { surfaced[node].push({ origin, text }); },
+    ack: async (origin, text) => { acks[node].push({ origin, text }); },
     runBeing: run,
-    resolveRoute: (n) => routes[n] ?? null,
-    isLocalBeing: (name) => beings.includes(name),
-    seen: createMeshSeenCache(),
+    resolveRoute: () => route,
+    isLocalBeing: (b) => beings.includes(b),
   });
 
-  const reve = mk('reve', [], async () => '');
-  const dolly = mk('dolly', ['don'], donReply);
+  const kg = mk('kg', [], async () => '');
+  const doSpine = mk('do', ['don'], donReply);
 
-  // Deliver a Room message to BOTH observers, as a real shared Room would.
   async function deliver(text) {
-    await reve.onRoomMessage({ route: routes.reve, text });
-    await dolly.onRoomMessage({ route: routes.dolly, text });
+    await kg.onRoomMessage({ route, text });
+    await doSpine.onRoomMessage({ route, text });
   }
-  return { room, surfaced, reve, dolly, deliver, routes };
+  return { channel, surfaced, acks, kg, do: doSpine, deliver, route };
 }
 
-describe('mesh relay - human-first visible Room loop', () => {
-  it('relays @don.dolly through the shared Room and surfaces the reply to the origin', async () => {
-    const h = harness({ donReply: async (_name, prompt) => `you said: ${prompt}` });
-    const id = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'here?', returnTo: { surface: 'whatsapp', chat_id: 'HFM' } });
-    expect(id).toBeTruthy();
-
-    // request landed in the Room: human body first, compact tail after
-    expect(h.room).toHaveLength(1);
-    expect(h.room[0]).toMatch(/^@don\.dolly here\?/);
-    expect(h.room[0]).toMatch(/\[egpt-mesh:req:/);
-
-    // both observe; only dolly acts and posts a reply into the SAME Room
-    await h.deliver(h.room[0]);
-    expect(h.room).toHaveLength(2);
-    expect(parseMeshTail(h.room[1]).kind).toBe('reply');
-    expect(h.surfaced.reve).toHaveLength(0);
-
-    // both observe the reply; reve correlates and surfaces a CLEAN body to HFM
-    await h.deliver(h.room[1]);
-    expect(h.surfaced.reve).toEqual([{ returnTo: { surface: 'whatsapp', chat_id: 'HFM' }, text: 'you said: here?' }]);
-    expect(h.surfaced.reve[0].text).not.toMatch(/egpt-mesh/);
-    expect(h.reve.pending.size).toBe(0);
+describe('mesh relay — YAML provenance over a shared channel', () => {
+  it('encodes the human-first wire format and round-trips', () => {
+    const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
+    expect(w).toBe('An: hi @don\n\n---\n```\nfrom: HFM\nby: An\n```');
+    expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });
   });
 
-  it('does not drop the reply although the origin saw its own request (same id)', async () => {
+  it('parses tolerantly when a bridge strips the ``` fences', () => {
+    expect(parseMesh('An: hi @don\n\n---\nfrom: HFM\nby: An'))
+      .toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An' });
+  });
+
+  it('relays @don, acks "relayed — waiting", and surfaces the reply home', async () => {
+    const h = harness({ donReply: async (_b, prompt) => `you said: ${prompt}` });
+    const ok = await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    expect(ok).toBe(true);
+
+    // wire: body preserved, readable sender, YAML provenance — no cryptic tag
+    expect(h.channel).toHaveLength(1);
+    expect(h.channel[0]).toMatch(/^An: hi @don/);
+    expect(h.channel[0]).not.toMatch(/egpt-mesh/);
+    expect(h.channel[0]).toMatch(/from: HFM/);
+    // honest ack on the origin (NOT a faked "thinking")
+    expect(h.acks.kg[0].text).toMatch(/relayed to don\.do — waiting/);
+    expect(h.acks.kg[0].text).not.toMatch(/thinking/i);
+
+    // both observe; only `do` owns don → it runs (mention stripped) and replies
+    await h.deliver(h.channel[0]);
+    expect(h.channel).toHaveLength(2);
+    expect(parseMesh(h.channel[1])).toMatchObject({ by: 'don.do', re: 'HFM', body: 'you said: hi' });
+
+    // both observe the reply; kg correlates via re:HFM and surfaces home
+    await h.deliver(h.channel[1]);
+    expect(h.surfaced.kg).toEqual([{ origin: { chat_id: 'HFM-id', name: 'HFM' }, text: 'you said: hi' }]);
+    expect(h.surfaced.do).toHaveLength(0);
+  });
+
+  it('answers "no <being>.<node> here" — never silence — when the peer lacks it', async () => {
     const h = harness();
-    await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'ping', returnTo: { surface: 'shell' } });
-    await h.deliver(h.room[0]);
-    await h.deliver(h.room[1]);
-    expect(h.surfaced.reve.map(s => s.text)).toEqual(['yes, here']);
+    await h.do.onRoomMessage({ route: h.route, text: encodeMesh({ by: 'An', body: 'hi @ghost', from: 'HFM', to: 'do' }) });
+    expect(h.channel).toHaveLength(1);
+    expect(parseMesh(h.channel[0])).toMatchObject({ by: 'ghost.do', body: 'no ghost.do here' });
   });
 
-  it('runs the target being once even if the request is re-observed (replay guard)', async () => {
-    const run = vi.fn(async () => 'once');
-    const h = harness({ donReply: run });
-    await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'x', returnTo: { surface: 'shell' } });
-    await h.deliver(h.room[0]);
-    await h.dolly.onRoomMessage({ route: h.routes.dolly, text: h.room[0] });
-    expect(run).toHaveBeenCalledTimes(1);
-  });
-
-  it('replies "not here" when the being is not local on the target node', async () => {
+  it('never re-relays mesh traffic (a provenance-tailed message is consumed)', async () => {
     const h = harness();
-    await h.reve.relayOut({ name: 'ghost', toNode: 'dolly', body: 'x', returnTo: { surface: 'shell' } });
-    await h.deliver(h.room[0]);
-    expect(h.room[1]).toMatch(/ghost\.dolly is not here/);
-  });
-
-  it('surfaces a no-route error when the target node has no route', async () => {
-    const h = harness();
-    const id = await h.reve.relayOut({ name: 'don', toNode: 'nowhere', body: 'x', returnTo: { surface: 'shell' } });
-    expect(id).toBeNull();
-    expect(h.surfaced.reve[0].text).toMatch(/no route to nowhere/);
-  });
-
-  it('drops a request whose ttl has run out (no reply, no being run)', async () => {
-    const run = vi.fn(async () => 'should not run');
-    const h = harness({ donReply: run });
-    const text = `@don.dolly x\n${encodeMeshTail({ kind: 'request', id: 'mesh-x', ttl: 0, target: 'don.dolly' })}`;
-    const consumed = await h.dolly.onRoomMessage({ route: h.routes.dolly, text });
+    // kg is not the target node (to: do) → consume, no re-relay, no "not here"
+    const consumed = await h.kg.onRoomMessage({ route: h.route, text: encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', to: 'do' }) });
     expect(consumed).toBe(true);
-    expect(run).not.toHaveBeenCalled();
-    expect(h.room).toHaveLength(0);
+    expect(h.channel).toHaveLength(0);
   });
 
-  it('shows a "thinking" notice after the grace but never fails or drops', async () => {
-    vi.useFakeTimers();
-    try {
-      const h = harness();
-      await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'x', returnTo: { surface: 'shell' }, target: 'don.dolly' });
-      await vi.advanceTimersByTimeAsync(13_000);
-      // a single "thinking" notice — NOT a failure — and the request is still pending
-      expect(h.surfaced.reve).toHaveLength(1);
-      expect(h.surfaced.reve[0].text).toMatch(/thinking/i);
-      expect(h.surfaced.reve[0].text).not.toMatch(/did not answer/i);
-      expect(h.reve.pending.size).toBe(1);
-    } finally { vi.useRealTimers(); }
-  });
-
-  it('delivers a late reply long after the grace — never thrown away', async () => {
-    vi.useFakeTimers();
-    try {
-      const h = harness({ donReply: async (_n, p) => `late: ${p}` });
-      await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'slow one', returnTo: { surface: 'shell' }, target: 'don.dolly' });
-      await vi.advanceTimersByTimeAsync(120_000);     // well past the 12s grace, far under the reaper
-      await h.deliver(h.room[0]);                       // dolly finally runs + posts its reply
-      await h.deliver(h.room[1]);                       // reve correlates the late reply
-      const texts = h.surfaced.reve.map(s => s.text);
-      expect(texts).toContain('late: slow one');        // the answer was delivered
-      expect(texts.some(t => /did not answer/i.test(t))).toBe(false);
-      expect(h.reve.pending.size).toBe(0);
-    } finally { vi.useRealTimers(); }
-  });
-
-  it('suppresses a duplicate relay (same target+body) within the dedup window', async () => {
+  it('the relayer ignores its own request echo (no false "not here")', async () => {
     const h = harness();
-    const id1 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'ping', returnTo: { surface: 'shell' } });
-    const id2 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'ping', returnTo: { surface: 'shell' } });
-    expect(id1).toBeTruthy();
-    expect(id2).toBeNull();           // the double-dispatch is dropped — no second ping
-    expect(h.room).toHaveLength(1);   // only ONE request posted to the Room
-    // a different body is NOT suppressed
-    const id3 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'other', returnTo: { surface: 'shell' } });
-    expect(id3).toBeTruthy();
-    expect(h.room).toHaveLength(2);
+    await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
+    h.channel.length = 0;
+    await h.kg.onRoomMessage({ route: h.route, text: encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', to: 'do' }) });
+    expect(h.channel).toHaveLength(0);  // to: do != kg → stays quiet (no false "not here")
   });
 
-  it('consumes (never re-relays) a tailed request addressed to another node', async () => {
-    // The loop regression: the origin observes its OWN relayed request (e.g. via
-    // a second bridge in the same group). It must consume it, not re-relay.
+  it('ignores ordinary messages', async () => {
     const h = harness();
-    const text = `@don.dolly hi\n${encodeMeshTail({ kind: 'request', id: 'mesh-z', ttl: 3, target: 'don.dolly' })}`;
-    const consumed = await h.reve.onRoomMessage({ route: h.routes.reve, text });
-    expect(consumed).toBe(true);          // treated as relay traffic
-    expect(h.room).toHaveLength(0);       // reve sent nothing (no re-relay)
-    expect(h.surfaced.reve).toHaveLength(0);
+    expect(parseMesh('just a normal message')).toBeNull();
+    expect(await h.do.onRoomMessage({ route: h.route, text: 'just a normal message' })).toBe(false);
   });
 
-  it('ignores ordinary messages and round-trips the tail', () => {
-    expect(parseMeshTail('just a normal chat message')).toBeNull();
-    expect(parseMeshTail(`hi ${encodeMeshTail({ kind: 'request', id: 'mesh-a', ttl: 3 })}`))
-      .toMatchObject({ kind: 'request', id: 'mesh-a', ttl: 3, body: 'hi' });
-  });
-
-  // 2026-06-19 storm guard: a re-relayed body that already carries mesh tail(s)
-  // must NOT accumulate them (one self-test re-relayed its growing body ~30× in
-  // 3s, each pass appending another [egpt-mesh:req:…]).
-  it('strips pre-existing mesh tails so a re-relay never accumulates them', async () => {
-    expect(stripMeshTails(`hello ${encodeMeshTail({ kind: 'request', id: 'mesh-a', ttl: 3, target: 'don.dolly' })}`)).toBe('hello');
-    expect(stripMeshTails(`x ${encodeMeshTail({ kind: 'request', id: 'i1', ttl: 3 })} ${encodeMeshTail({ kind: 'reply', id: 'i2', ttl: 2 })}`)).toBe('x');
-    expect(stripMeshTails('plain message')).toBe('plain message');
-
-    const h = harness();
-    // body already carries a tail (the storm's re-fed body) — relayOut must emit ONE tail, not two.
-    const dirty = `self-test ${encodeMeshTail({ kind: 'request', id: 'old-id', ttl: 3, target: 'don.dolly' })}`;
-    await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: dirty, returnTo: { surface: 'shell' } });
-    expect(h.room[0].match(/\[egpt-mesh:/g)).toHaveLength(1);   // exactly one tail
-    expect(h.room[0]).not.toContain('old-id');                 // the stale tail was stripped
-    expect(h.room[0]).toMatch(/^@don\.dolly self-test/);       // clean human body preserved
+  it('mentionedBeing finds the first @mention', () => {
+    expect(mentionedBeing('hi @don how are you')).toBe('don');
+    expect(mentionedBeing('no mention here')).toBeNull();
   });
 });

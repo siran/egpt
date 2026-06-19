@@ -76,7 +76,7 @@ import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
-import { createMeshRelay, parseMeshTail } from './src/mesh/relay.mjs';
+import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -7050,10 +7050,6 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, name);
     },
-    ttl: Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL,
-    noticeMs: (Number.isFinite(Number(EGPT_CONFIG.mesh?.notice_ms)) ? Math.max(0, Number(EGPT_CONFIG.mesh?.notice_ms)) : 12_000),
-    reapMs:   (Number.isFinite(Number(EGPT_CONFIG.mesh?.reap_ms))   ? Math.max(0, Number(EGPT_CONFIG.mesh?.reap_ms))   : 30 * 60_000),
-    dedupMs:  (Number.isFinite(Number(EGPT_CONFIG.mesh?.dedup_ms))  ? Math.max(0, Number(EGPT_CONFIG.mesh?.dedup_ms))  : 8_000),
     log: (m) => logOut(m),
   });
 
@@ -7095,7 +7091,7 @@ function startSpineRuntime() {
         // its OWN relayed message (e.g. via a second bridge in the same group)
         // consumes it instead of re-relaying. onRoomMessage ignores requests not
         // addressed to this node, and replies it doesn't own.
-        if (typeof text === 'string' && parseMeshTail(text)) {
+        if (typeof text === 'string' && parseMesh(text)) {
           const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
           const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: _meshChat != null ? String(_meshChat) : null };
           if (await meshRelay.onRoomMessage({ route: _route, text })) return;
@@ -7105,16 +7101,16 @@ function startSpineRuntime() {
       // relayed there over a visible Room - even in auto_e chats, which otherwise
       // forceTarget straight to E and never reach the mention path. Inert without
       // EGPT_CONFIG.mesh.nodes. Local @mentions fall through to normal dispatch.
-      if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed && !parseMeshTail(text)) {
+      if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed && !parseMesh(text)) {
         const _meshCtx = {
           localNode: BUS_NODE_ID,
           localNames: meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}),
           peerNodes: EGPT_CONFIG.mesh.nodes,
         };
-        // Handle EVERY @mention, not just the first: relay each FOREIGN being once,
-        // and let LOCAL ones fall through to normal dispatch. ("@don? @wren?" must
-        // relay @don AND still run @wren here — the old first-match+return dropped
-        // @wren entirely and fed @don a garbage body.)
+        // A @being on a PEER node is RELAYED there (one relay per target node);
+        // LOCAL @mentions fall through to normal dispatch. The human body is sent
+        // UNCHANGED (so "@don" stays "@don" — a limb can't linkify "don.do") with a
+        // readable YAML provenance tail; the target self-selects + answers home.
         const _foreign = [];
         let _anyLocal = false;
         for (const _m of text.matchAll(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi)) {
@@ -7123,16 +7119,18 @@ function startSpineRuntime() {
           else if (_a.kind === 'local') _anyLocal = true;
         }
         if (_foreign.length) {
-          // Body relayed to a peer being = the message with EVERY @mention stripped.
-          const _relayBody = text.replace(/(^|\s)@[a-z0-9_.-]+\b/gi, ' ').replace(/\s+/g, ' ').trim();
-          const _returnTo = returnAddressForMeta(meta);
+          const _ret = returnAddressForMeta(meta);
+          const _originName = (meta.fromWhatsApp ? waBridgeRef.current?.getChatName?.(meta.waChatId)
+                             : meta.fromTelegram ? bridgeRef.current?.getChatName?.(meta.telegramChatId)
+                             : null) || _ret.chat_id || 'origin';
+          const _origin = { ..._ret, name: _originName };
+          const _sender = meta.waSenderName ?? meta.senderName ?? 'someone';
           const _sent = new Set();
           for (const _a of _foreign) {
-            const _target = _a.fqid ?? `${_a.name}.${_a.node}`;
-            if (_sent.has(_target)) continue;      // one message, repeated @mention → relay once
-            _sent.add(_target);
-            await meshRelay.relayOut({ name: _a.name, toNode: _a.node, body: _relayBody, returnTo: _returnTo, target: _target });
-            if (_returnTo.surface === 'shell') sysOut(`@${_target} -> via Room relay`);
+            if (_sent.has(_a.node)) continue;      // one relay per target node
+            _sent.add(_a.node);
+            await meshRelay.relayOut({ being: _a.name, toNode: _a.node, body: text, origin: _origin, sender: _sender });
+            if (_ret.surface === 'shell') sysOut(`@${_a.name}.${_a.node} -> relayed`);
           }
           if (!_anyLocal) return;                  // every mention was foreign — fully handled
           // Mixed: strip ONLY the foreign mentions so the dispatch below still runs
@@ -7753,14 +7751,17 @@ function startSpineRuntime() {
       // chat the human asked from. Inert (clear "no route" message) until
       // EGPT_CONFIG.mesh.nodes.<node>.routes is configured.
       const returnTo = returnAddressForMeta(meta);
+      const _origName = (meta.fromWhatsApp ? waBridgeRef.current?.getChatName?.(meta.waChatId)
+                       : meta.fromTelegram ? bridgeRef.current?.getChatName?.(meta.telegramChatId)
+                       : null) || returnTo.chat_id || 'origin';
       await meshRelay.relayOut({
-        name: decision.name,
+        being: decision.name,
         toNode: decision.node,
-        body: decision.body ?? '',
-        returnTo,
-        target: decision.target,
+        body: text ?? decision.body ?? '',
+        origin: { ...returnTo, name: _origName },
+        sender: meta.waSenderName ?? meta.senderName ?? 'someone',
       });
-      if (returnTo.surface === 'shell') sysOut(`@${decision.target} -> ${decision.node} via Room relay`);
+      if (returnTo.surface === 'shell') sysOut(`@${decision.target} -> ${decision.node} relayed`);
       return;
     }
     if (decision.kind === 'empty') {
