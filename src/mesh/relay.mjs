@@ -3,12 +3,13 @@
 // so a human — and any spine watching — can always see where a relayed message
 // came from and who sent it. No cryptic tags, no minted ids, no ttl.
 //
-//   An: hi @don
+//   ```
+//   hi @don
 //
 //   ---
-//   ```
 //   from: HFM
 //   by: An
+//   to: do
 //   ```
 //
 // Principles (An/e7, 2026-06-19):
@@ -37,8 +38,12 @@ export function encodeMesh({ by = '', body = '', from = '', to = '', re = '' } =
   const lines = [`from: ${from}`, `by: ${by}`];
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
-  const head = by ? `${by}: ${String(body).trim()}` : String(body).trim();
-  return `${head}\n\n---\n\`\`\`\n${lines.join('\n')}\n\`\`\``;
+  // Fence the ENTIRE payload so the transport delivers it VERBATIM — no HTML
+  // render, no "don.do" linkification, no mangled "---" divider. (The 2026-06-19
+  // loop was an UN-fenced body: "---" became <hr>, recognition broke, the echo
+  // re-relayed forever. The inner YAML fence had survived fine as <pre> — so
+  // fencing the whole thing is the real fix; An, 2026-06-19.)
+  return '```\n' + `${String(body).trim()}\n\n---\n${lines.join('\n')}` + '\n```';
 }
 
 // A bridge may deliver our own echo RENDERED as HTML — the 2026-06-19 loop was
@@ -70,10 +75,15 @@ export function parseMesh(text) {
     break;
   }
   if (Object.keys(prov).length === 0) return null;
-  let body = lines.slice(0, provStart).join('\n').replace(/[`\-\s]+$/, '').trim();
-  if (prov.by) {
+  // body = everything above the provenance, minus the outer fence / divider edges.
+  const bodyLines = lines.slice(0, provStart);
+  const edge = (l) => /^(?:`+|-{3,}|\s*)$/.test(String(l).trim());
+  while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
+  while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
+  let body = bodyLines.join('\n').trim();
+  if (prov.by) {   // legacy: peel an old-format "by:" (or accumulated "An: An:") prefix
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();  // also peels accumulated "An: An: "
+    body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
   return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '' };
 }
