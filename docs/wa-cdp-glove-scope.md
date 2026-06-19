@@ -91,8 +91,8 @@ digests, autoresponse/proactive, multi-account tabs.
   risk). The DOM-control path already looks like a person using WhatsApp.
 
 ## Verification ladder
-1. ✅ select / read / send proven (`tests-manual/wa-dom-*.mjs`).
-2. ✅ afferent proven (`tests-manual/wa-notif-spike.mjs`, 2026-06-08): real inbound
+1. ✅ select / read / send proven (`attic/tests-manual/wa-dom-*.mjs`).
+2. ✅ afferent proven (`attic/tests-manual/wa-notif-spike.mjs`, 2026-06-08): real inbound
    fired PAGE-level `window.Notification` `{title=chat, body="Sender: preview",
    tag=chat JID}` (NOT the SW), + MutationObserver unread backup. Full loop green.
 3. NEXT (build): branch `beta-1.15-wa-cdp` from main; wire the glove to the limb
@@ -108,3 +108,4 @@ On the new branch, the thin slice that proves the architecture:
   type + click-send. Inert (mention/mention-direct/on only).
 - Leave baileys in place initially; switch the host to the CDP limb behind the
   limb contract, then excise baileys-isms from the ~10 leaking files.
+

@@ -1,7 +1,7 @@
 // whisper-server transcribe-over-HTTP layer. The ffmpeg conversion is
 // injected (convert) so these run without ffmpeg/whisper; the resident
 // server lifecycle (spawn/readiness/respawn) is proven by the real-binary
-// smoke test (tests-manual/transcriptor-smoke.mjs --server).
+// smoke test (attic/tests-manual/transcriptor-smoke.mjs --server).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer } from 'node:http';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -95,3 +95,4 @@ describe('makeWhisperServerTranscriber', () => {
     expect(await transcribe(audio, {}, () => {})).toBe('transcrito');
   });
 });
+
