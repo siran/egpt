@@ -7032,7 +7032,7 @@ function startSpineRuntime() {
       const routes = EGPT_CONFIG.mesh?.nodes?.[toNode]?.routes;
       return Array.isArray(routes) && routes.length ? routes[0] : null;
     },
-    isLocalBeing: (name) => !!resolveBusBeingTarget(name),
+    isLocalBeing: (name) => meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}).has(String(name).toLowerCase()),
     send: async (route, textOut) => {
       const limb = String(route?.limb ?? '').toLowerCase();
       if ((limb === 'telegram' || limb === 'tg') && bridgeRef.current) { bridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
@@ -7045,9 +7045,10 @@ function startSpineRuntime() {
       sysOut(textOut);
     },
     runBeing: async (name, prompt) => {
-      const t = resolveBusBeingTarget(name);
-      if (t && t.kind !== 'persona') return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, t.name);
-      return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
+      const n = String(name).toLowerCase();
+      const persona = String(EGPT_CONFIG.persona ?? EGPT_CONFIG.persona_name ?? 'e').toLowerCase();
+      if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
+      return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, name);
     },
     ttl: Number(EGPT_CONFIG.mesh?.ttl ?? DEFAULT_MESH_TTL) || DEFAULT_MESH_TTL,
     timeoutMs: Math.max(1000, Number(EGPT_CONFIG.mesh?.timeout_ms ?? 60_000) || 60_000),
