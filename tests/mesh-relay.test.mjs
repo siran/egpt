@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createMeshRelay, encodeMeshTail, parseMeshTail } from '../src/mesh/relay.mjs';
+import { createMeshRelay, encodeMeshTail, parseMeshTail, stripMeshTails } from '../src/mesh/relay.mjs';
 import { createMeshSeenCache } from '../src/mesh/envelope.mjs';
 
 // A shared fake route Room observed by both spines, plus a capture of what each
@@ -121,5 +121,22 @@ describe('mesh relay - human-first visible Room loop', () => {
     expect(parseMeshTail('just a normal chat message')).toBeNull();
     expect(parseMeshTail(`hi ${encodeMeshTail({ kind: 'request', id: 'mesh-a', ttl: 3 })}`))
       .toMatchObject({ kind: 'request', id: 'mesh-a', ttl: 3, body: 'hi' });
+  });
+
+  // 2026-06-19 storm guard: a re-relayed body that already carries mesh tail(s)
+  // must NOT accumulate them (one self-test re-relayed its growing body ~30× in
+  // 3s, each pass appending another [egpt-mesh:req:…]).
+  it('strips pre-existing mesh tails so a re-relay never accumulates them', async () => {
+    expect(stripMeshTails(`hello ${encodeMeshTail({ kind: 'request', id: 'mesh-a', ttl: 3, target: 'don.dolly' })}`)).toBe('hello');
+    expect(stripMeshTails(`x ${encodeMeshTail({ kind: 'request', id: 'i1', ttl: 3 })} ${encodeMeshTail({ kind: 'reply', id: 'i2', ttl: 2 })}`)).toBe('x');
+    expect(stripMeshTails('plain message')).toBe('plain message');
+
+    const h = harness();
+    // body already carries a tail (the storm's re-fed body) — relayOut must emit ONE tail, not two.
+    const dirty = `self-test ${encodeMeshTail({ kind: 'request', id: 'old-id', ttl: 3, target: 'don.dolly' })}`;
+    await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: dirty, returnTo: { surface: 'shell' } });
+    expect(h.room[0].match(/\[egpt-mesh:/g)).toHaveLength(1);   // exactly one tail
+    expect(h.room[0]).not.toContain('old-id');                 // the stale tail was stripped
+    expect(h.room[0]).toMatch(/^@don\.dolly self-test/);       // clean human body preserved
   });
 });
