@@ -50,6 +50,7 @@ import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
 import { createWarmCliSession } from './src/warm-cli-session.mjs';
 import { createStopGuard, parseStopWord } from './src/stop-guard.mjs';
+import { createFloodGuard, guardedSend } from './src/flood-guard.mjs';
 // Warm-session pool singleton at MODULE scope — the _warmPool() helper lives in
 // a per-dispatch closure, so a local `let` reset every turn → a brand-new empty
 // pool each turn (no warm reuse). Module scope persists across dispatches.
@@ -2764,6 +2765,29 @@ function startSpineRuntime() {
   // is definite. See src/stop-guard.mjs.
   const _stopGuardRef = ref(null);
   if (!_stopGuardRef.current) _stopGuardRef.current = createStopGuard({ onLog: (m) => { try { logOut(`stop-guard: ${m}`); } catch { /* logOut not ready */ } } });
+
+  // FLOOD GUARD — the bridge's last line of defense. Every bridge .send is wrapped
+  // through it (below), so a runaway from ANY source (mesh loop, a being looping,
+  // a bad backlog replay) is capped at the send chokepoint: > limit sends to one
+  // chat in the window ⇒ that chat is PAUSED. This catches what the bot↔bot
+  // loop-guard structurally cannot (mesh posts as the operator + runs before it).
+  const _floodGuardRef = ref(null);
+  if (!_floodGuardRef.current) _floodGuardRef.current = createFloodGuard({
+    limit:      Number(EGPT_CONFIG.flood?.limit ?? 10) || 10,
+    windowMs:   Number(EGPT_CONFIG.flood?.window_ms ?? 3_000) || 3_000,
+    cooldownMs: Number(EGPT_CONFIG.flood?.cooldown_ms ?? 60_000) || 60_000,
+    onTrip: (chat, n, win) => { try { logOut(`flood-guard: ⛔ FLOOD on ${chat} — ${n} sends in ${win / 1000}s; sends to that chat PAUSED (cooldown)`); } catch { /* logOut not ready */ } },
+  });
+  // Wrap a bridge's .send through the flood guard, once. guardedSend THROWS if the
+  // guard is missing, so an unguarded send path cannot be built by accident.
+  const _wrapBridgeFlood = (bridge, label) => {
+    if (bridge && typeof bridge.send === 'function' && !bridge._floodWrapped) {
+      const _raw = bridge.send.bind(bridge);
+      bridge.send = guardedSend({ send: _raw, floodGuard: _floodGuardRef.current, log: (m) => { try { logOut(m); } catch { /* not ready */ } }, label });
+      bridge._floodWrapped = true;
+    }
+    return bridge;
+  };
   // Where sysOut output should land. 'local' = mark items _localOnly so
   // they don't bounce to Telegram or peers; 'remote' = let them through.
   // The submit handler flips this to 'remote' when meta.fromTelegram so
@@ -3118,6 +3142,7 @@ function startSpineRuntime() {
         }
       },
     });
+    _wrapBridgeFlood(bridge, 'telegram');
     bridgeRef.current = bridge;
     _globalBridge = bridge;
     setTgPolling(true);
@@ -4050,6 +4075,7 @@ function startSpineRuntime() {
       }
       const _starter = _waTransport === 'cdp' ? startWhatsAppCdpBridge : startBeeperBridge;
       const bridge = await _starter(_bridgeOpts);
+      _wrapBridgeFlood(bridge, 'whatsapp');
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;
       _walog(`waBridgeRef SET (bridge=${!!bridge}) — outbound should now work`);
