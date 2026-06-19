@@ -2945,6 +2945,12 @@ function startSpineRuntime() {
     // overlay is folded into EGPT_CONFIG once at boot). Prefer the already-
     // merged EGPT_CONFIG for the token, same as beeper_token — otherwise a token
     // in config.local.json silently never starts the bridge (2026-06-12 trap).
+    // Respect telegram.enabled: false — a present bot_token must NOT force the
+    // bridge on. Beeper is the transport; the telegram bots are off (2026-06-19).
+    if ((EGPT_CONFIG.telegram?.enabled ?? cfg.telegram?.enabled) === false) {
+      logOut('telegram: disabled (telegram.enabled: false) — bridge not started');
+      return false;
+    }
     const botToken = EGPT_CONFIG.telegram?.bot_token ?? cfg.telegram?.bot_token;
     if (!botToken) {
       // Loud only when telegram is meant to be on — a bare unconfigured node
