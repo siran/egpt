@@ -7087,9 +7087,14 @@ function startSpineRuntime() {
       // stop. Inert unless mesh.nodes.*.routes are configured (empty route-id set
       // → never matches → zero effect on normal dispatch). Never the bus.
       {
-        const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
-        if (_meshChat != null && _meshRouteRoomIds.has(String(_meshChat)) && parseMeshTail(text)) {
-          const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: String(_meshChat) };
+        // ANY message carrying a mesh tail is relay traffic (request or reply),
+        // regardless of which limb/chat it arrives on - so a node that observes
+        // its OWN relayed message (e.g. via a second bridge in the same group)
+        // consumes it instead of re-relaying. onRoomMessage ignores requests not
+        // addressed to this node, and replies it doesn't own.
+        if (typeof text === 'string' && parseMeshTail(text)) {
+          const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
+          const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: _meshChat != null ? String(_meshChat) : null };
           if (await meshRelay.onRoomMessage({ route: _route, text })) return;
         }
       }
@@ -7097,7 +7102,7 @@ function startSpineRuntime() {
       // relayed there over a visible Room - even in auto_e chats, which otherwise
       // forceTarget straight to E and never reach the mention path. Inert without
       // EGPT_CONFIG.mesh.nodes. Local @mentions fall through to normal dispatch.
-      if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed) {
+      if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed && !parseMeshTail(text)) {
         const _mm = /(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/i.exec(text);
         if (_mm) {
           const _addr = resolveMeshAddress(_mm[2], {
