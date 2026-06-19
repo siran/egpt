@@ -35,7 +35,9 @@ const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
 export function encodeMesh({ by = '', body = '', from = '', to = '', re = '' } = {}) {
-  const lines = [`from: ${from}`, `by: ${by}`];
+  const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
+  if (from) lines.push(`from: ${from}`);
+  if (by) lines.push(`by: ${by}`);
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
   // Fence the ENTIRE payload so the transport delivers it VERBATIM — no HTML
@@ -77,7 +79,9 @@ export function parseMesh(text) {
   if (Object.keys(prov).length === 0) return null;
   // body = everything above the provenance, minus the outer fence / divider edges.
   const bodyLines = lines.slice(0, provStart);
-  const edge = (l) => /^(?:`+|-{3,}|\s*)$/.test(String(l).trim());
+  // edge = fence / divider / blank / a stray EMPTY provenance key ("from:") — none
+  // of which belong in the surfaced body.
+  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig)\s*:\s*)$/i.test(String(l).trim());
   while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
   while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
   let body = bodyLines.join('\n').trim();

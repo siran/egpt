@@ -36,6 +36,19 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });
   });
 
+  it('a reply omits empty keys and surfaces a CLEAN body (no leaked from: or ---)', () => {
+    const reply = encodeMesh({ by: 'don.do', body: '🐕 Hola', re: 'HFM' });   // from is empty
+    expect(reply).not.toMatch(/\bfrom:/);                                       // no empty key emitted
+    const p = parseMesh(reply);
+    expect(p.body).toBe('🐕 Hola');
+    expect(p).toMatchObject({ by: 'don.do', re: 'HFM' });
+  });
+
+  it('strips a stray empty "from:" AND its divider out of the body (defense)', () => {
+    const p = parseMesh('```\n🐕 Hola\n\n---\nfrom:\nby: don.do\nre: HFM\n```');
+    expect(p.body).toBe('🐕 Hola');                                             // no trailing ---/from:
+  });
+
   it('parses tolerantly even if a bridge mangles the fence/divider', () => {
     expect(parseMesh('hi @don\n---\nfrom: HFM\nby: An\nto: do'))
       .toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', to: 'do' });
