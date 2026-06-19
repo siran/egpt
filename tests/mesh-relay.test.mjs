@@ -32,13 +32,13 @@ function harness({ donReply = async () => 'yes, here' } = {}) {
 describe('mesh relay — YAML provenance over a shared channel', () => {
   it('encodes the human-first wire format and round-trips', () => {
     const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
-    expect(w).toBe('An: hi @don\n\n---\n```\nfrom: HFM\nby: An\n```');
+    expect(w).toBe('```\nhi @don\n\n---\nfrom: HFM\nby: An\n```');   // whole payload fenced
     expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });
   });
 
-  it('parses tolerantly when a bridge strips the ``` fences', () => {
-    expect(parseMesh('An: hi @don\n\n---\nfrom: HFM\nby: An'))
-      .toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An' });
+  it('parses tolerantly even if a bridge mangles the fence/divider', () => {
+    expect(parseMesh('hi @don\n---\nfrom: HFM\nby: An\nto: do'))
+      .toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', to: 'do' });
   });
 
   it('relays @don, acks "relayed — waiting", and surfaces the reply home', async () => {
@@ -48,9 +48,10 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
 
     // wire: body preserved, readable sender, YAML provenance — no cryptic tag
     expect(h.channel).toHaveLength(1);
-    expect(h.channel[0]).toMatch(/^An: hi @don/);
+    expect(h.channel[0]).toMatch(/^```/);          // whole payload fenced (verbatim over transport)
+    expect(h.channel[0]).toMatch(/hi @don/);       // body preserved, unchanged
+    expect(h.channel[0]).toMatch(/to: do/);
     expect(h.channel[0]).not.toMatch(/egpt-mesh/);
-    expect(h.channel[0]).toMatch(/from: HFM/);
     // honest ack on the origin (NOT a faked "thinking")
     expect(h.acks.kg[0].text).toMatch(/relayed to don\.do — waiting/);
     expect(h.acks.kg[0].text).not.toMatch(/thinking/i);
