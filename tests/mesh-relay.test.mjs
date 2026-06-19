@@ -124,6 +124,19 @@ describe('mesh relay - human-first visible Room loop', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('suppresses a duplicate relay (same target+body) within the dedup window', async () => {
+    const h = harness();
+    const id1 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'ping', returnTo: { surface: 'shell' } });
+    const id2 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'ping', returnTo: { surface: 'shell' } });
+    expect(id1).toBeTruthy();
+    expect(id2).toBeNull();           // the double-dispatch is dropped — no second ping
+    expect(h.room).toHaveLength(1);   // only ONE request posted to the Room
+    // a different body is NOT suppressed
+    const id3 = await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'other', returnTo: { surface: 'shell' } });
+    expect(id3).toBeTruthy();
+    expect(h.room).toHaveLength(2);
+  });
+
   it('consumes (never re-relays) a tailed request addressed to another node', async () => {
     // The loop regression: the origin observes its OWN relayed request (e.g. via
     // a second bridge in the same group). It must consume it, not re-relay.
