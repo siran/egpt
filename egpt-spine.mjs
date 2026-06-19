@@ -4164,7 +4164,15 @@ function startSpineRuntime() {
     // explicitly true (default off — most installs have no local model, and a
     // missing/wrong model_path would just spam respawn errors). Toggle with
     // /e llama on (persists enabled:true). whatsapp, by contrast, defaults on.
-    if (!cfg || cfg.enabled !== true) return;
+    if (!cfg || cfg.enabled !== true) {
+      // Disabled — but if a prior llama is still ORPHANED on the configured port
+      // (Windows doesn't kill the child with its parent, and a disabled worker
+      // never runs the spawn-time reap), free its RAM now. This makes "set
+      // enabled:false + /restart" a COMPLETE unload through the outbox — no
+      // tree-kill, no /T caveat, no elevation (the 2026-06-19 harakiri lesson).
+      if (cfg && cfg.port != null) { try { reapPort(Number(cfg.port), logOut); } catch { /* best effort */ } }
+      return;
+    }
     const bin = cfg.bin;
     const model = cfg.model_path;
     const cwd = cfg.cwd || (bin ? dirname(bin) : undefined);
