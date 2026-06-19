@@ -22,12 +22,17 @@ import {
 
 // Compact, visible tail carried only in the route Room. Human body stays first;
 // this single line rides after it. No invisible Unicode — a plain bracket tag.
-const TAIL_RE = /\[egpt-mesh:(req|rep):([a-z0-9._-]+):(\d+)\]\s*$/i;
-const ADDR_RE = /(^|\s)@([a-z0-9_-]+)\.([a-z0-9_-]+)\b/i;
+// The tail carries the routing target EXPLICITLY: a limb may strip a leading
+// @handle from the body (Telegram strips @<agentHandle>, e.g. @don), so the body
+// @mention is not reliable for routing — the tail is.
+const TAIL_RE = /\[egpt-mesh:(req|rep):([a-z0-9._-]+):(\d+)(?::([a-z0-9._-]*))?\]\s*$/i;
+// Leading address remnant to strip from the prompt ("@don.dolly" or just ".dolly").
+const LEAD_ADDR_RE = /^\s*@?[a-z0-9_-]*\.[a-z0-9_-]+\b\s*/i;
 
-export function encodeMeshTail({ kind, id, ttl }) {
+export function encodeMeshTail({ kind, id, ttl, target = '' }) {
   const k = kind === 'reply' ? 'rep' : 'req';
-  return `[egpt-mesh:${k}:${id}:${normalizeMeshTtl(ttl)}]`;
+  const t = String(target ?? '').toLowerCase().replace(/[^a-z0-9._-]/g, '');
+  return `[egpt-mesh:${k}:${id}:${normalizeMeshTtl(ttl)}:${t}]`;
 }
 
 export function parseMeshTail(text) {
@@ -38,6 +43,7 @@ export function parseMeshTail(text) {
     kind: m[1].toLowerCase() === 'rep' ? 'reply' : 'request',
     id: m[2],
     ttl: normalizeMeshTtl(m[3]),
+    target: (m[4] ?? '').toLowerCase(),
     body: raw.replace(TAIL_RE, '').trimEnd(),
   };
 }
@@ -65,7 +71,8 @@ export function createMeshRelay({
     if (!route) { await surface(returnTo, `!! mesh: no route to ${toNode} (set mesh.nodes.${toNode}.routes)`); return null; }
 
     const id = makeMeshRequestId({ node, now, random });
-    const text = `@${name}.${toNode} ${body}`.trimEnd() + `\n${encodeMeshTail({ kind: 'request', id, ttl })}`;
+    const fqTarget = `${name}.${toNode}`;
+    const text = `@${fqTarget} ${body}`.trimEnd() + `\n${encodeMeshTail({ kind: 'request', id, ttl, target: fqTarget })}`;
 
     const timer = setTimeout(() => {
       if (!pending.has(id)) return;
@@ -103,28 +110,28 @@ export function createMeshRelay({
       return true;
     }
 
-    // kind === 'request' — ignore (without polluting our seen-cache) anything
-    // not addressed to this node; the origin sees its own request fly by here.
-    const addr = ADDR_RE.exec(tail.body);
-    if (!addr) return true;
-    const name = addr[2].toLowerCase();
-    const toNode = addr[3].toLowerCase();
-    if (toNode !== String(node).toLowerCase()) return true;
+    // kind === 'request' — route by the TAIL target (a limb may have stripped the
+    // body @mention). Ignore, without polluting our seen-cache, anything not for
+    // this node; the origin sees its own request fly by here.
+    const [tName, tNode] = String(tail.target ?? '').split('.');
+    const name = String(tName ?? '').toLowerCase();
+    const toNode = String(tNode ?? '').toLowerCase();
+    if (!name || toNode !== String(node).toLowerCase()) return true;
 
     if (seen.checkAndMark(tail.id)) { log(`mesh: replay dropped ${tail.id}`); return true; }
     if (tail.ttl <= 0) { log(`mesh: ttl expired before ${node} (${tail.id})`); return true; }
 
     const replyTtl = tail.ttl - 1;
     if (!isLocalBeing(name)) {
-      await send(route, `@${name}.${node} is not here\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl })}`);
+      await send(route, `@${name}.${node} is not here\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl, target: tail.target })}`);
       return true;
     }
 
-    const prompt = tail.body.replace(ADDR_RE, ' ').trim();
+    const prompt = tail.body.replace(LEAD_ADDR_RE, '').trim() || tail.body.trim();
     let reply;
     try { reply = await runBeing(name, prompt); }
     catch (e) { reply = `(@${name}.${node} error: ${e?.message ?? e})`; }
-    await send(route, `${String(reply ?? '').trim()}\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl })}`);
+    await send(route, `${String(reply ?? '').trim()}\n${encodeMeshTail({ kind: 'reply', id: tail.id, ttl: replyTtl, target: tail.target })}`);
     return true;
   }
 
