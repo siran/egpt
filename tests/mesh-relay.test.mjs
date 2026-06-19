@@ -95,13 +95,31 @@ describe('mesh relay - human-first visible Room loop', () => {
     expect(h.room).toHaveLength(0);
   });
 
-  it('times out visibly when no reply comes', async () => {
+  it('shows a "thinking" notice after the grace but never fails or drops', async () => {
     vi.useFakeTimers();
     try {
       const h = harness();
       await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'x', returnTo: { surface: 'shell' }, target: 'don.dolly' });
-      await vi.advanceTimersByTimeAsync(61_000);
-      expect(h.surfaced.reve[0].text).toMatch(/don\.dolly did not answer/);
+      await vi.advanceTimersByTimeAsync(13_000);
+      // a single "thinking" notice — NOT a failure — and the request is still pending
+      expect(h.surfaced.reve).toHaveLength(1);
+      expect(h.surfaced.reve[0].text).toMatch(/thinking/i);
+      expect(h.surfaced.reve[0].text).not.toMatch(/did not answer/i);
+      expect(h.reve.pending.size).toBe(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('delivers a late reply long after the grace — never thrown away', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ donReply: async (_n, p) => `late: ${p}` });
+      await h.reve.relayOut({ name: 'don', toNode: 'dolly', body: 'slow one', returnTo: { surface: 'shell' }, target: 'don.dolly' });
+      await vi.advanceTimersByTimeAsync(120_000);     // well past the 12s grace, far under the reaper
+      await h.deliver(h.room[0]);                       // dolly finally runs + posts its reply
+      await h.deliver(h.room[1]);                       // reve correlates the late reply
+      const texts = h.surfaced.reve.map(s => s.text);
+      expect(texts).toContain('late: slow one');        // the answer was delivered
+      expect(texts.some(t => /did not answer/i.test(t))).toBe(false);
       expect(h.reve.pending.size).toBe(0);
     } finally { vi.useRealTimers(); }
   });

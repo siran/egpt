@@ -9,6 +9,12 @@
 // request/reply can be correlated). The human's own chat (the origin Room) only
 // ever sees the clean body — surface() strips the protocol.
 //
+// A target being may take minutes (it can read files, reason, run tools — we
+// once watched a "what do you think?" turn read a whole source file and write a
+// critique in ~110s). So the origin NEVER fails a request on a timer and NEVER
+// drops a late reply: it surfaces a one-time "thinking…" notice so the human can
+// SEE it working, then delivers the answer whenever it lands.
+//
 // This module is carrier-agnostic: send/surface/runBeing/resolveRoute are
 // injected, so the whole loop is unit-testable with fake Rooms and never
 // touches a real network.
@@ -67,12 +73,13 @@ export function createMeshRelay({
   isLocalBeing = () => false,             // (name) => bool
   seen = createMeshSeenCache(),
   ttl = DEFAULT_MESH_TTL,
-  timeoutMs = 60_000,
+  noticeMs = 12_000,           // after this, tell the human the target is "thinking…" (once); 0 disables
+  reapMs = 30 * 60_000,        // silent leak-guard for a request that is NEVER answered; never reports failure; 0 = never reap
   log = () => {},
   now = Date.now,
   random = Math.random,
 } = {}) {
-  const pending = new Map();   // request_id -> { returnTo, timer, target }
+  const pending = new Map();   // request_id -> { returnTo, target, noticeTimer, reapTimer }
 
   // ── ORIGIN: relay an outbound @name.node that targets another node ──
   async function relayOut({ name, toNode, body = '', returnTo = null, target = null } = {}) {
@@ -85,18 +92,30 @@ export function createMeshRelay({
     const fqTarget = `${name}.${toNode}`;
     const text = `@${fqTarget} ${body}`.trimEnd() + `\n${encodeMeshTail({ kind: 'request', id, ttl, target: fqTarget })}`;
 
-    const timer = setTimeout(() => {
-      if (!pending.has(id)) return;
-      pending.delete(id);
-      surface(returnTo, `!! ${label} did not answer within ${Math.round(timeoutMs / 1000)}s`).catch(() => {});
-    }, timeoutMs);
-    timer.unref?.();
-    pending.set(id, { returnTo, timer, target: label });
+    const entry = { returnTo, target: label, noticeTimer: null, reapTimer: null };
+    // "See it think": a being may legitimately take minutes. We never fail and
+    // never drop — but if the answer hasn't landed within the grace, tell the
+    // human it's working, once, so silence never reads as a dead request.
+    if (noticeMs > 0) {
+      entry.noticeTimer = setTimeout(() => {
+        if (pending.has(id)) surface(returnTo, `🧠 ${label} is thinking…`).catch(() => {});
+      }, noticeMs);
+      entry.noticeTimer.unref?.();
+    }
+    // The ONLY timer that clears state: a generous, SILENT leak-guard for a
+    // request that is never answered (e.g. the target is offline). It reports
+    // nothing and is long enough that no real reply is ever lost.
+    if (reapMs > 0) {
+      entry.reapTimer = setTimeout(() => { pending.delete(id); }, reapMs);
+      entry.reapTimer.unref?.();
+    }
+    pending.set(id, entry);
 
     try {
       await send(route, text);
     } catch (e) {
-      clearTimeout(timer);
+      clearTimeout(entry.noticeTimer);
+      clearTimeout(entry.reapTimer);
       pending.delete(id);
       await surface(returnTo, `!! mesh relay failed for ${label}: ${e?.message ?? e}`);
       return null;
@@ -115,7 +134,8 @@ export function createMeshRelay({
     if (tail.kind === 'reply') {
       const p = pending.get(tail.id);
       if (!p) { log(`mesh: reply for unknown/handled request ${tail.id}`); return true; }
-      clearTimeout(p.timer);
+      clearTimeout(p.noticeTimer);
+      clearTimeout(p.reapTimer);
       pending.delete(tail.id);
       await surface(p.returnTo, tail.body);
       return true;
