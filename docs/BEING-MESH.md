@@ -1,370 +1,224 @@
-# BEING-MESH - federated eGPT beings over visible Rooms
+# BEING-MESH — federated eGPT beings over shared chats
 
-Status: **DESIGN - spec only, no implementation yet.** Captures the An/e7
-design session of 2026-06-18, revised after the Room/limb framing became
-clearer.
+Status: **DESIGN — re-architected 2026-06-19 (An/e7 session).** This supersedes
+the earlier route-room/envelope model. The mesh is now *decentralised by
+default*: there is no central router, no dedicated route Room, and no machine
+envelope — beings reach each other through ordinary shared chats, and the only
+machine bit is a small, human-readable provenance tail on relay hops.
 
-Read alongside GENOME (I6, I8), the emit gate, the transcription-service code,
-and the Room abstraction.
+Read alongside GENOME §11 (the mesh law) and I8 (no invisible backchannel), the
+stop-guard (C7.7), `allowed_users` / the emit gate, and the transcript
+discipline.
 
-## 0. What This Is
+## 0. What this is
 
-Being Mesh lets eGPT beings on different spines address each other by name.
+Being Mesh lets eGPT beings on different spines (machines) address each other by
+name — `@don.do`, `@wren.kg` — and answer each other in the open, so a human can
+always read the exchange.
 
-The transport is not the point. A spine can see Rooms through limbs:
+The core realisation that drives the whole design:
 
-- Beeper rooms
-- Telegram bot chats
-- WhatsApp rooms
-- Signal rooms through Beeper
-- Signal rooms through signal-cli
-- future Gmail, Matrix, Slack, Discord, etc.
+> **A shared chat is the shared stream.** Two spines that sit in the same chat —
+> whether it's one person's account on two machines, or two people's separate
+> accounts in one group — *already see the same messages.* So the cross-machine
+> "hop" we used to build a route Room for **does not exist**: the being's own
+> spine sees the message directly and answers in place.
 
-The actual primitive is:
+Everything else is consequence.
 
-```text
-origin spine -> visible Room message -> target spine observes it -> local being runs
-```
+## 1. The one law
 
-eGPT is the virtual bot. Platform bots are only one possible limb shape.
-
-Telegram bot-to-bot is one option, not a dependency: Beeper already exposes
-Telegram, Signal, WhatsApp, and other networks as rooms eGPT reads and writes.
-
-The mesh has no central server. Each spine owns its local beings, identities,
-trust decisions, and limbs. Peers learn about one another through shared Rooms
-or configured registries.
-
-## 1. Transport Model
-
-Being Mesh is Room-visible, not bot-specific.
-
-| Limb | Native Shape | Mesh Meaning |
-| --- | --- | --- |
-| Beeper | normalized multi-network rooms | preferred general limb |
-| Telegram Bot API | bot account/chats | useful direct relay, bot-to-bot optional |
-| Signal via Beeper | normal Signal account rooms | account-as-limb |
-| Signal via signal-cli | linked/account client | fallback account-as-limb |
-| WhatsApp via Beeper/CDP | normal account rooms | account-as-limb |
-| Matrix/Slack/Discord | accounts/apps/bots | room/app-as-limb |
-
-Requirement: the target spine must be able to observe a visible Room message
-addressed to it, and the origin spine must have a return Room or correlation
-path.
-
-This keeps the mesh independent of each platform's bot semantics.
-
-## 2. Addressing: `<name>.<node>`
-
-Everything - human, being, or service - can be named `<name>.<node>`.
-
-- `don.morgan` means being `don` hosted by node `morgan`.
-- `an.reve` means human An as known by node `reve`.
-- `@don` is origin-local shorthand. If two known peers expose `don`, the node is
-  required.
-
-The node is the authority for the local name. It is like the domain half of an
-email address.
-
-Handles are local conveniences; envelopes carry resolved identities. If REVE
-resolves `@don` to `don.morgan`, the wire message carries `don.morgan`, not the
-bare alias.
-
-## 3. Relay Envelope
-
-A mesh message is an envelope, not just a mention. The envelope provides routing,
-authorization, correlation, and loop control.
-
-```yaml
-version: 1
-kind: mesh.request
-to:       { kind: being, id: don.morgan }
-handle:   don
-id:       "<uuid>"
-origin:
-  who:    { kind: human|being, id: an.reve }
-  room:   { node: reve, id: "!6ljZ...", label: HFM }
-via:
-  node:   reve
-  limb:   beeper
-ttl:      2
-prompt:   "here?"
-```
-
-Rules:
-
-- `to` is resolved before sending.
-- `origin.who` is the auth subject. It must be stable and provable enough for
-  the limb, never a display name.
-- `origin.room` is the return address.
-- `id` is mandatory when quote/reply metadata is unavailable or when the request
-  crosses a route Room.
-- `ttl` is mandatory for routed relays. Decrement at each routed hop; drop at
-  zero.
-- Receivers keep a short-lived seen cache keyed by message id / request id /
-  signature to stop loops and replay.
-
-Replies use quote/reply metadata where available, otherwise the same request id:
-
-```yaml
-version: 1
-kind: mesh.reply
-to:       { kind: room, node: reve, id: "!6ljZ..." }
-from:     { kind: being, id: don.morgan }
-origin:   { kind: human|being, id: an.reve }
-in_reply_to: "<uuid-or-room-message-id>"
-body:     "yes, here"
-```
-
-### Envelope as a view, not a blob
-
-Most of the envelope is already implicit in an ordinary Room message, so it is
-never dumped as visible YAML (which would turn a chat into protocol noise):
-
-- correlation   the quote-reply relationship (the reply quotes the request)
-- `origin.who`  the message sender (provable by the limb)
-- `origin.room` the room it was sent in
-- `prompt`      the text
-
-Only fields the limb cannot derive need an explicit machine tail or limb metadata:
-usually `kind`, `version`, `id`, `ttl`, and a signature. The human sees
-"@don.morgan here?" and Don's reply; the protocol rides the message's natural
-structure. Correlation is trivial when quote-reply survives the limb.
-
-There is no full path `trace` in v1. Loops are handled with `ttl` plus the seen
-cache. Delegated authorization uses `root` / `via` provenance when needed, not a
-complete hop list.
-
-## 4. Relay Flow
-
-Example: An is in HFM on REVE and invokes `@don.morgan`.
+Every spine runs the **same uniform loop** on every message from every limb
+(Beeper, Telegram, WhatsApp, …). There is no separate "mesh path":
 
 ```text
-HFM on REVE:
-  An: @don.morgan here?
-
-REVE:
-  resolve don.morgan
-  choose a limb and target Room visible to MORGAN
-  send mesh.request with a request id, or rely on quote-reply if co-present
-
-MORGAN:
-  observes request in that Room
-  validates identity, replay guard, ttl, and grant
-  dispatches local being don
-  sends mesh.reply quoting or referencing the request
-
-REVE:
-  matches the quote or request id
-  posts Don's answer into HFM
+receive (from a limb)
+  → log it           (transcript — first-class, unconditional)
+  → validate it      (allowed_users; Beeper already authenticated the account)
+  → decide locally   (is this for one of MY beings, in a chat I'm in?)
+  → if asked, ANSWER (run the being and reply IN PLACE — or say "no <being> here")
 ```
 
-Two cases hide in "a Room visible to MORGAN":
+The decision is the **receiving spine's alone**. The originator does not route,
+resolve, or know who will answer — it dropped a message into a chat and is "on
+another level, another time." No coordinator, no registry lookup at the origin,
+no central anything.
 
-- Target co-present in the origin Room (Morgan is also in HFM): request and reply
-  happen in HFM, visibly - no separate relay Room. The default; needs almost no
-  machinery.
-- Target not present: route via a Room both nodes share (a registry route), then
-  carry the reply back to the origin Room. The harder path.
+## 2. Addressing: `@being.node`
 
-A local config entry should make this a sibling kind:
+- `@don.do` — being `don`, hosted by node `do`.
+- `@wren.kg` — being `wren`, hosted by node `kg`.
+- Bare `@don` is a convenience; it works when only one reachable node exposes
+  `don`. Qualify with `.node` when two could answer.
+
+`node` is the machine's configured `node_name` (e.g. `kg`, `do`) — the authority
+for its local names, like the domain half of an email address. **It must be
+unique per machine** — that uniqueness is what guarantees exactly one responder.
+
+A spine claims a message iff: it **is** that node, it **owns** that being, and it
+**sees** that chat. Three independent spines can watch the same group; only the
+one matching `(being, node)` in a chat it participates in responds. Everyone
+else stays silent (not their node). Collisions dissolve naturally: a spine that
+doesn't recognise the origin chat ("morgan doesn't know HFM") simply isn't being
+asked.
+
+## 3. Two paths: direct, and relay
+
+**Direct (the default, ~all of it).** The target being's spine is already in the
+chat. It sees `@don.do`, runs `don`, and posts the reply back into that same
+chat where everyone sees it. No relay, no envelope, no route Room, no
+correlation bookkeeping — the reply is just a message in the chat. Multi-mention
+"just works": `@don.do @wren.kg` is picked up independently by each owning spine.
+
+**Relay (the exception).** The target being is **not** on your stream — another
+person's machine, an off-network being. A local sibling record of `type: relay`
+says where to forward:
 
 ```yaml
 don:
   type: relay
   to: don.morgan
-  preferred_limb: beeper
+  via: { limb: beeper, chat: "<room/chat where morgan listens>" }
 ```
 
-The dispatcher does not spawn a local brain for `type: relay`; it emits an
-envelope and awaits the correlated reply.
+The dispatcher does **not** spawn a local brain for a `relay` record. It re-posts
+the message — with a provenance tail (§4) — into the channel `morgan` listens
+on; `morgan`'s spine owns `don.morgan` and answers there; the relaying spine
+watches that channel and surfaces the answer home via the chat's **native reply
+threading**. The provenance tail is the only place machine metadata ever rides.
 
-## 5. Registry And Peering
+## 4. Provenance — the YAML tail
 
-Each spine owns its own registry. There is no global source of truth.
+When a message crosses spines (a relay hop), it carries a small **fenced YAML
+tail** so that bot↔bot traffic is *always human-visible and auditable* (I8) —
+never a hidden side channel. Human body first, divider, then the block:
 
-Minimal registry shape:
+````text
+hi @don.morgan
 
-```yaml
-nodes:
-  morgan:
-    beings: [don]
-    routes:
-      - limb: beeper
-        room_id: "<beeper-room-or-chat-id>"
-      - limb: telegram
-        username: egpt_morgan_bot
+---
 ```
-
-Peering can start manually. Gossip can come later.
-
-When gossip exists, it should be visible and auditable:
-
-```text
-reve announces: node=reve beings=e,wren routes=...
-morgan announces: node=morgan beings=don routes=...
+from: HFM
+by: Andres
 ```
+````
 
-No spine should blindly accept a gossiped peer as trusted. Discovery tells us
-where a node claims to be; grants decide what it may do.
+- **Only the truly-needed keys.** Today: `from` (origin chat) and `by` (sender).
+- **No `id`, no `ttl`.** Correlation rides the chat's native message/reply
+  threading (every message already has an id); loops are bounded by the
+  stop-guard (§6). We mint neither.
+- **`sig:` is reserved**, not built — the slot where cross-*person* trust would
+  plug in later (morgan verifying kg's claimed `by:`). Off until trust genuinely
+  crosses people.
+- **Parse tolerantly.** Some bridges transmute a ``` fence into a rich code-block
+  entity, so the literal backticks may not round-trip byte-for-byte. Recognise
+  the trailing `key: value` provenance whether the fence arrives literal,
+  re-rendered, or stripped — never depend on an exact fence match.
 
-## 6. Trust
+In a **direct** (shared-chat) exchange the origin is ambient — everyone is in the
+chat — so the tail is only load-bearing on **relay** hops.
 
-Identity says who. Grants say what they may do.
+## 5. Never silence
 
-Stable identity is limb-specific:
+> If a spine is asked, it **MUST** answer.
 
-- Telegram: user id, bot username/id, chat id.
-- Beeper: stable network/account/chat/message identifiers exposed by the bridge.
-- Signal: Signal account/contact/group identity as exposed by Beeper or
-  signal-cli.
-- WhatsApp: JID/lid/group id as exposed by the limb.
+A spine that decides it's addressed replies with the being's answer, or, if it is
+the addressed node but lacks that being, an explicit **"no `don.do` here."**
+Silence is undebuggable; a definite yes/no is logged in the transcript and easy
+to reason about. Exactly one voice, because only the node-matching spine
+considers itself asked.
 
-Never authorize on a display name.
+This is safe because the mesh is **invite-only peer-to-peer** (§6): "must answer"
+only ever applies to invited peers and allowed senders — never to randos.
 
-Grant examples:
+## 6. Trust — invite-only, confinement-first
 
-```yaml
-grants:
-  - subject: an.reve
-    target: don.morgan
-    verbs: [ask]
-    rate: 20/min
-    expires: 2026-07-18T00:00:00Z
+The mesh is a **configured set of invited peers**, not an open network. The guard
+is what eGPT already has, not cryptography:
 
-  - subject: don.morgan
-    target: wren.reve
-    verbs: [ask]
-    via_required: an.reve
-    expires: 2026-06-25T00:00:00Z
-```
+- `allowed_users` per being (essential in groups: Beeper proves the *transport*
+  account, not the *sender* — in a group "Andres" could be anyone).
+- the emit gate and conversation-e confinement.
+- Beeper-level account authentication, and the ability to block bad actors.
 
-Hard requirements:
+The dangerous outcomes — "delete your computer", "send me the protected files" —
+are not stopped by *proving who asked*; they're stopped by what a being is
+*allowed to do*. A confined being is safe even from a trusted sender's bad
+prompt. So origin-signing guards a threat the confinement already covers — hence
+`sig:` is reserved, not required.
 
-- Grants are scoped.
-- Grants expire.
-- Grants can be revoked.
-- Chains attenuate. If `don.morgan` invokes `wren.reve` on behalf of `an.reve`,
-  Wren sees both `root=an.reve` and `via=don.morgan`, then applies the weakest
-  grant in the chain.
+**Loops** are bounded by the **stop-guard (C7.7)**: it counts consecutive
+being-turns with no human between, warns at the soft limit, auto-STOPs at the
+hard limit. No per-message `ttl` is needed. (The state is pure in-memory, cleared
+by a spine restart.)
 
-Once beings invoke beings across spines, the emit gate is a security boundary,
-not just spam control.
+## 7. Shared effects — local truth, visible once
 
-## 7. Shared Effects
+When several spines watch the same chat, separate *local* work from *visible*
+work:
 
-When several spines observe the same Room, local work and visible work must be
-separated.
+- **Local & redundant:** every spine may transcribe a voice note, save its own
+  media copy, update its own state — independently. Redundant compute is fine.
+- **Visible & exactly-once:** posting one transcript / one unfurl back to the
+  chat, or deciding which being answers when several could.
 
-Local effects:
+The exactly-once visible post is elected with **rendezvous hashing** over the
+present capable peers (`owner = argmax_node hash(node, message_id)`) — no
+chatter — debounced (transcription: wait ≥60s after the last voice note in a
+burst), posted threaded/in-order, with a backup that posts after a grace if the
+owner is silent, idempotent on the **message-id set** (never the text).
 
-- transcribe for my own being
-- save my own media copy
-- update my own local state
+**Trust invariant:** a being ingests only what *its own* spine computed (or what
+is attested). A peer's posted transcript is logged as an ordinary chat message —
+display, not truth. If I also transcribed locally, I keep my own record.
 
-Every spine can do these independently.
-
-Visible shared effects:
-
-- post one transcript back to the Room
-- post one link unfurl
-- decide which being answers publicly when several could
-
-These must happen exactly once.
-
-Protocol for shared visible effects:
-
-1. Compute a deterministic owner with rendezvous hashing:
-   `owner = argmax_node hash(node_id, message_id)` over present capable peers.
-2. Debounce bursts before posting. For voice notes, wait at least 60 seconds
-   after the last note in a burst.
-3. Post threaded/in-reply-to the original messages, in order.
-4. Backups watch the Room. If the primary does not post, rank `k` posts after
-   `k * grace`.
-5. Dedup by message id set, not transcript text.
-
-Trust invariant:
-
-A being ingests only what its own spine computed, or what is cryptographically
-attested. A peer's posted artifact is display, not truth.
-
-So:
-
-- My local transcript can feed my being.
-- A peer's posted transcript is logged as a Room message.
-- If I also transcribed locally, I keep that record too.
-
-Redundant compute is acceptable. Trusting another spine's AI output silently is
-not.
+(This is a later slice — the direct/relay loop comes first.)
 
 ## 8. Invariants
 
-1. A relay is a visible Room event or a logged limb event, not hidden process RPC.
-2. eGPT is the virtual bot; platform bots are just limbs.
-3. Bot-to-bot support is optional transport capability, not a mesh dependency.
-4. Stable identity only; never authorize on display names.
-5. The wire carries resolved identity, not only a local alias.
-6. Every routed relay carries a correlation strategy, replay guard, and hop
-   budget. A full path trace is not required.
-7. Grants are scoped, expiring, revocable, and attenuating across chains.
-8. Local truth is self-computed; peer output is display unless attested.
-9. Visible shared effects are exactly-once; local effects are redundant and
-   independent.
+1. A being is reached only through a chat message a human could read — never a
+   hidden RPC (I8). The YAML provenance keeps even bot↔bot legible.
+2. Every spine decides **locally**. No central router, no origin resolution.
+3. Addressing is `@being.node`; `node_name` is unique per machine ⇒ **exactly one
+   responder**.
+4. Asked ⇒ a definite answer (the being, or "no `<being>.<node>` here"). **Never
+   silence.**
+5. The mesh is **invite-only**; the guard is `allowed_users` + the gate +
+   confinement + Beeper + block — **confinement, not crypto.**
+6. Local truth is self-computed; a peer's artifact is **display unless attested.**
+7. Loops bounded by the **stop-guard**; correlation by **native threading** — no
+   minted `id`/`ttl`, no envelope bookkeeping.
+8. Direct (shared-chat) is the default; **relay** records are only for beings off
+   your stream, and only there does the YAML tail ride.
 
-## 9. Current State
+## 9. What the re-architecture removed
 
-Already present:
+This design is mostly **subtraction** from the route-room model:
 
-- Room abstraction.
-- Beeper bridge covering multiple networks.
-- Telegram bridge.
-- WhatsApp paths via Beeper/CDP.
-- Per-node/spine runtime direction.
-- `siblings` registry shape.
-- emit gate.
-- transcription-service per-chat verdicts.
-- stable-id discipline in several limbs.
+| Removed | Replaced by |
+| --- | --- |
+| dedicated **route Room** | shared chat = shared stream; owner answers in place |
+| cryptic `[egpt-mesh:req:id:ttl:target]` tail | legible fenced YAML provenance (`from`/`by`) |
+| minted request **`id`** + **`ttl`** | native chat threading + the stop-guard |
+| outbound **dedup hack** | node-authoritative single responder + unique `node_name` |
+| **grants / signing** as a built layer | invite-only + `allowed_users` + confinement; `sig:` reserved |
+| central **resolver/router** at the origin | each spine decides locally |
 
-Partially present:
+Kept: the `@being.node` resolver (`src/mesh/names.mjs`), the transcript
+discipline, the stop-guard, the emit gate / `allowed_users`, and the `type:
+relay` sibling — now scoped to the genuine off-stream case.
 
-- Presence/heartbeat concepts.
-- per-chat service decisions.
-- file IPC and limb separation.
+## 10. Current state
 
-Not built:
+Present: Room/limb abstraction, Beeper bridge (multi-network), Telegram bridge,
+WhatsApp via Beeper/CDP, per-node runtime, `siblings` registry, emit gate,
+per-chat transcription, stop-guard (C7.7), `@being.node` resolver.
 
-- `type: relay` siblings.
-- `<name>.<node>` resolver.
-- mesh request/reply envelope.
-- request id / quote-reply correlation and timeout/retry handling.
-- route selection across limbs.
-- peer registry/gossip.
-- cross-node grants and attenuation.
-- HRW ownership for shared visible effects.
-- optional cryptographic node signatures.
+Not yet built to this design: the uniform per-spine decide-and-answer loop over
+shared chats (replacing the route-room dispatch), the YAML provenance tail (in
+place of the bracket tag), `type: relay` forwarding with native-threading
+surface-back, and the HRW shared-effects layer.
 
-## 10. First Implementation Slice
-
-Do not start with gossip or grants.
-
-Start with one narrow path:
-
-1. Add `type: relay` sibling config.
-2. Resolve `don.morgan` from a static registry.
-3. Emit a `mesh.request` into a chosen Room via Beeper or Telegram.
-4. Have the target spine recognize the envelope and dispatch a fake local
-   handler.
-5. Send `mesh.reply` quoting or referencing the request.
-6. Origin posts the reply back into the original Room.
-7. Add tests with fake limbs and fake Rooms.
-
-This proves the architecture without depending on any platform-specific bot
-feature.
-
-## 11. Open Questions
-
-- What is the minimal stable identity shape Beeper exposes for each network?
-- What is the operator UX for grants?
-- What is the timeout/retry policy for pending request ids?
-- How fresh must presence be before HRW failover risks duplicate posts?
-- Which peer artifacts deserve cryptographic attestation?
+The empirical prerequisite — two spines on separate accounts sharing one chat
+(`kg` on the main number, `do` on an alternate number, in one group) — is the
+topology to build against.
