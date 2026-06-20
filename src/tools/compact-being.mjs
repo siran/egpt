@@ -32,6 +32,12 @@ import { pathToFileURL } from 'node:url';
 export const MODEL_WINDOWS = { haiku: 200_000, sonnet: 1_000_000, opus: 1_000_000 };
 export const DEFAULT_WINDOW = 200_000;
 export const COMPACT_RATIO  = 0.25;   // keep sessions THIN — compact at 25% of the window (An 2026-06-19)
+// A session whose jsonl changed within this window is treated as a turn IN FLIGHT
+// (or just-ran) and is NOT reaped — reaping a live turn guillotines it (the
+// 2026-06-20 bug: the hourly scan killed Wren's 2.4-min answer, claude exited
+// 4294967295). Generous on purpose: skipping a cycle is free (next beat retries
+// once the session goes quiet). An 2026-06-20: "if there is a turn going on, skip".
+export const BUSY_WINDOW_MS = 10 * 60 * 1000;
 
 export function windowForModel(model) {
   const m = String(model || '').toLowerCase();
@@ -76,6 +82,14 @@ export function needsCompaction(tokens, { window = DEFAULT_WINDOW, ratio = COMPA
   return tokens >= Math.round(window * ratio);
 }
 
+// ── pure: is a session "active" right now? Claude writes the session jsonl at
+//    turn START (the user message) and during streaming, so a recent mtime ⇒ a
+//    turn is in flight (or just ran). The compactor must NOT reap an active
+//    session — that guillotines the live turn. ──
+export function isActiveMtime(mtimeMs, now = Date.now(), windowMs = BUSY_WINDOW_MS) {
+  return Number.isFinite(mtimeMs) && (now - mtimeMs) < windowMs;
+}
+
 // ── pure: the LOCAL ccode siblings with a resumable session (the only kind
 //    /compact applies to — sdk/codex/llama manage context differently). ──
 export function compactableBeings(config) {
@@ -100,6 +114,11 @@ function findSessionFile(sessionId) {
     try { if (statSync(f).isFile()) return f; } catch { /* not here */ }
   }
   return null;
+}
+
+// Is a turn in flight on this session (don't reap it)? Reads the jsonl mtime.
+function sessionActive(file, windowMs = BUSY_WINDOW_MS) {
+  try { return isActiveMtime(statSync(file).mtimeMs, Date.now(), windowMs); } catch { return false; }
 }
 
 // Kill any claude process currently holding the session (single-active guard):
@@ -130,13 +149,20 @@ function runCompactTurn({ sessionId, cwd, model, log }) {
 // Compact ONE being iff it's over threshold (or force). Returns a report row.
 // dryRun reports the decision (ok / would-compact) without touching anything —
 // for safe inspection.
-export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RATIO, force = false, dryRun = false } = {}) {
+export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RATIO, force = false, dryRun = false, busyWindowMs = BUSY_WINDOW_MS } = {}) {
   const window = being.window || windowForModel(being.model);
   const file = findSessionFile(being.sessionId);
   if (!file) return { ...being, status: 'no-session-file' };
   const before = latestContextTokens(readFileSync(file, 'utf8'));
   const over = force || needsCompaction(before, { window, ratio });
   if (!over) return { ...being, before, status: 'ok' };
+  // BUSY-SKIP (An 2026-06-20): a turn in flight ⇒ skip this cycle, never reap it.
+  // The scan is automatic + periodic, so skipping is free — it compacts once the
+  // session goes quiet. A manual `force` (named target) is the operator's override.
+  if (!force && sessionActive(file, busyWindowMs)) {
+    log(`compact: ${being.name} active (jsonl touched <${Math.round(busyWindowMs / 60000)}m ago) — skip this cycle`);
+    return { ...being, before, status: 'busy-skip' };
+  }
   if (dryRun) return { ...being, before, status: 'would-compact' };
   log(`compact: ${being.name} at ${before} tok (threshold ${Math.round(window * ratio)}) — compacting…`);
   // Success = a NEW compact boundary appears (the post-compact token size isn't
@@ -174,9 +200,11 @@ export function scanAndCompact(targets, opts = {}) {
 // One-line human summary of a report set (for the heartbeat log / butler reply).
 export function summarize(reports) {
   const acted = reports.filter(r => r.status === 'compacted' || r.status === 'compact-failed');
-  if (!acted.length) return 'compact: nothing over threshold';
+  const busy = reports.filter(r => r.status === 'busy-skip').length;
+  const busyNote = busy ? ` (${busy} busy-skipped)` : '';
+  if (!acted.length) return 'compact: nothing over threshold' + busyNote;
   return 'compact: ' + acted.map(r =>
-    r.status === 'compacted' ? `${r.name} compacted (was ${r.before} tok)` : `${r.name} FAILED`).join(', ');
+    r.status === 'compacted' ? `${r.name} compacted (was ${r.before} tok)` : `${r.name} FAILED`).join(', ') + busyNote;
 }
 
 // ── CLI ──
@@ -208,6 +236,7 @@ if (isMain) {
   for (const r of reports) {
     const tag = r.status === 'compacted' ? `compacted (was ${r.before} tok)`
       : r.status === 'would-compact' ? `WOULD compact (${r.before} tok)`
+      : r.status === 'busy-skip' ? `busy — skipped (${r.before} tok)`
       : r.status === 'ok' ? `ok (${r.before} tok)` : r.status;
     log(`  ${r.name}: ${tag}`);
   }
