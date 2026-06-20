@@ -26,6 +26,7 @@ import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
 import { readTranscriptionConfig, DEFAULT_SERVICE as DEFAULT_TRANSCRIPTION_SERVICE } from './src/transcription-service.mjs';
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
+import { LIFECYCLE_COMMANDS, firstLifecycleToken, isSelfLifecycleCommand } from './src/spine-lifecycle-gate.mjs';
 import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // Baileys init goes through egpt-comm-handler.mjs — the keeper side
 // of the twin-soul split. Today it's a thin in-process wrapper; in
@@ -3624,6 +3625,8 @@ function startSpineRuntime() {
           const who = from.username ? `${from.username} (wa:${from.userId})` : `wa:${from.userId}`;
           logOut(`(whatsapp message from ${who}) -> ${text}`);
           const isCommand = text.trimStart().startsWith('/') || /^@\S+/.test(text.trimStart());
+          const selfDmChatId = EGPT_CONFIG.whatsapp?.chat_id ?? waBridgeRef.current?.selfDmJid ?? null;
+          const isSelfDm = isSelfLifecycleCommand({ text, fromChatId: from.chatId, selfChatId: selfDmChatId });
           if (isCommand && !from.authorized) {
             // Non-authorized sender. Slash commands are operator-only —
             // always drop (no /restart etc. from randos). A DIRECT @e/@egpt
@@ -3641,13 +3644,16 @@ function startSpineRuntime() {
             const _waCfg0 = EGPT_CONFIG.whatsapp ?? {};
             const _isAutoE0 = Array.isArray(_waCfg0.auto_e_chats)
               && _waCfg0.auto_e_chats.includes(from.chatId);
-            if (_isSlash) return;
+            if (_isSlash && isSelfDm) {
+              // Operator self-DM: allow lifecycle commands even if Beeper fails
+              // to tag the owner as authorized. The self chat itself is the
+              // contract; senderID auth is a transport hint.
+            } else if (_isSlash) return;
             if (!_isAutoE0 && !_isPersonaWake) return;
           }
           // Lifecycle commands restricted to 1:1 chats, same as Telegram.
-          const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
-          const firstTok = text.trimStart().split(/\s+/)[0];
-          if (LIFECYCLE.has(firstTok)) {
+          const firstTok = firstLifecycleToken(text);
+          if (LIFECYCLE_COMMANDS.has(firstTok)) {
             if (from.chatType !== 'private') {
               bridge.send(`${firstTok} only works in a 1:1 chat — DM me and try again`,
                 { chatId: from.chatId });
