@@ -2,7 +2,7 @@
 // egpt-spine.mjs — file IS the conversation; spine owns engine/bridges
 import YAML from 'yaml';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, watch as fsWatch, statSync, renameSync, appendFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, watch as fsWatch, renameSync, appendFileSync } from 'node:fs';
 import { readFile, writeFile, appendFile, readdir, stat, open, mkdir, unlink, rm, rename, symlink, copyFile } from 'node:fs/promises';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -77,6 +77,7 @@ import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { launchSpineProcess } from './src/spine-launch.mjs';
+import { startSpineOutputLog as startSpineOutputLogImpl } from './src/spine-output-log.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
@@ -9318,32 +9319,6 @@ startAliveHeartbeat();
 // back from inside the legacy lifecycle we get reply-able rows on the very
 // first frame, and attached limbs receive them through the output channel.
 
-function startSpineOutputLog() {
-  const HEADLESS_LOG_MAX_BYTES = 500 * 1024;
-  const HEADLESS_LOG_BACKUP = EGPT_HEADLESS_LOG + '.1';
-  const rotateIfBig = () => {
-    try {
-      const st = statSync(EGPT_HEADLESS_LOG);
-      if (st.size <= HEADLESS_LOG_MAX_BYTES) return;
-      try { unlinkSync(HEADLESS_LOG_BACKUP); } catch {}
-      renameSync(EGPT_HEADLESS_LOG, HEADLESS_LOG_BACKUP);
-    } catch {}
-  };
-  rotateIfBig();
-  try {
-    appendFileSync(EGPT_HEADLESS_LOG, `\n[${new Date().toISOString()}] egpt spine starting (pid ${process.pid}, file ${FILE})\n`, { mode: 0o600 });
-  } catch {}
-  return engine.subscribe((item) => {
-    if (item?._log) return;
-    try {
-      rotateIfBig();
-      const author = item?.author ?? 'system';
-      const body = String(item?.body ?? '').trimEnd();
-      appendFileSync(EGPT_HEADLESS_LOG, `[${new Date().toISOString()}] ${author}: ${body}` + '\n', { mode: 0o600 });
-    } catch {}
-  });
-}
-
 console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
 console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
 console.log();
@@ -9355,7 +9330,7 @@ await launchSpineProcess({
   takeoverIfRunning,
   writePidfile,
   startAliveHeartbeat,
-  startSpineOutputLog,
+  startSpineOutputLog: () => startSpineOutputLogImpl({ engine, logPath: EGPT_HEADLESS_LOG, file: FILE }),
   log: console.log,
   onExit: ({ code, stopSpineRuntime, stopOutputLog }) => {
     try { stopOutputLog?.(); } catch {}
