@@ -4382,31 +4382,33 @@ function startSpineRuntime() {
       heartbeatScanBusy = true;
       try {
         const now = Date.now();
-        // Butler-e maintenance heartbeat FIRST and in its OWN try, so a throw in
-        // the conversation/room loops below can never block it (buried at the end
-        // the first time, it never ran). ~/.egpt/butler/ (config.yaml +
-        // heartbeat.md) fires butler-e (haiku, full tools) for periodic UPKEEP,
-        // not conversation: keep each LOCAL ccode being's session under its model
-        // window (src/tools/compact-being.mjs --scan) so none hits "Prompt is too
-        // long". Decentralised — each spine tends its OWN beings; output to the
-        // engine log, never a chat.
+        // Command heartbeats — deterministic UPKEEP the engine runs ITSELF, NO AI
+        // in the loop (An 2026-06-19: "heartbeats should be more deterministic —
+        // AI not required for compression; only a heartbeat.yaml specifying the
+        // command, executed by the bridge"). Each ~/.egpt/heartbeats/<name>/
+        // heartbeat.yaml = { enabled, interval_min, command, cwd? }; the bridge
+        // runs the command on schedule. FIRST and in its own try so a throw in the
+        // conversation/room loops below can't block it. The canonical one keeps
+        // each LOCAL ccode being's session under its model window
+        // (compact-being.mjs --scan). logOut → egpt.log (durable); sysLog → the
+        // render buffer (dropped), so it MUST be logOut here.
         try {
-          const bdir = join(EGPT_HOME, 'butler');
-          const bcfg = await hb.readConfig(bdir);
-          if (bcfg.enabled && hb.shouldFire(bcfg, await hb.readLastFiredMs(bdir), now)) {
-            const bprompt = await hb.readPrompt(bdir);
-            if (bprompt) {
-              sysLog('butler heartbeat: firing (maintenance)…');
-              try {
-                const { runButler } = await import('./src/tools/butler.mjs');
-                const r = await runButler({ prompt: bprompt, cwd: APP_DIR, model: 'haiku', allowedTools: 'all' });
-                if (r?.error) sysLog(`!! butler heartbeat: ${r.error}`);
-                else sysLog(`butler heartbeat done (${r.durationMs}ms): ${String(r.text ?? '').trim().slice(0, 300) || '(no output)'}`);
-              } catch (e) { sysLog(`!! butler heartbeat run: ${e?.message ?? e}`); }
-              await hb.markFired(bdir);
-            }
+          const hroot = join(EGPT_HOME, 'heartbeats');
+          let subs = [];
+          try { subs = readdirSync(hroot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { /* no heartbeats dir = none */ }
+          for (const name of subs) {
+            const hdir = join(hroot, name);
+            const ch = await hb.readCommandHeartbeat(hdir);
+            if (!ch.enabled) continue;
+            if (!hb.shouldFire(ch, await hb.readLastFiredMs(hdir), now)) continue;
+            try {
+              const r = spawnSync(ch.command, { cwd: ch.cwd || APP_DIR, shell: true, encoding: 'utf8', timeout: 10 * 60 * 1000, windowsHide: true });
+              const out = (String(r.stdout ?? '').trim() || String(r.stderr ?? '').trim() || `exit ${r.status}`).slice(0, 300);
+              logOut(`heartbeat[${name}]: ${ch.command} → ${out}`);
+            } catch (e) { logOut(`!! heartbeat[${name}] command failed: ${e?.message ?? e}`); }
+            await hb.markFired(hdir);
           }
-        } catch (e) { sysLog(`!! butler heartbeat scan: ${e?.message ?? e}`); }
+        } catch (e) { logOut(`!! command-heartbeat scan: ${e?.message ?? e}`); }
         // Conversations — each contact with a slug maps to its folder.
         const cs = await _loadConvState();
         for (const surface of Object.keys(cs.contacts ?? {})) {

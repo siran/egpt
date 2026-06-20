@@ -28,6 +28,7 @@ export const MIN_INTERVAL_MIN = 0.1;
 
 export const configPath        = (dir) => join(dir, 'config.yaml');
 export const promptPath        = (dir) => join(dir, 'heartbeat.md');
+export const commandPath       = (dir) => join(dir, 'heartbeat.yaml');
 export const statePath         = (dir) => join(dir, 'heartbeat.state.json');
 
 // Parse the heartbeat block out of a config.yaml's text. Pure: takes the raw
@@ -43,6 +44,29 @@ export function parseHeartbeatConfig(yamlText) {
   const raw = Number(hb.interval_min);
   const intervalMin = Number.isFinite(raw) && raw > 0 ? Math.max(raw, MIN_INTERVAL_MIN) : DEFAULT_INTERVAL_MIN;
   return { enabled: hb.enabled === true, intervalMin };
+}
+
+// A COMMAND heartbeat (heartbeat.yaml): deterministic upkeep the engine runs
+// ITSELF — no AI in the loop. Pure parse of { enabled, interval_min, command,
+// cwd? }. enabled requires a non-empty command (a heartbeat that runs nothing is
+// disabled). Anything malformed → disabled. An 2026-06-19: "heartbeats should be
+// more deterministic — AI not required for compression; only a heartbeat.yaml
+// specifying the command, executed by the bridge."
+export function parseCommandHeartbeat(yamlText) {
+  let doc = {};
+  if (yamlText && yamlText.trim()) { try { doc = YAML.parse(yamlText) ?? {}; } catch { doc = {}; } }
+  if (!doc || typeof doc !== 'object') doc = {};
+  const raw = Number(doc.interval_min);
+  const intervalMin = Number.isFinite(raw) && raw > 0 ? Math.max(raw, MIN_INTERVAL_MIN) : DEFAULT_INTERVAL_MIN;
+  const command = (typeof doc.command === 'string' && doc.command.trim()) ? doc.command.trim() : null;
+  const cwd = (typeof doc.cwd === 'string' && doc.cwd.trim()) ? doc.cwd.trim() : null;
+  return { enabled: doc.enabled === true && !!command, intervalMin, command, cwd };
+}
+
+export async function readCommandHeartbeat(dir) {
+  let text = null;
+  try { text = await readFile(commandPath(dir), 'utf8'); } catch { /* no heartbeat.yaml = disabled */ }
+  return parseCommandHeartbeat(text);
 }
 
 // Pure firing gate: enabled AND the configured interval has elapsed since
