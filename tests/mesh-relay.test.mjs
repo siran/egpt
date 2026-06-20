@@ -165,4 +165,61 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     }
     expect(sends.length).toBeLessThanOrEqual(5);   // 20 requests, but the breaker halts the flood
   });
+
+  // ── STREAMING (An 2026-06-20): a relayed reply streams via edits — the responder
+  //    edit-streams into the relay room, the origin mirrors onto the origin chat. ──
+  it('done round-trips and is omitted when false', () => {
+    expect(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM', done: true })).toMatch(/\ndone: true\n/);
+    expect(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' })).not.toMatch(/\bdone:/);
+    expect(parseMesh(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM', done: true })).done).toBe(true);
+    expect(parseMesh(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' })).done).toBe(false);
+  });
+
+  it('RESPONDER edit-streams the reply into the relay room (🤔 placeholder → partials → final done)', async () => {
+    const frames = []; let streamFinal = null;
+    const doSpine = createMeshRelay({
+      node: 'do', send: async () => {}, surface: async () => {},
+      runBeing: async (_n, _p, _ctx, onPartial) => { onPartial('Ja'); onPartial('Jaja'); return 'Jaja, aquí'; },
+      beingEmoji: () => '🤝', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+      openStream: (_route, initial) => { frames.push(initial); return { update: (t) => frames.push(t), finish: async (t) => { streamFinal = t; } }; },
+    });
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'do' }), msgId: 'm1' });
+    expect(frames[0]).toMatch(/🤔/);                                              // placeholder posted first
+    expect(parseMesh(frames[frames.length - 1]).body).toBe('Jaja');              // last live edit = last partial
+    expect(parseMesh(streamFinal)).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', emoji: '🤝', done: true });
+  });
+
+  it('ORIGIN mirrors a streamed reply: first frame opens a stream, edits update it, done finalizes', async () => {
+    const updates = []; let finished = null; const oneShot = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async (_o, t) => oneShot.push(t), ack: async () => {},
+      runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
+      openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
+    });
+    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: '🤔', re: 'HFM', emoji: '🤝' }), msgId: 'r1' });
+    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: 'Jaja', re: 'HFM', emoji: '🤝' }) });
+    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', emoji: '🤝', done: true }) });
+    expect(updates[0].open).toMatchObject({ by: 'don.do', emoji: '🤝' });        // stream opened with the being's identity
+    expect(updates).toContain('🤔');
+    expect(updates).toContain('Jaja');
+    expect(finished).toBe('Jaja, aquí');                                          // done frame finalized
+    expect(oneShot).toHaveLength(0);                                             // streamed, never one-shot surfaced
+  });
+
+  it('ORIGIN one-shots (pre-streaming behavior) with no stream primitive, or a first frame already done', async () => {
+    const surfaced = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async (_o, t) => surfaced.push(t), ack: async () => {},
+      runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
+    });
+    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'final', re: 'HFM', emoji: '🤝', done: true }), msgId: 'r1' });
+    expect(surfaced).toEqual(['final']);
+  });
+
+  it('onRoomMessageEdit ignores an edit for a message it is not streaming (returns false → bridge handles it)', async () => {
+    const kg = createMeshRelay({ node: 'kg', send: async () => {}, surface: async () => {}, resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false });
+    expect(await kg.onRoomMessageEdit({ msgId: 'unknown', text: 'whatever' })).toBe(false);
+  });
 });

@@ -2836,6 +2836,9 @@ function startSpineRuntime() {
   // when the keeper runs in its own process the same call site
   // gets a file-IPC implementation, transparent to callers.
   const streamFactoryRef = ref(null);
+  // Late-bound: the mesh relay is created far below (after the bridge starts), but
+  // the bridge's onMessageEdit hook needs to reach it. Set after createMeshRelay.
+  const meshRelayRef = ref(null);
 
   let busyTimer = null;
   let busyWakeCleanup = null;
@@ -3387,6 +3390,11 @@ function startSpineRuntime() {
       const _bridgeOpts = {
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
+        // RAW edit hook → the mesh router: a relayed reply's relay-room message was
+        // edited (the responder streaming). Mirror it to the origin chat. Returns
+        // truthy iff consumed (the bridge then skips the edit stage-direction).
+        onMessageEdit:     async (_chatId, msgId, newText) =>
+          (await meshRelayRef.current?.onRoomMessageEdit?.({ msgId, text: newText })) || false,
         ...(personaNames ? { personaNames } : {}),
         // Default true: mid-body @e/@egpt routes to @e instead of
         // falling through to plain-text. Opt out with at_e_anywhere:false.
@@ -7120,14 +7128,40 @@ function startSpineRuntime() {
       sysOut(waBody);
     },
     beingEmoji: (name) => (EGPT_CONFIG.siblings?.[String(name).toLowerCase()]?.body_emoji) ?? '',
-    runBeing: async (name, prompt) => {
+    runBeing: async (name, prompt, _ctx, onPartial) => {
       const n = String(name).toLowerCase();
       const persona = String(EGPT_CONFIG.persona ?? EGPT_CONFIG.persona_name ?? 'e').toLowerCase();
+      // E persona stays one-shot (runDefaultBrainTurn has no onPartial); meta siblings
+      // (Don/Wren/…) stream — runMetaBrainTurn calls onPartial with each partial.
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
-      return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, () => {}, name);
+      return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
+    },
+    // RESPONDER: edit-stream the reply INTO the relay room (reuses the bridge's
+    // universal editor on route.room_id). Each frame is the full encoded mesh.
+    openStream: (route, initialText) => {
+      const room = route?.room_id;
+      if (room == null) return null;
+      const limb = String(route?.limb ?? '').toLowerCase();
+      const br = (limb === 'telegram' || limb === 'tg') ? bridgeRef.current : waBridgeRef.current;
+      if (!br?.startStreamMessage) return null;
+      return br.startStreamMessage(initialText, { chatId: room });
+    },
+    // ORIGIN: edit-stream the surfaced reply INTO the origin chat, stamping the
+    // being's identity (emoji) on every frame — the same tag surface() applies.
+    openOriginStream: (returnTo, info = {}) => {
+      const room = returnTo?.chat_id;
+      const tgt = returnTo?.surface === 'telegram' ? bridgeRef.current : waBridgeRef.current;
+      if (room == null || !tgt?.startStreamMessage) return null;
+      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
+      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
+      const wrap = (b) => { const body = String(b ?? '').trim() || '…'; return tag ? `${tag} ${body}` : body; };
+      const h = tgt.startStreamMessage(wrap('…'), { chatId: room });
+      if (!h) return null;
+      return { update: (b) => h.update?.(wrap(b)), finish: (b) => h.finish?.(wrap(b)) };
     },
     log: (m) => logOut(m),
   });
+  meshRelayRef.current = meshRelay;
 
   const submitInner = async (raw, text, meta = {}) => {
 
@@ -7170,7 +7204,9 @@ function startSpineRuntime() {
         if (typeof text === 'string' && parseMesh(text)) {
           const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
           const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: _meshChat != null ? String(_meshChat) : null };
-          if (await meshRelay.onRoomMessage({ route: _route, text })) return;
+          // msgId correlates a streamed relayed reply's first frame with its edits.
+          const _msgId = meta.waMsgKey ?? meta.telegramMessageId ?? null;
+          if (await meshRelay.onRoomMessage({ route: _route, text, msgId: _msgId })) return;
         }
       }
       // Outbound mesh relay: a @being mention whose being lives on a PEER node is
