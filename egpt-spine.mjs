@@ -78,6 +78,7 @@ import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWh
 import { stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { launchSpineProcess } from './src/spine-launch.mjs';
 import { startSpineOutputLog as startSpineOutputLogImpl } from './src/spine-output-log.mjs';
+import { createTelegramBootScheduler } from './src/spine-telegram-boot.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
@@ -3188,42 +3189,22 @@ function startSpineRuntime() {
   // → peer announce → 2s timer → start → 409 → ... — exactly the
   // race the user called out as wrong (the right semantic is "saw
   // 409, somebody else is polling, stop").
-  const tgBootAttempted = ref(false);
-  let tgBootTimer = null;
-  function scheduleTelegramBootAttempt() {
-    if (tgBootAttempted.current) return;
-    if (bridgeRef.current) return;
-    if (tgBootTimer) clearTimeout(tgBootTimer);
-    tgBootTimer = setTimeout(() => {
-      tgBootTimer = null;
-      if (tgBootAttempted.current) return;
-      tgBootAttempted.current = true;
-      if (bridgeRef.current) return;
-      const peers = [...peerNodesRef.current.values()];
-      const otherShellPolling = peers.some(p => p.polling && p.role !== 'chrome');
-      if (otherShellPolling) return;       // another shell owns it
-      const chromePolling = peers.some(p => p.polling && p.role === 'chrome');
-      if (chromePolling) {
-        // Preempt the extension. Post a self-handoff; the extension's
-        // telegram-handoff handler will stopBridge() since ev.to is
-        // not its own id. 1.5s settle lets the yield reach Telegram
-        // before our getUpdates opens (Bot API still 409s for several
-        // seconds after a polling stop).
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-            ts: Date.now(), to: BUS_NODE_ID }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-          setTimeout(() => startTgBridge(), 1500);
-          return;
-        }
-      }
-      startTgBridge();
-    }, 2000);
+  const tgBootSchedulerRef = ref(null);
+  if (!tgBootSchedulerRef.current) {
+    tgBootSchedulerRef.current = createTelegramBootScheduler({
+      startTgBridge,
+      isBridgeRunning: () => !!bridgeRef.current,
+      getPeers: () => [...peerNodesRef.current.values()],
+      getBusTargetId: () => busTargetIdRef.current,
+      postEvent: (tid, ev) => bus.postEvent(tid, ev),
+      nodeId: BUS_NODE_ID,
+      log: (m) => logOut(m),
+    });
   }
   startEffect(() => {
-    scheduleTelegramBootAttempt();
+    tgBootSchedulerRef.current.scheduleBootAttempt();
     return () => {
-      if (tgBootTimer) clearTimeout(tgBootTimer);
+      tgBootSchedulerRef.current.cancelBootAttempt();
     };
   }, []);
 
