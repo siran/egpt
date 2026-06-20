@@ -750,33 +750,17 @@ export async function startBeeperBridge(opts = {}) {
     myJid: null,   // no jid concept on this transport
     listEgptPinned: () => [],   // pins were a baileys-side feature
     setEgptPin: (..._a) => { onLog('beeper: setEgptPin not supported on this transport (yet)'); return null; },
-    // Stream a reply into the chat. Two modes:
-    //  • plain (E persona): buffer update()s, send the FINAL once on finish().
-    //    The host skips its fallback send only when the stream reports `delivered`,
-    //    so the handle MUST expose delivered (+ lastError) — else replies double-send.
-    //  • showThink (meta-engineers, An 2026-06-20): a REAL in-place editor — post
-    //    the 🤔 placeholder, edit it live as the turn streams, finish as
-    //    "<reply>\n\n✅ Done". ONE message; the 🤔→✅ lifecycle is OWNED HERE, in the
-    //    bridge, so every surface behaves identically. Edit/delete verified live.
+    // Stream a bot reply into the chat as a REAL in-place editor: post the
+    // placeholder, edit it live as the turn streams, finalize in place — ONE
+    // message, never a separate "final" send. The edit lifecycle is OWNED HERE in
+    // the bridge so every surface behaves identically. An 2026-06-20: edit-streaming
+    // is a bridge PROPERTY of ANY bot reply (the operator's own typing never
+    // streams — this only ever runs on a bot's generated reply). `showThink` only
+    // adds the 🤔 placeholder + "✅ Done" marker (engineers); a plain reply (E)
+    // finalizes to just its text. The host skips its fallback send only when the
+    // stream reports `delivered`, so the handle MUST expose delivered (+ lastError).
     startStreamMessage(initialText, { chatId, chatName, persona, showThink = false } = {}) {
-      if (!showThink) {
-        let latest = initialText, finished = false;
-        const handle = { delivered: false, lastError: null };
-        const deliver = async () => {
-          if (handle.delivered) return;
-          handle.delivered = true;
-          if (latest && latest.trim()) {
-            const r = await sendMessage(chatId ?? chatName, latest, {});
-            if (!r) { handle.delivered = false; handle.lastError = 'send returned null'; }
-          }
-        };
-        handle.update = (t) => { if (!finished && t) latest = t; };
-        handle.finish = async (t) => { if (t) latest = t; finished = true; await deliver(); };
-        handle.delete = async () => { finished = true; };   // nothing posted yet → no-op
-        handle.fail   = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
-        return handle;
-      }
-      // ── show-think in-place editor ───────────────────────────────────────────
+      // ── universal in-place editor (every bot reply) ──────────────────────────
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
       const EDIT_MIN_MS = 1500;   // debounce live edits so we don't hammer the API
@@ -822,7 +806,7 @@ export async function startBeeperBridge(opts = {}) {
         if (t) latest = t;
         await ready;
         if (cid && realId) {
-          const ok = await applyEdit(`${latest}\n\n✅ Done`);
+          const ok = await applyEdit(showThink ? `${latest}\n\n✅ Done` : latest);
           if (ok) handle.delivered = true; else handle.lastError = handle.lastError || 'final edit failed';
         }
         // Couldn't edit in place → drop the dangling placeholder so the spine's
