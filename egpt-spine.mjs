@@ -7136,33 +7136,14 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
-    // RESPONDER (An 2026-06-20, attempt #4): hand the relay prompt to the NORMAL
-    // dispatch (forceTarget=being, chat=relay room), tagged _meshReturn so the emit
-    // path wraps each streamed frame in the mesh tail. The being replies like ANY
-    // prompt (universal editor) — non-blocking; system-bypass + no-recirculation are
-    // handled in the emit path. No more relay-owned runBeing/openStream.
-    relayDispatch: async ({ being, prompt, route, re, by, emoji }) => {
-      if (!submitRef.current || route?.room_id == null) return;
-      await submitRef.current(prompt, {
-        forceTarget: being, fromWhatsApp: true, waChatId: String(route.room_id),
-        replyAllowed: true, autoDispatched: true,
-        _meshReturn: { re, by, emoji },
-      });
-    },
-    // ORIGIN: mirror the relayed reply into the origin chat via the universal editor,
-    // stamped with the being's identity. relay.mjs opens this on the first frame and
-    // feeds it the relay-room edits (onRoomMessageEdit).
-    openOriginStream: (returnTo, info = {}) => {
-      const room = returnTo?.chat_id;
-      const tgt = returnTo?.surface === 'telegram' ? bridgeRef.current : waBridgeRef.current;
-      if (room == null || !tgt?.startStreamMessage) return null;
-      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
-      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
-      const wrap = (b) => { const body = String(b ?? '').trim() || '…'; return tag ? `${tag} ${body}` : body; };
-      const h = tgt.startStreamMessage(wrap('…'), { chatId: room });
-      if (!h) return null;
-      return { update: (b) => h.update?.(wrap(b)), finish: (b) => h.finish?.(wrap(b)) };
-    },
+    // RELAY = ONE-SHOT, ENCODED (An 2026-06-20). Live token-streaming over the relay
+    // was abandoned: WhatsApp message EDITS don't reliably propagate cross-account
+    // (REVE got Don's 🤔 *send* but never the 🤔→reply *edit*), and streaming-via-edit
+    // inherits that flakiness. So we DON'T wire relayDispatch/openOriginStream — relay.mjs
+    // falls back to runBeing + guardedSend(encodeMesh(reply, done)) = ONE new message
+    // (new sends DO propagate), and the origin one-shot-surfaces it. The base64 body
+    // encoding (encodeMesh/parseMesh) carries Don's code reply through cleanly. TRUE
+    // cross-node live-streaming needs the sturdy side channel (direct socket), later.
     log: (m) => logOut(m),
   });
   meshRelayRef.current = meshRelay;
