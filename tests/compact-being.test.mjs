@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   latestContextTokens, needsCompaction, compactableBeings, compactableConversations, summarize, windowForModel,
-  DEFAULT_WINDOW, COMPACT_RATIO,
+  isActiveMtime, DEFAULT_WINDOW, COMPACT_RATIO, BUSY_WINDOW_MS,
 } from '../src/tools/compact-being.mjs';
 
 const usageLine = (u) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', usage: u } });
@@ -113,5 +113,25 @@ describe('compact-being — deterministic trigger', () => {
       { name: 'don', status: 'compacted', before: 150000 },
       { name: 'wren', status: 'ok', before: 20000 },
     ])).toBe('compact: don compacted (was 150000 tok)');
+  });
+
+  it('BUSY-SKIP: a session whose jsonl changed recently is mid-turn → never reaped (the 2026-06-20 Wren guillotine)', () => {
+    const now = 1_700_000_000_000;
+    // Wren's failed turn: the scan fired 2.4 min into the turn — INSIDE the window → must skip
+    expect(isActiveMtime(now - 2.4 * 60_000, now)).toBe(true);
+    expect(isActiveMtime(now - 1_000, now)).toBe(true);                    // 1s ago → active
+    expect(isActiveMtime(now - (BUSY_WINDOW_MS - 1), now)).toBe(true);     // just inside → active
+    expect(isActiveMtime(now - (BUSY_WINDOW_MS + 1), now)).toBe(false);    // just outside → idle, ok to compact
+    expect(isActiveMtime(now - 60 * 60_000, now)).toBe(false);            // an hour quiet → idle
+    expect(isActiveMtime(NaN, now)).toBe(false);                          // no mtime → not active
+  });
+
+  it('summarize notes busy-skipped sessions (so the heartbeat log shows the skip, not silence)', () => {
+    expect(summarize([{ name: 'wren', status: 'busy-skip', before: 60000 }]))
+      .toBe('compact: nothing over threshold (1 busy-skipped)');
+    expect(summarize([
+      { name: 'don', status: 'compacted', before: 150000 },
+      { name: 'wren', status: 'busy-skip', before: 60000 },
+    ])).toBe('compact: don compacted (was 150000 tok) (1 busy-skipped)');
   });
 });
