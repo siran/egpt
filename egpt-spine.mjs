@@ -7136,29 +7136,16 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
-    // RESPONDER: edit-stream the reply INTO the relay room (reuses the bridge's
-    // universal editor on route.room_id). Each frame is the full encoded mesh.
-    openStream: (route, initialText) => {
-      const room = route?.room_id;
-      if (room == null) return null;
-      const limb = String(route?.limb ?? '').toLowerCase();
-      const br = (limb === 'telegram' || limb === 'tg') ? bridgeRef.current : waBridgeRef.current;
-      if (!br?.startStreamMessage) return null;
-      return br.startStreamMessage(initialText, { chatId: room });
-    },
-    // ORIGIN: edit-stream the surfaced reply INTO the origin chat, stamping the
-    // being's identity (emoji) on every frame — the same tag surface() applies.
-    openOriginStream: (returnTo, info = {}) => {
-      const room = returnTo?.chat_id;
-      const tgt = returnTo?.surface === 'telegram' ? bridgeRef.current : waBridgeRef.current;
-      if (room == null || !tgt?.startStreamMessage) return null;
-      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
-      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
-      const wrap = (b) => { const body = String(b ?? '').trim() || '…'; return tag ? `${tag} ${body}` : body; };
-      const h = tgt.startStreamMessage(wrap('…'), { chatId: room });
-      if (!h) return null;
-      return { update: (b) => h.update?.(wrap(b)), finish: (b) => h.finish?.(wrap(b)) };
-    },
+    // RELAY STREAMING REVERTED to one-shot (An 2026-06-20): omitting openStream /
+    // openOriginStream makes relay.mjs fall back to send()/surface() — the reliable
+    // pre-Phase-2 behavior (Don replies in one message). The streaming logic is
+    // CORRECT (id-resolution match verified) but two live @don tests stranded the 🤔:
+    // the relayed turn didn't cleanly finish, and a non-finishing turn leaves the
+    // placeholder forever (no timeout/fallback) — plus the responder blocks ~30s on
+    // the turn. Re-enable only after the redesign: WS-echo id capture (no list poll),
+    // a turn-timeout/error-finalize so a hung turn can't strand a placeholder, and a
+    // non-blocking responder. The mesh streaming code (done marker, onRoomMessageEdit,
+    // onMessageEdit hook) stays dormant until then.
     log: (m) => logOut(m),
   });
   meshRelayRef.current = meshRelay;
