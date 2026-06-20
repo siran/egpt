@@ -74,6 +74,23 @@ describe('stream registry', () => {
     expect(registry.size()).toBe(0);
   });
 
+  it('forwards showThink through to the bridge stream options', () => {
+    const calls = [];
+    const registry = createStreamRegistry({
+      startStreamMessage(initialText, opts) {
+        calls.push({ initialText, opts });
+        return { update() {}, async finish() {}, delivered: true, lastError: null };
+      },
+    });
+
+    registry.open({ streamId: 's1', chatId: 'chat-1', initialText: 'draft', persona: 'e', showThink: true });
+
+    expect(calls).toEqual([{
+      initialText: 'draft',
+      opts: { chatId: 'chat-1', persona: 'e', showThink: true },
+    }]);
+  });
+
   it('returns a miss result and cancels pending streams on restart', async () => {
     const registry = createStreamRegistry({
       startStreamMessage() {
@@ -151,12 +168,12 @@ describe('stream proxy and in-process stream channel', () => {
     };
     const { makeStream, registry } = createInProcessStreamChannel(bridge);
 
-    const stream = makeStream('hello', { chatId: 'chat-1', persona: 'wren' }, { finishTimeoutMs: 100 });
+    const stream = makeStream('hello', { chatId: 'chat-1', persona: 'wren', showThink: true }, { finishTimeoutMs: 100 });
     stream.update('partial');
     await stream.finish('final');
 
     expect(started).toHaveLength(1);
-    expect(started[0]).toMatchObject({ initialText: 'hello', opts: { chatId: 'chat-1', persona: 'wren' } });
+    expect(started[0]).toMatchObject({ initialText: 'hello', opts: { chatId: 'chat-1', persona: 'wren', showThink: true } });
     expect(started[0].updates).toEqual(['partial']);
     expect(started[0].finished).toEqual(['final']);
     expect(stream.delivered).toBe(true);

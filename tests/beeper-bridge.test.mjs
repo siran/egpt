@@ -13,19 +13,62 @@ import { startBeeperBridge } from '../src/bridges/beeper.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
+  const puts = [];    // PUTs to /v1/chats/:id/messages/:id
+  const deletes = []; // DELETEs to /v1/chats/:id/messages/:id
   const chats = new Map();   // chatID -> chat info served by GET
+  const messages = new Map();   // chatID -> [{ id, text }]
+  const upsertMessage = (chatID, message) => {
+    const list = messages.get(chatID) ?? [];
+    const idx = list.findIndex((m) => String(m.id) === String(message.id));
+    if (idx >= 0) list[idx] = { ...list[idx], ...message };
+    else list.push({ ...message });
+    messages.set(chatID, list);
+  };
+  const deleteMessage = (chatID, messageID) => {
+    const list = messages.get(chatID) ?? [];
+    const next = list.filter((m) => String(m.id) !== String(messageID));
+    messages.set(chatID, next);
+  };
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
       const post = req.url.match(/^\/v1\/chats\/([^/]+)\/messages$/);
       if (req.method === 'POST' && post) {
-        posts.push({ chatID: decodeURIComponent(post[1]), ...JSON.parse(body) });
+        const chatID = decodeURIComponent(post[1]);
+        const payload = JSON.parse(body);
+        const confirmedID = String(1000 + posts.length);
+        posts.push({ chatID, ...payload, confirmedID });
+        upsertMessage(chatID, { id: confirmedID, text: payload.text ?? '', timestamp: Date.now() });
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
+        return;
+      }
+      const put = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/]+)$/);
+      if (put && req.method === 'PUT') {
+        const chatID = decodeURIComponent(put[1]);
+        const messageID = decodeURIComponent(put[2]);
+        const payload = JSON.parse(body);
+        puts.push({ chatID, messageID, ...payload });
+        upsertMessage(chatID, { id: messageID, text: payload.text ?? '' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (put && req.method === 'DELETE') {
+        const chatID = decodeURIComponent(put[1]);
+        const messageID = decodeURIComponent(put[2]);
+        deletes.push({ chatID, messageID });
+        deleteMessage(chatID, messageID);
+        res.end(JSON.stringify({ ok: true }));
         return;
       }
       if (req.method === 'GET' && req.url === '/v1/chats') {
         res.end(JSON.stringify({ items: [...chats.entries()].map(([id, c]) => ({ id, ...c })) }));
+        return;
+      }
+      const getMessages = req.url.match(/^\/v1\/chats\/([^/]+)\/messages(?:\?.*)?$/);
+      if (req.method === 'GET' && getMessages) {
+        const id = decodeURIComponent(getMessages[1]);
+        res.end(JSON.stringify({ items: (messages.get(id) ?? []).slice(-8) }));
         return;
       }
       const get = req.url.match(/^\/v1\/chats\/([^/]+)$/);
@@ -48,7 +91,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, chats,
+    port, posts, puts, deletes, chats, messages,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
@@ -336,6 +379,33 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('a real message');
+  });
+
+  it('startStreamMessage edit-streams in place and showThink appends the done marker', async () => {
+    const { bridge, incoming } = await startBridge();
+    const stream = bridge.startStreamMessage('🤔 thinking', { chatId: CHAT('chat-1'), showThink: true });
+    await waitFor(() => fake.posts.length === 1);
+    const { chatID, confirmedID } = fake.posts[0];
+
+    // First sight of the placeholder establishes the baseline; our own stream
+    // edits should stay invisible to the dispatcher.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: confirmedID, chatID, text: '🤔 thinking' })] });
+    await new Promise((r) => setTimeout(r, 50));
+
+    await stream.finish('final reply');
+    expect(fake.puts.at(-1)).toMatchObject({
+      chatID,
+      messageID: confirmedID,
+      text: 'final reply\n\n✅ Done',
+    });
+
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: confirmedID, chatID, text: 'final reply\n\n✅ Done' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel', chatID, text: 'a real message' })] });
+    await waitFor(() => incoming.length === 1);
+
+    expect(incoming[0].text).toBe('a real message');
+    expect(stream.delivered).toBe(true);
+    expect(fake.deletes).toHaveLength(0);
   });
 
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
