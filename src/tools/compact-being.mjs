@@ -17,7 +17,7 @@
 // so it runs automatically, periodically, and logged — never by hand. Also a
 // CLI: `node src/tools/compact-being.mjs [--scan|<being>] [--force]`.
 
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, appendFileSync, mkdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -185,5 +185,14 @@ if (isMain) {
       : r.status === 'ok' ? `ok (${r.before} tok)` : r.status;
     log(`  ${r.name}: ${tag}`);
   }
+  // Durable record of EVERY maintenance run — this is the actually-loggable bit:
+  // the spine's sysLog goes to the dropped render buffer, so the butler heartbeat
+  // is otherwise invisible. `cat ~/.egpt/logs/compact.log` shows every scan.
+  try {
+    const logDir = join(homedir(), '.egpt', 'logs');
+    mkdirSync(logDir, { recursive: true });
+    const detail = reports.map(r => `${r.name}=${r.status}${r.before != null ? `(${r.before})` : ''}`).join(' ') || 'no ccode beings';
+    appendFileSync(join(logDir, 'compact.log'), `${new Date().toISOString()} ${dryRun ? '[dry] ' : ''}${summarize(reports)} | ${detail}\n`);
+  } catch { /* logging is best-effort */ }
   console.log(dryRun ? `compact[dry-run]: ${reports.filter(r => r.status === 'would-compact').length} over threshold` : summarize(reports));
 }
