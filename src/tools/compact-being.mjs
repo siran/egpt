@@ -40,20 +40,35 @@ export function windowForModel(model) {
 }
 
 // ── pure: the real context size (tokens) of the most recent turn, from Claude
-//    Code's own usage accounting. Scans up for the last record carrying a
-//    message.usage and sums everything that counts against the window. ──
+//    Code's own usage accounting (input + cache_read + cache_creation = all that
+//    counts against the window). CRUCIAL: if a compact boundary is NEWER than the
+//    last usage record, the session was just compacted and hasn't run a real turn
+//    since — its effective context is the small summary, not the stale pre-compact
+//    usage. Return 0 then, so we never re-compact an already-compacted being. ──
 export function latestContextTokens(jsonlText) {
   const lines = String(jsonlText ?? '').split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
+  let lastUsage = -1, lastUsageTokens = 0, lastBoundary = -1;
+  for (let i = 0; i < lines.length; i++) {
     if (!lines[i]) continue;
     let o; try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (o.isCompactSummary === true) lastBoundary = i;
     const u = o?.message?.usage;
     if (u) {
       const t = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-      if (t > 0) return t;
+      if (t > 0) { lastUsage = i; lastUsageTokens = t; }
     }
   }
-  return 0;   // no usage yet (fresh/empty session) → nothing to compact
+  if (lastBoundary > lastUsage) return 0;   // compacted since the last measured turn → effectively small
+  return lastUsageTokens;                    // 0 if no usage yet (fresh/empty session)
+}
+
+// ── pure: number of compact boundaries — its DELTA across a /compact is the
+//    reliable success signal (the post-compact token size isn't measurable until
+//    the being runs a real turn). ──
+export function countBoundaries(jsonlText) {
+  let n = 0;
+  for (const l of String(jsonlText ?? '').split('\n')) if (l && l.includes('"isCompactSummary":true')) n++;
+  return n;
 }
 
 // ── pure: decision gate. ──
@@ -124,10 +139,13 @@ export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RA
   if (!over) return { ...being, before, status: 'ok' };
   if (dryRun) return { ...being, before, status: 'would-compact' };
   log(`compact: ${being.name} at ${before} tok (threshold ${Math.round(window * ratio)}) — compacting…`);
+  // Success = a NEW compact boundary appears (the post-compact token size isn't
+  // measurable until the being next runs a real turn, so don't read it back).
+  const boundariesBefore = countBoundaries(readFileSync(file, 'utf8'));
   reapResident(being.sessionId, log);
-  const ran = runCompactTurn({ sessionId: being.sessionId, cwd: being.cwd, model: being.model, log });
-  const after = latestContextTokens(readFileSync(file, 'utf8'));
-  return { ...being, before, after, status: ran ? 'compacted' : 'compact-failed' };
+  runCompactTurn({ sessionId: being.sessionId, cwd: being.cwd, model: being.model, log });
+  const compacted = countBoundaries(readFileSync(file, 'utf8')) > boundariesBefore;
+  return { ...being, before, status: compacted ? 'compacted' : 'compact-failed' };
 }
 
 // Scan every local ccode being and compact the oversized ones. Returns reports.
@@ -140,7 +158,7 @@ export function summarize(reports) {
   const acted = reports.filter(r => r.status === 'compacted' || r.status === 'compact-failed');
   if (!acted.length) return 'compact: nothing over threshold';
   return 'compact: ' + acted.map(r =>
-    r.status === 'compacted' ? `${r.name} ${r.before}→${r.after} tok` : `${r.name} FAILED`).join(', ');
+    r.status === 'compacted' ? `${r.name} compacted (was ${r.before} tok)` : `${r.name} FAILED`).join(', ');
 }
 
 // ── CLI ──
@@ -162,7 +180,7 @@ if (isMain) {
     reports = scanAndCompact(config, { log, force, dryRun });
   }
   for (const r of reports) {
-    const tag = r.status === 'compacted' ? `compacted ${r.before}→${r.after} tok`
+    const tag = r.status === 'compacted' ? `compacted (was ${r.before} tok)`
       : r.status === 'would-compact' ? `WOULD compact (${r.before} tok)`
       : r.status === 'ok' ? `ok (${r.before} tok)` : r.status;
     log(`  ${r.name}: ${tag}`);
