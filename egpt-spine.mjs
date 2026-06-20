@@ -8206,9 +8206,12 @@ function startSpineRuntime() {
                 : `${tgPrefix}⌛ thinking…`,
               { chatId: meta.telegramChatId })
           : null;
+        // showThink: claude/codex meta-engineers stream as a bridge-OWNED 🤔→reply+✅
+        // in-place edit (An 2026-06-20). @l (llama) keeps the <think>-split path below.
+        const _waShowThink = !_isLlamaBeing(meta.forceTarget ?? sibName);
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
-          ? streamFactoryRef.current(`${waPrefix}⌛ thinking…`,
-              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName })
+          ? streamFactoryRef.current(`${waPrefix}${_waShowThink ? '🤔 thinking…' : '⌛ thinking…'}`,
+              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName, showThink: _waShowThink })
           : null;
         // WA two-message split for thinking models (@l). Operator
         // 2026-05-24: "the thinking response should reply once, after
@@ -8357,7 +8360,11 @@ function startSpineRuntime() {
               replyLine({ being: sibName, body: _r, surfaced: !_dropResident(reply) }));
           }
         }
-        if (waStream) {
+        if (waStream && _dropResident(reply)) {
+          // silent/gated/infra → remove the 🤔 placeholder, emit nothing
+          // (mirrors the tgStream.delete() path so a '…' never lands as "…✅ Done").
+          await waStream.delete?.();
+        } else if (waStream) {
           const { think, answer } = splitThink(reply);
           let primaryStream = waStream;
           if (answer !== null) {

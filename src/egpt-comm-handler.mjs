@@ -110,13 +110,15 @@ export function createStreamRegistry(bridge) {
   }
   const streams = new Map();
   return {
-    open({ streamId, chatId, initialText, persona = null }) {
+    open({ streamId, chatId, initialText, persona = null, showThink = false }) {
       if (!streamId) return;
       if (streams.has(streamId)) return;        // duplicate-open is a no-op
       // `persona` (operator 2026-06-08): the slug E replies AS, threaded to the
       // bridge so the stream's emitted ids are recorded as PROVABLE persona
       // replies (authorizes a later reply-to-E). Null for non-persona streams.
-      const s = bridge.startStreamMessage(initialText, { chatId, persona });
+      // `showThink` (An 2026-06-20): meta-engineer streams the bridge renders as a
+      // 🤔→reply+✅ in-place edit instead of a plain final send.
+      const s = bridge.startStreamMessage(initialText, { chatId, persona, showThink });
       if (s) streams.set(streamId, s);
     },
     update({ streamId, text }) {
@@ -295,9 +297,9 @@ export function createInProcessStreamChannel(bridge) {
     }
   };
 
-  const makeStream = (initialText, { chatId, persona = null } = {}, proxyOpts = {}) => {
+  const makeStream = (initialText, { chatId, persona = null, showThink = false } = {}, proxyOpts = {}) => {
     const streamId = randomUUID();
-    registry.open({ streamId, chatId, initialText, persona });
+    registry.open({ streamId, chatId, initialText, persona, showThink });
     return createStreamProxy({
       streamId, sendEvent, awaitResult,
       // Operator-configurable timing per EGPT_CONFIG.streaming.*; the
