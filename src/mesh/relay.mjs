@@ -27,14 +27,14 @@
 
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji']);
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji', 'done']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
 // `to` (target node) is what makes "never silence" work without a chorus: only
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
-export function encodeMesh({ by = '', body = '', from = '', to = '', re = '', emoji = '' } = {}) {
+export function encodeMesh({ by = '', body = '', from = '', to = '', re = '', emoji = '', done = false } = {}) {
   const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
   if (from) lines.push(`from: ${from}`);
   if (by) lines.push(`by: ${by}`);
@@ -46,6 +46,9 @@ export function encodeMesh({ by = '', body = '', from = '', to = '', re = '', em
   if (emoji) lines.push(`emoji: ${emoji}`);
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
+  // `done` (An 2026-06-20): marks the FINAL frame of a streamed reply, so the
+  // origin knows when to finalize the mirrored stream (vs keep editing).
+  if (done) lines.push(`done: true`);
   // Fence the ENTIRE payload so the transport delivers it VERBATIM — no HTML
   // render, no "don.do" linkification, no mangled "---" divider. (The 2026-06-19
   // loop was an UN-fenced body: "---" became <hr>, recognition broke, the echo
@@ -87,7 +90,7 @@ export function parseMesh(text) {
   const bodyLines = lines.slice(0, provStart);
   // edge = fence / divider / blank / a stray EMPTY provenance key ("from:") — none
   // of which belong in the surfaced body.
-  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|emoji)\s*:\s*)$/i.test(String(l).trim());
+  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|emoji|done)\s*:\s*)$/i.test(String(l).trim());
   while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
   while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
   let body = bodyLines.join('\n').trim();
@@ -95,7 +98,7 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', emoji: prov.emoji || '' };
+  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', emoji: prov.emoji || '', done: prov.done === 'true' };
 }
 
 export function mentionedBeing(text) {
@@ -112,9 +115,21 @@ export function createMeshRelay({
   beingEmoji = () => '',             // (being) => body_emoji — rides the reply so the relayer can identify it
   resolveRoute = () => null,         // (toNode) => route | null
   isLocalBeing = () => false,        // (being) => bool
+  // STREAMING (An 2026-06-20): edit-streaming is a bridge property, so a relayed
+  // reply streams for free — the relay just routes. RESPONDER: openStream(route,
+  // initialText) → {update,finish} that edit-streams the reply INTO the relay room.
+  // ORIGIN: openOriginStream(returnTo, info) → {update,finish} that edit-streams the
+  // surfaced reply INTO the origin chat. Both null → fall back to one-shot send/surface.
+  openStream = null,
+  openOriginStream = null,
   log = () => {},
 } = {}) {
   const awaiting = new Map();   // origin name -> returnTo (so a reply's `re:` surfaces home)
+  // ORIGIN-side: relayRoomMsgId -> { handle } for an in-flight relayed reply we're
+  // mirroring (the responder edits its relay-room message; we edit ours in the origin
+  // chat). Capped; entries cleared on the `done` frame.
+  const streamingIn = new Map();
+  const STREAM_CAP = 50;
   const seen = new Set();       // tiny replay guard (content keys already acted on)
   const SEEN_CAP = 500;
   const mark = (k) => { seen.add(k); if (seen.size > SEEN_CAP) seen.delete(seen.values().next().value); };
@@ -159,17 +174,32 @@ export function createMeshRelay({
 
   // ── INBOUND: any observed message. Returns true iff it was mesh traffic we
   //    consumed (caller then skips normal handling). ──
-  async function onRoomMessage({ route, text } = {}) {
+  async function onRoomMessage({ route, text, msgId = null } = {}) {
     const prov = parseMesh(text);
     if (!prov) return false;                       // ordinary message — not ours
 
     // A REPLY (carries `re:`) — surface home if we're the origin awaiting it.
     if (prov.re) {
       const back = awaiting.get(prov.re);
+      if (!back) { log(`mesh: reply re:${prov.re} not awaited here`); return true; }
+      // STREAMING: a non-final frame opens an origin-chat stream we keep editing as
+      // the responder edits its relay-room message (correlated by msgId); the final
+      // `done` frame finalizes (onRoomMessageEdit). A reply already complete in its
+      // first frame (done set, or no stream primitive) one-shots — pre-streaming behavior.
+      if (openOriginStream && msgId != null && !prov.done) {
+        const handle = openOriginStream(back, { by: prov.by, emoji: prov.emoji });
+        if (handle) {
+          handle.update?.(prov.body);
+          streamingIn.set(String(msgId), { handle });
+          if (streamingIn.size > STREAM_CAP) { const k = streamingIn.keys().next().value; streamingIn.delete(k); }
+          awaiting.delete(prov.re);                // tracked by streamingIn from here
+          return true;
+        }
+      }
       // Carry the being's identity (by + emoji) so the surfacer can stamp it — a
       // bare body would read as the operator's own message in a self-chat.
-      if (back) { awaiting.delete(prov.re); await surface(back, prov.body, { by: prov.by, emoji: prov.emoji }); }
-      else log(`mesh: reply re:${prov.re} not awaited here`);
+      awaiting.delete(prov.re);
+      await surface(back, prov.body, { by: prov.by, emoji: prov.emoji });
       return true;                                 // consume either way (never re-relay)
     }
 
@@ -196,15 +226,36 @@ export function createMeshRelay({
     mark(key);
 
     const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
+    // Stamp the being's emoji so the relayer can surface it AS the being (it may not
+    // host the being). `done` marks the final frame; '🤔' is the streaming placeholder.
+    const wrap = (body, done = false) => encodeMesh({ by: `${being}.${node}`, body: String(body ?? '').trim() || '…', from: '', re: prov.from, emoji: beingEmoji(being), done });
+    // RESPONDER STREAMING: edit-stream the reply INTO the relay room — post a 🤔
+    // placeholder, edit it live as the being thinks, finalize with `done`. Edits are
+    // editMessage (not guardedSend), so they NEVER count against the circuit breaker.
+    const stream = openStream ? openStream(route, wrap('🤔')) : null;
     let reply;
-    try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
-    catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
+    try {
+      reply = await runBeing(being, prompt, { from: prov.from, by: prov.by },
+        stream ? (partial) => stream.update?.(wrap(partial)) : undefined);
+    } catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    // Stamp the being's emoji into the reply so the relaying spine can surface it
-    // AS the being (it may not host the being and can't look the emoji up itself).
-    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim(), from: '', re: prov.from, emoji: beingEmoji(being) }));
+    if (stream) await stream.finish?.(wrap(reply, true));
+    else await guardedSend(route, wrap(reply, true));   // no stream primitive → one-shot (done)
     return true;
   }
 
-  return { relayOut, onRoomMessage, awaiting };
+  // ── ORIGIN: a relayed reply's relay-room message was EDITED (the responder is
+  //    streaming). Mirror it onto the origin-chat stream. Returns true iff it was a
+  //    relayed reply we track (caller then skips its normal incoming-edit handling).
+  async function onRoomMessageEdit({ msgId, text } = {}) {
+    const s = streamingIn.get(String(msgId));
+    if (!s) return false;                          // not a relayed reply we're mirroring
+    const prov = parseMesh(text);
+    if (!prov) return true;                        // ours, but unparseable — consume, no-op
+    if (prov.done) { streamingIn.delete(String(msgId)); await s.handle.finish?.(prov.body); }
+    else await s.handle.update?.(prov.body);
+    return true;
+  }
+
+  return { relayOut, onRoomMessage, onRoomMessageEdit, awaiting };
 }

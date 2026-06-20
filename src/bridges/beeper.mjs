@@ -69,6 +69,11 @@ const RECONNECT_MAX_MS = 60_000;
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
+    // RAW edit hook (An 2026-06-20): an incoming message EDIT, before it's wrapped
+    // as an editAction stage-direction. Lets the mesh router mirror a relayed
+    // reply's streamed edits to the origin chat. async (chatId, msgId, newText,
+    // oldText) => truthy-if-consumed (truthy → skip the stage-direction surfacing).
+    onMessageEdit = null,
     // CONTRACT C2: every attachment is persisted to the chat's media/ folder.
     // The bridge downloads + decides (whatsapp.media.download); the host's
     // onMedia copies the local file into slugDir/media/. No gate wired = the
@@ -513,6 +518,13 @@ export async function startBeeperBridge(opts = {}) {
     _seenText.set(key, cur);
     _capMap(_seenText, REACTION_CAP);
     if (first || !cur || prev === cur) return;   // baseline / empty / unchanged → not an edit
+    // RAW edit hook: a relayed reply's relay-room message was edited by the
+    // responder (streaming). Let the mesh router mirror it to the origin chat; if it
+    // consumes the edit, skip the normal stage-direction surfacing.
+    if (onMessageEdit) {
+      try { if (await onMessageEdit(msg.chatID, msg.id, cur, prev)) return; }
+      catch (e) { onLog(`beeper: onMessageEdit threw — ${e?.message ?? e}`); }
+    }
     const info = await chatInfo(msg.chatID);
     const editor = (msg.isSender && userName) ? userName : (msg.senderName || _idToName.get(msg.senderID) || 'someone');
     const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
