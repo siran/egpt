@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  latestContextTokens, needsCompaction, compactableBeings, summarize, windowForModel,
+  latestContextTokens, needsCompaction, compactableBeings, compactableConversations, summarize, windowForModel,
   DEFAULT_WINDOW, COMPACT_RATIO,
 } from '../src/tools/compact-being.mjs';
 
@@ -40,8 +40,9 @@ describe('compact-being — deterministic trigger', () => {
     expect(needsCompaction(limit - 1)).toBe(false);
     expect(needsCompaction(limit)).toBe(true);
     expect(needsCompaction(DEFAULT_WINDOW)).toBe(true);
-    // a freshly-compacted being (Don at 53k) stays well under → left alone
-    expect(needsCompaction(53421)).toBe(false);
+    // THIN policy (25% → 50k on haiku): even ~53k trips it; only well under is left alone
+    expect(needsCompaction(40_000)).toBe(false);
+    expect(needsCompaction(53421)).toBe(true);
   });
 
   it('honours a custom window/ratio', () => {
@@ -54,11 +55,26 @@ describe('compact-being — deterministic trigger', () => {
     expect(windowForModel('claude-opus-4-8')).toBe(1_000_000);
     expect(windowForModel('sonnet')).toBe(1_000_000);
     expect(windowForModel('whatever-unknown')).toBe(200_000);   // conservative default
-    // Wren's real 769k: under threshold on opus (1M*0.65=650k? → over), over the roof on haiku
-    expect(needsCompaction(769351, { window: windowForModel('opus') })).toBe(true);   // 769k ≥ 650k → compact
+    // 25% thresholds: haiku 50k, opus/sonnet 250k
+    expect(needsCompaction(769351, { window: windowForModel('opus') })).toBe(true);   // 769k ≥ 250k → compact
     expect(needsCompaction(120_000, { window: windowForModel('opus') })).toBe(false); // 120k on opus → plenty of room
-    expect(needsCompaction(120_000, { window: windowForModel('haiku') })).toBe(false);
-    expect(needsCompaction(150_000, { window: windowForModel('haiku') })).toBe(true); // 150k on haiku → compact
+    expect(needsCompaction(40_000, { window: windowForModel('haiku') })).toBe(false); // 40k < 50k → ok
+    expect(needsCompaction(60_000, { window: windowForModel('haiku') })).toBe(true);  // 60k ≥ 50k → compact
+  });
+
+  it('compactableConversations — active threads become compaction targets (skips aliases / no-thread)', () => {
+    const state = { contacts: {
+      whatsapp: {
+        '111@s': { slug: 'mom', threadId: 'sess-mom', threadCwd: 'C:/conv/mom' },
+        '222@s': { slug: 'work', threadId: 'sess-work', threadCwd: 'C:/conv/work' },
+        '333@s': { slug: 'idle' },                                  // no threadId → skip
+        '444@s': { aliasOf: '111@s', threadId: 'x' },               // alias → skip
+      },
+      telegram: { '999': { slug: 'tg-chat', threadId: 'sess-tg', threadCwd: 'C:/conv/tg' } },
+    } };
+    const got = compactableConversations(state, 'haiku');
+    expect(got.map(c => c.name).sort()).toEqual(['telegram/tg-chat', 'whatsapp/mom', 'whatsapp/work']);
+    expect(got.find(c => c.name === 'whatsapp/mom')).toMatchObject({ sessionId: 'sess-mom', cwd: 'C:/conv/mom', model: 'haiku', window: 200_000 });
   });
 
   it('selects only LOCAL ccode beings with a session_id — never sdk/codex/llama or _note', () => {
