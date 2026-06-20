@@ -27,8 +27,16 @@
 
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji', 'done']);
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji', 'done', 'enc']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
+
+// Body codec (An 2026-06-20): base64 so the transport can't mangle the body. Beeper
+// renders ``` → <pre><code> → `` and a CODE-bearing reply (Don writes code!) collides
+// with the fence → the mirror edit breaks ("Failed to edit"). base64 is markdown-inert
+// (no backticks / --- / <>) → delivered verbatim; the TAIL stays readable. node-only
+// module → Buffer is available.
+const b64encode = (s) => Buffer.from(String(s ?? ''), 'utf8').toString('base64');
+const b64decode = (s) => Buffer.from(String(s ?? ''), 'base64').toString('utf8');
 
 // `to` (target node) is what makes "never silence" work without a chorus: only
 // the named node answers (or says "no <being>.<node> here"); every other spine
@@ -49,12 +57,13 @@ export function encodeMesh({ by = '', body = '', from = '', to = '', re = '', em
   // `done` (An 2026-06-20): marks the FINAL frame of a streamed reply, so the
   // origin knows when to finalize the mirrored stream (vs keep editing).
   if (done) lines.push(`done: true`);
-  // Fence the ENTIRE payload so the transport delivers it VERBATIM — no HTML
-  // render, no "don.do" linkification, no mangled "---" divider. (The 2026-06-19
-  // loop was an UN-fenced body: "---" became <hr>, recognition broke, the echo
-  // re-relayed forever. The inner YAML fence had survived fine as <pre> — so
-  // fencing the whole thing is the real fix; An, 2026-06-19.)
-  return '```\n' + `${String(body).trim()}\n\n---\n${lines.join('\n')}` + '\n```';
+  // Body is base64 (An 2026-06-20): markdown-inert, so the transport can't mangle it
+  // and a code-bearing reply can't collide with the fence. The TAIL stays readable
+  // for routing + light provenance; only the body is opaque (a privacy bonus in the
+  // relay channel). `enc: b64` marks it so parseMesh decodes; un-tagged = legacy raw.
+  lines.push('enc: b64');
+  // Fence keeps the structure delivered verbatim (the --- divider intact).
+  return '```\n' + `${b64encode(String(body).trim())}\n\n---\n${lines.join('\n')}` + '\n```';
 }
 
 // A bridge may deliver our own echo RENDERED as HTML — the 2026-06-19 loop was
@@ -90,15 +99,17 @@ export function parseMesh(text) {
   const bodyLines = lines.slice(0, provStart);
   // edge = fence / divider / blank / a stray EMPTY provenance key ("from:") — none
   // of which belong in the surfaced body.
-  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|emoji|done)\s*:\s*)$/i.test(String(l).trim());
+  const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|emoji|done|enc)\s*:\s*)$/i.test(String(l).trim());
   while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
   while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
   let body = bodyLines.join('\n').trim();
-  if (prov.by) {   // legacy: peel an old-format "by:" (or accumulated "An: An:") prefix
+  if (prov.enc === 'b64') {
+    try { body = b64decode(body); } catch { /* malformed — leave as-is */ }
+  } else if (prov.by) {   // legacy un-encoded: peel an old-format "by:" (or "An: An:") prefix
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', emoji: prov.emoji || '', done: prov.done === 'true' };
+  return { body, from: prov.from || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', emoji: prov.emoji || '', done: prov.done === 'true', enc: prov.enc || '' };
 }
 
 export function mentionedBeing(text) {

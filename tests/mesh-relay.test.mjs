@@ -31,10 +31,24 @@ function harness({ donReply = async () => 'yes, here', emojis = { don: '🤝' } 
 }
 
 describe('mesh relay — YAML provenance over a shared channel', () => {
-  it('encodes the human-first wire format and round-trips', () => {
+  it('encodes an OPAQUE base64 body with a READABLE tail, and round-trips (An 2026-06-20)', () => {
     const w = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM' });
-    expect(w).toBe('```\nhi @don\n\n---\nfrom: HFM\nby: An\n```');   // whole payload fenced
-    expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });
+    expect(w).toMatch(/\nfrom: HFM\n/);            // routing tail stays readable
+    expect(w).toMatch(/\nby: An\n/);
+    expect(w).toMatch(/\nenc: b64\n/);             // body-encoding marked
+    expect(w).not.toContain('hi @don');            // body is opaque in the channel (mangle-proof + private)
+    expect(parseMesh(w)).toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An', re: '' });   // decodes back
+  });
+
+  it('a code-bearing body (backticks/fences) round-trips EXACTLY (the bug that broke Don)', () => {
+    const body = 'fix:\n```js\nconst t = `x ${1}`;\n```\ndone';
+    const p = parseMesh(encodeMesh({ by: 'don.do', body, re: 'HFM', emoji: '🤝', done: true }));
+    expect(p.body).toBe(body);
+  });
+
+  it('legacy un-encoded messages (no enc tag) still parse raw — backward compatible', () => {
+    expect(parseMesh('```\nhi @don\n\n---\nfrom: HFM\nby: An\n```'))
+      .toMatchObject({ body: 'hi @don', from: 'HFM', by: 'An' });
   });
 
   it('carries a being emoji in the provenance and round-trips it (body stays clean)', () => {
@@ -68,11 +82,12 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     const ok = await h.kg.relayOut({ being: 'don', toNode: 'do', body: 'hi @don', origin: { chat_id: 'HFM-id', name: 'HFM' }, sender: 'An' });
     expect(ok).toBe(true);
 
-    // wire: body preserved, readable sender, YAML provenance — no cryptic tag
+    // wire: body OPAQUE (base64, mangle-proof), readable routing tail — no cryptic minted tag
     expect(h.channel).toHaveLength(1);
     expect(h.channel[0]).toMatch(/^```/);          // whole payload fenced (verbatim over transport)
-    expect(h.channel[0]).toMatch(/hi @don/);       // body preserved, unchanged
-    expect(h.channel[0]).toMatch(/to: do/);
+    expect(h.channel[0]).not.toContain('hi @don'); // body opaque in the channel
+    expect(h.channel[0]).toMatch(/to: do/);        // routing tail readable
+    expect(parseMesh(h.channel[0])).toMatchObject({ body: 'hi @don', to: 'do' });   // decodes back
     expect(h.channel[0]).not.toMatch(/egpt-mesh/);
     // honest ack on the origin (NOT a faked "thinking")
     expect(h.acks.kg[0].text).toMatch(/relayed to don\.do — waiting/);
