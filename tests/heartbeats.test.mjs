@@ -1,6 +1,26 @@
 // Per-entity heartbeat config: parsing the heartbeat block and the firing gate.
 import { describe, it, expect } from 'vitest';
-import { parseHeartbeatConfig, shouldFire, DEFAULT_INTERVAL_MIN, MIN_INTERVAL_MIN } from '../src/heartbeats.mjs';
+import { parseHeartbeatConfig, parseCommandHeartbeat, shouldFire, DEFAULT_INTERVAL_MIN, MIN_INTERVAL_MIN } from '../src/heartbeats.mjs';
+
+describe('parseCommandHeartbeat — deterministic command (no AI)', () => {
+  it('reads enabled + interval + command + cwd', () => {
+    expect(parseCommandHeartbeat('enabled: true\ninterval_min: 60\ncommand: node src/tools/compact-being.mjs --scan\ncwd: C:/x'))
+      .toEqual({ enabled: true, intervalMin: 60, command: 'node src/tools/compact-being.mjs --scan', cwd: 'C:/x' });
+  });
+  it('is DISABLED without a command — a heartbeat that runs nothing does nothing', () => {
+    expect(parseCommandHeartbeat('enabled: true\ninterval_min: 60')).toMatchObject({ enabled: false, command: null });
+    expect(parseCommandHeartbeat('enabled: true\ncommand: "   "')).toMatchObject({ enabled: false, command: null });
+  });
+  it('respects enabled:false and defaults a missing interval', () => {
+    expect(parseCommandHeartbeat('enabled: false\ncommand: x')).toMatchObject({ enabled: false });
+    expect(parseCommandHeartbeat('enabled: true\ncommand: x').intervalMin).toBe(DEFAULT_INTERVAL_MIN);
+  });
+  it('malformed / empty → disabled, never throws', () => {
+    expect(parseCommandHeartbeat('')).toMatchObject({ enabled: false, command: null });
+    expect(parseCommandHeartbeat(': : not yaml : :')).toMatchObject({ enabled: false });
+    expect(parseCommandHeartbeat(null)).toMatchObject({ enabled: false });
+  });
+});
 
 describe('parseHeartbeatConfig', () => {
   it('reads enabled + interval from a heartbeat block', () => {
