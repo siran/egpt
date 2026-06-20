@@ -22,6 +22,19 @@ describe('compact-being — deterministic trigger', () => {
     expect(needsCompaction(0)).toBe(false);
   });
 
+  it('returns 0 right after a compact (boundary NEWER than last usage) — never re-compacts', () => {
+    // a big pre-compact turn, THEN a compact boundary and no real turn since
+    const jsonl = [
+      usageLine({ input_tokens: 2, cache_read_input_tokens: 768495, cache_creation_input_tokens: 854 }),  // wren's 769k turn
+      '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary…"}}',            // compact boundary, newer
+    ].join('\n');
+    expect(latestContextTokens(jsonl)).toBe(0);          // effectively small now → not over threshold
+    expect(needsCompaction(latestContextTokens(jsonl), { window: 1_000_000 })).toBe(false);
+    // but once a REAL turn runs after the boundary, its usage counts again
+    const after = jsonl + '\n' + usageLine({ input_tokens: 10, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0 });
+    expect(latestContextTokens(after)).toBe(40010);
+  });
+
   it('the threshold is a fraction of the window, not the full window', () => {
     const limit = Math.round(DEFAULT_WINDOW * COMPACT_RATIO);   // 130_000 (haiku default)
     expect(needsCompaction(limit - 1)).toBe(false);
@@ -81,8 +94,8 @@ describe('compact-being — deterministic trigger', () => {
   it('summarize reports only beings actually acted on', () => {
     expect(summarize([{ name: 'don', status: 'ok', before: 50 }])).toMatch(/nothing over threshold/);
     expect(summarize([
-      { name: 'don', status: 'compacted', before: 150000, after: 40000 },
+      { name: 'don', status: 'compacted', before: 150000 },
       { name: 'wren', status: 'ok', before: 20000 },
-    ])).toBe('compact: don 150000→40000 tok');
+    ])).toBe('compact: don compacted (was 150000 tok)');
   });
 });
