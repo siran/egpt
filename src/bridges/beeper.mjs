@@ -408,9 +408,14 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   // Resolve the CONFIRMED id of a message we just sent: poll the recent list and
-  // match our own (normalized) text; pick the newest match (largest numeric id).
+  // match our own text; pick the newest match (largest numeric id). FENCE-TOLERANT:
+  // a ``` code fence round-trips LOSSY (sent ``` → Beeper stores <pre><code> →
+  // htmlToMarkdown yields ``), so a literal compare misses every fenced message —
+  // e.g. the mesh placeholder. Drop backticks from BOTH sides before comparing
+  // (verified live 2026-06-20: this was why a relayed reply's 🤔 never updated).
+  const _matchKey = (s) => _normEcho(String(s ?? '').replace(/`+/g, ' '));
   async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500 } = {}) {
-    const want = _normEcho(text);
+    const want = _matchKey(text);
     if (!chatID || !want) return null;
     for (let i = 0; i < tries; i++) {
       try {
@@ -419,7 +424,7 @@ export async function startBeeperBridge(opts = {}) {
         let best = null;
         for (const m of items) {
           if (!m?.id) continue;
-          if (_normEcho(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
+          if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
           if (best == null || Number(m.id) > Number(best) || String(m.id) > String(best)) best = m.id;
         }
         if (best != null) return best;
@@ -792,7 +797,7 @@ export async function startBeeperBridge(opts = {}) {
           if (realId) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             rememberSent(realId, cid, latest);
-          } else { handle.lastError = 'could not resolve placeholder id'; }
+          } else { handle.lastError = 'could not resolve placeholder id'; onLog(`beeper: stream could not resolve placeholder id in ${cid} — edits will no-op (text: ${JSON.stringify(String(latest).slice(0, 60))})`); }
         } catch (e) { handle.lastError = e?.message ?? String(e); }
       })();
 
