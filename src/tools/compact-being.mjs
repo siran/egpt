@@ -31,7 +31,7 @@ import { pathToFileURL } from 'node:url';
 // on 2026-06-19) plus the system prompt + tools.
 export const MODEL_WINDOWS = { haiku: 200_000, sonnet: 1_000_000, opus: 1_000_000 };
 export const DEFAULT_WINDOW = 200_000;
-export const COMPACT_RATIO  = 0.65;
+export const COMPACT_RATIO  = 0.25;   // keep sessions THIN — compact at 25% of the window (An 2026-06-19)
 
 export function windowForModel(model) {
   const m = String(model || '').toLowerCase();
@@ -148,9 +148,27 @@ export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RA
   return { ...being, before, status: compacted ? 'compacted' : 'compact-failed' };
 }
 
-// Scan every local ccode being and compact the oversized ones. Returns reports.
-export function scanAndCompact(config, opts = {}) {
-  return compactableBeings(config).map(b => compactBeingIfNeeded(b, opts));
+// ── pure: ACTIVE conversations are ccode threads too — each contact entry holds
+//    its own persona session (threadId) + cwd (threadCwd). Same compaction, so
+//    busy chats stay thin alongside the beings (An 2026-06-19: "not only the
+//    being, the active conversations"). ──
+export function compactableConversations(state, model = 'haiku') {
+  const out = [];
+  const contacts = state?.contacts ?? {};
+  for (const surface of Object.keys(contacts)) {
+    const bucket = contacts[surface] ?? {};
+    for (const [jid, e] of Object.entries(bucket)) {
+      if (!e || e.aliasOf || typeof e.threadId !== 'string' || !e.threadId) continue;   // no live thread → nothing to compact
+      out.push({ name: `${surface}/${e.slug || jid}`, sessionId: e.threadId, cwd: e.threadCwd || process.cwd(), model, window: windowForModel(model) });
+    }
+  }
+  return out;
+}
+
+// Compact the oversized sessions among a list of targets (beings and/or
+// conversations). Returns one report per target.
+export function scanAndCompact(targets, opts = {}) {
+  return (Array.isArray(targets) ? targets : []).map(t => compactBeingIfNeeded(t, opts));
 }
 
 // One-line human summary of a report set (for the heartbeat log / butler reply).
@@ -171,13 +189,21 @@ if (isMain) {
   const { readConfigSync } = await import('./config-io.mjs');
   const config = readConfigSync();
   const log = (m) => console.error(m);   // diagnostics to stderr; the summary to stdout
+  // Targets = local ccode beings + ACTIVE conversation threads (each chat carries
+  // its own persona session, so busy chats stay thin too).
+  const targets = [...compactableBeings(config)];
+  try {
+    const { readState, CONV_YAML_PATH } = await import('../../conversations-state.mjs');
+    const state = await readState(CONV_YAML_PATH);
+    targets.push(...compactableConversations(state, config.default_brain?.model || 'haiku'));
+  } catch (e) { log(`compact: conversation scan skipped — ${e?.message ?? e}`); }
   let reports;
   if (target) {
-    const b = compactableBeings(config).find(x => x.name === String(target).toLowerCase());
-    if (!b) { console.log(`compact: no compactable ccode being "${target}"`); process.exit(1); }
-    reports = [compactBeingIfNeeded(b, { log, force: !dryRun, dryRun })];   // named target → force (unless dry-run)
+    const t = targets.find(x => x.name === String(target).toLowerCase() || x.name.endsWith('/' + String(target).toLowerCase()));
+    if (!t) { console.log(`compact: no compactable target "${target}"`); process.exit(1); }
+    reports = [compactBeingIfNeeded(t, { log, force: !dryRun, dryRun })];   // named target → force (unless dry-run)
   } else {
-    reports = scanAndCompact(config, { log, force, dryRun });
+    reports = scanAndCompact(targets, { log, force, dryRun });
   }
   for (const r of reports) {
     const tag = r.status === 'compacted' ? `compacted (was ${r.before} tok)`
