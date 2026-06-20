@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startBeeperBridge } from '../src/bridges/beeper.mjs';
+import { createMeshRelay, encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -406,6 +407,71 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('a real message');
     expect(stream.delivered).toBe(true);
     expect(fake.deletes).toHaveLength(0);
+  });
+
+  it('streams a relayed reply through the real Beeper bridge', async () => {
+    const { bridge } = await startBridge();
+    const relayRoom = CHAT('relay-room');
+
+    const relayFrames = [];
+    const originRelay = createMeshRelay({
+      node: 'kg',
+      send: async (_route, text) => bridge.send(text, { chatId: relayRoom }),
+      surface: async () => {},
+      ack: async () => {},
+      runBeing: async () => '',
+      beingEmoji: () => '🤝',
+      resolveRoute: () => ({ chatID: relayRoom }),
+      isLocalBeing: () => false,
+    });
+    const targetRelay = createMeshRelay({
+      node: 'do',
+      send: async (_route, text) => bridge.send(text, { chatId: relayRoom }),
+      surface: async () => {},
+      ack: async () => {},
+      runBeing: async (_being, _prompt, _ctx, onPartial) => {
+        onPartial('Ja');
+        onPartial('Jaja');
+        return 'Jaja, aquí';
+      },
+      beingEmoji: () => '🤝',
+      resolveRoute: () => ({ chatID: relayRoom }),
+      isLocalBeing: () => true,
+      openStream: (_route, initial) => {
+        relayFrames.push(initial);
+        const stream = bridge.startStreamMessage(initial, { chatId: relayRoom, showThink: true });
+        return {
+          update: async (text) => { relayFrames.push(text); await stream.update?.(text); },
+          finish: async (text) => { relayFrames.push(text); await stream.finish?.(text); },
+        };
+      },
+    });
+
+    const request = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'do' });
+    const relayed = await originRelay.relayOut({
+      being: 'don',
+      toNode: 'do',
+      body: '@don hola',
+      origin: { chat_id: CHAT('origin-room'), name: 'HFM' },
+      sender: 'An',
+    });
+    expect(relayed).toBe(true);
+    await waitFor(() => fake.posts.some((p) => p.chatID === relayRoom));
+    expect(fake.posts.some((p) => p.chatID === relayRoom && p.text === request)).toBe(true);
+
+    const requestPost = fake.posts.find((p) => p.chatID === relayRoom && p.text === request);
+    expect(requestPost).toBeTruthy();
+    await targetRelay.onRoomMessage({ route: { chatID: relayRoom }, text: requestPost.text, msgId: requestPost.confirmedID });
+
+    const relayPosts = fake.posts.filter((p) => p.chatID === relayRoom);
+    expect(relayPosts.length).toBeGreaterThan(1);
+    const targetPost = relayPosts.at(-1);
+    expect(parseMesh(targetPost.text)).toMatchObject({ by: 'don.do', re: 'HFM' });
+    expect(relayFrames[0]).toMatch(/🤔/);
+    expect(relayFrames.some((f) => parseMesh(f)?.body === 'Ja')).toBe(true);
+    expect(relayFrames.some((f) => parseMesh(f)?.body === 'Jaja')).toBe(true);
+    expect(relayFrames.some((f) => parseMesh(f)?.done)).toBe(true);
+    expect(relayFrames.length).toBeGreaterThan(2);
   });
 
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
