@@ -4382,6 +4382,31 @@ function startSpineRuntime() {
       heartbeatScanBusy = true;
       try {
         const now = Date.now();
+        // Butler-e maintenance heartbeat FIRST and in its OWN try, so a throw in
+        // the conversation/room loops below can never block it (buried at the end
+        // the first time, it never ran). ~/.egpt/butler/ (config.yaml +
+        // heartbeat.md) fires butler-e (haiku, full tools) for periodic UPKEEP,
+        // not conversation: keep each LOCAL ccode being's session under its model
+        // window (src/tools/compact-being.mjs --scan) so none hits "Prompt is too
+        // long". Decentralised — each spine tends its OWN beings; output to the
+        // engine log, never a chat.
+        try {
+          const bdir = join(EGPT_HOME, 'butler');
+          const bcfg = await hb.readConfig(bdir);
+          if (bcfg.enabled && hb.shouldFire(bcfg, await hb.readLastFiredMs(bdir), now)) {
+            const bprompt = await hb.readPrompt(bdir);
+            if (bprompt) {
+              sysLog('butler heartbeat: firing (maintenance)…');
+              try {
+                const { runButler } = await import('./src/tools/butler.mjs');
+                const r = await runButler({ prompt: bprompt, cwd: APP_DIR, model: 'haiku', allowedTools: 'all' });
+                if (r?.error) sysLog(`!! butler heartbeat: ${r.error}`);
+                else sysLog(`butler heartbeat done (${r.durationMs}ms): ${String(r.text ?? '').trim().slice(0, 300) || '(no output)'}`);
+              } catch (e) { sysLog(`!! butler heartbeat run: ${e?.message ?? e}`); }
+              await hb.markFired(bdir);
+            }
+          }
+        } catch (e) { sysLog(`!! butler heartbeat scan: ${e?.message ?? e}`); }
         // Conversations — each contact with a slug maps to its folder.
         const cs = await _loadConvState();
         for (const surface of Object.keys(cs.contacts ?? {})) {
