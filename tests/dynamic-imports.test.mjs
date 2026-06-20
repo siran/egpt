@@ -34,8 +34,7 @@ async function walkMjs(dir, out = []) {
 describe('dynamic imports', () => {
   it('every dynamic `import("./X.mjs")` path resolves to a real file', async () => {
     const files = (await walkMjs(REPO_ROOT))
-      .filter(p => !p.endsWith('dynamic-imports.test.mjs'))   // skip self (contains the regex examples)
-      .filter(p => !relative(REPO_ROOT, p).replace(/\\/g, '/').startsWith('attic/'))
+      .filter(p => !p.endsWith('dynamic-imports.test.mjs'));   // skip self (contains the regex examples)
     // Match both `await import('...')` and bare `import('...')` forms,
     // single or double quoted, relative paths only (we don't validate
     // bare-module specifiers like 'node:fs' or 'qrcode-terminal').
@@ -63,6 +62,3 @@ describe('dynamic imports', () => {
     expect(broken).toEqual([]);
   });
 });
-
-
-

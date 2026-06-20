@@ -75,7 +75,8 @@ import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/wh
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
-import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
+import { stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
+import { launchSpineProcess } from './src/spine-launch.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
@@ -9343,25 +9344,33 @@ function startSpineOutputLog() {
   });
 }
 
-startSpineOutputLog();
 console.log(`egpt spine | ${FILE}${HEADLESS ? ' (headless)' : ''}`);
 console.log('Attach with node egpt.mjs --client or run node egpt.mjs.');
 console.log();
-await bootSpineRuntime({
+await launchSpineProcess({
+  mode: _egptMode,
   engine,
   startSpineRuntime,
   processObj: process,
-  onExit: (code, stopSpineRuntime) => stopSpineRuntimeOnExit({
-    code,
-    bridge: _globalBridge,
-    waBridge: _globalWaBridge,
-    clearNucleusInfoSync,
-    clearPidfile,
-    stopAliveHeartbeat,
-    stopSpineRuntime,
-    engine,
-    llamaProc: _globalLlamaProc,
-  }),
+  takeoverIfRunning,
+  writePidfile,
+  startAliveHeartbeat,
+  startSpineOutputLog,
+  log: console.log,
+  onExit: ({ code, stopSpineRuntime, stopOutputLog }) => {
+    try { stopOutputLog?.(); } catch {}
+    stopSpineRuntimeOnExit({
+      code,
+      bridge: _globalBridge,
+      waBridge: _globalWaBridge,
+      clearNucleusInfoSync,
+      clearPidfile,
+      stopAliveHeartbeat,
+      stopSpineRuntime,
+      engine,
+      llamaProc: _globalLlamaProc,
+    });
+  },
 });
 
 // Crash logger (operator 2026-05-23: shell crash-loops code=1, stack
@@ -9382,3 +9391,4 @@ function _logCrash(kind, err) {
 }
 process.on('unhandledRejection', (reason) => { _logCrash('unhandledRejection', reason); });
 process.on('uncaughtException',  (err)    => { _logCrash('uncaughtException', err); process.exit(1); });
+

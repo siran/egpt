@@ -95,4 +95,3 @@ describe('makeWhisperServerTranscriber', () => {
     expect(await transcribe(audio, {}, () => {})).toBe('transcrito');
   });
 });
-

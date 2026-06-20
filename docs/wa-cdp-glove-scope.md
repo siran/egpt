@@ -108,4 +108,3 @@ On the new branch, the thin slice that proves the architecture:
   type + click-send. Inert (mention/mention-direct/on only).
 - Leave baileys in place initially; switch the host to the CDP limb behind the
   limb contract, then excise baileys-isms from the ~10 leaking files.
-
