@@ -77,7 +77,7 @@ import { extractKeyframes } from './src/video-frames.mjs';
 import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
-import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
+import { createMeshRelay, parseMesh, encodeMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
@@ -7136,16 +7136,33 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
-    // RELAY STREAMING REVERTED to one-shot (An 2026-06-20): omitting openStream /
-    // openOriginStream makes relay.mjs fall back to send()/surface() — the reliable
-    // pre-Phase-2 behavior (Don replies in one message). The streaming logic is
-    // CORRECT (id-resolution match verified) but two live @don tests stranded the 🤔:
-    // the relayed turn didn't cleanly finish, and a non-finishing turn leaves the
-    // placeholder forever (no timeout/fallback) — plus the responder blocks ~30s on
-    // the turn. Re-enable only after the redesign: WS-echo id capture (no list poll),
-    // a turn-timeout/error-finalize so a hung turn can't strand a placeholder, and a
-    // non-blocking responder. The mesh streaming code (done marker, onRoomMessageEdit,
-    // onMessageEdit hook) stays dormant until then.
+    // RESPONDER (An 2026-06-20, attempt #4): hand the relay prompt to the NORMAL
+    // dispatch (forceTarget=being, chat=relay room), tagged _meshReturn so the emit
+    // path wraps each streamed frame in the mesh tail. The being replies like ANY
+    // prompt (universal editor) — non-blocking; system-bypass + no-recirculation are
+    // handled in the emit path. No more relay-owned runBeing/openStream.
+    relayDispatch: async ({ being, prompt, route, re, by, emoji }) => {
+      if (!submitRef.current || route?.room_id == null) return;
+      await submitRef.current(prompt, {
+        forceTarget: being, fromWhatsApp: true, waChatId: String(route.room_id),
+        replyAllowed: true, autoDispatched: true,
+        _meshReturn: { re, by, emoji },
+      });
+    },
+    // ORIGIN: mirror the relayed reply into the origin chat via the universal editor,
+    // stamped with the being's identity. relay.mjs opens this on the first frame and
+    // feeds it the relay-room edits (onRoomMessageEdit).
+    openOriginStream: (returnTo, info = {}) => {
+      const room = returnTo?.chat_id;
+      const tgt = returnTo?.surface === 'telegram' ? bridgeRef.current : waBridgeRef.current;
+      if (room == null || !tgt?.startStreamMessage) return null;
+      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
+      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
+      const wrap = (b) => { const body = String(b ?? '').trim() || '…'; return tag ? `${tag} ${body}` : body; };
+      const h = tgt.startStreamMessage(wrap('…'), { chatId: room });
+      if (!h) return null;
+      return { update: (b) => h.update?.(wrap(b)), finish: (b) => h.finish?.(wrap(b)) };
+    },
     log: (m) => logOut(m),
   });
   meshRelayRef.current = meshRelay;
@@ -8231,10 +8248,19 @@ function startSpineRuntime() {
           : null;
         // showThink: claude/codex meta-engineers stream as a bridge-OWNED 🤔→reply+✅
         // in-place edit (An 2026-06-20). @l (llama) keeps the <think>-split path below.
-        const _waShowThink = !_isLlamaBeing(meta.forceTarget ?? sibName);
+        // RELAY-RETURN (An 2026-06-20): a relayed being (Don) replies through THIS
+        // normal dispatch, but every streamed frame is wrapped in the mesh tail
+        // (encodeMesh) so the origin spine recognizes + mirrors it. No 🤔/✅ markers
+        // (the mesh body stays clean; identity rides the tail emoji); system:true
+        // bypasses the @e gate (relay traffic is machine-routed, like the raw send).
+        const _mr = meta._meshReturn || null;
+        const _meshFrame = _mr
+          ? (body, done = false) => encodeMesh({ by: _mr.by, body: String(body ?? '').trim() || '🤔', re: _mr.re, emoji: _mr.emoji, done })
+          : null;
+        const _waShowThink = !_mr && !_isLlamaBeing(meta.forceTarget ?? sibName);
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
-          ? streamFactoryRef.current(`${waPrefix}${_waShowThink ? '🤔 thinking…' : '⌛ thinking…'}`,
-              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName, showThink: _waShowThink })
+          ? streamFactoryRef.current(_mr ? _meshFrame('🤔') : `${waPrefix}${_waShowThink ? '🤔 thinking…' : '⌛ thinking…'}`,
+              { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName, showThink: _waShowThink, system: !!_mr })
           : null;
         // WA two-message split for thinking models (@l). Operator
         // 2026-05-24: "the thinking response should reply once, after
@@ -8276,7 +8302,7 @@ function startSpineRuntime() {
           if (waStream) {
             const { think, answer } = splitThink(partial);
             if (answer === null) {
-              waStream.update(`${waPrefix}${think}`);
+              waStream.update(_mr ? _meshFrame(think) : `${waPrefix}${think}`);
             } else {
               if (!waSplit) {
                 waSplit = true;
@@ -8324,7 +8350,8 @@ function startSpineRuntime() {
         // Brains converse: feed this resident's reply to the other residents —
         // but NEVER a silent '…' self-select (operator 2026-06-14: "we're feeding
         // him his own '...'") nor an infra failure. Both are loop fuel, not content.
-        if (!_infraFail && !_silentReply(reply)) _recirculateResidentReply({ being: _sibForFail, reply, meta });
+        // (relay-return replies never recirculate — Don answers HFM via the mesh, not DOLLY's residents.)
+        if (!_infraFail && !_silentReply(reply) && !meta._meshReturn) _recirculateResidentReply({ being: _sibForFail, reply, meta });
         // @l (sessionless) emit verdict → egpt.log. Localises why a sessionless
         // sibling stayed quiet: DROP:silent (model self-selected out with '…'),
         // DROP:gate (chat mode/replyAllowed blocked it), DROP:infra (fetch
@@ -8398,12 +8425,12 @@ function startSpineRuntime() {
             }
             if (waAnswerStream) { await waAnswerStream.finish(`${waPrefix}${answer || '…'}`); primaryStream = waAnswerStream; }
           } else {
-            await waStream.finish(`${waPrefix}${reply}`);
+            await waStream.finish(_mr ? _meshFrame(reply, true) : `${waPrefix}${reply}`);
           }
           if (!primaryStream?.delivered && meta.fromWhatsApp && waBridgeRef.current) {
             const fallbackText = answer !== null ? (answer || reply) : reply;
             const r = await waBridgeRef.current.send(
-              `${waPrefix}${fallbackText}`,
+              _mr ? _meshFrame(fallbackText, true) : `${waPrefix}${fallbackText}`,
               { chatId: meta.waChatId },
             );
             if (!r) {
@@ -8413,7 +8440,7 @@ function startSpineRuntime() {
           }
         } else if (meta.fromWhatsApp && waBridgeRef.current && !_dropResident(reply)) {
           const r = await waBridgeRef.current.send(
-            `${waPrefix}${reply}`,
+            _mr ? _meshFrame(reply, true) : `${waPrefix}${reply}`,
             { chatId: meta.waChatId },
           );
           if (!r) {

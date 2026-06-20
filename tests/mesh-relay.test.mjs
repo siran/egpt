@@ -175,18 +175,29 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(parseMesh(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' })).done).toBe(false);
   });
 
-  it('RESPONDER edit-streams the reply into the relay room (🤔 placeholder → partials → final done)', async () => {
-    const frames = []; let streamFinal = null;
+  it('RESPONDER hands the prompt to the NORMAL dispatch (relayDispatch) — does not run the being itself', async () => {
+    let dispatched = null; let ranBeing = false;
     const doSpine = createMeshRelay({
       node: 'do', send: async () => {}, surface: async () => {},
-      runBeing: async (_n, _p, _ctx, onPartial) => { onPartial('Ja'); onPartial('Jaja'); return 'Jaja, aquí'; },
+      runBeing: async () => { ranBeing = true; return 'should not run'; },
       beingEmoji: () => '🤝', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
-      openStream: (_route, initial) => { frames.push(initial); return { update: (t) => frames.push(t), finish: async (t) => { streamFinal = t; } }; },
+      relayDispatch: async (d) => { dispatched = d; },
     });
     await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'do' }), msgId: 'm1' });
-    expect(frames[0]).toMatch(/🤔/);                                              // placeholder posted first
-    expect(parseMesh(frames[frames.length - 1]).body).toBe('Jaja');              // last live edit = last partial
-    expect(parseMesh(streamFinal)).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', emoji: '🤝', done: true });
+    expect(ranBeing).toBe(false);                                                 // routed, not run locally
+    expect(dispatched).toMatchObject({ being: 'don', prompt: 'hola', re: 'HFM', by: 'don.do', emoji: '🤝' });
+    expect(dispatched.route).toMatchObject({ room_id: 'C' });
+  });
+
+  it('RESPONDER falls back to one-shot runBeing when no relayDispatch is wired', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (_r, t) => sent.push(t), surface: async () => {},
+      runBeing: async () => 'Jaja, aquí', beingEmoji: () => '🤝',
+      resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+    });
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'do' }), msgId: 'm1' });
+    expect(parseMesh(sent[sent.length - 1])).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', emoji: '🤝', done: true });
   });
 
   it('ORIGIN mirrors a streamed reply: first frame opens a stream, edits update it, done finalizes', async () => {

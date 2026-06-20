@@ -116,11 +116,14 @@ export function createMeshRelay({
   resolveRoute = () => null,         // (toNode) => route | null
   isLocalBeing = () => false,        // (being) => bool
   // STREAMING (An 2026-06-20): edit-streaming is a bridge property, so a relayed
-  // reply streams for free — the relay just routes. RESPONDER: openStream(route,
-  // initialText) → {update,finish} that edit-streams the reply INTO the relay room.
-  // ORIGIN: openOriginStream(returnTo, info) → {update,finish} that edit-streams the
-  // surfaced reply INTO the origin chat. Both null → fall back to one-shot send/surface.
-  openStream = null,
+  // reply streams for free — the relay just routes.
+  //   RESPONDER: relayDispatch({being,prompt,route,re,by,emoji}) → hand the prompt
+  //     to the host's NORMAL dispatch; the being replies like any prompt (universal
+  //     streaming) and the host wraps each frame in the mesh tail. Null → one-shot
+  //     runBeing fallback.
+  //   ORIGIN: openOriginStream(returnTo, info) → {update,finish} that edit-streams
+  //     the surfaced reply INTO the origin chat. Null → one-shot surface.
+  relayDispatch = null,
   openOriginStream = null,
   log = () => {},
 } = {}) {
@@ -226,21 +229,22 @@ export function createMeshRelay({
     mark(key);
 
     const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
-    // Stamp the being's emoji so the relayer can surface it AS the being (it may not
-    // host the being). `done` marks the final frame; '🤔' is the streaming placeholder.
-    const wrap = (body, done = false) => encodeMesh({ by: `${being}.${node}`, body: String(body ?? '').trim() || '…', from: '', re: prov.from, emoji: beingEmoji(being), done });
-    // RESPONDER STREAMING: edit-stream the reply INTO the relay room — post a 🤔
-    // placeholder, edit it live as the being thinks, finalize with `done`. Edits are
-    // editMessage (not guardedSend), so they NEVER count against the circuit breaker.
-    const stream = openStream ? openStream(route, wrap('🤔')) : null;
+    // RESPONDER (An 2026-06-20): hand the prompt to the host's NORMAL dispatch so the
+    // being replies like ANY prompt (the universal editor), and the host wraps each
+    // streamed frame in the mesh tail (re/by/emoji, done on the last) — so the origin
+    // recognizes + mirrors it. The relay no longer runs the being itself. Non-blocking:
+    // relayDispatch fires the dispatch; we don't await the whole turn here.
+    if (relayDispatch) {
+      relayDispatch({ being, prompt, route, re: prov.from, by: `${being}.${node}`, emoji: beingEmoji(being) })
+        .catch((e) => log(`mesh: relayDispatch ${being} failed: ${e?.message ?? e}`));
+      return true;
+    }
+    // Fallback (no relayDispatch wired): run the being one-shot and post the reply.
     let reply;
-    try {
-      reply = await runBeing(being, prompt, { from: prov.from, by: prov.by },
-        stream ? (partial) => stream.update?.(wrap(partial)) : undefined);
-    } catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
+    try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
+    catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    if (stream) await stream.finish?.(wrap(reply, true));
-    else await guardedSend(route, wrap(reply, true));   // no stream primitive → one-shot (done)
+    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: String(reply).trim() || '…', from: '', re: prov.from, emoji: beingEmoji(being), done: true }));
     return true;
   }
 
