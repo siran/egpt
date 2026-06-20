@@ -79,6 +79,7 @@ import { stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { launchSpineProcess } from './src/spine-launch.mjs';
 import { startSpineOutputLog as startSpineOutputLogImpl } from './src/spine-output-log.mjs';
 import { createTelegramBootScheduler } from './src/spine-telegram-boot.mjs';
+import { createWaBypassSync, createWhatsAppConfirmMirror, resolveWaTransport } from './src/spine-wa-policy.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh } from './src/mesh/relay.mjs';
 import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
@@ -543,14 +544,6 @@ const LOCAL_CONFIG_PATH = join(EGPT_HOME, 'config.local.json');
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 
-// WhatsApp transport resolution (operator 2026-06-10: "baileys never.
-// chrome-cdp is fallback. beeper default and preferred." — and later the
-// same day: "remove baileys completely"; it is GONE, not deprecated).
-// beeper is the default; cdp must be chosen explicitly. A config still
-// saying 'baileys' gets beeper + a loud notice rather than a dead bridge.
-function resolveWaTransport(cfg = {}) {
-  return cfg.transport === 'cdp' ? 'cdp' : 'beeper';
-}
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
@@ -3284,21 +3277,11 @@ function startSpineRuntime() {
   const _waJoinedAdd = _joined.add;
   const _waJoinedRemove = _joined.remove;
   const _waJoinedClear = _joined.clear;
-  const _syncBypassToBridge = () => {
-    // Keep the WA bridge's awareness-bypass set aligned with chats we want EVERY
-    // message from, not just @-tagged ones: joined chats (/use, /join) +
-    // auto_e_chats (operator-configured @e groups). Without this, a group with
-    // the default 'mentions' awareness would drop the operator's own fromMe posts
-    // AND every non-mentioned member message before auto_e_chats dispatch.
-    // Operator (2026-05-17): "obviously do not skip my own messages."
-    const wa = waBridgeRef.current;
-    if (!wa || typeof wa.setBypassChats !== 'function') return;
-    const joined = _waJoinedAll().map(e => e.jid);
-    const auto = Array.isArray(EGPT_CONFIG.whatsapp?.auto_e_chats)
-      ? EGPT_CONFIG.whatsapp.auto_e_chats
-      : [];
-    wa.setBypassChats([...new Set([...joined, ...auto])]);
-  };
+  const _syncBypassToBridge = createWaBypassSync({
+    waBridgeRef,
+    getJoinedChats: _waJoinedAll,
+    getAutoChats: () => EGPT_CONFIG.whatsapp?.auto_e_chats ?? [],
+  });
   const startWaBridge = callback(async (force = false) => {
     if (waBridgeRef.current) return true;
     const cfg = EGPT_CONFIG.whatsapp;
@@ -3330,42 +3313,14 @@ function startSpineRuntime() {
       // wa.send, which rememberSent's them, so they never loop back into
       // dispatch even though the self-DM is itself an auto_e chat. Exposed via
       // confirmMirrorRef so the per-being dispatch taps can reach it.
-      confirmMirrorRef.current = async (jid, header, content) => {
-        try {
-          if (!jid) return;
-          const watch = EGPT_CONFIG.whatsapp?.confirm_chats;
-          const dests = watch && Array.isArray(watch[jid]) ? watch[jid] : null;
-          if (!dests || !dests.length) return;
-          // Directional debug header that traces the flow — "Debug: ->E"
-          // (human prompted E), "Debug: <-E" (reply received from E),
-          // "Debug: E->L" (E's reply re-circulated as L's prompt) — followed
-          // by the exact envelope as fenced content.
-          const body = String(content ?? '');
-          const hdr = header ? `Debug: ${header}` : null;
-          const waBody = hdr ? `${hdr}\n\`\`\`\n${body}\n\`\`\`` : `\`\`\`\n${body}\n\`\`\``;
-          const shellBody = hdr ? `${hdr}\n${body}` : body;
-          const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
-          for (const dest of dests) {
-            if (dest === 'shell') {
-              pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: shellBody });
-            } else if (dest === 'self' || dest === 'egptbot') {
-              const targetJid = dest === 'self' ? selfDm : (EGPT_CONFIG.whatsapp?.egptbot_jid ?? null);
-              if (!targetJid) {
-                if (dest === 'egptbot') pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-                  body: `!! /e confirm: dest "egptbot" needs whatsapp.egptbot_jid configured (no bot account yet) — skipped` });
-                continue;
-              }
-              if (targetJid === jid) continue;  // don't echo a watched chat into itself
-              const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-              // deliverEcho: the debug mirror is a normal Self message — let it
-              // reach the Self residents (system-e / system-l) instead of being
-              // dropped as a self-echo. They see it and may react.
-              const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: waBody, deliverEcho: true };
-              await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
-            }
-          }
-        } catch (e) { console.error(`!! confirmMirror: ${e?.message ?? e}`); }
-      };
+      confirmMirrorRef.current = createWhatsAppConfirmMirror({
+        config: EGPT_CONFIG,
+        pushItem,
+        emitOutbox: async (ev) => {
+          const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+          await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), ...ev }));
+        },
+      });
 
       const _bridgeOpts = {
         allowedUsers:      cfg.allowed_users ?? [],
