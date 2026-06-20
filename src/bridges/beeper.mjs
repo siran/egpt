@@ -250,6 +250,10 @@ export async function startBeeperBridge(opts = {}) {
   // differ from the POST's pendingMessageID). Operator's OWN messages are NOT
   // suppressed — so the operator can @e themselves.
   const _sentText = new Map();   // `${chatID}|${normalizedText}` -> expiry ms
+  // Chat-qualified ids of OUR OWN streaming placeholders (meta-engineer 🤔→reply
+  // in-place edits). Our live edits re-upsert the message; without this guard the
+  // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
+  const _ourStreamIds = new Set();
   // Normalize for echo matching: egpt SENDS plain text ("🦙 l\n…") but Beeper
   // echoes our OWN message back HTML-formatted ("🦙 l<br>…") with a DIFFERENT
   // final id than the POST's pendingMessageID — so a raw id/text compare misses
@@ -383,6 +387,43 @@ export async function startBeeperBridge(opts = {}) {
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); return null; }
   }
 
+  // --- edit / delete (Beeper Desktop API: PUT/DELETE a message by its CONFIRMED
+  // id) -------------------------------------------------------------------------
+  // Verified live 2026-06-20: PUT /v1/chats/{c}/messages/{id} {text} edits in place;
+  // DELETE removes. The POST only returns a pendingMessageID — useless for PUT — so
+  // the confirmed id is resolved separately (resolveSentMessageId).
+  async function editMessage(chatID, messageID, text) {
+    if (!chatID || !messageID || !text) return false;
+    try { await api('PUT', `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}`, { text: String(text) }); return true; }
+    catch (e) { onLog(`beeper: edit failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
+  }
+  async function deleteMessage(chatID, messageID) {
+    if (!chatID || !messageID) return false;
+    try { await api('DELETE', `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}`); return true; }
+    catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
+  }
+  // Resolve the CONFIRMED id of a message we just sent: poll the recent list and
+  // match our own (normalized) text; pick the newest match (largest numeric id).
+  async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500 } = {}) {
+    const want = _normEcho(text);
+    if (!chatID || !want) return null;
+    for (let i = 0; i < tries; i++) {
+      try {
+        const r = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}/messages?limit=8`);
+        const items = Array.isArray(r?.items) ? r.items : [];
+        let best = null;
+        for (const m of items) {
+          if (!m?.id) continue;
+          if (_normEcho(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
+          if (best == null || Number(m.id) > Number(best) || String(m.id) > String(best)) best = m.id;
+        }
+        if (best != null) return best;
+      } catch { /* retry */ }
+      await new Promise((res) => setTimeout(res, delayMs));
+    }
+    return null;
+  }
+
   // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
   // Beeper delivers a reaction as TWO events (verified live 2026-06-16): a bare
   // type:'REACTION' event (reactor + linkedMessageID, but NO emoji), and a
@@ -464,6 +505,9 @@ export async function startBeeperBridge(opts = {}) {
     if (!msg?.id || msg.type === 'REACTION') return;
     const key = msgKeyOf(msg.chatID, msg.id);   // chat-qualified: Beeper ids are per-chat
     const cur = htmlToMarkdown(msg.text) || '';
+    // OUR OWN streaming edit (a meta-engineer's 🤔→reply in-place edit): keep the
+    // baseline current so a LATER genuine edit still diffs, but NEVER surface it.
+    if (_ourStreamIds.has(key)) { _seenText.set(key, cur); return; }
     const first = !_seenText.has(key);
     const prev = _seenText.get(key);
     _seenText.set(key, cur);
@@ -691,6 +735,10 @@ export async function startBeeperBridge(opts = {}) {
     async send(text, { chatId, chatName } = {}) {
       return await sendMessage(chatId ?? chatName, text, {});
     },
+    // In-place edit / delete by CONFIRMED message id (used by the show-think
+    // stream; also available to callers that hold a real id).
+    editMessage:   (chatId, messageId, text) => editMessage(chatId, messageId, text),
+    deleteMessage: (chatId, messageId)       => deleteMessage(chatId, messageId),
     // Deterministic-name surface (operator 2026-06-10): callers and slash
     // files work with names/slugs; room ids stay an internal detail.
     listChats,
@@ -702,26 +750,91 @@ export async function startBeeperBridge(opts = {}) {
     myJid: null,   // no jid concept on this transport
     listEgptPinned: () => [],   // pins were a baileys-side feature
     setEgptPin: (..._a) => { onLog('beeper: setEgptPin not supported on this transport (yet)'); return null; },
-    // Non-streaming shim for the host's persona-reply path: the gate already
-    // approved emit (streamFactory returns null otherwise); send the FINAL text
-    // on finish(). Ignore intermediate update() frames (no edit-spam).
-    startStreamMessage(initialText, { chatId, chatName, persona } = {}) {
-      // The host meta-brain path (egpt.mjs ~7880) skips its fallback send only
-      // when the stream reports `delivered` — so the handle MUST expose
-      // `delivered` (+ `lastError`), else every sibling reply is sent twice
-      // (stream finish + fallback). A local-only `delivered` was the double-@jay bug.
-      let latest = initialText, finished = false;
+    // Stream a reply into the chat. Two modes:
+    //  • plain (E persona): buffer update()s, send the FINAL once on finish().
+    //    The host skips its fallback send only when the stream reports `delivered`,
+    //    so the handle MUST expose delivered (+ lastError) — else replies double-send.
+    //  • showThink (meta-engineers, An 2026-06-20): a REAL in-place editor — post
+    //    the 🤔 placeholder, edit it live as the turn streams, finish as
+    //    "<reply>\n\n✅ Done". ONE message; the 🤔→✅ lifecycle is OWNED HERE, in the
+    //    bridge, so every surface behaves identically. Edit/delete verified live.
+    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false } = {}) {
+      if (!showThink) {
+        let latest = initialText, finished = false;
+        const handle = { delivered: false, lastError: null };
+        const deliver = async () => {
+          if (handle.delivered) return;
+          handle.delivered = true;
+          if (latest && latest.trim()) {
+            const r = await sendMessage(chatId ?? chatName, latest, {});
+            if (!r) { handle.delivered = false; handle.lastError = 'send returned null'; }
+          }
+        };
+        handle.update = (t) => { if (!finished && t) latest = t; };
+        handle.finish = async (t) => { if (t) latest = t; finished = true; await deliver(); };
+        handle.delete = async () => { finished = true; };   // nothing posted yet → no-op
+        handle.fail   = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
+        return handle;
+      }
+      // ── show-think in-place editor ───────────────────────────────────────────
+      let latest = initialText, finished = false, cid = null, realId = null;
+      let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
+      const EDIT_MIN_MS = 1500;   // debounce live edits so we don't hammer the API
       const handle = { delivered: false, lastError: null };
-      const deliver = async () => {
-        if (handle.delivered) return;
-        handle.delivered = true;
-        if (latest && latest.trim()) {
-          const r = await sendMessage(chatId, latest, {});
-          if (!r) { handle.delivered = false; handle.lastError = 'send returned null'; }
+      const serial = (fn) => (chain = chain.then(fn, fn));   // never overlap PUTs (final edit wins)
+
+      // Post the placeholder NOW (so 🤔 shows immediately) + resolve its CONFIRMED
+      // id (POST returns only a pending id). Mark it OURS so our live edits don't
+      // surface as incoming edits, and rememberSent so the re-upsert is deduped.
+      const ready = (async () => {
+        try {
+          cid = await resolveChatId(chatId ?? chatName);
+          if (!cid) { handle.lastError = 'no chat'; return; }
+          const r = await sendMessage(cid, latest, {});
+          if (!r) { handle.lastError = 'placeholder send failed'; return; }
+          realId = await resolveSentMessageId(cid, latest);
+          if (realId) {
+            _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
+            rememberSent(realId, cid, latest);
+          } else { handle.lastError = 'could not resolve placeholder id'; }
+        } catch (e) { handle.lastError = e?.message ?? String(e); }
+      })();
+
+      const applyEdit = (text) => serial(async () => {
+        await ready;
+        if (!cid || !realId) return false;
+        rememberSent(realId, cid, text);   // our edit re-upserts this → suppress from dispatch
+        return editMessage(cid, realId, text);
+      });
+
+      handle.update = (t) => {
+        if (finished || !t) return;
+        latest = t; pendingText = t;
+        const now = Date.now();
+        if (now - lastEditAt >= EDIT_MIN_MS) { lastEditAt = now; applyEdit(t); }
+        else if (!editTimer) {
+          editTimer = setTimeout(() => { editTimer = null; lastEditAt = Date.now(); if (pendingText != null) applyEdit(pendingText); }, EDIT_MIN_MS - (now - lastEditAt));
         }
       };
-      handle.update = (t) => { if (!finished && t) latest = t; };
-      handle.finish = async (t) => { if (t) latest = t; finished = true; await deliver(); };
+      handle.finish = async (t) => {
+        if (finished) return; finished = true;
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        if (t) latest = t;
+        await ready;
+        if (cid && realId) {
+          const ok = await applyEdit(`${latest}\n\n✅ Done`);
+          if (ok) handle.delivered = true; else handle.lastError = handle.lastError || 'final edit failed';
+        }
+        // Couldn't edit in place → drop the dangling placeholder so the spine's
+        // fallback can send the reply fresh (delivered stays false).
+        if (!handle.delivered && cid && realId) { await deleteMessage(cid, realId).catch(() => {}); }
+      };
+      handle.delete = async () => {
+        finished = true;
+        if (editTimer) { clearTimeout(editTimer); editTimer = null; }
+        await ready;
+        if (cid && realId) await deleteMessage(cid, realId).catch(() => {});
+      };
       handle.fail = (e) => { finished = true; handle.lastError = e?.message ?? String(e); onLog(`beeper: stream fail — ${e?.message ?? e}`); };
       return handle;
     },
