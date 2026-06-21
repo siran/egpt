@@ -41,10 +41,10 @@ describe('/config', () => {
   it('parses JSON values', async () => {
     const sync = makeStorage();
     const local = makeStorage();
-    await config('whatsapp_cdp {"chat_name":"foo"}', {
+    await config('whatsapp {"enabled":true}', {
       log: () => {}, storageSync: sync, storageLocal: local,
     });
-    expect(sync.store.whatsapp_cdp).toEqual({ chat_name: 'foo' });
+    expect(sync.store.whatsapp).toEqual({ enabled: true });
   });
 
   it('triggers onTelegramConfigChange when key is "telegram"', async () => {

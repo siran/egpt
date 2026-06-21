@@ -1,5 +1,11 @@
 # CDP / content-script WhatsApp / Telegram bridges — spec
 
+> **REMOVED 2026-06-21.** The extension's WhatsApp feature (the
+> `web.whatsapp.com` content script, the background relay, the WA-CDP
+> bridge/routing/commands, and the `whatsapp_cdp` config) was deleted —
+> beeper (in the daemon/spine) is the only WhatsApp transport now. This
+> spec is kept for historical context only; nothing below is wired up.
+
 > **Note (post-v1)**: The WhatsApp bridge ships as a **content script**
 > declared in the manifest (`https://web.whatsapp.com/*`), not via CDP.
 > Content scripts auto-load when the matching page opens — no Chrome
