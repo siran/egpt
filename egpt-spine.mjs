@@ -4263,7 +4263,7 @@ function startSpineRuntime() {
   // wa-inbound events arriving in ~/.egpt/inbox/ would double-dispatch
   // if we routed them through submitRef. Until the keeper is the SOLE
   // baileys owner (Phase 2c step 4: handler stops calling
-  // startBaileysBridge, daemon-wrap.ps1 spawns keeper alongside),
+  // startBaileysBridge, the service spawns the keeper alongside),
   // the listener is passive: it logs every received event to /log
   // but does NOT dispatch. That proves the wire works end-to-end
   // (file IPC → handler) without risking the double-dispatch.
