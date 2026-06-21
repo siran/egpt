@@ -7192,16 +7192,29 @@ function startSpineRuntime() {
     // always surfaces (the user asked the being) — it isn't subject to the origin chat's
     // @e mode gate.
     openOriginStream: (returnTo, info = {}) => {
-      const makeStream = streamFactoryRef.current;
-      if (!makeStream || returnTo?.surface !== 'whatsapp' || !waBridgeRef.current) return null;
+      const wa = waBridgeRef.current;
+      if (returnTo?.surface !== 'whatsapp' || !wa?.startStreamMessage) {
+        logOut(`mesh: openOriginStream → null (surface=${returnTo?.surface} wa=${!!wa})`);
+        return null;
+      }
       const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
       const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || '🔗';
       const postId = info.msgId || null;
-      const stream = makeStream('', { chatId: returnTo.chat_id, system: true, ...(postId ? { existingMsgId: postId } : {}) });
+      // Use the bridge's in-place editor DIRECTLY (no proxy/gate layer): with
+      // existingMsgId it edits the placeholder in place AND marks it ours so our own
+      // mirror-edits aren't re-surfaced as stage-directions. The pipe: relay → origin.
+      const stream = wa.startStreamMessage('', { chatId: returnTo.chat_id, ...(postId ? { existingMsgId: postId } : {}) });
+      logOut(`mesh: openOriginStream OPEN chat=${returnTo.chat_id} existingMsgId=${postId || '-'} stream=${!!stream}`);
       if (!stream) return null;
       return {
-        update: (body) => { stream.update(`${tag} ${body}`); },
-        finish: async (body) => { await stream.finish(`${tag} ${body}`); },
+        update: (body) => {
+          stream.update(`${tag} ${String(body ?? '').trim() || '…'}`);
+          setTimeout(() => { if (stream.lastError) logOut(`mesh: mirror #${postId || '?'} edit error: ${stream.lastError}`); }, 2500);
+        },
+        finish: async (body) => {
+          await stream.finish(`${tag} ${String(body ?? '').trim() || '…'}`);
+          logOut(`mesh: mirror finish #${postId || '?'} delivered=${stream.delivered} err=${stream.lastError ?? '-'}`);
+        },
       };
     },
     log: (m) => logOut(m),

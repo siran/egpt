@@ -226,6 +226,7 @@ export function createMeshRelay({
       const dotIdx = prov.re.lastIndexOf('.');
       const reChatId = dotIdx >= 0 ? prov.re.slice(0, dotIdx) : prov.re;
       const back = awaiting.get(reChatId) || awaiting.get(prov.re);
+      log(`mesh: reply re:${prov.re} post_id:${prov.post_id || '-'} msgId:${msgId ?? '-'} back:${back ? 'yes' : 'NO'} oOS:${openOriginStream ? 'yes' : 'no'} tracked:${streamingIn.has(String(msgId)) ? 'yes' : 'no'}`);
 
       // STREAMING MIRROR (Option B, An 2026-06-21): the responder edit-streams ONE
       // relay-room message; we mirror EVERY version of it onto the origin placeholder.
