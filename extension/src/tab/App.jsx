@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
 import { startTelegramBridge } from '../../../src/bridges/telegram.mjs';
-import { startWhatsAppCdpBridge } from '../bridges/whatsapp-cdp.js';
-import { shouldMirrorTypedToWa, shouldMirrorBrainReplyToWa } from '../bridges/wa-routing.js';
-import * as waCommands from '../commands/wa-commands.js';
 import * as sessionCommands from '../commands/session-commands.js';
 import * as miscCommands from '../commands/misc-commands.js';
 import { generateKey as generateBusKey } from '../../../src/tools/bus-sign.mjs';
@@ -93,7 +90,6 @@ export default function App() {
   // 'attached' = green dot (content script in WA Web tab is connected);
   // 'detached' = red dot (no WA tab, or it was closed); 'unknown' before
   // the bridge has reported state. Surfaced in the status bar.
-  const [waState, setWaState] = useState('unknown');
   const [userName, setUserName] = useState('human');
   // Whether THIS extension currently owns Telegram polling. /telegram <node>
   // hands off; bus event 'telegram-handoff' may start/stop us.
@@ -130,14 +126,11 @@ export default function App() {
   const appendMsg = useCallback((author, text, opts = {}) => {
     const id = mkId();
     setMessages(prev => [...prev, { id, author, text, streaming: opts.streaming ?? false }]);
-    // Sink mirrors the message to the originating bridge (e.g. back
-    // to the WA chat that sent the dispatch) so command output and
-    // dispatch errors land where the user typed from. Internal
-    // system logs (bridge ready/disconnected, chat-id captured at
-    // bridge startup, etc.) opt OUT via {noMirror:true} — without
-    // this, a concurrent bridge event during a dispatch leaks the
-    // 'whatsapp-cdp: chat … captured and saved' log into the user's
-    // WA chat.
+    // Sink mirrors the message to the originating bridge (e.g. back to
+    // the Telegram chat that sent the dispatch) so command output and
+    // dispatch errors land where the user typed from. Internal system
+    // logs (chat-id captured, etc.) opt OUT via {noMirror:true} so a
+    // concurrent bridge event during a dispatch doesn't leak into the chat.
     if (currentOutputSinkRef.current && author === 'egpt' && !opts.noMirror) {
       try { currentOutputSinkRef.current(text); } catch (_) {}
     }
@@ -205,7 +198,6 @@ export default function App() {
   // /mirror to forward 'whatever was just said' to a target. Updated
   // on every WA incoming, regardless of whether dispatch fired.
   // Shape: { sender, text, source, chatId?, ts }.
-  const lastIncomingRef = useRef(null);
 
   const ensureEThread = useCallback(async () => {
     const existing = sessionsRef.current.get('e');
@@ -348,25 +340,6 @@ export default function App() {
       );
       updateMsg(msgId, finalText, false);
       tgStream?.finish(`${tgPrefix}\n${escapeHtml(finalText)}`);
-      // Mirror to WhatsApp via the CDP bridge — only when no shell is
-      // on the bus (shell mirrors brain replies via baileys). Tag the
-      // line with the session name so the user on their phone can tell
-      // which brain answered.
-      const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-      if (waCdpBridgeRef.current && !hasShellPeer && finalText) {
-        // replyTo routes the reply back to the originating chat;
-        // waJoined routes it to the /join target. Without either,
-        // we don't mirror — the brain reply stays local. Pinned in
-        // tests/wa-routing.test.mjs (regression: whatsapp_cdp.chat_name
-        // in config used to silently route here, leaking @e replies
-        // to the user's self-DM).
-        if (shouldMirrorBrainReplyToWa({ replyTo, waJoined: !!waJoinedRef.current })) {
-          waCdpBridgeRef.current.send(
-            `[${sessionName}] ${finalText}`,
-            replyTo ? { chatName: replyTo } : undefined,
-          ).catch((e) => appendMsg('egpt', `!! WA reply mirror failed: ${e?.message ?? e}`));
-        }
-      }
       return finalText ?? '';
     } catch (e) {
       const err = `error: ${e.message}`;
@@ -435,52 +408,6 @@ export default function App() {
     if (parsed.type === 'mention') {
       const name = parsed.target;
       const prompt = parsed.body || trimmed;
-      // @waN ad-hoc send: resolve N→JID against the extension's own
-      // /channels cache, then route to whichever peer has baileys
-      // (the shell) via a wa-send bus event. The originator's
-      // /channels cache wins resolution — N is meaningful in the
-      // context where the user typed it, not after a hop.
-      const waNMatch = /^wa(\d+)$/i.exec(name);
-      if (waNMatch) {
-        const idx = parseInt(waNMatch[1], 10) - 1;
-        const chat = waChannelsRef.current?.[idx];
-        if (!chat) {
-          bridgeRef.current?.send(
-            `!! @wa${idx + 1}: no channel at that index. Run /channels first.`,
-            { chatId: meta.chatId });
-          return;
-        }
-        // Find a shell peer with baileys (wa:true). Without one we
-        // can't honour the request from TG — report back so the user
-        // knows why nothing happened.
-        let target = null;
-        for (const [nodeId, peer] of peerNodesRef.current) {
-          if (peer.role === 'shell' && peer.wa) { target = nodeId; break; }
-        }
-        if (!target) {
-          bridgeRef.current?.send(
-            `!! @wa${idx + 1}: no shell with baileys on the bus — start /whatsapp on a shell first.`,
-            { chatId: meta.chatId });
-          return;
-        }
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          try {
-            await bus.postEvent(tid, {
-              type: 'wa-send', from: BUS_NODE_ID, ts: Date.now(),
-              to_node: target, jid: chat.jid, body: prompt,
-            });
-            bridgeRef.current?.send(
-              `→ @wa${idx + 1} "${chat.name}" via ${target}`,
-              { chatId: meta.chatId });
-          } catch (e) {
-            bridgeRef.current?.send(
-              `!! @wa${idx + 1}: bus post failed (${e.message})`,
-              { chatId: meta.chatId });
-          }
-        }
-        return;
-      }
       if (sessionsRef.current.has(name)) {
         runBrain(name, prompt, { tgChatId: meta.chatId });
       } else {
@@ -595,38 +522,6 @@ export default function App() {
       setActiveSessions: (arr) => setActiveSessions(arr),
       getPeerNodes: () => peerNodesRef.current,
     };
-    const waCtx = {
-      ...baseCtx,
-      bridge: waCdpBridgeRef.current,
-      storage: chrome.storage.sync,
-      getChannels: () => waChannelsRef.current,
-      setChannels: (c) => { waChannelsRef.current = c; },
-      getJoined:   () => waJoinedRef.current,
-      setJoined:   (v) => {
-        waJoinedRef.current = v;
-        setWaJoined(v);
-        // Announce on the bus so peers with whatsapp.follow_join
-        // enabled can adopt. Peers with follow_join:'never' (default)
-        // just see the log line. v=null means /unjoin.
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          bus.postEvent(tid, {
-            type: 'wa-join', from: BUS_NODE_ID, ts: Date.now(),
-            jid: v?.jid ?? null,
-            ...(v?.name ? { name: v.name } : {}),
-          }).catch(() => {});
-        }
-      },
-      getLastIncoming: () => lastIncomingRef.current,
-      runBrainE: async (text, sender) => {
-        await ensureEThread();
-        await runBrain('e', text, { sender });
-        await persistEThreadUrl();
-      },
-      runBrainSession: async (name, text, sender) => {
-        await runBrain(name, text, { sender });
-      },
-    };
     const sessionCtx = {
       ...baseCtx,
       brains: BRAINS,
@@ -681,11 +576,6 @@ export default function App() {
       case '/clear':     await miscCommands.clear(rest, uiCtx); break;
       case '/help':      await miscCommands.help(rest, uiCtx); break;
       case '/bus-key':   await miscCommands.busKey(rest, busKeyCtx); break;
-      // WA-CDP
-      case '/channels':  await waCommands.channels(rest, waCtx); break;
-      case '/join':      await waCommands.join(rest, waCtx); break;
-      case '/unjoin':    await waCommands.unjoin(rest, waCtx); break;
-      case '/mirror':    await waCommands.mirror(rest, waCtx); break;
       default:
         error(`unknown command: ${slash}`);
     }
@@ -707,40 +597,6 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    // @waN <msg> ad-hoc send to a channel from /channels' cache.
-    // Doesn't bus-post, doesn't dispatch — it's a one-shot WA send,
-    // separate from the play-script. Only handled for local typing
-    // (skip when fromBridge — the bridge wouldn't be sending @waN
-    // back to itself).
-    if (!fromBridge) {
-      const waMatch = trimmed.match(/^@wa(\d+)\s+([\s\S]+)$/i);
-      if (waMatch) {
-        const idx = parseInt(waMatch[1], 10) - 1;
-        const body = waMatch[2].trim();
-        const chat = waChannelsRef.current[idx];
-        if (!chat) {
-          appendMsg('egpt', `!! @wa${idx + 1}: no channel cached at that index. /channels first.`);
-          return;
-        }
-        if (!waCdpBridgeRef.current) {
-          appendMsg('egpt', '!! @wa send: WA-CDP bridge not ready (open web.whatsapp.com)');
-          return;
-        }
-        // Render with the WA chat in the author tag so multiple
-        // parallel conversations are visually distinguishable in the
-        // unified room view: 'me→Galindo@wa: mira'. The @wa suffix
-        // also bypasses the displayAuthor render hack that would
-        // otherwise append @<node>.
-        appendMsg(`me→${chat.name}@wa`, body);
-        try {
-          await waCdpBridgeRef.current.send(body, { chatName: chat.name, chatJid: chat.jid });
-        } catch (e) {
-          appendMsg('egpt', `!! @wa send failed: ${e.message}`);
-        }
-        return;
-      }
-    }
-
     // Mirror to peer surfaces so the room shows what's happening
     // regardless of which surface someone is looking at. Pure
     // visibility — peers render the line and do NOT re-route.
@@ -757,20 +613,6 @@ export default function App() {
           role: 'chrome', user: userName, body: trimmed,
           client: 'ext',
         }).catch(() => {});
-
-        // WA mirror for self-typed messages. Gate via the pure
-        // shouldMirrorTypedToWa helper (see extension/src/bridges/
-        // wa-routing.js + tests/wa-routing.test.mjs). Strict rule:
-        // mirror ONLY when /join is active. chat_name being set
-        // doesn't imply auto-mirror — that field's only role is
-        // identifying the self-DM for the inbound wake-word gate.
-        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-        if (waCdpBridgeRef.current && !hasShellPeer) {
-          if (shouldMirrorTypedToWa({ fromBridge, waJoined: !!waJoinedRef.current })) {
-            waCdpBridgeRef.current.send(trimmed)
-              .catch((e) => appendMsg('egpt', `!! WA mirror failed: ${e?.message ?? e}`));
-          }
-        }
       }
     }
 
@@ -797,24 +639,14 @@ export default function App() {
     // mirror back to the originating bridge for the duration of this
     // dispatch. Try/finally guarantees the sink clears even on throw.
     const sinkPrev = currentOutputSinkRef.current;
-    if (fromBridge === 'wa-cdp' && waCdpBridgeRef.current) {
-      currentOutputSinkRef.current = (text) => {
-        try { waCdpBridgeRef.current?.send(text); } catch (_) {}
-      };
-    }
     try {
       if (decision.kind === 'command') { await handleCommand(trimmed); return; }
 
     // Local echo of the user's own typed input. When fromBridge, the
-    // bridge handler (handleIncomingWaCdp) already appended the
-    // message with its bridge-tagged author, so skip the second
-    // append here. When /join'd to a WA chat, render with the WA
-    // destination in the author tag so the conversation flow is
-    // identifiable in the unified room view.
+    // originating bridge already appended the message with its own
+    // author tag, so skip the second append here.
     if (!fromBridge) {
-      const joined = waJoinedRef.current;
-      const author = joined ? `me→${joined.name}@wa` : userName;
-      appendMsg(author, trimmed);
+      appendMsg(userName, trimmed);
     }
 
     if (decision.kind === 'error') { appendMsg('egpt', `!! ${decision.message}`); return; }
@@ -946,9 +778,8 @@ export default function App() {
     }
   }, [appendMsg, handleCommand, runBrain, userName]);
 
-  // Stable ref so cross-render callers (handleIncomingWaCdp, etc.)
-  // can route input through the latest handleSubmit without
-  // re-creating the bridge wiring on every dependency change.
+  // Stable ref so cross-render callers can route input through the latest
+  // handleSubmit without re-creating the bridge wiring on every dep change.
   const handleSubmitRef = useRef(handleSubmit);
   handleSubmitRef.current = handleSubmit;
 
@@ -1191,12 +1022,6 @@ export default function App() {
         peerNodesRef.current.set(ev.from, {
           role: ev.role, sessions: ev.sessions ?? [],
           polling: !!ev.polling, lastSeen: ev.ts ?? Date.now(),
-          // wa: true means this peer (typically the shell) is actively
-          // handling WhatsApp via baileys. handleIncomingWaCdp uses
-          // this to decide whether to yield brain dispatch. A shell
-          // on bus with wa:false means baileys is disconnected — the
-          // extension stays in charge of WA replies.
-          wa: !!ev.wa,
         });
         setPeersRev(r => r + 1);
         if (!ev._replayed) {
@@ -1205,10 +1030,7 @@ export default function App() {
         // Telegram yield: when a shell joins the bus, hand TG polling
         // over. The shell is the canonical compute home for bridges;
         // the extension only holds the slot opportunistically while no
-        // shell is around. Symmetric to shell yielding WA-CDP to the
-        // extension when shell has no baileys, and to the extension's
-        // own WA-CDP-out skipping outbound when a shell with wa:true
-        // is present. stopBridge() flips tgPolling false; the
+        // shell is around. stopBridge() flips tgPolling false; the
         // telegram-status broadcast effect then notifies the shell,
         // which auto-claims on the next tick.
         if (ev.role === 'shell' && bridgeRef.current && !ev._replayed) {
@@ -1243,38 +1065,6 @@ export default function App() {
         const peer = peerNodesRef.current.get(ev.from);
         if (peer) { peer.sessions = ev.sessions ?? []; peer.lastSeen = ev.ts ?? Date.now(); }
         setPeersRev(r => r + 1);
-        return;
-      }
-      case 'wa-join': {
-        if (ev._replayed) return;
-        const peer = peerNodesRef.current.get(ev.from);
-        const peerRole = peer?.role ?? 'unknown';
-        if (ev.jid) {
-          log(`bus: ${ev.from} (${peerRole}) joined "${ev.name ?? ev.jid}"`);
-        } else {
-          log(`bus: ${ev.from} (${peerRole}) unjoined`);
-        }
-        // Adoption gated by chrome.storage.sync.whatsapp.follow_join.
-        // 'never' (default) just logs. 'from_shell' adopts only when
-        // the announcing peer is the shell. 'always' adopts any.
-        const { whatsapp } = await chrome.storage.sync.get('whatsapp');
-        const followCfg = whatsapp?.follow_join ?? 'never';
-        const shouldFollow =
-          followCfg === 'always' ||
-          (followCfg === 'from_shell' && peerRole === 'shell');
-        if (!shouldFollow) return;
-        // Update ref + state DIRECTLY (don't go through the ctx
-        // setJoined wrapper — that would re-broadcast and ping-pong).
-        if (ev.jid) {
-          waJoinedRef.current = { jid: ev.jid, name: ev.name ?? ev.jid };
-          setWaJoined(waJoinedRef.current);
-          log(`wa: following ${ev.from} — bound to "${ev.name ?? ev.jid}"`);
-        } else if (waJoinedRef.current) {
-          const prevName = waJoinedRef.current.name;
-          waJoinedRef.current = null;
-          setWaJoined(null);
-          log(`wa: following ${ev.from} — released "${prevName}"`);
-        }
         return;
       }
       case 'telegram-status': {
@@ -1372,30 +1162,6 @@ export default function App() {
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
         }
-        // Mirror to WhatsApp via the CDP bridge — but ONLY when there
-        // is no shell on the bus. The shell, when present, has the
-        // baileys WA bridge and mirrors room-utterances natively (no
-        // chrome.debugger banner). Extension's WA-CDP bridge takes
-        // over only as the no-shell fallback. Anti-loop guards:
-        //   - skip events that originated FROM WA (would echo).
-        //   - skip events that originated FROM THIS NODE — handleSubmit
-        //     already mirrored locally and (when /join is set) sent to
-        //     the WA chat directly. The bus echo coming back here would
-        //     re-send and dump into self-DM via the chat_name fallback,
-        //     leaking '@e foo' typed in the extension into "message
-        //     yourself".
-        //   - require waJoinedRef so we only auto-mirror when the user
-        //     has explicitly bound a WA destination.
-        const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
-        const fromOwnNode  = ev.from === BUS_NODE_ID;
-        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-        if (waCdpBridgeRef.current && !fromWhatsApp && !fromOwnNode && !hasShellPeer && waJoinedRef.current) {
-          // Async, fire-and-forget. Bridge surfaces failures via its
-          // own onError → appendMsg. Success is silent — this fires
-          // for every utterance and per-mirror logging would clutter.
-          waCdpBridgeRef.current.send(ev.body ?? '')
-            .catch((e) => appendMsg('egpt', `!! WA peer mirror failed: ${e?.message ?? e}`));
-        }
         return;
       }
       case 'room-reply': {
@@ -1411,20 +1177,6 @@ export default function App() {
           bridgeRef.current.send(
             `<b>${escapeHtml(tag)}</b>\n${escapeHtml(ev.body ?? '')}`
           );
-        }
-        // Mirror peer brain replies to WA when no shell is on the bus
-        // (shell otherwise handles WA mirroring via baileys). Same
-        // guards as room-utterance: skip own broadcasts (runBrain
-        // mirrored locally and to replyTo when applicable), skip WA-
-        // origin (avoid loop), require waJoined so we only auto-mirror
-        // peer replies when the user has explicitly bound a WA
-        // destination.
-        const fromWhatsApp = String(ev.via ?? '').startsWith('whatsapp');
-        const fromOwnNode  = ev.from === BUS_NODE_ID;
-        const hasShellPeer = [...peerNodesRef.current.values()].some(p => p.role === 'shell');
-        if (waCdpBridgeRef.current && !fromWhatsApp && !fromOwnNode && !hasShellPeer && ev.body && waJoinedRef.current) {
-          waCdpBridgeRef.current.send(`[${ev.session ?? 'reply'}] ${ev.body}`)
-            .catch((e) => appendMsg('egpt', `!! WA peer reply mirror failed: ${e?.message ?? e}`));
         }
         return;
       }
@@ -1466,192 +1218,6 @@ export default function App() {
     }).catch(() => {});
   }, [tgPolling]);
 
-  // ── WhatsApp-CDP bridge ───────────────────────────────────────
-  //
-  // Content-script architecture: the WA Web page itself runs
-  // extension/src/content/wa-content.js (declared in
-  // manifest.chrome.json), which talks to the extension's background
-  // service worker via a chrome.runtime port. Background republishes
-  // every incoming WA message as a 'room-utterance' event on the bus
-  // (so peers see them through their existing subscription) AND
-  // forwards them to this bridge's dedicated subscriber port for
-  // tighter UI integration (chat_id capture, in-tab rendering).
-  //
-  // No CDP, no Chrome launch flags. Open web.whatsapp.com → bridge
-  // attaches automatically. Close it → 'content-gone' state.
-  //
-  // Opt out via chrome.storage.sync.whatsapp_cdp.enabled = false.
-  const waCdpBridgeRef = useRef(null);
-  // Cached chat list from the most recent /channels call. /join @waN
-  // resolves N (1-based) against this. waJoinedRef holds the currently-
-  // bound chat (null when none); when set, all outbound from this
-  // extension routes there (preempts whatsapp_cdp.chat_name).
-  const waChannelsRef = useRef([]);
-  const waJoinedRef   = useRef(null);
-  const [waJoined, setWaJoined] = useState(null);
-
-  const handleIncomingWaCdp = useCallback(async (text, fromInfo) => {
-    // Render with WA chat context in the author tag so the unified
-    // room view stays legible when multiple WA chats are active.
-    //   - mine:        'me→<chat>@wa'
-    //   - 1:1 other:   '<author>@wa'        (chat name == author, redundant)
-    //   - group other: '<author>@wa[<chat>]'
-    // Detection of 'mine' compares the scraped data-pre-plain-text
-    // author to userName (wa-content currently emits fromMe=true for
-    // every row by design — see comment in scan(); the real signal is
-    // the per-message author string).
-    const waAuthor = fromInfo.author ?? null;
-    const chatName = fromInfo.chatId ?? null;
-    const isMine = !!(waAuthor && userName && waAuthor === userName);
-    let displayAuthor;
-    if (isMine) {
-      displayAuthor = chatName ? `me→${chatName}@wa` : 'me@wa';
-    } else {
-      const speaker = waAuthor || fromInfo.firstName || 'wa';
-      const isGroup = chatName && chatName !== speaker;
-      displayAuthor = isGroup ? `${speaker}@wa[${chatName}]` : `${speaker}@wa`;
-    }
-    appendMsg(displayAuthor, text);
-
-    // Author for ATTRIBUTION (the [name]: prefix that goes to brains).
-    // Uses the actual WA-side author when available so a friend's
-    // message keeps their name even when the extension owner is "An".
-    const localAuthor = isMine ? userName : (fromInfo.firstName ?? 'wa');
-    const attributedSender = waAuthor || localAuthor;
-
-    // Track every WA message as the 'last incoming' so /mirror can
-    // forward it. Done BEFORE the wake-word gate so observed-only
-    // messages are still mirror-able.
-    const trimmedRaw = text.trim();
-    if (trimmedRaw) {
-      lastIncomingRef.current = {
-        sender:  attributedSender,
-        text:    trimmedRaw,
-        source:  'wa-cdp',
-        chatId:  fromInfo.chatId ?? null,
-        ts:      Date.now(),
-      };
-    }
-
-    if (!fromInfo.fromMe) return;
-    if (!trimmedRaw) return;
-
-    // Yield to shell ONLY when a shell is on the bus AND has baileys
-    // running (wa: true in its node-online). A shell that joined the
-    // bus but ran /whatsapp disconnect (or that crashed its baileys
-    // connection) cannot reply to WA, so the extension must stay in
-    // charge — otherwise the message gets silently dropped.
-    //
-    // When the gate fires, the extension's WA-CDP still renders the
-    // message in the unified UI above (for visibility), but stops
-    // here — no brain dispatch, no reply mirror. Without this gate
-    // both halves would dispatch the same '@e' to a brain in parallel
-    // and the user would see duplicate replies.
-    const hasShellHandlingWa = [...peerNodesRef.current.values()].some(p => p.role === 'shell' && p.wa);
-    if (hasShellHandlingWa) return;
-
-    // Wake-word gate + allowed_users gate.
-    let dispatchText = trimmedRaw;
-    let shouldDispatch = true;
-
-    try {
-      const { whatsapp_cdp = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-      const chatName = (whatsapp_cdp.chat_name ?? '').trim();
-      const allowedUsers = Array.isArray(whatsapp_cdp.allowed_users) ? whatsapp_cdp.allowed_users : null;
-      const inSelfDm = chatName && fromInfo.chatId === chatName;
-
-      // 1. Wake-word: required outside self-DM.
-      if (chatName && !inSelfDm) {
-        const wake = trimmedRaw.match(/^@(egpt|e)\b\s*(.*)$/i);
-        if (!wake) {
-          shouldDispatch = false;
-        } else {
-          dispatchText = wake[2].trim();
-          if (!dispatchText) shouldDispatch = false;
-        }
-      }
-
-      // 2. Sender authorization. Self-DM always allowed (you're
-      //    talking to yourself). Outside self-DM:
-      //      - the main user (userName) is always allowed
-      //      - additional names in allowed_users are also allowed
-      //      - anyone else is observe-only
-      //    Default (allowed_users unset) = ONLY the main user.
-      //    A friend in your chat saying '@egpt /help' has no effect
-      //    until you explicitly add their WA display name to
-      //    whatsapp_cdp.allowed_users.
-      if (shouldDispatch && !inSelfDm) {
-        const allowList = [userName, ...(allowedUsers ?? [])];
-        if (!allowList.includes(attributedSender)) {
-          shouldDispatch = false;
-        }
-      }
-    } catch (_) { /* storage failed — fall through with default dispatch */ }
-
-    if (!shouldDispatch) return;
-
-    try {
-      await handleSubmitRef.current?.(dispatchText, {
-        fromBridge: 'wa-cdp',
-        sender:     attributedSender,
-        fromChat:   fromInfo.chatId ?? null,   // route reply back to source
-      });
-    }
-    catch (e) { appendMsg('egpt', `!! wa-cdp dispatch: ${e.message}`); }
-  }, [appendMsg, userName]);
-  const handleIncomingWaCdpRef = useRef(handleIncomingWaCdp);
-  handleIncomingWaCdpRef.current = handleIncomingWaCdp;
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const start = async () => {
-      const { whatsapp_cdp: cfg = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-      if (cfg.enabled === false) return;
-      if (cancelled) return;
-      try {
-        const bridge = await startWhatsAppCdpBridge({
-          // Bridge state messages: noMirror so they don't leak into
-          // a WA chat if the bridge happens to fire during a wa-cdp
-          // dispatch (the sink would otherwise pick them up).
-          onLog:      (msg) => appendMsg('egpt', msg, { noMirror: true }),
-          onError:    (msg) => appendMsg('egpt', `⚠ ${msg}`, { noMirror: true }),
-          onState:    (state) => setWaState(state),
-          getActiveChat: () => waJoinedRef.current
-            ? { jid: waJoinedRef.current.jid ?? null, name: waJoinedRef.current.name ?? null }
-            : null,
-          onChatId:   async (id) => {
-            try {
-              const { whatsapp_cdp: cur = {} } = await chrome.storage.sync.get('whatsapp_cdp');
-              if (cur.chat_id === id) return;
-              await chrome.storage.sync.set({
-                whatsapp_cdp: { ...cur, chat_id: id },
-              });
-              // First-time chat-id capture often races with the very
-              // first wa-cdp dispatch on a fresh bridge, so this used
-              // to leak into the user's WA chat.
-              appendMsg('egpt', `whatsapp-cdp: chat ${id} captured and saved`, { noMirror: true });
-            } catch (e) {
-              appendMsg('egpt', `!! whatsapp-cdp: could not persist chat_id (${e.message})`, { noMirror: true });
-            }
-          },
-          onIncoming: (text, fromInfo) => handleIncomingWaCdpRef.current?.(text, fromInfo),
-        });
-        if (cancelled) { bridge.stop(); return; }
-        waCdpBridgeRef.current = bridge;
-      } catch (e) {
-        appendMsg('egpt', `whatsapp-cdp: start failed: ${e.message}`);
-      }
-    };
-    start();
-
-    return () => {
-      cancelled = true;
-      try { waCdpBridgeRef.current?.stop(); } catch (_) {}
-      waCdpBridgeRef.current = null;
-    };
-  }, [appendMsg]);
-
   // ── auto-scroll ───────────────────────────────────────────────
 
   useEffect(() => {
@@ -1661,8 +1227,7 @@ export default function App() {
   // ── render ────────────────────────────────────────────────────
 
   const authorClass = (author) =>
-    (author === userName || author.startsWith('me→') || author.startsWith('me@'))
-      ? 'you'
+    author === userName ? 'you'
       : author === 'egpt' ? 'egpt' : 'brain';
 
   return (
@@ -1675,26 +1240,6 @@ export default function App() {
             : sessionsList.map(s => activeSessions.includes(s.name) ? `*${s.name}` : s.name).join('  ')}
         </span>
         <span className="status-tg">{tgStatus}</span>
-        <span className={`status-wa wa-${waState}`} style={{ marginLeft: 12 }}>
-          whatsapp: {waState === 'attached' ? 'connected'
-                    : waState === 'detached' ? 'disconnected'
-                    : 'unknown'}
-          {waJoined ? ` → ${waJoined.name}` : ''}
-          <span
-            title={
-              waState === 'attached' ? 'WA Web tab connected'
-              : waState === 'detached' ? 'WA Web tab closed/missing — open web.whatsapp.com'
-              : 'WA Web tab status unknown'
-            }
-            style={{
-              display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-              marginLeft: 6, verticalAlign: 'middle',
-              background: waState === 'attached' ? '#3fb950'
-                        : waState === 'detached' ? '#f85149'
-                        : '#6e7681',
-            }}
-          />
-        </span>
       </div>
 
       <div className="conversation" ref={convRef}>

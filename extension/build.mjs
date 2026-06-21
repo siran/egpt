@@ -88,14 +88,6 @@ await build({
   outfile: resolve(chromeDist, 'background.js'),
 });
 
-// Content scripts (declared in manifest, auto-loaded on matching pages).
-mkdirSync(resolve(chromeDist, 'content'), { recursive: true });
-await build({
-  ...chromeShared,
-  entryPoints: [resolve(__dirname, 'src/content/wa-content.js')],
-  outfile: resolve(chromeDist, 'content/wa-content.js'),
-});
-
 await build({
   ...chromeShared,
   entryPoints: [resolve(__dirname, 'src/tab/index.jsx')],
@@ -169,9 +161,7 @@ const firefoxStaticAssets = [
   'settings/style.css',
   'bus.html',
   'bus.js',
-  'content/wa-content.js',
 ];
-mkdirSync(resolve(firefoxDist, 'content'), { recursive: true });
 for (const rel of firefoxStaticAssets) {
   copyFileSync(resolve(chromeDist, rel), resolve(firefoxDist, rel));
 }

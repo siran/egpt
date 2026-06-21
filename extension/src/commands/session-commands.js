@@ -1,7 +1,7 @@
 // extension/src/commands/session-commands.js — pure command handlers
-// for the session-management slash commands. Same DI pattern as
-// wa-commands.js: each handler takes (rest, ctx); the React layer in
-// App.jsx wires ctx to the live refs/storage/chrome APIs.
+// for the session-management slash commands. DI pattern: each handler
+// takes (rest, ctx); the React layer in App.jsx wires ctx to the live
+// refs/storage/chrome APIs.
 //
 // Commands: /use, /sessions, /detach, /tabs, /open, /attach.
 //

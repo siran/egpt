@@ -1,6 +1,6 @@
 // extension/src/commands/misc-commands.js — pure handlers for the
 // remaining slash commands: /config, /telegram, /clear, /help.
-// Same DI pattern as wa-commands.js / session-commands.js.
+// Same DI pattern as session-commands.js.
 
 // /config [key] [value]
 //   no args: dump sync + local storage

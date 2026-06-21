@@ -4907,10 +4907,7 @@ function startSpineRuntime() {
           type: 'node-online', from: BUS_NODE_ID, ts: Date.now(), role: 'shell',
           sessions: Object.entries(sessionsLatestRef.current).map(([n, s]) => ({ name: n, brain: s.brain })),
           polling: tgPolling,
-          // wa: true → shell is actively handling WhatsApp via baileys.
-          // The extension's handleIncomingWaCdp checks this to decide
-          // whether to yield brain dispatch. If shell is on the bus
-          // but baileys is disconnected, extension stays in charge.
+          // wa: true → this node owns the WhatsApp (beeper) bridge.
           wa: !!waBridgeRef.current,
         });
         notice(located.opened ? `bus tab opened (${await bus.busUrl()})` : `bus tab attached`);
