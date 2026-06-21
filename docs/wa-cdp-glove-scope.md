@@ -1,5 +1,10 @@
 # WhatsApp-Web-over-CDP DOM-control glove — scope (2026-06-08)
 
+> **REMOVED 2026-06-21.** This server-side WhatsApp-Web-over-CDP transport
+> (`src/bridges/whatsapp-cdp.mjs` + the `wa-web-dom.mjs` anchor layer) was
+> deleted — beeper is now the only WhatsApp transport. Kept for historical
+> context only.
+
 ## Context
 Pivot WhatsApp off **baileys** (forged protocol, ban-risk) to driving the
 **official WhatsApp Web client** in egpt's already-CDP-controlled Chrome (same
