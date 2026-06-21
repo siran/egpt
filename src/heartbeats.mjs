@@ -17,9 +17,32 @@
 // never throws to the scanner (a malformed file disables that entity's
 // heartbeat, it does not crash the tick).
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
+
+// In-memory cache of the operator-owned files (config.yaml, heartbeat.md,
+// heartbeat.yaml), keyed by path → { mtimeMs, raw }. The spine loop scans every
+// conversation + room + global heartbeat each tick (HEARTBEAT_SCAN_MS); without
+// this it re-read + re-parsed every file every tick. Here we stat (cheap) and
+// re-read ONLY when the mtime changed — so the parsed config effectively lives in
+// memory, while a live operator edit is still picked up on its next tick (mtime
+// moves → re-read). The engine-owned sidecar (heartbeat.state.json) is NEVER
+// cached — it changes on every fire. (An 2026-06-21: "have them in memory … the
+// loop checks every iteration".)
+const _fileCache = new Map();
+async function readCachedText(path) {
+  let mtimeMs;
+  try { mtimeMs = (await stat(path)).mtimeMs; } catch { _fileCache.delete(path); return null; }   // missing → disabled
+  const hit = _fileCache.get(path);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.raw;
+  let raw = null;
+  try { raw = await readFile(path, 'utf8'); } catch { return null; }
+  _fileCache.set(path, { mtimeMs, raw });
+  return raw;
+}
+// Exposed so tests can assert cache behavior deterministically.
+export function _clearHeartbeatCache() { _fileCache.clear(); }
 
 export const DEFAULT_INTERVAL_MIN = 30;
 // Floor: a heartbeat may not fire more often than this regardless of config —
@@ -64,8 +87,7 @@ export function parseCommandHeartbeat(yamlText) {
 }
 
 export async function readCommandHeartbeat(dir) {
-  let text = null;
-  try { text = await readFile(commandPath(dir), 'utf8'); } catch { /* no heartbeat.yaml = disabled */ }
+  const text = await readCachedText(commandPath(dir));   // null when absent = disabled
   return parseCommandHeartbeat(text);
 }
 
@@ -80,16 +102,15 @@ export function shouldFire({ enabled, intervalMin = DEFAULT_INTERVAL_MIN } = {},
 // ── best-effort IO (never throws) ──────────────────────────────────────────
 
 export async function readConfig(dir) {
-  let text = null;
-  try { text = await readFile(configPath(dir), 'utf8'); } catch { /* no config.yaml = disabled */ }
+  const text = await readCachedText(configPath(dir));   // null when absent = disabled
   return parseHeartbeatConfig(text);
 }
 
 // The prompt body, with ${time} substituted to HH:MM local. null when absent or
 // blank (blank prompt = nothing to say = treated as disabled by the scanner).
+// The raw body is cached (mtime-keyed); ${time} is substituted fresh each call.
 export async function readPrompt(dir, { now = new Date() } = {}) {
-  let text;
-  try { text = await readFile(promptPath(dir), 'utf8'); } catch { return null; }
+  const text = await readCachedText(promptPath(dir));
   if (!text || !text.trim()) return null;
   const tstr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   return text.replace(/\$\{time\}/g, tstr);

@@ -1,6 +1,9 @@
 // Per-entity heartbeat config: parsing the heartbeat block and the firing gate.
 import { describe, it, expect } from 'vitest';
-import { parseHeartbeatConfig, parseCommandHeartbeat, shouldFire, DEFAULT_INTERVAL_MIN, MIN_INTERVAL_MIN } from '../src/heartbeats.mjs';
+import { parseHeartbeatConfig, parseCommandHeartbeat, shouldFire, DEFAULT_INTERVAL_MIN, MIN_INTERVAL_MIN, readConfig, configPath, _clearHeartbeatCache } from '../src/heartbeats.mjs';
+import { mkdtempSync, writeFileSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as pjoin } from 'node:path';
 
 describe('parseCommandHeartbeat — deterministic command (no AI)', () => {
   it('reads enabled + interval + command + cwd', () => {
@@ -67,5 +70,27 @@ describe('shouldFire', () => {
     const now = 10_000_000;
     expect(shouldFire({ enabled: true }, now - (DEFAULT_INTERVAL_MIN - 1) * MIN, now)).toBe(false);
     expect(shouldFire({ enabled: true }, now - (DEFAULT_INTERVAL_MIN + 1) * MIN, now)).toBe(true);
+  });
+});
+
+describe('readConfig — mtime cache (in-memory; re-reads only on change)', () => {
+  it('serves the cached parse while mtime is unchanged, re-reads when mtime moves', async () => {
+    _clearHeartbeatCache();
+    const dir = mkdtempSync(pjoin(tmpdir(), 'hb-'));
+    const f = configPath(dir);
+    const t0 = new Date('2026-06-21T00:00:00Z');
+    writeFileSync(f, 'heartbeat:\n  enabled: true\n  interval_min: 45');
+    utimesSync(f, t0, t0);
+    expect(await readConfig(dir)).toEqual({ enabled: true, intervalMin: 45 });   // read + cached
+
+    // change content but keep the SAME mtime → cache hit returns the old parse
+    writeFileSync(f, 'heartbeat:\n  enabled: true\n  interval_min: 99');
+    utimesSync(f, t0, t0);
+    expect((await readConfig(dir)).intervalMin).toBe(45);                          // cached (mtime unchanged)
+
+    // bump mtime → re-read picks up the live edit (operator edits are honoured)
+    const t1 = new Date('2026-06-21T01:00:00Z');
+    utimesSync(f, t1, t1);
+    expect((await readConfig(dir)).intervalMin).toBe(99);                          // invalidated
   });
 });
