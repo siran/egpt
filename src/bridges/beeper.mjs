@@ -408,12 +408,18 @@ export async function startBeeperBridge(opts = {}) {
     catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   // Resolve the CONFIRMED id of a message we just sent: poll the recent list and
-  // match our own text; pick the newest match (largest numeric id). FENCE-TOLERANT:
-  // a ``` code fence round-trips LOSSY (sent ``` → Beeper stores <pre><code> →
-  // htmlToMarkdown yields ``), so a literal compare misses every fenced message —
-  // e.g. the mesh placeholder. Drop backticks from BOTH sides before comparing
-  // (verified live 2026-06-20: this was why a relayed reply's 🤔 never updated).
-  const _matchKey = (s) => _normEcho(String(s ?? '').replace(/`+/g, ' '));
+  // match our own text; pick the newest match (largest numeric id). TRANSFORM-TOLERANT:
+  // Beeper round-trips our text LOSSY, so a literal compare misses the message.
+  //   - FENCE: sent ``` → Beeper stores <pre><code> → htmlToMarkdown yields `` (drop backticks).
+  //   - LINK: sent a domain-like token "don.do" → Beeper auto-linkifies → htmlToMarkdown
+  //     yields "[don.do](http://don.do)" (collapse [text](url) → text). Verified live
+  //     2026-06-21: this was why the relay placeholder "↪ relayed to don.do — waiting…"
+  //     never resolved its id, so post_id was empty in the tail and the origin couldn't
+  //     stream the relayed reply in place.
+  // Normalise BOTH sides identically so the just-sent message is found regardless.
+  const _matchKey = (s) => _normEcho(
+    String(s ?? '').replace(/`+/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'),
+  );
   async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500 } = {}) {
     const want = _matchKey(text);
     if (!chatID || !want) return null;

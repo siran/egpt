@@ -170,13 +170,15 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(sends.length).toBeLessThanOrEqual(5);   // 20 requests, but the breaker halts the flood
   });
 
-  // ── STREAMING (An 2026-06-20): a relayed reply streams via edits — the responder
-  //    edit-streams into the relay room, the origin mirrors onto the origin chat. ──
-  it('done round-trips and is omitted when false', () => {
-    expect(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM', done: true })).toMatch(/\ndone: true\n/);
+  // ── STREAMING — a LIVING MIRROR (An 2026-06-21): the responder edit-streams ONE
+  //    relay-room message; the origin mirrors EVERY edit onto its placeholder. There
+  //    is no terminal "done" — the final answer is just the last edit. ──
+  it('never emits a "done" marker — a relayed reply is a living mirror', () => {
     expect(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' })).not.toMatch(/\bdone:/);
-    expect(parseMesh(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM', done: true })).done).toBe(true);
-    expect(parseMesh(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' })).done).toBe(false);
+    expect(encodeMesh({ by: 'don.do', body: 'x', re: 'HFM', done: true })).not.toMatch(/\bdone:/);  // ignored even if passed
+    // tolerant of legacy in-flight frames that still carry done: (body stays clean)
+    expect(parseMesh('```\neA==\n\n---\nby: don.do\nre: HFM\ndone: true\nenc: b64\n```'))
+      .toMatchObject({ by: 'don.do', re: 'HFM', body: 'x' });
   });
 
   it('RESPONDER hands the prompt to the NORMAL dispatch (relayDispatch) — does not run the being itself', async () => {
@@ -201,35 +203,37 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
       resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
     });
     await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
-    expect(parseMesh(sent[sent.length - 1])).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', done: true });
+    expect(parseMesh(sent[sent.length - 1])).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM' });
   });
 
-  it('ORIGIN mirrors a streamed reply: first frame opens a stream, edits update it, done finalizes', async () => {
-    const updates = []; let finished = null; const oneShot = [];
+  it('ORIGIN mirrors a streamed reply: first sight opens the stream, every edit updates it (living mirror, no "done")', async () => {
+    const updates = []; const oneShot = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => oneShot.push(t), ack: async () => {},
       runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
-      openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
+      openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async () => {} }; },
     });
     await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    // first sight of the responder's relay message (r1) opens the mirror, keyed by r1
     await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: '🤔', re: 'HFM' }), msgId: 'r1' });
+    // every subsequent edit of r1 flows onto the placeholder — the LAST one is the answer
     await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: 'Jaja', re: 'HFM' }) });
-    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM', done: true }) });
+    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM' }) });
     expect(updates[0].open).toMatchObject({ by: 'don.do' });        // stream opened with the being's identity
     expect(updates).toContain('🤔');
     expect(updates).toContain('Jaja');
-    expect(finished).toBe('Jaja, aquí');                                          // done frame finalized
-    expect(oneShot).toHaveLength(0);                                             // streamed, never one-shot surfaced
+    expect(updates).toContain('Jaja, aquí');                        // final answer is just the last edit — no terminal frame
+    expect(oneShot).toHaveLength(0);                                // streamed, never one-shot surfaced
   });
 
-  it('ORIGIN one-shots (pre-streaming behavior) with no stream primitive, or a first frame already done', async () => {
+  it('ORIGIN one-shots (surfaces once) when no stream primitive is wired', async () => {
     const surfaced = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => surfaced.push(t), ack: async () => {},
       runBeing: async () => '', resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: () => false,
     });
     await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
-    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'final', re: 'HFM', done: true }), msgId: 'r1' });
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: 'final', re: 'HFM' }), msgId: 'r1' });
     expect(surfaced).toEqual(['final']);
   });
 
