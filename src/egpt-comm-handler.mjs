@@ -14,7 +14,7 @@
 //
 // Future phases will move startWhatsAppBridge in here too, then wire
 // inbound via ~/.egpt/inbox/, then split out as a separate process
-// spawned by tools/daemon-wrap.ps1.
+// under the NSSM egpt-daemon service.
 
 import { join } from 'node:path';
 import { mkdirSync, watch as fsWatch, existsSync } from 'node:fs';

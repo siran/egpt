@@ -177,21 +177,11 @@ script installs NSSM via winget if needed, stops the older Task Scheduler
 task if present, registers `egpt-daemon` as an auto-start service, and
 starts it. To revert: `setup\uninstall-nssm-service.cmd`.
 
-**Windows — legacy Task Scheduler** (still works; useful if you can't
-install NSSM):
-
-Open Task Scheduler (`Win+R` → `taskschd.msc`), Right pane → `Import Task...`,
-select `setup\egpt-spine.xml`. In the Properties dialog click `Change
-User or Group...`, pick your own account, confirm `Run whether user is
-logged on or not` is selected, click `OK`, enter your Windows password.
-
-Or command-line (elevated PowerShell):
-
-```powershell
-schtasks /Create /XML "setup\egpt-spine.xml" `
-  /TN "egpt-spine" `
-  /RU "$env:USERNAME" /RP * /F
-```
+> The older Task Scheduler supervisor (`egpt-spine` / `egpt-daemon-headless`
+> task + `daemon-wrap.ps1`) and its `egpt-spine.xml` have been retired — the
+> NSSM service is the single supported supervisor. Restart the running service
+> with `setup\restart-egpt-service.ps1` (elevated), or reload just the app code
+> from any surface with `/restart` (the supervisor respawns the spine).
 
 Either form prompts for your Windows password once. It's stored encrypted
 in the SAM so the task can authenticate at boot before any logon.
