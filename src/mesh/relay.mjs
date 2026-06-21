@@ -261,6 +261,10 @@ export function createMeshRelay({
           return true;
         }
       }
+      // Non-done frames arrive before the final response (streaming relay without
+      // post_id). Consume them so they don't reach normal dispatch, but don't delete
+      // awaiting or surface yet — wait for the done:true final frame.
+      if (!prov.done) return true;
       // Carry the being's identity (by + emoji) so the surfacer can stamp it — a
       // bare body would read as the operator's own message in a self-chat.
       awaiting.delete(reChatId);
