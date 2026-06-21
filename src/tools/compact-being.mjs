@@ -307,7 +307,8 @@ if (isMain) {
   } catch (e) { log(`compact: conversation scan skipped — ${e?.message ?? e}`); }
   let reports;
   if (target) {
-    const t = targets.find(x => x.name === String(target).toLowerCase() || x.name.endsWith('/' + String(target).toLowerCase()));
+    const _t = String(target).toLowerCase();
+    const t = targets.find(x => x.name.toLowerCase() === _t || x.name.toLowerCase().endsWith('/' + _t));
     if (!t) { console.log(`compact: no compactable target "${target}"`); process.exit(1); }
     reports = [compactBeingIfNeeded(t, { log, force: !dryRun, dryRun })];   // named target → force (unless dry-run)
   } else {
