@@ -1,4 +1,4 @@
-// beeper.mjs — the WhatsApp/multi-network LIMB over the Beeper Desktop API.
+﻿// beeper.mjs — the WhatsApp/multi-network LIMB over the Beeper Desktop API.
 //
 // Why Beeper over CDP DOM-control: Beeper exposes a real LOCAL API (REST +
 // WebSocket at http://127.0.0.1:23373) for every bridged network. That means
@@ -752,6 +752,16 @@ export async function startBeeperBridge(opts = {}) {
     async send(text, { chatId, chatName } = {}) {
       return await sendMessage(chatId ?? chatName, text, {});
     },
+    // Post a message and resolve its CONFIRMED Beeper message id (polls the
+    // message list — same path startStreamMessage uses). Returns null on failure.
+    // Use this when the caller needs to EDIT the message later (e.g. relay streaming).
+    async sendAndGetId(text, { chatId, chatName } = {}) {
+      const chatID = await resolveChatId(chatId ?? chatName);
+      if (!chatID || !text) return null;
+      const r = await sendMessage(chatID, text, {});
+      if (!r) return null;
+      return await resolveSentMessageId(chatID, text) ?? null;
+    },
     // In-place edit / delete by CONFIRMED message id (used by the show-think
     // stream; also available to callers that hold a real id).
     editMessage:   (chatId, messageId, text) => editMessage(chatId, messageId, text),
@@ -776,7 +786,7 @@ export async function startBeeperBridge(opts = {}) {
     // adds the 🤔 placeholder + "✅ Done" marker (engineers); a plain reply (E)
     // finalizes to just its text. The host skips its fallback send only when the
     // stream reports `delivered`, so the handle MUST expose delivered (+ lastError).
-    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false } = {}) {
+    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false, existingMsgId = null } = {}) {
       // ── universal in-place editor (every bot reply) ──────────────────────────
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
@@ -791,6 +801,12 @@ export async function startBeeperBridge(opts = {}) {
         try {
           cid = await resolveChatId(chatId ?? chatName);
           if (!cid) { handle.lastError = 'no chat'; return; }
+          if (existingMsgId) {
+            // Caller already posted the placeholder and resolved its id — just wire.
+            realId = existingMsgId;
+            _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
+            return;
+          }
           const r = await sendMessage(cid, latest, {});
           if (!r) { handle.lastError = 'placeholder send failed'; return; }
           realId = await resolveSentMessageId(cid, latest);
@@ -855,3 +871,6 @@ if (process.argv[1]?.endsWith('beeper.mjs')) {
     onIncoming: (text, from) => console.log('  INCOMING', JSON.stringify({ chat: from.chatName, sender: from.senderName, atE: from.atEAnywhere, voice: from.isTranscriptFromVoice, text: (text || '').slice(0, 80) })),
   }).then(() => console.log('beeper bridge running (Ctrl-C to stop) — send a WhatsApp message / voice note'));
 }
+
+
+
