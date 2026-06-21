@@ -2989,6 +2989,7 @@ function startSpineRuntime() {
             getKey: () => EGPT_CONFIG.transcription_token,
           })
         : transcribeAudioFile,   // local whisper-cli fallback (host is Node — fine to import)
+      postsBackDelayMs: EGPT_CONFIG.posts_back_delay_ms,   // 👂 echo debounce (config.yaml; undefined → bridge default)
       onIncoming: async (text, from) => {
         const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
         logOut(`(telegram message from ${who}) -> ${text}`);
@@ -3453,6 +3454,10 @@ function startSpineRuntime() {
               getKey: () => EGPT_CONFIG.transcription_token,
             })
           : undefined,
+        // The spine owns WHEN the 👂 transcript echo posts: hold + coalesce per
+        // chat for this many ms (config.yaml posts_back_delay_ms; undefined →
+        // the bridge's POSTS_BACK_DELAY_MS default).
+        postsBackDelayMs:  EGPT_CONFIG.posts_back_delay_ms,
         // Override per-chat media destination so files land inside
         // the contact's slug-dir (operator 2026-05-20). Sync callback;
         // bridge falls back to the legacy ~/.egpt/media/<jid>/ path
