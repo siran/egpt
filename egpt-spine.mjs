@@ -46,7 +46,6 @@ import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
 import { loadAnnouncedModes, saveAnnouncedModes } from './src/announced-modes.mjs';
 import * as hb from './src/heartbeats.mjs';
-import { compactionTargets, dueForCompaction } from './src/tools/compact-being.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
@@ -4504,45 +4503,11 @@ function startSpineRuntime() {
     };
     const playTimer = setInterval(rotateTick, HEARTBEAT_MS);
 
-    // COMPACTION (native /compact, in-process — no spawned worker). Keep each
-    // WARM ccode session under its model window by sending Anthropic's REAL
-    // /compact through the warm pool on the session's own key, so it compacts the
-    // live session IN PLACE (same id, no reseed/repoint) and serializes behind any
-    // in-flight turn (ccode warm sessions expose no `inject`). Only WARM (active)
-    // sessions are compacted proactively; idle/oversized ones are handled
-    // reactively on their next turn (the dispatch overflow backstop resets the
-    // thread). The trigger is the deterministic token count (compact-being.mjs);
-    // once compacted it reads ~0 until the session grows again, so no /compact spam.
-    const COMPACTION_SCAN_MS = 3 * 60 * 1000;
-    const compactionTick = async () => {
-      if (stopped || !_warmEnabled()) return;
-      let convState; try { convState = await _loadConvState(); } catch { return; }
-      let targets; try { targets = compactionTargets({ config: EGPT_CONFIG, convState, slugDir: conversationsState.slugDir }); }
-      catch (e) { logOut(`!! compaction: build targets — ${e?.message ?? e}`); return; }
-      for (const t of targets) {
-        if (stopped) break;
-        if (!_warmPool().has(t.key)) continue;             // proactively compact WARM (active) sessions only
-        let info; try { info = dueForCompaction(t); } catch { continue; }
-        if (!info.due) continue;
-        logOut(`compact: ${t.name} at ${info.tokens} tok (≥ ${info.threshold}) — native /compact via warm session`);
-        try {
-          const r = await _warmPool().run(t.key, '/compact', () => {}, {
-            brainOptions: { sessionId: t.sessionId, cwd: t.cwd, model: t.model, allowedTools: 'all' },
-            klass: t.klass,
-          });
-          logOut(`compact: ${t.name} → ${String(r?.text ?? '').replace(/\s+/g, ' ').slice(0, 80)}`);
-        } catch (e) { logOut(`!! compact: ${t.name} — ${e?.message ?? e}`); }
-      }
-    };
-    const compactionTimer = setInterval(compactionTick, COMPACTION_SCAN_MS);
-    setTimeout(() => { compactionTick().catch(() => {}); }, 90 * 1000);   // first pass ~90s after boot
-
     return () => {
       stopped = true;
       clearInterval(timer);
       clearInterval(playTimer);
       clearInterval(perContactTimer);
-      clearInterval(compactionTimer);
     };
   }, []);
 
