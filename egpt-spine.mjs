@@ -7153,25 +7153,22 @@ function startSpineRuntime() {
     // sends it to the relay channel. Beeper echoes each edit → onRoomMessageEdit
     // detects the mesh tail + remote re:, forwards to the return route (Telegram).
     relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
-      const limb = String(route?.limb ?? '').toLowerCase();
       const relayChatId = route?.room_id ? String(route.room_id) : null;
-      // Open a streaming message in the relay channel for this being's reply.
-      const makeStream = streamFactoryRef.current;
-      if (!makeStream || !relayChatId) {
-        // No stream factory — fall back to one-shot runBeing (used in tests).
-        return;
-      }
+      if (!relayChatId || !waBridgeRef.current) return;
       const wrapFrame = (body, done) => encodeMesh({ by, body: String(body ?? ''), re, post_id, done });
-      const stream = await makeStream(wrapFrame('…', false), { chatId: relayChatId, replyAllowed: true });
-      // Run the being with a per-partial callback that updates the relay message.
-      const onPartial = (partial) => { stream.update(wrapFrame(partial, false)); };
+      // Post a thinking placeholder so the relay channel shows activity while the
+      // being generates its response. Not awaited — fire-and-forget is fine here.
+      waBridgeRef.current.send(wrapFrame('…', false), { chatId: relayChatId });
       let final = '';
       try {
-        final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`, onPartial, being);
+        final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`, () => {}, being);
       } catch (e) {
         final = `(${being}.${BUS_NODE_ID} error: ${e?.message ?? e})`;
       }
-      await stream.finish(wrapFrame(final || '…', true));
+      // Send the complete response as a NEW message (done:true) so the origin node
+      // receives it via onRoomMessage and surfaces it to the origin chat. Streaming
+      // via edits is unreliable across accounts; one-shot new sends are guaranteed.
+      await waBridgeRef.current.send(wrapFrame(final || '…', true), { chatId: relayChatId });
     },
     // ORIGIN (REVE): post the "↪ relayed…" placeholder and return its Beeper msgId.
     // The msgId rides as post_id in the relay request so DOLLY can echo it back in
