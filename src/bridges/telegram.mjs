@@ -19,7 +19,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { extname, basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MIME_BY_EXT, mediaKind } from '../media-kind.mjs';
-import { transcribeVoiceNote } from '../incoming-media.mjs';
+import { transcribeVoiceNote, POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { relMediaPath } from '../media-path.mjs';
 
 const API = (token) => `https://api.telegram.org/bot${token}`;
@@ -70,6 +70,7 @@ export function startTelegramBridge({
   // not E — async (chatId) => { enabled, postsBack }; src/transcription-service.mjs).
   // Default = transcribe but never surface (fail-closed announce).
   resolveTranscriptionService = async () => ({ enabled: true, postsBack: false }),
+  postsBackDelayMs = POSTS_BACK_DELAY_MS,   // trailing-debounce window for the 👂 echo (per chat)
 }) {
   if (!botToken) throw new Error('telegram bridge: botToken is required');
 
@@ -295,6 +296,8 @@ export function startTelegramBridge({
             enabled: svc.enabled,
             postsBack: svc.postsBack,
             muted: false,
+            debounceKey: String(msgChat),   // coalesce the 👂 echo per chat (trailing window)
+            postsBackDelayMs,
             onLog: (m) => log(`media: ${m}`),
           });
           if (transcript) text = text ? `${text}\n${transcript}` : transcript;

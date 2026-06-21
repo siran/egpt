@@ -87,6 +87,7 @@ async function startBridge(extra = {}) {
     onIncoming: (text, from) => incoming.push({ text, from }),
     onMedia: (m) => media.push(m),
     transcribe: async () => 'fake transcript',
+    postsBackDelayMs: 0,   // tests assert the 👂 gate synchronously; debounce timing is covered in incoming-media.test.mjs
     ...extra,
   });
   bridges.push(bridge);
