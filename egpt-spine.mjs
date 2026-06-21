@@ -7142,33 +7142,31 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
-    // RELAY STREAMING (An 2026-06-21):
-    // Architecture: DOLLY detects its OWN Beeper edits (the Beeper bridge echoes them
-    // back via onMessageEdit) and forwards each frame as a NEW message to the return
-    // channel (Telegram). REVE receives each frame as a new message and edits the
-    // origin placeholder using post_id. New sends propagate reliably; we never rely on
-    // cross-account edit propagation (which was the failure mode of the prior attempt).
-    //
-    // RESPONDER (DOLLY): relayDispatch wraps each streaming frame in encodeMesh and
-    // sends it to the relay channel. Beeper echoes each edit → onRoomMessageEdit
-    // detects the mesh tail + remote re:, forwards to the return route (Telegram).
+    // RELAY STREAMING — a LIVING MIRROR (An 2026-06-21), Beeper-only:
+    // RESPONDER (DOLLY): edit-stream the being's reply into the shared relay room as
+    // ONE message wrapped in the mesh tail (by/re/post_id, NO done). The bridge edit-
+    // streams in place; DOLLY's OWN edits are suppressed locally (_ourStreamIds) but
+    // propagate over Beeper to the origin (REVE), which observes them directly and
+    // mirrors each version onto its placeholder. No edit-forwarding, no "final" frame —
+    // the answer is just the last edit, and a late edit would still flow.
     relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
       const relayChatId = route?.room_id ? String(route.room_id) : null;
-      if (!relayChatId || !waBridgeRef.current) return;
-      const wrapFrame = (body, done) => encodeMesh({ by, body: String(body ?? ''), re, post_id, done });
-      // Post a thinking placeholder so the relay channel shows activity while the
-      // being generates its response. Not awaited — fire-and-forget is fine here.
-      waBridgeRef.current.send(wrapFrame('…', false), { chatId: relayChatId });
+      if (!relayChatId) return;
+      const wrap = (body) => encodeMesh({ by, body: String(body ?? '').trim() || '🤔', re, post_id });
+      // system:true bypasses the @e gate — relay traffic is machine-routed, like a raw
+      // send. The stream posts the '🤔' placeholder (a new message → the origin opens
+      // its mirror) then edits it in place as the being streams.
+      const stream = streamFactoryRef.current?.(wrap('🤔'), { chatId: relayChatId, system: true });
       let final = '';
       try {
-        final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`, () => {}, being);
+        final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`,
+          (partial) => { stream?.update(wrap(partial)); }, being);
       } catch (e) {
         final = `(${being}.${BUS_NODE_ID} error: ${e?.message ?? e})`;
       }
-      // Send the complete response as a NEW message (done:true) so the origin node
-      // receives it via onRoomMessage and surfaces it to the origin chat. Streaming
-      // via edits is unreliable across accounts; one-shot new sends are guaranteed.
-      await waBridgeRef.current.send(wrapFrame(final || '…', true), { chatId: relayChatId });
+      final = String(final ?? '').trim() || '…';
+      if (stream) await stream.finish(wrap(final));
+      else await waBridgeRef.current?.send(wrap(final), { chatId: relayChatId });   // no stream factory — degraded one-shot
     },
     // ORIGIN (REVE): post the "↪ relayed…" placeholder and return its Beeper msgId.
     // The msgId rides as post_id in the relay request so DOLLY can echo it back in
@@ -7186,20 +7184,24 @@ function startSpineRuntime() {
       }
       return null;
     },
-    // ORIGIN (REVE): open a streaming handle that edits the origin placeholder.
-    // info.msgId == post_id — the Beeper msgId of the placeholder we posted above.
+    // ORIGIN (REVE): open a streaming handle that mirrors the responder's reply home.
+    // info.msgId == post_id — the Beeper msgId of the "↪ relayed… waiting" placeholder
+    // we posted in the origin chat. Seed the stream with it so updates EDIT that message
+    // in place (waiting → reply). If it's missing (placeholder id didn't resolve), post
+    // a FRESH stream message so the mirror still works. system:true: a relayed reply
+    // always surfaces (the user asked the being) — it isn't subject to the origin chat's
+    // @e mode gate.
     openOriginStream: (returnTo, info = {}) => {
       const makeStream = streamFactoryRef.current;
-      const postId = info.msgId;
-      if (!makeStream || !postId || returnTo?.surface !== 'whatsapp' || !waBridgeRef.current) return null;
+      if (!makeStream || returnTo?.surface !== 'whatsapp' || !waBridgeRef.current) return null;
       const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
       const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || '🔗';
-      // Re-use the existing stream factory, seeded with the already-posted msgId
-      // so updates edit that message instead of creating a new one.
-      const stream = makeStream('', { chatId: returnTo.chat_id, existingMsgId: postId });
+      const postId = info.msgId || null;
+      const stream = makeStream('', { chatId: returnTo.chat_id, system: true, ...(postId ? { existingMsgId: postId } : {}) });
+      if (!stream) return null;
       return {
-        update: (body) => { stream?.update(`${tag} ${body}`); },
-        finish: async (body) => { await stream?.finish(`${tag} ${body}`); },
+        update: (body) => { stream.update(`${tag} ${body}`); },
+        finish: async (body) => { await stream.finish(`${tag} ${body}`); },
       };
     },
     log: (m) => logOut(m),
