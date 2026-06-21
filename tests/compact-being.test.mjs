@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   latestContextTokens, needsCompaction, compactableBeings, compactableConversations, summarize, windowForModel,
   isActiveMtime, DEFAULT_WINDOW, COMPACT_RATIO, BUSY_WINDOW_MS,
+  extractConversationText, buildReseedPrompt, buildSeedPrompt, reseedSession, compactBeingIfNeeded,
 } from '../src/tools/compact-being.mjs';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { join as pjoin } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const usageLine = (u) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', usage: u } });
 
@@ -133,5 +137,102 @@ describe('compact-being — deterministic trigger', () => {
       { name: 'don', status: 'compacted', before: 150000 },
       { name: 'wren', status: 'busy-skip', before: 60000 },
     ])).toBe('compact: don compacted (was 150000 tok) (1 busy-skipped)');
+  });
+});
+
+describe('compact-being — summarize-and-reseed (claude /compact is dead on 2.1.185)', () => {
+  const userLine = (t) => JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: t }] } });
+  const asstLine = (t) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: t }] } });
+
+  it('extractConversationText pulls user/assistant text and labels roles', () => {
+    const jsonl = [
+      userLine('hello there'),
+      asstLine('hi, how can I help'),
+      '{"type":"system","subtype":"init"}',                       // non-message → skipped
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'plain string content' } }),
+      asstLine(''),                                               // empty → skipped
+    ].join('\n');
+    const text = extractConversationText(jsonl);
+    expect(text).toContain('User: hello there');
+    expect(text).toContain('Assistant: hi, how can I help');
+    expect(text).toContain('User: plain string content');
+    expect(text).not.toContain('init');
+  });
+
+  it('extractConversationText keeps only the TAIL within the char budget', () => {
+    const lines = [];
+    for (let i = 0; i < 50; i++) lines.push(userLine(`msg-${i} ${'x'.repeat(50)}`));
+    const text = extractConversationText(lines.join('\n'), { maxChars: 200 });
+    expect(text.length).toBeLessThanOrEqual(200);
+    expect(text).toContain('msg-49');     // most recent kept
+    expect(text).not.toContain('msg-0');  // oldest dropped
+  });
+
+  it('the prompts keep the brief OUT of the conversation feed and the seed', () => {
+    const reseed = buildReseedPrompt('CONV-BODY');
+    expect(reseed).toContain('=== CONVERSATION ===');
+    expect(reseed).toContain('CONV-BODY');
+    const seed = buildSeedPrompt('THE BRIEF');
+    expect(seed).toContain('THE BRIEF');
+    expect(seed).not.toContain('=== CONVERSATION ===');   // the seed carries ONLY the brief
+  });
+
+  it('reseedSession distils + seeds a fresh session and reports the new id', () => {
+    const dir = mkdtempSync(pjoin(tmpdir(), 'reseed-'));
+    const file = pjoin(dir, 'sess.jsonl');
+    writeFileSync(file, [userLine('remember the secret is 42'), asstLine('noted')].join('\n'));
+    let fedConversation = null, fedSeed = null;
+    const summarize = (text, opts) => { fedConversation = text; fedSeed = 'BRIEF'; return { sessionId: 'fresh-001', brief: 'BRIEF' }; };
+    const r = reseedSession(
+      { name: 'whatsapp/spoiler', sessionId: 'old-999', model: 'haiku', cwd: dir },
+      { summarize, resolveFile: () => file },
+    );
+    expect(r.status).toBe('reseeded');
+    expect(r.newSessionId).toBe('fresh-001');
+    expect(fedConversation).toContain('secret is 42');   // the summarizer saw the real history
+  });
+
+  it('reseedSession aborts when the summarizer returns the SAME id or nothing', () => {
+    const dir = mkdtempSync(pjoin(tmpdir(), 'reseed-'));
+    const file = pjoin(dir, 'sess.jsonl');
+    writeFileSync(file, userLine('hi'));
+    const same = reseedSession({ name: 'x', sessionId: 'old-999', model: 'haiku', cwd: dir },
+      { summarize: () => ({ sessionId: 'old-999', brief: 'b' }), resolveFile: () => file });
+    expect(same.status).toBe('reseed-failed');
+    const none = reseedSession({ name: 'x', sessionId: 'old-999', model: 'haiku', cwd: dir },
+      { summarize: () => null, resolveFile: () => file });
+    expect(none.status).toBe('reseed-failed');
+    const noFile = reseedSession({ name: 'x', sessionId: 'gone', model: 'haiku' },
+      { summarize: () => ({ sessionId: 'new' }), resolveFile: () => null });
+    expect(noFile.status).toBe('no-session-file');
+  });
+
+  it('compactBeingIfNeeded reseeds an over-threshold session and carries newSessionId', () => {
+    const dir = mkdtempSync(pjoin(tmpdir(), 'reseed-'));
+    const file = pjoin(dir, 'sess.jsonl');
+    // a usage line over the haiku 25% threshold (50k) + some conversation
+    writeFileSync(file, [
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', usage: { input_tokens: 10, cache_read_input_tokens: 179206, cache_creation_input_tokens: 0 } } }),
+      userLine('the football debate'), asstLine('par or impar'),
+    ].join('\n'));
+    const r = compactBeingIfNeeded(
+      { name: 'whatsapp/spoiler', sessionId: 'old-999', model: 'haiku', window: 200_000, cwd: dir, surface: 'whatsapp', slug: 'spoiler' },
+      { force: true, summarize: () => ({ sessionId: 'fresh-77', brief: 'B' }), resolveFile: () => file },
+    );
+    expect(r.status).toBe('compacted');     // reporting layer unchanged
+    expect(r.newSessionId).toBe('fresh-77'); // pointer for the CLI main to persist
+    expect(r.before).toBe(179216);
+  });
+
+  it('compactableConversations carries surface+slug and leaves cwd null when no threadCwd (runner fills it)', () => {
+    const state = { contacts: { whatsapp: {
+      '111@s': { slug: 'mom', threadId: 'sess-mom' },                      // no threadCwd
+      '222@s': { slug: 'work', threadId: 'sess-work', threadCwd: 'C:/conv/work' },
+    } } };
+    const got = compactableConversations(state, 'haiku');
+    const mom = got.find(c => c.name === 'whatsapp/mom');
+    expect(mom).toMatchObject({ surface: 'whatsapp', slug: 'mom', sessionId: 'sess-mom', cwd: null });
+    const work = got.find(c => c.name === 'whatsapp/work');
+    expect(work.cwd).toBe('C:/conv/work');   // threadCwd preserved
   });
 });
