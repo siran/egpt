@@ -108,8 +108,8 @@ or it jumps to main). Config: `jay.type: claude-sdk` (warmable), `wren.live_term
 send only when the stream handle reports `delivered`. The Beeper limb's
 `startStreamMessage` had a *local-only* `delivered`, so the fallback always fired
 → every sibling reply sent twice. Fixed: the handle now exposes `delivered` +
-`lastError` (src/bridges/beeper.mjs). NOTE: whatsapp-cdp.mjs has the SAME shim
-bug — fix it identically before CDP is used for siblings.
+`lastError` (src/bridges/beeper.mjs). (whatsapp-cdp.mjs had the same shim bug,
+but the CDP WhatsApp transport was removed 2026-06-21 — beeper is the only limb.)
 
 **OPEN — warm session not reused (still cold/slow each turn).** Trace signature:
 every `@jay` turn logs `WARM-TURN ... warm=false` then `POOL warm: opened ...
