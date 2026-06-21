@@ -47,7 +47,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -91,6 +91,9 @@ export async function startBeeperBridge(opts = {}) {
     // async (chatId) => { enabled, postsBack }. Default = transcribe (HEARD) but
     // never surface (SPOKEN): a bridge with no host wired can never announce egpt.
     resolveTranscriptionService = async () => ({ enabled: true, postsBack: false }),
+    // Trailing-debounce window for the 👂 echo (per chat, coalesced). The
+    // transcript still reaches the model instantly; only the chat echo waits.
+    postsBackDelayMs = POSTS_BACK_DELAY_MS,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions)? Host-supplied (reads whatsapp.allowed_users live). Beeper does
     // NOT reliably tag the owner's OWN sends as isSender — it fails even in the
@@ -618,6 +621,8 @@ export async function startBeeperBridge(opts = {}) {
           enabled: svc.enabled,
           postsBack: svc.postsBack,
           muted: info.isMuted,
+          debounceKey: chatID,   // coalesce the 👂 echo per chat (trailing window)
+          postsBackDelayMs,
           onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         });
