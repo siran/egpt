@@ -7136,14 +7136,67 @@ function startSpineRuntime() {
       if (n === persona || n === 'e' || n === 'egpt') return await runDefaultBrainTurn(`[mesh ${name}]: ${prompt}`);
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
-    // RELAY = ONE-SHOT, ENCODED (An 2026-06-20). Live token-streaming over the relay
-    // was abandoned: WhatsApp message EDITS don't reliably propagate cross-account
-    // (REVE got Don's 🤔 *send* but never the 🤔→reply *edit*), and streaming-via-edit
-    // inherits that flakiness. So we DON'T wire relayDispatch/openOriginStream — relay.mjs
-    // falls back to runBeing + guardedSend(encodeMesh(reply, done)) = ONE new message
-    // (new sends DO propagate), and the origin one-shot-surfaces it. The base64 body
-    // encoding (encodeMesh/parseMesh) carries Don's code reply through cleanly. TRUE
-    // cross-node live-streaming needs the sturdy side channel (direct socket), later.
+    // RELAY STREAMING (An 2026-06-21):
+    // Architecture: DOLLY detects its OWN Beeper edits (the Beeper bridge echoes them
+    // back via onMessageEdit) and forwards each frame as a NEW message to the return
+    // channel (Telegram). REVE receives each frame as a new message and edits the
+    // origin placeholder using post_id. New sends propagate reliably; we never rely on
+    // cross-account edit propagation (which was the failure mode of the prior attempt).
+    //
+    // RESPONDER (DOLLY): relayDispatch wraps each streaming frame in encodeMesh and
+    // sends it to the relay channel. Beeper echoes each edit → onRoomMessageEdit
+    // detects the mesh tail + remote re:, forwards to the return route (Telegram).
+    relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
+      const limb = String(route?.limb ?? '').toLowerCase();
+      const relayChatId = route?.room_id ? String(route.room_id) : null;
+      // Open a streaming message in the relay channel for this being's reply.
+      const makeStream = streamFactoryRef.current;
+      if (!makeStream || !relayChatId) {
+        // No stream factory — fall back to one-shot runBeing (used in tests).
+        return;
+      }
+      const stream = await makeStream('', { chatId: relayChatId });
+      const wrapFrame = (body, done) => encodeMesh({ by, body: String(body ?? ''), re, post_id, done });
+      stream.update(wrapFrame('…', false));
+      // Run the being with a per-partial callback that updates the relay message.
+      const onPartial = (partial) => { stream.update(wrapFrame(partial, false)); };
+      let final = '';
+      try {
+        final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`, onPartial, being);
+      } catch (e) {
+        final = `(${being}.${BUS_NODE_ID} error: ${e?.message ?? e})`;
+      }
+      await stream.finish(wrapFrame(final || '…', true));
+    },
+    // ORIGIN (REVE): post the "↪ relayed…" placeholder and return its Beeper msgId.
+    // The msgId rides as post_id in the relay request so DOLLY can echo it back in
+    // every reply frame — REVE then knows which message to edit as the stream arrives.
+    ackWithPostId: async (returnTo, text) => {
+      if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) {
+        const msgId = await waBridgeRef.current.send(text, { chatId: returnTo.chat_id, returnMsgId: true });
+        return msgId ?? null;
+      }
+      if (returnTo?.surface === 'telegram' && bridgeRef.current) {
+        bridgeRef.current.send(text, { chatId: returnTo.chat_id });
+      }
+      return null;
+    },
+    // ORIGIN (REVE): open a streaming handle that edits the origin placeholder.
+    // info.msgId == post_id — the Beeper msgId of the placeholder we posted above.
+    openOriginStream: (returnTo, info = {}) => {
+      const makeStream = streamFactoryRef.current;
+      const postId = info.msgId;
+      if (!makeStream || !postId || returnTo?.surface !== 'whatsapp' || !waBridgeRef.current) return null;
+      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
+      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || '🔗';
+      // Re-use the existing stream factory, seeded with the already-posted msgId
+      // so updates edit that message instead of creating a new one.
+      const stream = makeStream('', { chatId: returnTo.chat_id, existingMsgId: postId });
+      return {
+        update: (body) => { stream?.update(`${tag} ${body}`); },
+        finish: async (body) => { await stream?.finish(`${tag} ${body}`); },
+      };
+    },
     log: (m) => logOut(m),
   });
   meshRelayRef.current = meshRelay;
