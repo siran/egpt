@@ -23,9 +23,9 @@ import { randomUUID } from 'node:crypto';
 
 // The baileys bridge (and its startBaileysBridge / isBaileysPaired wrappers
 // that lived here) was REMOVED 2026-06-10 (operator: "remove baileys
-// completely"). WhatsApp transports are beeper (default) and whatsapp-cdp
-// (fallback); egpt.mjs selects the starter directly. This module keeps the
-// transport-agnostic comm machinery: outbox/inbox watchers, stream-over-IPC
+// completely"). The CDP WhatsApp-Web transport was removed 2026-06-21, so
+// beeper is now the only WhatsApp transport; egpt.mjs starts it directly. This
+// module keeps the transport-agnostic comm machinery: outbox/inbox watchers, stream-over-IPC
 // channel, and deliverBridgeReply.
 
 // ─── Phase 2b: stream-over-IPC protocol design ────────────────────────
