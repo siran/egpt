@@ -7179,7 +7179,10 @@ function startSpineRuntime() {
     // every reply frame — REVE then knows which message to edit as the stream arrives.
     ackWithPostId: async (returnTo, text) => {
       if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) {
-        const msgId = await waBridgeRef.current.send(text, { chatId: returnTo.chat_id, returnMsgId: true });
+        // sendAndGetId posts the message and resolves the CONFIRMED Beeper message id
+        // (same polling path startStreamMessage uses) — the confirmed id is stable for
+        // editMessage / startStreamMessage({existingMsgId}).
+        const msgId = await waBridgeRef.current.sendAndGetId(text, { chatId: returnTo.chat_id });
         return msgId ?? null;
       }
       if (returnTo?.surface === 'telegram' && bridgeRef.current) {
