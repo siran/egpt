@@ -371,6 +371,110 @@ describe('dispatch runtime', () => {
     expect(state.contacts.whatsapp['12345@lid'].threadId).toBe('fresh-thread');
   });
 
+  it('resets the thread and retries fresh when the brain THROWS a context-overflow', async () => {
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'spoiler@g.us': {
+            slug: 'spoiler',
+            personality: 'default',
+            threadId: 'huge-thread',
+          },
+        },
+      },
+    }), 'utf8');
+
+    let attempts = 0;
+    const logs = [];
+    const sends = [];
+    const brainCalls = [];
+    const runtime = createDispatchRuntime({
+      stateDir,
+      sysLog: (msg) => logs.push(msg),
+      clock: fixedClock,
+      logger: { error: () => {} },
+      bridge: { send: async (body, opts) => { sends.push({ body, opts }); return { ok: true }; } },
+      brain: {
+        stream: async (payload, onPartial, sessionOpts) => {
+          brainCalls.push({ payload, sessionOpts });
+          attempts++;
+          if (attempts === 1) throw new Error('claude: error_during_execution\n  Prompt is too long');
+          return { text: 'fresh ok', optionsPatch: { sessionId: 'fresh-thread' } };
+        },
+      },
+    });
+
+    await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      replyAllowed: true,
+      waChatId: 'spoiler@g.us',
+      waChatName: 'spoiler',
+      waSlug: 'spoiler',
+    });
+
+    expect(brainCalls).toHaveLength(2);
+    expect(brainCalls[0].sessionOpts.sessionId).toBe('huge-thread');
+    expect(brainCalls[1].sessionOpts.sessionId).toBe(null);     // retried on a fresh session
+    expect(sends[0].body).toContain('fresh ok');                 // not "Prompt is too long"
+    expect(sends.some(s => /prompt is too long/i.test(s.body))).toBe(false);
+    expect(logs.some(line => line.includes('overflowed its context window'))).toBe(true);
+    const state = await readConvState(stateDir);
+    expect(state.contacts.whatsapp['spoiler@g.us'].threadId).toBe('fresh-thread');
+  });
+
+  it('resets the thread and retries fresh when overflow comes back as TEXT', async () => {
+    const stateDir = await makeTempDir();
+    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
+      contacts: {
+        whatsapp: {
+          'chat-b': {
+            slug: 'bob',
+            personality: 'default',
+            threadId: 'huge-thread',
+          },
+        },
+      },
+    }), 'utf8');
+
+    let attempts = 0;
+    const logs = [];
+    const sends = [];
+    const brainCalls = [];
+    const runtime = createDispatchRuntime({
+      stateDir,
+      sysLog: (msg) => logs.push(msg),
+      clock: fixedClock,
+      logger: { error: () => {} },
+      bridge: { send: async (body, opts) => { sends.push({ body, opts }); return { ok: true }; } },
+      brain: {
+        stream: async (payload, onPartial, sessionOpts) => {
+          brainCalls.push({ payload, sessionOpts });
+          attempts++;
+          if (attempts === 1) {
+            return { text: 'Prompt is too long', optionsPatch: { sessionId: 'huge-thread' } };
+          }
+          return { text: 'fresh ok', optionsPatch: { sessionId: 'fresh-thread' } };
+        },
+      },
+    });
+
+    await runtime.submitIncoming('@e hello', {
+      fromWhatsApp: true,
+      replyAllowed: true,
+      waChatId: 'chat-b',
+      waChatName: 'bob',
+      waSlug: 'bob',
+    });
+
+    expect(brainCalls).toHaveLength(2);
+    expect(brainCalls[1].sessionOpts.sessionId).toBe(null);
+    expect(sends[0].body).toContain('fresh ok');
+    expect(logs.some(line => line.includes('overflowed its context window'))).toBe(true);
+    const state = await readConvState(stateDir);
+    expect(state.contacts.whatsapp['chat-b'].threadId).toBe('fresh-thread');
+  });
+
   it('notifies the operator when a contact turn fails without recovery', async () => {
     const stateDir = await makeTempDir();
     await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({

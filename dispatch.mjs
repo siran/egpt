@@ -71,6 +71,21 @@ function isMissingResumeError(text) {
     || /resume failed/i.test(msg);
 }
 
+// The resumed claude session + the new message overflowed the model's context
+// window. Distinct from a missing-resume (the session loads fine; it's just too
+// big now) and from a generic brain failure. Recovery = reset the thread and
+// retry fresh; transcript.md preserves the conversation regardless. (Confirmed
+// 2026-06-21: SPOILER's session grew to 4 MB / 179k tok and the periodic
+// compactor couldn't reduce it, so the live being kept emitting this verbatim.)
+export function isContextOverflowError(text) {
+  const msg = String(text ?? '');
+  return /prompt is too long/i.test(msg)
+    || /too many tokens/i.test(msg)
+    || /maximum context length/i.test(msg)
+    || /context (?:window|length)[^.]{0,40}exceed/i.test(msg)
+    || /exceed[^.]{0,40}context (?:window|length)/i.test(msg);
+}
+
 export function isBrainFailureResult(text) {
   const msg = String(text ?? '').trim();
   return /^!!\s+/.test(msg)
@@ -1153,7 +1168,12 @@ export function createDispatchRuntime({
 
       let final = typeof result === 'object' ? (result.text ?? '') : (result ?? '');
       const triedResume = !!(isPerContactDispatch && convSlug && convEntry?.threadId);
-      if (triedResume && !threadCtx._retried && isMissingResumeError(final)) {
+      // Reset + retry fresh when the stored session can't be resumed (missing
+      // rollout) OR it overflowed the context window. Most brains THROW on
+      // overflow (caught below), but codex/url brains can return it as text — so
+      // check here too. transcript.md preserves history across the reset.
+      if (triedResume && !threadCtx._retried && (isMissingResumeError(final) || isContextOverflowError(final))) {
+        const overflowed = isContextOverflowError(final);
         await updateState((state) => {
           const next = isSystemPersonality
             ? setSystemThread(state, { threadId: null, threadCreatedAt: null, identityInjectedAt: null })
@@ -1164,7 +1184,7 @@ export function createDispatchRuntime({
               });
           return { state: next, write: true };
         });
-        logSystem(`@e: stored thread for "${convSlug}" could not be resumed; cleared it and retrying fresh`);
+        logSystem(`@e: stored thread for "${convSlug}" ${overflowed ? 'overflowed its context window' : 'could not be resumed'}; cleared it and retrying fresh`);
         return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
       }
       if (usedAttempt.brainType === brainType && fallbackAttempt && !threadCtx._fallbackTried && isBrainFailureResult(final)) {
@@ -1252,6 +1272,24 @@ export function createDispatchRuntime({
         label: 'error',
       });
       const triedResume = !!(isPerContactDispatch && convSlug && convEntry?.threadId);
+      // CONTEXT OVERFLOW (operator 2026-06-21): the resumed session + this
+      // message blew the model's context window. Left alone the being surfaces
+      // "Prompt is too long" verbatim into the chat (observed in SPOILER, and
+      // `/e new` couldn't clear it while the warm pool held the stale session).
+      // Reset the thread — transcript.md preserves the full history — and retry
+      // ONCE on a fresh session; the warm pool's session-identity guard drops the
+      // stale open session for us. This is the reactive backstop to the periodic
+      // compactor; it recovers even when compaction never ran.
+      if (triedResume && !threadCtx._retried && isContextOverflowError(msg)) {
+        await updateState((state) => ({
+          state: isSystemPersonality
+            ? setSystemThread(state, { threadId: null, threadCreatedAt: null, identityInjectedAt: null })
+            : patchContact(state, surface, convSlug, { threadId: null, threadCreatedAt: null, identityInjectedAt: null }),
+          write: true,
+        }));
+        logSystem(`@e: "${convSlug}" overflowed its context window; reset the thread and retrying fresh`);
+        return await runDefaultBrainTurn(text, onPartial, { ...threadCtx, _retried: true });
+      }
       if (triedResume && !threadCtx._retried && typeof findThreadJsonl === 'function') {
         try {
           const current = await updateState((state) => ({ state, write: false }));

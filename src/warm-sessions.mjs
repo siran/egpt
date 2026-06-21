@@ -105,6 +105,25 @@ export function createWarmPool({
   function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs } = {}) {
     let e = _s.get(key);
     if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
+    // SESSION-IDENTITY GUARD (operator 2026-06-21): a warm entry stays bound to
+    // whatever claude session it opened/resumed. The conversation/E key omits the
+    // session id (unlike the sibling key `sib:name:session_id`), so a re-pin on
+    // the SAME key — `/e new` nulling the thread, or the out-of-process compactor
+    // reseeding it to a new session — would otherwise be silently ignored: the
+    // pool keeps resuming the STALE session. That was the SPOILER bug (`/e new`
+    // rebooted straight back onto the 4 MB / 0-boundary session). If the caller
+    // now asks for a DIFFERENT session than the open one is bound to, evict so we
+    // reopen on the requested id. Idle-only (never guillotine an in-flight turn);
+    // gated on an explicit `sessionId` so callers that don't manage sessions are
+    // untouched; acts only once the open session has a known id to compare.
+    if (e && !e.errored && !e.busy && Object.prototype.hasOwnProperty.call(brainOptions, 'sessionId')) {
+      const want = brainOptions.sessionId ?? null;
+      const have = e.session?.sessionId ?? null;
+      if (have && want !== have) {
+        _evict(key, `session re-pinned (${String(have).slice(0, 8)}…→${want ? String(want).slice(0, 8) + '…' : 'fresh'})`);
+        e = null;
+      }
+    }
     // INJECT-INTO-RUNNING-TURN (operator 2026-06-13): if a turn is already
     // streaming on this key, weave the new message into THAT live turn rather
     // than serializing a fresh turn behind it. The in-flight turn's single

@@ -1,19 +1,29 @@
-// tools/compact-being.mjs — deterministic compaction worker for ccode beings.
+// tools/compact-being.mjs — deterministic compaction worker for ccode beings
+// and active conversation threads.
 //
-// A `ccode` being (Claude Code CLI, resumed per turn via --resume <session_id>)
+// A `ccode` session (Claude Code CLI, resumed per turn via --resume <session_id>)
 // accumulates context until a big incoming message overflows the model window
-// ("Prompt is too long" — the session itself still resumes; it's session + the
-// new message that overflows). This worker compacts a being's session from the
-// OUTSIDE — the only safe way, since a session can't self-compact while its
-// resident holds it (single-active):
+// ("Prompt is too long"). This worker keeps sessions thin from the OUTSIDE so the
+// being never reaches that wall.
 //
-//   reap the resident  →  `claude --resume <id> -p "/compact"`  →  being re-resumes compacted
+// COMPACTION = SUMMARIZE-AND-RESEED (NOT `/compact`). Verified 2026-06-21:
+// `claude --resume <id> -p "/compact"` on claude 2.1.185 does NOT run the slash
+// command — it feeds "/compact" to the model as literal text and writes no
+// boundary. The old worker silently no-op'd for months (SPOILER grew to 4 MB /
+// 179k tok / 0 boundaries while the hourly scan logged compact-failed). Instead:
+//
+//   distil the session's recent turns into a CONTINUITY BRIEF  →  seed a FRESH
+//   small session with ONLY that brief  →  repoint the thread pointer to it
+//
+// The daemon's warm-pool session-identity guard (src/warm-sessions.mjs) drops the
+// stale session and resumes the new one on the next turn. The old session jsonl
+// is orphaned, not touched — no reaping, so a live daemon turn is never killed.
 //
 // The TRIGGER is deterministic: read Claude Code's OWN per-turn token accounting
 // (input + cache_read + cache_creation = everything that was sent last turn) and
-// compact when it crosses a fraction of the model window. No byte-guessing.
+// reseed when it crosses a fraction of the model window. No byte-guessing.
 //
-// Driven by the butler-e maintenance heartbeat (egpt-spine.mjs heartbeat scan),
+// Driven by the maintenance command-heartbeat (egpt-spine.mjs heartbeat scan),
 // so it runs automatically, periodically, and logged — never by hand. Also a
 // CLI: `node src/tools/compact-being.mjs [--scan|<being>] [--force]`.
 
@@ -121,57 +131,117 @@ function sessionActive(file, windowMs = BUSY_WINDOW_MS) {
   try { return isActiveMtime(statSync(file).mtimeMs, Date.now(), windowMs); } catch { return false; }
 }
 
-// Kill any claude process currently holding the session (single-active guard):
-// a second `claude --resume <id>` racing this one would corrupt the .jsonl.
-function reapResident(sessionId, log) {
-  if (process.platform === 'win32') {
-    const ps = `Get-CimInstance Win32_Process -Filter "name='claude.exe'" | Where-Object { $_.CommandLine -like '*--resume ${sessionId}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }`;
-    const r = spawnSync('powershell', ['-NoProfile', '-Command', ps], { encoding: 'utf8' });
-    const killed = (r.stdout || '').trim().split(/\s+/).filter(Boolean);
-    if (killed.length) log(`compact: reaped resident pid(s) ${killed.join(',')} holding ${sessionId}`);
-    return killed.length;
+// ── pure: pull the human-readable user/assistant turns out of a session jsonl,
+//    keeping only the TAIL within a char budget. This is the material we hand the
+//    summarizer; bounding it means the summarizer call itself can't overflow. ──
+export function extractConversationText(jsonlText, { maxChars = 200_000 } = {}) {
+  const out = [];
+  for (const line of String(jsonlText ?? '').split('\n')) {
+    if (!line.trim()) continue;
+    let o; try { o = JSON.parse(line); } catch { continue; }
+    const role = o?.message?.role || (o.type === 'user' ? 'user' : o.type === 'assistant' ? 'assistant' : null);
+    if (role !== 'user' && role !== 'assistant') continue;
+    const content = o?.message?.content;
+    let text = '';
+    if (typeof content === 'string') text = content;
+    else if (Array.isArray(content)) {
+      text = content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text).join('');
+    }
+    text = String(text).trim();
+    if (!text) continue;
+    out.push(`${role === 'user' ? 'User' : 'Assistant'}: ${text}`);
   }
-  const r = spawnSync('pkill', ['-f', `--resume ${sessionId}`]);
-  return r.status === 0 ? 1 : 0;
+  let joined = out.join('\n\n');
+  if (joined.length > maxChars) joined = joined.slice(joined.length - maxChars);   // keep the most RECENT
+  return joined;
 }
 
-// Run the compaction turn. `/compact` works in -p print mode (claude 2.1.x); it
-// appends an isCompactSummary boundary that resume reads from. stdin is closed
-// (input:'') so claude doesn't wait on it.
-function runCompactTurn({ sessionId, cwd, model, log }) {
-  const args = ['--resume', sessionId, '--model', model, '--dangerously-skip-permissions', '-p', '/compact'];
-  const r = spawnSync('claude', args, { cwd, input: '', encoding: 'utf8', windowsHide: true, timeout: 5 * 60 * 1000 });
-  if (r.error) { log(`!! compact: claude spawn failed for ${sessionId} — ${r.error.message}`); return false; }
-  if (r.status !== 0) log(`compact: claude exit ${r.status} for ${sessionId} (may still have compacted)`);
-  return !r.error;
+// ── pure: the two prompts. STEP 1 distils the conversation into a brief; STEP 2
+//    seeds a FRESH session with ONLY that brief (so the new session is small —
+//    feeding the whole conversation into one -p call would leave it inside the
+//    new session and defeat the compaction). ──
+export function buildReseedPrompt(text) {
+  return [
+    'You are distilling a conversation that has grown too large for its context window.',
+    'Write a CONTINUITY BRIEF that carries everything needed to continue with no loss of important context: participants, durable facts, decisions, commitments, open questions, and the current topic/state. Be thorough but compact. Output ONLY the brief — no preamble, no questions.',
+    '',
+    '=== CONVERSATION ===',
+    text || '(no recoverable history)',
+  ].join('\n');
+}
+export function buildSeedPrompt(brief) {
+  return [
+    'This session continues an ongoing conversation. The following continuity brief carries everything important so far — treat it as established context. Reply with a single short acknowledgement; we continue from here.',
+    '',
+    '=== CONTINUITY BRIEF ===',
+    brief,
+  ].join('\n');
+}
+
+// ── side-effecting default summarizer: one throwaway claude call to produce the
+//    brief, then a SECOND fresh call seeded with only the brief — the keeper. We
+//    return the keeper's session_id (small) + the brief. `/compact` is NOT used:
+//    verified 2026-06-21 that `claude --resume -p "/compact"` on 2.1.185 treats
+//    the slash command as literal text (no boundary written) — the whole reason
+//    the old compactor silently no-op'd for months. ──
+function defaultSummarize(text, { model, cwd, log = () => {} } = {}) {
+  const runJson = (promptStr) => {
+    const args = ['--model', model, '--dangerously-skip-permissions', '--output-format', 'json', '-p'];
+    const r = spawnSync('claude', args, { cwd, input: promptStr, encoding: 'utf8', windowsHide: true, timeout: 5 * 60 * 1000, maxBuffer: 128 * 1024 * 1024 });
+    if (r.error) { log(`!! reseed: claude spawn failed — ${r.error.message}`); return null; }
+    let o; try { o = JSON.parse(r.stdout); } catch { log(`!! reseed: non-JSON output — ${String(r.stdout).slice(0, 160)}`); return null; }
+    return o;
+  };
+  const sum = runJson(buildReseedPrompt(text));
+  const brief = sum && typeof sum.result === 'string' ? sum.result.trim() : '';
+  if (!brief) { log('reseed: summarizer produced an empty brief'); return null; }
+  const seed = runJson(buildSeedPrompt(brief));
+  const sessionId = seed?.session_id ?? null;
+  if (!sessionId) { log('reseed: seed session produced no session_id'); return null; }
+  return { sessionId, brief };
+}
+
+// Reseed ONE session: read its jsonl, distil a brief, seed a fresh small session,
+// and report the new session id. Does NOT persist the pointer (the async CLI main
+// does that) and does NOT touch the old session (the daemon's warm-pool
+// session-identity guard drops it on the next turn once the pointer moves). The
+// summarizer + persistence are injectable for testing.
+export function reseedSession(being, { log = () => {}, summarize = defaultSummarize, resolveFile = findSessionFile } = {}) {
+  const file = resolveFile(being.sessionId);
+  if (!file) return { ...being, status: 'no-session-file' };
+  let text;
+  try { text = extractConversationText(readFileSync(file, 'utf8')); }
+  catch (e) { log(`!! reseed: read ${being.name} failed — ${e?.message ?? e}`); return { ...being, status: 'reseed-failed' }; }
+  const res = summarize(text, { model: being.model, cwd: being.cwd, log });
+  if (!res?.sessionId) return { ...being, status: 'reseed-failed' };
+  if (res.sessionId === being.sessionId) { log(`reseed: ${being.name} got the same session id — abort`); return { ...being, status: 'reseed-failed' }; }
+  log(`reseed: ${being.name} → ${String(res.sessionId).slice(0, 8)}… (brief ${String(res.brief || '').length}ch)`);
+  return { ...being, newSessionId: res.sessionId, status: 'reseeded' };
 }
 
 // Compact ONE being iff it's over threshold (or force). Returns a report row.
 // dryRun reports the decision (ok / would-compact) without touching anything —
-// for safe inspection.
-export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RATIO, force = false, dryRun = false, busyWindowMs = BUSY_WINDOW_MS } = {}) {
+// for safe inspection. A success carries `newSessionId` for the caller to persist
+// (status stays 'compacted'/'compact-failed' so the reporting layer is unchanged).
+export function compactBeingIfNeeded(being, { log = () => {}, ratio = COMPACT_RATIO, force = false, dryRun = false, busyWindowMs = BUSY_WINDOW_MS, summarize, resolveFile = findSessionFile } = {}) {
   const window = being.window || windowForModel(being.model);
-  const file = findSessionFile(being.sessionId);
+  const file = resolveFile(being.sessionId);
   if (!file) return { ...being, status: 'no-session-file' };
   const before = latestContextTokens(readFileSync(file, 'utf8'));
   const over = force || needsCompaction(before, { window, ratio });
   if (!over) return { ...being, before, status: 'ok' };
-  // BUSY-SKIP (An 2026-06-20): a turn in flight ⇒ skip this cycle, never reap it.
-  // The scan is automatic + periodic, so skipping is free — it compacts once the
-  // session goes quiet. A manual `force` (named target) is the operator's override.
+  // BUSY-SKIP (An 2026-06-20): a turn in flight ⇒ skip this cycle. Reseeding a
+  // session the daemon is actively writing risks the daemon re-persisting the old
+  // pointer over ours. The scan is periodic, so skipping is free — it reseeds once
+  // the session goes quiet. A manual `force` (named target) is the operator's override.
   if (!force && sessionActive(file, busyWindowMs)) {
     log(`compact: ${being.name} active (jsonl touched <${Math.round(busyWindowMs / 60000)}m ago) — skip this cycle`);
     return { ...being, before, status: 'busy-skip' };
   }
   if (dryRun) return { ...being, before, status: 'would-compact' };
-  log(`compact: ${being.name} at ${before} tok (threshold ${Math.round(window * ratio)}) — compacting…`);
-  // Success = a NEW compact boundary appears (the post-compact token size isn't
-  // measurable until the being next runs a real turn, so don't read it back).
-  const boundariesBefore = countBoundaries(readFileSync(file, 'utf8'));
-  reapResident(being.sessionId, log);
-  runCompactTurn({ sessionId: being.sessionId, cwd: being.cwd, model: being.model, log });
-  const compacted = countBoundaries(readFileSync(file, 'utf8')) > boundariesBefore;
-  return { ...being, before, status: compacted ? 'compacted' : 'compact-failed' };
+  log(`compact: ${being.name} at ${before} tok (threshold ${Math.round(window * ratio)}) — reseeding…`);
+  const r = reseedSession(being, { log, resolveFile, ...(summarize ? { summarize } : {}) });
+  return { ...being, before, newSessionId: r.newSessionId, status: r.status === 'reseeded' ? 'compacted' : 'compact-failed' };
 }
 
 // ── pure: ACTIVE conversations are ccode threads too — each contact entry holds
@@ -185,7 +255,12 @@ export function compactableConversations(state, model = 'haiku') {
     const bucket = contacts[surface] ?? {};
     for (const [jid, e] of Object.entries(bucket)) {
       if (!e || e.aliasOf || typeof e.threadId !== 'string' || !e.threadId) continue;   // no live thread → nothing to compact
-      out.push({ name: `${surface}/${e.slug || jid}`, sessionId: e.threadId, cwd: e.threadCwd || process.cwd(), model, window: windowForModel(model) });
+      const slug = e.slug || jid;
+      // cwd left null when there's no threadCwd — the CLI runner fills it with the
+      // slug-dir (the SAME cwd the daemon resumes with) so the reseeded session
+      // lands in the right claude project and `--resume` finds it. surface+slug
+      // ride along so the runner can persist the new pointer + threadCwd.
+      out.push({ name: `${surface}/${slug}`, surface, slug, sessionId: e.threadId, cwd: e.threadCwd || null, model, window: windowForModel(model) });
     }
   }
   return out;
@@ -214,16 +289,21 @@ if (isMain) {
   const force = argv.includes('--force');
   const dryRun = argv.includes('--dry-run') || argv.includes('--check');
   const target = argv.find(a => !a.startsWith('--'));   // a being name → force-compact just it
-  const { readConfigSync } = await import('./config-io.mjs');
+  const { readConfigSync, writeConfig } = await import('./config-io.mjs');
   const config = readConfigSync();
   const log = (m) => console.error(m);   // diagnostics to stderr; the summary to stdout
+  let convState = null;   // imported conversations-state module (null if unavailable)
   // Targets = local ccode beings + ACTIVE conversation threads (each chat carries
   // its own persona session, so busy chats stay thin too).
   const targets = [...compactableBeings(config)];
   try {
-    const { readState, CONV_YAML_PATH } = await import('../../conversations-state.mjs');
-    const state = await readState(CONV_YAML_PATH);
-    targets.push(...compactableConversations(state, config.default_brain?.model || 'haiku'));
+    convState = await import('../../conversations-state.mjs');
+    const state = await convState.readState(convState.CONV_YAML_PATH);
+    const convTargets = compactableConversations(state, config.default_brain?.model || 'haiku');
+    // Fill the reseed cwd with the slug-dir (the cwd the daemon resumes with) so
+    // the new session lands in the matching claude project and `--resume` finds it.
+    for (const t of convTargets) { if (!t.cwd) t.cwd = convState.slugDir(t.surface, t.slug); }
+    targets.push(...convTargets);
   } catch (e) { log(`compact: conversation scan skipped — ${e?.message ?? e}`); }
   let reports;
   if (target) {
@@ -239,6 +319,33 @@ if (isMain) {
       : r.status === 'busy-skip' ? `busy — skipped (${r.before} tok)`
       : r.status === 'ok' ? `ok (${r.before} tok)` : r.status;
     log(`  ${r.name}: ${tag}`);
+  }
+  // Persist the new session pointers (reseed succeeded). Done HERE, async, after
+  // the sync scan: a conversation repoints its threadId+threadCwd in
+  // conversations.yaml; a being repoints siblings.<name>.session_id in config.
+  // The daemon's warm-pool session-identity guard drops the stale session and
+  // resumes the new (small) one on the contact's next turn. Re-read each file
+  // immediately before writing to minimize clobbering a concurrent daemon write.
+  for (const r of reports) {
+    if (r.status !== 'compacted' || !r.newSessionId) continue;
+    try {
+      if (r.surface && r.slug && convState) {
+        const now = new Date().toISOString();
+        const fresh = await convState.readState(convState.CONV_YAML_PATH);
+        const next = convState.patchContact(fresh, r.surface, r.slug, {
+          threadId: r.newSessionId, threadCwd: r.cwd ?? null, threadCreatedAt: now, identityInjectedAt: now,
+        });
+        await convState.writeState(convState.CONV_YAML_PATH, next);
+        log(`compact: repointed ${r.name} → ${String(r.newSessionId).slice(0, 8)}…`);
+      } else if (!r.surface) {
+        const fresh = readConfigSync();
+        if (fresh.siblings?.[r.name]) {
+          fresh.siblings[r.name].session_id = r.newSessionId;
+          await writeConfig(fresh);
+          log(`compact: repointed being ${r.name} → ${String(r.newSessionId).slice(0, 8)}…`);
+        }
+      }
+    } catch (e) { log(`!! compact: repoint ${r.name} failed — ${e?.message ?? e}`); }
   }
   // Durable record of EVERY maintenance run — this is the actually-loggable bit:
   // the spine's sysLog goes to the dropped render buffer, so the butler heartbeat

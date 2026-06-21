@@ -174,6 +174,64 @@ describe('warm-session pool', () => {
     expect(made[0].turns).toEqual(['first', 'second']);
   });
 
+  // CONTRACT (operator 2026-06-21): the conversation/E warm key omits the
+  // session id, so a re-pin on the same key (e.g. `/e new` nulling the thread,
+  // or the compactor reseeding to a new session) must EVICT the stale open
+  // session instead of silently resuming it (the SPOILER bug). A session that
+  // reports a `sessionId` is compared against what the caller now requests.
+  function sessionIdFactory() {
+    const made = [];
+    const makeSession = (opts) => {
+      const s = {
+        opts, closed: false, turns: [],
+        get sessionId() { return opts.sessionId ?? null; },
+        close() { this.closed = true; },
+        turn(msg) { this.turns.push(msg); return Promise.resolve({ text: `echo:${msg}`, sessionId: this.sessionId }); },
+      };
+      made.push(s);
+      return s;
+    };
+    return { makeSession, made };
+  }
+
+  it('evicts + reopens when the same key is re-pinned to a DIFFERENT session', async () => {
+    const { makeSession, made } = sessionIdFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('e:ccode:wa:slug', 'a', () => {}, { brainOptions: { sessionId: 'OLD12345' } });
+    await pool.run('e:ccode:wa:slug', 'b', () => {}, { brainOptions: { sessionId: 'NEW67890' } });
+    expect(made.length).toBe(2);                 // stale session not reused
+    expect(made[0].closed).toBe(true);           // old one evicted/closed
+    expect(made[0].opts.sessionId).toBe('OLD12345');
+    expect(made[1].opts.sessionId).toBe('NEW67890');
+  });
+
+  it('evicts + reopens FRESH when the thread is reset to null (/e new)', async () => {
+    const { makeSession, made } = sessionIdFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('e:ccode:wa:slug', 'a', () => {}, { brainOptions: { sessionId: 'OLD12345' } });
+    await pool.run('e:ccode:wa:slug', 'b', () => {}, { brainOptions: { sessionId: null } });
+    expect(made.length).toBe(2);
+    expect(made[0].closed).toBe(true);
+    expect(made[1].opts.sessionId).toBe(null);   // brand-new session
+  });
+
+  it('reuses the warm session when the SAME session id is requested', async () => {
+    const { makeSession, made } = sessionIdFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('k', 'a', () => {}, { brainOptions: { sessionId: 'SAME0001' } });
+    await pool.run('k', 'b', () => {}, { brainOptions: { sessionId: 'SAME0001' } });
+    expect(made.length).toBe(1);                  // no churn on steady state
+    expect(made[0].turns).toEqual(['a', 'b']);
+  });
+
+  it('does NOT guard callers that omit sessionId (no churn)', async () => {
+    const { makeSession, made } = sessionIdFactory();
+    const pool = createWarmPool({ makeSession });
+    await pool.run('k', 'a');                     // no brainOptions.sessionId at all
+    await pool.run('k', 'b');
+    expect(made.length).toBe(1);
+  });
+
   it('reopens a fresh session after a genuine session error (not a timeout)', async () => {
     const factory = fakeFactory();
     let first = true;
