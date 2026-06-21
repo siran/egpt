@@ -7143,16 +7143,17 @@ function startSpineRuntime() {
       return await runMetaBrainTurn(`[mesh ${name}]: ${prompt}`, onPartial || (() => {}), name);
     },
     // RELAY STREAMING — a LIVING MIRROR (An 2026-06-21), Beeper-only:
-    // RESPONDER (DOLLY): edit-stream the being's reply into the shared relay room as
-    // ONE message wrapped in the mesh tail (by/re/post_id, NO done). The bridge edit-
-    // streams in place; DOLLY's OWN edits are suppressed locally (_ourStreamIds) but
-    // propagate over Beeper to the origin (REVE), which observes them directly and
-    // mirrors each version onto its placeholder. No edit-forwarding, no "final" frame —
-    // the answer is just the last edit, and a late edit would still flow.
+    // RESPONDER (DOLLY): edit-stream the being's reply into the shared relay room as ONE
+    // message wrapped in the mesh tail (by/emoji/re/post_id). The bridge edit-streams in
+    // place; DOLLY's OWN edits are suppressed locally (_ourStreamIds) but propagate over
+    // Beeper to the origin (REVE), which mirrors each version onto its placeholder. The
+    // being's body_emoji rides every frame so the origin can STAMP identity (contract);
+    // the FINAL frame carries done:true so the origin appends "✅ Done".
     relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
       const relayChatId = route?.room_id ? String(route.room_id) : null;
       if (!relayChatId) return;
-      const wrap = (body) => encodeMesh({ by, body: String(body ?? '').trim() || '🤔', re, post_id });
+      const emoji = EGPT_CONFIG.siblings?.[String(being).toLowerCase()]?.body_emoji ?? '';
+      const wrap = (body, done = false) => encodeMesh({ by, emoji, body: String(body ?? '').trim() || '🤔', re, post_id, done });
       // system:true bypasses the @e gate — relay traffic is machine-routed, like a raw
       // send. The stream posts the '🤔' placeholder (a new message → the origin opens
       // its mirror) then edits it in place as the being streams.
@@ -7165,8 +7166,8 @@ function startSpineRuntime() {
         final = `(${being}.${BUS_NODE_ID} error: ${e?.message ?? e})`;
       }
       final = String(final ?? '').trim() || '…';
-      if (stream) await stream.finish(wrap(final));
-      else await waBridgeRef.current?.send(wrap(final), { chatId: relayChatId });   // no stream factory — degraded one-shot
+      if (stream) await stream.finish(wrap(final, true));
+      else await waBridgeRef.current?.send(wrap(final, true), { chatId: relayChatId });   // no stream factory — degraded one-shot
     },
     // ORIGIN (REVE): post the "↪ relayed…" placeholder and return its Beeper msgId.
     // The msgId rides as post_id in the relay request so DOLLY can echo it back in
@@ -7185,12 +7186,11 @@ function startSpineRuntime() {
       return null;
     },
     // ORIGIN (REVE): open a streaming handle that mirrors the responder's reply home.
-    // info.msgId == post_id — the Beeper msgId of the "↪ relayed… waiting" placeholder
-    // we posted in the origin chat. Seed the stream with it so updates EDIT that message
-    // in place (waiting → reply). If it's missing (placeholder id didn't resolve), post
-    // a FRESH stream message so the mirror still works. system:true: a relayed reply
-    // always surfaces (the user asked the being) — it isn't subject to the origin chat's
-    // @e mode gate.
+    // info.msgId == post_id — the Beeper msgId of the "🤔" placeholder we posted in the
+    // origin chat. Seed the stream with it so updates EDIT that message in place (🤔 →
+    // reply). info.emoji is the being's body_emoji, STAMPED on every frame (contract). A
+    // lone 🤔 (no stamp) stays big until real text arrives. showThink:true → the bridge
+    // appends "✅ Done" on finish. If post_id is missing, post a FRESH stream message.
     openOriginStream: (returnTo, info = {}) => {
       const wa = waBridgeRef.current;
       if (returnTo?.surface !== 'whatsapp' || !wa?.startStreamMessage) {
@@ -7200,19 +7200,22 @@ function startSpineRuntime() {
       const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
       const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || '🔗';
       const postId = info.msgId || null;
-      // Use the bridge's in-place editor DIRECTLY (no proxy/gate layer): with
-      // existingMsgId it edits the placeholder in place AND marks it ours so our own
-      // mirror-edits aren't re-surfaced as stage-directions. The pipe: relay → origin.
-      const stream = wa.startStreamMessage('', { chatId: returnTo.chat_id, ...(postId ? { existingMsgId: postId } : {}) });
-      logOut(`mesh: openOriginStream OPEN chat=${returnTo.chat_id} existingMsgId=${postId || '-'} stream=${!!stream}`);
+      // A bare 🤔 (or empty) renders BIG as a thinking indicator — don't stamp it. Once
+      // real text arrives, stamp the being's body_emoji: "<emoji> <reply>".
+      const render = (body) => { const b = String(body ?? '').trim(); return (!b || b === '🤔') ? '🤔' : `${tag} ${b}`; };
+      // Use the bridge's in-place editor DIRECTLY (no proxy/gate layer): with existingMsgId
+      // it edits the placeholder in place AND marks it ours so our own mirror-edits aren't
+      // re-surfaced as stage-directions. The pipe: relay in, origin out.
+      const stream = wa.startStreamMessage('', { chatId: returnTo.chat_id, showThink: true, ...(postId ? { existingMsgId: postId } : {}) });
+      logOut(`mesh: openOriginStream OPEN chat=${returnTo.chat_id} existingMsgId=${postId || '-'} emoji=${tag} stream=${!!stream}`);
       if (!stream) return null;
       return {
         update: (body) => {
-          stream.update(`${tag} ${String(body ?? '').trim() || '…'}`);
+          stream.update(render(body));
           setTimeout(() => { if (stream.lastError) logOut(`mesh: mirror #${postId || '?'} edit error: ${stream.lastError}`); }, 2500);
         },
         finish: async (body) => {
-          await stream.finish(`${tag} ${String(body ?? '').trim() || '…'}`);
+          await stream.finish(render(body));   // showThink appends "✅ Done"
           logOut(`mesh: mirror finish #${postId || '?'} delivered=${stream.delivered} err=${stream.lastError ?? '-'}`);
         },
       };
