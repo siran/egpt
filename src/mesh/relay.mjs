@@ -57,7 +57,8 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   // `post_id` is the Beeper msgId of the origin placeholder ("↪ relayed — waiting…")
   // that was posted in the origin chat. The responder echoes it back in every reply
   // frame so the origin knows WHICH message to edit as the stream progresses.
-  if (post_id) lines.push(`post_id: ${post_id}`);
+  const _pid = typeof post_id === 'string' ? post_id : '';
+  if (_pid) lines.push(`post_id: ${_pid}`);
   // `done` (An 2026-06-20): marks the FINAL frame of a streamed reply, so the
   // origin knows when to finalize the mirrored stream (vs keep editing).
   if (done) lines.push(`done: true`);
@@ -189,7 +190,10 @@ export function createMeshRelay({
     let postId = null;
     const statusText = `↪ relayed to ${being}.${toNode} — waiting for a reply…`;
     if (ackWithPostId) {
-      try { postId = await ackWithPostId(origin, statusText); } catch { /* best-effort */ }
+      try {
+        const _raw = await ackWithPostId(origin, statusText);
+        postId = typeof _raw === 'string' ? _raw : null;
+      } catch { /* best-effort */ }
     } else {
       await notify(origin, statusText);
     }

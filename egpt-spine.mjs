@@ -7161,7 +7161,7 @@ function startSpineRuntime() {
         // No stream factory — fall back to one-shot runBeing (used in tests).
         return;
       }
-      const stream = await makeStream('', { chatId: relayChatId });
+      const stream = await makeStream('', { chatId: relayChatId, replyAllowed: true });
       const wrapFrame = (body, done) => encodeMesh({ by, body: String(body ?? ''), re, post_id, done });
       stream.update(wrapFrame('…', false));
       // Run the being with a per-partial callback that updates the relay message.
