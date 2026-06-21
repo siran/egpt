@@ -35,7 +35,6 @@ import { startTelegramBridge } from './src/bridges/telegram.mjs';
 import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult } from './dispatch.mjs';
 import { startOutboxWatcher, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
-import { startWhatsAppCdpBridge } from './src/bridges/whatsapp-cdp.mjs';
 import { startBeeperBridge } from './src/bridges/beeper.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
@@ -541,14 +540,6 @@ const LOCAL_CONFIG_PATH = join(EGPT_HOME, 'config.local.json');
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 
-// WhatsApp transport resolution (operator 2026-06-10: "baileys never.
-// chrome-cdp is fallback. beeper default and preferred." — and later the
-// same day: "remove baileys completely"; it is GONE, not deprecated).
-// beeper is the default; cdp must be chosen explicitly. A config still
-// saying 'baileys' gets beeper + a loud notice rather than a dead bridge.
-function resolveWaTransport(cfg = {}) {
-  return cfg.transport === 'cdp' ? 'cdp' : 'beeper';
-}
 // dp(path) — display a filesystem path, converting to POSIX style when
 // unix_paths:true is set in config. Useful in MSYS2 / WSL environments.
 const dp = (p) => EGPT_CONFIG.unix_paths ? p.replace(/\\/g, '/') : p;
@@ -4086,15 +4077,16 @@ function startSpineRuntime() {
           setTimeout(() => { try { process.exit(75); } catch { /* already exiting */ } }, 300);
         },
       };
-      // Transport policy (operator 2026-06-10): beeper default + preferred,
-      // cdp explicit fallback, baileys REMOVED ("remove baileys completely").
-      const _waTransport = resolveWaTransport(EGPT_CONFIG.whatsapp ?? {});
-      logOut(`whatsapp: transport=${_waTransport}${EGPT_CONFIG.whatsapp?.transport ? '' : ' (default)'}`);
-      if (EGPT_CONFIG.whatsapp?.transport === 'baileys') {
-        logOut('whatsapp: transport "baileys" was REMOVED (operator 2026-06-10) — starting beeper instead. Set whatsapp.transport: beeper (+ beeper_token) or cdp.');
+      // WhatsApp transport: beeper is the ONLY transport. baileys was removed
+      // 2026-06-10; the CDP WhatsApp-Web transport was removed 2026-06-21
+      // (operator). A config still naming another transport gets beeper + a
+      // notice rather than a dead bridge.
+      const _waTransportCfg = EGPT_CONFIG.whatsapp?.transport;
+      if (_waTransportCfg && _waTransportCfg !== 'beeper') {
+        logOut(`whatsapp: transport "${_waTransportCfg}" is no longer available — starting beeper (the only transport; set whatsapp.transport: beeper + beeper_token).`);
       }
-      const _starter = _waTransport === 'cdp' ? startWhatsAppCdpBridge : startBeeperBridge;
-      const bridge = await _starter(_bridgeOpts);
+      logOut('whatsapp: transport=beeper');
+      const bridge = await startBeeperBridge(_bridgeOpts);
       _wrapBridgeFlood(bridge, 'whatsapp');
       waBridgeRef.current = bridge;
       _globalWaBridge = bridge;

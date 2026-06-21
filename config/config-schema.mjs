@@ -24,10 +24,10 @@ export const CONFIG_SCHEMA = {
   telegram:     'telegram bridge config: { bot_token, allowed_users, chat_id, mirror, node_name, client_name (default "tg", appears in handle@client tags), max_backlog_seconds (default 5 — grace window in seconds; messages with Telegram-side timestamps older than N seconds before bridge connect are HELD instead of auto-dispatched and reviewed via /tg-pending. 0 = strict (hold ANYTHING pre-connect). -1 = disable hold entirely (legacy behavior; not recommended — daemon restart auto-executes brain on every queued message)) }',
   // whatsapp: nested object with keys { enabled, allowed_users, chat_id }.
   // The bridge starts when this block is present (and not enabled:false).
-  // transport: 'beeper' (DEFAULT — rides the Beeper Desktop login, needs
-  // beeper_token) | 'cdp' (fallback — drives the logged-in WhatsApp Web
-  // tab in egpt's Chrome). baileys was REMOVED 2026-06-10 (operator:
-  // "remove baileys completely") — no QR pairing exists anymore.
+  // transport: 'beeper' is the ONLY transport (rides the Beeper Desktop login,
+  // needs beeper_token). baileys was REMOVED 2026-06-10 ("remove baileys
+  // completely"); the CDP WhatsApp-Web transport was REMOVED 2026-06-21 — no QR
+  // pairing and no in-Chrome WA-Web limb exist anymore.
   // chat_id / auto_e_chats are AUTHORIZATION lists: entries MUST be stable
   // chat ids (Beeper room id '!xxx:beeper.local' / WA jid), NEVER display
   // names (operator 2026-06-10: a chat title is attacker-controllable).
