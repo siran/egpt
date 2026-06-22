@@ -27,7 +27,6 @@ message came from and who sent it. No cryptic tags, no minted ids, no ttl.
 from: HFM
 from_node: kg
 by: An
-emoji: 🤝
 to: do
 re: HFM.kg
 post_id: <origin placeholder msgId>
@@ -43,15 +42,14 @@ enc: b64
 
 ## Keys
 
-Allowlist (`PROV_KEYS`): `from`, `from_node`, `by`, `emoji`, `to`, `re`,
-`post_id`, `done`, `enc`, `sig`.
+Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `done`, `enc`,
+`sig` (reserved).
 
 | key | meaning |
 |---|---|
 | `from` | origin chat label (e.g. `HFM`) |
 | `from_node` | origin node — lets the responder build the return address `re: ${from}.${from_node}` |
 | `by` | sender (a human, or `being.node`) |
-| `emoji` | the being's `body_emoji` — rides so the origin can stamp the reply with the being's identity (it can't look it up; the being is remote) |
 | `to` | target **node** — only that node answers (or says "no `<being>.<node>` here"); every other spine stays quiet |
 | `re` | return address (e.g. `HFM.kg`) — the reply echoes it so the relaying spine surfaces it home, correlated without a minted id |
 | `post_id` | the origin placeholder's msgId — echoed in every reply frame so the origin edits the right message as the mirrored reply streams |
@@ -73,7 +71,7 @@ A bridge may re-render the message as HTML or strip the fence, so `parseMesh`:
 
 1. strips HTML/markup (`stripRender`),
 2. scans **up from the end**, taking the trailing run of `key: value` lines whose
-   key is in `PROV_KEYS` (tolerant of leading `> * _ ~ \` -` and whitespace),
+   key is recognised (tolerant of leading `> * _ ~ \` -` and whitespace),
 3. takes everything above as the body, trimming fence/divider/blank edges,
 4. if `enc: b64`, base64-decodes the body.
 
@@ -87,7 +85,7 @@ Recognising our own tail (divider or not) is what stops infinite re-relay.
   answering node; `from_node` builds the return route; the reply echoes `re:`.
 - **Streaming living-mirror.** The responder edit-streams ONE relay-room message
   wrapped in this tail; the origin mirrors every edit onto its `post_id`
-  placeholder; `done: true` finalizes. (`emoji` / `post_id` / `done` serve this.)
+  placeholder; `done: true` finalizes. (`post_id` / `done` serve this.)
 
 ## Not yet (planned — NOT in the code)
 
@@ -99,5 +97,5 @@ Recognising our own tail (divider or not) is what stops infinite re-relay.
 
 ## Source of truth
 
-`src/mesh/relay.mjs` — `encodeMesh({ from, from_node, by, emoji, to, re, post_id, done })`,
+`src/mesh/relay.mjs` — `encodeMesh({ from, from_node, by, to, re, post_id, done })`,
 `parseMesh(text)`, `createMeshRelay(...)`.

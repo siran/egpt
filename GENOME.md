@@ -663,7 +663,7 @@ around it** — including eGPT's own heartbeats (they route through `submitInner
 
 **Wire format.** The concrete relay message format — a base64 human body + a
 readable trailing YAML provenance tail
-(`from`/`from_node`/`by`/`emoji`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
+(`from`/`from_node`/`by`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
 reserved), as emitted by `src/mesh/relay.mjs` — is specified in
 [`EGPT-MESH-PROTOCOL.md`](EGPT-MESH-PROTOCOL.md). `docs/BEING-MESH.md` is the
 routing design; `EGPT-MESH-PROTOCOL.md` is the bytes on the wire.

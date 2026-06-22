@@ -413,7 +413,7 @@ Lock status of the four:
 
 - **C8.5** The cross-spine relay **wire format** — a chat-carried message: the
   human body as a base64 block + a readable trailing YAML provenance tail
-  (`from`/`from_node`/`by`/`emoji`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
+  (`from`/`from_node`/`by`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
   reserved) — is specified in `EGPT-MESH-PROTOCOL.md` and implemented by
   `src/mesh/relay.mjs` (`encodeMesh`/`parseMesh`). Body is base64 (`enc: b64`,
   markdown-inert so the transport can't mangle code); the tail stays
