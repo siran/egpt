@@ -29,6 +29,7 @@ from_node: kg
 by: An
 to: do
 re: HFM.kg
+mid: mesh-kg-<stamp>-<nonce>
 post_id: <origin placeholder msgId>
 done: true
 enc: b64
@@ -42,8 +43,8 @@ enc: b64
 
 ## Keys
 
-Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `done`, `enc`,
-`sig` (reserved).
+Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `mid`, `done`,
+`enc`, `sig` (reserved).
 
 | key | meaning |
 |---|---|
@@ -53,6 +54,7 @@ Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `done`, `enc`,
 | `to` | target **node** — only that node answers (or says "no `<being>.<node>` here"); every other spine stays quiet |
 | `re` | return address (e.g. `HFM.kg`) — the reply echoes it so the relaying spine surfaces it home, correlated without a minted id |
 | `post_id` | the origin placeholder's msgId — echoed in every reply frame so the origin edits the right message as the mirrored reply streams |
+| `mid` | minted request id (origin), preserved across forwards — a spine forwards a given `mid` at most ONCE, so multi-hop transit is loop-safe and self-terminating (no ttl) |
 | `done` | `true` on the FINAL frame — a display finish marker (origin appends "✅ Done"), NOT a teardown; non-`done` frames keep flowing |
 | `enc` | body codec; `b64` ⇒ base64 (current). Untagged ⇒ legacy raw |
 | `sig` | **reserved** — parsed but never emitted; the slot where cross-*person* origin-signing would plug in later. Off until trust crosses people |
@@ -80,22 +82,27 @@ Recognising our own tail (divider or not) is what stops infinite re-relay.
 
 ## Semantics (today)
 
-- **Single-hop, loop-safe.** A relay message addressed to another node is
-  consumed and **never re-relayed** (the current loop guard). `to` picks the one
-  answering node; `from_node` builds the return route; the reply echoes `re:`.
-- **Streaming living-mirror.** The responder edit-streams ONE relay-room message
-  wrapped in this tail; the origin mirrors every edit onto its `post_id`
-  placeholder; `done: true` finalizes. (`post_id` / `done` serve this.)
+- **Multi-hop transit, loop-safe.** `to` picks the answering node; a spine that
+  isn't it forwards the message one hop toward it (`resolveRoute`), and the reply
+  comes back hop by hop. Loop-safety is structural: a spine forwards a given `mid`
+  **at most once**, so the message reaches every reachable node ~once and
+  self-terminates — no ttl. `from_node` builds the return route; the reply echoes
+  `re:`.
+- **Streaming living-mirror, chained.** The responder edit-streams ONE message;
+  each edit is an atomic, rate-free event. The origin mirrors edits onto its
+  `post_id` placeholder; a **transit** node re-mirrors — it edits its own
+  forwarded copy as the upstream streams, chaining the stream one hop on. `done:
+  true` finalizes. Only the FIRST forward of a message is loop-guarded; the edits
+  that follow can't loop.
 
-## Not yet (planned — NOT in the code)
+## Not yet
 
-- **Multi-hop transit.** Loop-safety should become structural via a **msgid
-  seen-count** (each spine forwards a given id at most once) — which both prevents
-  loops AND unlocks transit (`kg→do→mo`) and "who has xxx?" flood-discovery.
-  Today it is single-hop only.
-- **`sig`** cross-person origin-signing (reserved above).
+- **Live transit** is proven by unit tests (`kg→do→mo`); the running mesh is 2
+  nodes (REVE↔DOLLY = direct hop), so transit hasn't been exercised live yet.
+- **`sig`** cross-person origin-signing (reserved above) — NOT in the code.
+- **"who has xxx?" flood-discovery** — builds on the same `mid` forward-once.
 
 ## Source of truth
 
-`src/mesh/relay.mjs` — `encodeMesh({ from, from_node, by, to, re, post_id, done })`,
-`parseMesh(text)`, `createMeshRelay(...)`.
+`src/mesh/relay.mjs` — `encodeMesh({ from, from_node, by, to, re, post_id, mid, done })`,
+`parseMesh(text)`, `createMeshRelay(...)` (transit: `forwardToward` + `openRelayStream`).
