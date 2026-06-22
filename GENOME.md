@@ -661,6 +661,13 @@ eGPT spans machines + networks as ONE being‑system. The unifying law (a sharpe
 of I1): **everything reaches a being through the bridge; nothing prompts a model
 around it** — including eGPT's own heartbeats (they route through `submitInner`).
 
+**Wire format.** The concrete relay message format — a base64 human body + a
+readable trailing YAML provenance tail
+(`from`/`from_node`/`by`/`emoji`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
+reserved), as emitted by `src/mesh/relay.mjs` — is specified in
+[`EGPT-MESH-PROTOCOL.md`](EGPT-MESH-PROTOCOL.md). `docs/BEING-MESH.md` is the
+routing design; `EGPT-MESH-PROTOCOL.md` is the bytes on the wire.
+
 - **Three transports to a being, one router:**
   - **`@alias`** — reach any sibling by name from any controlled network. The default: explicit, cheap.
   - **bot** — a Telegram bot IS a being on its spine (`egpt_reve_bot`=Wren, `egpt_dolly_bot`=Don); the bot's PRESENCE in a chat = enrollment. A bot is transport/reachability for a being whose spine isn't on the shared network — NOT a separate identity. `egpt_tbot` deprecated.
