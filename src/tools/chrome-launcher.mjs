@@ -100,7 +100,9 @@ export async function spawnChrome({ port, userDataDir, extensionDir, url = 'abou
     stdio: 'ignore',
   });
   child.unref();
-  return { pid: child.pid };
+  // The exact Target the shell echoes on /chrome — exe + flags as spawned.
+  const command = [chrome, ...args].map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ');
+  return { pid: child.pid, command };
 }
 
 /**

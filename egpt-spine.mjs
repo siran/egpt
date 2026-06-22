@@ -4760,6 +4760,7 @@ function startSpineRuntime() {
         extensionDir: extDist,
       });
       _chromeBrainPidRef.current = _spawnResult?.pid ?? null;
+      if (_spawnResult?.command) sysOut(`executing Target: ${_spawnResult.command}`);
       await launcher.waitForChromeReady(9221);
       sysOut('Chrome ready');
       return true;
