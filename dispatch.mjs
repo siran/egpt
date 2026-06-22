@@ -319,37 +319,6 @@ async function rotateIfBig(fs, path) {
   }
 }
 
-// Daily-archive rotation for append-only logs that grow forever
-// (operator 2026-05-22: "rotate hourly in daily files"). On the first
-// write of a new day, the current file is moved to archiveDir/
-// <base>-YYYY-MM-DD.md (the previous day's content) and the writer
-// starts a fresh file. Cheap: one stat per append; rename only when
-// the file's mtime date differs from today's.
-async function rotateDailyIfNeeded(fs, filePath, archiveDir, clock) {
-  // Same serializer as the appends: the rename here would misfile a
-  // concurrent append into the archived file.
-  return _byTranscriptPath(filePath, () => _rotateDailyLocked(fs, filePath, archiveDir, clock));
-}
-async function _rotateDailyLocked(fs, filePath, archiveDir, clock) {
-  try {
-    let st;
-    try { st = await fs.stat?.(filePath); }
-    catch (e) { return; }
-    if (!st) return;
-    const fileDate = new Date(st.mtime).toISOString().slice(0, 10);
-    const todayDate = clockIso(clock).slice(0, 10);
-    if (fileDate === todayDate) return;
-    const ext = extname(filePath);
-    const base = basename(filePath, ext);
-    await fs.mkdir(archiveDir, { recursive: true });
-    const archived = join(archiveDir, `${base}-${fileDate}${ext}`);
-    try { await fs.unlink(archived); } catch (e) { /* no clash — fine */ }
-    await fs.rename(filePath, archived);
-  } catch (e) {
-    // best-effort; never blocks the main path
-  }
-}
-
 // Exported for tests (transcript-serialization.test.mjs).
 export async function appendTranscript({ fs, logger, path, body, label }) {
   return _byTranscriptPath(path, async () => {
@@ -1022,11 +991,10 @@ export function createDispatchRuntime({
     const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
     const isSystemPersonality = convEntry?.personality === 'system';
     const logSlug = isSystemThread ? null : (convSlug ?? threadCtx.slug ?? null);
-    // Heartbeat transcript lives at ~/.egpt/e-heartbeat.md (operator
-    // 2026-05-22: "those logs should be on .egpt/{e-feed, e-heartbeat}").
-    // Other system threads (shell, etc.) still go to state/.
-    const isHeartbeatThread = isSystemThread && threadId === 'heartbeat';
-    const heartbeatTranscript = join(paths.root, 'e-heartbeat.md');
+    // System threads (shell, etc.) write their transcript under state/. The
+    // legacy global @e heartbeat (e-heartbeat.md) was retired with the global
+    // heartbeat loop (2026-06-03); heartbeats are now per-entity and log to the
+    // entity's own transcript through the normal path below.
     const baseDir = isSystemThread
       ? paths.stateDir
       : isSystemPersonality
@@ -1034,9 +1002,7 @@ export function createDispatchRuntime({
       : logSlug && surface
       ? paths.slugDir(surface, logSlug)
       : join(paths.conversationsDir, '_unrouted');
-    const fpath = isHeartbeatThread
-      ? heartbeatTranscript
-      : join(baseDir, isSystemThread ? `${sanitizeSlug(threadId)}.md` : 'transcript.md');
+    const fpath = join(baseDir, isSystemThread ? `${sanitizeSlug(threadId)}.md` : 'transcript.md');
     const nowStamp = stamp(clock);
     const replyClock = nowStamp.slice(11, 16);
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
@@ -1056,16 +1022,12 @@ export function createDispatchRuntime({
               persona:   isSystemPersonality ? 'system-e' : 'e',
             }))
       : '';
-    // Daily archive for the heartbeat transcript only (other thread
-    // types are per-chat or system-e and have their own lifecycle).
-    // Archives at ~/.egpt/e-heartbeats/<base>-YYYY-MM-DD.md (plural).
+    // Per-chat + system-e transcripts: 8-day rolling window. Insert a
+    // `## YYYY-MM-DD` section header when the date changes; archive sections
+    // older than TRANSCRIPT_KEEP_DAYS into memories/. (System threads like
+    // shell have their own lifecycle and skip this.)
     let dateHeader = '';
-    if (isHeartbeatThread) {
-      await rotateDailyIfNeeded(fs, fpath, join(paths.root, 'e-heartbeats'), clock);
-    } else if (!isSystemThread) {
-      // Per-chat + system-e transcripts: 8-day rolling window. Insert a
-      // `## YYYY-MM-DD` section header when the date changes; archive
-      // sections older than TRANSCRIPT_KEEP_DAYS into memories/.
+    if (!isSystemThread) {
       dateHeader = await maybePrefixDateHeader(fs, fpath, clock);
     }
     const inboundLogged = await appendTranscript({
