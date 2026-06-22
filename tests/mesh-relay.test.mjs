@@ -81,7 +81,7 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(parseMesh(h.channel[0])).toMatchObject({ body: 'hi @don', to: 'don.do' });   // decodes back
     expect(h.channel[0]).not.toMatch(/egpt-mesh/);
     // origin placeholder is a lone 🤔 (renders big; edited in place into the reply)
-    expect(h.acks.kg[0].text).toBe('🤔');
+    expect(h.acks.kg[0].text).toBe('🤔 thinking…');
 
     // both observe; only `do` owns don → it runs (mention stripped) and replies
     await h.deliver(h.channel[0]);

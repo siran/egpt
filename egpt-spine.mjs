@@ -7149,16 +7149,18 @@ function startSpineRuntime() {
       if (!relayChatId) return;
       const emoji = EGPT_CONFIG.siblings?.[String(being).toLowerCase()]?.body_emoji ?? '';
       // Stamp the being's body_emoji INTO the body (the responder owns it; the origin
-      // can't look up a remote being's). A bare 🤔 placeholder stays unstamped.
+      // can't look up a remote being's). The placeholder carries TEXT (no lone-emoji
+      // jumbo) and stays UNSTAMPED; only real being text gets the body_emoji.
+      const PLACEHOLDER = '🤔 thinking…';
       const wrap = (body, done = false) => {
         const b = String(body ?? '').trim();
-        const stamped = b ? (emoji ? `${emoji} ${b}` : b) : '🤔';
-        return encodeMesh({ by, body: stamped, re, post_id, done });
+        const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER : (emoji ? `${emoji} ${b}` : b);
+        return encodeMesh({ by, body: out, re, post_id, done });
       };
       // system:true bypasses the @e gate — relay traffic is machine-routed, like a raw
-      // send. The stream posts the '🤔' placeholder (a new message → the origin opens
+      // send. The stream posts the text placeholder (a new message → the origin opens
       // its mirror) then edits it in place as the being streams.
-      const stream = streamFactoryRef.current?.(wrap('🤔'), { chatId: relayChatId, system: true });
+      const stream = streamFactoryRef.current?.(wrap(''), { chatId: relayChatId, system: true });
       let final = '';
       try {
         final = await runMetaBrainTurn(`[mesh ${being}]: ${prompt}`,
@@ -7200,9 +7202,9 @@ function startSpineRuntime() {
         return null;
       }
       const postId = info.msgId || null;
-      // The body already carries the being's body_emoji (stamped by the responder), so
-      // mirror it verbatim; a bare/empty frame renders as the big 🤔 thinking indicator.
-      const render = (body) => { const b = String(body ?? '').trim(); return b || '🤔'; };
+      // The body already carries the being's body_emoji (stamped by the responder) and a
+      // text placeholder while it thinks, so mirror it verbatim (no lone-emoji jumbo).
+      const render = (body) => { const b = String(body ?? '').trim(); return b || '🤔 thinking…'; };
       // Use the bridge's in-place editor DIRECTLY (no proxy/gate layer): with existingMsgId
       // it edits the placeholder in place AND marks it ours so our own mirror-edits aren't
       // re-surfaced as stage-directions. The pipe: relay in, origin out.
@@ -8308,15 +8310,19 @@ function startSpineRuntime() {
         // RELAY-RETURN (An 2026-06-20): a relayed being (Don) replies through THIS
         // normal dispatch, but every streamed frame is wrapped in the mesh tail
         // (encodeMesh) so the origin spine recognizes + mirrors it. No 🤔/✅ markers
-        // (the mesh body stays clean; identity rides the tail emoji); system:true
+        // (identity = the being's body_emoji stamped INTO the body); system:true
         // bypasses the @e gate (relay traffic is machine-routed, like the raw send).
         const _mr = meta._meshReturn || null;
         const _meshFrame = _mr
-          ? (body, done = false) => encodeMesh({ by: _mr.by, body: String(body ?? '').trim() || '🤔', re: _mr.re, emoji: _mr.emoji, done })
+          ? (body, done = false) => {
+              const b = String(body ?? '').trim();
+              const out = (!b || b === '🤔') ? '🤔 thinking…' : (_mr.emoji ? `${_mr.emoji} ${b}` : b);
+              return encodeMesh({ by: _mr.by, body: out, re: _mr.re, done });
+            }
           : null;
         const _waShowThink = !_mr && !_isLlamaBeing(meta.forceTarget ?? sibName);
         const waStream = (_streaming && meta.fromWhatsApp && streamFactoryRef.current && _waMayEmit)
-          ? streamFactoryRef.current(_mr ? _meshFrame('🤔') : `${waPrefix}${_waShowThink ? '🤔 thinking…' : '⌛ thinking…'}`,
+          ? streamFactoryRef.current(_mr ? _meshFrame('') : `${waPrefix}${_waShowThink ? '🤔 thinking…' : '⌛ thinking…'}`,
               { chatId: meta.waChatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: meta.forceTarget ?? sibName, showThink: _waShowThink, system: !!_mr })
           : null;
         // WA two-message split for thinking models (@l). Operator

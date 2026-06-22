@@ -190,10 +190,10 @@ export function createMeshRelay({
     const fromName = (origin && origin.name) || '';
     // Post the placeholder FIRST so we can capture its msgId as post_id. The responder
     // echoes post_id back in every reply frame so the origin knows which message to edit
-    // as the stream arrives. The placeholder is a LONE 🤔 — a bare emoji renders BIG on
-    // WhatsApp/Beeper (a clean "thinking" indicator); it's edited in place into the reply.
+    // as the stream arrives. The placeholder carries TEXT (not a lone emoji) — a bare
+    // emoji renders jumbo-big on WhatsApp/Beeper; it's edited in place into the reply.
     let postId = null;
-    const statusText = '🤔';
+    const statusText = '🤔 thinking…';
     if (ackWithPostId) {
       try {
         const _raw = await ackWithPostId(origin, statusText);
