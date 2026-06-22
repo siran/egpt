@@ -119,7 +119,6 @@ function makePaths(stateDir) {
     root,
     activityLog: join(root, 'state', 'e-activity.log'),
     conversationsYaml: join(root, 'conversations.yaml'),
-    eFeed: join(root, 'e-feed.md'),
     stateDir: join(root, 'state'),
     conversationsDir: join(root, 'conversations'),
     slugDir(surface, slug) {
@@ -1234,22 +1233,6 @@ export function createDispatchRuntime({
         body: `${replyLine}\n\n`,
         label: 'reply',
       });
-      try {
-        // Daily archive: on first write of a new day, move yesterday's
-        // e-feed.md into ~/.egpt/e-feeds/e-feed-<yesterday>.md and start
-        // fresh. Cheap-ish; mtime check + maybe one rename. Operator
-        // 2026-05-22: archive folder is e-feeds/ (plural).
-        await rotateDailyIfNeeded(fs, paths.eFeed, join(stateDir, 'e-feeds'), clock);
-        const feedScene = isSystemThread
-          ? `## ${nowStamp} — [${threadId}]`
-          : `## ${nowStamp} — [${threadCtx.name || threadId}] (${threadId})`;
-        // Via appendTranscript so the append shares the per-path serializer
-        // with rotateDailyIfNeeded above — a rotation rename between two raw
-        // appends would misfile the second into the archived day.
-        await appendTranscript({ fs, logger, path: paths.eFeed, body: [feedScene, '', text, '', `[${personaTag} (${replyClock})]:`, final, '', ''].join('\n'), label: 'feed' });
-      } catch (e) {
-        logger?.error?.(`!! transcript (feed) ${paths.eFeed}: ${e?.message ?? e}`);
-      }
       await logActivity('REPLY', threadCtx.surface ?? '?', threadId, `${String(final).length}ch`, `${clockMs(clock) - startMs}ms`);
       // Append the reply to e-prompts.log so the full prompt→reply pair
       // is captured in one tail-friendly stream.
