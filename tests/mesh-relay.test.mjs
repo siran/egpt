@@ -295,22 +295,24 @@ describe('mesh relay — multi-hop transit', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('a transit node RE-MIRRORS a reply via an edit-stream toward the origin node, once', async () => {
+  it('a node that FORWARDED a request re-mirrors the reply back into the channel (return hop), once', async () => {
     const opened = []; const updates = []; let finished = null;
     const doSpine = createMeshRelay({
       node: 'do', send: async () => {}, surface: async () => {},
       resolveRoute: (n) => routeFor('do')[n] ?? null, isLocalBeing: () => false,
       openRelayStream: (route, info) => { opened.push({ room: route.room_id, info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
     });
+    // do first FORWARDS the request (toward mo) — recording that it handled this mid
+    await doSpine.onRoomMessage({ route: A, text: encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.mo', mid: 'M3' }), msgId: 'q1' });
+    // the reply for that mid comes back through the channel → do re-mirrors it (same channel)
     const frame = (body, done = false) => encodeMesh({ by: 'don.mo', body, re: 'HFM.kg', mid: 'M3', done });
-    await doSpine.onRoomMessage({ route: B, text: frame('🤝 Ja'), msgId: 'r1' });          // first sight → open relay stream toward kg (room A)
-    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja') });               // edit → chains on
-    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja, aquí', true) });    // done → finish
-    expect(opened).toEqual([{ room: 'A', info: { by: 'don.mo', re: 'HFM.kg', mid: 'M3' } }]);
-    expect(updates).toContain('🤝 Ja');
+    await doSpine.onRoomMessage({ route: A, text: frame('🤝 Ja'), msgId: 'r1' });
+    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja') });
+    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja, aquí', true) });
+    expect(opened).toEqual([{ room: 'A', info: { by: 'don.mo', re: 'HFM.kg', mid: 'M3' } }]);   // re-mirrored into the channel it arrived on
     expect(updates).toContain('🤝 Jaja');
     expect(finished).toBe('🤝 Jaja, aquí');
-    await doSpine.onRoomMessage({ route: B, text: frame('🤝 Ja'), msgId: 'r2' });          // a re-seen copy doesn't open a 2nd stream
+    await doSpine.onRoomMessage({ route: A, text: frame('🤝 Ja'), msgId: 'r2' });   // re-seen → no 2nd stream
     expect(opened).toHaveLength(1);
   });
 
