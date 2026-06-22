@@ -142,6 +142,7 @@ export function createMeshRelay({
   beingEmoji = () => '',             // (being) => body_emoji — stamps the relayed reply (contract)
   resolveRoute = () => null,         // (toNode) => route | null
   isLocalBeing = () => false,        // (being) => bool
+  resolveBeingRelay = () => null,    // (being) => {being,node}|null — relay-record: re-resolve to another node
   // STREAMING — a relayed reply is a LIVING MIRROR (An 2026-06-21). Edit-streaming
   // is a bridge property, so a relayed reply streams for free; the relay just mirrors.
   //   RESPONDER: relayDispatch({being,prompt,route,re,post_id,by}) → edit-stream ONE
@@ -317,6 +318,20 @@ export function createMeshRelay({
     if (!being) return true;
     if (target) {
       if (target !== String(node).toLowerCase()) { await forwardToward(target, prov, route, 'req'); return true; }
+      // RELAY-RECORD: `being` is configured here as a relay to ANOTHER node's being —
+      // re-address and forward toward it (re-resolution; BEING-MESH §3). Loop-safe via the
+      // same mid (forward-once); re-addressing is legit even in the same room (no echo guard).
+      const _rec = resolveBeingRelay(being);
+      if (_rec) {
+        if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}`)) {
+          const dest = resolveRoute(_rec.node);
+          if (dest) {
+            log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
+            await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, mid: prov.mid, body: prov.body }));
+          }
+        }
+        return true;
+      }
       if (!isLocalBeing(being)) {
         await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: `no ${being}.${node} here`, re: reAddress, mid: prov.mid }));
         return true;

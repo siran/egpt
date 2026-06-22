@@ -7108,6 +7108,14 @@ function startSpineRuntime() {
       return Array.isArray(routes) && routes.length ? routes[0] : null;
     },
     isLocalBeing: (name) => meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}).has(String(name).toLowerCase()),
+    // RELAY-RECORD: `mesh.relay_records[<being>] = "<being>.<node>"` makes a being on THIS
+    // node a relay that re-resolves + forwards to another node's being (BEING-MESH §3).
+    resolveBeingRelay: (name) => {
+      const rec = EGPT_CONFIG.mesh?.relay_records?.[String(name).toLowerCase()];
+      if (!rec) return null;
+      const [b, n] = String(rec).split('.');
+      return (b && n) ? { being: b.toLowerCase(), node: n.toLowerCase() } : null;
+    },
     send: async (route, textOut) => {
       const limb = String(route?.limb ?? '').toLowerCase();
       if ((limb === 'telegram' || limb === 'tg') && bridgeRef.current) { bridgeRef.current.send(textOut, { chatId: route.room_id }); return; }

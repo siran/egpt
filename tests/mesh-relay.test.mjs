@@ -314,6 +314,21 @@ describe('mesh relay — multi-hop transit', () => {
     expect(opened).toHaveLength(1);
   });
 
+  it('a RELAY-RECORD re-addresses a request and forwards it toward the mapped being.node (once)', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }),
+      resolveRoute: (n) => routeFor('do')[n] ?? null, isLocalBeing: () => false,
+      resolveBeingRelay: (b) => (b === 'wren2' ? { being: 'wren', node: 'kg' } : null),
+    });
+    const req = encodeMesh({ by: 'An', body: 'hi @wren2', from: 'HFM', from_node: 'kg', to: 'wren2.do', mid: 'R1' });
+    await doSpine.onRoomMessage({ route: B, text: req, msgId: 'a1' });          // do hosts the wren2 relay-record → re-address to wren.kg
+    expect(sent).toHaveLength(1);
+    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'wren.kg', from: 'HFM', from_node: 'kg', mid: 'R1', body: 'hi @wren2' });
+    await doSpine.onRoomMessage({ route: B, text: req, msgId: 'a2' });          // re-seen → forward-once
+    expect(sent).toHaveLength(1);
+  });
+
   it('the ORIGIN mirrors the reply forwarded to it (end of the chain)', async () => {
     const rendered = []; let done = null;
     const kg = createMeshRelay({
