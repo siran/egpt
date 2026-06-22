@@ -29,12 +29,12 @@ export async function run({ arg, ctx }) {
   //   parseCommandWords
   //   resolveOperatorSession
   //   nextName(prefix, sessions), nextEmoji(sessions)
-  //   setDefaultOp, persistDefaultOp        — pin the auto-attached operator
+  //   setDefaultOp        — pin the auto-attached operator (in-memory)
   const { sysOut, append, setItems, setBusy, setStreaming, setBrowserWaiting,
           sessions, setSessions, brainForName,
           runBrainTurn, dispatchToOperator,
           parseCommandWords, resolveOperatorSession,
-          nextName, nextEmoji, setDefaultOp, persistDefaultOp } = ctx;
+          nextName, nextEmoji, setDefaultOp } = ctx;
 
   const words = parseCommandWords(arg);
   if (!words.length) {
@@ -91,7 +91,6 @@ export async function run({ arg, ctx }) {
       extraSessions[name] = entry;
       setSessions(s => ({ ...s, [name]: entry }));
       setDefaultOp(name);
-      persistDefaultOp(name);
       sysOut(`attached ${emoji} ${name} (codex) — new default operator`);
       viaOp = name;
     } else {

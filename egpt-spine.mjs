@@ -591,18 +591,9 @@ function _isMetaMessage(body) {
 let _showPrompts = EGPT_CONFIG.show_prompts ?? false;
 
 // default operator session name — used when a command needs an operator and
-// none is specified. Persisted to ~/.egpt/default-op.txt.
-const DEFAULT_OP_FILE = join(EGPT_HOME, 'default-op.txt');
+// none is specified. In-memory only (operator 2026-06-22): the default is the
+// operator auto-attached this session; no longer persisted to a file.
 let _defaultOp = null;
-try { _defaultOp = readFileSync(DEFAULT_OP_FILE, 'utf8').trim() || null; } catch (e) { swallow('default-op.read', e, { expect: ['ENOENT'] }); }
-
-function persistDefaultOp(name) {
-  try {
-    mkdirSync(EGPT_HOME, { recursive: true });
-    if (name) writeFileSync(DEFAULT_OP_FILE, name, 'utf8');
-    else { try { unlinkSync(DEFAULT_OP_FILE); } catch (e) { swallow('default-op.clear', e, { expect: ['ENOENT'] }); } }
-  } catch (e) { swallow('default-op.persist', e); }
-}
 
 // Return the operator session name to use for a command:
 // 1. explicit (passed in) — always wins
@@ -5493,7 +5484,6 @@ function startSpineRuntime() {
         ts,
         getDefaultOp: () => _defaultOp,
         setDefaultOp: (v) => { _defaultOp = v; },
-        persistDefaultOp,
         peerNodesRef,
         // Batch 7 additions
         spawnChromeWithExtension,

@@ -987,7 +987,7 @@ export async function readPersonalityMeta(name, opts = {}) {
 // get COPIED into <slug-dir>/ at /e new and /e persona so conversation-e
 // (sandboxed to its slug-dir) can `cat ./rules.md ./pointers.md`.
 const RULES_OPERATOR_PATH    = join(homedir(), '.egpt', 'rules.md');
-const POINTERS_OPERATOR_PATH = join(homedir(), '.egpt', 'e-pointers.md');
+const POINTERS_OPERATOR_PATH = join(homedir(), '.egpt', 'pointers.md');
 
 // Read identity/rules/pointers content. Returns { identity, rules, pointers }
 // with empty strings (not null) for any missing file — easier downstream.
