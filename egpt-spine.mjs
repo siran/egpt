@@ -7101,6 +7101,13 @@ function startSpineRuntime() {
       .flatMap(n => (n?.routes ?? []).map(r => (r?.room_id != null ? String(r.room_id) : null)))
       .filter(Boolean),
   );
+  // Outbound-relay dedupe. A message in a resident chat is dispatched once PER
+  // resident brain (the _residentOrder loop), and the outbound mesh block lives
+  // in that per-resident path — so without a guard a single @peer mention relays
+  // once per resident (each minting a fresh mid → orphaned placeholders). Key the
+  // relay on the ORIGIN message id (stable across the resident dispatches via
+  // baseMeta) + target node → relay exactly once. TTL-bounded, self-pruning.
+  const _meshOutSeen = createMeshSeenCache();
   const meshRelay = createMeshRelay({
     node: BUS_NODE_ID,
     resolveRoute: (toNode) => {
@@ -7327,9 +7334,13 @@ function startSpineRuntime() {
           const _origin = { ..._ret, name: _originName };
           const _sender = meta.waSenderName ?? meta.senderName ?? 'someone';
           const _sent = new Set();
+          const _meshOutMsgId = meta.waMsgKey ?? meta.telegramMessageId ?? null;
           for (const _a of _foreign) {
-            if (_sent.has(_a.node)) continue;      // one relay per target node
+            if (_sent.has(_a.node)) continue;      // one relay per target node (this dispatch)
             _sent.add(_a.node);
+            // Dispatched once per resident → dedupe the actual send on the origin
+            // message id so one mention relays exactly once (not once per brain).
+            if (_meshOutMsgId && _meshOutSeen.checkAndMark(`${_meshOutMsgId}:${_a.node}`)) continue;
             await meshRelay.relayOut({ being: _a.being, toNode: _a.node, body: text, origin: _origin, sender: _sender });
             if (_ret.surface === 'shell') sysOut(`@${_a.being}.${_a.node} -> relayed`);
           }
