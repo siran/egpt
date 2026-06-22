@@ -148,6 +148,12 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(p).toMatchObject({ to: 'do', by: 'An', from: 'HFM' });
   });
 
+  it('reads a tail value Beeper has linkified (don.do → [don.do](http://don.do))', () => {
+    const w = encodeMesh({ by: 'An', body: 'hi', from: 'HFM', to: 'wren.kg', re: 'HFM.kg', mid: 'm1' });
+    const linkified = w.replace('to: wren.kg', 'to: [wren.kg](http://wren.kg)').replace('re: HFM.kg', 're: [HFM.kg](http://HFM.kg)');
+    expect(parseMesh(linkified)).toMatchObject({ to: 'wren.kg', re: 'HFM.kg', mid: 'm1' });
+  });
+
   it('peels an accumulated "An: An: …" prefix (the loop signature) back to the body', () => {
     const p = parseMesh('An: An: An: hi @don\n\n---\n```\nfrom: HFM\nby: An\nto: do\n```');
     expect(p.body).toBe('hi @don');
