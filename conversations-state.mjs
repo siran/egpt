@@ -42,7 +42,6 @@ const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'state', 'heartbeats
 // readHeartbeat below falls back to the old name for back-compat
 // during the migration window.
 const LEGACY_HEARTBEAT_PATH      = join(homedir(), '.egpt', 'heartbeat-prompt.md');
-const VERY_LEGACY_HEARTBEAT_PATH = join(homedir(), '.egpt', 'e-heartbeat.md');
 
 // Canonical location of the per-contact YAML registry. Exported so
 // daemon + slashes + tools all agree. The registry sits OUTSIDE the
@@ -1197,10 +1196,6 @@ export function resolveHeartbeatFile(contactSlug, personality, opts = {}) {
   if (personality) candidates.push(join(dir, `${sanitizeSlug(personality)}.md`));
   candidates.push(join(dir, 'default.md'));
   candidates.push(legacy);
-  // Last-ditch fallback for installs that still have the prompt at the
-  // pre-rename location. Migration in egpt.mjs renames this on boot;
-  // this candidate is only hit if migration hasn't run yet.
-  candidates.push(opts.veryLegacyPath ?? VERY_LEGACY_HEARTBEAT_PATH);
   for (const p of candidates) if (existsSync(p)) return p;
   return null;
 }
