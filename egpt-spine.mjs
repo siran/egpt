@@ -7141,13 +7141,20 @@ function startSpineRuntime() {
     // message wrapped in the mesh tail (by/emoji/re/post_id). The bridge edit-streams in
     // place; DOLLY's OWN edits are suppressed locally (_ourStreamIds) but propagate over
     // Beeper to the origin (REVE), which mirrors each version onto its placeholder. The
-    // being's body_emoji rides every frame so the origin can STAMP identity (contract);
-    // the FINAL frame carries done:true so the origin appends "✅ Done".
+    // the being's body_emoji is stamped INTO the body by the responder (it owns the
+    // emoji; the origin can't look up a remote being's). The FINAL frame carries
+    // done:true so the origin appends "✅ Done".
     relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
       const relayChatId = route?.room_id ? String(route.room_id) : null;
       if (!relayChatId) return;
       const emoji = EGPT_CONFIG.siblings?.[String(being).toLowerCase()]?.body_emoji ?? '';
-      const wrap = (body, done = false) => encodeMesh({ by, emoji, body: String(body ?? '').trim() || '🤔', re, post_id, done });
+      // Stamp the being's body_emoji INTO the body (the responder owns it; the origin
+      // can't look up a remote being's). A bare 🤔 placeholder stays unstamped.
+      const wrap = (body, done = false) => {
+        const b = String(body ?? '').trim();
+        const stamped = b ? (emoji ? `${emoji} ${b}` : b) : '🤔';
+        return encodeMesh({ by, body: stamped, re, post_id, done });
+      };
       // system:true bypasses the @e gate — relay traffic is machine-routed, like a raw
       // send. The stream posts the '🤔' placeholder (a new message → the origin opens
       // its mirror) then edits it in place as the being streams.
@@ -7182,26 +7189,25 @@ function startSpineRuntime() {
     // ORIGIN (REVE): open a streaming handle that mirrors the responder's reply home.
     // info.msgId == post_id — the Beeper msgId of the "🤔" placeholder we posted in the
     // origin chat. Seed the stream with it so updates EDIT that message in place (🤔 →
-    // reply). info.emoji is the being's body_emoji, STAMPED on every frame (contract). A
-    // lone 🤔 (no stamp) stays big until real text arrives. showThink:true → the bridge
-    // appends "✅ Done" on finish. If post_id is missing, post a FRESH stream message.
+    // reply). The being's body_emoji is already stamped INTO the body by the responder,
+    // so the origin mirrors verbatim — no lookup of a remote being's emoji. A lone 🤔
+    // stays big until real text arrives. showThink:true → the bridge appends "✅ Done"
+    // on finish. If post_id is missing, post a FRESH stream message.
     openOriginStream: (returnTo, info = {}) => {
       const wa = waBridgeRef.current;
       if (returnTo?.surface !== 'whatsapp' || !wa?.startStreamMessage) {
         logOut(`mesh: openOriginStream → null (surface=${returnTo?.surface} wa=${!!wa})`);
         return null;
       }
-      const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
-      const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || '🔗';
       const postId = info.msgId || null;
-      // A bare 🤔 (or empty) renders BIG as a thinking indicator — don't stamp it. Once
-      // real text arrives, stamp the being's body_emoji: "<emoji> <reply>".
-      const render = (body) => { const b = String(body ?? '').trim(); return (!b || b === '🤔') ? '🤔' : `${tag} ${b}`; };
+      // The body already carries the being's body_emoji (stamped by the responder), so
+      // mirror it verbatim; a bare/empty frame renders as the big 🤔 thinking indicator.
+      const render = (body) => { const b = String(body ?? '').trim(); return b || '🤔'; };
       // Use the bridge's in-place editor DIRECTLY (no proxy/gate layer): with existingMsgId
       // it edits the placeholder in place AND marks it ours so our own mirror-edits aren't
       // re-surfaced as stage-directions. The pipe: relay in, origin out.
       const stream = wa.startStreamMessage('', { chatId: returnTo.chat_id, showThink: true, ...(postId ? { existingMsgId: postId } : {}) });
-      logOut(`mesh: openOriginStream OPEN chat=${returnTo.chat_id} existingMsgId=${postId || '-'} emoji=${tag} stream=${!!stream}`);
+      logOut(`mesh: openOriginStream OPEN chat=${returnTo.chat_id} existingMsgId=${postId || '-'} stream=${!!stream}`);
       if (!stream) return null;
       return {
         update: (body) => {

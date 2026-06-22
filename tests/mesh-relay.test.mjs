@@ -171,17 +171,18 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
 
   // ── STREAMING — a LIVING MIRROR (An 2026-06-21): the responder edit-streams ONE
   //    relay-room message; the origin mirrors EVERY edit onto its placeholder. The
-  //    being's body_emoji rides every frame (identity, by contract); the FINAL frame
-  //    carries done:true so the origin appends "✅ Done". ──
-  it('emits emoji (identity) + done (final-frame marker) and round-trips', () => {
-    const final = encodeMesh({ by: 'don.do', emoji: '🤝', body: 'x', re: 'HFM', done: true });
-    expect(final).toMatch(/\nemoji: 🤝\n/);                          // body_emoji rides the tail (contract)
+  //    being's body_emoji is stamped INTO the body by the responder (it owns the emoji;
+  //    the origin can't look up a remote being's); the FINAL frame carries done:true so
+  //    the origin appends "✅ Done". ──
+  it('emits done (final-frame marker) and round-trips; emoji is NOT a wire key', () => {
+    const final = encodeMesh({ by: 'don.do', body: '🤝 x', re: 'HFM', done: true });
+    expect(final).not.toMatch(/\bemoji:/);                           // emoji is stamped into the body, never a key
     expect(final).toMatch(/\ndone: true\n/);
-    expect(parseMesh(final)).toMatchObject({ by: 'don.do', emoji: '🤝', re: 'HFM', body: 'x', done: true });
-    // a non-final frame carries no done; emoji is optional
+    expect(parseMesh(final)).toMatchObject({ by: 'don.do', re: 'HFM', body: '🤝 x', done: true });
+    // a non-final frame carries no done
     const frame = encodeMesh({ by: 'don.do', body: 'x', re: 'HFM' });
     expect(frame).not.toMatch(/\bdone:/);
-    expect(parseMesh(frame)).toMatchObject({ done: false, emoji: '' });
+    expect(parseMesh(frame)).toMatchObject({ done: false });
   });
 
   it('RESPONDER hands the prompt to the NORMAL dispatch (relayDispatch) — does not run the being itself', async () => {
@@ -209,7 +210,19 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(parseMesh(sent[sent.length - 1])).toMatchObject({ by: 'don.do', body: 'Jaja, aquí', re: 'HFM' });
   });
 
-  it('ORIGIN mirrors a streamed reply: opens on first sight, updates on edits, finalizes on done', async () => {
+  it('RESPONDER stamps the being body_emoji INTO the fallback body (no emoji wire key)', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (_r, t) => sent.push(t), surface: async () => {},
+      runBeing: async () => 'aquí', beingEmoji: () => '🤝',
+      resolveRoute: () => ({ room_id: 'C' }), isLocalBeing: (b) => b === 'don',
+    });
+    await doSpine.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', to: 'don.do' }), msgId: 'm1' });
+    expect(sent[sent.length - 1]).not.toMatch(/\bemoji:/);                 // emoji is not a wire key
+    expect(parseMesh(sent[sent.length - 1]).body).toBe('🤝 aquí');          // it's stamped into the body
+  });
+
+  it('ORIGIN mirrors a streamed reply verbatim (stamp rides in the body): opens, updates, finalizes', async () => {
     const updates = []; let finished = null; const oneShot = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => oneShot.push(t), ack: async () => {},
@@ -217,15 +230,16 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
       openOriginStream: (_returnTo, info) => { updates.push({ open: info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
     });
     await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
-    // first sight of the responder's relay message (r1) opens the mirror, keyed by r1
-    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', emoji: '🤝', body: '🤔', re: 'HFM' }), msgId: 'r1' });
+    // first sight of the responder's relay message (r1) opens the mirror, keyed by r1.
+    // the body_emoji is part of the BODY (stamped by the responder) — no emoji key.
+    await kg.onRoomMessage({ route: { room_id: 'C' }, text: encodeMesh({ by: 'don.do', body: '🤔', re: 'HFM' }), msgId: 'r1' });
     // every subsequent edit of r1 flows onto the placeholder; done:true finalizes it
-    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', emoji: '🤝', body: 'Jaja', re: 'HFM' }) });
-    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', emoji: '🤝', body: 'Jaja, aquí', re: 'HFM', done: true }) });
-    expect(updates[0].open).toMatchObject({ by: 'don.do', emoji: '🤝' });   // identity rides to the origin stream
+    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: '🤝 Jaja', re: 'HFM' }) });
+    await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'don.do', body: '🤝 Jaja, aquí', re: 'HFM', done: true }) });
+    expect(updates[0].open).toMatchObject({ by: 'don.do' });                // identity (by) rides to the origin stream
     expect(updates).toContain('🤔');
-    expect(updates).toContain('Jaja');
-    expect(finished).toBe('Jaja, aquí');                                    // done frame finalized (bridge appends ✅ Done)
+    expect(updates).toContain('🤝 Jaja');                                   // the stamp is in the mirrored body
+    expect(finished).toBe('🤝 Jaja, aquí');                                 // done frame finalized (bridge appends ✅ Done)
     expect(oneShot).toHaveLength(0);                                        // streamed, never one-shot surfaced
   });
 

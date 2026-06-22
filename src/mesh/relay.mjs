@@ -27,8 +27,9 @@
 
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
-// 'emoji' carries the being's body_emoji (identity stamp); 'done' marks the final frame.
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'emoji', 'done', 'enc', 'post_id', 'from_node']);
+// 'done' marks the final frame. The being's body_emoji is stamped INTO the body by
+// the responder (it owns the emoji), not carried as a key.
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
 // Body codec (An 2026-06-20): base64 so the transport can't mangle the body. Beeper
@@ -43,7 +44,7 @@ const b64decode = (s) => Buffer.from(String(s ?? ''), 'base64').toString('utf8')
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
-export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', emoji = '', done = false } = {}) {
+export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', done = false } = {}) {
   const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
   if (from) lines.push(`from: ${from}`);
   // `from_node` rides the REQUEST so the responder can build a node-qualified return
@@ -51,11 +52,6 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   // suffix to resolve the return route; without it, replies can't stream back.
   if (from_node) lines.push(`from_node: ${from_node}`);
   if (by) lines.push(`by: ${by}`);
-  // `emoji` is the being's body_emoji (e.g. don → 🤝). It RIDES the relay so the origin
-  // can STAMP the reply with the being's identity — the origin can't look it up (the
-  // being lives on the responder's node). Enforcing body_emoji on every reply is a
-  // contract (CONTRACTS.md: a reply is "<body_emoji> body", one unit, all paths).
-  if (emoji) lines.push(`emoji: ${emoji}`);
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
   // `post_id` is the Beeper msgId of the origin placeholder ("🤔") that was posted in
@@ -119,7 +115,7 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', emoji: prov.emoji || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '' };
+  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '' };
 }
 
 export function mentionedBeing(text) {
@@ -312,7 +308,9 @@ export function createMeshRelay({
     try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
     catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, emoji: beingEmoji(being), body: String(reply).trim() || '…', re: reAddress, post_id: prov.post_id, done: true }));
+    const _stamp = beingEmoji(being);
+    const _fbBody = String(reply).trim() || '…';
+    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, done: true }));
     return true;
   }
 
