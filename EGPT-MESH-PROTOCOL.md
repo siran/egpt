@@ -57,7 +57,7 @@ Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `mid`, `done`,
 | `mid` | minted request id (origin), preserved across forwards — a spine forwards a given `mid` at most ONCE, so multi-hop transit is loop-safe and self-terminating (no ttl) |
 | `done` | `true` on the FINAL frame — a display finish marker (origin appends "✅ Done"), NOT a teardown; non-`done` frames keep flowing |
 | `enc` | body codec; `b64` ⇒ base64 (current). Untagged ⇒ legacy raw |
-| `sig` | **reserved** — parsed but never emitted; the slot where cross-*person* origin-signing would plug in later. Off until trust crosses people |
+| `sig` | **reserved** — parsed but never emitted; the slot for **per-hop** signing where a hop crosses *people* (see Status & reserved). Off for now |
 
 ## Why base64
 
@@ -95,12 +95,54 @@ Recognising our own tail (divider or not) is what stops infinite re-relay.
   true` finalizes. Only the FIRST forward of a message is loop-guarded; the edits
   that follow can't loop.
 
-## Not yet
+## Relay-records & N-hop chaining
 
-- **Live transit** is proven by unit tests (`kg→do→mo`); the running mesh is 2
-  nodes (REVE↔DOLLY = direct hop), so transit hasn't been exercised live yet.
-- **`sig`** cross-person origin-signing (reserved above) — NOT in the code.
-- **"who has xxx?" flood-discovery** — builds on the same `mid` forward-once.
+A **relay-record** is a *local* being that isn't run — it re-resolves to another
+node's being and forwards there. Configured per node:
+`mesh.relay_records[<being>] = "<being>.<node>"`. The trick is the `to:` field —
+each relay rewrites `to:` to the *next* hop's target, so one message chains across
+as many hops as there are relay-records: **N hops on as few as two machines** (it
+can bounce `kg→do→kg→…`).
+
+- **Transit** *(built)* — a spine that owns `to:`'s node but finds the being is a
+  local relay-record (`resolveBeingRelay`) rewrites `to:` to the mapped
+  `being.node` and forwards via its configured route (`resolveRoute`); loop-safe
+  via the same `mid` (forward-once).
+- **Terminal** *(built)* — the being is a *real* local sibling → run it → reply.
+- **Origin** *(design — not built)* — today the origin only relays an explicit
+  foreign `@being.node`. To chain from a bare `@wren2` (a local relay-record), the
+  origin must resolve relay-records too and post `to: don.do` (the record's target).
+
+**Return path — `path:` *(design — not built)*.** Each hop appends its
+fully-qualified hop to a `path:` field (`don.do`, then `wren.kg`, …); the reply
+walks it in **reverse**, re-mirroring at each hop. That routes the reply home
+*through the intermediate nodes* — so each hop mirrors a *different* node's send,
+which is exactly what lets a 2-box `kg→do→kg` bounce stream its reply back without
+a node hitting its own edit-suppression.
+
+## Reactions *(design — not built)*
+
+A **reaction is an edit** to the message. A reaction on a *relayed* reply must be
+relayed **back to the model** that produced it — it rides the return `path:` like
+any other edit and surfaces to the being as a stage-direction
+(`[ … reacted 👍 to … ]`, CONTRACTS C7.8), so the being can answer it.
+
+## Status & reserved
+
+- **Built + unit-tested:** the wire format, transit forward (`forwardToward`,
+  forward-once per `mid`), the streaming edit-mirror, transit relay-records. Live,
+  the running mesh is 2 nodes (REVE↔DOLLY = direct hop) so transit isn't exercised
+  live; N-hop is proven by `tests/mesh-relay.test.mjs`.
+- **Design (not built):** origin-side relay-records, the `path:` return field,
+  reaction relaying.
+- **Reserved / future:**
+  - *Multi-relay / multipath* — the same packet MAY route through multiple channels
+    or relay routes at once; `mid` dedups, forward-once stops loops, a future `seq`
+    reorders. The protocol allows it; it isn't wired.
+  - *Per-hop `sig`* — one signature per hop (each relay signs what it adds), for
+    hops that cross *people* (not every hop — a signature is fixed-size regardless
+    of the tiny hop it signs). NOT built; reserved.
+  - *"who has xxx?" flood-discovery* — builds on the same `mid` forward-once.
 
 ## Source of truth
 
