@@ -10,7 +10,7 @@ machine bit is a small, human-readable provenance tail on relay hops.
 > IMPLEMENTED in `src/mesh/relay.mjs` and is the live relay (streaming
 > living-mirror). The shipped wire format is fuller than this design sketch — the
 > human body rides **base64** and the tail carries
-> `from`/`from_node`/`by`/`emoji`/`to`/`re`/`post_id`/`done`/`enc` (`sig`
+> `from`/`from_node`/`by`/`to`/`re`/`post_id`/`done`/`enc` (`sig`
 > reserved) — and is specified in
 > [`EGPT-MESH-PROTOCOL.md`](../EGPT-MESH-PROTOCOL.md). This doc remains the
 > **routing/topology design**; that file is the **wire format**. Still unbuilt to
