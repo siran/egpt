@@ -43,7 +43,6 @@ import { buildMenu, initState, view as helpView, step as helpStep, searchView as
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
 import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
-import { loadAnnouncedModes, saveAnnouncedModes } from './src/announced-modes.mjs';
 import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
@@ -82,10 +81,6 @@ import { resolveMeshAddress, meshSiblingKind } from './src/mesh/names.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
-// Persisted "last reply-mode announced to E per chat" — survives restarts so the
-// mode note is shown only on a real mode change, not on every boot (2026-06-16).
-const ANNOUNCED_MODES_PATH = join(EGPT_HOME, 'state', 'announced-modes.json');
-
 // ~/.local/bin (where `claude`, `codex`, … live) must be on PATH for the engine's
 // child spawns — notably warm-cli's `spawn('claude')`. A Windows SERVICE inherits
 // a MINIMAL system PATH, not the interactive login PATH, so on a spine whose
@@ -2177,11 +2172,10 @@ function startSpineRuntime() {
   // just the gated ones, so E always knows its current engagement contract.
   const _MODE_NOTES = MODE_NOTES;          // moved to src/dispatch-helpers.mjs
   const _modeNote = modeNote;
-  // chatId -> last auto-mode announced to @e. Lazy-loaded from disk ONCE so the
-  // mode note isn't re-announced after every restart (E resumes its thread and
-  // already knows; only a genuine mode change should re-announce). Saved on set.
-  const _announcedMode = ref(null);
-  if (_announcedMode.current === null) _announcedMode.current = loadAnnouncedModes(ANNOUNCED_MODES_PATH);
+  // chatId -> last auto-mode announced to @e. In-memory only (operator 2026-06-22:
+  // modes live in config, not a separate persisted ledger) — so the mode note
+  // re-announces once per process start + on a genuine mode change, never per turn.
+  const _announcedMode = ref(new Map());
 
   // Room fan-out (operator 2026-05-26). SAFETY: gated behind
   // rooms.routing_enabled (default OFF) — a loop bug here would spam real
@@ -3809,8 +3803,7 @@ function startSpineRuntime() {
           // this run) — E remembers; no need to repeat it every turn.
           const _modeChanged = _announcedMode.current.get(from.chatId) !== _autoMode;
           if (_modeChanged) {
-            _announcedMode.current.set(from.chatId, _autoMode);
-            saveAnnouncedModes(ANNOUNCED_MODES_PATH, _announcedMode.current);   // persist so a restart doesn't re-announce
+            _announcedMode.current.set(from.chatId, _autoMode);   // in-memory; re-announced once per process start
           }
           // Room fan-out (independent of the per-chat auto-mode dispatch below).
           // Gated + loop-safe; no-op unless this chat is a contributing room member.
