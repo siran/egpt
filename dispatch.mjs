@@ -117,7 +117,7 @@ function makePaths(stateDir) {
   const root = stateDir;
   return {
     root,
-    activityLog: join(root, 'state', 'e-activity.log'),
+    activityLog: join(root, 'logs', 'access.log'),
     conversationsYaml: join(root, 'conversations.yaml'),
     stateDir: join(root, 'state'),
     conversationsDir: join(root, 'conversations'),
@@ -785,12 +785,6 @@ export function createDispatchRuntime({
       await rotateIfBig(fs, paths.activityLog);
     }
   }
-  // e-prompts.log rotation: triggered before each append (lighter
-  // volume than activity, but each entry can be sizable — full
-  // wrappedText including any lineage prelude).
-  async function rotatePromptsLogIfBig() {
-    await rotateIfBig(fs, join(paths.stateDir, 'e-prompts.log'));
-  }
 
   async function runDefaultBrainTurn(text, onPartial = () => {}, threadCtx = {}) {
     const resolved = resolveBrain
@@ -1090,19 +1084,6 @@ export function createDispatchRuntime({
     }
     await logActivity('RECV', threadCtx.surface ?? '?', threadId, `${text.length}ch`);
 
-    // Plain-text prompts log: every brain dispatch gets one record with
-    // the literal prompt the model received. Easier to tail than the
-    // JSONL session file. Operator (2026-05-22): "are we logging
-    // somewhere every prompt sent to e? jsonl is a pain to see."
-    try {
-      const promptsPath = join(paths.stateDir, 'e-prompts.log');
-      await rotatePromptsLogIfBig();
-      const header = `=== ${clockIso(clock)}  ${threadCtx.surface ?? '?'}/${threadId}${convEntry?.personality ? ' ('+convEntry.personality+')' : ''}  ${text.length}ch ===`;
-      await fs.mkdir(paths.stateDir, { recursive: true });
-      await fs.appendFile(promptsPath, `${header}\n${wrappedText}\n\n`, 'utf8');
-    } catch (e) {
-      logger?.error?.(`!! e-prompts.log: ${e?.message ?? e}`);
-    }
 
     try {
       const applyRuntimeSessionShape = (base, { sameBrainType = true } = {}) => ({
@@ -1234,15 +1215,6 @@ export function createDispatchRuntime({
         label: 'reply',
       });
       await logActivity('REPLY', threadCtx.surface ?? '?', threadId, `${String(final).length}ch`, `${clockMs(clock) - startMs}ms`);
-      // Append the reply to e-prompts.log so the full prompt→reply pair
-      // is captured in one tail-friendly stream.
-      try {
-        const promptsPath = join(paths.stateDir, 'e-prompts.log');
-        const replyHeader = `--- ${clockIso(clock)}  ${threadCtx.surface ?? '?'}/${threadId} reply  ${String(final).length}ch  ${clockMs(clock) - startMs}ms ---`;
-        await fs.appendFile(promptsPath, `${replyHeader}\n${final}\n\n`, 'utf8');
-      } catch (e) {
-        logger?.error?.(`!! e-prompts.log reply: ${e?.message ?? e}`);
-      }
       return String(final).trim() || '...';
     } catch (e) {
       const msg = e?.message ?? '';
