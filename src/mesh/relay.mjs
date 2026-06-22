@@ -260,7 +260,6 @@ export function createMeshRelay({
     if (prov.re) {
       const dotIdx = prov.re.lastIndexOf('.');
       const reChatId = dotIdx >= 0 ? prov.re.slice(0, dotIdx) : prov.re;
-      const reNode = (dotIdx >= 0 ? prov.re.slice(dotIdx + 1) : '').toLowerCase();
       const back = awaiting.get(reChatId) || awaiting.get(prov.re);
       log(`mesh: reply re:${prov.re} mid:${prov.mid || '-'} msgId:${msgId ?? '-'} back:${back ? 'yes' : 'NO'} tracked:${streamingIn.has(String(msgId)) ? 'yes' : 'no'}`);
 
@@ -271,16 +270,15 @@ export function createMeshRelay({
             // ORIGIN: edit the origin placeholder (post_id) in place.
             const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null });
             if (handle) { s = { handle }; awaiting.delete(reChatId); }
-          } else if (!back && openRelayStream && prov.mid && reNode && reNode !== String(node).toLowerCase()
+          } else if (!back && openRelayStream && prov.mid && fwdSeen.has(`req:${prov.mid}`)
                      && !fwdSeen.checkAndMark(`rep:${prov.mid}`)) {
-            // TRANSIT: post a forwarded copy toward the origin node, then edit it as the
-            // upstream streams. forward-once per mid guards only this initial post.
-            const dest = resolveRoute(reNode);
-            if (dest && _routeKey(dest) !== _routeKey(route)) {
-              log(`mesh: transit-mirror rep ${prov.mid} → ${reNode}`);
-              const handle = openRelayStream(dest, { by: prov.by, re: prov.re, mid: prov.mid });
-              if (handle) s = { handle };
-            }
+            // RETURN HOP: I forwarded this request, so I re-mirror the reply back into the
+            // channel it's travelling — the upstream hop / origin then sees a DIFFERENT
+            // node's copy, which is what gets a kg→do→kg bounce home past a node mirroring
+            // its OWN reply (edit-suppression). Same-channel re-mirror is fine; loop-safe.
+            log(`mesh: return-mirror rep ${prov.mid} (I forwarded its request)`);
+            const handle = openRelayStream(route, { by: prov.by, re: prov.re, mid: prov.mid });
+            if (handle) s = { handle };
           }
           if (s) {
             streamingIn.set(String(msgId), s);

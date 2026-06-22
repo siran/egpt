@@ -113,12 +113,13 @@ can bounce `kg→do→kg→…`).
   foreign `@being.node`. To chain from a bare `@wren2` (a local relay-record), the
   origin must resolve relay-records too and post `to: don.do` (the record's target).
 
-**Return path — `path:` *(design — not built)*.** Each hop appends its
-fully-qualified hop to a `path:` field (`don.do`, then `wren.kg`, …); the reply
-walks it in **reverse**, re-mirroring at each hop. That routes the reply home
-*through the intermediate nodes* — so each hop mirrors a *different* node's send,
-which is exactly what lets a 2-box `kg→do→kg` bounce stream its reply back without
-a node hitting its own edit-suppression.
+**Return path *(built — mid-linked)*.** A node that *forwarded* a request
+re-mirrors the reply (matched by the same `mid`) back into the channel — so the
+upstream hop / origin sees a **different** node's copy. That's exactly what gets a
+2-box `kg→do→kg` bounce home past a node mirroring its **own** edit (edit
+suppression). Loop-safe: each node re-mirrors a given `mid` once. *(An explicit
+`path:` breadcrumb — `don.do`, `wren.kg` — for precise/branching routing is
+reserved; the mid-linked retrace already covers linear chains.)*
 
 ## Reactions *(design — not built)*
 
@@ -130,12 +131,13 @@ any other edit and surfaces to the being as a stage-direction
 ## Status & reserved
 
 - **Built + unit-tested:** the wire format, transit forward (`forwardToward`,
-  forward-once per `mid`), the streaming edit-mirror, transit relay-records. Live,
-  the running mesh is 2 nodes (REVE↔DOLLY = direct hop) so transit isn't exercised
-  live; N-hop is proven by `tests/mesh-relay.test.mjs`.
-- **Design (not built):** origin-side relay-records, the `path:` return field,
-  reaction relaying.
+  forward-once per `mid`), transit relay-records, the streaming edit-mirror, and
+  the **reply return-via-forwarder** (a forwarder re-mirrors the reply, mid-linked).
+  N-hop is proven by `tests/mesh-relay.test.mjs`.
+- **Design (not built):** origin-side relay-records, reaction relaying.
 - **Reserved / future:**
+  - *Explicit `path:` routing* — a `don.do,wren.kg` breadcrumb for precise/branching
+    return paths (the mid-linked retrace already covers linear chains).
   - *Multi-relay / multipath* — the same packet MAY route through multiple channels
     or relay routes at once; `mid` dedups, forward-once stops loops, a future `seq`
     reorders. The protocol allows it; it isn't wired.
