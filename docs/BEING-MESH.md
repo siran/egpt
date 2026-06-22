@@ -6,6 +6,17 @@ default*: there is no central router, no dedicated route Room, and no machine
 envelope — beings reach each other through ordinary shared chats, and the only
 machine bit is a small, human-readable provenance tail on relay hops.
 
+> **As-built note (2026-06-21).** The provenance tail described in §4 is now
+> IMPLEMENTED in `src/mesh/relay.mjs` and is the live relay (streaming
+> living-mirror). The shipped wire format is fuller than this design sketch — the
+> human body rides **base64** and the tail carries
+> `from`/`from_node`/`by`/`emoji`/`to`/`re`/`post_id`/`done`/`enc` (`sig`
+> reserved) — and is specified in
+> [`EGPT-MESH-PROTOCOL.md`](../EGPT-MESH-PROTOCOL.md). This doc remains the
+> **routing/topology design**; that file is the **wire format**. Still unbuilt to
+> this design: the per-spine shared-stream decide-loop, `type: relay` forwarding
+> with native-threading surface-back, and the HRW shared-effects layer (§7, §10).
+
 Read alongside GENOME §11 (the mesh law) and I8 (no invisible backchannel), the
 stop-guard (C7.7), `allowed_users` / the emit gate, and the transcript
 discipline.
