@@ -78,7 +78,7 @@ import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWh
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh, encodeMesh } from './src/mesh/relay.mjs';
-import { resolveMeshAddress, meshNamesFromSiblings } from './src/mesh/names.mjs';
+import { resolveMeshAddress, meshSiblingKind } from './src/mesh/names.mjs';
 
 const APP_DIR = dirname(fileURLToPath(import.meta.url));
 const EGPT_HOME = join(homedir(), '.egpt');
@@ -7107,13 +7107,16 @@ function startSpineRuntime() {
       const routes = EGPT_CONFIG.mesh?.nodes?.[toNode]?.routes;
       return Array.isArray(routes) && routes.length ? routes[0] : null;
     },
-    isLocalBeing: (name) => meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}).has(String(name).toLowerCase()),
-    // RELAY-RECORD: `mesh.relay_records[<being>] = "<being>.<node>"` makes a being on THIS
-    // node a relay that re-resolves + forwards to another node's being (BEING-MESH §3).
+    isLocalBeing: (name) => {
+      const s = (EGPT_CONFIG.siblings ?? {})[String(name).toLowerCase()];
+      return !!s && meshSiblingKind(s) === 'local';
+    },
+    // ONE registry — `siblings`, each entry typed local|remote(node)|relay(to). A `relay`
+    // sibling (`siblings.<name>.to = "<being>.<node>"`) re-resolves + forwards elsewhere.
     resolveBeingRelay: (name) => {
-      const rec = EGPT_CONFIG.mesh?.relay_records?.[String(name).toLowerCase()];
-      if (!rec) return null;
-      const [b, n] = String(rec).split('.');
+      const s = (EGPT_CONFIG.siblings ?? {})[String(name).toLowerCase()];
+      if (!s?.to) return null;
+      const [b, n] = String(s.to).split('.');
       return (b && n) ? { being: b.toLowerCase(), node: n.toLowerCase() } : null;
     },
     send: async (route, textOut) => {
@@ -7302,8 +7305,7 @@ function startSpineRuntime() {
       if (EGPT_CONFIG.mesh?.nodes && typeof text === 'string' && !meta._meshRelayed && !parseMesh(text)) {
         const _meshCtx = {
           localNode: BUS_NODE_ID,
-          localNames: meshNamesFromSiblings(EGPT_CONFIG.siblings ?? {}),
-          peerNodes: EGPT_CONFIG.mesh.nodes,
+          siblings: EGPT_CONFIG.siblings ?? {},   // ONE registry: local | remote(node) | relay(to)
         };
         // A @being on a PEER node is RELAYED there (one relay per target node);
         // LOCAL @mentions fall through to normal dispatch. The human body is sent
@@ -7313,7 +7315,8 @@ function startSpineRuntime() {
         let _anyLocal = false;
         for (const _m of text.matchAll(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi)) {
           const _a = resolveMeshAddress(_m[2], _meshCtx);
-          if (_a.kind === 'foreign') _foreign.push(_a);
+          if (_a.kind === 'foreign') _foreign.push({ being: _a.name, node: _a.node });
+          else if (_a.kind === 'relay') _foreign.push({ being: _a.being, node: _a.node });   // relay-record → forward to its target being.node
           else if (_a.kind === 'local') _anyLocal = true;
         }
         if (_foreign.length) {
@@ -7327,14 +7330,16 @@ function startSpineRuntime() {
           for (const _a of _foreign) {
             if (_sent.has(_a.node)) continue;      // one relay per target node
             _sent.add(_a.node);
-            await meshRelay.relayOut({ being: _a.name, toNode: _a.node, body: text, origin: _origin, sender: _sender });
-            if (_ret.surface === 'shell') sysOut(`@${_a.name}.${_a.node} -> relayed`);
+            await meshRelay.relayOut({ being: _a.being, toNode: _a.node, body: text, origin: _origin, sender: _sender });
+            if (_ret.surface === 'shell') sysOut(`@${_a.being}.${_a.node} -> relayed`);
           }
           if (!_anyLocal) return;                  // every mention was foreign — fully handled
           // Mixed: strip ONLY the foreign mentions so the dispatch below still runs
           // the local being(s) (e.g. @wren) in this chat with the original message.
-          text = text.replace(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi, (full, pre, tok) =>
-            resolveMeshAddress(tok, _meshCtx).kind === 'foreign' ? pre : full);
+          text = text.replace(/(^|\s)@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)\b/gi, (full, pre, tok) => {
+            const k = resolveMeshAddress(tok, _meshCtx).kind;
+            return (k === 'foreign' || k === 'relay') ? pre : full;
+          });
         }
       }
       // Loop-guard: a human turn resets; an inbound message from ANOTHER bot is a

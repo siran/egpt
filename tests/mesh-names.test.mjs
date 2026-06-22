@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   meshNamesFromSiblings,
+  meshSiblingKind,
   normalizeMeshPart,
   parseMeshAddress,
   resolveMeshAddress,
@@ -50,123 +51,59 @@ describe('mesh names', () => {
     expect([...names].sort()).toEqual(['e', 'me', 'wren']);
   });
 
-  it('resolves same-node fully-qualified addresses locally', () => {
-    expect(resolveMeshAddress('@don.morgan', {
-      localNode: 'morgan',
-      localNames: ['don'],
-    })).toEqual({
-      kind: 'local',
-      qualified: true,
-      name: 'don',
-      node: 'morgan',
-      fqid: 'don.morgan',
-    });
+  it('classifies sibling kinds (the one typed registry)', () => {
+    expect(meshSiblingKind({ type: 'ccode' })).toBe('local');
+    expect(meshSiblingKind({ node: 'do' })).toBe('remote');
+    expect(meshSiblingKind({ to: 'wren.kg' })).toBe('relay');
+    expect(meshSiblingKind(undefined)).toBe('local');
   });
 
-  it('marks other-node fully-qualified addresses foreign', () => {
-    expect(resolveMeshAddress('@don.reve', {
-      localNode: 'morgan',
-      localNames: ['don'],
-    })).toEqual({
-      kind: 'foreign',
-      qualified: true,
-      name: 'don',
-      node: 'reve',
-      fqid: 'don.reve',
-    });
+  it('resolves a same-node fully-qualified address locally', () => {
+    expect(resolveMeshAddress('@don.morgan', { localNode: 'morgan', siblings: { don: {} } }))
+      .toEqual({ kind: 'local', qualified: true, name: 'don', node: 'morgan', fqid: 'don.morgan' });
   });
 
-  it('reports ambiguous bare names across local and peer nodes', () => {
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      localNames: ['don'],
-      peerNodes: { reve: ['don'] },
-    })).toEqual({
-      kind: 'ambiguous',
-      qualified: false,
-      name: 'don',
-      candidates: ['don', 'don.reve'],
-    });
+  it('marks an other-node fully-qualified address foreign', () => {
+    expect(resolveMeshAddress('@don.reve', { localNode: 'morgan', siblings: { don: {} } }))
+      .toEqual({ kind: 'foreign', qualified: true, name: 'don', node: 'reve', fqid: 'don.reve' });
   });
 
-  it('resolves a bare name to a single peer when local node lacks it', () => {
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      localNames: ['e'],
-      peerNodes: { reve: ['don'] },
-    })).toEqual({
-      kind: 'foreign',
-      qualified: false,
-      name: 'don',
-      node: 'reve',
-      fqid: 'don.reve',
-    });
+  it('resolves a bare LOCAL sibling', () => {
+    expect(resolveMeshAddress('@wren', { localNode: 'kg', siblings: { wren: { type: 'ccode' }, e: {} } }))
+      .toEqual({ kind: 'local', qualified: false, name: 'wren', node: 'kg' });
   });
 
-  it('reports invalid and missing addresses explicitly', () => {
-    expect(resolveMeshAddress('@bad/name')).toEqual({
-      kind: 'invalid',
-      token: '@bad/name',
-    });
-    expect(resolveMeshAddress('@don.morgan', {
-      localNode: 'morgan',
-      localNames: ['e'],
-    })).toEqual({
-      kind: 'missing',
-      qualified: true,
-      name: 'don',
-      node: 'morgan',
-      fqid: 'don.morgan',
-    });
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      localNames: ['e'],
-    })).toEqual({
-      kind: 'missing',
-      qualified: false,
-      name: 'don',
-      node: 'morgan',
-      fqid: null,
-    });
+  it('resolves a bare REMOTE sibling to its node (foreign)', () => {
+    expect(resolveMeshAddress('@don', { localNode: 'kg', siblings: { don: { node: 'do' } } }))
+      .toEqual({ kind: 'foreign', qualified: false, name: 'don', node: 'do', fqid: 'don.do' });
   });
 
-  it('accepts map and array peer registries', () => {
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      peerNodes: new Map([
-        ['reve', new Map([['don', {}]])],
-      ]),
-    })).toMatchObject({ kind: 'foreign', node: 'reve', fqid: 'don.reve' });
-
-    expect(resolveMeshAddress('@jay', {
-      localNode: 'morgan',
-      peerNodes: [
-        ['reve', [{ name: 'jay', aliases: ['j'] }]],
-      ],
-    })).toMatchObject({ kind: 'foreign', node: 'reve', fqid: 'jay.reve' });
+  it('resolves a bare RELAY sibling to its target (relay)', () => {
+    expect(resolveMeshAddress('@wren2', { localNode: 'kg', siblings: { wren2: { to: 'wren.do' } } }))
+      .toEqual({ kind: 'relay', qualified: false, name: 'wren2', target: 'wren.do', being: 'wren', node: 'do' });
   });
 
-  it('accepts object-shaped peer rosters', () => {
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      peerNodes: { reve: { siblings: { don: {} } } },
-    })).toMatchObject({ kind: 'foreign', node: 'reve', fqid: 'don.reve' });
-
-    expect(resolveMeshAddress('@jay', {
-      localNode: 'morgan',
-      peerNodes: { reve: { names: ['jay'] } },
-    })).toMatchObject({ kind: 'foreign', node: 'reve', fqid: 'jay.reve' });
-
-    expect(resolveMeshAddress('@e', {
-      localNode: 'morgan',
-      peerNodes: { reve: { sessions: [{ name: 'e' }] } },
-    })).toMatchObject({ kind: 'foreign', node: 'reve', fqid: 'e.reve' });
+  it('resolves a bare name by ALIAS', () => {
+    expect(resolveMeshAddress('@me', { localNode: 'kg', siblings: { wren: { aliases: ['me'] } } }))
+      .toMatchObject({ kind: 'local', name: 'wren' });
   });
 
-  it('ignores malformed peer registries', () => {
-    expect(resolveMeshAddress('@don', {
-      localNode: 'morgan',
-      peerNodes: 'not-a-registry',
-    })).toMatchObject({ kind: 'missing', name: 'don' });
+  it('reports a missing bare name (not in the registry)', () => {
+    expect(resolveMeshAddress('@ghost', { localNode: 'kg', siblings: { wren: {} } }))
+      .toEqual({ kind: 'missing', qualified: false, name: 'ghost', node: 'kg', fqid: null });
+  });
+
+  it('a same-node qualified name we do not run is missing', () => {
+    expect(resolveMeshAddress('@don.kg', { localNode: 'kg', siblings: { wren: {} } }))
+      .toEqual({ kind: 'missing', qualified: true, name: 'don', node: 'kg', fqid: 'don.kg' });
+  });
+
+  it('a relay-record is NOT local even on a same-node qualified address', () => {
+    expect(resolveMeshAddress('@don.kg', { localNode: 'kg', siblings: { don: { to: 'wren.do' } } }))
+      .toMatchObject({ kind: 'missing', name: 'don', node: 'kg' });
+  });
+
+  it('reports invalid addresses', () => {
+    expect(resolveMeshAddress('@bad/name')).toEqual({ kind: 'invalid', token: '@bad/name' });
   });
 });

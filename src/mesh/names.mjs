@@ -58,90 +58,67 @@ export function meshNamesFromSiblings(siblings) {
   return out;
 }
 
-function normalizeNameSet(input) {
-  if (!input) return new Set();
-  if (input instanceof Set) return new Set([...input].map(normalizeMeshPart).filter(Boolean));
-  if (input instanceof Map) return meshNamesFromSiblings(input);
-  if (Array.isArray(input)) {
-    const out = new Set();
-    for (const item of input) {
-      if (Array.isArray(item)) {
-        addName(out, item[0]);
-        addAliases(out, item[1]);
-      } else if (item && typeof item === 'object' && 'name' in item) {
-        addName(out, item.name);
-        addAliases(out, item);
-      } else {
-        addName(out, item);
-      }
-    }
-    return out;
+// Classify a sibling registry entry by HOW it is reached:
+//   { to: "being.node" } → relay   (re-resolves + forwards to another being.node)
+//   { node: "X" }        → remote  (a real being living at node X)
+//   else                 → local   (run on this node)
+export function meshSiblingKind(entry) {
+  if (entry && typeof entry === 'object') {
+    if (entry.to) return 'relay';
+    if (entry.node) return 'remote';
   }
-  if (typeof input === 'object') return meshNamesFromSiblings(input);
-  return new Set([normalizeMeshPart(input)].filter(Boolean));
+  return 'local';
 }
 
-function peerEntries(peerNodes) {
-  if (!peerNodes) return [];
-  if (peerNodes instanceof Map) return [...peerNodes.entries()];
-  if (Array.isArray(peerNodes)) return peerNodes;
-  if (typeof peerNodes === 'object') return Object.entries(peerNodes);
+function siblingEntries(siblings) {
+  if (!siblings) return [];
+  if (siblings instanceof Map) return [...siblings.entries()];
+  if (Array.isArray(siblings)) return siblings.map((s) => (Array.isArray(s) ? s : [s?.name, s]));
+  if (typeof siblings === 'object') return Object.entries(siblings);
   return [];
 }
 
-function namesFromPeerValue(value) {
-  if (!value) return new Set();
-  if (Array.isArray(value)) return normalizeNameSet(value);
-  if (value instanceof Map) return meshNamesFromSiblings(value);
-  if (typeof value === 'object') {
-    if (value.beings) return normalizeNameSet(value.beings);
-    if (value.siblings) return meshNamesFromSiblings(value.siblings);
-    if (value.names) return normalizeNameSet(value.names);
-    if (value.sessions) return normalizeNameSet(value.sessions);
-    return meshNamesFromSiblings(value);
+// Find a registry entry by canonical name OR alias → { name, entry } | null.
+function findSibling(siblings, name) {
+  const want = normalizeMeshPart(name);
+  if (!want) return null;
+  for (const [n, entry] of siblingEntries(siblings)) {
+    if (normalizeMeshPart(n) === want) return { name: want, entry };
+    for (const a of (entry?.aliases ?? [])) if (normalizeMeshPart(a) === want) return { name: normalizeMeshPart(n), entry };
   }
-  return normalizeNameSet(value);
+  return null;
 }
 
-export function resolveMeshAddress(token, { localNode, localNames = [], peerNodes = {} } = {}) {
+// Resolve an @mention against the ONE per-node registry (EGPT_CONFIG.siblings) —
+// each entry local | remote(node) | relay(to). `mesh.nodes.<node>.routes` is the
+// SEPARATE transport layer (how to reach a node), not part of this registry.
+export function resolveMeshAddress(token, { localNode, siblings = {} } = {}) {
   const addr = parseMeshAddress(token);
   if (!addr) return { kind: 'invalid', token: String(token ?? '') };
-
   const node = normalizeMeshPart(localNode);
-  const localSet = normalizeNameSet(localNames);
-  const base = { name: addr.name, qualified: addr.qualified };
+  const found = findSibling(siblings, addr.name);
 
+  // Fully-qualified @being.node — explicit destination.
   if (addr.qualified) {
-    const fq = { ...base, node: addr.node, fqid: addr.fqid };
+    const base = { name: addr.name, qualified: true, node: addr.node, fqid: addr.fqid };
     if (node && sameMeshNode(addr.node, node)) {
-      return localSet.has(addr.name)
-        ? { kind: 'local', ...fq }
-        : { kind: 'missing', ...fq };
+      return (found && meshSiblingKind(found.entry) === 'local')
+        ? { kind: 'local', ...base }
+        : { kind: 'missing', ...base };
     }
-    return { kind: 'foreign', ...fq };
+    return { kind: 'foreign', ...base };
   }
 
-  const candidates = [];
-  if (localSet.has(addr.name)) candidates.push({ kind: 'local', name: addr.name, node });
-
-  for (const [peerNode, value] of peerEntries(peerNodes)) {
-    const peer = normalizeMeshPart(peerNode);
-    if (!peer || (node && peer === node)) continue;
-    if (namesFromPeerValue(value).has(addr.name)) {
-      candidates.push({ kind: 'foreign', name: addr.name, node: peer, fqid: `${addr.name}.${peer}` });
-    }
+  // Bare @being — resolved by the single registry entry.
+  if (!found) return { kind: 'missing', name: addr.name, qualified: false, node: node ?? null, fqid: null };
+  const kind = meshSiblingKind(found.entry);
+  if (kind === 'local') return { kind: 'local', name: found.name, qualified: false, node };
+  if (kind === 'remote') {
+    const rn = normalizeMeshPart(found.entry.node);
+    return { kind: 'foreign', name: found.name, qualified: false, node: rn, fqid: `${found.name}.${rn}` };
   }
-
-  if (candidates.length === 1) {
-    return { ...candidates[0], qualified: false };
-  }
-  if (candidates.length > 1) {
-    return {
-      kind: 'ambiguous',
-      name: addr.name,
-      qualified: false,
-      candidates: candidates.map(c => c.fqid ?? c.name),
-    };
-  }
-  return { kind: 'missing', ...base, node: node ?? null, fqid: null };
+  // relay → re-resolves to entry.to ("being.node")
+  const t = parseMeshAddress(found.entry.to);
+  if (!t || !t.node) return { kind: 'missing', name: found.name, qualified: false, node: node ?? null, fqid: null };
+  return { kind: 'relay', name: found.name, qualified: false, target: t.fqid, being: t.name, node: t.node };
 }
