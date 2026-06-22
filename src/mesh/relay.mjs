@@ -86,7 +86,10 @@ function stripRender(s) {
     .replace(/<\s*(?:br|hr|p|div)\s*\/?\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-    .replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&');
+    .replace(/&#0?39;|&apos;/g, "'").replace(/&amp;/g, '&')
+    // Beeper auto-linkifies `don.do`/`wren.kg` → `[don.do](http://don.do)`, which would
+    // mangle a `to:`/`re:` value in the (plaintext) tail. Collapse markdown links to text.
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
 }
 
 // Tolerant of bridge transmutation (HTML, mangled/stripped fences, no divider):
