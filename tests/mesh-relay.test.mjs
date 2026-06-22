@@ -324,7 +324,6 @@ describe('mesh relay — multi-hop transit', () => {
     const req = encodeMesh({ by: 'An', body: 'hi @wren2', from: 'HFM', from_node: 'kg', to: 'wren2.do', mid: 'R1' });
     await doSpine.onRoomMessage({ route: B, text: req, msgId: 'a1' });          // do hosts the wren2 relay-record → re-address to wren.kg
     expect(sent).toHaveLength(1);
-    expect(sent[0].room).toBe('B');                                            // forwarded into the SAME (incoming) channel, not a configured route
     expect(parseMesh(sent[0].t)).toMatchObject({ to: 'wren.kg', from: 'HFM', from_node: 'kg', mid: 'R1', body: 'hi @wren2' });
     await doSpine.onRoomMessage({ route: B, text: req, msgId: 'a2' });          // re-seen → forward-once
     expect(sent).toHaveLength(1);

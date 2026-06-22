@@ -323,12 +323,12 @@ export function createMeshRelay({
       // same mid (forward-once); re-addressing is legit even in the same room (no echo guard).
       const _rec = resolveBeingRelay(being);
       if (_rec) {
-        // Re-address into the SAME shared channel it arrived on (where the mapped node also
-        // listens) — NOT a configured route: Beeper room ids are PER-ACCOUNT, so the incoming
-        // `route` is the only id we know is valid from here. Loop-safe via the same mid.
         if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}`)) {
-          log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
-          await guardedSend(route, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, mid: prov.mid, body: prov.body }));
+          const dest = resolveRoute(_rec.node);
+          if (dest) {
+            log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
+            await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, mid: prov.mid, body: prov.body }));
+          }
         }
         return true;
       }
