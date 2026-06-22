@@ -408,20 +408,21 @@ Lock status of the four:
   crypto. The legible fenced-YAML provenance tail is now BUILT in `src/mesh/relay.mjs`
   (the live relay — streaming living-mirror, 2026-06-21); its wire format is
   specified in `EGPT-MESH-PROTOCOL.md` (C8.5). What was superseded is the
-  route-Room *dedup* plan, NOT relay.mjs. ⏳ still owed: multi-hop transit + the
-  per-spine shared-stream decide-loop.
+  route-Room *dedup* plan, NOT relay.mjs. ✅ multi-hop transit now BUILT (see C8.5);
+  ⏳ still owed: the per-spine shared-stream decide-loop.
 
 - **C8.5** The cross-spine relay **wire format** — a chat-carried message: the
   human body as a base64 block + a readable trailing YAML provenance tail
-  (`from`/`from_node`/`by`/`to`/`re`/`post_id`/`done`/`enc`; `sig`
+  (`from`/`from_node`/`by`/`to`/`re`/`post_id`/`mid`/`done`/`enc`; `sig`
   reserved) — is specified in `EGPT-MESH-PROTOCOL.md` and implemented by
   `src/mesh/relay.mjs` (`encodeMesh`/`parseMesh`). Body is base64 (`enc: b64`,
   markdown-inert so the transport can't mangle code); the tail stays
   human-readable; `parseMesh` scans up from the end, tolerant of HTML/fence
   transmutation; a message carrying a provenance block is relay traffic
-  (consume, never re-relay). ✅ format live (streaming living-mirror,
-  2026-06-21). ⏳ single-hop today; planned msgid-seen-count → multi-hop transit.
-  Owed: a round-trip + PROV_KEYS-allowlist test.
+  (consume, never re-relay). ✅ format live (streaming living-mirror, 2026-06-21);
+  ✅ multi-hop transit BUILT — a spine forwards each `mid` once (loop-safe, no ttl)
+  and replies re-mirror via chained edits; `tests/mesh-relay.test.mjs` locks
+  kg→do→mo + the round-trip. ⏳ live transit needs a 3rd node (mesh is 2 nodes today).
 
 ## 9. Lifecycle / logging
 - **C9.1** `/restart` (exit 43) respawns from disk via the supervisor — NO UAC.

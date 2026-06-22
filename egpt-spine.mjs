@@ -7144,7 +7144,7 @@ function startSpineRuntime() {
     // the being's body_emoji is stamped INTO the body by the responder (it owns the
     // emoji; the origin can't look up a remote being's). The FINAL frame carries
     // done:true so the origin appends "✅ Done".
-    relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
+    relayDispatch: async ({ being, prompt, route, re, post_id, by, mid }) => {
       const relayChatId = route?.room_id ? String(route.room_id) : null;
       if (!relayChatId) return;
       const emoji = EGPT_CONFIG.siblings?.[String(being).toLowerCase()]?.body_emoji ?? '';
@@ -7155,7 +7155,7 @@ function startSpineRuntime() {
       const wrap = (body, done = false) => {
         const b = String(body ?? '').trim();
         const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER : (emoji ? `${emoji} ${b}` : b);
-        return encodeMesh({ by, body: out, re, post_id, done });
+        return encodeMesh({ by, body: out, re, post_id, mid, done });
       };
       // system:true bypasses the @e gate — relay traffic is machine-routed, like a raw
       // send. The stream posts the text placeholder (a new message → the origin opens
@@ -7220,6 +7220,21 @@ function startSpineRuntime() {
           await stream.finish(render(body));   // showThink appends "✅ Done"
           logOut(`mesh: mirror finish #${postId || '?'} delivered=${stream.delivered} err=${stream.lastError ?? '-'}`);
         },
+      };
+    },
+    // TRANSIT (multi-hop): re-mirror a forwarded reply toward the next hop. Post a
+    // placeholder into the relay `route` (system → bypasses the @e gate) and edit it as
+    // the upstream streams, wrapping each frame in the mesh tail (re/mid) so the next hop
+    // recognises + mirrors it onward. Same edit-streaming as the direct hop — rate-free.
+    openRelayStream: (route, info = {}) => {
+      const relayChatId = route?.room_id ? String(route.room_id) : null;
+      if (!relayChatId || !streamFactoryRef.current) return null;
+      const wrap = (body, done = false) => encodeMesh({ by: info.by, body: String(body ?? '').trim() || '🤔 thinking…', re: info.re, mid: info.mid, done });
+      const stream = streamFactoryRef.current(wrap(''), { chatId: relayChatId, system: true });
+      if (!stream) return null;
+      return {
+        update: (body) => stream.update(wrap(body)),
+        finish: async (body) => { await stream.finish(wrap(body, true)); },
       };
     },
     log: (m) => logOut(m),

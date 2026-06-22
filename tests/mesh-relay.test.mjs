@@ -259,3 +259,72 @@ describe('mesh relay — YAML provenance over a shared channel', () => {
     expect(await kg.onRoomMessageEdit({ msgId: 'unknown', text: 'whatever' })).toBe(false);
   });
 });
+
+// ── MULTI-HOP TRANSIT (An 2026-06-21): a spine that isn't the destination forwards one
+//    hop toward it. Loop-safe by forwarding each `mid` ONCE (no ttl). Requests forward as
+//    new posts; replies re-mirror via EDITS (rate-free), chaining the stream hop by hop. ──
+describe('mesh relay — multi-hop transit', () => {
+  const A = { room_id: 'A' }, B = { room_id: 'B' };           // rooms: A = {kg,do}, B = {do,mo}
+  const routeFor = (self) => ({                                // next-hop routing table
+    kg: { do: A, mo: A }, do: { kg: A, mo: B }, mo: { kg: B, do: B },
+  }[self]);
+
+  it('a transit node forwards a REQUEST one hop toward the target (mid preserved), only once', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }),
+      resolveRoute: (n) => routeFor('do')[n] ?? null, isLocalBeing: () => false,   // do does NOT own don
+    });
+    const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.mo', mid: 'M1' });
+    await doSpine.onRoomMessage({ route: A, text: req, msgId: 'a1' });              // seen in room A → forward to room B
+    expect(sent).toHaveLength(1);
+    expect(sent[0].room).toBe('B');
+    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'don.mo', from: 'HFM', from_node: 'kg', mid: 'M1', body: 'hi @don' });
+    await doSpine.onRoomMessage({ route: A, text: req, msgId: 'a2' });              // re-seen (loop) → NOT forwarded again
+    expect(sent).toHaveLength(1);
+  });
+
+  it('a transit node never forwards a request back the way it came (no echo loop)', async () => {
+    const sent = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async (r) => sent.push(r.room_id),
+      resolveRoute: (n) => routeFor('kg')[n] ?? null, isLocalBeing: () => false,
+    });
+    // kg sees its OWN request echo in room A (to: don.mo); next hop toward mo is room A === incoming → skip
+    await kg.onRoomMessage({ route: A, text: encodeMesh({ by: 'An', body: 'hi', from: 'HFM', from_node: 'kg', to: 'don.mo', mid: 'M2' }), msgId: 'x1' });
+    expect(sent).toHaveLength(0);
+  });
+
+  it('a transit node RE-MIRRORS a reply via an edit-stream toward the origin node, once', async () => {
+    const opened = []; const updates = []; let finished = null;
+    const doSpine = createMeshRelay({
+      node: 'do', send: async () => {}, surface: async () => {},
+      resolveRoute: (n) => routeFor('do')[n] ?? null, isLocalBeing: () => false,
+      openRelayStream: (route, info) => { opened.push({ room: route.room_id, info }); return { update: (b) => updates.push(b), finish: async (b) => { finished = b; } }; },
+    });
+    const frame = (body, done = false) => encodeMesh({ by: 'don.mo', body, re: 'HFM.kg', mid: 'M3', done });
+    await doSpine.onRoomMessage({ route: B, text: frame('🤝 Ja'), msgId: 'r1' });          // first sight → open relay stream toward kg (room A)
+    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja') });               // edit → chains on
+    await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja, aquí', true) });    // done → finish
+    expect(opened).toEqual([{ room: 'A', info: { by: 'don.mo', re: 'HFM.kg', mid: 'M3' } }]);
+    expect(updates).toContain('🤝 Ja');
+    expect(updates).toContain('🤝 Jaja');
+    expect(finished).toBe('🤝 Jaja, aquí');
+    await doSpine.onRoomMessage({ route: B, text: frame('🤝 Ja'), msgId: 'r2' });          // a re-seen copy doesn't open a 2nd stream
+    expect(opened).toHaveLength(1);
+  });
+
+  it('the ORIGIN mirrors the reply forwarded to it (end of the chain)', async () => {
+    const rendered = []; let done = null;
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async () => {}, ack: async () => {},
+      resolveRoute: (n) => routeFor('kg')[n] ?? null, isLocalBeing: () => false,
+      openOriginStream: (_back, info) => { rendered.push(['open', info]); return { update: (b) => rendered.push(b), finish: async (b) => { done = b; } }; },
+    });
+    await kg.relayOut({ being: 'don', toNode: 'mo', body: '@don hola', origin: { surface: 'whatsapp', chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    await kg.onRoomMessage({ route: A, text: encodeMesh({ by: 'don.mo', body: '🤝 Jaja', re: 'HFM.kg', mid: 'M4' }), msgId: 'f1' });
+    await kg.onRoomMessageEdit({ msgId: 'f1', text: encodeMesh({ by: 'don.mo', body: '🤝 Jaja, aquí', re: 'HFM.kg', mid: 'M4', done: true }) });
+    expect(rendered).toContain('🤝 Jaja');
+    expect(done).toBe('🤝 Jaja, aquí');
+  });
+});
