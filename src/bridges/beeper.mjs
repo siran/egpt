@@ -457,7 +457,7 @@ export async function startBeeperBridge(opts = {}) {
   // genuinely live reaction diffs against the baseline and emits. No timestamps,
   // no event correlation.
   const _idToName = new Map();         // senderID -> last-seen senderName (reactor naming)
-  const _seenReactions = new Map();    // msgId -> Set of `${reactor} ${emoji}`
+  const _seenReactions = new Map();    // msgId -> Set of `${reactor}\u0000${emoji}`
   const _seenText = new Map();         // msgId -> last cleaned text (edit detection, baseline-on-first-sight)
   const REACTION_CAP = 4000;
   function _capMap(m, cap) { while (m.size > cap) m.delete(m.keys().next().value); }
@@ -477,7 +477,7 @@ export async function startBeeperBridge(opts = {}) {
     for (const r of list) {
       const reactor = r?.participantID || r?.id;
       const emoji = (typeof r?.reactionKey === 'string' && r.reactionKey) || null;
-      if (reactor && emoji) cur.add(`${reactor} ${emoji}`);
+      if (reactor && emoji) cur.add(`${reactor}\u0000${emoji}`);
     }
     const first = !_seenReactions.has(msgId);
     const prev = _seenReactions.get(msgId) || new Set();
@@ -485,7 +485,7 @@ export async function startBeeperBridge(opts = {}) {
     _capMap(_seenReactions, REACTION_CAP);
     if (first) return [];   // baseline — record, never surface (don't replay)
     const fresh = [];
-    for (const key of cur) if (!prev.has(key)) { const [reactor, emoji] = key.split(' '); fresh.push({ reactor, emoji }); }
+    for (const key of cur) if (!prev.has(key)) { const [reactor, emoji] = key.split('\u0000'); fresh.push({ reactor, emoji }); }
     return fresh;
   }
   // Surface each newly-added reaction as a stage-direction through the ONE router

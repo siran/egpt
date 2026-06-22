@@ -15,25 +15,22 @@ export async function run({ arg, ctx }) {
   //   sysOut(text)
   //   sessions                       — snapshot
   //   getDefaultOp() / setDefaultOp(name|null)  — manages _defaultOp let
-  //   persistDefaultOp(name)         — to disk
   //   brainForName(name)             — brain spec lookup for stateDetail()
   //   peerNodesRef                   — bus peers + their zombie sessions
   const { sysOut, sessions, getDefaultOp, setDefaultOp,
-          persistDefaultOp, brainForName, peerNodesRef } = ctx;
+          brainForName, peerNodesRef } = ctx;
 
   const parts = arg.split(/\s+/).filter(Boolean);
   if (parts[0] === 'default') {
     const target = parts[1];
     if (!target || target === 'clear' || target === 'none') {
       setDefaultOp(null);
-      persistDefaultOp(null);
       sysOut('default operator cleared');
     } else if (!sessions[target]) {
       sysOut(`!! no session named "${target}"`);
     } else {
       setDefaultOp(target);
-      persistDefaultOp(target);
-      sysOut(`default operator -> ${target} (persisted)`);
+      sysOut(`default operator -> ${target} (this session)`);
     }
     return true;
   }
