@@ -53,7 +53,9 @@ Write-Host "NSSM: $nssm" -ForegroundColor Cyan
 #         that at the renamed copy. All `nssm set/start/stop/remove` commands
 #         in the rest of this script still use the canonical $nssm (those
 #         are admin operations that don't care which copy is invoked). ---
-$serviceBinDir = Join-Path $env:USERPROFILE '.egpt\bin'
+# The renamed nssm copy lives in the repo (setup/bin, gitignored) — NOT in ~/.egpt,
+# which is for config/state/personal data only (operator 2026-06-23).
+$serviceBinDir = Join-Path $PSScriptRoot 'bin'
 if (-not (Test-Path $serviceBinDir)) { New-Item -ItemType Directory -Path $serviceBinDir -Force | Out-Null }
 $serviceBin = Join-Path $serviceBinDir 'egpt-service.exe'
 # Resolve $nssm if it's a winget shim symlink — symlinks can't be SCM ImagePath

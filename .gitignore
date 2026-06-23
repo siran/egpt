@@ -16,3 +16,6 @@ tmp/
 
 # runtime reply-target state — never commit
 conversation.replytargets.json
+
+# generated NSSM service binary (renamed copy)
+setup/bin/
