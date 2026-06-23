@@ -988,48 +988,38 @@ export function createDispatchRuntime({
 
     const startMs = clockMs(clock);
     const threadId = threadCtx.threadId ?? 'shell';
-    const isSystemThread = threadId === 'heartbeat' || threadId === 'shell';
     const isSystemPersonality = convEntry?.personality === 'system';
-    const logSlug = isSystemThread ? null : (convSlug ?? threadCtx.slug ?? null);
-    // System threads (shell, etc.) write their transcript under state/. The
-    // legacy global @e heartbeat (e-heartbeat.md) was retired with the global
-    // heartbeat loop (2026-06-03); heartbeats are now per-entity and log to the
-    // entity's own transcript through the normal path below.
-    const baseDir = isSystemThread
-      ? paths.stateDir
-      : isSystemPersonality
+    // Slug: per-contact convSlug, else the thread's own slug, else (for the shell
+    // surface) 'main'. The shell is a surface like any other now — its transcript
+    // lives at conversations/shell/main/transcript.md. The old system-thread
+    // special-case under state/ was retired 2026-06-23 (heartbeat gone, shell moved).
+    const logSlug = convSlug ?? threadCtx.slug ?? (surface === 'shell' ? 'main' : null);
+    const baseDir = isSystemPersonality
       ? paths.systemSlugDir
       : logSlug && surface
       ? paths.slugDir(surface, logSlug)
       : join(paths.conversationsDir, '_unrouted');
-    const fpath = join(baseDir, isSystemThread ? `${sanitizeSlug(threadId)}.md` : 'transcript.md');
+    const fpath = join(baseDir, 'transcript.md');
     const nowStamp = stamp(clock);
     const replyClock = nowStamp.slice(11, 16);
     const personaTag = isSystemPersonality ? 'system-e' : '@e';
 
     const header = !fs.existsSync?.(fpath)
-      ? (isSystemThread
-          ? `# @e ${threadId} log\n\n`
-          // YAML front matter: who the transcript is with + the resumable thread
-          // + the persona on it + an operator notes slot. Written once, at
-          // creation. network/phone/type/participants are enriched later by the
-          // collector (GENOME §5); the fields available here are populated now.
-          : renderFrontMatter({
-              name:      threadCtx.name ?? threadId,
-              surface:   threadCtx.surface ?? '?',
-              slug:      threadCtx.slug ?? '?',
-              thread_id: threadId,
-              persona:   isSystemPersonality ? 'system-e' : 'e',
-            }))
+      // YAML front matter: who the transcript is with + the resumable thread
+      // + the persona on it + an operator notes slot. Written once, at
+      // creation. network/phone/type/participants are enriched later by the
+      // collector (GENOME §5); the fields available here are populated now.
+      ? renderFrontMatter({
+          name:      threadCtx.name ?? threadId,
+          surface:   threadCtx.surface ?? '?',
+          slug:      threadCtx.slug ?? logSlug,
+          thread_id: threadId,
+          persona:   isSystemPersonality ? 'system-e' : 'e',
+        })
       : '';
-    // Per-chat + system-e transcripts: 8-day rolling window. Insert a
-    // `## YYYY-MM-DD` section header when the date changes; archive sections
-    // older than TRANSCRIPT_KEEP_DAYS into memories/. (System threads like
-    // shell have their own lifecycle and skip this.)
-    let dateHeader = '';
-    if (!isSystemThread) {
-      dateHeader = await maybePrefixDateHeader(fs, fpath, clock);
-    }
+    // 8-day rolling window: insert a `## YYYY-MM-DD` section header when the date
+    // changes; archive sections older than TRANSCRIPT_KEEP_DAYS into memories/.
+    const dateHeader = await maybePrefixDateHeader(fs, fpath, clock);
     const inboundLogged = await appendTranscript({
       fs,
       logger,
