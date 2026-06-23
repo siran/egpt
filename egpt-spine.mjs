@@ -3831,10 +3831,6 @@ function startSpineRuntime() {
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
-            // Did THIS message address E directly (@e at start / anywhere, or a
-            // reply to E's own message)? Threaded so a direct ping can SURFACE
-            // E's '...' instead of dropping it as ambient silence (2026-06-23).
-            directMention: !!(from.atEStart || from.atEAnywhere || from.replyToBot),
             // One-line statement of the chat's reply mode — injected only when
             // the mode changed (see _modeChanged), so E learns its engagement
             // contract once per change instead of every turn.

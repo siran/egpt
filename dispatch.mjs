@@ -484,19 +484,16 @@ export async function dispatchPersonaTurn({
     logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
     return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
-  // Politeness cosmetic, reached ONLY after the mode gate already allowed a
-  // reply — E may decline by replying just '...'. It is NOT a gating input (a
-  // mode-blocked chat never gets here), just a no-noise courtesy.
-  // EXCEPTION (operator 2026-06-23): when the user DIRECTLY addressed E (@e
-  // mention / reply-to-E), the '...' is surfaced instead of dropped — a direct
-  // ping deserves an acknowledgment, not dead air (which reads as "E is broken").
-  // A truly-empty reply is still dropped (nothing to surface — usually a brain
-  // hiccup, not a deliberate silence).
-  const _directMention = !!(meta.directMention || meta.atEAnywhere || meta.replyToBot);
+  // Silence policy (operator 2026-06-23): a deliberate '…' FLOWS everywhere and
+  // is REPRESSED only for conversation-e — E stays quiet in human group/contact
+  // chats, but in system-e (Self) its '…' is delivered (a real signal there).
+  // An EMPTY reply never ships anywhere (nothing to send; we never manufacture a
+  // '…' the model didn't give). Reached only past the mode gate.
   const _emptyReply = String(reply ?? '').trim() === '';
-  if (isSilence(reply) && (!_directMention || _emptyReply)) {
+  const _repressDots = !threadCtx._isSystemPersonality;   // conversation-e represses '…'
+  if (_emptyReply || (isSilence(reply) && _repressDots)) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-    logOut(`@e: polite '...' from ${where} (skipped — not sent; directMention=${_directMention})`);
+    logOut(`@e: silence from ${where} (${_emptyReply ? 'empty' : 'conversation-e represses …'} — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
 
@@ -876,6 +873,10 @@ export function createDispatchRuntime({
       }
 
       const isSystemPersonality = convEntry?.personality === 'system';
+      // Surface it to the caller (dispatchPersonaTurn) so it can apply the
+      // silence policy: '…' is repressed ONLY for conversation-e, and FLOWS for
+      // system-e (Self) (operator 2026-06-23).
+      threadCtx._isSystemPersonality = isSystemPersonality;
       const sluggedDir = paths.slugDir(surface, convSlug);
       await fs.mkdir(sluggedDir, { recursive: true });
       // Seed ./pointers.md into the chat's own folder (inside E's sandbox) so the
