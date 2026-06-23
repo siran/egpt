@@ -3831,6 +3831,11 @@ function startSpineRuntime() {
             // Per-chat auto-mode reply gate: when false, residents still RUN
             // (E reads for context) but their reply is NOT sent to the chat.
             replyAllowed: _replyAllowed,
+            // Was E directly addressed (@e at start/anywhere, or a reply to E)?
+            // Drives the streaming conditional: a mention ALWAYS surfaces (🤔→reply→✅,
+            // even '…'); an unmentioned auto-on turn streams no placeholder and
+            // represses '…' (operator 2026-06-23).
+            mention: !!(from.atEStart || from.atEAnywhere || from.replyToBot),
             // One-line statement of the chat's reply mode — injected only when
             // the mode changed (see _modeChanged), so E learns its engagement
             // contract once per change instead of every turn.
