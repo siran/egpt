@@ -1,4 +1,4 @@
-// slash/config.mjs — get/set local config keys.
+// slash/config.mjs — get/set config keys in ~/.egpt/config.yaml.
 //
 // Three input forms:
 //   /config                              list all keys with current values + descriptions
@@ -8,13 +8,17 @@
 //   /config <subkey> <val>  (bridge-typed) — unknown bare key from telegram/whatsapp gets
 //                                            auto-scoped to that bridge's nested namespace
 //
+// Writes edit config.yaml IN PLACE via the yaml lib's Document API, so the
+// operator's `_note` comments survive every /config write (the old config.local.json
+// overlay was retired 2026-06-22 — one config file now).
+//
 // Side-effects on certain keys: live-applies theme / user_name /
 // show_prompts / node_name (the last requires re-announcing on the
 // bus so peers refresh).
 
-import { readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import * as YAML from 'yaml';
 import { CONFIG_SCHEMA } from '../config/config-schema.mjs';
 
 export const meta = {
@@ -22,34 +26,29 @@ export const meta = {
   section: 'MISC',
   surface: 'both',
   usage: '/config [key [val]]',
-  desc: 'read or write config (per-project local config; nested keys via dot notation)',
+  desc: 'read or write config (~/.egpt/config.yaml; nested keys via dot notation)',
 };
 
 export async function run({ arg, meta: callMeta, ctx }) {
   // ctx keys consumed:
   //   sysOut, dp
-  //   EGPT_CONFIG, LOCAL_CONFIG_PATH
+  //   EGPT_CONFIG, CONFIG_PATH
   //   setTheme(name)                 — re-applies theme on live change
   //   setUserName(name)              — module-level let setter
   //   setShowPrompts(bool)
   //   nodeRename(newName)            — bus rename: offline+online ping
-  const { sysOut, dp, EGPT_CONFIG, LOCAL_CONFIG_PATH,
+  const { sysOut, dp, EGPT_CONFIG, CONFIG_PATH,
           setTheme, setUserName, setShowPrompts, nodeRename } = ctx;
 
   const parts = arg.trim().split(/\s+/);
   let key = parts[0];
   const rawVal = parts.slice(1).join(' ');
-  let localCfg = {};
-  try { localCfg = JSON.parse(readFileSync(LOCAL_CONFIG_PATH, 'utf8')); } catch {}
 
   if (!key) {
-    const lines = [`config  (${dp(LOCAL_CONFIG_PATH)}):`, ''];
+    const lines = [`config  (${dp(CONFIG_PATH)}):`, ''];
     for (const [k, desc] of Object.entries(CONFIG_SCHEMA)) {
-      const hasLocal = Object.prototype.hasOwnProperty.call(localCfg, k);
       const live = EGPT_CONFIG[k];
-      const valStr = hasLocal
-        ? JSON.stringify(localCfg[k])
-        : (live !== undefined ? `${JSON.stringify(live)}  (default)` : '(unset)');
+      const valStr = live !== undefined ? JSON.stringify(live) : '(unset)';
       lines.push(`  ${k} = ${valStr}`);
       lines.push(`    ${desc}`);
       lines.push('');
@@ -78,7 +77,7 @@ export async function run({ arg, meta: callMeta, ctx }) {
   }
 
   if (!rawVal) {
-    const top = localCfg[topKey] ?? EGPT_CONFIG[topKey];
+    const top = EGPT_CONFIG[topKey];
     const v = subKey ? top?.[subKey] : top;
     sysOut(v !== undefined ? `${key}: ${JSON.stringify(v)}` : `${key}: (not set)`);
     return true;
@@ -87,19 +86,15 @@ export async function run({ arg, meta: callMeta, ctx }) {
   let val;
   try { val = JSON.parse(rawVal); } catch { val = rawVal; }
 
-  // Apply: nested writes preserve the rest of the block.
-  if (subKey) {
-    const block = (typeof localCfg[topKey] === 'object' && localCfg[topKey] !== null)
-      ? localCfg[topKey] : {};
-    block[subKey] = val;
-    localCfg[topKey] = block;
-  } else {
-    localCfg[topKey] = val;
-  }
-
+  // Edit config.yaml IN PLACE via the Document API — preserves the _note comments
+  // (a plain YAML.stringify round-trip would drop them).
   try {
-    await mkdir(dirname(LOCAL_CONFIG_PATH), { recursive: true });
-    await writeFile(LOCAL_CONFIG_PATH, JSON.stringify(localCfg, null, 2) + '\n');
+    let doc;
+    try { doc = YAML.parseDocument(await readFile(CONFIG_PATH, 'utf8')); }
+    catch { doc = new YAML.Document({}); }
+    doc.setIn(subKey ? [topKey, subKey] : [topKey], val);
+    await mkdir(dirname(CONFIG_PATH), { recursive: true });
+    await writeFile(CONFIG_PATH, doc.toString());
     // Mirror into in-memory EGPT_CONFIG so downstream handlers see
     // the change without a restart.
     if (subKey) {
@@ -118,6 +113,6 @@ export async function run({ arg, meta: callMeta, ctx }) {
   if (topKey === 'show_prompts' && !subKey) setShowPrompts(!!val);
   if (topKey === 'node_name' && !subKey)    await nodeRename(String(val));
 
-  sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(LOCAL_CONFIG_PATH)}`);
+  sysOut(`config: ${key} = ${JSON.stringify(val)}  →  ${dp(CONFIG_PATH)}`);
   return true;
 }

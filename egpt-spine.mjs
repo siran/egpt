@@ -73,7 +73,7 @@ import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAU
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
-import { applyLocalConfigOverlaySync, configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
+import { configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
 import { DEFAULT_MESH_TTL, buildMeshMention, createMeshSeenCache, meshReplyContext, meshRequestId, meshTtl, returnAddressForMeta } from './src/mesh/envelope.mjs';
 import { createMeshRelay, parseMesh, encodeMesh } from './src/mesh/relay.mjs';
@@ -514,24 +514,11 @@ for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
     unlinkSync(_sidecar);
   } catch (e) { const _m = `restart-announce FAILED — ${e?.message ?? e}`; try { appendFileSync(join(EGPT_LOGS, 'restart.log'), `${new Date().toISOString()} [${process.pid}] boot: ${_m}\n`); } catch {} console.error(`!! egpt boot: ${_m}`); }
 })();
-// Runtime overlay config (JSON) that /config writes to — kept SEPARATE from
-// config.yaml so /config never has to YAML-round-trip the operator's
-// hand-written config (which would drop all the `_note` comments). Anchored to
-// a STABLE ~/.egpt path, NOT process.cwd(): the daemon's cwd flips between
-// worktrees with /e source, and a cwd-relative overlay scattered /config writes
-// into src/egpt/.egpt vs src/egpt-dev/.egpt and silently "lost" settings
-// (routing_enabled) across restarts (operator 2026-05-27).
-const LOCAL_CONFIG_PATH = join(EGPT_HOME, 'config.local.json');
-{
-  const overlay = applyLocalConfigOverlaySync(EGPT_CONFIG, LOCAL_CONFIG_PATH);
-  EGPT_CONFIG = overlay.config;
-  // Missing overlay is normal; a CORRUPT one silently dropping every
-  // /config-written setting (routing_enabled, …) is the exact bug class
-  // from 2026-05-27 — shout instead of swallowing.
-  if (overlay.error) {
-    console.error(`!! egpt boot: ${LOCAL_CONFIG_PATH} unreadable/corrupt — ALL /config overlay settings are dropped this run: ${overlay.error?.message ?? overlay.error}`);
-  }
-}
+// Single config file: ~/.egpt/config.yaml (operator-editable YAML with _note
+// comments). /config edits it IN PLACE comment-preservingly (yaml parseDocument)
+// — the separate config.local.json overlay was retired 2026-06-22 and its values
+// merged in. Anchored to a STABLE ~/.egpt path, NOT process.cwd().
+const CONFIG_PATH = join(EGPT_HOME, 'config.yaml');
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 
@@ -5594,7 +5581,7 @@ function startSpineRuntime() {
         setRoomSessionsMap,
         getCurrentRoom: () => currentRoom,
         setCurrentRoom,
-        LOCAL_CONFIG_PATH,
+        CONFIG_PATH,
         setUserName:    (v) => { USER_NAME = String(v); },
         nodeRename:     async (newName) => {
           // Live rename: announce node-offline under the old name first
