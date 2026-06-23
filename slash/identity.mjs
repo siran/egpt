@@ -143,7 +143,7 @@ export async function run({ arg, meta, ctx }) {
           const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
           const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
           await fsmod.writeFile(
-            pathmod.join(osmod.homedir(), '.egpt', 'outbox', id + '.json'),
+            pathmod.join(osmod.homedir(), '.egpt', 'state', 'outbox', id + '.json'),
             JSON.stringify(ev),
           );
         } catch (e) {

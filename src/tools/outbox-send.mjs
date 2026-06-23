@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 
 const DEFAULT_FROM = 'sibling-subproc';
-export const OUTBOX_DIR = path.join(os.homedir(), '.egpt', 'outbox');
+export const OUTBOX_DIR = path.join(os.homedir(), '.egpt', 'state', 'outbox');
 
 async function readEgptConfig() {
   const p = path.join(os.homedir(), '.egpt', 'config.json');

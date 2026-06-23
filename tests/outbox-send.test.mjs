@@ -37,7 +37,7 @@ describe('outboxSend', () => {
 
     const result = await mod.outboxSend({ type: 'slash', cmd: '/identity' }, { from: 'test-subproc' });
 
-    const outboxDir = join(home, '.egpt', 'outbox');
+    const outboxDir = join(home, '.egpt', 'state', 'outbox');
     expect(mod.OUTBOX_DIR).toBe(outboxDir);
     expect(result.filename).toMatch(/^\d+-[0-9a-f-]+\.json$/);
     expect(readdirSync(outboxDir).filter((name) => name.startsWith('.tmp-'))).toEqual([]);
@@ -67,7 +67,7 @@ describe('waSend', () => {
       jid: '123@s.whatsapp.net',
       body: 'hola',
     });
-    expect(JSON.parse(readFileSync(join(home, '.egpt', 'outbox', result.filename), 'utf8'))).toEqual(result.posted);
+    expect(JSON.parse(readFileSync(join(home, '.egpt', 'state', 'outbox', result.filename), 'utf8'))).toEqual(result.posted);
   });
 
   it('requires jid and body', async () => {
