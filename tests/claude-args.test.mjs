@@ -23,7 +23,10 @@ describe('tool limitation + trusted access', () => {
     const a = buildClaudeArgs({ allowedTools: 'all' });
     expect(has(a, '--dangerously-skip-permissions')).toBe(true);
     expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
-    expect(has(a, '--setting-sources')).toBe(false);     // full access — not sandboxed
+    // Full FILE access (skip-permissions, no --add-dir confinement), but settings
+    // are NOT inherited from ~/.claude — '' so the operator's personal MCP servers
+    // don't leak into egpt's beings + slow every turn (2026-06-23).
+    expect(valsOf(a, '--setting-sources')).toEqual(['']);
     expect(has(a, '--allowedTools')).toBe(false);
   });
   it("'*' is treated the same as 'all'", () => {
