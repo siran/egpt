@@ -33,16 +33,6 @@ const PERSONALITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'personalities');
 // files (NN- orders the injection); operator overrides shipped, per folder.
 const IDENTITIES_SHIPPED_DIR  = join(_here, 'identities');
 const IDENTITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'identities');
-// Heartbeats moved under state/ alongside other internals (operator
-// 2026-05-22 declutter). Legacy path migrated on first boot in
-// egpt.mjs alongside the other directory moves.
-const HEARTBEATS_OPERATOR_DIR    = join(homedir(), '.egpt', 'state', 'heartbeats');
-// Legacy heartbeat PROMPT location. Renamed to heartbeat-prompt.md
-// 2026-05-22 so e-heartbeat.md can hold the heartbeat transcript.
-// readHeartbeat below falls back to the old name for back-compat
-// during the migration window.
-const LEGACY_HEARTBEAT_PATH      = join(homedir(), '.egpt', 'heartbeat-prompt.md');
-
 // Canonical location of the per-contact YAML registry. Exported so
 // daemon + slashes + tools all agree. The registry sits OUTSIDE the
 // per-conversation dirs so conversation-e (cwd-locked to its own
@@ -1181,30 +1171,6 @@ export function buildRebootAnnouncement(personalityName, bundle) {
     '- read your ./pointers.md file when you think you lack an ability or tool:',
     pointers.trim(),
   ].filter(x => x != null).join('\n');
-}
-
-// ── Heartbeat file resolution ──────────────────────────────────────────────
-
-// Resolution: contact-specific → personality-specific → default. Plus a
-// last-ditch fallback to ~/.egpt/e-heartbeat.md for back-compat during
-// migration.
-export function resolveHeartbeatFile(contactSlug, personality, opts = {}) {
-  const dir = opts.heartbeatsDir ?? HEARTBEATS_OPERATOR_DIR;
-  const legacy = opts.legacyPath ?? LEGACY_HEARTBEAT_PATH;
-  const candidates = [];
-  if (contactSlug) candidates.push(join(dir, `${sanitizeSlug(contactSlug)}.md`));
-  if (personality) candidates.push(join(dir, `${sanitizeSlug(personality)}.md`));
-  candidates.push(join(dir, 'default.md'));
-  candidates.push(legacy);
-  for (const p of candidates) if (existsSync(p)) return p;
-  return null;
-}
-
-export async function readHeartbeat(contactSlug, personality, opts = {}) {
-  const p = resolveHeartbeatFile(contactSlug, personality, opts);
-  if (!p) return null;
-  try { return await readFile(p, 'utf8'); }
-  catch { return null; }
 }
 
 // ── YAML serialization ─────────────────────────────────────────────────────
