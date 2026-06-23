@@ -8069,6 +8069,7 @@ function startSpineRuntime() {
           personaName,
           runDefaultBrainTurn,
           runEmittedCommand,
+          streamFactory: streamFactoryRef.current,   // WA edit-stream (single streaming path)
           stateDir: EGPT_HOME,
         });
         // Watcher: "->E" (human prompt) or "S->E" (resident S's reply
