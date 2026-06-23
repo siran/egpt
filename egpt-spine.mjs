@@ -5732,7 +5732,7 @@ function startSpineRuntime() {
   // whatsapp.resident_history_chars (default 30000) to fit llama's context;
   // oldest lines roll off. The /confirm watcher shows only the per-turn delta —
   // this is the invisible, durable memory.
-  const _residentDir = join(EGPT_HOME, 'agent', 'l');
+  const _residentDir = join(EGPT_HOME, 'config', 'agents', 'l');
   const _residentMem = ref(new Map());   // chatId -> { identity, lines }
   const _residentSan = (id) => String(id).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
   const _residentPath = (chatId) => join(_residentDir, `${_residentSan(chatId)}.json`);
