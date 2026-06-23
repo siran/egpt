@@ -110,7 +110,11 @@ function MultiLineInput({ disabled = false, onSubmit }) {
     next[last] += after;
     setLines(next);
     setRow(last);
-    setCol(chunks[chunks.length - 1].length);
+    // Cursor advance: single-line insert moves the column FORWARD by the typed
+    // length (col + chunk) — not to the chunk length, which stranded the cursor
+    // at position 1 and made typing run backwards ('hello' → 'holle'). A
+    // multi-line paste lands on the last line at that chunk's length.
+    setCol(chunks.length === 1 ? col + chunks[0].length : chunks[chunks.length - 1].length);
   });
 
   return h(Box, { flexDirection: 'column' },
