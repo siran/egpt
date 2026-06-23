@@ -5912,7 +5912,8 @@ function startSpineRuntime() {
       // (meta._silenceForward). Two brains mutually shrugging otherwise burns
       // the whole chain on empty turns. Content replies always forward (a
       // curious "why silent?" keeps the conversation alive) and reset the flag.
-      const _isSilence = /^(?:\.{3,}|…+)$/.test(body.trim());
+      const _bt = body.trim();
+      const _isSilence = _bt === '' || /^(?:\.{3,}|…+)$/.test(_bt);   // empty counts as silence (no faked '…')
       if (_isSilence && meta._silenceForward) return;    // second-layer silence: received, not forwarded
       const persona = EGPT_CONFIG.persona ?? 'e';
       for (const other of others) {
@@ -6246,7 +6247,7 @@ function startSpineRuntime() {
           try {
             await logActivity('REPLY', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${final.length}ch`, `${Date.now() - started}ms`, brainType);
           } catch (e) { console.error(`!! urlbrain activity REPLY: ${e?.message ?? e}`); }
-          return final.trim() || '...';
+          return final.trim();   // never manufacture '...' on empty
         } catch (e) {
           try {
             await logActivity('ERROR', threadCtx.surface ?? '?', threadCtx.threadId ?? '?', `${Date.now() - started}ms`, (e?.message ?? '').slice(0, 200));
@@ -6509,7 +6510,7 @@ function startSpineRuntime() {
           },
           onLog: (m) => logOut(`agent[@${name}]: ${m}`),
         });
-        return String(final ?? '').trim() || '...';
+        return String(final ?? '').trim();   // never manufacture '...' on empty
       }
       // WARM PATH: a ccode (CLI) sibling runs on a persistent pooled session —
       // no per-turn cold start / subprocess spawn. Keyed per sibling+session so
@@ -6531,7 +6532,7 @@ function startSpineRuntime() {
             // turn emits the combined reply, so drop this dispatch silently —
             // '...' is the silence marker the dispatcher treats as "no message".
             logOut(`@${selectedName}: injected into the running turn (no separate reply)`);
-            return '...';
+            return '';   // merged into a streaming turn → emit nothing (drop), not a faked '...'
           }
           result = { text: r.text, optionsPatch: r.sessionId ? { sessionId: r.sessionId } : null };
         } catch (e) {
@@ -6560,10 +6561,10 @@ function startSpineRuntime() {
         mbCfg.session_id = newSessionId;
         await persistSiblingSession(newSessionId);
       }
-      // Empty successful reply → silence protocol marker. Was previously
-      // the verbose string '(no reply)' which the dispatcher would ship
-      // to chat as a real message. Now: empty == '...' == drop.
-      return final.trim() || '...';
+      // Empty successful reply → emit nothing. The dispatcher treats '' as
+      // silence (drop) — we never manufacture a '...' the model didn't give
+      // (operator 2026-06-23: "do NOT fake or default responses EVER").
+      return final.trim();
     } catch (e) {
       return `!! @${name}: ${e.message}`;
     }
@@ -6976,7 +6977,7 @@ function startSpineRuntime() {
         ...(tg ? { _source: 'telegram' } : {}),
         ...(wa ? { _sourceChatId: waChatId } : {}),   // wa only set when waChatId is explicit
       };
-      const isSilence = /^(\.{3,}|…+)$/.test(trimmed);
+      const isSilence = trimmed === '' || /^(\.{3,}|…+)$/.test(trimmed);   // empty == silence (no faked '…')
       if (isSilence) {
         // Quiet ack: render as the session itself with a single em-dash body,
         // both locally and on Telegram.

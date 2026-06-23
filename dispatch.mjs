@@ -1174,7 +1174,7 @@ export function createDispatchRuntime({
         label: 'reply',
       });
       await logActivity('REPLY', threadCtx.surface ?? '?', threadId, `${String(final).length}ch`, `${clockMs(clock) - startMs}ms`);
-      return String(final).trim() || '...';
+      return String(final).trim();   // empty stays empty — never manufacture a '...' (drop-paths treat '' as silence)
     } catch (e) {
       const msg = e?.message ?? '';
       await logActivity('ERROR', threadCtx.surface ?? '?', threadId, `${clockMs(clock) - startMs}ms`, msg.slice(0, 200));
