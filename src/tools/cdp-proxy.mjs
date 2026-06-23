@@ -22,7 +22,7 @@ import { homedir }          from 'node:os';
 import { fileURLToPath }    from 'node:url';
 
 const EGPT_HOME   = join(homedir(), '.egpt');
-const TOKEN_FILE  = join(EGPT_HOME, 'cdp-token');
+const TOKEN_FILE  = join(EGPT_HOME, 'config', 'cdp-token');
 const PROXY_DIR   = dirname(fileURLToPath(import.meta.url));
 const BUS_HTML_PATH = join(PROXY_DIR, 'bus.html');
 const BUS_JS_PATH   = join(PROXY_DIR, 'bus.js');
