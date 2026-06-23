@@ -478,15 +478,24 @@ export async function dispatchPersonaTurn({
   // the brain generates, via the same WA streamFactory the resident path uses.
   // LAZY — the stream opens on the FIRST real token, so a mode-withheld or silent
   // turn never posts a placeholder (no gate-on-silence delete for the common case).
+  const _isMention = !!meta.mention;
   const _chatId = meta.waChatId;
   const _fmtBody = (text) => `${personaEmoji} ${personaName}: ${String(text ?? '')}`;
   const _canStream = _gateAllow && typeof streamFactory === 'function' && meta.fromWhatsApp && _chatId != null;
   let _stream = null;
+  const _streamOpts = { chatId: _chatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: personaName };
+  // A MENTION opens the stream UPFRONT (🤔 thinking… → reply → ✅, showThink) and
+  // ALWAYS surfaces — even a '…'. An unmentioned auto-on turn streams LAZILY
+  // (opens on the first real token, no placeholder) so a silent turn never
+  // pollutes the chat (operator 2026-06-23).
+  if (_canStream && _isMention) {
+    _stream = streamFactory(_fmtBody('🤔 thinking…'), { ..._streamOpts, showThink: true });
+  }
   const _onPartial = _canStream
     ? (partial) => {
         const t = String(partial ?? '');
         if (!t.trim()) return;
-        if (!_stream) _stream = streamFactory(_fmtBody(t), { chatId: _chatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: personaName });
+        if (!_stream) _stream = streamFactory(_fmtBody(t), _streamOpts);
         else _stream.update(_fmtBody(t));
       }
     : () => {};
@@ -505,12 +514,15 @@ export async function dispatchPersonaTurn({
   // chats, but in system-e (Self) its '…' is delivered (a real signal there).
   // An EMPTY reply never ships anywhere (nothing to send; we never manufacture a
   // '…' the model didn't give). Reached only past the mode gate.
+  // A MENTION always surfaces (even '…' — the operator asked, a reply is owed).
+  // Only an UNMENTIONED conversation-e represses '…' (ambient quiet). An EMPTY
+  // reply never ships anywhere (nothing to send; never manufactured).
   const _emptyReply = String(reply ?? '').trim() === '';
-  const _repressDots = !threadCtx._isSystemPersonality;   // conversation-e represses '…'
-  if (_emptyReply || (isSilence(reply) && _repressDots)) {
+  const _repress = !_isMention && !threadCtx._isSystemPersonality;
+  if (_emptyReply || (isSilence(reply) && _repress)) {
     if (_stream) await _stream.delete?.();   // remove anything streamed
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-    logOut(`@e: silence from ${where} (${_emptyReply ? 'empty' : 'conversation-e represses …'} — not sent)`);
+    logOut(`@e: silence from ${where} (${_emptyReply ? 'empty' : 'unmentioned conversation-e represses …'} — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
 

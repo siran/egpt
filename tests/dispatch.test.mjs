@@ -49,7 +49,22 @@ describe('dispatchPersonaTurn — single streaming path (WA)', () => {
     expect(turn.kind).toBe('suppressed');
   });
 
-  it('deletes the stream when conversation-e represses a … reply', async () => {
+  it('a MENTION opens 🤔 upfront and surfaces even a … reply', async () => {
+    const rec = { updates: [] };
+    const turn = await dispatchPersonaTurn(baseArgs({
+      meta: { fromWhatsApp: true, waChatId: 'wa1', replyAllowed: true, inboundLine: '@e there?', mention: true },
+      streamFactory: mkStream(rec),
+      // conversation-e replying just '…' — but it was MENTIONED, so it surfaces
+      runDefaultBrainTurn: async (_t, onPartial, threadCtx) => { threadCtx._isSystemPersonality = false; onPartial('…'); return '…'; },
+    }));
+    expect(rec.opened.initial).toBe('🐶 egpt: 🤔 thinking…');   // upfront placeholder
+    expect(rec.opened.opts.showThink).toBe(true);              // 🤔 → ✅ sequence
+    expect(rec.deleted).toBeUndefined();                        // NOT repressed — mention surfaces
+    expect(rec.finished).toBe('🐶 egpt: …');                    // '…' delivered
+    expect(turn.kind).toBe('reply');
+  });
+
+  it('deletes the stream when an UNMENTIONED conversation-e represses a … reply', async () => {
     const rec = { updates: [] };
     const turn = await dispatchPersonaTurn(baseArgs({
       streamFactory: mkStream(rec),
