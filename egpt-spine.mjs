@@ -769,7 +769,7 @@ const BRAIN_STATE_DIR = join(EGPT_HOME, 'brain-state');
 // leaving room for chrome/profiles/extension/ etc. when the extension
 // gets its own dedicated browser. The legacy path is still recognized
 // for one-time auto-migration when Chrome isn't holding it open.
-const CHROME_BRAIN_PROFILE        = join(EGPT_HOME, 'browser', 'chrome', 'profiles', 'brain');
+const CHROME_BRAIN_PROFILE        = join(EGPT_HOME, 'config', 'browser', 'chrome', 'profiles', 'brain');
 const LEGACY_CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'egpt-brain');
 const USER_BRAIN_PROFILE_DIR = join(EGPT_HOME, 'brains');
 const PROJECT_BRAIN_PROFILE_DIR = join(process.cwd(), '.egpt', 'brains');
