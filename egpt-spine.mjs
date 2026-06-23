@@ -34,7 +34,7 @@ import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // WA via file IPC (~/.egpt/inbox + ~/.egpt/outbox).
 import { classifyWhatsAppChat } from './src/bridges/whatsapp-classify.mjs';
 import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult } from './dispatch.mjs';
-import { startOutboxWatcher, createInProcessStreamChannel, startInboxWatcher } from './src/egpt-comm-handler.mjs';
+import { startOutboxWatcher, createInProcessStreamChannel } from './src/egpt-comm-handler.mjs';
 import { startBeeperBridge } from './src/bridges/beeper.mjs';
 import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUrlBrain } from './src/persona-state.mjs';
 import * as conversationsState from './conversations-state.mjs';
@@ -505,7 +505,7 @@ for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
       const _oldPid = _info.pid ?? null;
       const _oldSha = _info.sha ?? '?';
       const _hashLine = _oldSha && _oldSha !== _sha ? `${_oldSha} → ${_sha}` : _sha;
-      const _postFile = join(homedir(), '.egpt', 'outbox', `${Date.now()}-restart-post.json`);
+      const _postFile = join(homedir(), '.egpt', 'state', 'outbox', `${Date.now()}-restart-post.json`);
       writeFileSync(_postFile, JSON.stringify({
         type: 'wa-send', from: 'system', ts: Date.now(), jid: _info.jid,
         body: `🧠 egpt back! pid ${process.pid}${_oldPid ? ` (was ${_oldPid})` : ''} · ${_hashLine}${_subj ? ` "${_subj}"` : ''}${_down != null ? ` · ${_down}s down` : ''}`,
@@ -3349,7 +3349,7 @@ function startSpineRuntime() {
               // reach the Self residents (system-e / system-l) instead of being
               // dropped as a self-echo. They see it and may react.
               const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: waBody, deliverEcho: true };
-              await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+              await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'), JSON.stringify(ev));
             }
           }
         } catch (e) { console.error(`!! confirmMirror: ${e?.message ?? e}`); }
@@ -4163,7 +4163,7 @@ function startSpineRuntime() {
       id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
     });
     return startOutboxWatcher({
-      outboxDir:              join(EGPT_HOME, 'outbox'),
+      outboxDir:              join(EGPT_HOME, 'state', 'outbox'),
       dispatchWaSend:         (payload, src) => dispatchWaSendRef.current?.(payload, src),
       dispatchWaGroupSubject: (payload, src) => dispatchWaGroupSubjectRef.current?.(payload, src),
       dispatchWaGroupMembers: (payload, src) => dispatchWaGroupMembersRef.current?.(payload, src),
@@ -4174,42 +4174,6 @@ function startSpineRuntime() {
       // this becomes a restart-handler event the keeper sends to
       // the wrapper, without exiting the keeper itself.
       signalRestart:  () => setTimeout(() => process.exit(0), 100),
-    });
-  }, []);
-
-  // Phase 2c step 3a (passive listener): handler-side inbox watcher.
-  // Today the handler still owns baileys via startWaBridge, so any
-  // wa-inbound events arriving in ~/.egpt/inbox/ would double-dispatch
-  // if we routed them through submitRef. Until the keeper is the SOLE
-  // baileys owner (Phase 2c step 4: handler stops calling
-  // startBaileysBridge, the service spawns the keeper alongside),
-  // the listener is passive: it logs every received event to /log
-  // but does NOT dispatch. That proves the wire works end-to-end
-  // (file IPC → handler) without risking the double-dispatch.
-  // When the operator flips the handler-side gate (config flag or
-  // env var, TBD), this onEvent gets replaced with real dispatch
-  // via the extracted processWaIncoming function.
-  startEffect(() => {
-    // inbox is the spine-side WA-inbound watcher.
-    const sysLog = (msg) => pushItem({
-      id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: msg,
-    });
-    return startInboxWatcher({
-      inboxDir: join(EGPT_HOME, 'inbox'),
-      log: sysLog,
-      onEvent: (ev) => {
-        // Passive: log and consume so files don't pile up. Real
-        // dispatch lands when the keeper actually owns baileys.
-        const t = ev?.type ?? '<missing>';
-        const from = ev?.from ?? '?';
-        const preview =
-          t === 'wa-inbound' ? ` chat=${ev.chatId} body=${JSON.stringify(String(ev.body ?? '').slice(0, 60))}`
-          : t === 'wa-chat-id' ? ` chat=${ev.chatId}`
-          : t === 'wa-media-saved' ? ` ${ev.kind} ${ev.chatJid} ${(ev.sizeBytes ?? 0)}b`
-          : '';
-        sysLog(`inbox[${from}]: ${t}${preview}  (passive — not dispatched, keeper-as-baileys-owner not yet wired)`);
-        return true;  // consume so the file is unlinked
-      },
     });
   }, []);
 
@@ -6154,7 +6118,7 @@ function startSpineRuntime() {
         if (!selfDm) return;
         const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: selfDm, body: message };
         const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-        await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+        await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'), JSON.stringify(ev));
       },
       runUrlBrainTurn: async ({ brain, brainType, dbCfg, text, onPartial, threadCtx, logActivity }) => {
         const url = dbCfg.url;
@@ -6428,7 +6392,7 @@ function startSpineRuntime() {
         const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
         const _outboxSend = async (jid, body, from) => {
           const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-          await writeFile(join(EGPT_HOME, 'outbox', id + '.json'),
+          await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'),
             JSON.stringify({ type: 'wa-send', from, ts: Date.now(), jid, body: String(body) }));
         };
         const final = await runAgentLoop({
@@ -7823,7 +7787,7 @@ function startSpineRuntime() {
               if (replyText && replyText !== '...' && replyText !== '…') {
                 const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
                 const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: selfDm, body: replyText };
-                await writeFile(join(EGPT_HOME, 'outbox', id + '.json'), JSON.stringify(ev));
+                await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'), JSON.stringify(ev));
               }
             } catch (e) {
               sysOut(`!! /-prompt-to-system-e failed: ${e?.message ?? e}`);
@@ -8351,7 +8315,7 @@ function startSpineRuntime() {
             const _selfDm = EGPT_CONFIG.whatsapp?.chat_id;
             if (_think && _selfDm) {
               const _id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-              writeFile(join(EGPT_HOME, 'outbox', _id + '.json'),
+              writeFile(join(EGPT_HOME, 'state', 'outbox', _id + '.json'),
                 JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid: _selfDm, body: `🦙 ${sibName} 💭\n${_think}` }))
                 .catch(() => {});
             }

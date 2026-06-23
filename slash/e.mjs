@@ -174,7 +174,7 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
     const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     const body = mode === 'persona' ? `🧠 eGPT: persona → ${personaName}` : `🧠 eGPT: reboot — persona "${personaName}"`;
     const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: targetJid, body };
-    await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+    await writeFile(join(homedir(), '.egpt', 'state', 'outbox', id + '.json'), JSON.stringify(ev));
   } catch (e) {
     sysOut(`!! /e ${mode}: outbox marker write failed — ${e?.message ?? e}`);
   }
@@ -195,7 +195,7 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
     if (originJid && originJid !== targetJid && ackText && ackText !== '...' && ackText !== '…') {
       const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
       const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
-      await writeFile(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+      await writeFile(join(homedir(), '.egpt', 'state', 'outbox', id + '.json'), JSON.stringify(ev));
     }
   } catch (e) {
     sysOut(`!! /e ${mode} ${slug}: kickoff failed — ${e?.message ?? e}`);

@@ -71,8 +71,8 @@ async function announceBounce({ ctx, meta, preBody }) {
   // gets a duplicate, and often out-of-order (it's outbox-delayed until the new
   // spine reconnects), "respawning on <sha>" message (operator 2026-06-01).
   if (!meta?.fromWhatsApp) {
-    await mkdir(join(EGPT_HOME, 'outbox'), { recursive: true });
-    await writeFile(join(EGPT_HOME, 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
+    await mkdir(join(EGPT_HOME, 'state', 'outbox'), { recursive: true });
+    await writeFile(join(EGPT_HOME, 'state', 'outbox', `${Date.now()}-restart-pre.json`), JSON.stringify({
       type: 'wa-send', from: 'system', ts: Date.now(), jid: selfJid, body: preBody(sha),
     }));
   }

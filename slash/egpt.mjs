@@ -257,7 +257,7 @@ export async function run({ arg, meta, ctx }) {
         if (originJid && ackText && ackText !== '...' && ackText !== '…') {
           const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
           const ev = { type: 'wa-send', from: 'e', ts: Date.now(), jid: originJid, body: ackText };
-          await writeFileAsync(join(homedir(), '.egpt', 'outbox', id + '.json'), JSON.stringify(ev));
+          await writeFileAsync(join(homedir(), '.egpt', 'state', 'outbox', id + '.json'), JSON.stringify(ev));
         }
       } catch (e) {
         sysOut(`!! /egpt new ${targetSlug}: kickoff failed — ${e?.message ?? e}`);

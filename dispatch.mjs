@@ -662,7 +662,7 @@ export function createDispatchRuntime({
       `Read, Bash, Edit, Grep, WebFetch, WebSearch, and the rest`,
       `claude-code exposes. Use them when relevant. The files at`,
       `~/.egpt/ and ~/src/egpt/ actually exist; you can ls them. The`,
-      `outbox events you write to ~/.egpt/outbox/ actually get sent.`,
+      `outbox events you write to ~/.egpt/state/outbox/ actually get sent.`,
       `If a request needs the web, a file, or past context — use the`,
       `tool, don't apologize for being Claude. Your WORKING DIRECTORY is`,
       `THIS conversation's OWN folder (you are sandboxed to it): Read`,
