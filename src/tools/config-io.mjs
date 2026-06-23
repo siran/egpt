@@ -75,14 +75,22 @@ export async function writeConfig(cfg) {
 // Siblings live in per-sibling files: ~/.egpt/agent/<name>.yaml (one file each,
 // extracted from config.yaml 2026-06-23). Loaded at boot + merged into
 // EGPT_CONFIG.siblings — every reader uses EGPT_CONFIG.siblings unchanged.
-export const AGENT_DIR = join(homedir(), '.egpt', 'agent');
+// Sibling configs moved under ~/.egpt/config/agents/ (operator 2026-06-23); reads
+// fall back to the pre-move ~/.egpt/agent/ so the migration can't lose siblings.
+export const AGENT_DIR = join(homedir(), '.egpt', 'config', 'agents');
+const LEGACY_AGENT_DIR = join(homedir(), '.egpt', 'agent');
+function _readAgentDir(dir) {
+  if (dir !== AGENT_DIR) return dir;             // explicit override (tests) — honor it
+  return existsSync(AGENT_DIR) ? AGENT_DIR : (existsSync(LEGACY_AGENT_DIR) ? LEGACY_AGENT_DIR : AGENT_DIR);
+}
 
-// Files only — skips subdirs like agent/l/ (the @l resident memory). Returns
+// Files only — skips subdirs like agents/l/ (the @l resident memory). Returns
 // { name: cfg }. Sync because EGPT_CONFIG is built at module-import time.
 export function loadSiblingFilesSync(dir = AGENT_DIR) {
   const out = {};
   let entries = [];
-  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  try { entries = readdirSync(_readAgentDir(dir), { withFileTypes: true }); } catch { return out; }
+  dir = _readAgentDir(dir);
   for (const ent of entries) {
     if (!ent.isFile() || !ent.name.endsWith('.yaml')) continue;
     const name = ent.name.slice(0, -5);
