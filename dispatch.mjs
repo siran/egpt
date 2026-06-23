@@ -169,7 +169,7 @@ function isSilence(reply) {
 
 async function appendActivity({ fs, paths, clock, logger, type, surface, threadId, fields = [] }) {
   try {
-    await fs.mkdir(paths.stateDir, { recursive: true });
+    await fs.mkdir(dirname(paths.activityLog), { recursive: true });
     await fs.appendFile(
       paths.activityLog,
       [clockIso(clock), type, `${surface ?? '?'}/${threadId ?? '?'}`, ...fields].join('\t') + '\n',
@@ -484,12 +484,19 @@ export async function dispatchPersonaTurn({
     logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
     return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
-  // 'on'-mode politeness cosmetic, reached ONLY after the mode gate already
-  // allowed a reply — E may decline by replying just '...'. It is NOT a gating
-  // input (a mode-blocked chat never gets here), just a no-noise courtesy.
-  if (isSilence(reply)) {
+  // Politeness cosmetic, reached ONLY after the mode gate already allowed a
+  // reply — E may decline by replying just '...'. It is NOT a gating input (a
+  // mode-blocked chat never gets here), just a no-noise courtesy.
+  // EXCEPTION (operator 2026-06-23): when the user DIRECTLY addressed E (@e
+  // mention / reply-to-E), the '...' is surfaced instead of dropped — a direct
+  // ping deserves an acknowledgment, not dead air (which reads as "E is broken").
+  // A truly-empty reply is still dropped (nothing to surface — usually a brain
+  // hiccup, not a deliberate silence).
+  const _directMention = !!(meta.atEAnywhere || meta.replyToBot);
+  const _emptyReply = String(reply ?? '').trim() === '';
+  if (isSilence(reply) && (!_directMention || _emptyReply)) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-    logOut(`@e: polite '...' from ${where} (skipped — not sent)`);
+    logOut(`@e: polite '...' from ${where} (skipped — not sent; directMention=${_directMention})`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
 
