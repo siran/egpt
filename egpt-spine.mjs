@@ -440,8 +440,12 @@ let EGPT_CONFIG = {};
 // dynamic import path (silent catch hid it for hours). The catch
 // below now SHOUTS and queues a Self DM alert.
 try {
-  const { readConfigSync } = await import('./src/tools/config-io.mjs');
+  const { readConfigSync, loadSiblingFilesSync } = await import('./src/tools/config-io.mjs');
   EGPT_CONFIG = readConfigSync();
+  // Siblings now live in per-sibling files (~/.egpt/agent/<name>.yaml); merge them
+  // over config.yaml.siblings (empty post-extraction, kept only as a fallback).
+  const _sibFiles = loadSiblingFilesSync();
+  if (Object.keys(_sibFiles).length) EGPT_CONFIG.siblings = { ...(EGPT_CONFIG.siblings ?? {}), ..._sibFiles };
 } catch (e) {
   // eslint-disable-next-line no-console
   console.error(configLoadFailureConsoleMessage(e));
@@ -6375,17 +6379,16 @@ function startSpineRuntime() {
           if (!EGPT_CONFIG.meta_brain || typeof EGPT_CONFIG.meta_brain !== 'object') EGPT_CONFIG.meta_brain = {};
           EGPT_CONFIG.meta_brain.session_id = sessionId ?? null;
         }
-        const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
-        const cfg = await readConfig();
         if (source.startsWith('siblings.')) {
-          if (!cfg.siblings || typeof cfg.siblings !== 'object') cfg.siblings = {};
-          if (!cfg.siblings[selectedName] || typeof cfg.siblings[selectedName] !== 'object') cfg.siblings[selectedName] = {};
-          cfg.siblings[selectedName].session_id = sessionId ?? null;
+          const { writeSiblingSessionId } = await import('./src/tools/config-io.mjs');
+          await writeSiblingSessionId(selectedName, sessionId);
         } else {
+          const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
+          const cfg = await readConfig();
           if (!cfg.meta_brain || typeof cfg.meta_brain !== 'object') cfg.meta_brain = {};
           cfg.meta_brain.session_id = sessionId ?? null;
+          await writeConfig(cfg);
         }
-        await writeConfig(cfg);
       } catch (e) {
         sysOut(`!! @${selectedName}: couldn't persist session_id: ${e.message}`);
       }
