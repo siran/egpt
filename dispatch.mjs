@@ -409,6 +409,10 @@ export async function dispatchPersonaTurn({
   personaEmoji = '🐶',
   personaName = decision?.name ?? 'egpt',
   runDefaultBrainTurn,
+  // WA edit-stream factory (streamFactoryRef.current). When present, the persona
+  // reply edit-streams as the brain generates instead of a one-shot send. Null →
+  // one-shot via deliverBridgeReply (shell / Telegram / tests).
+  streamFactory = null,
   // Optional: execute an own-line slash command emitted in the brain's reply.
   // (line, meta) -> { isCommand, handled }. isCommand=false means "not a real
   // command, fold back into prose"; true means strip it (ran or blocked). The
@@ -465,20 +469,32 @@ export async function dispatchPersonaTurn({
     ? { threadId: meta.telegramChatId ?? 'tg-unknown', surface: 'tg' }
     : { threadId: 'shell', surface: 'shell' };
 
-  const reply = await runDefaultBrainTurn(personaPrompt, () => {}, threadCtx);
-  // MODE GATE FIRST — the per-chat auto-mode is authoritative; the model's reply
-  // text is IRRELEVANT to whether @e may speak (operator 2026-06-04: "MODEL'S
-  // REPLY IS IRRELEVANT FOR GATING … no reply to a prompt can go anywhere
-  // ungated"). The brain still RAN (so E has the message in context), but a chat
-  // whose mode + mention-status don't permit a reply gets NOTHING delivered,
-  // whatever the reply says.
-  //
-  // Fails CLOSED for WA: replyAllowed must be EXPLICITLY true. An undefined flag
-  // (a caller that forgot to thread it) must NOT emit. The previous
-  // `replyAllowed === false` test was fail-OPEN — undefined passed it, so @e's
-  // reflections leaked into Joyce's mention-mode chat whenever the reply wasn't
-  // a pure '...'. (Same class as the pile-drain leak; this path never got it.)
+  // MODE GATE is known BEFORE the turn (it's the chat's reply PERMISSION, not the
+  // reply text — operator 2026-06-04: "MODEL'S REPLY IS IRRELEVANT FOR GATING").
+  // Fails CLOSED for WA: replyAllowed must be EXPLICITLY true.
   const _gateAllow = meta.fromWhatsApp ? (meta.replyAllowed === true) : (meta.replyAllowed !== false);
+
+  // SINGLE STREAMING PATH (operator 2026-06-23): the persona reply edit-streams as
+  // the brain generates, via the same WA streamFactory the resident path uses.
+  // LAZY — the stream opens on the FIRST real token, so a mode-withheld or silent
+  // turn never posts a placeholder (no gate-on-silence delete for the common case).
+  const _chatId = meta.waChatId;
+  const _fmtBody = (text) => `${personaEmoji} ${personaName}: ${String(text ?? '')}`;
+  const _canStream = _gateAllow && typeof streamFactory === 'function' && meta.fromWhatsApp && _chatId != null;
+  let _stream = null;
+  const _onPartial = _canStream
+    ? (partial) => {
+        const t = String(partial ?? '');
+        if (!t.trim()) return;
+        if (!_stream) _stream = streamFactory(_fmtBody(t), { chatId: _chatId, replyAllowed: meta.replyAllowed, isReaction: meta.isReaction, persona: personaName });
+        else _stream.update(_fmtBody(t));
+      }
+    : () => {};
+
+  const reply = await runDefaultBrainTurn(personaPrompt, _onPartial, threadCtx);
+  // The brain still RAN (so E has the message in context), but a chat whose mode +
+  // mention-status don't permit a reply gets NOTHING delivered (we never opened a
+  // stream — _canStream was false), whatever the reply says.
   if (!_gateAllow) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
     logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
@@ -492,6 +508,7 @@ export async function dispatchPersonaTurn({
   const _emptyReply = String(reply ?? '').trim() === '';
   const _repressDots = !threadCtx._isSystemPersonality;   // conversation-e represses '…'
   if (_emptyReply || (isSilence(reply) && _repressDots)) {
+    if (_stream) await _stream.delete?.();   // remove anything streamed
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
     logOut(`@e: silence from ${where} (${_emptyReply ? 'empty' : 'conversation-e represses …'} — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
@@ -519,23 +536,32 @@ export async function dispatchPersonaTurn({
     deliverReply = proseLines.join('\n').trim();
     // Command-only turn: the action(s) ran, there's no prose to send.
     if (emitted.length && !deliverReply) {
+      if (_stream) await _stream.delete?.();   // nothing to render
       return { kind: 'commands', reply: '', threadCtx, personaPrompt, emitted };
     }
   }
 
-  const delivery = await deliverBridgeReply({
-    bridge,
-    clock,
-    errOut,
-    fs,
-    logger,
-    mdToTgHtml,
-    meta,
-    personaEmoji,
-    personaName,
-    reply: deliverReply,
-    stateDir,
-  });
+  // Deliver: finish the live stream (edit it to the final prose), or one-shot via
+  // deliverBridgeReply when we never streamed (shell / Telegram / no factory).
+  let delivery;
+  if (_stream) {
+    await _stream.finish(_fmtBody(deliverReply));
+    delivery = { sent: true, streamed: true };
+  } else {
+    delivery = await deliverBridgeReply({
+      bridge,
+      clock,
+      errOut,
+      fs,
+      logger,
+      mdToTgHtml,
+      meta,
+      personaEmoji,
+      personaName,
+      reply: deliverReply,
+      stateDir,
+    });
+  }
   return { kind: 'reply', reply: deliverReply, threadCtx, delivery, personaPrompt, emitted };
 }
 

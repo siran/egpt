@@ -4,10 +4,62 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createDispatchRuntime, isBrainFailureResult } from '../dispatch.mjs';
+import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult } from '../dispatch.mjs';
 import { parse, serialize } from '../conversations-state.mjs';
 import { resolveRoute } from '../src/room.mjs';
 import { parseInput } from '../src/interpreter.mjs';
+
+describe('dispatchPersonaTurn — single streaming path (WA)', () => {
+  const mkStream = (rec) => (initial, opts) => {
+    rec.opened = { initial, opts };
+    return {
+      update: (b) => rec.updates.push(b),
+      finish: async (b) => { rec.finished = b; },
+      delete: async () => { rec.deleted = true; },
+    };
+  };
+  const baseArgs = (over = {}) => ({
+    bridge: { send: async () => ({ ok: true }) },
+    meta: { fromWhatsApp: true, waChatId: 'wa1', replyAllowed: true, inboundLine: 'hi' },
+    personaEmoji: '🐶', personaName: 'egpt',
+    logOut: () => {},
+    ...over,
+  });
+
+  it('edit-streams as the brain generates, finishes with the final prose', async () => {
+    const rec = { updates: [] };
+    const turn = await dispatchPersonaTurn(baseArgs({
+      streamFactory: mkStream(rec),
+      runDefaultBrainTurn: async (_t, onPartial) => { onPartial('hel'); onPartial('hello'); return 'hello'; },
+    }));
+    expect(rec.opened.initial).toBe('🐶 egpt: hel');        // lazy-opened on FIRST token
+    expect(rec.updates).toContain('🐶 egpt: hello');         // streamed
+    expect(rec.finished).toBe('🐶 egpt: hello');             // committed final
+    expect(turn.kind).toBe('reply');
+  });
+
+  it('never opens a stream for a withheld (mode-gated) turn', async () => {
+    const rec = { updates: [] };
+    const turn = await dispatchPersonaTurn(baseArgs({
+      meta: { fromWhatsApp: true, waChatId: 'wa1', replyAllowed: false, inboundLine: 'hi' },   // gate closed
+      streamFactory: mkStream(rec),
+      runDefaultBrainTurn: async (_t, onPartial) => { onPartial('hi'); return 'hi'; },
+    }));
+    expect(rec.opened).toBeUndefined();   // _canStream false → onPartial is a no-op
+    expect(turn.kind).toBe('suppressed');
+  });
+
+  it('deletes the stream when conversation-e represses a … reply', async () => {
+    const rec = { updates: [] };
+    const turn = await dispatchPersonaTurn(baseArgs({
+      streamFactory: mkStream(rec),
+      // conversation-e (not system personality) → '…' is repressed
+      runDefaultBrainTurn: async (_t, onPartial, threadCtx) => { threadCtx._isSystemPersonality = false; onPartial('…'); return '…'; },
+    }));
+    expect(rec.deleted).toBe(true);
+    expect(turn.kind).toBe('silence');
+  });
+});
 
 describe('isBrainFailureResult — tool/infra errors are NOT a sibling reply', () => {
   it('detects the failure shapes that must not be emitted/recirculated', () => {
