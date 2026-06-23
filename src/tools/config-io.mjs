@@ -9,7 +9,7 @@
 // always go to YAML. JSON is renamed to .bak after migration.
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
@@ -56,4 +56,39 @@ export async function readConfig() {
 export async function writeConfig(cfg) {
   await mkdir(dirname(CONFIG_YAML_PATH), { recursive: true });
   await writeFile(CONFIG_YAML_PATH, YAML.stringify(cfg, { lineWidth: 100 }), 'utf8');
+}
+
+// Siblings live in per-sibling files: ~/.egpt/agent/<name>.yaml (one file each,
+// extracted from config.yaml 2026-06-23). Loaded at boot + merged into
+// EGPT_CONFIG.siblings — every reader uses EGPT_CONFIG.siblings unchanged.
+export const AGENT_DIR = join(homedir(), '.egpt', 'agent');
+
+// Files only — skips subdirs like agent/l/ (the @l resident memory). Returns
+// { name: cfg }. Sync because EGPT_CONFIG is built at module-import time.
+export function loadSiblingFilesSync(dir = AGENT_DIR) {
+  const out = {};
+  let entries = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const ent of entries) {
+    if (!ent.isFile() || !ent.name.endsWith('.yaml')) continue;
+    const name = ent.name.slice(0, -5);
+    try {
+      const doc = YAML.parse(readFileSync(join(dir, ent.name), 'utf8'));
+      if (doc && typeof doc === 'object') out[name] = doc;
+    } catch (e) { console.error(`!! loadSiblingFiles(${ent.name}): ${e?.stack ?? e?.message ?? e}`); }
+  }
+  return out;
+}
+
+// Persist a sibling's session_id to its OWN agent/<name>.yaml, comment-preserving
+// (parseDocument keeps the per-sibling _note + comments — unlike a whole-config
+// YAML.stringify rewrite, which dropped them).
+export async function writeSiblingSessionId(name, sessionId, dir = AGENT_DIR) {
+  const fp = join(dir, `${name}.yaml`);
+  await mkdir(dir, { recursive: true });
+  let doc;
+  try { doc = YAML.parseDocument(await readFile(fp, 'utf8')); }
+  catch { doc = new YAML.Document({}); }
+  doc.setIn(['session_id'], sessionId ?? null);
+  await writeFile(fp, doc.toString());
 }
