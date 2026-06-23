@@ -64,6 +64,13 @@ export function buildClaudeArgs(options = {}) {
     const at = options.allowedTools;
     if (at === 'all' || at === '*') {
       // Trusted (engineers / system-e): full access, belt + suspenders.
+      // --setting-sources '' so egpt's beings DON'T inherit the operator's
+      // personal ~/.claude.json — esp. its MCP servers (Gmail/Google/etc.),
+      // whose ~30 tool schemas bloat every turn's prompt and slow inference
+      // (operator 2026-06-23: system-E went 4-6s → 14s after MCP servers were
+      // added). A being's tools come from egpt's own args, not the operator's
+      // dev config. (The confined path already does this.)
+      args.push('--setting-sources', '');
       args.push('--dangerously-skip-permissions');
       args.push('--permission-mode', 'bypassPermissions');
     } else {
