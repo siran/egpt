@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 async function readActivity(dir) {
-  return realFs.readFile(join(dir, 'state', 'e-activity.log'), 'utf8');
+  return realFs.readFile(join(dir, 'logs', 'access.log'), 'utf8');
 }
 
 async function readConvState(dir) {
