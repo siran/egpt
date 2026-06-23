@@ -492,7 +492,7 @@ export async function dispatchPersonaTurn({
   // ping deserves an acknowledgment, not dead air (which reads as "E is broken").
   // A truly-empty reply is still dropped (nothing to surface — usually a brain
   // hiccup, not a deliberate silence).
-  const _directMention = !!(meta.atEAnywhere || meta.replyToBot);
+  const _directMention = !!(meta.directMention || meta.atEAnywhere || meta.replyToBot);
   const _emptyReply = String(reply ?? '').trim() === '';
   if (isSilence(reply) && (!_directMention || _emptyReply)) {
     const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
