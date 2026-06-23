@@ -9,20 +9,32 @@
 // always go to YAML. JSON is renamed to .bak after migration.
 
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 
-export const CONFIG_YAML_PATH = join(homedir(), '.egpt', 'config.yaml');
+// Canonical config now lives under ~/.egpt/config/ (operator 2026-06-23). Read
+// resolves the new location first, then the pre-move root path (~/.egpt/config.yaml)
+// so the migration can't brick boot; writes always go to the new config/ location.
+export const CONFIG_YAML_PATH = join(homedir(), '.egpt', 'config', 'config.yaml');
+const LEGACY_CONFIG_YAML = join(homedir(), '.egpt', 'config.yaml');
 export const CONFIG_JSON_LEGACY = join(homedir(), '.egpt', 'config.json');
+
+// The config.yaml to READ from — new config/ location, else the legacy root.
+function _readConfigYamlPath() {
+  if (existsSync(CONFIG_YAML_PATH)) return CONFIG_YAML_PATH;
+  if (existsSync(LEGACY_CONFIG_YAML)) return LEGACY_CONFIG_YAML;
+  return null;
+}
 
 // Sync reader — egpt.mjs loads EGPT_CONFIG at module import time before
 // any async machinery is available. Try YAML first; on miss but JSON
 // present, migrate in place + return parsed object.
 export function readConfigSync() {
-  if (existsSync(CONFIG_YAML_PATH)) {
-    try { return YAML.parse(readFileSync(CONFIG_YAML_PATH, 'utf8')) ?? {}; }
+  const yamlPath = _readConfigYamlPath();
+  if (yamlPath) {
+    try { return YAML.parse(readFileSync(yamlPath, 'utf8')) ?? {}; }
     catch (e) { console.error(`!! readConfigSync(YAML): ${e?.stack ?? e?.message ?? e}`); return {}; }
   }
   if (existsSync(CONFIG_JSON_LEGACY)) {
@@ -33,6 +45,7 @@ export function readConfigSync() {
     // place so subsequent runs can retry — caller still gets the parsed
     // config either way.
     try {
+      mkdirSync(dirname(CONFIG_YAML_PATH), { recursive: true });
       writeFileSync(CONFIG_YAML_PATH, YAML.stringify(cfg, { lineWidth: 100 }), 'utf8');
       renameSync(CONFIG_JSON_LEGACY, CONFIG_JSON_LEGACY + '.bak');
     } catch (e) { console.error(`!! readConfigSync(migrate): ${e?.stack ?? e?.message ?? e}`); }
@@ -42,8 +55,9 @@ export function readConfigSync() {
 }
 
 export async function readConfig() {
-  if (existsSync(CONFIG_YAML_PATH)) {
-    try { return YAML.parse(await readFile(CONFIG_YAML_PATH, 'utf8')) ?? {}; }
+  const yamlPath = _readConfigYamlPath();
+  if (yamlPath) {
+    try { return YAML.parse(await readFile(yamlPath, 'utf8')) ?? {}; }
     catch (e) { console.error(`!! readConfig(YAML): ${e?.stack ?? e?.message ?? e}`); return {}; }
   }
   if (existsSync(CONFIG_JSON_LEGACY)) {

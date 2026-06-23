@@ -34,7 +34,7 @@ export function setBusInvalidSigHandler(fn) { _onInvalidSig = fn; }
 // Default path for the shell-side key file. Used by loadOrCreateBusKey
 // when no explicit override is given. Lives outside the source tree
 // so it survives repo re-clones.
-export const DEFAULT_KEY_PATH = path.join(os.homedir(), '.egpt', 'bus.key');
+export const DEFAULT_KEY_PATH = path.join(os.homedir(), '.egpt', 'config', 'bus.key');
 
 // Load (or create) the shell-side bus key. Order of precedence:
 //   1. process.env.EGPT_BUS_KEY — for one-shot overrides, CI, etc.

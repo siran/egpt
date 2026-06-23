@@ -521,7 +521,7 @@ for (const w of configWarnings(EGPT_CONFIG)) console.error(w);
 // comments). /config edits it IN PLACE comment-preservingly (yaml parseDocument)
 // — the separate config.local.json overlay was retired 2026-06-22 and its values
 // merged in. Anchored to a STABLE ~/.egpt path, NOT process.cwd().
-const CONFIG_PATH = join(EGPT_HOME, 'config.yaml');
+const CONFIG_PATH = join(EGPT_HOME, 'config', 'config.yaml');
 const T = loadTheme(EGPT_CONFIG.theme ?? 'catppuccin');
 let _currentTheme = EGPT_CONFIG.theme ?? 'catppuccin';
 
@@ -769,7 +769,7 @@ const BRAIN_STATE_DIR = join(EGPT_HOME, 'brain-state');
 // leaving room for chrome/profiles/extension/ etc. when the extension
 // gets its own dedicated browser. The legacy path is still recognized
 // for one-time auto-migration when Chrome isn't holding it open.
-const CHROME_BRAIN_PROFILE        = join(EGPT_HOME, 'chrome', 'profiles', 'brain');
+const CHROME_BRAIN_PROFILE        = join(EGPT_HOME, 'browser', 'chrome', 'profiles', 'brain');
 const LEGACY_CHROME_BRAIN_PROFILE = join(EGPT_HOME, 'egpt-brain');
 const USER_BRAIN_PROFILE_DIR = join(EGPT_HOME, 'brains');
 const PROJECT_BRAIN_PROFILE_DIR = join(process.cwd(), '.egpt', 'brains');
