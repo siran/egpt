@@ -559,10 +559,9 @@ const clickablePath = (displayText, absPath) => {
 // .md still records everything for forensics; this is purely a view
 // filter. Keep persona/brain replies and file-save notes (those carry
 // real content); drop slash command echoes, prior /last headers, bus /
-// telegram / whatsapp lifecycle one-liners.
+// whatsapp lifecycle one-liners.
 const _META_PATTERNS = [
   /^bus: peer (online|offline)/,
-  /^telegram: (yielded|re-claimed|outbound|not running|disconnected|bridge stopped)/,
   /^whatsapp: (outbound|not running|disconnected|bridge stopped|configured but)/,
   /^exiting with code/,
   /^⛈ storm:/,
@@ -5620,7 +5619,6 @@ function startSpineRuntime() {
       stateDir: EGPT_HOME,
       getSelfDmConfig: () => ({
         whatsapp: EGPT_CONFIG.whatsapp?.chat_id ?? null,
-        telegram: EGPT_CONFIG.telegram?.chat_id ?? null,
       }),
       readPersonality: (personality) => conversationsState.readPersonality(personality),
       readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),

@@ -29,10 +29,6 @@ describe('mesh envelope', () => {
   });
 
   it('derives return addresses from dispatch metadata', () => {
-    expect(returnAddressForMeta({ fromTelegram: true, telegramChatId: 123 })).toEqual({
-      surface: 'telegram',
-      chat_id: '123',
-    });
     expect(returnAddressForMeta({ fromWhatsApp: true, waChatId: 'abc@g.us' })).toEqual({
       surface: 'whatsapp',
       chat_id: 'abc@g.us',

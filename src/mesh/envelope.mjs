@@ -30,9 +30,6 @@ export function nextMeshTtl(event, fallback = DEFAULT_MESH_TTL) {
 }
 
 export function returnAddressForMeta(meta = {}) {
-  if (meta.fromTelegram && meta.telegramChatId != null) {
-    return { surface: 'telegram', chat_id: String(meta.telegramChatId) };
-  }
   if (meta.fromWhatsApp && meta.waChatId != null) {
     return { surface: 'whatsapp', chat_id: String(meta.waChatId) };
   }
