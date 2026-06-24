@@ -63,7 +63,7 @@ import { createEngine } from './src/engine/index.mjs';
 import { MODE_NOTES, modeNote, bodyMentionsBrain, bodyMentionsAny, resolveChatAutoMode, isLlamaBeing } from './src/dispatch-helpers.mjs';
 import { createJoinedChats } from './src/wa-joined.mjs';
 import { loadReplyTargets as _loadReplyTargets, saveReplyTargets as _saveReplyTargets, stableIdForItem as _stableIdForItem } from './src/reply-targets.mjs';
-import { mdToTgHtml, formatItemForTelegram as _formatItemForTelegram, formatItemForWhatsApp as _formatItemForWhatsApp } from './src/item-format.mjs';
+import { formatItemForWhatsApp as _formatItemForWhatsApp } from './src/item-format.mjs';
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
@@ -1810,8 +1810,6 @@ function itemFormatOptions() {
     authorEmojiOptions: _AUTHOR_EMOJI_OPTS,
   };
 }
-const formatItemForTelegram = (item, sessions) =>
-  _formatItemForTelegram(item, sessions, itemFormatOptions());
 const formatItemForWhatsApp = (item, sessions) =>
   _formatItemForWhatsApp(item, sessions, itemFormatOptions());
 
@@ -1858,7 +1856,6 @@ function startSpineRuntime() {
     items = applyState(items, next);
     onItemsChanged(prev);
   };
-  const sentItemsCountRef = ref(0);
   const sentToWaItemsCountRef = ref(0);
   // Render every item the engine emits (Phase C). The flow is
   // pushItem(x) → engine.emit(x) → this subscriber → setItems append.
@@ -2118,7 +2115,6 @@ function startSpineRuntime() {
   ));
   const _helpReply = (surface, chatId, body) => {
     if (surface === 'whatsapp' && chatId && waBridgeRef.current) waBridgeRef.current.send(body, { chatId });
-    else if (surface === 'telegram' && chatId && bridgeRef.current) bridgeRef.current.send(body, { chatId });
     else sysOut(body);
   };
   // Returns true if the message was consumed by the menu (caller stops).
@@ -2523,7 +2519,6 @@ function startSpineRuntime() {
               .catch(e => logOut(`!! room ${roomName} → ${m.id} routed E: ${e?.message ?? e}`));
           }
         }
-        else if (m.kind === 'tg-group') bridgeRef.current?.send(env, { chatId: m.id });
         else if (m.kind === 'shell' || m.kind === 'extension') {
           // Show the envelope so the operator can read along.
           pushItem({ id: Date.now() + Math.random(), author: `room@${roomName}`, body: env });
@@ -2727,10 +2722,9 @@ function startSpineRuntime() {
   const setBrowserWaiting = (next) => { browserWaiting = applyState(browserWaiting, next); };
   const exit = (code = 0) => process.exit(code);
 
-  // Refs so background bridges (Telegram) can call submit() and forward new
-  // items without depending on render closures. submitRef updated each render.
+  // Refs so background bridges can call submit() and forward new items without
+  // depending on render closures. submitRef updated each render.
   const submitRef = ref(null);
-  const bridgeRef = ref(null);
   const wizardRef = ref(null);
   // STOP — the bridge's definite kill-switch + bot↔bot loop-guard (C7.7). One
   // instance, persisted across renders. Every dispatch checks it at submitInner;
@@ -2762,9 +2756,9 @@ function startSpineRuntime() {
     return bridge;
   };
   // Where sysOut output should land. 'local' = mark items _localOnly so
-  // they don't bounce to Telegram or peers; 'remote' = let them through.
-  // The submit handler flips this to 'remote' when meta.fromTelegram so
-  // /help and /sessions issued from Telegram reach Telegram. Default is
+  // they don't bounce to bridges or peers; 'whatsapp' = let them through.
+  // The submit handler flips this to 'whatsapp' when meta.fromWhatsApp so
+  // /help and /sessions issued from WhatsApp reach WhatsApp. Default is
   // 'local' — most sysOut calls (startup status, bus dispatcher logs,
   // local slash commands) are operational noise that doesn't belong in
   // the conversation feed.
@@ -4094,34 +4088,6 @@ function startSpineRuntime() {
     }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
   }
 
-  // Broadcast our polling state on change so /telegram (no arg) on peers
-  // can show a fresh picture without round-trips.
-  // Forward every NEW item to the Telegram bridge. Track sent count via ref so
-  // bulk additions (/last replays) flush all of them, not just the tail.
-  // Items tagged _localOnly stay out of Telegram (e.g. the "(telegram message
-  // from X)" arrival note, the user's own [You] echo when they typed via
-  // Telegram). The bridge itself drops sends until a chat_id is known, so
-  // pre-Telegram backlog never floods the chat when someone connects later.
-  //
-  // The counter advances even when bridgeRef is null (we yielded the polling
-  // slot). That avoids a backlog flood + duplicate-with-peer-mirror when we
-  // later reclaim: items typed during the yield should be carried to telegram
-  // by whichever peer holds the slot at that moment, not retroactively by us.
-  function mirrorNewTelegramItems() {
-    const b = bridgeRef.current;
-    while (sentItemsCountRef.current < items.length) {
-      const item = items[sentItemsCountRef.current++];
-      if (item._localOnly) continue;
-      // _source tags the surface this item came from. Skip mirroring
-      // back to its own surface (avoid echo loops).
-      if (item._source === 'telegram') continue;
-      // _target restricts a sysOut response to one bridge — used for
-      // slash command output so /sessions in WA doesn't leak to TG.
-      if (item._target && item._target !== 'telegram') continue;
-      if (b) b.send(formatItemForTelegram(item, sessions));
-    }
-  }
-
   // Symmetric mirror to WhatsApp. Default target is the user's
   // 'Message Yourself' chat (selfDmJid, derived from the bridge's
   // own JID). Override via config: whatsapp.mirror_chat_id (a JID
@@ -4196,7 +4162,6 @@ function startSpineRuntime() {
 
   function onItemsChanged(prev = []) {
     assignVisibleItemIds();
-    mirrorNewTelegramItems();
     mirrorNewWhatsAppItems();
     if (items.length !== prev.length) _scheduleReplyTargetSave();
   }
@@ -4975,8 +4940,6 @@ function startSpineRuntime() {
     // still uses the shell sysOut — a follow-up to route too.
     const _cmdSysOut = (meta?.fromWhatsApp && meta.waChatId && waBridgeRef.current)
       ? (body) => { sysOut(body); try { waBridgeRef.current.send(String(body), { chatId: meta.waChatId }); } catch (e) { errOut(`cmd-reply wa: ${e?.message ?? e}`); } }
-      : (meta?.fromTelegram && meta.telegramChatId && bridgeRef.current)
-      ? (body) => { sysOut(body); try { bridgeRef.current.send(String(body), { chatId: meta.telegramChatId }); } catch (e) { errOut(`cmd-reply tg: ${e?.message ?? e}`); } }
       : sysOut;
 
     // File-command dispatch lane. Any cmd registered by a slash/*.mjs
@@ -5047,12 +5010,10 @@ function startSpineRuntime() {
         // Batch 4 additions
         outputSinkRef,                               // for /help to respect sink
         brainNamesForHelp,                           // help template substitutions
-        tgBridgeRef:           bridgeRef,            // for /status
         listConversationFiles,                       // for /conversations
         CONVERSATION_DIRS,                           // search-dir constants
         resolveConversationSpec,                     // name/path → absolute
         setFile: (p) => { FILE = p; },               // /conversation mutates FILE
-        sentItemsCountRef,                           // reset on conversation swap
         // Batch 5 additions
         setSessions,                                 // mutate sessions runtime state
         writeBrainProfileState,                      // persist a session to disk
@@ -5229,7 +5190,6 @@ function startSpineRuntime() {
         // in that chat (operator 2026-06-14: "/rules didn't show the rules in the
         // chat"). Falls back to sysOut when there's no originating bridge chat.
         replyHere: (t) => {
-          if (meta.fromTelegram && meta.telegramChatId) return bridgeRef.current?.send?.(t, { chatId: meta.telegramChatId });
           if (meta.fromWhatsApp && meta.waChatId) return waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
           return sysOut(t);
         },
@@ -5367,14 +5327,6 @@ function startSpineRuntime() {
     // UTC ISO 'YYYY-MM-DD HH:MM' — consistent with reply envelope in
     // runDefaultBrainTurn. Operator (2026-05-21): no mixed local/UTC.
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
-    if (meta.fromTelegram) {
-      const user = meta.telegramUser ?? 'someone';
-      const chat = meta.telegramChatId ?? 'unknown';
-      // TG chat-name lookup isn't wired yet (the TG bridge doesn't
-      // track titles by chat_id — defer to a follow-up). The chatId
-      // alone still distinguishes which TG conversation it is.
-      return `[${stamp}, in Telegram chat ${chat}, ${user} said:]\n${body}`;
-    }
     if (meta.fromWhatsApp) {
       const user = meta.waUser ?? 'someone';
       const chat = meta.waChatId ?? 'unknown';
@@ -6322,31 +6274,18 @@ function startSpineRuntime() {
   async function runBrainTurn(routedTo, messageOrObj, sessionMap = sessions, callOpts = {}) {
     const messageText = typeof messageOrObj === 'string' ? messageOrObj : (messageOrObj?.message ?? '');
     const askText    = typeof messageOrObj === 'string' ? null : (messageOrObj?.ask ?? null);
-    const tgChatId  = callOpts.tgChatId  ?? null;
-    const tgReplyTo = callOpts.tgReplyTo ?? null;
     const waChatId  = callOpts.waChatId  ?? null;
     // ROOM DISPATCH: when true, this turn produces ONLY a return value — no
     // bridge streams, no committed shell item, no conversation.md append. The
     // caller (_deliverToRoom) mirrors the text to the room's members itself.
-    // Without this, a room brain reply with no tg/wa chat id falls back to the
+    // Without this, a room brain reply with no wa chat id falls back to the
     // bridge's lastChat — re-introducing the leak class we just removed. Default
     // off, so the normal shell @session path is unchanged.
     const noBridge = !!callOpts.noBridge;
-    // show-think: when true for this TG chat, the streaming "thinking" message
-    // is frozen in place and the clean final reply is posted as a NEW message
-    // (a reply to the original message that triggered the turn).
-    // Toggle via: /e auto show-think on|off
-    // show-think is DEFAULT-ON for Telegram (operator 2026-06-14: "show_think can
-    // be default"). Beyond the visible 🤔/✅, it's load-bearing for bot↔bot: it
-    // posts the answer as its OWN message, whereas plain mode EDITS the "thinking…"
-    // placeholder — and the bridge doesn't subscribe to edits, so a peer would
-    // never see the answer. Disable globally with telegram.show_think: false.
-    const tgShowThink = !!(tgChatId && EGPT_CONFIG.telegram?.show_think !== false);
     // Bridge selection rule: when a turn was triggered by an upstream
-    // bridge (Telegram OR WhatsApp), only that bridge gets the reply
-    // (route back to the chat that asked). For local typing, both
-    // bridges send (each to their lastChat).
-    const fromAnyBridge = !!tgChatId || !!waChatId;
+    // bridge (WhatsApp), only that bridge gets the reply (route back to the
+    // chat that asked). For local typing, the bridge sends to its lastChat.
+    const fromAnyBridge = !!waChatId;
     const session = sessionMap[routedTo];
     if (!session) { sysOut(`!! no session "${routedTo}"`); return null; }
     const brain = brainForName(session.brain);
@@ -6437,46 +6376,21 @@ function startSpineRuntime() {
       _osFocusBrainChrome();
     }
 
-    // If Telegram is connected, send a placeholder message that we'll edit
-    // in place as the stream progresses. This gives Telegram users the
-    // same "thinking → text" experience as the local shell. The eventual
-    // committed item is tagged _localOnly so we don't double-deliver.
-    const sessEmoji = sessionMap[routedTo]?.emoji ?? '❓';
-    const authorPrefix = `${sessEmoji} <b>${escapeHtml(routedTo)}@${SURFACE_TAG}</b>`;
-    // tgChatId / waChatId route the streaming reply to the chat that
-    // originated the request. When fromAnyBridge is true we only call
-    // the originating bridge; for local typing we call both (each goes
-    // to its target chat — see resolveWaStreamTarget below for the
-    // /join-aware WA target).
-    // Stream to a bridge ONLY when this turn explicitly came from that bridge
-    // (route the reply back to the chat that asked). NEVER fall back to the
-    // bridge's lastChat: that sends a shell/room-initiated reply to whatever
-    // WA/TG chat happened to message last — which leaked @e's answer to the
-    // operator into Eduardo's chat (operator 2026-06-02). Shell/room replies
-    // reach the operator via the shell + self-DM mirror + the room — never a
-    // bridge guess. (Removing the legacy /join deleted _waJoinedFirst, which had
-    // been masking this lastChat fallback.)
-    const tg = (!noBridge && tgChatId)
-      ? bridgeRef.current?.startStreamMessage?.(
-          tgShowThink
-            ? renderThink({ header: `💭 ${authorPrefix}`, body: '', escape: escapeHtml })
-            : `${authorPrefix}\n⌛ thinking…`,
-          { chatId: tgChatId })
-      : null;
     const waPrefix = `${routedTo}@${SURFACE_TAG}`;
     // Named-brain reply: replyAllowed:true because the brain was explicitly
     // addressed (the caller already nulled waChatId for mute/off/paused chats);
     // the chokepoint re-confirms via the same gate. waChatId here is only set
     // for a chat the gate already permitted.
+    // Stream to the WA bridge ONLY when this turn explicitly came from it
+    // (route the reply back to the chat that asked). NEVER fall back to the
+    // bridge's lastChat: that sends a shell/room-initiated reply to whatever
+    // WA chat happened to message last — which leaked @e's answer to the
+    // operator into Eduardo's chat (operator 2026-06-02). Shell/room replies
+    // reach the operator via the shell + self-DM mirror + the room — never a
+    // bridge guess.
     const wa = (!noBridge && waChatId)
       ? streamFactoryRef.current?.(`${waPrefix}\n⌛ thinking…`, { chatId: waChatId, replyAllowed: true, persona: routedTo })
       : null;
-    const tgFmt = (text) => {
-      // Show only the trailing ~3500 chars during streaming so it fits in
-      // Telegram's 4096-char message cap (even with our prefix).
-      const tail = text.length > 3500 ? '…' + text.slice(-3500) : text;
-      return `${authorPrefix}\n${escapeHtml(tail)} ⌛`;
-    };
 
     let lastStreamingText = '';
     try {
@@ -6486,11 +6400,6 @@ function startSpineRuntime() {
         partial => {
           lastStreamingText = partial;
           setStreaming({ author: routedTo, text: partial });
-          // show-think streams the live thinking with the "(thinking... 🤔)"
-          // suffix (HTML-escaped body); otherwise the plain "… ⌛" stream.
-          tg?.update(tgShowThink
-            ? renderThink({ header: `💭 ${authorPrefix}`, body: partial, escape: escapeHtml })
-            : tgFmt(partial));
           // WhatsApp doesn't support edit-streaming the way Telegram
           // does. We only forward update() so the bridge's buffer stays
           // current; finish() does the single send.
@@ -6530,22 +6439,16 @@ function startSpineRuntime() {
         });
       }
       // Per-bridge "already-streamed" tags. The reply has just been
-      // streamed-and-finished into tg (if any) and into one WA chat
-      // (waStreamChatId — origin chat for WA-arrived, first joined
-      // for local). Tag the local item so the items-mirror skips the
-      // bridges/chats that already got it WITHOUT blocking fan-out
-      // to OTHER joined WA chats. _localOnly fallback only when we
-      // streamed to WA via lastChat (unknown chat) and there are no
-      // joined targets to fan out to.
+      // streamed-and-finished into one WA chat (waStreamChatId — origin
+      // chat for WA-arrived, first joined for local). Tag the local item
+      // so the items-mirror skips the chats that already got it WITHOUT
+      // blocking fan-out to OTHER joined WA chats.
       const tagsAlreadySent = {
-        ...(tg ? { _source: 'telegram' } : {}),
         ...(wa ? { _sourceChatId: waChatId } : {}),   // wa only set when waChatId is explicit
       };
       const isSilence = trimmed === '' || /^(\.{3,}|…+)$/.test(trimmed);   // empty == silence (no faked '…')
       if (isSilence) {
-        // Quiet ack: render as the session itself with a single em-dash body,
-        // both locally and on Telegram.
-        await tg?.finish(`${authorPrefix}\n—`);
+        // Quiet ack: render as the session itself with a single em-dash body.
         await wa?.finish(`${waPrefix}\n—`);
         if (!noBridge) pushItem({
           id: Date.now() + Math.random(), author: routedTo, body: '—',
@@ -6555,19 +6458,6 @@ function startSpineRuntime() {
         return null;
       }
       // Finalize the streaming bridge messages with the full text.
-      const finalTail = final.length > 3900 ? '…' + final.slice(-3900) : final;
-      if (tgShowThink && tg) {
-        // show-think mode: freeze the in-progress streaming message as the
-        // "thinking" artifact (💭 + the last streamed snapshot) with the
-        // "(done ✅)" finished signal, then post the clean final as a NEW reply
-        // to the original message.
-        const snap = lastStreamingText.trim();
-        await tg.finish(renderThink({ header: `💭 ${authorPrefix}`, body: snap, escape: escapeHtml, done: true }));
-        bridgeRef.current?.send?.(`${authorPrefix}\n${mdToTgHtml(finalTail)}`,
-          { chatId: tgChatId, replyTo: tgReplyTo ?? undefined });
-      } else {
-        await tg?.finish(`${authorPrefix}\n${mdToTgHtml(finalTail)}`);
-      }
       await wa?.finish(`${waPrefix}\n${final}`);
       if (!noBridge) {
         pushItem({
@@ -6579,7 +6469,6 @@ function startSpineRuntime() {
       return final;
     } catch (e) {
       setStreaming(null);
-      await tg?.finish(`${authorPrefix}\n!! ${escapeHtml(e.message)}`);
       await wa?.finish(`${waPrefix}\n!! ${e.message}`);
       sysOut(`!! ${routedTo}: ${e.message}`);
       return null;
@@ -6592,7 +6481,7 @@ function startSpineRuntime() {
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
     // re-dispatch) goes through the interactive help menu first.
-    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched
+    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
         && _maybeHandleHelp(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
       return;
     }
@@ -6607,7 +6496,7 @@ function startSpineRuntime() {
     // routed @cgpt1 hello gets dispatched to cgpt1) must not re-route — that
     // would re-fan the same body back into the room. Loop-safe on the same
     // principle as isRoomEnvelope on the wa-group side.
-    if (!meta.fromWhatsApp && !meta.fromTelegram && !meta.forceTarget && !meta.autoDispatched && !meta._routedFromRoom) {
+    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched && !meta._routedFromRoom) {
       // Enriched senderLabel: {user}@{node}.shell (HH:MM) — same shape as
       // the WA route's {pushName}@{chatName}.wa (HH:MM), so readers can tell
       // which surface and which node a routed line came from.
@@ -6619,13 +6508,12 @@ function startSpineRuntime() {
       }).catch(e => errOut(`!! _maybeRouteToRooms(shell): ${e?.message ?? e}`));
     }
 
-    // Tell sysOut where this submit's output should go. fromTelegram means
-    // the user issued the command from Telegram and the response should
+    // Tell sysOut where this submit's output should go. fromWhatsApp means
+    // the user issued the command from WhatsApp and the response should
     // flow back there; otherwise it stays local. Reset in finally so a
     // crashing submit doesn't leak the 'remote' sink to later sysOut calls
     // (e.g. bus event logs).
-    outputSinkRef.current = meta.fromTelegram ? 'telegram'
-      : meta.fromWhatsApp ? 'whatsapp'
+    outputSinkRef.current = meta.fromWhatsApp ? 'whatsapp'
       : 'local';
     try {
     return await submitInner(raw, text, meta);
@@ -6670,8 +6558,6 @@ function startSpineRuntime() {
       return (b && n) ? { being: b.toLowerCase(), node: n.toLowerCase() } : null;
     },
     send: async (route, textOut) => {
-      const limb = String(route?.limb ?? '').toLowerCase();
-      if ((limb === 'telegram' || limb === 'tg') && bridgeRef.current) { bridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
       if (waBridgeRef.current) { await waBridgeRef.current.send(textOut, { chatId: route.room_id }); return; }
       throw new Error(`mesh: no limb available for route ${route?.limb}`);
     },
@@ -6683,7 +6569,6 @@ function startSpineRuntime() {
       // neutral mesh marker) so the reply is unmistakably the being's voice.
       const being = info.by ? String(info.by).split('.')[0].toLowerCase() : '';
       const tag = info.emoji || (being ? (EGPT_CONFIG.siblings?.[being]?.body_emoji ?? '') : '') || (info.by ? '🔗' : '');
-      if (returnTo?.surface === 'telegram' && bridgeRef.current) { bridgeRef.current.send(`${tag || EGPT_EMOJI} <i>${escapeHtml(textOut)}</i>`, { chatId: returnTo.chat_id }); return; }
       const waBody = tag ? `${tag} ${textOut}` : textOut;
       if (returnTo?.surface === 'whatsapp' && waBridgeRef.current) { await waBridgeRef.current.send(waBody, { chatId: returnTo.chat_id }); return; }
       sysOut(waBody);
@@ -6743,9 +6628,6 @@ function startSpineRuntime() {
         // editMessage / startStreamMessage({existingMsgId}).
         const msgId = await waBridgeRef.current.sendAndGetId(text, { chatId: returnTo.chat_id });
         return msgId ?? null;
-      }
-      if (returnTo?.surface === 'telegram' && bridgeRef.current) {
-        bridgeRef.current.send(text, { chatId: returnTo.chat_id });
       }
       return null;
     },
@@ -6811,10 +6693,9 @@ function startSpineRuntime() {
     // which only blocks emit. See src/stop-guard.mjs.
     {
       const g = _stopGuardRef.current;
-      const ch = meta._heartbeatConv?.chatId ?? meta.telegramChatId ?? meta.waChatId ?? null;
+      const ch = meta._heartbeatConv?.chatId ?? meta.waChatId ?? null;
       const ack = (t) => {
-        if (meta.fromTelegram && meta.telegramChatId) bridgeRef.current?.send?.(t, { chatId: meta.telegramChatId });
-        else if (meta.fromWhatsApp && meta.waChatId) waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
+        if (meta.fromWhatsApp && meta.waChatId) waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
         else sysOut(t);
       };
       // Operator safe-word: STOP / STOP ALL / RESUME / RESUME ALL.
@@ -6841,10 +6722,10 @@ function startSpineRuntime() {
         // consumes it instead of re-relaying. onRoomMessage ignores requests not
         // addressed to this node, and replies it doesn't own.
         if (typeof text === 'string' && parseMesh(text)) {
-          const _meshChat = meta.telegramChatId ?? meta.waChatId ?? null;
-          const _route = { limb: meta.fromTelegram ? 'telegram' : 'whatsapp', room_id: _meshChat != null ? String(_meshChat) : null };
+          const _meshChat = meta.waChatId ?? null;
+          const _route = { limb: 'whatsapp', room_id: _meshChat != null ? String(_meshChat) : null };
           // msgId correlates a streamed relayed reply's first frame with its edits.
-          const _msgId = meta.waMsgKey ?? meta.telegramMessageId ?? null;
+          const _msgId = meta.waMsgKey ?? null;
           if (await meshRelay.onRoomMessage({ route: _route, text, msgId: _msgId })) return;
         }
       }
@@ -6872,12 +6753,11 @@ function startSpineRuntime() {
         if (_foreign.length) {
           const _ret = returnAddressForMeta(meta);
           const _originName = (meta.fromWhatsApp ? waBridgeRef.current?.getChatName?.(meta.waChatId)
-                             : meta.fromTelegram ? bridgeRef.current?.getChatName?.(meta.telegramChatId)
                              : null) || _ret.chat_id || 'origin';
           const _origin = { ..._ret, name: _originName };
           const _sender = meta.waSenderName ?? meta.senderName ?? 'someone';
           const _sent = new Set();
-          const _meshOutMsgId = meta.waMsgKey ?? meta.telegramMessageId ?? null;
+          const _meshOutMsgId = meta.waMsgKey ?? null;
           for (const _a of _foreign) {
             if (_sent.has(_a.node)) continue;      // one relay per target node (this dispatch)
             _sent.add(_a.node);
@@ -6900,7 +6780,7 @@ function startSpineRuntime() {
       // being-turn. Consecutive being-turns with no human between → warn (the
       // channel + the bots, who self-silence), then auto-STOP. (egpt's own emit is
       // counted at the emit point — wired next.)
-      const inbound = (meta.fromTelegram || meta.fromWhatsApp) && !meta._heartbeatConv && !meta._routedFromRoom;
+      const inbound = meta.fromWhatsApp && !meta._heartbeatConv && !meta._routedFromRoom;
       if (inbound) {
         if (meta.fromBot) {
           // A peer bot's thinking ARTIFACT ("⌛ thinking…" / "(thinking... 🤔)" /
@@ -6963,7 +6843,7 @@ function startSpineRuntime() {
     //   TG: bot.sendMessage with reply_to_message_id
     //   brain reply: dispatch to that brain as a follow-up
     //   local typing / system: refuses with a hint
-    if (!meta.fromTelegram && !meta.fromWhatsApp) {
+    if (!meta.fromWhatsApp) {
       // Two reply forms:
       //   @m<N> body         — session-local short id (resets on restart)
       //   @<stable-id> body  — stable id (wa-<key>, tg-<chat>-<msg>, or
@@ -7051,7 +6931,6 @@ function startSpineRuntime() {
         // are dispatched the same way.
         const rtList = Array.isArray(rt) ? rt : (rt ? [rt] : []);
         const waTargets = rtList.filter(t => t?.kind === 'wa');
-        const tgTargets = rtList.filter(t => t?.kind === 'tg');
         // Collect the WA send-result keys so the echo can carry the
         // resulting messages as _replyTarget — that makes the echo's
         // stable id wa-<key.id> (instead of a random u-<rnd>) and
@@ -7077,21 +6956,7 @@ function startSpineRuntime() {
             }
           }
         }
-        if (tgTargets.length) {
-          const tg = bridgeRef.current;
-          for (const t of tgTargets) {
-            if (tg) {
-              try {
-                const r = tg.send(body, { chatId: t.chatId, replyTo: t.msgId });
-                // TG bridge.send isn't awaitable in the same way; if a
-                // future change makes it return the message id we can
-                // collect it the same way as wa above.
-                void r;
-              } catch (e) { sysOut(`!! @${shortId} tg reply failed: ${e.message}`); }
-            }
-          }
-        }
-        if (waTargets.length || tgTargets.length) {
+        if (waTargets.length) {
           // Echo + record locally — typed prompt is sacred, so the
           // body is the operator's raw input verbatim (text), not a
           // reconstructed '↳ @<full-id>\n<body>'. If the operator
@@ -7105,7 +6970,6 @@ function startSpineRuntime() {
             id: Date.now() + Math.random(), author: 'You',
             body: text,
             _directWa: !!waTargets.length,
-            _localOnly: !waTargets.length && !!tgTargets.length,
             ...(rt ? { _replyTarget: rt } : {}),
           });
           void append('You', text);
@@ -7170,14 +7034,11 @@ function startSpineRuntime() {
     // routing back to the originating chat, but observers reading the
     // transcript don't need the JID.
     const waClient = EGPT_CONFIG.whatsapp?.client_name ?? 'wa';
-    const tgClient = EGPT_CONFIG.telegram?.client_name ?? 'tg';
     // waClientLabel: when the WA arrival is from a group, the bridge
     // overrides the bare client_name with '<group-slug>.wa' so the
     // handle conveys the group. Falls back to waClient for 1:1 chats.
     const waClientForTag = meta.waClientLabel ?? waClient;
-    const echoAuthor = (meta.fromTelegram && meta.telegramUser)
-      ? `${stripAt(meta.telegramUser)}@${tgClient}`
-      : (meta.fromWhatsApp && meta.waUser)
+    const echoAuthor = (meta.fromWhatsApp && meta.waUser)
       ? `${stripAt(meta.waUser)}@${waClientForTag}`
       : 'You';
     const isSlashCommand = text.startsWith('/');
@@ -7188,17 +7049,16 @@ function startSpineRuntime() {
     // is destined for the joined chat. In either case we tag the echo
     // _directWa so the wa-items-mirror skips it — otherwise the same
     // message also lands in 'Message Yourself', which was the bug.
-    const isAtWaNExplicit = !meta.fromTelegram && !meta.fromWhatsApp
+    const isAtWaNExplicit = !meta.fromWhatsApp
       && /^@wa\d+\s+/i.test(text);
-    const willDirectWa = !isSlashCommand && !meta.fromTelegram && !meta.fromWhatsApp
+    const willDirectWa = !isSlashCommand && !meta.fromWhatsApp
       && (isAtWaNExplicit || _waJoinedSize() > 0);
     // Slash commands are operator tooling, not part of the conversation
     // — they stay local. Bridge-arrived messages mirror to OTHER bridges
     // (e.g. WA arrival → TG mirror) but skip the bridge they came from
     // (no echo loop). _source carries the origin so each surface's
     // items-mirror can decide.
-    const echoSource = meta.fromTelegram ? 'telegram'
-      : meta.fromWhatsApp ? 'whatsapp'
+    const echoSource = meta.fromWhatsApp ? 'whatsapp'
       : null;
     // observeOnly: this submit came from a chat the operator hasn't
     // designated as an egpt chat (e.g. a friend's WhatsApp DM) AND
@@ -7232,8 +7092,6 @@ function startSpineRuntime() {
         // this same item id.
         ...(meta.fromWhatsApp && meta.waMsgKey
           ? { _replyTarget: { kind: 'wa', chatId: meta.waChatId, key: meta.waMsgKey, raw: meta.waMsgRaw ?? null } }
-          : meta.fromTelegram && meta.telegramMessageId
-          ? { _replyTarget: { kind: 'tg', chatId: meta.telegramChatId, msgId: meta.telegramMessageId } }
           : {}),
         ...(willDirectWa ? { _directWa: true } : {}),
       });
@@ -7271,16 +7129,12 @@ function startSpineRuntime() {
     const _broadcastRoomUtterance = () => {
       const tid = busTargetIdRef.current;
       if (!tid || isSlashCommand || meta.observeOnly) return;
-      const fromTg = !!meta.fromTelegram;
       const fromWa = !!meta.fromWhatsApp;
-      const via = fromTg ? `telegram[${meta.telegramChatId ?? '?'}]`
-        : fromWa ? `whatsapp[${meta.waChatId ?? '?'}]`
+      const via = fromWa ? `whatsapp[${meta.waChatId ?? '?'}]`
         : null;
-      const utteranceUser = fromTg ? (meta.telegramUser ?? USER_NAME)
-        : fromWa ? (meta.waUser ?? USER_NAME)
+      const utteranceUser = fromWa ? (meta.waUser ?? USER_NAME)
         : USER_NAME;
-      const client = fromTg ? tgClient
-        : fromWa ? (meta.waClientLabel ?? waClient)
+      const client = fromWa ? (meta.waClientLabel ?? waClient)
         : null;
       bus.postEvent(tid, {
         type: 'room-utterance', from: BUS_NODE_ID, ts: Date.now(),
@@ -7395,8 +7249,8 @@ function startSpineRuntime() {
       // dispatched (because the chat is observe-only and the message
       // didn't include a @persona wake-word).
       try {
-        const chatId = meta.waChatId ?? meta.telegramChatId ?? 'shell';
-        const surface = meta.fromWhatsApp ? 'wa' : meta.fromTelegram ? 'tg' : 'shell';
+        const chatId = meta.waChatId ?? 'shell';
+        const surface = meta.fromWhatsApp ? 'wa' : 'shell';
         await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
         const preview = String(text ?? '').slice(0, 80).replace(/\n/g, '↵');
         await appendFile(join(EGPT_HOME, 'state', 'e-activity.log'),
@@ -7466,7 +7320,7 @@ function startSpineRuntime() {
     // for shell-typed input (a bridge-sourced @waN would loop). The
     // output line references the chat NAME so the user can confirm
     // they're hitting the right group, not just a number.
-    if (!meta.fromTelegram && !meta.fromWhatsApp) {
+    if (!meta.fromWhatsApp) {
       const waMatch = text.match(/^@wa(\d+)\s+([\s\S]+)$/i);
       if (waMatch) {
         const idx = parseInt(waMatch[1], 10) - 1;
@@ -7509,7 +7363,6 @@ function startSpineRuntime() {
       // EGPT_CONFIG.mesh.nodes.<node>.routes is configured.
       const returnTo = returnAddressForMeta(meta);
       const _origName = (meta.fromWhatsApp ? waBridgeRef.current?.getChatName?.(meta.waChatId)
-                       : meta.fromTelegram ? bridgeRef.current?.getChatName?.(meta.telegramChatId)
                        : null) || returnTo.chat_id || 'origin';
       await meshRelay.relayOut({
         being: decision.name,
@@ -7528,7 +7381,7 @@ function startSpineRuntime() {
       // local or peer, can hear AND the message came from the local
       // shell (the hint coaches the operator typing here; bridge users
       // weren't asking for advice — they were chatting / replicating).
-      const fromBridge = !!meta.fromTelegram || !!meta.fromWhatsApp;
+      const fromBridge = !!meta.fromWhatsApp;
       if (peerNodesRef.current.size === 0 && !fromBridge) {
         logOut('the room is empty — /attach to bring in CDP tabs, /open <brain> to register a participant, or /help for slash commands that work without a brain');
       }
@@ -7540,7 +7393,7 @@ function startSpineRuntime() {
       // don't auto-call a brain. Hint how to opt in — but only for
       // shell-local input. Bridge-arrived text is conversational, not
       // an attempt to address a brain; the hint would be noise.
-      if (meta.fromTelegram || meta.fromWhatsApp) return;
+      if (meta.fromWhatsApp) return;
       const names = Object.keys(sessions).slice(0, 3).join(', ') || '(none)';
       logOut(`message stayed in the room — no active brain. Address one with @<name> (e.g. ${names}), or /use <name> (single) or /use a,b,c (multi-AI) for plain-text routing.`);
       return;
@@ -7596,7 +7449,6 @@ function startSpineRuntime() {
         const personaCfg  = (EGPT_CONFIG.siblings ?? {})[personaName] ?? {};
         const personaEmoji = personaCfg.body_emoji ?? personaCfg.emoji ?? EGPT_PERSONA_EMOJI;
         const bridgeForReply = meta.fromWhatsApp ? waBridgeRef.current
-          : meta.fromTelegram ? bridgeRef.current
           : null;
         // Let the resident DRIVE commands: an own-line slash command in its
         // reply runs through the same handleSlash pipeline the operator uses,
@@ -7631,7 +7483,6 @@ function startSpineRuntime() {
           getWaChatName: (chatId) => waBridgeRef.current?.getChatName?.(chatId) ?? null,
           getWaChatSlug: (chatId) => waBridgeRef.current?.getChatSlug?.(chatId) ?? null,
           logOut,
-          mdToTgHtml,
           meta,
           personaEmoji,
           personaName,
@@ -7667,7 +7518,7 @@ function startSpineRuntime() {
           // Observed-chat invocation: reply went to the originating
           // chat above. Log to /log for operator audit; don't
           // populate the transcript or broadcast on the bus.
-          const where = meta.waChatId ?? meta.telegramChatId ?? '?';
+          const where = meta.waChatId ?? '?';
           const preview = reply.length > 200 ? reply.slice(0, 200) + '…' : reply;
           logOut(`(observed @egpt in ${where}): ${preview}`);
         } else {
@@ -7675,15 +7526,14 @@ function startSpineRuntime() {
           // _source tag: the bridge that asked. Items-mirror to that
           // bridge will skip (we direct-send above); items-mirror to
           // OTHER bridges still fires (cross-surface visibility).
-          const replySource = meta.fromTelegram ? 'telegram'
-            : meta.fromWhatsApp ? 'whatsapp'
+          const replySource = meta.fromWhatsApp ? 'whatsapp'
             : null;
           // _sourceChatId: the WA chat the streamed reply already
           // landed in (via waStream.finish above). Items-mirror's
           // per-target loop uses this to skip that ONE chat while
           // still fanning out to OTHER joined chats — without it,
           // the brain reply double-posts in the origin chat. Set
-          // for WA-arrived @e turns; left unset for local / TG.
+          // for WA-arrived @e turns; left unset for local.
           pushItem({
             id: Date.now() + Math.random(),
             author: replyAuthor,
@@ -7699,8 +7549,7 @@ function startSpineRuntime() {
           // same bridge we already direct-sent to.
           const tid = busTargetIdRef.current;
           if (tid) {
-            const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
-              : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+            const via = meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
               : null;
             bus.postEvent(tid, {
               type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
@@ -7825,7 +7674,6 @@ function startSpineRuntime() {
             && EGPT_CONFIG.siblings?.[sibName]?.memory !== false) {
           _siblingTurns = await _buildSiblingTurns(meta.waChatId, sibName, decision.body, Number(EGPT_CONFIG.siblings?.[sibName]?.history_chars ?? 4000));
         }
-        const tgPrefix = `${sibEmoji} <b>${sibName}</b>\n`;
         const waPrefix = `${sibEmoji} ${sibName}\n`;
         // A resident being can self-select OUT of a message by replying with
         // '…' (or empty) — we then post nothing. Operator 2026-05-24: "can
@@ -7864,30 +7712,6 @@ function startSpineRuntime() {
         const _waMayEmit = meta.fromWhatsApp
           ? _eMayReplyToChat(meta.waChatId, { replyAllowed: meta.replyAllowed, isReaction: meta.isReaction })
           : true;
-        const _tgMayEmit = meta.fromTelegram ? (meta.replyAllowed !== false) : true;
-        // show-think: per-chat two-message Telegram mode. The streaming reply
-        // carries the LIVE thinking (marked 💭 …, suffixed "(thinking... 🤔)" so
-        // an in-progress turn is unmistakable); on finish it is FROZEN as the
-        // thinking artifact and the clean final answer is posted as a NEW reply
-        // to the original message — the arriving reply IS the "finished" signal.
-        // Computed once here (not just at finish) so the live updates can mark
-        // the thinking too. Toggle via: /e auto show-think on|off.
-        // show-think DEFAULT-ON (operator 2026-06-14): visible 🤔/✅, and the
-        // answer goes out as its OWN message so a peer bot actually receives it
-        // (plain mode edits the placeholder; the bridge ignores edits). Disable
-        // globally with telegram.show_think: false.
-        const _tgShowThink = !!(meta.fromTelegram && meta.telegramChatId &&
-          EGPT_CONFIG.telegram?.show_think !== false);
-        const tgStream = (_streaming && meta.fromTelegram && bridgeRef.current?.startStreamMessage && _tgMayEmit)
-          ? bridgeRef.current.startStreamMessage(
-              // show-think: 💭 header, blank line, then the live thinking body
-              // (renderThink → src/show-think.mjs spaces the statements + adds
-              // the "(thinking... 🤔)" suffix on each update).
-              _tgShowThink
-                ? renderThink({ header: `💭 ${tgPrefix}`, body: '', escape: escapeHtml })
-                : `${tgPrefix}⌛ thinking…`,
-              { chatId: meta.telegramChatId })
-          : null;
         // showThink: claude/codex meta-engineers stream as a bridge-OWNED 🤔→reply+✅
         // in-place edit (An 2026-06-20). @l (llama) keeps the <think>-split path below.
         // RELAY-RETURN (An 2026-06-20): a relayed being (Don) replies through THIS
@@ -7933,18 +7757,7 @@ function startSpineRuntime() {
             ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
           confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
         }
-        let _tgLastPartial = '';   // last streamed snapshot — frozen as the thinking in show-think mode
         let reply = await runMetaBrainTurn(personaPrompt, (partial) => {
-          if (tgStream) {
-            _tgLastPartial = partial;
-            // show-think body is HTML-ESCAPED, not md-rendered: a partial tail
-            // with an unbalanced ** / <tag> makes Telegram reject the edit, which
-            // is why the "(thinking... 🤔)" suffix wasn't appearing. The clean
-            // final answer (below) is the only md-rendered message.
-            tgStream.update(_tgShowThink
-              ? renderThink({ header: `💭 ${tgPrefix}`, body: partial, escape: escapeHtml })
-              : `${tgPrefix}${mdToTgHtml(partial)}`);
-          }
           if (waStream) {
             const { think, answer } = splitThink(partial);
             if (answer === null) {
@@ -7991,7 +7804,7 @@ function startSpineRuntime() {
         if (_infraFail) {
           const _errSum = String(reply).replace(/^!!\s*/, '').replace(/\s+/g, ' ').trim().slice(0, 200);
           logOut(`@${_sibForFail}: turn FAILED — ${_errSum} (bridge-attributed; not recirculated)`);
-          reply = meta.fromTelegram ? `⚠️ couldn't answer (bridge): ${_errSum}` : '';
+          reply = '';
         }
         // Brains converse: feed this resident's reply to the other residents —
         // but NEVER a silent '…' self-select (operator 2026-06-14: "we're feeding
@@ -8016,49 +7829,9 @@ function startSpineRuntime() {
             _appendSiblingReply(meta.waChatId, sibName, _r, _verdict === 'SEND').catch(() => {});
           }
         }
-        if (tgStream) {
-          if (_dropResident(reply)) {
-            // Silent ('…') / gated / infra-suppressed → DELETE the "⌛ thinking…"
-            // placeholder and emit NOTHING. Editing it to '…' posts a real message
-            // that fans to the other bots and feeds a bot↔bot loop (operator
-            // 2026-06-14: "make sure '...' is not being fanned out to bots"). The
-            // plain-tgStream branch used to finish('…') unconditionally — that was
-            // the loop driver after Don was fixed.
-            await tgStream.delete();
-          } else if (_tgShowThink) {
-            // show-think: FREEZE the streamed thinking in place (the last
-            // snapshot the operator watched stream, kept as the 💭 artifact)
-            // with the "(done ✅)" suffix — the finished signal that tells the
-            // operator the turn is over — then post the clean final answer as a
-            // NEW reply to the original message.
-            const _snap = String(_tgLastPartial ?? '').trim();
-            await tgStream.finish(renderThink({ header: `💭 ${tgPrefix}`, body: _snap, escape: escapeHtml, done: true }));
-            bridgeRef.current?.send?.(`${tgPrefix}${mdToTgHtml(reply)}`,
-              { chatId: meta.telegramChatId, replyTo: meta.telegramMessageId ?? undefined });
-          } else {
-            await tgStream.finish(`${tgPrefix}${mdToTgHtml(reply)}`);
-          }
-        } else if (meta.fromTelegram && bridgeRef.current && !_dropResident(reply)) {
-          bridgeRef.current.send(`${tgPrefix}${mdToTgHtml(reply)}`,
-            { chatId: meta.telegramChatId });
-        }
-        // C1.2/I3: log the Telegram conversation (inbound + reply). The
-        // sibling/forceTarget route (Telegram→Wren) bypasses runDefaultBrainTurn's
-        // logger, so log here, surface-aware. (WhatsApp logs via the default-brain
-        // path.) Inbound logged always; reply logged unless silent/infra-error.
-        if (meta.fromTelegram && meta.telegramChatId != null) {
-          const _tgChat = String(meta.telegramChatId);
-          const _tgName = meta.telegramChatName ?? meta.telegramUser ?? _tgChat;
-          await _logChatLine('telegram', _tgChat, _tgName, sibName, personaPrompt);
-          const _r = String(reply ?? '').trim();
-          if (_r && !_silentReply(_r) && !/^!!\s*@/.test(_r)) {
-            await _logChatLine('telegram', _tgChat, _tgName, sibName,
-              replyLine({ being: sibName, body: _r, surfaced: !_dropResident(reply) }));
-          }
-        }
         if (waStream && _dropResident(reply)) {
           // silent/gated/infra → remove the 🤔 placeholder, emit nothing
-          // (mirrors the tgStream.delete() path so a '…' never lands as "…✅ Done").
+          // (so a '…' never lands as "…✅ Done").
           await waStream.delete?.();
         } else if (waStream) {
           const { think, answer } = splitThink(reply);
@@ -8094,7 +7867,7 @@ function startSpineRuntime() {
           }
         }
         if (meta.observeOnly) {
-          const where = meta.waChatId ?? meta.telegramChatId ?? '?';
+          const where = meta.waChatId ?? '?';
           const preview = reply.length > 200 ? reply.slice(0, 200) + '…' : reply;
           logOut(`(observed @me in ${where}): ${preview}`);
         } else if (!_dropResident(reply)) {
@@ -8105,8 +7878,7 @@ function startSpineRuntime() {
           // (initial) + shows in the /confirm debug; it just doesn't surface
           // as a chat message anywhere.
           const replyAuthor = `wren@${SURFACE_TAG}`;
-          const replySource = meta.fromTelegram ? 'telegram'
-            : meta.fromWhatsApp ? 'whatsapp'
+          const replySource = meta.fromWhatsApp ? 'whatsapp'
             : null;
           pushItem({
             id: Date.now() + Math.random(),
@@ -8119,8 +7891,7 @@ function startSpineRuntime() {
           await append(replyAuthor, reply);
           const tid = busTargetIdRef.current;
           if (tid) {
-            const via = meta.fromTelegram ? `telegram[${meta.telegramChatId ?? '?'}]`
-              : meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
+            const via = meta.fromWhatsApp ? `whatsapp[${meta.waChatId ?? '?'}]`
               : null;
             bus.postEvent(tid, {
               type: 'room-reply', from: BUS_NODE_ID, ts: Date.now(),
@@ -8143,12 +7914,7 @@ function startSpineRuntime() {
         await bus.postEvent(tid, {
           type: 'mention', from: BUS_NODE_ID, ts: Date.now(),
           target: decision.target, to_node: decision.toNode,
-          body: decision.body, user: meta.telegramUser ?? USER_NAME,
-          // tg_chat_id rides along so the responding node can route its
-          // mention-reply back to the same Telegram chat that asked.
-          ...(meta.fromTelegram && meta.telegramChatId
-            ? { tg_chat_id: meta.telegramChatId, tg_via: `telegram[${meta.telegramChatId}]` }
-            : {}),
+          body: decision.body, user: USER_NAME,
         });
         sysOut(`@${decision.target} -> ${decision.toNode} via bus`);
       } catch (e) {
@@ -8187,17 +7953,13 @@ function startSpineRuntime() {
     // ('tg', 'wa', or whatever the operator renamed to). The
     // brain's tab keeps its own native history; this header is the
     // per-turn context that varies turn-to-turn.
-    const brainAuthor = (meta.fromTelegram && meta.telegramUser)
-      ? `${stripAt(meta.telegramUser)}@${tgClient}.${SURFACE_TAG}`
-      : (meta.fromWhatsApp && meta.waUser)
+    const brainAuthor = (meta.fromWhatsApp && meta.waUser)
       ? `${stripAt(meta.waUser)}@${meta.waClientLabel ?? waClient}.${SURFACE_TAG}`
       : `${USER_NAME}@${SURFACE_TAG}`;
     const messageForBrains = `[${brainAuthor} ${ts()}]: ${userPayload}`;
     if (decision.broadcast) {
       sysOut(`broadcasting to ${recipients.length} session(s): ${recipients.join(', ')}`);
     }
-    const tgChatId  = meta.fromTelegram ? meta.telegramChatId  ?? null : null;
-    const tgReplyTo = meta.fromTelegram ? meta.telegramMessageId ?? null : null;
     // ALL model replies are gated (operator 2026-06-04). runBrainTurn opens its
     // WA stream on waChatId ALONE (no mode gate), so a NAMED brain (cgpt/codex/
     // llama) addressed in a mute/off/paused chat would stream its reply there.
@@ -8209,7 +7971,7 @@ function startSpineRuntime() {
       ? _waRaw : null;
     const replies = [];
     for (const recipient of recipients) {
-      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { tgChatId, tgReplyTo, waChatId });
+      const reply = await runBrainTurn(recipient, messageForBrains, effectiveSessions, { waChatId });
       if (reply !== null) {
         replies.push({ author: recipient, text: reply });
         // Broadcast every brain reply to peer surfaces. The room is
@@ -8759,32 +8521,20 @@ function startSpineRuntime() {
         const author = `${target}@${ev.from ?? 'unknown'}`;
         if (ev.error) {
           log(`!! ${author}: ${ev.error}`);
-          // Errors still go to the originating Telegram chat if known.
-          if (ev.tg_chat_id && bridgeRef.current) {
-            const formatted = `${EGPT_EMOJI} <i>!! ${escapeHtml(`${author}: ${ev.error}`)}</i>`;
-            bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
-          }
           if (ev.wa_chat_id && waBridgeRef.current) {
             await waBridgeRef.current.send(`!! ${author}: ${ev.error}`, { chatId: ev.wa_chat_id });
           }
         } else {
-          // tg_chat_id means the original request came from a Telegram
+          // wa_chat_id means the original request came from a WhatsApp
           // chat; route the reply back there directly. Mark the item
           // _localOnly so items-flush doesn't ALSO send it (which would
           // hit lastChat — possibly a different chat).
-          const tgRouted = ev.tg_chat_id != null;
           const waRouted = ev.wa_chat_id != null;
           pushItem({
             id: Date.now() + Math.random(), author, body: ev.body ?? '(empty)',
-            _node: ev.from, _localOnly: tgRouted || waRouted,
+            _node: ev.from, _localOnly: waRouted,
           });
           await append(author, ev.body ?? '');
-          if (tgRouted && bridgeRef.current) {
-            const sess = sessions[author] ?? sessions[target];
-            const emoji = sess?.emoji ?? '❓';
-            const formatted = `${emoji} <b>${escapeHtml(author)}</b>\n${mdToTgHtml(ev.body ?? '')}`;
-            bridgeRef.current.send(formatted, { chatId: ev.tg_chat_id });
-          }
           if (waRouted && waBridgeRef.current) {
             await waBridgeRef.current.send(`${author}\n${ev.body ?? ''}`, { chatId: ev.wa_chat_id });
           }
