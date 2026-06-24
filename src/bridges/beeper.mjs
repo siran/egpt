@@ -503,6 +503,7 @@ export async function startBeeperBridge(opts = {}) {
       const from = {
         chatId: msg.chatID, chatName: info.title,
         chatType: info.type === 'group' ? 'group' : 'private',
+        network: msg.accountID || info.accountID || 'whatsapp',   // origin network (Beeper accountID); default 'whatsapp'
         userId: reactor, username: undefined, firstName: name, senderName: name,
         isSender: false, authorized: isAllowedUser(reactor),
         atEStart: false, atEAnywhere: false, replyToBot: false,
@@ -546,6 +547,7 @@ export async function startBeeperBridge(opts = {}) {
     const from = {
       chatId: msg.chatID, chatName: info.title,
       chatType: info.type === 'group' ? 'group' : 'private',
+      network: msg.accountID || info.accountID || 'whatsapp',   // origin network (Beeper accountID); default 'whatsapp'
       userId: msg.senderID || msg.chatID, username: msg.senderName || undefined,
       firstName: editor, senderName: editor,
       isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID),
@@ -685,6 +687,7 @@ export async function startBeeperBridge(opts = {}) {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,
       chatType: info.type === 'group' ? 'group' : 'private',
+      network: acct || 'whatsapp',          // origin network (Beeper accountID); default 'whatsapp'
       userId: msg.senderID || chatID,
       username: msg.senderName || undefined,
       firstName: msg.senderName || undefined,
