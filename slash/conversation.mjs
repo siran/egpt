@@ -34,12 +34,9 @@ export async function run({ cmd, arg, ctx }) {
   //   listConversationFiles()          — scan the search dirs (local helper)
   //   CONVERSATION_DIRS                — search dirs constant (for empty-state hint)
   //   resolveConversationSpec(spec)    — name/path → absolute path
-  //   sentItemsCountRef                — clear on switch so the items-mirror
-  //                                      effect doesn't replay the new room's
-  //                                      seeded line to bridges
   const { sysOut, setItems, getFile, setFile, dp,
           listConversationFiles, CONVERSATION_DIRS,
-          resolveConversationSpec, sentItemsCountRef } = ctx;
+          resolveConversationSpec } = ctx;
 
   if (cmd === '/conversations') {
     try {
@@ -93,7 +90,6 @@ export async function run({ cmd, arg, ctx }) {
         id: Date.now() + Math.random(), author: 'system',
         body: `switched conversation -> ${dp(nextPath)}`,
       }]);
-      sentItemsCountRef.current = 0;
     } catch (e) { sysOut(`!! /conversation: ${e.message}`); }
     return true;
   }

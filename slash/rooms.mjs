@@ -30,9 +30,8 @@ export async function run({ cmd, arg, ctx }) {
   //   sysOut(text)
   //   dp(p)
   //   sessions
-  //   tgBridgeRef           — telegram chat_id source
   //   ts()                  — timestamp formatter
-  const { sysOut, dp, sessions, tgBridgeRef, ts } = ctx;
+  const { sysOut, dp, sessions, ts } = ctx;
 
   if (cmd === '/rooms') {
     try {
@@ -73,10 +72,6 @@ export async function run({ cmd, arg, ctx }) {
         if (opts.model)       lines.push(`    model: ${opts.model}`);
         if (opts.effort)      lines.push(`    effort: ${opts.effort}`);
         if (opts.profileName) lines.push(`    profile: ${opts.profileName}`);
-      }
-      const tgChatId = tgBridgeRef.current?.chatId;
-      if (tgChatId) {
-        lines.push(``, `telegram:`, `  chat_id: ${tgChatId}`);
       }
       await mkdir(ROOMS_DIR, { recursive: true });
       const roomFile = join(ROOMS_DIR, `${roomName}.yaml`);
