@@ -20,7 +20,7 @@ const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const DEFAULT_CODEX_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 const DEFAULT_CODEX_REASONING_EFFORT = 'low';
-const CODEX_LOG_DIR = join(homedir(), '.egpt', 'codex');
+const CODEX_LOG_DIR = join(homedir(), '.egpt', 'logs', 'codex');
 // Messages that begin with one of these markers are operator tasks
 // (browse, send-file, etc.) and trigger the codex-task template + bumped effort.
 const TASK_MARKER_RE = /^\[(?:browse|send-file|file)\s+task\b/i;
