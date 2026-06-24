@@ -1,124 +1,95 @@
-# Bridge-routing unification plan
+# Single-channel restructure (Beeper is the one channel)
 
-Status: PROPOSED (2026-06-24). No code yet — review before executing on a branch.
+Status: PROPOSED (2026-06-24). Core restructure — review before executing on a branch.
+Supersedes the earlier "routing dialects" framing: that was a symptom; this is the cause.
 
-## The drift (problem)
+## Principle (operator 2026-06-24)
 
-WhatsApp and Telegram each grew their **own config dialect** for the same three
-questions about a chat:
+> There is only **Beeper** serving messages to the spine — the spine uses Beeper as a
+> throughput channel. WhatsApp / Telegram / Signal / whatever is just the **network a
+> message arrived on**: metadata, not architecture. The code must honor that single
+> path. `network` is a field on the message and a conversation's identity — never a
+> branch in the dispatch, gate, or render logic, and never a config namespace.
 
-1. **Who is in it?** (which beings are residents)
-2. **Who replies, and in what mode?** (on / mention / off / …)
-3. Is it muted / paused?
+## The code already proves the principle
 
-A lean machine answers these **once**, bridge-agnostically, from the
-**per-conversation config** (`conversations/<surface>/<slug>/config.yaml`) + the
-siblings registry. Instead, the answers are scattered across top-level
-`whatsapp.auto_e_*` and `telegram.*` keys.
+- `src/bridges/beeper.mjs` IS the single multi-network channel: the WS subscribes to
+  `'*'` (every chat, every network) and tags each message with `accountID` (the
+  network). egpt then **clamps** it: `networks = ['whatsapp']` is a "v1 SAFE SCOPE"
+  filter that drops every other network. The single channel exists; it's narrowed,
+  and the network is discarded instead of carried.
+- `src/bridges/telegram.mjs` is a **redundant second transport** — direct Telegram
+  Bot API (`api.telegram.org`, polling, `bot_token`). It bypasses Beeper. The literal
+  violation.
+- The dichotomy has spread: **~94** `fromWhatsApp`/`fromTelegram` branch-points across
+  egpt-spine.mjs + dispatch.mjs + src/, and `KNOWN_SURFACES = ['whatsapp','telegram',
+  'shell','signal']` models network as a code *surface*.
 
-## What already exists (the seams — ~half the work is done)
+## The three collapses
 
-- **Surface-agnostic mode model**: `src/auto-mode.mjs` —
-  `AUTO_MODES = ['on','accum','mute','mention-direct','mention','off']`,
-  `resolveBeingMode({ auto_modes[chat][being], chatId, being, defaultMode })`.
-  Telegram **already** resolves through it (egpt-spine.mjs:3072 — `autoModes: EGPT_CONFIG.auto_modes`).
-- **Per-conversation config** already holds `personality`, `members[]`, `mute`,
-  `threadId`, `jids[]` (conversations-state.mjs). And `members[]` **already wins**
-  over `whatsapp.residents_per_chat` (egpt-spine.mjs:3851).
+### 1. Transport — one ingress
+- **Delete** `src/bridges/telegram.mjs` + `startTelegramBridge` + the telegram bridge
+  startup/ref in egpt-spine + the `telegram:` config block + its schema entries.
+- Beeper carries `network` (`accountID`) per message. Widen the `networks` scope from
+  `['whatsapp']` to the set the operator has connected in Beeper (config:
+  `beeper.networks: ['whatsapp', …]`, default `['whatsapp']` to stay fail-closed).
+- Telegram, *if ever wanted*, arrives **through Beeper** (connect it in Beeper),
+  tagged `network: telegram` — no egpt code change.
 
-So the target structures exist; the work is **convergence + data migration + deletion**,
-not a new subsystem.
+### 2. Code paths — network-agnostic dispatch
+- Replace the `meta.fromWhatsApp` / `meta.fromTelegram` booleans with a single
+  `meta.network` string (+ `meta.fromChannel` true for any Beeper message vs shell).
+- Audit the ~94 branches: each is one of
+  - **render/format** (e.g. TG HTML vs WA text) → a per-network *formatter* picked by
+    `network`, not an `if` in the dispatch core;
+  - **identity/storage** (slug dir, jids) → keep `network` as the key, no branch;
+  - **genuinely dead** (telegram-only paths) → delete with collapse #1.
+- Goal: dispatch, the reply gate, silence policy, mention resolution, streaming —
+  **zero** `network` branches. Network appears only in formatters + storage keys.
 
-## The two dialects → their unified home
+### 3. Config — one channel block + per-conversation model
+- `whatsapp:` → `beeper:` (or `channel:`) — the channel config: `enabled`, `networks`,
+  `allowed_users`, `chat_id` (operator self), `media`, `beeper_token`. Nothing
+  network-specific.
+- The routing dialects (`auto_e_*`, `telegram.agent`, `telegram.mirror`,
+  `residents_per_chat`) fold into the **per-conversation config**
+  (`conversations/<network>/<slug>/config.yaml`: `members`, `modes{being:mode}`,
+  `mute`) + top-level `defaults: {mode, paused}`. (Beeper already has the
+  surface-agnostic `auto_modes[chat][being]` + `resolveBeingMode` — WhatsApp just
+  hasn't adopted it; Telegram already calls it at egpt-spine.mjs:3072.)
+- One `resolveConversationRouting(network, chatId) -> { members, modeFor(being), mute }`
+  that the (single) dispatch path calls.
 
-| Dialect key (where read) | Controls | Unified home |
-|---|---|---|
-| `whatsapp.auto_e_modes[chat]` (legacy, E-only) | E's reply mode per chat | conv `modes.e` (via `auto_modes[chat].e`) |
-| `whatsapp.auto_e_default_mode` | global default reply mode | top-level `defaults.mode` |
-| `whatsapp.auto_e_paused` | global kill-switch | top-level `defaults.paused` |
-| `whatsapp.auto_e_chats` (write-whitelist → 'on') | which chats E posts freely in | conv `modes.e: on` |
-| `whatsapp.residents_per_chat[chat]` | who's in the chat | conv `members[]` |
-| `telegram.agent` (default → 'wren') | which being answers on TG | conv `members` / default being |
-| `telegram.mirror` (none/all/allowed) | does a group route to the bot | conv `modes['*']` (off/mention/on) |
-| `telegram.show_think_chats` | show the 💭 think stream | conv `show_think: true` (or DROP — legacy) |
+## Phases (each = branch commit → deploy REVE → verify → DOLLY)
 
-Note: `auto_modes[chat][being]` (the new surface-agnostic map) is itself still a
-**flat top-level** map keyed by chatId. The lean end-state moves that per-chat data
-**into each conversation's own config file** (`modes:` block), so there is exactly
-one place per chat.
+- **Phase 0 — kill the redundant transport.** Remove the Telegram-bot bridge + config
+  (it's `enabled:false`, abandoned). Smallest, clearest embodiment of the principle;
+  also removes a chunk of the 94 branches (the telegram-only ones). LOW risk.
+- **Phase 1 — carry the network.** beeper.mjs already has `accountID`; thread it as
+  `meta.network`. Add `beeper.networks` scope. Keep behavior identical (still
+  whatsapp-only by default).
+- **Phase 2 — collapse the branches.** Convert the surviving `fromWhatsApp` checks to
+  network-agnostic logic + per-network formatters. This is the bulk; do it in slices
+  (render, gate, storage) with tests pinning identical output.
+- **Phase 3 — config convergence + per-conversation routing.** `whatsapp:`→`beeper:`;
+  WhatsApp adopts `auto_modes`/per-conversation `modes`; writers (`/e auto`,
+  `/e residents`) target the conversation config. Fallbacks keep old configs working.
+- **Phase 4 — migrate data + delete.** Move flat per-chat keys into conversation
+  files (both nodes); delete the dialect keys, fallbacks, and schema. The spine has
+  ONE channel, ONE dispatch, network-as-data.
 
-## Target per-conversation model
-
-`~/.egpt/conversations/<surface>/<slug>/config.yaml`:
-```yaml
-personality: default          # or system
-members: [e]                  # residents — replaces residents_per_chat + telegram.agent
-modes:                        # per-being reply mode — replaces auto_e_modes + telegram.mirror
-  e: mention
-  "*": off                    # everyone else (the tg-group "mirror" gate)
-mute: false
-show_think: false             # optional; replaces telegram.show_think_chats
-threadId: …
-jids: [ … ]
-```
-Top-level (bridge-agnostic globals), replacing `whatsapp.auto_e_default_mode` / `auto_e_paused`:
-```yaml
-defaults:
-  mode: mention
-  paused: false
-```
-
-## One resolver, both bridges
-
-Add `resolveConversationRouting(surface, chatId) -> { members, modeFor(being), mute, showThink }`
-in auto-mode.mjs (or a new `src/conversation-routing.mjs`). It reads the per-conversation
-config + `defaults`, and **both** bridge dispatch paths call it:
-- WhatsApp: egpt-spine.mjs ~2017 / ~3668-3725 (mode gate + residents).
-- Telegram: egpt-spine.mjs ~3044 (`mirror`) / ~3063 (`agent`) / ~3072 (already partial).
-
-## Phases (each = branch commit + deploy + verify)
-
-**Phase 1 — reader convergence (no data move; fallbacks keep behavior identical).**
-Both bridges resolve `(members, mode, mute)` through the one resolver. The resolver
-reads per-conv config + `defaults`, **falling back** to the legacy flat keys
-(`auto_e_modes`, `auto_e_default_mode`, `auto_e_paused`, `residents_per_chat`,
-`telegram.agent`, `telegram.mirror`). WhatsApp adopts `resolveBeingMode`/`auto_modes`.
-Verify: every existing chat behaves **exactly** as before (tests below).
-
-**Phase 2 — writer convergence.** `/e auto`, `/e residents` (slash/e.mjs:851-1090) and
-the telegram equivalents write the per-conversation `modes`/`members` instead of
-`whatsapp.auto_e_*` / `telegram.*`.
-
-**Phase 3 — one-time migration.** Fold existing `whatsapp.auto_e_modes` /
-`auto_e_chats` / `residents_per_chat` and `telegram.agent` / `telegram.mirror` into the
-matching `conversations/<surface>/<slug>/config.yaml` files. `auto_e_default_mode` /
-`auto_e_paused` → top-level `defaults`. (Both nodes.)
-
-**Phase 4 — deletion (the payoff).** Remove the flat keys, the legacy fallbacks, and the
-schema entries. The bridges carry **zero** per-bridge routing config — only `enabled`,
-`chat_id`, `allowed_users`, and secrets remain bridge-scoped.
-
-## Files touched
-- `src/auto-mode.mjs` — the resolver (+ `modeFor`/`members` resolution).
-- `egpt-spine.mjs` — WA dispatch (~2017, ~3668-3725) + TG dispatch (~3044-3072) call the resolver.
-- `conversations-state.mjs` — add `modes` (+ optional `show_think`) to the entry schema.
-- `slash/e.mjs` — writers target per-conv config.
-- `config/config-schema.mjs` — drop the dialect entries (Phase 4); add `defaults`.
-
-## Risk + test strategy
-- **Highest risk:** the reply gate. A wrong resolution makes a silent chat start
-  replying (noise into real groups) or a live chat go quiet.
-- **Mitigation:** Phase 1's fallback ⇒ byte-identical behavior. Lock it with tests
-  asserting `resolveConversationRouting(...)` equals the OLD resolution for each legacy
-  shape (auto_e_chats-only, auto_e_modes per-being, residents_per_chat, telegram
-  mirror/agent) **before** Phase 4 deletes anything.
-- Branch `bridge-routing-unification`; per-phase deploy to REVE, then DOLLY.
+## Risk + tests
+- Highest risk: the reply gate (a wrong network-agnostic resolution makes a silent
+  chat reply or a live chat go quiet). Mitigation: per-phase fallbacks ⇒ byte-identical
+  behavior; pin with tests asserting the new path == old per legacy shape **before**
+  deleting. Phase 2 is the delicate one — slice it, test each slice.
+- Branch `single-channel`; REVE first, then DOLLY (independent node, same code).
 
 ## Open decisions (operator)
-1. `defaults` as a top-level block, or under a `routing:` block?
-2. `telegram.show_think_chats` — migrate to conv `show_think`, or **drop** (it's the
-   legacy show-think we already flagged)?
-3. Keep a global default `members` (e.g. `[e]`) or require each conversation to list its own?
-4. Telegram is currently `enabled: false` and "abandoned" — do we unify it at all, or
-   just strip its config and leave the bridge dormant? (If stripped, this plan is
-   WhatsApp-only convergence onto the per-conversation model.)
+1. **Telegram**: confirm DELETE the bot bridge entirely (Phase 0). If ever needed, it
+   returns via Beeper. (Recommended — you've called it abandoned twice.)
+2. **Config name**: `whatsapp:` → `beeper:` or `channel:`?
+3. **Storage**: conversations stay keyed by `<network>/<slug>` (network = identity), or
+   flatten? (Recommend keep `<network>/<slug>` — a WA chat ≠ a TG chat.)
+4. **Scope rollout**: keep `networks: ['whatsapp']` fail-closed for now, widen later
+   per-network deliberately? (Recommend yes — don't auto-act on every Beeper network.)
