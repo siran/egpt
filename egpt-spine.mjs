@@ -4984,6 +4984,11 @@ function startSpineRuntime() {
         stormRef:           _stormRef,
         exit,
         exitClean:          _exitClean,
+        // Refresh the live _convStateCache after a command writes conversations.yaml
+        // directly (e.g. /e auto's per-chat mode). A raw writeConvState only touches
+        // the file; this re-reads through the runtime, which fires onStateChange →
+        // the reader (_convChatMode) sees the change immediately, not next message.
+        refreshConvState:   async () => { await _loadConvState(); },
         APP_DIR,
         EGPT_HOME,
         // announceBounce (slash/lifecycle.mjs) falls back to the operator's

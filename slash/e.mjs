@@ -1091,6 +1091,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         if (e && typeof e === 'object') delete e.mode;
       }
       await writeConvState(CONV_YAML_PATH, cs);
+      await ctx.refreshConvState?.();   // make the cleared overrides live now (not next message)
       autoLabel = `all chats → ${action} (global default; per-chat overrides cleared)`;
       // falls through to config persist for the global default
     } else {
@@ -1119,6 +1120,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       cs.contacts.whatsapp[key] ??= { slug: chatId };
       cs.contacts.whatsapp[key].mode = action;
       await writeConvState(CONV_YAML_PATH, cs);
+      await ctx.refreshConvState?.();   // make the new mode live now (not next message)
       sysOut(`/e auto ${action}: ${resolvedName ? `«${resolvedName}» ` : ''}${chatId} → ${action}`);
       return true;   // per-chat path persists to conv state only, not config
     }
