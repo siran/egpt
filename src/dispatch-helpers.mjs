@@ -32,12 +32,15 @@ export const bodyMentionsAny = (body, names) => {
   return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
 };
 
-// Resolve a WA chat's auto-mode from the whatsapp config block. Precedence:
-// explicit auto_e_modes entry > auto_e_chats membership ('on') >
-// auto_e_default_mode > DEFAULT_AUTO_MODE. (Self-DM "always on" is gone — add an
-// explicit auto_e_modes entry to get it; removed 2026-06-05 after a leak where a
-// Self DM configured 'mention' still got @e replies.)
-export const resolveChatAutoMode = (waConfig, chatId) => {
+// Resolve a WA chat's auto-mode. Precedence (operator 2026-06-24, reader-convergence
+// toward the per-conversation model): the conversation's OWN config mode wins, THEN
+// the legacy flat whatsapp keys (explicit auto_e_modes entry > auto_e_chats membership
+// ('on') > auto_e_default_mode > DEFAULT_AUTO_MODE). `convMode` is the per-conversation
+// config.yaml `mode` for this chat — undefined until data is migrated there, so the
+// flat keys still decide and behavior is byte-identical. (Self-DM "always on" is gone —
+// set an explicit mode; removed 2026-06-05 after a Self-DM 'mention' leak.)
+export const resolveChatAutoMode = (waConfig, chatId, convMode) => {
+  if (isAutoMode(convMode)) return convMode;
   const waCfg = waConfig ?? {};
   const modes = waCfg.auto_e_modes;
   if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
