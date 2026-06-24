@@ -3562,7 +3562,8 @@ function startSpineRuntime() {
                 ? residentsFromMembers(_explicitMembers)
                 : resolveRoster({
                     chatId:           from.chatId,
-                    residentsPerChat: EGPT_CONFIG.whatsapp?.residents_per_chat,
+                    // residents_per_chat removed (migrated to per-conversation members[]);
+                    // with no explicit members[], seed from global residents > persona.
                     globalResidents:  EGPT_CONFIG.whatsapp?.residents,
                     personaBeing:     _personaBeing,
                     siblings:         EGPT_CONFIG.siblings,

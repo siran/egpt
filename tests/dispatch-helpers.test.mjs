@@ -23,20 +23,18 @@ describe('dispatch-helpers (pure, lifted out of the App — Phase C strangler)',
     expect(bodyMentionsAny('x', [])).toBe(false);
   });
 
-  it('resolveChatAutoMode follows explicit > auto_e_chats > default > DEFAULT', () => {
-    expect(resolveChatAutoMode({ auto_e_modes: { c1: 'mention' }, auto_e_chats: ['c1'] }, 'c1')).toBe('mention'); // explicit wins
-    expect(resolveChatAutoMode({ auto_e_chats: ['c1'] }, 'c1')).toBe('on');                                      // membership → on
-    expect(resolveChatAutoMode({ auto_e_default_mode: 'mute' }, 'c9')).toBe('mute');                             // default mode
-    expect(resolveChatAutoMode({}, 'c9')).toBe('mention');                                                       // DEFAULT_AUTO_MODE
-    expect(resolveChatAutoMode(undefined, 'c9')).toBe('mention');                                                // null-safe
+  it('resolveChatAutoMode: convMode > auto_e_default_mode > DEFAULT (per-chat flat keys removed)', () => {
+    expect(resolveChatAutoMode({ auto_e_default_mode: 'mute' }, 'c1', 'on')).toBe('on');   // conversation mode wins
+    expect(resolveChatAutoMode({ auto_e_default_mode: 'mute' }, 'c9')).toBe('mute');       // global default
+    expect(resolveChatAutoMode({}, 'c9')).toBe('mention');                                 // DEFAULT_AUTO_MODE
+    expect(resolveChatAutoMode(undefined, 'c9')).toBe('mention');                          // null-safe
+    expect(resolveChatAutoMode({ auto_e_default_mode: 'mute' }, 'c9', 'bogus')).toBe('mute'); // invalid convMode ignored
   });
 
-  it('per-conversation mode (convMode) wins over every flat whatsapp key', () => {
-    // reader-convergence: the conversation's OWN config mode is authoritative
-    expect(resolveChatAutoMode({ auto_e_modes: { c1: 'on' }, auto_e_chats: ['c1'], auto_e_default_mode: 'on' }, 'c1', 'mute')).toBe('mute');
-    // undefined/invalid convMode → falls through to the flat keys (byte-identical)
-    expect(resolveChatAutoMode({ auto_e_chats: ['c1'] }, 'c1', undefined)).toBe('on');
-    expect(resolveChatAutoMode({ auto_e_chats: ['c1'] }, 'c1', 'bogus')).toBe('on');
+  it('legacy flat per-chat keys are IGNORED (migrated to per-conversation entry.mode)', () => {
+    // auto_e_modes / auto_e_chats no longer influence the result
+    expect(resolveChatAutoMode({ auto_e_modes: { c1: 'on' }, auto_e_chats: ['c1'] }, 'c1')).toBe('mention'); // → DEFAULT, not 'on'
+    expect(resolveChatAutoMode({ auto_e_modes: { c1: 'on' }, auto_e_default_mode: 'mute' }, 'c1')).toBe('mute'); // → default, not 'on'
   });
 
   it('isLlamaBeing recognizes a llama sibling by type', () => {

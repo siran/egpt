@@ -32,20 +32,15 @@ export const bodyMentionsAny = (body, names) => {
   return new RegExp(`(^|\\s)@(?:${esc})\\b`, 'i').test(String(body ?? ''));
 };
 
-// Resolve a WA chat's auto-mode. Precedence (operator 2026-06-24, reader-convergence
-// toward the per-conversation model): the conversation's OWN config mode wins, THEN
-// the legacy flat whatsapp keys (explicit auto_e_modes entry > auto_e_chats membership
-// ('on') > auto_e_default_mode > DEFAULT_AUTO_MODE). `convMode` is the per-conversation
-// config.yaml `mode` for this chat — undefined until data is migrated there, so the
-// flat keys still decide and behavior is byte-identical. (Self-DM "always on" is gone —
-// set an explicit mode; removed 2026-06-05 after a Self-DM 'mention' leak.)
-export const resolveChatAutoMode = (waConfig, chatId, convMode) => {
-  if (isAutoMode(convMode)) return convMode;
-  const waCfg = waConfig ?? {};
-  const modes = waCfg.auto_e_modes;
-  if (modes && typeof modes === 'object' && modes[chatId]) return modes[chatId];
-  if (Array.isArray(waCfg.auto_e_chats) && waCfg.auto_e_chats.includes(chatId)) return 'on';
-  if (isAutoMode(waCfg.auto_e_default_mode)) return waCfg.auto_e_default_mode;
+// Resolve a WA chat's auto-mode (operator 2026-06-24, routing unification complete).
+// Precedence: the conversation's OWN config.yaml `mode` (convMode) wins, then the global
+// default (whatsapp.auto_e_default_mode), then DEFAULT_AUTO_MODE. The per-chat flat keys
+// (auto_e_modes/auto_e_chats) are GONE — migrated into each conversation's entry.mode and
+// no longer read or written. (Self-DM "always on" is gone — set an explicit mode; removed
+// 2026-06-05 after a Self-DM 'mention' leak.)
+export const resolveChatAutoMode = (waConfig, _chatId, convMode) => {
+  if (isAutoMode(convMode)) return convMode;                                    // the chat's OWN mode
+  if (isAutoMode(waConfig?.auto_e_default_mode)) return waConfig.auto_e_default_mode;   // global default
   return DEFAULT_AUTO_MODE;
 };
 
