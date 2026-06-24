@@ -621,7 +621,11 @@ export async function startBeeperBridge(opts = {}) {
           enabled: svc.enabled,
           postsBack: svc.postsBack,
           muted: info.isMuted,
-          debounceKey: chatID,   // coalesce the 👂 echo per chat (trailing window)
+          // PER-NOTE key (chat + this note's id): each voice note gets its OWN
+          // delayed 👂 transcript, posted as a reply to ITSELF — never coalesced
+          // with other notes into one block (operator 2026-06-24). The delay is
+          // postsBackDelayMs (config.yaml posts_back_delay_ms), applied per note.
+          debounceKey: `${chatID}:${msg.id}`,
           postsBackDelayMs,
           onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
