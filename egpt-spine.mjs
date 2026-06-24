@@ -1997,7 +1997,7 @@ function startSpineRuntime() {
   };
   // Flush all accum buffers (called by the heartbeat). One combined turn per
   // chat with pending messages; replyAllowed = whether the batch was mentioned.
-  const _accumFlush = () => {
+  const _accumFlush = async () => {
     if (!submitRef.current) return;
     for (const [chatId, b] of [..._accumBuffers.current.entries()]) {
       if (!b.msgs.length) continue;
@@ -2010,9 +2010,13 @@ function startSpineRuntime() {
       const fullPrompt = b.msgs.map(it => formatAutoDispatchLine({
         senderName: it.senderName, body: it.body, ts: it.ts, surface, chatType, chatName,
       })).join('\n');
-      const residents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[chatId]);
+      // Residents from the per-conversation members[] store (the unified home); with no
+      // explicit members[], seed from global residents > persona (2026-06-24).
+      const _explicit = await _explicitMembersForChat(b.meta?.network ?? 'whatsapp', chatId);
       const globalRes = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
-      const beings = residents.length ? residents : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
+      const beings = _explicit.length
+        ? residentsFromMembers(_explicit)
+        : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
       for (const being of beings) {
         submitRef.current(`@${being} (accum flush)`, {
           fromWhatsApp: true,
@@ -2049,7 +2053,7 @@ function startSpineRuntime() {
   // release-linger cushions the handoff + leaves a grace window for any
   // follow-up after the catch-up posts (operator 2026-06-04).
   const _backlogBuffers = ref(new Map());   // chatId -> { msgs:[{body,senderName,ts}], replyAllowed, meta, firstTs }
-  const _backlogFlush = () => {
+  const _backlogFlush = async () => {
     if (!submitRef.current) return;
     for (const [chatId, b] of [..._backlogBuffers.current.entries()]) {
       _backlogBuffers.current.delete(chatId);
@@ -2073,9 +2077,13 @@ function startSpineRuntime() {
       const nowHHMM = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
       const hint = `⏰ (resumed at ${nowHHMM} after ${napStr} offline — catch-up below, oldest first; reply once and mind the timestamps)`;
       const fullPrompt = `${hint}\n${lines}`;
-      const residents = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents_per_chat?.[chatId]);
+      // Residents from the per-conversation members[] store (the unified home); with no
+      // explicit members[], seed from global residents > persona (2026-06-24).
+      const _explicit = await _explicitMembersForChat(b.meta?.network ?? 'whatsapp', chatId);
       const globalRes = conversationsState.normalizeResidents(EGPT_CONFIG.whatsapp?.residents);
-      const beings = residents.length ? residents : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
+      const beings = _explicit.length
+        ? residentsFromMembers(_explicit)
+        : (globalRes.length ? globalRes : [EGPT_CONFIG.persona ?? 'e']);
       for (const being of beings) {
         submitRef.current(`@${being} (backlog catch-up)`, {
           fromWhatsApp: true,
@@ -3648,7 +3656,7 @@ function startSpineRuntime() {
         // upsert batch (sleep/restart catch-up). Flush the accumulated per-chat
         // catch-up to E now — one consolidated turn per chat. No timer: this is
         // the real delivery boundary.
-        onBacklogDelivered: () => { try { _backlogFlush(); } catch (e) { errOut(`!! backlog flush: ${e?.message ?? e}`); } },
+        onBacklogDelivered: () => { _backlogFlush().catch((e) => errOut(`!! backlog flush: ${e?.message ?? e}`)); },
         onLog:   (msg) => logOut(`whatsapp: ${msg}`),
         onError: (msg) => errOut(`!! whatsapp: ${msg}`),
         onQR: (_qrText, msgWithHeader) => {
@@ -3907,7 +3915,7 @@ function startSpineRuntime() {
       // now a property of a CONVERSATION or a ROOM, dispatched through the
       // same confined + bridge-gated path as any reply — see perContactTick
       // below (and the per-room heartbeat, [[heartbeat-per-room-config]]).
-      try { _accumFlush(); } catch (e) { sysLog(`!! accum flush: ${e?.message ?? e}`); }
+      _accumFlush().catch((e) => sysLog(`!! accum flush: ${e?.message ?? e}`));
     };
 
     // ── Heartbeat scanner ──────────────────────────────────────────────
