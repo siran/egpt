@@ -2600,7 +2600,16 @@ function startSpineRuntime() {
   // body (not @e-specific), so WA and TG route identically.
   // Resolve a WA chat's auto-mode the same way onIncoming does — the single
   // source of truth, callable from any emit path. (operator 2026-05-28)
-  const _resolveChatAutoMode = (chatId) => resolveChatAutoMode(EGPT_CONFIG.whatsapp, chatId);   // moved to src/dispatch-helpers.mjs
+  // Per-conversation mode (alias-resolved): a chat's OWN config.yaml `mode` is the
+  // unified home (reader-convergence 2026-06-24). undefined until migrated → the flat
+  // whatsapp.auto_e_* keys still decide → byte-identical today.
+  const _convChatMode = (chatId) => {
+    const c = _convStateCache?.contacts?.whatsapp;
+    let entry = c?.[chatId];
+    if (entry?.aliasOf) entry = c?.[entry.aliasOf];
+    return entry?.mode;
+  };
+  const _resolveChatAutoMode = (chatId) => resolveChatAutoMode(EGPT_CONFIG.whatsapp, chatId, _convChatMode(chatId));   // resolver in src/dispatch-helpers.mjs
   // The outbound backstop (I4): may E SEND a reply to this WA chat right now?
   // The gate logic now lives in the ENGINE (engine.mayEmit — pause-kill over the
   // per-chat mode gate, the tested autoMayEmitChat). This stays as a thin alias
