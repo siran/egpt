@@ -16,7 +16,7 @@
 //                                    announcement frame, threadId
 //                                    preserved.
 //
-//   /e auto on|off [<jid>|all]         — toggle auto_e_chats membership
+//   /e auto on|off [<jid>|all]         — set a chat's reply mode (per-conversation)
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
 //
@@ -58,6 +58,7 @@ import {
 } from '../conversations-state.mjs';
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
+import { Room, normalizeMemberState, DEFAULT_MEMBER_STATE } from '../src/room-core.mjs';
 import {
   loadGrants, saveGrants, grantedEntries, addGrant, removeGrant, normalizeAccess,
 } from '../src/conv-grants.mjs';
@@ -842,28 +843,38 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   // Per-chat resident selection. The global whatsapp.residents list applies
-  // everywhere by default; a per-chat override (whatsapp.residents_per_chat)
-  // lets one chat run a subset — e.g. @l-only to spare the Claude plan's 5h
-  // window (@l is local/free; @e is haiku on your subscription).
+  // everywhere by default; a per-chat override (the conversation's Room
+  // members[], conversations/whatsapp/<slug>/config.yaml) lets one chat run a
+  // subset — e.g. @l-only to spare the Claude plan's 5h window (@l is
+  // local/free; @e is haiku on your subscription).
   if (sub === 'residents') {
     if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
     const wa = EGPT_CONFIG.whatsapp;
-    if (!wa.residents_per_chat || typeof wa.residents_per_chat !== 'object') wa.residents_per_chat = {};
 
     if (!action || action === 'status') {
       const g = normalizeResidents(wa.residents);
       const glob = g.length ? g.join(', ') : '(persona only)';
-      const ents = Object.entries(wa.residents_per_chat);
+      // Per-chat overrides now live in each conversation's Room members[]
+      // (conversations/whatsapp/<slug>/config.yaml). Walk the conversation
+      // entries that have a slug and surface any with an explicit members[].
       let lines = '  (none — every chat uses the global list)';
-      if (ents.length) {
-        const rows = await Promise.all(ents.map(async ([j, r]) => {
+      try {
+        const cs = await readConvState(CONV_YAML_PATH);
+        const ents = Object.entries(cs.contacts?.whatsapp ?? {})
+          .filter(([, e]) => e && !e.aliasOf && e.slug);
+        const rows = [];
+        for (const [j, e] of ents) {
+          const members = await Room.forChat('whatsapp', e.slug).members();
+          if (!members.length) continue;
           const { name } = await _resolveChatTarget(j);
           const label = name ? `«${name}» ${j}` : j;
-          return `  - ${label}: ${normalizeResidents(r).join(', ')}`;
-        }));
-        lines = rows.join('\n');
+          rows.push(`  - ${label}: ${members.map(m => `${m.id} (${m.state})`).join(', ')}`);
+        }
+        if (rows.length) lines = rows.join('\n');
+      } catch (e) {
+        lines = `  (per-chat overrides live in each conversation's members[]; read failed: ${e.message})`;
       }
-      sysOut(`residents (global): ${glob}\nper-chat overrides:\n${lines}`);
+      sysOut(`residents (global): ${glob}\nper-chat overrides (conversation members[]):\n${lines}`);
       return true;
     }
 
@@ -885,8 +896,21 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
     const label = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
 
+    // Resolve the chat's conversation slug (alias-resolved to the primary entry):
+    // per-chat residents now live in the Room store, keyed by slug.
+    const cs = await readConvState(CONV_YAML_PATH);
+    const entry0 = cs.contacts?.whatsapp?.[chatId];
+    const entry = entry0?.aliasOf ? cs.contacts.whatsapp[entry0.aliasOf] : entry0;
+    const slug = entry?.slug;
+    if (!slug) {
+      sysOut(`/e residents: no conversation slug for ${label} — message the chat once first.`);
+      return true;
+    }
+    const room = Room.forChat('whatsapp', slug);
+
     if (['off', 'clear', 'reset'].includes(String(action).toLowerCase())) {
-      delete wa.residents_per_chat[chatId];
+      // Clear the Room members so the chat falls back to the global residents.
+      for (const m of await room.members()) await room.removeMember(m.id);
       sysOut(`/e residents: ${label} → cleared (uses global: ${normalizeResidents(wa.residents).join(', ') || 'persona'})`);
     } else {
       const known = new Set(Object.keys(EGPT_CONFIG.siblings ?? {}).map(s => s.toLowerCase()));
@@ -896,17 +920,13 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         sysOut(`/e residents: unknown resident(s): ${bad.join(', ') || '(none)'}. Known: ${[...known].join(', ') || '(none)'}. Usage: /e residents <e,l|e|l|off> [<jid>]`);
         return true;
       }
-      wa.residents_per_chat[chatId] = list;
+      // Write the Room members: map the chat's mode to a member state; drop any
+      // member not in the new list, then add/keep the new list.
+      const state = normalizeMemberState(entry?.mode) ?? DEFAULT_MEMBER_STATE;
+      const cur = await room.members();
+      for (const m of cur) if (!list.includes(String(m.id))) await room.removeMember(m.id);
+      for (const id of list) await room.setMember({ kind: 'brain', id, state });
       sysOut(`/e residents: ${label} → ${list.join(', ')} only`);
-    }
-
-    try {
-      const saved = await readConfig();
-      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-      saved.whatsapp.residents_per_chat = wa.residents_per_chat;
-      await writeConfig(saved);
-    } catch (e) {
-      sysOut(`!! /e residents: persist failed: ${e.message}`);
     }
     return true;
   }
@@ -920,9 +940,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     EGPT_CONFIG.whatsapp = {};
   }
   const wa = EGPT_CONFIG.whatsapp;
-  if (!Array.isArray(wa.auto_e_chats)) wa.auto_e_chats = [];
-
-  if (!wa.auto_e_modes || typeof wa.auto_e_modes !== 'object') wa.auto_e_modes = {};
   const MODES = AUTO_MODES;   // on, accum, mute, mention-direct, mention, off
 
   // ── /e auto show-think [on|off] [<chat>] ────────────────────────
@@ -985,10 +1002,14 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     // the operator was asking about (operator 2026-05-28).
     const search = String(jidArg ?? '').trim().toLowerCase();
 
-    // Merge legacy auto_e_chats (→ 'on') with explicit auto_e_modes.
+    // Per-chat modes now live in each conversation entry's `mode`
+    // (conversations.yaml → contacts.whatsapp[<chatId>].mode), the unified home.
+    const cs = await readConvState(CONV_YAML_PATH);
     const merged = {};
-    for (const j of (Array.isArray(wa.auto_e_chats) ? wa.auto_e_chats : [])) merged[j] = 'on';
-    for (const [j, m] of Object.entries(wa.auto_e_modes)) merged[j] = m;
+    for (const [j, e] of Object.entries(cs.contacts?.whatsapp ?? {})) {
+      if (e?.aliasOf || !e?.mode) continue;
+      merged[j] = e.mode;
+    }
     const ents = Object.entries(merged);
     const rows = await Promise.all(ents.map(async ([j, m]) => {
       const { name } = await _resolveChatTarget(j);
@@ -1031,7 +1052,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         }
       } catch { /* offline / not yet connected — fall through to the registry */ }
 
-      const cs = await readConvState(CONV_YAML_PATH);
       for (const [j, e] of Object.entries(cs.contacts?.whatsapp ?? {})) {
         if (seenJid.has(j)) continue;
         const hay = `${e?.pushedName ?? ''} ${e?.slug ?? ''} ${j}`.toLowerCase();
@@ -1062,12 +1082,17 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     const target = jidArg ? String(jidArg).trim() : null;
     if (target && target.toLowerCase() === 'all') {
       // 'all' makes EVERY chat this mode: set the global default + clear all
-      // per-chat overrides so nothing deviates. (Use /e auto pause for a
-      // temporary global kill that preserves per-chat config.)
+      // per-chat overrides so nothing deviates. The per-chat overrides now live
+      // in each conversation entry's `mode`, so clear those (not a flat key).
+      // (Use /e auto pause for a temporary global kill that preserves config.)
       wa.auto_e_default_mode = action;
-      wa.auto_e_modes = {};
-      wa.auto_e_chats = [];
+      const cs = await readConvState(CONV_YAML_PATH);
+      for (const e of Object.values(cs.contacts?.whatsapp ?? {})) {
+        if (e && typeof e === 'object') delete e.mode;
+      }
+      await writeConvState(CONV_YAML_PATH, cs);
       autoLabel = `all chats → ${action} (global default; per-chat overrides cleared)`;
+      // falls through to config persist for the global default
     } else {
       let chatId = null, resolvedName = null;
       if (target) {
@@ -1085,22 +1110,28 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
         chatId = here;
       }
       if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
-      wa.auto_e_modes[chatId] = action;
-      // Drop the jid from the legacy list so auto_e_modes is authoritative.
-      if (Array.isArray(wa.auto_e_chats)) wa.auto_e_chats = wa.auto_e_chats.filter(j => j !== chatId);
-      autoLabel = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId} → ${action}`;
+      // Write the per-chat mode into the conversation entry (the unified home).
+      // Alias-resolve to the PRIMARY entry; create a minimal one if never seen.
+      const cs = await readConvState(CONV_YAML_PATH);
+      const c = cs.contacts?.whatsapp ?? {};
+      let key = chatId; if (c[chatId]?.aliasOf) key = c[chatId].aliasOf;
+      cs.contacts ??= {}; cs.contacts.whatsapp ??= {};
+      cs.contacts.whatsapp[key] ??= { slug: chatId };
+      cs.contacts.whatsapp[key].mode = action;
+      await writeConvState(CONV_YAML_PATH, cs);
+      sysOut(`/e auto ${action}: ${resolvedName ? `«${resolvedName}» ` : ''}${chatId} → ${action}`);
+      return true;   // per-chat path persists to conv state only, not config
     }
   } else {
     sysOut(`usage: /e auto <${MODES.join('|')}> [<name|jid>|all] | pause | resume | status`);
     return true;
   }
 
-  // Persist to ~/.egpt/config.yaml (merge with whatever else is there).
+  // Persist the GLOBAL knobs to ~/.egpt/config.yaml (merge with what's there).
+  // Per-chat modes no longer live in config — they're in each conversation entry.
   try {
     const saved = await readConfig();
     if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-    saved.whatsapp.auto_e_modes = wa.auto_e_modes;
-    saved.whatsapp.auto_e_chats = wa.auto_e_chats;     // kept as legacy fallback
     saved.whatsapp.auto_e_paused = !!wa.auto_e_paused;
     if (wa.auto_e_default_mode) saved.whatsapp.auto_e_default_mode = wa.auto_e_default_mode;
     await writeConfig(saved);
