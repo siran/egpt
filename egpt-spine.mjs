@@ -1966,6 +1966,7 @@ function startSpineRuntime() {
     })).join('\n');
     submitRef.current(`@${being} (pile)`, {
       fromWhatsApp: true,
+      network: meta?.network ?? 'whatsapp',   // carry origin network from the originating dispatch
       waChatId: nextChat,
       waSenderName: 'multiple',
       autoDispatched: true,
@@ -2016,6 +2017,7 @@ function startSpineRuntime() {
       for (const being of beings) {
         submitRef.current(`@${being} (accum flush)`, {
           fromWhatsApp: true,
+          network: b.meta?.network ?? 'whatsapp',   // carry origin network from the buffered baseMeta
           waChatId: chatId,
           waUser: b.meta?.waUser,
           waClientLabel: b.meta?.waClientLabel,
@@ -2078,6 +2080,7 @@ function startSpineRuntime() {
       for (const being of beings) {
         submitRef.current(`@${being} (backlog catch-up)`, {
           fromWhatsApp: true,
+          network: b.meta?.network ?? 'whatsapp',   // carry origin network from the buffered baseMeta
           waChatId: chatId,
           waUser: b.meta?.waUser,
           waClientLabel: b.meta?.waClientLabel,
@@ -2236,7 +2239,10 @@ function startSpineRuntime() {
   // double-logs the ones the dispatch already records.
   const _recordInboundOnly = async (from, body) => {
     try {
-      const surface = 'whatsapp';
+      // Conversation-storage surface = the message's origin network. Additive:
+      // 'whatsapp' for the only active network (byte-identical there); lookup
+      // and slugDir stay paired on the same value.
+      const surface = from.network ?? 'whatsapp';
       const cs = await _loadConvState();
       const entry = conversationsState.getContact(cs, surface, from.chatId);
       const slug = entry?.slug;
@@ -3438,6 +3444,10 @@ function startSpineRuntime() {
           }
           const baseMeta = {
             fromWhatsApp: true,
+            // Origin network (Beeper accountID): additive, threaded from the
+            // bridge's `from`. 'whatsapp' for the only active network — keeps the
+            // 48 fromWhatsApp refs and the whatsapp path byte-identical.
+            network: from.network ?? 'whatsapp',
             waChatId: from.chatId,
             // The chat's resolved title, captured at receive time. dispatch uses
             // this to name the contact's slug/folder so it never depends SOLELY
@@ -3539,7 +3549,7 @@ function startSpineRuntime() {
               // path keeps the resident list un-mode-filtered (per-message reply
               // gating stays downstream via baseMeta.replyAllowed, unchanged).
               // See src/conversation-members.mjs.
-              const _explicitMembers = await _explicitMembersForChat('whatsapp', from.chatId);
+              const _explicitMembers = await _explicitMembersForChat(from.network ?? 'whatsapp', from.chatId);
               let residents = _explicitMembers.length
                 ? residentsFromMembers(_explicitMembers)
                 : resolveRoster({
@@ -5453,6 +5463,7 @@ function startSpineRuntime() {
       for (const other of others) {
         submitRef.current?.(body, {
           fromWhatsApp: true,
+          network: meta.network ?? 'whatsapp',   // carry origin network when re-circulating to other residents
           waChatId: meta.waChatId,
           waUser: meta.waUser,
           waClientLabel: meta.waClientLabel,
@@ -7468,7 +7479,7 @@ function startSpineRuntime() {
             if (known) logOut(`@e command BLOCKED: ${cmdTok} (not in whatsapp.e_commands allowlist)`);
             return { isCommand: known };
           }
-          const eMeta = { fromWhatsApp: true, waChatId: m.waChatId, waMsgKey: m.waMsgKey, _emittedByE: true };
+          const eMeta = { fromWhatsApp: true, network: m.network ?? 'whatsapp', waChatId: m.waChatId, waMsgKey: m.waMsgKey, _emittedByE: true };
           logOut(`@e → ${line}`);
           const handled = await handleSlash(line, eMeta);
           return { isCommand: true, handled: !!handled };
