@@ -27,7 +27,6 @@ import { readTranscriptionConfig, DEFAULT_SERVICE as DEFAULT_TRANSCRIPTION_SERVI
 import { loadTemplate, buildCommandPrompt } from './src/tools/template.mjs';
 import { loadTheme, listThemes } from './src/tools/theme.mjs';
 import { LIFECYCLE_COMMANDS, firstLifecycleToken, isSelfLifecycleCommand } from './src/spine-lifecycle-gate.mjs';
-import { startTelegramBridge } from './src/bridges/telegram.mjs';
 // Baileys init goes through egpt-comm-handler.mjs — the keeper side
 // of the twin-soul split. Today it's a thin in-process wrapper; in
 // Phase 2 the keeper runs in its own process and the handler reaches
@@ -2784,15 +2783,11 @@ function startSpineRuntime() {
   let peersRev = 0;
   const setPeersRev = (next) => {
     peersRev = applyState(peersRev, next);
-    scheduleTelegramBootAttempt();
   };
-  // Whether THIS node currently owns Telegram polling. Broadcast on change.
+  // Telegram polling ownership — vestigial (the telegram bot transport was removed
+  // 2026-06-24; telegram, if ever used, arrives via Beeper). Constant false so
+  // /status + peer reporting still read cleanly until the Phase-2 branch collapse.
   let tgPolling = false;
-  const setTgPolling = (next) => {
-    const prev = tgPolling;
-    tgPolling = applyState(tgPolling, next);
-    if (prev !== tgPolling) onTelegramPollingChanged();
-  };
   // Bus event dispatcher — populated each render with the current closure
   // so bus events always read fresh state. Keeps the bus subscription
   // startup effect's dependencies stable.
@@ -2896,314 +2891,6 @@ function startSpineRuntime() {
     }, 800);
     return () => clearInterval(id);
   }, []);
-
-  // Telegram bridge management. Auto-starts if ~/.egpt/config.json has a
-  // bot_token; /telegram <node> stops this node's bridge and hands polling to
-  // a peer over the bus; the named peer's startTgBridge() picks it up.
-  const tgCfgRef = ref(null);
-
-  const startTgBridge = callback(async () => {
-    if (bridgeRef.current) return true;
-    let cfg = tgCfgRef.current;
-    if (!cfg) {
-      try {
-        const { readConfig } = await import('./src/tools/config-io.mjs');
-        cfg = await readConfig();
-      } catch (e) {
-        // Same failure class as the boot readConfigSync SHOUT: a config
-        // read error here means Telegram silently never starts.
-        errOut(`!! telegram: config read failed — bridge NOT started: ${e?.message ?? e}`);
-        return false;
-      }
-      tgCfgRef.current = cfg;
-    }
-    // bot_token (telegram secret) lives in config.yaml under telegram.bot_token;
-    // prefer the already-merged EGPT_CONFIG, same as beeper_token.
-    // Respect telegram.enabled: false — a present bot_token must NOT force the
-    // bridge on. Beeper is the transport; the telegram bots are off (2026-06-19).
-    if ((EGPT_CONFIG.telegram?.enabled ?? cfg.telegram?.enabled) === false) {
-      logOut('telegram: disabled (telegram.enabled: false) — bridge not started');
-      return false;
-    }
-    const botToken = EGPT_CONFIG.telegram?.bot_token ?? cfg.telegram?.bot_token;
-    if (!botToken) {
-      // Loud only when telegram is meant to be on — a bare unconfigured node
-      // stays quiet (startTgBridge is called speculatively on peer events).
-      if (EGPT_CONFIG.telegram?.enabled ?? cfg.telegram?.enabled) {
-        errOut('!! telegram: enabled but no bot_token resolvable (checked config.local.json + config.yaml) — bridge NOT started');
-      }
-      return false;
-    }
-    const bridge = startTelegramBridge({
-      botToken,
-      nodeName:     cfg.telegram.node_name ?? 'egpt-shell',
-      allowedUsers: cfg.telegram.allowed_users ?? [],
-      // The bot IS the meta-bot (Wren) — let the operator address it by the
-      // egpt handle they know (@wren) and not just the clunky @<bot_username>.
-      agentHandle:  cfg.telegram.agent ?? 'wren',
-      // Hold-on-reconnect grace window. Same semantic as WA:
-      //   N > 0  grace seconds
-      //   N == 0 strict (hold anything older than connectedAt)
-      //   N == -1 disable hold
-      // Default 5 = only in-flight live messages dispatch; daemon
-      // restart sends overnight @e's to /tg-pending for review.
-      maxBacklogSeconds: cfg.telegram.max_backlog_seconds != null
-        ? Number(cfg.telegram.max_backlog_seconds)
-        : 5,
-      chatId:       cfg.telegram.chat_id ?? null,
-      // Media: the SAME host callbacks the WhatsApp limb uses, so a photo /
-      // voice note / document sent to egpt_reve_bot is processed at the bridge
-      // level (saved to conversations/telegram/<slug>/media/, voice transcribed
-      // + 👂 ack via the shared src/incoming-media.mjs), not dropped. The bot is
-      // Wren — its operator's media always acks; transcripts reach Wren as text.
-      onMedia:      _saveIncomingMedia,
-      audioCfg:     EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {},
-      // Transcription SERVICE verdict — a per-entity ROOM service (default-on,
-      // opt-out per conversation), not E (src/transcription-service.mjs).
-      // Surface-independent: reads conversations/telegram/<slug>/config.yaml.
-      resolveTranscriptionService: (chatId) => _resolveTranscriptionService('telegram', chatId),
-      transcribe:   (txEndpoint() && txToken())
-        ? makeRemoteFirstTranscriber({
-            endpoint: txEndpoint(),
-            getKey: () => txToken(),
-          })
-        : transcribeAudioFile,   // local whisper-cli fallback (host is Node — fine to import)
-      postsBackDelayMs: txPostsBackDelayMs(),   // 👂 echo debounce (transcription.posts_back_delay_ms; undefined → bridge default)
-      onIncoming: async (text, from) => {
-        const who = from.username ? `@${from.username}` : (from.firstName || `tg:${from.userId}`);
-        logOut(`(telegram message from ${who}) -> ${text}`);
-
-        const isSlashCommand = text.trimStart().startsWith('/');
-        const isCommand = isSlashCommand || /^@\S+/.test(text.trimStart());
-
-        // Authorization gates privileged actions, not whether the agent HEARS
-        // the room. Reject unauthorized slash commands always (host control),
-        // and unauthorized @being directives in a 1:1. But in a GROUP the bot
-        // IS Wren and forwards all chatter to it — non-operators talking in
-        // the room (e.g. reve in DOLLY-REVE) is the whole point, so don't
-        // reject their messages with a noisy "not authorized" reply.
-        const blockedUnauth = !from.authorized && (
-          isSlashCommand || (from.chatType === 'private' && /^@\S+/.test(text.trimStart())));
-        if (blockedUnauth) {
-          bridge.send(`${who} (${from.userId}) is not authorized to emit commands or mentions`,
-            { chatId: from.chatId });
-          return;
-        }
-
-        // Lifecycle / process-control commands are only allowed in 1:1
-        // chats with the bot. Even with @us-addressing in a group, we
-        // refuse — group members shouldn't be able to crash, upgrade,
-        // or rewind the bot's host. DM the bot if you need these.
-        const LIFECYCLE = new Set(['/rewind', '/upgrade', '/restart', '/exit', '/chrome']);
-        const firstTok = text.trimStart().split(/\s+/)[0];
-        if (LIFECYCLE.has(firstTok) && from.chatType && from.chatType !== 'private') {
-          bridge.send(`${firstTok} only works in a 1:1 chat with this bot — DM me and try again`,
-            { chatId: from.chatId });
-          return;
-        }
-
-        // Interactive help menu — owner-only, consumes their numbers/text.
-        if (_maybeHandleHelp(text, { surface: 'telegram', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
-          return;
-        }
-
-        // Room fan-out (gated + loop-safe; no-op unless this TG chat is a
-        // contributing room member). Routing is parallel to the bridge's own
-        // command execution — both happen, neither depends on the other.
-        // tg-group members are keyed by the bare chat id (joined as
-        // `tg:<id>`), matching String(from.chatId) here.
-        _maybeRouteToRooms({ memberId: String(from.chatId ?? ''), senderLabel: who, body: text })
-          .catch(e => errOut(`!! _maybeRouteToRooms(tg): ${e?.message ?? e}`));
-
-        // Replication is unconditional: every Telegram message in the
-        // room is part of the room. The legacy `mirror` policy now only
-        // controls whether a plain-text Telegram message ALSO triggers
-        // a brain call (broadcast to local sessions). skipRoute tells
-        // submitInner to post room-utterance and stop, without routing.
-        let skipRoute = false;
-        let dispatchTgText = text;
-        let _forceTarget = null;
-        // System-personality contacts (operator's own bot-DM with themselves,
-        // future operator-DMs) auto-dispatch plain text to @e, same as WA
-        // Self DM. Operator (2026-05-22): personality='system' is the
-        // canonical "operator talking to themselves" marker. Honor it on
-        // TG too — bypass the mirror policy gate, auto-prefix the message.
-        const tgChatIdStr = String(from.chatId ?? '');
-        const isSystemTgContact = (() => {
-          try {
-            const entry = _convStateCache?.contacts?.telegram?.[tgChatIdStr];
-            if (!entry) return false;
-            if (entry.aliasOf) {
-              const primary = _convStateCache.contacts.telegram[entry.aliasOf];
-              return primary?.personality === 'system';
-            }
-            return entry.personality === 'system';
-          } catch (e) { return false; }
-        })();
-        if (!isCommand && parseInput(text.trim()).type === 'message') {
-          const mirror = cfg.telegram?.mirror ?? 'none';
-          // An explicit @bot mention / reply-to-bot in a group is addressed
-          // to us by IDENTITY — honor it regardless of the mirror policy,
-          // same as a self-DM. (from.addressedToBot is set by the bridge
-          // only after it has verified the message names this bot.)
-          const canRoute = from.addressedToBot
-            || mirror === 'all' || (mirror === 'allowed' && from.authorized) || (isSystemTgContact && from.authorized);
-          skipRoute = !canRoute;
-          // NO @e auto-prefix. The bot IS the meta-bot (Wren): a message
-          // addressed to the bot routes to its own agent by IDENTITY
-          // (forceTarget), not by mangling text onto creation-E. A group
-          // message is addressedToBot regardless of sender (the bot's presence
-          // = Wren's presence), so Wren joins the actual conversation with
-          // everyone, not just the operator; in a 1:1 the operator's own text
-          // still routes here. Skip only when the message explicitly
-          // @-addresses someone else. agent overridable via telegram.agent
-          // (default 'wren').
-          if (canRoute && (from.addressedToBot || from.authorized)
-              && !/^@[\w-]+/.test(text.trimStart())) {
-            _forceTarget = cfg.telegram?.agent ?? 'wren';
-          }
-          // Per-being mode on Telegram (#4): a bot's PRESENCE = enrollment; this
-          // tunes the agent's participation per chat (default 'on' = today's
-          // behavior). off/mute → the agent stays OUT of the chat; mention(-direct)
-          // → prompted ONLY when explicitly @addressed or a reply-to-bot. Mode
-          // gates PROMPTING; an engineer's reply still flows ungated once prompted
-          // (I8). Resolver: EGPT_CONFIG.auto_modes[chatId][being]; see auto-mode.mjs.
-          if (_forceTarget) {
-            const _bm = resolveBeingMode({
-              autoModes: EGPT_CONFIG.auto_modes, chatId: tgChatIdStr,
-              being: _forceTarget, defaultMode: 'on',
-            });
-            if (_bm === 'off' || _bm === 'mute'
-                || ((_bm === 'mention' || _bm === 'mention-direct') && !from.explicitlyAddressed)) {
-              _forceTarget = null; skipRoute = true;
-            }
-          }
-        }
-
-        if (submitRef.current) await submitRef.current(dispatchTgText, {
-          fromTelegram: true,
-          telegramChatId: from.chatId,
-          telegramUser: who,
-          telegramMessageId: from.tgMessageId ?? null,
-          operator: !!from.authorized,   // may toggle the STOP safe-word
-          fromBot: !!from.fromBot,       // loop-guard: another bot's message = a being-turn
-          ...(_forceTarget ? { forceTarget: _forceTarget } : {}),
-          skipRoute,
-        });
-      },
-      onLog:   (msg) => logOut(`telegram: ${msg}`),
-      onError: (msg) => errOut(`!! telegram: ${msg}`),
-      onYield: () => {
-        // 409 from Telegram means another node holds the polling slot.
-        // Drop our bridge state so we stop showing as 'polling' on the
-        // bus; an auto-claim will fire on the next peer release event.
-        bridgeRef.current = null;
-        _globalBridge = null;
-        setTgPolling(false);
-        pushItem({
-          id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-          body: `telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram ${BUS_NODE_ID} to force-reclaim.`,
-        });
-      },
-      onChatId: async (id) => {
-        // First captured chat — persist so future runs know the outbound
-        // target without waiting for an inbound. Also update the live
-        // ref + bridge.chatId getter so /telegram (no arg) reflects it.
-        const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
-        const saved = await readConfig();
-        if (!saved.telegram || typeof saved.telegram !== 'object') saved.telegram = {};
-        if (saved.telegram.chat_id === id) return;
-        saved.telegram.chat_id = id;
-        try {
-          await writeConfig(saved);
-          if (tgCfgRef.current?.telegram) tgCfgRef.current.telegram.chat_id = id;
-          logOut(`telegram: outbound chat ${id} captured and saved`);
-        } catch (e) {
-          errOut(`!! telegram: could not persist chat_id (${e.message})`);
-        }
-      },
-    });
-    _wrapBridgeFlood(bridge, 'telegram');
-    bridgeRef.current = bridge;
-    _globalBridge = bridge;
-    setTgPolling(true);
-    logOut('telegram bridge enabled');
-    return true;
-  }, []);
-
-  const stopTgBridge = callback(() => {
-    if (!bridgeRef.current) return false;
-    bridgeRef.current.stop();
-    bridgeRef.current = null;
-    _globalBridge = null;
-    setTgPolling(false);
-    pushItem({ id: Date.now() + Math.random(), author: 'system', body: 'telegram bridge stopped', _localOnly: true });
-    return true;
-  }, []);
-
-  // Bus-aware Telegram startup, once per shell lifetime.
-  //
-  // Boot phase (first 2s of bus-stable peers): consult peerNodesRef
-  // and apply shell-priority policy. Shells are the natural Telegram
-  // owner — they also run WA, brains, file logging, and the bus.
-  // The chrome extension is a viewer surface that holds the slot
-  // opportunistically when no shell is around. So:
-  //   - polling SHELL peer present → defer (auto-resume on their yield)
-  //   - polling CHROME peer present → preempt via self-handoff
-  //   - nobody polling → start
-  // The chrome extension's telegram-handoff handler does the
-  // symmetric thing on its side: ev.to !== its own id → stop polling.
-  //
-  // The peersRev dependency is here ONLY to extend the 2s timer when
-  // peers churn before the timer fires; once the timer has fired, the
-  // attempted ref guard makes this a no-op for future changes.
-  // Without that guard the previous version oscillated: 409 → yield
-  // → peer announce → 2s timer → start → 409 → ... — exactly the
-  // race the user called out as wrong (the right semantic is "saw
-  // 409, somebody else is polling, stop").
-  const tgBootAttempted = ref(false);
-  let tgBootTimer = null;
-  function scheduleTelegramBootAttempt() {
-    if (tgBootAttempted.current) return;
-    if (bridgeRef.current) return;
-    if (tgBootTimer) clearTimeout(tgBootTimer);
-    tgBootTimer = setTimeout(() => {
-      tgBootTimer = null;
-      if (tgBootAttempted.current) return;
-      tgBootAttempted.current = true;
-      if (bridgeRef.current) return;
-      const peers = [...peerNodesRef.current.values()];
-      const otherShellPolling = peers.some(p => p.polling && p.role !== 'chrome');
-      if (otherShellPolling) return;       // another shell owns it
-      const chromePolling = peers.some(p => p.polling && p.role === 'chrome');
-      if (chromePolling) {
-        // Preempt the extension. Post a self-handoff; the extension's
-        // telegram-handoff handler will stopBridge() since ev.to is
-        // not its own id. 1.5s settle lets the yield reach Telegram
-        // before our getUpdates opens (Bot API still 409s for several
-        // seconds after a polling stop).
-        const tid = busTargetIdRef.current;
-        if (tid) {
-          bus.postEvent(tid, { type: 'telegram-handoff', from: BUS_NODE_ID,
-            ts: Date.now(), to: BUS_NODE_ID }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-          setTimeout(() => startTgBridge(), 1500);
-          return;
-        }
-      }
-      startTgBridge();
-    }, 2000);
-  }
-  startEffect(() => {
-    scheduleTelegramBootAttempt();
-    return () => {
-      if (tgBootTimer) clearTimeout(tgBootTimer);
-    };
-  }, []);
-
-  // Stop the bridge on unmount regardless of who started it.
-  startEffect(() => {
-    return () => stopTgBridge();
-  }, [stopTgBridge]);
 
   // ── WhatsApp bridge (beeper default / cdp fallback, personal account) ──
   // Enabled when EGPT_CONFIG.whatsapp.enabled === true (or any truthy
@@ -4409,15 +4096,6 @@ function startSpineRuntime() {
 
   // Broadcast our polling state on change so /telegram (no arg) on peers
   // can show a fresh picture without round-trips.
-  function onTelegramPollingChanged() {
-    const tid = busTargetIdRef.current;
-    if (!tid) return;
-    bus.postEvent(tid, {
-      type: 'telegram-status', from: BUS_NODE_ID, ts: Date.now(),
-      polling: tgPolling,
-    }).catch(e => console.error(`!! egpt.mjs:[promise-catch] ${e?.message ?? e}`));
-  }
-
   // Forward every NEW item to the Telegram bridge. Track sent count via ref so
   // bulk additions (/last replays) flush all of them, not just the tail.
   // Items tagged _localOnly stay out of Telegram (e.g. the "(telegram message
@@ -5484,11 +5162,6 @@ function startSpineRuntime() {
         loadBrainProfile,
         attachProfile,
         profileCreateUsage,
-        // Batch 13 additions
-        tgPolling,
-        stopTgBridge,
-        startTgBridge,
-        tgCfgRef,
         // Batch 14 additions
         clearGlobalWaBridge: () => { _globalWaBridge = null; },
         startWaBridge,
@@ -8924,33 +8597,12 @@ function startSpineRuntime() {
         peerNodesRef.current.delete(ev.from);
         setPeersRev(r => r + 1);
         log(`bus: peer offline ${ev.from}`);
-        // The polling slot just opened up. If we have a bot_token but
-        // aren't currently bridged (likely because we yielded earlier),
-        // schedule a claim attempt with jitter so multiple yielded
-        // peers don't all start simultaneously and re-409 each other.
-        if (wasPolling && !bridgeRef.current) {
-          const delay = 500 + Math.random() * 1500;
-          setTimeout(() => { if (!bridgeRef.current) startTgBridge(); }, delay);
-        }
         return;
       }
       case 'sessions-update': {
         const peer = peerNodesRef.current.get(ev.from);
         if (peer) { peer.sessions = ev.sessions ?? []; peer.lastSeen = ev.ts ?? Date.now(); }
         setPeersRev(r => r + 1);
-        return;
-      }
-      case 'telegram-status': {
-        const peer = peerNodesRef.current.get(ev.from);
-        const wasPolling = !!peer?.polling;
-        if (peer) { peer.polling = !!ev.polling; peer.lastSeen = ev.ts ?? Date.now(); }
-        setPeersRev(r => r + 1);
-        // A peer voluntarily released polling. Same auto-claim logic
-        // as node-offline.
-        if (wasPolling && !ev.polling && !bridgeRef.current) {
-          const delay = 500 + Math.random() * 1500;
-          setTimeout(() => { if (!bridgeRef.current) startTgBridge(); }, delay);
-        }
         return;
       }
       case 'mention': {
@@ -9190,16 +8842,6 @@ function startSpineRuntime() {
         // executes (must be admin). to_node narrows like wa-send.
         if (ev.to_node && ev.to_node !== BUS_NODE_ID) return;
         await dispatchWaGroupSubjectRef.current?.(ev, 'bus');
-        return;
-      }
-      case 'telegram-handoff': {
-        if (ev.to !== BUS_NODE_ID) {
-          if (tgPolling) { stopTgBridge(); }
-          return;
-        }
-        log(`bus: handoff request from ${ev.from} — starting bridge`);
-        const ok = await startTgBridge();
-        if (!ok) log(`!! could not start bridge — bot_token missing in ~/.egpt/config.json?`);
         return;
       }
       case 'command': {

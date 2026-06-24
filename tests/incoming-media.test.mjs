@@ -10,7 +10,6 @@
 //     descriptor (largest photo; voice = audio+isVoiceNote).
 import { describe, it, expect, beforeEach } from 'vitest';
 import { transcribeVoiceNote, POSTS_BACK_DELAY_MS, flushPostsBackAck, _resetPostsBackDebounce } from '../src/incoming-media.mjs';
-import { pickTelegramMedia } from '../src/bridges/telegram.mjs';
 
 const fakeTranscribe = async () => 'hola que tal';
 
@@ -167,25 +166,4 @@ describe('transcribeVoiceNote — 👂 posts-back debounce (operator 2026-06-21)
   });
 });
 
-describe('pickTelegramMedia — normalizer', () => {
-  it('photo[] → largest, kind image', () => {
-    const m = pickTelegramMedia({ photo: [{ file_id: 'lo', file_unique_id: 'u1' }, { file_id: 'hi', file_unique_id: 'u2' }] });
-    expect(m).toMatchObject({ fileId: 'hi', kind: 'image', isVoiceNote: false });
-  });
-
-  it('voice → kind audio, isVoiceNote true', () => {
-    const m = pickTelegramMedia({ voice: { file_id: 'v', file_unique_id: 'u', mime_type: 'audio/ogg' } });
-    expect(m).toMatchObject({ fileId: 'v', kind: 'audio', isVoiceNote: true });
-  });
-
-  it('document pdf → resolved kind, carries the filename', () => {
-    const m = pickTelegramMedia({ document: { file_id: 'd', file_unique_id: 'u', mime_type: 'application/pdf', file_name: 'report.pdf' } });
-    expect(m.fileId).toBe('d');
-    expect(m.fileName).toBe('report.pdf');
-    expect(m.isVoiceNote).toBe(false);
-  });
-
-  it('text-only message → null (nothing to download)', () => {
-    expect(pickTelegramMedia({ text: 'hi' })).toBeNull();
-  });
-});
+// (pickTelegramMedia tests removed 2026-06-24 with the direct Telegram-bot transport.)

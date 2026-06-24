@@ -50,7 +50,6 @@ export const COMMANDS = [
   { cmd: '/join',           surface: 'shell',     usage: '/join @waN[,@waM,...] [incoming|outgoing|both]', desc: 'bind shell to one or more WA chats. Direction (default both): both = bidirectional; outgoing = shell typing fans out, their incoming does NOT stream to shell; incoming = their messages stream to shell, shell typing does NOT go to them (use @waN to reply). Aliases: in/←/<-, out/→/->, bi/↔/<->. Subsequent /join calls overwrite a chat\'s direction. /unjoin releases all.' },
   { cmd: '/unjoin',         surface: 'shell',     usage: '/unjoin',                                       desc: 'release the /join binding' },
   { cmd: '/wa-pending',     surface: 'shell',     usage: '/wa-pending [dispatch <idx|all> | clear]',      desc: 'review WhatsApp messages received but not auto-dispatched because they predate the bridge connect (whatsapp.max_backlog_seconds). dispatch <idx> runs one through the brain pipeline; dispatch all runs the lot; clear discards them.' },
-  { cmd: '/tg-pending',     surface: 'shell',     usage: '/tg-pending [dispatch <idx|all> | clear]',      desc: 'review Telegram messages received but not auto-dispatched because they predate the bridge connect (telegram.max_backlog_seconds). dispatch <idx> runs one through the brain pipeline; dispatch all runs the lot; clear discards them.' },
   { cmd: '/storm',          surface: 'shell',     usage: '/storm [off | status]',                          desc: 'firehose mode: every WhatsApp arrival renders in shell — group chatter, status updates, broadcasts, every observed-chat line — and media notifications include status@broadcast saves. Awareness gates restored when /storm off. Useful for a deliberate "show me everything" pass.' },
   { section: 'PERSONA' },
   { cmd: '/identity',       surface: 'shell',     usage: '/identity [@<session> | show]',                 desc: 'show or (re)install the egpt persona manifest (the conversation-e personality, brains.identity, default ./e_identity.md). "show" prints the current manifest; no arg installs into @e + every active session.' },
@@ -107,7 +106,6 @@ export const COMMANDS = [
   { cmd: '/save-room',      surface: 'shell',     usage: '/save-room [name]',                              desc: 'snapshot the current room lineup as YAML' },
 
   { section: 'MISC' },
-  { cmd: '/telegram',       surface: 'both',      usage: '/telegram [<node>|disconnect|allow <id>|revoke <id>|allowed]', desc: 'manage telegram polling, handoff, and authorized users' },
   { cmd: '/whatsapp',       surface: 'shell',     usage: '/whatsapp [start|pair|disconnect|allow <num>|revoke <num>|allowed]', desc: 'manage whatsapp bridge: start (existing auth), pair (wipe + new QR), disconnect, allow/revoke numbers' },
   { cmd: '/config',         surface: 'both',      usage: '/config [key [value]]',                          desc: 'read or write config' },
   { cmd: '/themes',         surface: 'shell',     usage: '/themes',                                        desc: 'list available themes' },
