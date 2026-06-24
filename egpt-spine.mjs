@@ -2910,11 +2910,8 @@ function startSpineRuntime() {
       }
       tgCfgRef.current = cfg;
     }
-    // bot_token is a SECRET → it lives in config.local.json, which the fresh
-    // readConfig() above does NOT merge (it reads config.yaml only — the local
-    // overlay is folded into EGPT_CONFIG once at boot). Prefer the already-
-    // merged EGPT_CONFIG for the token, same as beeper_token — otherwise a token
-    // in config.local.json silently never starts the bridge (2026-06-12 trap).
+    // bot_token (telegram secret) lives in config.yaml under telegram.bot_token;
+    // prefer the already-merged EGPT_CONFIG, same as beeper_token.
     // Respect telegram.enabled: false — a present bot_token must NOT force the
     // bridge on. Beeper is the transport; the telegram bots are off (2026-06-19).
     if ((EGPT_CONFIG.telegram?.enabled ?? cfg.telegram?.enabled) === false) {
@@ -4008,11 +4005,9 @@ function startSpineRuntime() {
       // 2026-06-10; the CDP WhatsApp-Web transport was removed 2026-06-21
       // (operator). A config still naming another transport gets beeper + a
       // notice rather than a dead bridge.
-      const _waTransportCfg = EGPT_CONFIG.whatsapp?.transport;
-      if (_waTransportCfg && _waTransportCfg !== 'beeper') {
-        logOut(`whatsapp: transport "${_waTransportCfg}" is no longer available — starting beeper (the only transport; set whatsapp.transport: beeper + beeper_token).`);
-      }
-      logOut('whatsapp: transport=beeper');
+      // Beeper is the only WhatsApp transport (the CDP WhatsApp-Web transport was
+      // removed 2026-06-21). No transport selection — there's one.
+      logOut('whatsapp: starting beeper bridge');
       const bridge = await startBeeperBridge(_bridgeOpts);
       _wrapBridgeFlood(bridge, 'whatsapp');
       waBridgeRef.current = bridge;
@@ -6226,11 +6221,8 @@ function startSpineRuntime() {
   // See project-egpt-at-me-identity + project-egpt-design-relationship
   // in memory for the role this fills.
   async function runMetaBrainTurn(text, onPartial = () => {}, name = 'wren', opts = {}) {
-    // Resolution order: EGPT_CONFIG.siblings[name] first (the registry
-    // shape — supports @jay / @wren / future siblings as distinct
-    // sessions). Falls back to EGPT_CONFIG.meta_brain only when no
-    // registry match (legacy single-pinned-sibling shape, preserved
-    // so old configs keep working).
+    // Resolve @name against the ONE registry: EGPT_CONFIG.siblings (loaded from
+    // config/agents/<name>.yaml) — by canonical name, alias, or @me→main_engineer.
     const sibs = EGPT_CONFIG.siblings ?? null;
     let mbCfg = null;
     let source = '';
@@ -6255,11 +6247,7 @@ function startSpineRuntime() {
       }
     }
     if (!mbCfg) {
-      mbCfg = EGPT_CONFIG.meta_brain ?? null;
-      source = 'meta_brain (legacy fallback)';
-    }
-    if (!mbCfg) {
-      return `!! @${name}: not configured. Add EGPT_CONFIG.siblings.${name}.{session_id, cwd, model?} (preferred) or set EGPT_CONFIG.meta_brain.session_id (legacy single-sibling shape).`;
+      return `!! @${name}: not configured. Add a sibling at ~/.egpt/config/agents/${name}.yaml (type, session_id, cwd, model).`;
     }
     // Disabled sibling — operator turned it off (siblings.<name>.enabled: false).
     // Refuse to run it (operator 2026-06-15: codex siblings disabled for now,
@@ -6283,24 +6271,13 @@ function startSpineRuntime() {
     const selectedName = name;
     async function persistSiblingSession(sessionId) {
       try {
-        if (source.startsWith('siblings.')) {
-          if (!EGPT_CONFIG.siblings || typeof EGPT_CONFIG.siblings !== 'object') EGPT_CONFIG.siblings = {};
-          if (!EGPT_CONFIG.siblings[selectedName] || typeof EGPT_CONFIG.siblings[selectedName] !== 'object') EGPT_CONFIG.siblings[selectedName] = {};
-          EGPT_CONFIG.siblings[selectedName].session_id = sessionId ?? null;
-        } else {
-          if (!EGPT_CONFIG.meta_brain || typeof EGPT_CONFIG.meta_brain !== 'object') EGPT_CONFIG.meta_brain = {};
-          EGPT_CONFIG.meta_brain.session_id = sessionId ?? null;
-        }
-        if (source.startsWith('siblings.')) {
-          const { writeSiblingSessionId } = await import('./src/tools/config-io.mjs');
-          await writeSiblingSessionId(selectedName, sessionId);
-        } else {
-          const { readConfig, writeConfig } = await import('./src/tools/config-io.mjs');
-          const cfg = await readConfig();
-          if (!cfg.meta_brain || typeof cfg.meta_brain !== 'object') cfg.meta_brain = {};
-          cfg.meta_brain.session_id = sessionId ?? null;
-          await writeConfig(cfg);
-        }
+        // siblings are the only registry now — mirror into memory + persist to
+        // the sibling's OWN config/agents/<name>.yaml (comment-preserving).
+        if (!EGPT_CONFIG.siblings || typeof EGPT_CONFIG.siblings !== 'object') EGPT_CONFIG.siblings = {};
+        if (!EGPT_CONFIG.siblings[selectedName] || typeof EGPT_CONFIG.siblings[selectedName] !== 'object') EGPT_CONFIG.siblings[selectedName] = {};
+        EGPT_CONFIG.siblings[selectedName].session_id = sessionId ?? null;
+        const { writeSiblingSessionId } = await import('./src/tools/config-io.mjs');
+        await writeSiblingSessionId(selectedName, sessionId);
       } catch (e) {
         sysOut(`!! @${selectedName}: couldn't persist session_id: ${e.message}`);
       }
