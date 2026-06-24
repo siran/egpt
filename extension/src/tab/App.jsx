@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Input from './Input.jsx';
-import { startTelegramBridge } from '../../../src/bridges/telegram.mjs';
 import * as sessionCommands from '../commands/session-commands.js';
 import * as miscCommands from '../commands/misc-commands.js';
 import { generateKey as generateBusKey } from '../../../src/tools/bus-sign.mjs';
@@ -786,50 +785,15 @@ export default function App() {
   // ── Telegram bridge ───────────────────────────────────────────
 
   const startBridge = useCallback(async () => {
-    bridgeRef.current?.stop();
-    bridgeRef.current = null;
-    const { telegram } = await chrome.storage.sync.get('telegram');
-    if (!telegram?.bot_token) {
-      setTgStatus('no bot token — add one in Settings');
-      setTgPolling(false);
-      return false;
-    }
-    const bridge = startTelegramBridge({
-      botToken:     telegram.bot_token,
-      nodeName:     'chrome',
-      allowedUsers: telegram.allowed_users ?? [],
-      chatId:       telegram.chat_id ?? null,
-      onIncoming:   (text, meta) => handleIncomingRef.current(text, meta),
-      onLog:        msg => setTgStatus(msg),
-      onError:      msg => appendMsg('egpt', `⚠ ${msg}`),
-      onYield:      () => {
-        // Another node holds the polling slot. Drop our bridge state;
-        // the dispatcher's auto-claim will retry when the holder
-        // releases (peer node-offline or telegram-status:false).
-        bridgeRef.current = null;
-        setTgPolling(false);
-        setTgStatus('yielded — another node is polling');
-        appendMsg('egpt', `telegram: yielded — another node holds the polling slot. Will auto-resume when they release; /telegram ${BUS_NODE_ID} to force-reclaim.`);
-      },
-      onChatId: async (id) => {
-        // First captured chat — persist to chrome.storage.sync so
-        // future runs know the outbound target.
-        try {
-          const { telegram = {} } = await chrome.storage.sync.get('telegram');
-          if (telegram.chat_id === id) return;
-          await chrome.storage.sync.set({
-            telegram: { ...telegram, chat_id: id },
-          });
-          appendMsg('egpt', `telegram: outbound chat ${id} captured and saved`, { noMirror: true });
-        } catch (e) {
-          appendMsg('egpt', `!! telegram: could not persist chat_id (${e.message})`, { noMirror: true });
-        }
-      },
-    });
-    bridgeRef.current = bridge;
-    setTgPolling(true);
-    return true;
-  }, [appendMsg]);
+    // The direct Telegram-bot transport was removed 2026-06-24 — there is one
+    // channel, Beeper; telegram (if connected in Beeper) arrives as network=telegram.
+    // No-op stub: bridgeRef stays null, so the surrounding telegram bus handlers are
+    // inert (every bridgeRef.current.send is null-safe) pending the full extension
+    // cleanup (docs/BRIDGE-ROUTING-UNIFICATION-PLAN.md).
+    setTgStatus('telegram via Beeper (bot transport removed)');
+    setTgPolling(false);
+    return false;
+  }, []);
 
   const stopBridge = useCallback(() => {
     if (!bridgeRef.current) return false;

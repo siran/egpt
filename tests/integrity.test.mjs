@@ -208,16 +208,6 @@ describe('bridge-surface integrity', () => {
     expect(missing, `WA bridge return object is missing methods that slash files call:\n  ${missing.join('\n  ')}`).toEqual([]);
   });
 
-  it('TG bridge exposes every method accessed by slash files', () => {
-    const src = readFileSync(join(ROOT, 'src/bridges/telegram.mjs'), 'utf8');
-    const ret = _extractReturnObject(src, /export\s+function\s+startTelegramBridge\b/);
-    expect(ret, 'could not extract bridge return object — has the factory shape changed?').toBeTruthy();
-    const exposed = _exportedNames(ret);
-    const accessed = _surveyAccesses('tgBridgeRef');
-    const missing = [];
-    for (const [method, files] of accessed.entries()) {
-      if (!exposed.has(method)) missing.push(`${method} (used in: ${files.join(', ')})`);
-    }
-    expect(missing, `TG bridge return object is missing methods that slash files call:\n  ${missing.join('\n  ')}`).toEqual([]);
-  });
+  // (the TG-bridge method-coverage test was removed 2026-06-24 with the direct
+  // Telegram-bot transport — there is one channel, Beeper; telegram arrives via it.)
 });

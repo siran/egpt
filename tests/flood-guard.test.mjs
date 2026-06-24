@@ -61,7 +61,8 @@ describe('flood-guard — bridge send fail-safe', () => {
   //    wrap, this fails. ──
   it('META: the spine wraps EVERY bridge send through the flood guard (no bypass)', () => {
     const src = readFileSync(new URL('../egpt-spine.mjs', import.meta.url), 'utf8');
-    expect(src).toMatch(/_wrapBridgeFlood\(bridge, 'telegram'\);\s*bridgeRef\.current = bridge/);
+    // (the 'telegram' bridge wrap assertion was removed 2026-06-24 with the direct
+    // Telegram-bot transport — one channel, Beeper.)
     expect(src).toMatch(/_wrapBridgeFlood\(bridge, 'whatsapp'\);\s*waBridgeRef\.current = bridge/);
     expect(src).toMatch(/guardedSend\(\{[\s\S]*?floodGuard:/);   // the wrap goes through the guard
   });
