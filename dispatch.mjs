@@ -141,14 +141,6 @@ function defaultThreadContext(meta = {}) {
       name: meta.waChatName ?? null,
     };
   }
-  if (meta.fromTelegram) {
-    return {
-      threadId: meta.telegramChatId ?? 'tg-unknown',
-      surface: 'tg',
-      slug: meta.telegramSlug ?? null,
-      name: meta.telegramChatName ?? null,
-    };
-  }
   return { threadId: 'shell', surface: 'shell' };
 }
 
@@ -339,7 +331,6 @@ export async function deliverBridgeReply({
   errOut = () => {},
   fs = defaultFs,
   logger = console,
-  mdToTgHtml = (s) => String(s ?? ''),
   meta = {},
   personaEmoji = '🐶',
   personaName = 'egpt',
@@ -353,11 +344,7 @@ export async function deliverBridgeReply({
   let chatId = null;
   let body = null;
 
-  if (meta.fromTelegram) {
-    surface = 'tg';
-    chatId = meta.telegramChatId;
-    body = `${personaEmoji} <b>${personaName}</b>\n${mdToTgHtml(text)}`;
-  } else if (meta.fromWhatsApp) {
+  if (meta.fromWhatsApp) {
     surface = 'wa';
     chatId = meta.waChatId;
     body = `${personaEmoji} ${personaName}: ${text}`;
@@ -404,7 +391,6 @@ export async function dispatchPersonaTurn({
   getWaChatSlug = () => null,
   logger = console,
   logOut = () => {},
-  mdToTgHtml = (s) => String(s ?? ''),
   meta = {},
   personaEmoji = '🐶',
   personaName = decision?.name ?? 'egpt',
@@ -465,8 +451,6 @@ export async function dispatchPersonaTurn({
       slug: getWaChatSlug(meta.waChatId) ?? meta.waSlug ?? null,
       name: getWaChatName(meta.waChatId) ?? meta.waChatName ?? null,
       }
-    : meta.fromTelegram
-    ? { threadId: meta.telegramChatId ?? 'tg-unknown', surface: 'tg' }
     : { threadId: 'shell', surface: 'shell' };
 
   // MODE GATE is known BEFORE the turn (it's the chat's reply PERMISSION, not the
@@ -505,7 +489,7 @@ export async function dispatchPersonaTurn({
   // mention-status don't permit a reply gets NOTHING delivered (we never opened a
   // stream — _canStream was false), whatever the reply says.
   if (!_gateAllow) {
-    const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+    const where = meta.waChatId ?? 'shell';
     logOut(`@e: read ${where} (mode gate withheld reply — processed for context, not sent; replyAllowed=${meta.replyAllowed})`);
     return { kind: 'suppressed', reply, threadCtx, personaPrompt };
   }
@@ -521,7 +505,7 @@ export async function dispatchPersonaTurn({
   const _repress = !_isMention && !threadCtx._isSystemPersonality;
   if (_emptyReply || (isSilence(reply) && _repress)) {
     if (_stream) await _stream.delete?.();   // remove anything streamed
-    const where = meta.waChatId ?? meta.telegramChatId ?? 'shell';
+    const where = meta.waChatId ?? 'shell';
     logOut(`@e: silence from ${where} (${_emptyReply ? 'empty' : 'unmentioned conversation-e represses …'} — not sent)`);
     return { kind: 'silence', reply, threadCtx, personaPrompt };
   }
@@ -566,7 +550,6 @@ export async function dispatchPersonaTurn({
       errOut,
       fs,
       logger,
-      mdToTgHtml,
       meta,
       personaEmoji,
       personaName,

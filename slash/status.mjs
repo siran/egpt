@@ -15,9 +15,8 @@ export async function run({ ctx }) {
   //   sysOut(text)
   //   getFile()       — current conversation md path
   //   dp(p)           — path display formatter
-  //   tgBridgeRef     — React ref → telegram bridge (chatId, etc.)
   //   sessions        — sessions object snapshot
-  const { sysOut, getFile, dp, tgBridgeRef, sessions } = ctx;
+  const { sysOut, getFile, dp, sessions } = ctx;
 
   let tabsByid = new Map();
   try {
@@ -33,19 +32,9 @@ export async function run({ ctx }) {
     '  console     active',
   ];
 
-  const tgBridge = tgBridgeRef.current;
-  if (tgBridge) {
-    const chatInfo = tgBridge.chatId
-      ? `connected · chat ${tgBridge.chatId}`
-      : 'connected (no incoming messages yet)';
-    lines.push(`  telegram    ${chatInfo}`);
-  } else {
-    lines.push(`  telegram    not configured`);
-  }
   lines.push(`  extension   — coming soon`);
   lines.push('', '── PARTICIPANTS ─────────────────────────────────────');
-  const tgSuffix = tgBridge ? ' · telegram' : '';
-  lines.push(`  👤 You         human    console${tgSuffix}`);
+  lines.push(`  👤 You         human    console`);
 
   if (!Object.keys(sessions).length) {
     lines.push('  (no AI sessions — use /attach or /open)');
