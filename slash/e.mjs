@@ -940,6 +940,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     EGPT_CONFIG.whatsapp = {};
   }
   const wa = EGPT_CONFIG.whatsapp;
+  EGPT_CONFIG.dispatch ??= {};
+  const disp = EGPT_CONFIG.dispatch;   // global E-routing knobs, OUT of whatsapp: (E is a sibling, not a network) — auto_paused / auto_default_mode
   const MODES = AUTO_MODES;   // on, accum, mute, mention-direct, mention, off
 
   // ── /e auto show-think [on|off] [<chat>] ────────────────────────
@@ -1018,8 +1020,8 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     }));
     const shown = search ? rows.filter(r => r.hay.includes(search)) : rows;
 
-    const paused = wa.auto_e_paused ? 'PAUSED (global kill on)' : 'active';
-    const def = wa.auto_e_default_mode || DEFAULT_AUTO_MODE;
+    const paused = (disp.auto_paused ?? wa.auto_e_paused) ? 'PAUSED (global kill on)' : 'active';
+    const def = disp.auto_default_mode || wa.auto_e_default_mode || DEFAULT_AUTO_MODE;
     const header = search
       ? `auto: ${paused}  (default mode: ${def})  matches for "${jidArg}":`
       : `auto: ${paused}  (default mode: ${def})\nper-chat modes:`;
@@ -1075,9 +1077,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
 
   let autoLabel = null;   // what the echo reports
   if (action === 'pause') {
-    wa.auto_e_paused = true; autoLabel = 'PAUSED (global kill on)';
+    disp.auto_paused = true; autoLabel = 'PAUSED (global kill on)';
   } else if (action === 'resume') {
-    wa.auto_e_paused = false; autoLabel = 'active (resumed)';
+    disp.auto_paused = false; autoLabel = 'active (resumed)';
   } else if (MODES.includes(action)) {
     const target = jidArg ? String(jidArg).trim() : null;
     if (target && target.toLowerCase() === 'all') {
@@ -1085,7 +1087,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       // per-chat overrides so nothing deviates. The per-chat overrides now live
       // in each conversation entry's `mode`, so clear those (not a flat key).
       // (Use /e auto pause for a temporary global kill that preserves config.)
-      wa.auto_e_default_mode = action;
+      disp.auto_default_mode = action;
       const cs = await readConvState(CONV_YAML_PATH);
       for (const e of Object.values(cs.contacts?.whatsapp ?? {})) {
         if (e && typeof e === 'object') delete e.mode;
@@ -1133,9 +1135,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   // Per-chat modes no longer live in config — they're in each conversation entry.
   try {
     const saved = await readConfig();
-    if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-    saved.whatsapp.auto_e_paused = !!wa.auto_e_paused;
-    if (wa.auto_e_default_mode) saved.whatsapp.auto_e_default_mode = wa.auto_e_default_mode;
+    if (!saved.dispatch || typeof saved.dispatch !== 'object') saved.dispatch = {};
+    saved.dispatch.auto_paused = !!disp.auto_paused;
+    if (disp.auto_default_mode) saved.dispatch.auto_default_mode = disp.auto_default_mode;
     await writeConfig(saved);
   } catch (e) {
     sysOut(`!! /e auto: persist failed: ${e.message}`);

@@ -2359,7 +2359,7 @@ function startSpineRuntime() {
       // surfaces keep the plain string return. The augmented descriptor flows to
       // the limb's announce.
       if (m.kind === 'video' && surface === 'whatsapp') {
-        const audioCfg = EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+        const audioCfg = EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
         const ffmpeg = audioCfg.ffmpeg_command || 'ffmpeg';
         const base = savedName.replace(/\.[^.]+$/, '');
         let framePaths = [];
@@ -2617,7 +2617,11 @@ function startSpineRuntime() {
     if (entry?.aliasOf) entry = c?.[entry.aliasOf];
     return entry?.mode;
   };
-  const _resolveChatAutoMode = (chatId) => resolveChatAutoMode(EGPT_CONFIG.whatsapp, chatId, _convChatMode(chatId));   // resolver in src/dispatch-helpers.mjs
+  // Global default mode now lives in dispatch.auto_default_mode (out of whatsapp:),
+  // with a read-fallback to the legacy whatsapp.auto_e_default_mode during migration.
+  const _resolveChatAutoMode = (chatId) => resolveChatAutoMode(
+    { auto_e_default_mode: EGPT_CONFIG.dispatch?.auto_default_mode ?? EGPT_CONFIG.whatsapp?.auto_e_default_mode },
+    chatId, _convChatMode(chatId));   // resolver in src/dispatch-helpers.mjs
   // The outbound backstop (I4): may E SEND a reply to this WA chat right now?
   // The gate logic now lives in the ENGINE (engine.mayEmit — pause-kill over the
   // per-chat mode gate, the tested autoMayEmitChat). This stays as a thin alias
@@ -2996,9 +3000,15 @@ function startSpineRuntime() {
   };
   const startWaBridge = callback(async (force = false) => {
     if (waBridgeRef.current) return true;
-    const cfg = EGPT_CONFIG.whatsapp;
-    if (!cfg || typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
+    const cfg = EGPT_CONFIG.whatsapp ?? {};
+    if (typeof cfg !== 'object') return false;   // guard: a malformed override (e.g. a string) must not proceed
+    // Transport-on = Beeper token present. There's no separate "enabled" flag —
+    // Beeper IS the transport; configuring it (a token) enables it (operator
+    // 2026-06-25). A node with no token (e.g. a pure transcriptor worker) skips
+    // the bridge. Legacy whatsapp.enabled:false still honored as an explicit off.
     if (cfg.enabled === false) return false;
+    const _beeperToken = EGPT_CONFIG.beeper_token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
+    if (!_beeperToken) return false;
     // No pairing gate: baileys (and its QR dance) is gone. Both remaining
     // transports ride an existing login — beeper the Beeper Desktop app,
     // cdp the logged-in WhatsApp Web tab in egpt's Chrome.
@@ -3091,11 +3101,19 @@ function startSpineRuntime() {
         maxBacklogSeconds: cfg.max_backlog_seconds != null
           ? Number(cfg.max_backlog_seconds)
           : 0,
+        // Network scope: [] = process EVERY network Beeper bridges (the firehose;
+        // network is metadata, not a gate — operator 2026-06-25). Set
+        // whatsapp.networks: ['whatsapp', ...] to restrict.
+        networks:          cfg.networks ?? [],
         // Pass through whatsapp.media to the bridge. Defaults (set
         // inside the bridge) are { download: 'all', max_size_mb: 25 }
         // — every image / video / voice note / document / sticker is
         // saved automatically.
         media:             cfg.media ?? {},
+        // Whisper binary/model config now lives under transcription.whisper (its
+        // own namespace — transcription isn't a whatsapp-media subkey). Legacy
+        // whatsapp.media.audio_transcribe kept as a migration fallback.
+        transcribeCfg:     EGPT_CONFIG.transcription?.whisper ?? cfg.media?.audio_transcribe ?? {},
         // CONTRACT C2: the bridge downloads each attachment + decides (via
         // whatsapp.media.download), then hands it here to land in the chat's
         // own media/ folder. Best-effort; never blocks the text dispatch.
@@ -3383,7 +3401,7 @@ function startSpineRuntime() {
           //     work everywhere because hasMention catches them above
           //     and submitInner routes them through @-resolution.
           const waCfg = EGPT_CONFIG.whatsapp ?? {};
-          const autoPaused = !!waCfg.auto_e_paused;
+          const autoPaused = !!(EGPT_CONFIG.dispatch?.auto_paused ?? waCfg.auto_e_paused);
           const isAutoEChat = Array.isArray(waCfg.auto_e_chats)
             && waCfg.auto_e_chats.includes(from.chatId);
           // Implicit auto-dispatch: any contact whose personality is
@@ -4713,7 +4731,7 @@ function startSpineRuntime() {
     // (engine.mayEmit); this only hands it what it needs to resolve verdicts.
     engine.configureGate({
       resolveChatMode: _resolveChatAutoMode,
-      isPaused: () => !!EGPT_CONFIG.whatsapp?.auto_e_paused,
+      isPaused: () => !!(EGPT_CONFIG.dispatch?.auto_paused ?? EGPT_CONFIG.whatsapp?.auto_e_paused),
       log: logOut,
     });
   }, []);
@@ -4729,7 +4747,7 @@ function startSpineRuntime() {
     if (!tcfg?.enabled) return;
     const token = txToken();
     if (!token) { errOut('!! transcriptor enabled but transcription token unset — refusing to start an unauthenticated server. Set transcription.token (same value as the main spine) in config.yaml.'); return; }
-    const audioCfg = EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+    const audioCfg = EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
     const wlog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } };
     let server = null, whisper = null, closed = false;
     (async () => {
