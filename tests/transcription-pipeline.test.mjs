@@ -22,6 +22,7 @@ function mk({ profile = FULL, ...overrides } = {}) {
     now: () => clock,
     onTransition: (t) => transitions.push(t),
     transcribeViaEndpoint: async () => { calls.remote++; return 'REMOTE'; },
+    reachable: async () => true,
     cli: async () => { calls.cli++; return 'CLI'; },
     startWhisperServer: async () => { calls.spawn++; return { url: 'http://local', stop() {} }; },
     makeWhisperServerTranscriber: () => async () => { calls.local++; return 'LOCAL'; },
@@ -81,6 +82,14 @@ describe('transcription pipeline (declarative fallback chain)', () => {
       { from: 'remote', to: 'cli', recovered: false },
       { from: 'cli', to: 'remote', recovered: true },
     ]);
+  });
+
+  it('a probe-unreachable remote is skipped fast (no POST) and put in cooldown', async () => {
+    let posts = 0;
+    const { pipe } = mk({ profile: REMOTE_CLI, reachable: async () => false, transcribeViaEndpoint: async () => { posts++; return 'REMOTE'; } });
+    expect(await pipe.transcribe('a')).toBe('CLI');   // probe fails → straight to cli, no decode attempt
+    expect(posts).toBe(0);                            // never POSTed the audio
+    await pipe.transcribe('b'); expect(posts).toBe(0);// still in cooldown
   });
 
   it('returns null when every engine declines', async () => {
