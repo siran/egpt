@@ -4764,14 +4764,16 @@ function startSpineRuntime() {
         // the transcriptor's per-request transcribe POSTs to it. Falls
         // back to the per-note whisper-cli default when not enabled.
         let transcribe;
-        const scfg = audioCfg.server;
+        // Resident whisper.cpp server config lives with the WORKER that owns it
+        // (transcriptor.server); legacy fallback to the old cli/audio_transcribe.server.
+        const scfg = EGPT_CONFIG.transcriptor?.server ?? audioCfg.server ?? {};
         if (scfg?.enabled) {
           whisper = await startWhisperServer({
             command: scfg.command,
-            model: audioCfg.model_path,
+            model: scfg.model ?? audioCfg.model_path,
             host: scfg.host || '127.0.0.1',
             port: Number(scfg.port) > 0 ? Number(scfg.port) : 8089,
-            language: audioCfg.language,
+            language: scfg.language ?? audioCfg.language,
             extraArgs: Array.isArray(scfg.extra_args) ? scfg.extra_args : [],
             antiRepetition: scfg.anti_repetition !== false,   // -mc 0 -sns (op 2026-06-16); set false to opt out
             onLog: wlog,
