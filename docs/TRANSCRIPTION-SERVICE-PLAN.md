@@ -20,7 +20,8 @@ transcription_service:
       type: whisper-server-remote
       endpoint: http://192.168.1.102:23390
       token: <shared HMAC secret>
-      timeout_ms: 4000          # fail FAST (a down remote must not stall each note)
+      connect_timeout_ms: 3000  # liveness probe — fail FAST if the endpoint is down
+      timeout_ms: 120000        # DECODE budget — a working server legitimately takes seconds on a long note
       cooldown_ms: 30000        # circuit-breaker: after a failure, skip this engine for N ms, then re-probe
     local:
       type: whisper-server-local
@@ -47,7 +48,7 @@ transcription_service:
 ## Semantics
 - **Per note**: walk `fallback_order`; first engine that returns a transcript wins.
 - **Engine `type`** (explicit — names are free labels):
-  - `whisper-server-remote` — POST to `endpoint` (HMAC `token`, `transcribeViaEndpoint`). Has `timeout_ms` (fail fast) + `cooldown_ms` (circuit-breaker: a recently-failed remote is SKIPPED until cooldown elapses, then re-probed — no per-note stall).
+  - `whisper-server-remote` — POST to `endpoint` (HMAC `token`, `transcribeViaEndpoint`). A quick `reachable()` liveness probe (`connect_timeout_ms`) fails fast on a DOWN endpoint so a long `timeout_ms` (the DECODE budget — a working server legitimately takes seconds) never stalls per note; `cooldown_ms` is the circuit-breaker (a failed/unreachable remote is SKIPPED until it elapses, then re-probed).
   - `whisper-server-local` — resident whisper.cpp server (`startWhisperServer` + `makeWhisperServerTranscriber`). **Lazy-spawn** when first reached; resident after; port reaped on `/restart`. Not-yet-ready ⇒ this engine "fails" and the cascade falls to the next (cli).
   - `whisper-cli` — `transcribeAudioFile`, per-note spawn. Always available — the natural floor.
 - **Self warnings — on TRANSITION only** (not per note): when the *winning* engine changes

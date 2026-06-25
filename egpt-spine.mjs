@@ -514,6 +514,7 @@ let _txPipelineInstance = null;
 const txPipeline = () => (_txPipelineInstance ??= buildTranscriptionPipeline({
   profile: _resolveTxProfile(),
   transcribeViaEndpoint,
+  reachable: async (url, ms) => { try { await fetch(url, { method: 'GET', signal: AbortSignal.timeout(ms) }); return true; } catch { return false; } },
   startWhisperServer,
   makeWhisperServerTranscriber,
   cli: transcribeAudioFile,

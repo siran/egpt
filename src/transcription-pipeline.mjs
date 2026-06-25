@@ -18,6 +18,7 @@
 export function buildTranscriptionPipeline({
   profile,
   transcribeViaEndpoint,          // (audioPath, {endpoint, keyB64, timeoutMs}, log, meta) -> transcript (throws on fail)
+  reachable,                      // async (url, timeoutMs) -> bool — quick liveness probe (omit to skip probing)
   startWhisperServer,             // async ({command, model, host, port, language, extraArgs, antiRepetition, onLog}) -> {url, stop}
   makeWhisperServerTranscriber,   // ({url, ffmpeg, language}) -> (audioPath, cfg, log, meta) -> transcript
   cli,                            // transcribeAudioFile(audioPath, cfg, log, meta) -> transcript
@@ -36,9 +37,17 @@ export function buildTranscriptionPipeline({
   async function tryRemote(eng, audioPath, log, meta) {
     const downUntil = breaker.get(eng.name);
     if (downUntil && downUntil > now()) return null;            // in cooldown — skip fast
+    // Liveness probe: fail FAST on a down endpoint (connect_timeout_ms) instead of
+    // waiting the full DECODE budget — a working server legitimately takes seconds
+    // to transcribe a long note, so timeout_ms must be generous, not a fail-fast.
+    if (reachable && !(await reachable(eng.endpoint, eng.connect_timeout_ms ?? 3000))) {
+      breaker.set(eng.name, now() + (eng.cooldown_ms ?? 30_000));
+      onLog(`pipeline: remote "${eng.name}" unreachable — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
+      return null;
+    }
     try {
       const t = await transcribeViaEndpoint(
-        audioPath, { endpoint: eng.endpoint, keyB64: eng.token, timeoutMs: eng.timeout_ms ?? 4000 }, log, meta);
+        audioPath, { endpoint: eng.endpoint, keyB64: eng.token, timeoutMs: eng.timeout_ms ?? 120_000 }, log, meta);
       breaker.delete(eng.name);                                  // healthy again
       return t || null;
     } catch (e) {
