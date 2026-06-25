@@ -84,7 +84,7 @@ export async function startBeeperBridge(opts = {}) {
     beeperToken,
     baseUrl = 'http://127.0.0.1:23373',
     wsUrl = 'ws://127.0.0.1:23373/v1/ws',
-    networks = ['whatsapp'],   // v1 SAFE SCOPE: only act on these networks. The WS subscribes to '*' (all chats); anything else is dropped. Set [] / null to process every network.
+    networks = [],   // [] / null = process EVERY network Beeper bridges (signal/telegram/whatsapp/…). Beeper is the transport; network is metadata on each message, NOT a gate — anything that reaches the spine is processed (operator 2026-06-25). Set ['whatsapp', ...] to restrict scope.
     // Host verdict for this chat's transcription service (a per-entity ROOM
     // service, NOT E enrollment — the host reads the conversation/room config
     // and supplies { enabled, postsBack }; see src/transcription-service.mjs).
@@ -111,9 +111,13 @@ export async function startBeeperBridge(opts = {}) {
     holdGraceMs = 5_000,
     stateDir = join(homedir(), '.egpt', 'state'),
     transcribe = transcribeAudioFile,
+    // Whisper binary/model config — now sourced from transcription.whisper (the
+    // host resolves it; falls back to the legacy whatsapp.media.audio_transcribe
+    // during migration). Transcription is its own concern, not a media subkey.
+    transcribeCfg = null,
   } = opts;
   const token = beeperToken || process.env.BEEPER_ACCESS_TOKEN;
-  const audioCfg = media.audio_transcribe || {};
+  const audioCfg = transcribeCfg ?? media.audio_transcribe ?? {};
   const mediaDownloadPolicy = media.download ?? 'all';   // 'all' | 'images_docs' | 'off'
   const onLog = (m) => {
     try { appendFileSync(_BEEPER_LOG, `${new Date().toISOString()} ${m}\n`); } catch { /* ignore */ }
@@ -881,10 +885,12 @@ export async function startBeeperBridge(opts = {}) {
 // quick CLI smoke test: BEEPER_ACCESS_TOKEN=... node src/bridges/beeper.mjs
 if (process.argv[1]?.endsWith('beeper.mjs')) {
   let media = {}, token = process.env.BEEPER_ACCESS_TOKEN;
-  try { const cfg = (await import('../tools/config-io.mjs')).readConfigSync(); media = cfg?.whatsapp?.media || {}; token = token || cfg?.beeper_token || cfg?.whatsapp?.beeper_token; } catch { /* ignore */ }
+  let transcribeCfg = null;
+  try { const cfg = (await import('../tools/config-io.mjs')).readConfigSync(); media = cfg?.whatsapp?.media || {}; transcribeCfg = cfg?.transcription?.whisper ?? cfg?.whatsapp?.media?.audio_transcribe ?? null; token = token || cfg?.beeper_token || cfg?.whatsapp?.beeper_token; } catch { /* ignore */ }
   startBeeperBridge({
     beeperToken: token,
     media,
+    transcribeCfg,
     onLog: (m) => console.log('[beeper]', m),
     onIncoming: (text, from) => console.log('  INCOMING', JSON.stringify({ chat: from.chatName, sender: from.senderName, atE: from.atEAnywhere, voice: from.isTranscriptFromVoice, text: (text || '').slice(0, 80) })),
   }).then(() => console.log('beeper bridge running (Ctrl-C to stop) — send a WhatsApp message / voice note'));

@@ -366,16 +366,28 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('fresh');
   });
 
-  it('network scope is fail-closed: unknown or foreign accountID drops; prefix instance ids pass', async () => {
+  it('network scope is fail-closed WHEN SET: unknown or foreign accountID drops; prefix instance ids pass', async () => {
     fake.chats.set(CHAT('chat-unknown'), { title: 'X', type: 'single', isMuted: false, accountID: null });
     fake.chats.set(CHAT('chat-telegram'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
     fake.chats.set(CHAT('chat-wa2'), { title: 'W', type: 'single', isMuted: false, accountID: 'whatsappgo_2' });
-    const { incoming } = await startBridge();
+    const { incoming } = await startBridge({ networks: ['whatsapp'] });   // explicit scope (default [] = all networks)
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-unknown'), text: 'no-acct' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-telegram'), text: 'tg' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-wa2'), text: 'wa-instance' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('wa-instance');
+  });
+
+  it('default network scope is OPEN ([]): EVERY network is processed (Beeper is the transport; network is metadata, not a gate)', async () => {
+    fake.chats.set(CHAT('chat-unknown'), { title: 'X', type: 'single', isMuted: false, accountID: null });
+    fake.chats.set(CHAT('chat-telegram'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
+    fake.chats.set(CHAT('chat-signal'), { title: 'S', type: 'single', isMuted: false, accountID: 'signal' });
+    const { incoming } = await startBridge();   // no networks → default [] = process all
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-unknown'), text: 'no-acct' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-telegram'), text: 'tg' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-signal'), text: 'sig' })] });
+    await waitFor(() => incoming.length === 3);
+    expect(incoming.map((i) => i.text).sort()).toEqual(['no-acct', 'sig', 'tg']);
   });
 
   it('👂 ack only where posts_back; elsewhere still transcribes silently', async () => {
