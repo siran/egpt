@@ -67,9 +67,10 @@ import { formatItemForWhatsApp as _formatItemForWhatsApp } from './src/item-form
 import { clearNucleusInfoSync } from './src/attach/discovery.mjs';
 import { swallow } from './src/swallow.mjs';
 import { runVoiceStreamTurn } from './src/voice-stream.mjs';
-import { makeRemoteFirstTranscriber, startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT } from './src/tools/transcriptor.mjs';
+import { startTranscriptorServer, TRANSCRIPTOR_DEFAULT_PORT, transcribeViaEndpoint } from './src/tools/transcriptor.mjs';
 import { startWhisperServer, makeWhisperServerTranscriber } from './src/tools/whisper-server.mjs';
 import { transcribeAudioFile } from './src/tools/transcribe.mjs';
+import { buildTranscriptionPipeline } from './src/transcription-pipeline.mjs';
 import { extractKeyframes } from './src/video-frames.mjs';
 import { configLoadFailureConsoleMessage, missingWhatsappConfigKeys, writeConfigLoadFailureAlertSync } from './src/spine-boot.mjs';
 import { bootSpineRuntime, stopSpineRuntimeOnExit } from './src/spine-runtime.mjs';
@@ -471,13 +472,55 @@ const txToken = txServerToken;
 const txMode = () => EGPT_CONFIG.transcription?.mode ?? ((txServerEndpoint() && txServerToken()) ? 'whisper-server' : 'whisper-cli');
 // whisper-cli binary/model config — the cli engine AND the universal fallback.
 const txCli = () => EGPT_CONFIG.transcription?.cli ?? EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
-// The server transcriber when mode=whisper-server and an endpoint+token exist
-// (remote-first, cli fallback built in); null ⇒ caller uses the cli transcriber.
-const txRemoteTranscriber = () =>
-  (txMode() === 'whisper-server' && txServerEndpoint() && txServerToken())
-    ? makeRemoteFirstTranscriber({ endpoint: txServerEndpoint(), getKey: () => txServerToken() })
-    : null;
-const txPostsBackDelayMs = () => EGPT_CONFIG.transcription?.posts_back_delay_ms ?? EGPT_CONFIG.posts_back_delay_ms;
+// ── transcription pipeline (declarative fallback chain; docs/TRANSCRIPTION-SERVICE-PLAN.md) ──
+// Active profile = transcription_service[use_config], else synthesized from the legacy
+// transcription.{mode,server,cli} so an un-migrated node is unchanged. cli is always present.
+const _txlog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'egpt.log'), `${new Date().toISOString()} [log] transcription: ${m}\n`); } catch { /* best effort */ } };
+function _synthLegacyTxProfile() {
+  const order = [], prof = { fallback_order: order };
+  if (txMode() === 'whisper-server' && txServerEndpoint() && txServerToken()) {
+    order.push('remote');
+    prof.remote = { type: 'whisper-server-remote', endpoint: txServerEndpoint(), token: txServerToken() };
+  }
+  order.push('cli');
+  prof.cli = { type: 'whisper-cli', ...txCli() };
+  return prof;
+}
+function _resolveTxProfile() {
+  const svc = EGPT_CONFIG.transcription_service;
+  if (svc && typeof svc === 'object') {
+    const p = svc.use_config ? svc[svc.use_config] : null;
+    if (p && Array.isArray(p.fallback_order)) return p;
+    _txlog(`!! transcription_service.use_config "${svc.use_config}" missing/invalid — using cli only`);
+    return { fallback_order: ['cli'], cli: { type: 'whisper-cli', ...txCli() } };
+  }
+  return _synthLegacyTxProfile();
+}
+const _postTxTransition = ({ from, to, recovered }) => {
+  _txlog(recovered ? `recovered "${from}" → "${to}"` : `fell back "${from}" → "${to}"`);
+  const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
+  if (!selfDm) return;
+  const body = recovered
+    ? `✅ transcription back on "${to}" (was on "${from}")`
+    : `⚠️ transcription fell back: "${from}" → "${to}" — engine unavailable`;
+  const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'),
+    JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid: selfDm, body })).catch(() => {});
+};
+let _txPipelineInstance = null;
+// The per-note transcriber: walks the active profile's fallback_order (remote →
+// local resident → cli). Built once + memoized; circuit-breaker + lazy local-spawn
+// + transition warnings live in src/transcription-pipeline.mjs.
+const txPipeline = () => (_txPipelineInstance ??= buildTranscriptionPipeline({
+  profile: _resolveTxProfile(),
+  transcribeViaEndpoint,
+  startWhisperServer,
+  makeWhisperServerTranscriber,
+  cli: transcribeAudioFile,
+  onTransition: _postTxTransition,
+  onLog: _txlog,
+}));
+const txPostsBackDelayMs = () => EGPT_CONFIG.transcription_service?.posts_back_delay_ms ?? EGPT_CONFIG.transcription?.posts_back_delay_ms ?? EGPT_CONFIG.posts_back_delay_ms;
 // Wiring check: a being whose `cwd` doesn't exist fails EVERY turn with a
 // misleading "spawn … ENOENT" (operator 2026-06-14: DOLLY's Don had a
 // YAML-mangled cwd). Surface it LOUDLY at boot so it's diagnosable up front
@@ -2334,7 +2377,7 @@ function startSpineRuntime() {
   // Route A): remote-first to the worker spine when configured (same as the voice
   // path), else local whisper-cli. convertToWav16k reads video containers too, so
   // the same transcriber handles a video's audio track.
-  const _mediaTranscribe = txRemoteTranscriber() ?? transcribeAudioFile;
+  const _mediaTranscribe = txPipeline().transcribe;
 
   const _saveIncomingMedia = async (m) => {
     try {
@@ -3155,12 +3198,10 @@ function startSpineRuntime() {
         // both default-on), keyed on the STABLE chat id never a display name.
         // src/transcription-service.mjs.
         resolveTranscriptionService: (chatId) => _resolveTranscriptionService('whatsapp', chatId),
-        // Engine per transcription.mode: whisper-server → POST to the endpoint
-        // (a GPU worker e.g. DOLLY); ANY failure/timeout falls back to local
-        // whisper-cli, so a dead/asleep server only costs speed. whisper-cli (or
-        // no endpoint/token) → undefined here = the bridge's own cli transcriber.
-        // Auth is the shared transcription.server.token, same on both machines.
-        transcribe:        txRemoteTranscriber() ?? undefined,
+        // Per-note transcriber = the declarative fallback pipeline (remote → local
+        // resident → cli) resolved from transcription_service[use_config]. cli is the
+        // always-available floor, so this is never undefined.
+        transcribe:        txPipeline().transcribe,
         // The spine owns WHEN the 👂 transcript echo posts: hold per note for this
         // many ms (transcription.posts_back_delay_ms; undefined → the bridge's
         // POSTS_BACK_DELAY_MS default).
