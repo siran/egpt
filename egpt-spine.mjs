@@ -456,12 +456,27 @@ try {
     writeConfigLoadFailureAlertSync({ egptHome: EGPT_HOME, error: e });
   } catch (e2) { console.error(`!! egpt boot: alert write failed — ${e2?.message ?? e2}`); }
 }
-// Transcription config — grouped under `transcription:` (2026-06-24 declutter):
-// { endpoint, token, posts_back_delay_ms }. Resolvers fall back to the pre-grouping
-// floating top-level keys so a node still on the old config keeps working. (The
-// local-whisper block stays at whatsapp.media.audio_transcribe — already grouped.)
-const txEndpoint = () => EGPT_CONFIG.transcription?.endpoint ?? EGPT_CONFIG.transcription_endpoint ?? null;
-const txToken = () => EGPT_CONFIG.transcription?.token ?? EGPT_CONFIG.transcription_token ?? null;
+// Transcription config — grouped under `transcription:` with an explicit ENGINE
+// `mode` (2026-06-25): whisper-server (connect to an endpoint — a remote box e.g.
+// DOLLY, or a resident server) | whisper-cli (spawn the binary per note). cli is
+// ALWAYS the fallback when a server fails, so a dead server only costs speed.
+// Resolvers fall back to the pre-mode keys (transcription.endpoint/token/whisper,
+// the floating top-level, and whatsapp.media.audio_transcribe) so an un-migrated
+// node keeps working unchanged.
+const txServerEndpoint = () => EGPT_CONFIG.transcription?.server?.endpoint ?? EGPT_CONFIG.transcription?.endpoint ?? EGPT_CONFIG.transcription_endpoint ?? null;
+const txServerToken = () => EGPT_CONFIG.transcription?.server?.token ?? EGPT_CONFIG.transcription?.token ?? EGPT_CONFIG.transcription_token ?? null;
+const txEndpoint = txServerEndpoint;   // legacy aliases (worker role + older call sites)
+const txToken = txServerToken;
+// Engine: explicit `mode`, else inferred from legacy config (endpoint+token present ⇒ server).
+const txMode = () => EGPT_CONFIG.transcription?.mode ?? ((txServerEndpoint() && txServerToken()) ? 'whisper-server' : 'whisper-cli');
+// whisper-cli binary/model config — the cli engine AND the universal fallback.
+const txCli = () => EGPT_CONFIG.transcription?.cli ?? EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+// The server transcriber when mode=whisper-server and an endpoint+token exist
+// (remote-first, cli fallback built in); null ⇒ caller uses the cli transcriber.
+const txRemoteTranscriber = () =>
+  (txMode() === 'whisper-server' && txServerEndpoint() && txServerToken())
+    ? makeRemoteFirstTranscriber({ endpoint: txServerEndpoint(), getKey: () => txServerToken() })
+    : null;
 const txPostsBackDelayMs = () => EGPT_CONFIG.transcription?.posts_back_delay_ms ?? EGPT_CONFIG.posts_back_delay_ms;
 // Wiring check: a being whose `cwd` doesn't exist fails EVERY turn with a
 // misleading "spawn … ENOENT" (operator 2026-06-14: DOLLY's Don had a
@@ -2319,9 +2334,7 @@ function startSpineRuntime() {
   // Route A): remote-first to the worker spine when configured (same as the voice
   // path), else local whisper-cli. convertToWav16k reads video containers too, so
   // the same transcriber handles a video's audio track.
-  const _mediaTranscribe = (txEndpoint() && txToken())
-    ? makeRemoteFirstTranscriber({ endpoint: txEndpoint(), getKey: () => txToken() })
-    : transcribeAudioFile;
+  const _mediaTranscribe = txRemoteTranscriber() ?? transcribeAudioFile;
 
   const _saveIncomingMedia = async (m) => {
     try {
@@ -2359,7 +2372,7 @@ function startSpineRuntime() {
       // surfaces keep the plain string return. The augmented descriptor flows to
       // the limb's announce.
       if (m.kind === 'video' && surface === 'whatsapp') {
-        const audioCfg = EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+        const audioCfg = txCli();
         const ffmpeg = audioCfg.ffmpeg_command || 'ffmpeg';
         const base = savedName.replace(/\.[^.]+$/, '');
         let framePaths = [];
@@ -3113,7 +3126,7 @@ function startSpineRuntime() {
         // Whisper binary/model config now lives under transcription.whisper (its
         // own namespace — transcription isn't a whatsapp-media subkey). Legacy
         // whatsapp.media.audio_transcribe kept as a migration fallback.
-        transcribeCfg:     EGPT_CONFIG.transcription?.whisper ?? cfg.media?.audio_transcribe ?? {},
+        transcribeCfg:     txCli(),
         // CONTRACT C2: the bridge downloads each attachment + decides (via
         // whatsapp.media.download), then hands it here to land in the chat's
         // own media/ folder. Best-effort; never blocks the text dispatch.
@@ -3142,18 +3155,12 @@ function startSpineRuntime() {
         // both default-on), keyed on the STABLE chat id never a display name.
         // src/transcription-service.mjs.
         resolveTranscriptionService: (chatId) => _resolveTranscriptionService('whatsapp', chatId),
-        // Remote-first transcription (operator 2026-06-10): when
-        // transcription_endpoint is set, voice notes go to the GPU worker
-        // spine; ANY failure or timeout falls back to local whisper, so a
-        // dead/asleep worker only costs speed. Null endpoint (or no token)
-        // = pure local (the bridge's own default transcriber). Auth is the
-        // shared transcription_token, same value on both machines.
-        transcribe:        (txEndpoint() && txToken())
-          ? makeRemoteFirstTranscriber({
-              endpoint: txEndpoint(),
-              getKey: () => txToken(),
-            })
-          : undefined,
+        // Engine per transcription.mode: whisper-server → POST to the endpoint
+        // (a GPU worker e.g. DOLLY); ANY failure/timeout falls back to local
+        // whisper-cli, so a dead/asleep server only costs speed. whisper-cli (or
+        // no endpoint/token) → undefined here = the bridge's own cli transcriber.
+        // Auth is the shared transcription.server.token, same on both machines.
+        transcribe:        txRemoteTranscriber() ?? undefined,
         // The spine owns WHEN the 👂 transcript echo posts: hold per note for this
         // many ms (transcription.posts_back_delay_ms; undefined → the bridge's
         // POSTS_BACK_DELAY_MS default).
@@ -4747,7 +4754,7 @@ function startSpineRuntime() {
     if (!tcfg?.enabled) return;
     const token = txToken();
     if (!token) { errOut('!! transcriptor enabled but transcription token unset — refusing to start an unauthenticated server. Set transcription.token (same value as the main spine) in config.yaml.'); return; }
-    const audioCfg = EGPT_CONFIG.transcription?.whisper ?? EGPT_CONFIG.whatsapp?.media?.audio_transcribe ?? {};
+    const audioCfg = txCli();
     const wlog = (m) => { try { appendFileSync(join(EGPT_LOGS, 'transcriptor.log'), `${new Date().toISOString()} ${m}\n`, { mode: 0o600 }); } catch (e) { swallow('transcriptor.log', e); } };
     let server = null, whisper = null, closed = false;
     (async () => {
