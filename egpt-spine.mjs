@@ -2179,14 +2179,31 @@ function startSpineRuntime() {
   const _HELP_TTL_MS = 3 * 60 * 1000;
   const _wizardMode = ref(new Map());   // chatKey -> { state, surface, chatId, ts } (add-agent wizard)
   const _WIZARD_TTL_MS = 5 * 60 * 1000;
+  // Self-DM echo guard: egpt's OWN menu/wizard replies re-enter onIncoming as operator
+  // messages in a self-chat (the remembered send id ≠ the echoed final id). Track recent
+  // reply bodies per chat so we can swallow their echoes — else a deterministic prompt
+  // re-feeds the wizard and tight-loops (the agent-wizard flood, 2026-06-26).
+  const _menuSelfSends = new Map();   // chatId -> { bodies:Set<string>, ts }
+  const _MENU_ECHO_TTL_MS = 60 * 1000;
+  const _isMenuEcho = (chatId, text) => {
+    const rec = _menuSelfSends.get(chatId);
+    if (!rec || Date.now() - rec.ts > _MENU_ECHO_TTL_MS) return false;
+    return rec.bodies.has(String(text ?? '').trim());
+  };
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
     { surface: 'shell' },   // shell + WA/TG run host commands; hides extension-only
   ));
   const _helpReply = (surface, chatId, body) => {
-    if (surface === 'whatsapp' && chatId && waBridgeRef.current) waBridgeRef.current.send(body, { chatId });
-    else sysOut(body);
+    if (surface === 'whatsapp' && chatId && waBridgeRef.current) {
+      const rec = _menuSelfSends.get(chatId) ?? { bodies: new Set(), ts: 0 };
+      rec.bodies.add(String(body ?? '').trim());
+      if (rec.bodies.size > 24) rec.bodies = new Set([...rec.bodies].slice(-24));
+      rec.ts = Date.now();
+      _menuSelfSends.set(chatId, rec);
+      waBridgeRef.current.send(body, { chatId });
+    } else sysOut(body);
   };
   // Returns true if the message was consumed by the menu (caller stops).
   // Only the account OWNER (isOperator) drives it — others' messages pass through.
@@ -2205,6 +2222,7 @@ function startSpineRuntime() {
     }
     const hm = _helpMode.current.get(chatKey);
     if (hm && !t.startsWith('/')) {
+      if (_isMenuEcho(chatId, t)) return true;                 // own echoed menu view — swallow, don't loop
       if (Date.now() - hm.ts > _HELP_TTL_MS) { _helpMode.current.delete(chatKey); return false; }
       const r = helpStep(menu, hm.state, t);
       if (r.exit) { _helpMode.current.delete(chatKey); _helpReply(surface, chatId, '(help closed)'); return true; }
@@ -2238,6 +2256,7 @@ function startSpineRuntime() {
     const wm = _wizardMode.current.get(chatKey);
     if (!wm) return false;
     const t = String(text ?? '').trim();
+    if (_isMenuEcho(chatId, t)) return true;                   // egpt's own echoed prompt — swallow, don't loop
     if (t.startsWith('/')) return false;                       // slash commands pass through
     if (Date.now() - wm.ts > _WIZARD_TTL_MS) { _wizardMode.current.delete(chatKey); return false; }
     const r = wizardStep(wm.state, t);
