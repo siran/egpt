@@ -39,10 +39,9 @@ import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUr
 import * as conversationsState from './conversations-state.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers, roomDir } from './src/rooms.mjs';
+import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers } from './src/rooms.mjs';
 import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
-import * as hb from './src/heartbeats.mjs';
 import { acquireStayAwake } from './src/tools/stay-awake.mjs';
 import { entriesForSlug } from './src/conv-grants.mjs';
 import { createWarmPool } from './src/warm-sessions.mjs';
@@ -3009,9 +3008,6 @@ function startSpineRuntime() {
     }
   };
   const waBridgeRef = ref(null);
-  // /e confirm watcher — set in startWaBridge, called from the broadcast
-  // (incoming) tap and the per-being dispatch taps (persona + meta handlers).
-  const confirmMirrorRef = ref(null);
   // Cache the most recent /channels output so @waN can resolve N to a
   // chat by the index the user just saw. Reset every /channels so the
   // numbers always line up with the freshest view.
@@ -3083,52 +3079,6 @@ function startSpineRuntime() {
             ])
           )]
         : undefined;  // bridge default applies
-      // /e confirm watcher — see whatsapp.confirm_chats. For a watched jid we
-      // mirror, VERBATIM and per-being, the RAW string each side actually
-      // exchanges: the incoming message, the exact prompt each resident brain
-      // is handed, and each brain's raw reply (tags: "📥 in", "→ <being>",
-      // "<being> →"). Content is wrapped in a ``` fence so the operator's Self
-      // view renders it monospaced. Copies sent to self go via the outbox →
-      // wa.send, which rememberSent's them, so they never loop back into
-      // dispatch even though the self-DM is itself an auto_e chat. Exposed via
-      // confirmMirrorRef so the per-being dispatch taps can reach it.
-      confirmMirrorRef.current = async (jid, header, content) => {
-        try {
-          if (!jid) return;
-          const watch = EGPT_CONFIG.whatsapp?.confirm_chats;
-          const dests = watch && Array.isArray(watch[jid]) ? watch[jid] : null;
-          if (!dests || !dests.length) return;
-          // Directional debug header that traces the flow — "Debug: ->E"
-          // (human prompted E), "Debug: <-E" (reply received from E),
-          // "Debug: E->L" (E's reply re-circulated as L's prompt) — followed
-          // by the exact envelope as fenced content.
-          const body = String(content ?? '');
-          const hdr = header ? `Debug: ${header}` : null;
-          const waBody = hdr ? `${hdr}\n\`\`\`\n${body}\n\`\`\`` : `\`\`\`\n${body}\n\`\`\``;
-          const shellBody = hdr ? `${hdr}\n${body}` : body;
-          const selfDm = EGPT_CONFIG.whatsapp?.chat_id ?? null;
-          for (const dest of dests) {
-            if (dest === 'shell') {
-              pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true, body: shellBody });
-            } else if (dest === 'self' || dest === 'egptbot') {
-              const targetJid = dest === 'self' ? selfDm : (EGPT_CONFIG.whatsapp?.egptbot_jid ?? null);
-              if (!targetJid) {
-                if (dest === 'egptbot') pushItem({ id: Date.now() + Math.random(), author: 'system', _localOnly: true,
-                  body: `!! /e confirm: dest "egptbot" needs whatsapp.egptbot_jid configured (no bot account yet) — skipped` });
-                continue;
-              }
-              if (targetJid === jid) continue;  // don't echo a watched chat into itself
-              const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-              // deliverEcho: the debug mirror is a normal Self message — let it
-              // reach the Self residents (system-e / system-l) instead of being
-              // dropped as a self-echo. They see it and may react.
-              const ev = { type: 'wa-send', from: 'system', ts: Date.now(), jid: targetJid, body: waBody, deliverEcho: true };
-              await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'), JSON.stringify(ev));
-            }
-          }
-        } catch (e) { console.error(`!! confirmMirror: ${e?.message ?? e}`); }
-      };
-
       const _bridgeOpts = {
         allowedUsers:      cfg.allowed_users ?? [],
         awareness:         cfg.awareness ?? {},
@@ -3656,14 +3606,6 @@ function startSpineRuntime() {
                 if (_bodyMentionsAny(text, [_sn, ...((_se?.aliases) ?? [])])) _mentionedSiblings.push(_sn);
               }
               if (_mentionedSiblings.length) residents = [...new Set([...residents, ..._mentionedSiblings])];
-              // Debug-mirror telemetry (the /e confirm "Debug: …" lines that
-              // deliverEcho posts into the Self DM) must be SEEN by the Self
-              // residents but must NOT drive the residents-converse engine —
-              // otherwise the high-volume debug stream + re-circulation form a
-              // self-sustaining loop in the Self chat (operator 2026-05-25:
-              // "keeps recircling in telegram"). Omit _chainDepth for them, so
-              // replies to debug never re-circulate.
-              const isDebugMirror = /^Debug:\s/.test(String(text).trimStart());
               // (@l is stateless — no conversation-L transcript is recorded.)
               // ORDER: dispatch explicitly-@<mentioned> siblings FIRST so a
               // direct address (@jay/@me/@l) isn't stuck behind @e's turn —
@@ -3686,7 +3628,7 @@ function startSpineRuntime() {
                   ...baseMeta,
                   forceTarget: being,
                   ...(_addressed ? { replyAllowed: true } : {}),
-                  ...(isDebugMirror ? {} : { _chainDepth: 0 }),
+                  _chainDepth: 0,
                   // Every resident gets per-chat coalescing backpressure now:
                   // @e via the persona queue, @l (and other siblings) via the
                   // resident queue in the meta branch. A burst of group
@@ -3954,9 +3896,9 @@ function startSpineRuntime() {
     });
   }, []);
 
-  // Periodic background ticks: accum-mode flush, the (confined) per-contact
-  // heartbeat scanner, and the play.md rotator. There is deliberately NO
-  // global @e heartbeat here anymore — see the note in `tick` below.
+  // Periodic background ticks: accum-mode flush and the play.md rotator.
+  // There is deliberately NO global @e heartbeat here anymore — see the note
+  // in `tick` below.
   startEffect(() => {
     const HEARTBEAT_MS = 5 * 60 * 1000;
 
@@ -3985,144 +3927,7 @@ function startSpineRuntime() {
       _accumFlush().catch((e) => sysLog(`!! accum flush: ${e?.message ?? e}`));
     };
 
-    // ── Heartbeat scanner ──────────────────────────────────────────────
-    // A heartbeat is a property of an ENTITY (a conversation or a room),
-    // configured by files in that entity's own folder and read FRESH each
-    // scan (config.yaml + heartbeat.md; see src/heartbeats.mjs). Every
-    // heartbeat is dispatched through the SAME confined + bridge-gated path
-    // as a normal reply — it can never reach a surface a reply couldn't.
-    // The sidecar heartbeat.state.json tracks lastFiredAt per entity.
-
-    // Conversation heartbeat: run @e CONFINED for the chat (threadId=jid →
-    // per-contact confine branch → cwd = the conversation folder, not the
-    // repo), then emit only if the chat's gate permits an UNPROMPTED message.
-    // A heartbeat carries no incoming @mention, so we gate with
-    // replyAllowed:false → _eMayReplyToChat lets it through in 'on' mode only,
-    // and NEVER when muted/off/mention(-direct) or auto_e_paused. WhatsApp
-    // only — that is where the auto-mode gate + bridge live.
-    // A heartbeat is a self-generated prompt; route it THROUGH the bridge
-    // (submitInner) so the STOP gate is definite for it too (I1). submitInner
-    // delegates to _dispatchConversationHeartbeat AFTER the gate.
-    const _fireConversationHeartbeat = async ({ chatId, surface, slug, name, prompt }) => {
-      if (surface !== 'whatsapp' && surface !== 'wa') return;
-      await submitRef.current?.(prompt, { _heartbeatConv: { chatId, surface, slug, name } });
-    };
-    // The actual heartbeat dispatch (was the body above). Reached only via
-    // submitInner, after the STOP gate — so a stopped chat never heartbeats.
-    const _dispatchConversationHeartbeat = async (prompt, { chatId, slug, name }) => {
-      const reply = await runDefaultBrainTurn(prompt, () => {}, { threadId: chatId, surface: 'wa', slug, name });
-      const trimmed = String(reply ?? '').trim();
-      if (!trimmed || trimmed === '...' || trimmed === '…') return;
-      if (!_eMayReplyToChat(chatId, { replyAllowed: false })) return;   // gate: 'on' & not paused only
-      const personaName = EGPT_CONFIG.persona ?? 'e';
-      const personaEmoji = (EGPT_CONFIG.siblings ?? {})[personaName]?.body_emoji ?? EGPT_PERSONA_EMOJI;
-      try { waBridgeRef.current?.send(`${personaEmoji} ${personaName}\n${trimmed}`, { chatId, personaReply: personaName }); }
-      catch (e) { sysLog(`!! heartbeat send ${chatId}: ${e?.message ?? e}`); }
-    };
-
-    // Room heartbeat: prompt each ACTIVE brain member PRIVATELY — the prompt
-    // text is NEVER delivered to wa-group/tg members (that would leak it) —
-    // then fan only their REPLIES via _deliverToRoom, which gates each member
-    // by state. Muted/mention brains aren't prompted (a heartbeat @mentions
-    // no one). @e goes via the confined runDefaultBrainTurn; other brains via
-    // runBrainTurn(noBridge) so their reply only returns, then mirrors.
-    const _fireRoomHeartbeat = async (roomName, prompt) => {
-      let rstate; try { rstate = await loadRooms(); } catch { return; }
-      const room = rstate.rooms?.[roomName];
-      if (!room) return;
-      for (const m of room.members ?? []) {
-        if (stopped) break;
-        if (m.kind !== 'brain' || m.state !== 'active') continue;
-        let reply;
-        try {
-          if (m.id === 'e' || m.id === 'egpt') {
-            reply = await runDefaultBrainTurn(prompt, () => {}, { threadId: `room:${roomName}`, surface: 'system', name: `room:${roomName}` });
-          } else {
-            const roomSessions = sessionsMapFromMembers(rstate, roomName);
-            if (!roomSessions[m.id]?.brain) continue;
-            reply = await runBrainTurn(m.id, prompt, roomSessions, { noBridge: true });
-          }
-        } catch (e) { sysLog(`!! heartbeat room ${roomName}→${m.id}: ${e?.message ?? e}`); continue; }
-        const txt = String(reply ?? '').trim();
-        if (txt && txt !== '...' && txt !== '…') {
-          await _deliverToRoom(roomName, { fromId: m.id, senderLabel: `${m.emoji ?? '🧠'} ${m.id}`, body: txt, depth: 1 });
-        }
-      }
-    };
-
-    let heartbeatScanBusy = false;
-    const heartbeatScanTick = async () => {
-      if (stopped || heartbeatScanBusy) return;
-      heartbeatScanBusy = true;
-      try {
-        const now = Date.now();
-        // Command heartbeats — deterministic UPKEEP the engine runs ITSELF, NO AI
-        // in the loop (An 2026-06-19: "heartbeats should be more deterministic —
-        // AI not required for compression; only a heartbeat.yaml specifying the
-        // command, executed by the bridge"). Each ~/.egpt/heartbeats/<name>/
-        // heartbeat.yaml = { enabled, interval_min, command, cwd? }; the bridge
-        // runs the command on schedule. FIRST and in its own try so a throw in the
-        // conversation/room loops below can't block it. The canonical one keeps
-        // each LOCAL ccode being's session under its model window
-        // (compact-being.mjs --scan). logOut → egpt.log (durable); sysLog → the
-        // render buffer (dropped), so it MUST be logOut here.
-        try {
-          const hroot = join(EGPT_HOME, 'heartbeats');
-          let subs = [];
-          try { subs = readdirSync(hroot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name); } catch { /* no heartbeats dir = none */ }
-          for (const name of subs) {
-            const hdir = join(hroot, name);
-            const ch = await hb.readCommandHeartbeat(hdir);
-            if (!ch.enabled) continue;
-            if (!hb.shouldFire(ch, await hb.readLastFiredMs(hdir), now)) continue;
-            try {
-              const r = spawnSync(ch.command, { cwd: ch.cwd || APP_DIR, shell: true, encoding: 'utf8', timeout: 10 * 60 * 1000, windowsHide: true });
-              const out = (String(r.stdout ?? '').trim() || String(r.stderr ?? '').trim() || `exit ${r.status}`).slice(0, 300);
-              logOut(`heartbeat[${name}]: ${ch.command} → ${out}`);
-            } catch (e) { logOut(`!! heartbeat[${name}] command failed: ${e?.message ?? e}`); }
-            await hb.markFired(hdir);
-          }
-        } catch (e) { logOut(`!! command-heartbeat scan: ${e?.message ?? e}`); }
-        // Conversations — each contact with a slug maps to its folder.
-        const cs = await _loadConvState();
-        for (const surface of Object.keys(cs.contacts ?? {})) {
-          const bucket = cs.contacts[surface] ?? {};
-          for (const [jid, entry] of Object.entries(bucket)) {
-            if (stopped) break;
-            if (entry?.aliasOf || !entry?.slug) continue;
-            if (conversationsState.isMuted(entry)) continue;
-            const dir = conversationsState.slugDir(surface, entry.slug);
-            const cfg = await hb.readConfig(dir);
-            if (!cfg.enabled) continue;   // common case: no heartbeat block — skip the state read
-            if (!hb.shouldFire(cfg, await hb.readLastFiredMs(dir), now)) continue;
-            const prompt = await hb.readPrompt(dir);
-            if (!prompt) continue;   // no / blank heartbeat.md = nothing to fire
-            try {
-              await _fireConversationHeartbeat({ chatId: jid, surface, slug: entry.slug, name: entry.pushedName || entry.slug, prompt });
-            } catch (e) { sysLog(`!! heartbeat[${surface}/${entry.slug}]: ${e?.message ?? e}`); }
-            await hb.markFired(dir);   // mark even when gated-silent, so it doesn't re-attempt every scan
-          }
-        }
-        // Rooms — each room maps to ~/.egpt/rooms/<name>/.
-        let rstate; try { rstate = await loadRooms(); } catch { rstate = null; }
-        for (const roomName of Object.keys(rstate?.rooms ?? {})) {
-          if (stopped) break;
-          const dir = roomDir(roomName);
-          const cfg = await hb.readConfig(dir);
-          if (!cfg.enabled) continue;
-          if (!hb.shouldFire(cfg, await hb.readLastFiredMs(dir), now)) continue;
-          const prompt = await hb.readPrompt(dir);
-          if (!prompt) continue;
-          try { await _fireRoomHeartbeat(roomName, prompt); }
-          catch (e) { sysLog(`!! heartbeat room ${roomName}: ${e?.message ?? e}`); }
-          await hb.markFired(dir);
-        }
-      } finally { heartbeatScanBusy = false; }
-    };
-
     const timer = setInterval(tick, HEARTBEAT_MS);
-    const HEARTBEAT_SCAN_MS = 30 * 1000;  // 30s scan; enables fractional-minute intervals
-    const perContactTimer = setInterval(heartbeatScanTick, HEARTBEAT_SCAN_MS);
 
     // play.md hard-cap rotator — runs on the same 5-min cadence as the
     // heartbeat. play.md is loaded into every sibling's context on every
@@ -4167,7 +3972,6 @@ function startSpineRuntime() {
       stopped = true;
       clearInterval(timer);
       clearInterval(playTimer);
-      clearInterval(perContactTimer);
     };
   }, []);
 
@@ -5524,18 +5328,10 @@ function startSpineRuntime() {
         ? EGPT_CONFIG.whatsapp.residents
         : [EGPT_CONFIG.persona ?? 'e'];
       if (!residents.some(r => lc(r) === lc(being))) return;
-      // "Debug: <-E" — reply received from this resident, in envelope form,
-      // mirrored to the Self/egptbot debug watcher. Forwarding it below (when
-      // not an infra error / 2nd-layer silence) fires the recipient's tap as
-      // "Debug: E->L", echoing the same reply as the next brain's prompt.
-      const env = formatAutoDispatchLine({ senderName: being, body, ts: Date.now(), chatName: waBridgeRef.current?.getChatName?.(meta.waChatId) ?? null, node: 'wa', surface: buildWaSurfaceTag(meta.waChatId) });
-      confirmMirrorRef.current?.(meta.waChatId, `<-${String(being).toUpperCase()}`, env);
-      // Infra errors ("!! @l: llama: fetch failed …") MUST be visible in the
-      // debug (operator 2026-05-25) — so they are mirrored above — but they are
-      // NOT a brain reply: don't store them in @l's memory and don't
-      // re-circulate them to the other residents. (The chat send drops them via
-      // _dropResident, so humans in the group never see them — only the
-      // operator's Self/egptbot debug does.)
+      // Infra errors ("!! @l: llama: fetch failed …") are NOT a brain reply:
+      // don't store them in @l's memory and don't re-circulate them to the
+      // other residents. (The chat send drops them via _dropResident, so humans
+      // in the group never see them.)
       if (/^!!\s*@/.test(body.trim())) return;
       const others = residents.filter(r => lc(r) !== lc(being));
       const depth = Number(meta._chainDepth) || 0;
@@ -6788,13 +6584,12 @@ function startSpineRuntime() {
   const submitInner = async (raw, text, meta = {}) => {
 
     // ── STOP — the bridge's DEFINITE kill-switch + bot↔bot loop-guard (C7.7).
-    // EVERY dispatch flows through here (received AND self-generated: heartbeats
-    // route through submitInner too), so an operator safe-word here is absolute.
-    // STOP blocks PROMPTING (the brain never runs) — stronger than auto_e_paused,
-    // which only blocks emit. See src/stop-guard.mjs.
+    // EVERY dispatch flows through here, so an operator safe-word here is
+    // absolute. STOP blocks PROMPTING (the brain never runs) — stronger than
+    // auto_e_paused, which only blocks emit. See src/stop-guard.mjs.
     {
       const g = _stopGuardRef.current;
-      const ch = meta._heartbeatConv?.chatId ?? meta.waChatId ?? null;
+      const ch = meta.waChatId ?? null;
       const ack = (t) => {
         if (meta.fromWhatsApp && meta.waChatId) waBridgeRef.current?.send?.(t, { chatId: meta.waChatId });
         else sysOut(t);
@@ -6881,7 +6676,7 @@ function startSpineRuntime() {
       // being-turn. Consecutive being-turns with no human between → warn (the
       // channel + the bots, who self-silence), then auto-STOP. (egpt's own emit is
       // counted at the emit point — wired next.)
-      const inbound = meta.fromWhatsApp && !meta._heartbeatConv && !meta._routedFromRoom;
+      const inbound = meta.fromWhatsApp && !meta._routedFromRoom;
       if (inbound) {
         if (meta.fromBot) {
           // A peer bot's thinking ARTIFACT ("⌛ thinking…" / "(thinking... 🤔)" /
@@ -6901,9 +6696,6 @@ function startSpineRuntime() {
         }
       }
     }
-    // Self-generated heartbeat — enters through the bridge, dispatched AFTER the
-    // STOP gate above, so a stopped chat never heartbeats (I1).
-    if (meta._heartbeatConv) { await _dispatchConversationHeartbeat(text, meta._heartbeatConv); return; }
 
     // Voice-streaming branch (operator 2026-05-22). When a WA voice
     // note arrived in streaming mode, the bridge fires onIncoming
@@ -7592,21 +7384,8 @@ function startSpineRuntime() {
           streamFactory: streamFactoryRef.current,   // WA edit-stream (single streaming path)
           stateDir: EGPT_HOME,
         });
-        // Watcher: "->E" (human prompt) or "S->E" (resident S's reply
-        // re-circulated); content = the exact envelope fed to @e. Then feed
-        // @e's reply (even '…') onward — before the silence early-return so a
-        // quiet @e still reaches @l (which may react).
-        {
-          // Use the resident name the broadcast TARGETED (forceTarget — always
-          // a residents[] entry like 'e'/'l'), not decision.name, which for the
-          // persona resolves to an alias ('egpt') that doesn't match residents
-          // and made re-circulation bail. Falls back to personaName off-broadcast.
-          const _being = meta.forceTarget ?? personaName;
-          const _t = String(_being).toUpperCase();
-          const _arrow = (Number(meta._chainDepth) || 0) >= 1
-            ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
-          confirmMirrorRef.current?.(meta.waChatId, _arrow, turn.personaPrompt);
-        }
+        // Feed @e's reply (even '…') onward — before the silence early-return
+        // so a quiet @e still reaches @l (which may react).
         _recirculateResidentReply({ being: meta.forceTarget ?? personaName, reply: turn.reply, meta });
         // 'silence' = @e chose '…'; 'suppressed' = mode gate withheld the reply
         // (E read it for context but this chat/mode doesn't permit replying now);
@@ -7849,15 +7628,6 @@ function startSpineRuntime() {
         };
         let waAnswerStream = null;   // message 2 (the final answer)
         let waSplit = false;
-        // Watcher: "->L" (human prompt) or "S->L" (resident S's reply
-        // re-circulated); content = the exact envelope fed to this being.
-        {
-          const _being = meta.forceTarget ?? sibName;   // resident name the broadcast targeted
-          const _t = String(_being).toUpperCase();
-          const _arrow = (Number(meta._chainDepth) || 0) >= 1
-            ? `${String(meta.waSenderName ?? '?').toUpperCase()}->${_t}` : `->${_t}`;
-          confirmMirrorRef.current?.(meta.waChatId, _arrow, personaPrompt);
-        }
         let reply = await runMetaBrainTurn(personaPrompt, (partial) => {
           if (waStream) {
             const { think, answer } = splitThink(partial);
@@ -8192,16 +7962,12 @@ function startSpineRuntime() {
       body = `${emoji} ${ev.from}: ${body}`;
     }
     try {
-      // deliverEcho (set by the /e confirm watcher's self-sends): don't
-      // rememberSent, so the message flows back through onIncoming and the
-      // Self residents see it as a normal chat message.
       // _noRelay (operator 2026-05-29): if our bridge is deferred, do NOT
       // let send() spool ANOTHER outbox event — that's a CPU-burning
       // infinite loop (we'd just pick it up next sweep). Return null in
       // that case so we leave the file in place for the next attempt.
       const r = await wa.send(body, {
         chatId: ev.jid,
-        deliverEcho: ev.deliverEcho === true,
         _noRelay: true,
       });
       if (r === null) {

@@ -18,7 +18,6 @@ import {
   patchContact,
   recordThread,
   isMuted,
-  shouldFireHeartbeat,
   migrateJsonToYaml,
   parse,
   serialize,
@@ -376,29 +375,12 @@ describe('findContactsByName (cross-surface name search)', () => {
   });
 });
 
-describe('isMuted + shouldFireHeartbeat predicates', () => {
+describe('isMuted predicate', () => {
   it('isMuted true only when personality === mute', () => {
     expect(isMuted({ personality: 'mute' })).toBe(true);
     expect(isMuted({ personality: 'default' })).toBe(false);
     expect(isMuted({ personality: 'silent' })).toBe(false);
     expect(isMuted(null)).toBe(false);
-  });
-  it('shouldFireHeartbeat false when not enabled', () => {
-    expect(shouldFireHeartbeat({ heartbeatEnabled: false }, Date.now())).toBe(false);
-  });
-  it('shouldFireHeartbeat respects interval', () => {
-    const now = Date.now();
-    const e = {
-      heartbeatEnabled: true,
-      heartbeatIntervalMin: 30,
-      heartbeatLastFiredAt: new Date(now - 10 * 60_000).toISOString(),
-    };
-    expect(shouldFireHeartbeat(e, now)).toBe(false);
-    const e2 = { ...e, heartbeatLastFiredAt: new Date(now - 35 * 60_000).toISOString() };
-    expect(shouldFireHeartbeat(e2, now)).toBe(true);
-  });
-  it('shouldFireHeartbeat fires immediately when never fired', () => {
-    expect(shouldFireHeartbeat({ heartbeatEnabled: true, heartbeatIntervalMin: 30 }, Date.now())).toBe(true);
   });
 });
 
@@ -418,9 +400,6 @@ describe('YAML parse / serialize round-trip', () => {
             threadCreatedAt: '2026-05-19T18:34:00.000Z',
             identityInjectedAt: '2026-05-19T18:34:00.000Z',
             pushedName: 'Diego Pérez (Koma)',
-            heartbeatEnabled: true,
-            heartbeatIntervalMin: 60,
-            heartbeatLastFiredAt: null,
           },
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
         },

@@ -1,5 +1,5 @@
 // conversations-state.mjs — pure-logic module for @e's per-contact
-// conversation registry, personalities, and heartbeat resolution.
+// conversation registry and personalities.
 //
 // Per-contact (NOT per-JID) model: each human or group gets ONE
 // contact entry, keyed by a slug (e.g., "diego", "premise-driven-bitcoin").
@@ -9,8 +9,7 @@
 //
 // Operator (2026-05-19): registry is YAML for human readability,
 // personalities are markdown files shipped with egpt + overridable in
-// ~/.egpt/personalities/, heartbeats per personality/contact follow
-// the same resolution chain, all timestamps ISO 8601.
+// ~/.egpt/personalities/, all timestamps ISO 8601.
 //
 // This file: pure functions only — no fs/io side effects EXCEPT in
 // explicit read/write helpers at the bottom that take paths. Easy to
@@ -834,9 +833,6 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     firstSeenAt: firstSeen.toISOString(),
     identityInjectedAt: null,
     pushedName: ctx.pushedName ?? '',
-    heartbeatEnabled: false,
-    heartbeatIntervalMin: null,
-    heartbeatLastFiredAt: null,
   };
   nextBucket[jid] = entry;
   return { state: next, surface, jid, slug: candidateSlug, entry, isNew: true, changed: true };
@@ -878,16 +874,6 @@ export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIs
 
 export function isMuted(entry) {
   return entry?.personality === 'mute';
-}
-
-// Heartbeat opt-in: contact's heartbeatEnabled flag AND interval elapsed.
-export function shouldFireHeartbeat(entry, nowMs = Date.now()) {
-  if (!entry?.heartbeatEnabled) return false;
-  const interval = (entry.heartbeatIntervalMin ?? 30) * 60 * 1000;
-  const last = entry.heartbeatLastFiredAt
-    ? Date.parse(entry.heartbeatLastFiredAt) || 0
-    : 0;
-  return (nowMs - last) >= interval;
 }
 
 // ── Personality file resolution ────────────────────────────────────────────
@@ -1248,9 +1234,6 @@ export function migrateJsonToYaml(jsonMap) {
         identityInjectedAt: null,
         pushedName: row.pushedName ?? '',
         jids: [],
-        heartbeatEnabled: false,
-        heartbeatIntervalMin: null,
-        heartbeatLastFiredAt: null,
       };
     }
     state.contacts[slug].jids.push(jid);

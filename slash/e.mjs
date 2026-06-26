@@ -19,25 +19,10 @@
 //   /e auto on|off [<jid>|all]         — set a chat's reply mode (per-conversation)
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
-//
-//   /e heartbeat [<slug>]          — show heartbeat status (current chat or <slug>)
-//   /e heartbeat [<slug>] on|off   — enable/disable a conversation's heartbeat
-//   /e heartbeat [<slug>] interval <min> — set its cadence (writes <slug>/config.yaml)
-//                                    (minutes; default 30)
-//
-//   /e confirm [<jid>] on|off|status [self|shell|egptbot|all]
-//                                  — watcher/wiretap on <jid>: mirror VERBATIM
-//                                    + per-being exactly what each resident
-//                                    brain is FED (→ <being>) and its raw reply
-//                                    (<being> →), in a ``` fence, to the chosen
-//                                    destination(s). 'on' default dest is self;
-//                                    'all' = self+shell+egptbot. bare 'off'
-//                                    (or 'off all') stops watching.
 
-import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join, isAbsolute, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { writeFile, mkdir, rename } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   CONV_YAML_PATH,
   readState as readConvState,
@@ -58,25 +43,20 @@ import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
 import { Room, normalizeMemberState, DEFAULT_MEMBER_STATE } from '../src/room-core.mjs';
 import { homedir } from 'node:os';
-import * as YAML from 'yaml';
 
 export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]',
-  desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]',
+  desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, transcription, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
     { name: 'identity',   usage: '/e identity [<identity>]',                                 desc: 'reinstall/refresh the identity folder, KEEP the thread — after editing identities/<name>/', example: '/e identity' },
     { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
     { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>] | show-think on|off [<chat>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats; show-think on/off toggles two-message Telegram mode (thinking stream frozen 💭, final sent as new reply)', example: '/e auto show-think on' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
-    { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)', example: '/e source egpt-dev' },
-    { name: 'heartbeat',  usage: '/e heartbeat [<slug>] [on|off|interval <min>]',      desc: 'per-conversation heartbeat (writes <slug>/config.yaml); bare or <slug> alone shows status; needs a heartbeat.md prompt in the folder to fire', example: '/e heartbeat diego on' },
     { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global', example: '/e transcribe on' },
-    { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
-    { name: 'supervisor', usage: '/e supervisor [status|restart|bounce|install|uninstall]',   desc: 'manage the NSSM egpt-daemon service: status; restart (in-band exit-43 spine reload); bounce/install/uninstall print the elevated command', example: '/e supervisor status' },
   ],
 };
 
@@ -194,7 +174,7 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
 }
 
 export async function run({ arg, meta: dispatchMeta, ctx }) {
-  const { sysOut, EGPT_CONFIG, EGPT_HOME, waBridgeRef } = ctx;
+  const { sysOut, EGPT_CONFIG, waBridgeRef } = ctx;
   const tokens = arg.split(/\s+/).filter(Boolean);
   const [sub, action, jidArg] = tokens;
 
@@ -264,147 +244,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       const r = String(reply ?? '').trim();
       sysOut(`✓ /e persona ${slug}: injected ${personaName}/${injected.name}${r && r !== '...' && r !== '…' ? ` — @e: "${r.slice(0, 80)}"` : ''}`);
     } catch (e) { sysOut(`!! /e persona inject: ${e?.message ?? e}`); }
-    return true;
-  }
-
-  // ── /e supervisor [status|restart|bounce|install|uninstall] ─────────
-  // egpt runs as the NSSM Windows service `egpt-daemon`:
-  //   NSSM (egpt-service.exe) → node egpt-daemon.mjs (supervisor) → node egpt.mjs (spine)
-  // NSSM keeps the supervisor alive (SCM recovery, survives a kill); the supervisor
-  // owns the in-band lifecycle (/upgrade pull+build, /restart, /rewind, /e source,
-  // crash backoff). The legacy Task Scheduler + daemon-wrap.ps1 path is gone.
-  // A plain code reload needs NO admin: /restart (exit 43) and the supervisor
-  // respawns the spine. Service-level ops (install/uninstall/bounce) DO need admin
-  // and a UAC prompt CANNOT surface from the headless service — so those print the
-  // exact elevated command to run in your own terminal. Windows-only; no-op else.
-  if (sub === 'supervisor') {
-    const { spawnSync } = await import('node:child_process');
-    const { join } = await import('node:path');
-    const { homedir } = await import('node:os');
-    if (process.platform !== 'win32') {
-      sysOut('/e supervisor: Windows-only (NSSM service). No-op on this platform.');
-      return true;
-    }
-    const action = (arg ?? '').trim().split(/\s+/)[1] || 'status';
-    const setupDir = join(homedir(), 'src', 'egpt', 'setup');
-    const SERVICE = 'egpt-daemon';
-    const elevatedCmd = (script) => `powershell -ExecutionPolicy Bypass -File "${join(setupDir, script)}"`;
-
-    if (action === 'status') {
-      const r = spawnSync('powershell', ['-NoProfile', '-Command',
-        `$s=Get-Service ${SERVICE} -ErrorAction SilentlyContinue; if($s){"$($s.Status) ($($s.StartType))"}else{"NOT INSTALLED"}`],
-        { encoding: 'utf8' });
-      const svc = (r.stdout ?? '').trim() || '(query failed)';
-      const n = spawnSync('powershell', ['-NoProfile', '-Command',
-        `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'egpt(-daemon)?\\.mjs' }).Count`],
-        { encoding: 'utf8' });
-      sysOut(`/e supervisor: NSSM service ${SERVICE} = ${svc}; egpt node procs = ${(n.stdout ?? '').trim() || '?'}`);
-      return true;
-    }
-
-    if (action === 'restart' || action === 'update') {
-      // In-band code reload: the supervisor (egpt-daemon.mjs) respawns the spine
-      // on exit 43. No admin, no service bounce, no UAC. (For the FIRST load of
-      // code the running supervisor doesn't have yet, /upgrade pulls it first.)
-      sysOut('/e supervisor restart: reloading the spine via exit 43 — the supervisor respawns it from current disk in ~3s (this surface drops then reconnects).\n'
-        + `  For a FULL service bounce (wedged supervisor / NSSM), run elevated: ${elevatedCmd('restart-egpt-service.ps1')}`);
-      if (typeof ctx.exitClean === 'function') setTimeout(() => ctx.exitClean(43), 150);
-      return true;
-    }
-
-    // Service-level ops need admin; UAC can't reach the headless service, so we
-    // hand the operator the exact elevated command instead of failing silently.
-    const scripts = { install: 'install-nssm-service.ps1', uninstall: 'uninstall-nssm-service.ps1', bounce: 'restart-egpt-service.ps1' };
-    if (scripts[action]) {
-      sysOut(`/e supervisor ${action}: needs an elevated terminal (UAC can't surface from the headless service). Run:\n  ${elevatedCmd(scripts[action])}`);
-      return true;
-    }
-
-    sysOut('usage: /e supervisor [status|restart|bounce|install|uninstall]');
-    return true;
-  }
-
-  // ── /e heartbeat [<slug>] [on|off|interval <min>] [--slug|--jid <x>] ──
-  // Forms:
-  //   /e heartbeat                       → status for the CURRENT chat
-  //   /e heartbeat on|off|interval <min> → set the CURRENT chat (or --slug/--jid)
-  //   /e heartbeat <slug>                → status for <slug>   (works from Self)
-  //   /e heartbeat <slug> on|off|interval <min> → set <slug>   (works from Self)
-  if (sub === 'heartbeat') {
-    const tokens2 = arg.split(/\s+/).filter(Boolean);   // ['heartbeat', ...]
-    const ACTIONS = ['on', 'off', 'interval'];
-    // Pull --slug/--jid out anywhere; keep the rest as positionals.
-    let slugFlag = null, jidFlag = null;
-    const pos = [];
-    for (let i = 1; i < tokens2.length; i++) {
-      if (tokens2[i] === '--slug' && tokens2[i + 1]) { slugFlag = tokens2[++i]; continue; }
-      if (tokens2[i] === '--jid'  && tokens2[i + 1]) { jidFlag  = tokens2[++i]; continue; }
-      pos.push(tokens2[i]);
-    }
-    // Disambiguate the positionals: a leading on|off|interval acts on the
-    // current chat; otherwise the first positional is a target SLUG and the
-    // (optional) second is the action. No action → status (read-only).
-    let posSlug = null, hbAction = null, value = null;
-    if (pos.length === 0) {
-      hbAction = null;                                   // status, current chat
-    } else if (ACTIONS.includes(pos[0])) {
-      hbAction = pos[0]; value = pos[1] ?? null;         // act on current chat / flagged
-    } else {
-      posSlug = pos[0];                                  // first positional is the slug
-      if (pos[1] && ACTIONS.includes(pos[1])) { hbAction = pos[1]; value = pos[2] ?? null; }
-    }
-    if (hbAction === 'interval' && value == null) {
-      sysOut('usage: /e heartbeat [<slug>] interval <min>'); return true;
-    }
-    // Per-entity heartbeat config lives in the conversation's OWN folder:
-    //   <slugDir>/config.yaml  → { heartbeat: { enabled, interval_min } }
-    // read each scan by the daemon via src/heartbeats.mjs. The prompt body is
-    // a sibling heartbeat.md the operator drops in the same folder — without
-    // it the heartbeat has nothing to say and does not fire.
-    const cs = await readConvState(CONV_YAML_PATH);
-    // /e is WA-scoped by default — dispatchMeta.waChatId is a WA jid.
-    // TG-side equivalent will be added with task #20.
-    const surface = 'whatsapp';
-    const targetSlug = posSlug ?? slugFlag ?? findContactByJid(cs, surface, jidFlag ?? dispatchMeta?.waChatId);
-    if (!targetSlug) {
-      sysOut(`!! /e heartbeat: no contact for ${posSlug ?? slugFlag ?? jidFlag ?? dispatchMeta?.waChatId ?? '<no chat context>'} — try /e heartbeat <slug> [on|off|interval <min>]`);
-      return true;
-    }
-    const hbDir = slugDir(surface, targetSlug);
-    const hbCfgPath = join(hbDir, 'config.yaml');
-    let hbDoc = {};
-    try { hbDoc = YAML.parse(await readFile(hbCfgPath, 'utf8')) ?? {}; } catch { /* no config.yaml yet */ }
-    if (!hbDoc || typeof hbDoc !== 'object') hbDoc = {};
-    const block = (hbDoc.heartbeat && typeof hbDoc.heartbeat === 'object') ? hbDoc.heartbeat : {};
-
-    // Status form (no action) — read-only report, no write.
-    if (!hbAction) {
-      const hasPrompt = existsSync(join(hbDir, 'heartbeat.md'));
-      let lastFired = 'never';
-      try {
-        const st = JSON.parse(readFileSync(join(hbDir, 'heartbeat.state.json'), 'utf8'));
-        if (st?.lastFiredAt) lastFired = st.lastFiredAt;
-      } catch { /* never fired */ }
-      sysOut(`/e heartbeat ${targetSlug}: enabled=${block.enabled === true} interval=${block.interval_min ?? 30}min prompt=${hasPrompt ? 'heartbeat.md ✓' : "✗ none (won't fire)"} lastFired=${lastFired}`);
-      return true;
-    }
-
-    if (hbAction === 'on')  block.enabled = true;
-    if (hbAction === 'off') block.enabled = false;
-    if (hbAction === 'interval') {
-      const mins = parseFloat(value);
-      if (!Number.isFinite(mins) || mins < 0.1) {
-        sysOut('!! /e heartbeat interval: minutes must be a positive number (>= 0.1, fractional OK)'); return true;
-      }
-      block.interval_min = mins;
-    }
-    hbDoc.heartbeat = block;
-    try {
-      await mkdir(hbDir, { recursive: true });
-      await writeFile(hbCfgPath, YAML.stringify(hbDoc, { lineWidth: 100 }), 'utf8');
-    } catch (e) { sysOut(`!! /e heartbeat: write ${hbCfgPath} failed — ${e?.message ?? e}`); return true; }
-    const noPrompt = block.enabled === true && !existsSync(join(hbDir, 'heartbeat.md'));
-    sysOut(`/e heartbeat: ${targetSlug} enabled=${block.enabled === true} interval=${block.interval_min ?? 30}min (config.yaml)${noPrompt ? " — ⚠ no heartbeat.md in the folder yet; it won't fire until you add one" : ''}`);
     return true;
   }
 
@@ -491,158 +330,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     EGPT_CONFIG.whatsapp.media.audio_transcribe.per_chat = perChat;
 
     sysOut(`/e transcribe ${tAction}${streamingFlag ? ' --streaming' : ''}: ${chatId} → ${perChat[chatId]}`);
-    return true;
-  }
-
-  // ── /e confirm [<jid>] [status|on|off] [self|shell|egptbot|all] ──
-  // Watcher / wiretap: for a jid, egpt mirrors VERBATIM both the prompt
-  // it sends to the brains (inbound) and the text it writes back into the
-  // chat (outbound) to the named destination(s). Tokens are parsed
-  // position-independently (jid carries '@', action ∈ status|on|off, dest ∈
-  // self|shell|egptbot|all) so the operator can type them in any order.
-  if (sub === 'confirm') {
-    const rest = tokens.slice(1);
-    const ACTIONS = new Set(['status', 'on', 'off']);
-    const DESTS   = new Set(['self', 'shell', 'egptbot', 'all']);
-    let cJid = null, cAction = null, nameTerm = null;
-    const destTokens = [];
-    for (const t of rest) {
-      const lt = t.toLowerCase();
-      if (t.includes('@')) cJid = t;
-      else if (ACTIONS.has(lt)) cAction = lt;
-      else if (DESTS.has(lt)) destTokens.push(lt);
-      else nameTerm = nameTerm ? `${nameTerm} ${t}` : t;   // fuzzy chat-name search
-    }
-    const expand = (ds) => ds.includes('all') ? ['self', 'shell', 'egptbot'] : [...new Set(ds)];
-
-    if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
-    const wa2 = EGPT_CONFIG.whatsapp;
-    if (!wa2.confirm_chats || typeof wa2.confirm_chats !== 'object') wa2.confirm_chats = {};
-
-    // Bare `/e confirm` (no chat named, no action) → the global watched list,
-    // each jid resolved to its group name so the list is readable.
-    if (!cAction && !cJid && !nameTerm) {
-      const entries = Object.entries(wa2.confirm_chats);
-      let list = '  (none)';
-      if (entries.length) {
-        const rows = await Promise.all(entries.map(async ([j, ds]) => {
-          const { name } = await _resolveChatTarget(j);
-          const label = name ? `«${name}» ${j}` : j;
-          return `  - ${label} → ${(Array.isArray(ds) ? ds : []).join(', ') || '(none)'}`;
-        }));
-        list = rows.join('\n');
-      }
-      sysOut(`/e confirm (watched chats):\n${list}`);
-      return true;
-    }
-
-    // Resolve the target chat — by @-jid or by fuzzy name — so the echo NAMES
-    // the group it picked (a bare jid is unverifiable).
-    let chatId = cJid, resolvedName = null;
-    if (!chatId && nameTerm) {
-      const r = await _resolveChatTarget(nameTerm);
-      if (r.error) { sysOut(`/e confirm: ${r.error}`); return true; }
-      chatId = r.jid; resolvedName = r.name;
-    }
-    if (!chatId) chatId = dispatchMeta?.waChatId ?? null;
-    const isSelfOrShell = !chatId || chatId === EGPT_CONFIG.whatsapp?.chat_id;
-    if (!cJid && !nameTerm && isSelfOrShell) {
-      sysOut('/e confirm: name a chat — a <jid>, a fuzzy name (e.g. `/e confirm hector on`), or run it inside the target channel.');
-      return true;
-    }
-    // Name jid / current-chat targets too, so every echo identifies the group.
-    if (!resolvedName && chatId) resolvedName = (await _resolveChatTarget(chatId)).name;
-    const label = `${resolvedName ? `«${resolvedName}» ` : ''}${chatId}`;
-
-    // Named a chat but no on/off → show THAT chat's current watch state.
-    if (!cAction) {
-      const ds = wa2.confirm_chats[chatId];
-      sysOut(`/e confirm: ${label} → ${Array.isArray(ds) && ds.length ? ds.join(', ') : '(not watched)'}`);
-      return true;
-    }
-
-    if (cAction === 'status') {
-      const ds = wa2.confirm_chats[chatId];
-      sysOut(`/e confirm: ${label} → ${Array.isArray(ds) && ds.length ? ds.join(', ') : '(not watched)'}`);
-      return true;
-    }
-
-    if (cAction === 'on') {
-      const want = expand(destTokens.length ? destTokens : ['self']);  // default dest = self
-      const prev = Array.isArray(wa2.confirm_chats[chatId]) ? wa2.confirm_chats[chatId] : [];
-      wa2.confirm_chats[chatId] = [...new Set([...prev, ...want])];
-    } else { // off
-      const remove = expand(destTokens);
-      if (!destTokens.length || destTokens.includes('all')) {
-        delete wa2.confirm_chats[chatId];                 // stop watching entirely
-      } else {
-        const prev = Array.isArray(wa2.confirm_chats[chatId]) ? wa2.confirm_chats[chatId] : [];
-        const next = prev.filter(d => !remove.includes(d));
-        if (next.length) wa2.confirm_chats[chatId] = next;
-        else delete wa2.confirm_chats[chatId];
-      }
-    }
-
-    try {
-      const saved = await readConfig();
-      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-      saved.whatsapp.confirm_chats = wa2.confirm_chats;
-      await writeConfig(saved);
-    } catch (e) {
-      sysOut(`!! /e confirm: persist failed: ${e.message}`);
-      return true;
-    }
-    const now = wa2.confirm_chats[chatId];
-    sysOut(`/e confirm ${cAction}: ${label} → ${now ? now.join(', ') : '(not watched)'}`);
-    return true;
-  }
-
-  // /e source [path] — which checkout the daemon runs the app from. No arg:
-  // report the running source (dir + branch + commit) and the persisted
-  // setting. With a path (relative to ~/src/, or absolute, fwd or back slash):
-  // validate it has egpt.mjs, persist it to ~/.egpt/source-root.txt, and
-  // restart — the wrapper launches egpt.mjs from there. The wrapper itself
-  // stays stable; only the app follows. Default (no source file) = stable.
-  if (sub === 'source') {
-    const SRC_FILE = join(EGPT_HOME, 'source-root.txt');
-    const running = ctx.APP_DIR ?? process.cwd();
-    const gitAt = (dir) => {
-      try {
-        const br = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: dir }).toString().trim();
-        const sh = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: dir }).toString().trim();
-        return `${br} @ ${sh}`;
-      } catch { return '?'; }
-    };
-    const pathArg = tokens.slice(1).join(' ').trim();
-    if (!pathArg) {
-      let persisted = '(none → stable default)';
-      try { const p = readFileSync(SRC_FILE, 'utf8').trim(); if (p) persisted = p; } catch {}
-      sysOut(`/e source: running ${running} (${gitAt(running)})\n  persisted: ${persisted}`);
-      return true;
-    }
-    // Resolve: ~ → home; relative (no drive, not absolute) → ~/src/<path>.
-    let p = pathArg.replace(/[\\/]+$/, '');
-    if (p.startsWith('~')) p = join(homedir(), p.slice(1).replace(/^[\\/]+/, ''));
-    else if (!isAbsolute(p) && !/^[A-Za-z]:[\\/]/.test(p)) p = join(homedir(), 'src', p);
-    p = resolve(p);
-    if (!existsSync(join(p, 'egpt.mjs'))) {
-      sysOut(`/e source: no egpt.mjs at ${p} — not a valid egpt checkout. (relative paths resolve under ~/src/)`);
-      return true;
-    }
-    try {
-      mkdirSync(EGPT_HOME, { recursive: true });
-      writeFileSync(SRC_FILE, p + '\n');
-      // back-online announce: the respawned daemon (running from p) re-reads
-      // HEAD, so it reports p's branch/commit when it comes up.
-      const selfJid = dispatchMeta?.waChatId || EGPT_CONFIG.whatsapp?.chat_id || null;
-      if (selfJid) {
-        mkdirSync(join(EGPT_HOME, 'state'), { recursive: true });
-        writeFileSync(join(EGPT_HOME, 'state', 'restart-announce.json'),
-          JSON.stringify({ jid: selfJid, at: Date.now() }));
-      }
-    } catch (e) { sysOut(`!! /e source: ${e.message}`); return true; }
-    sysOut(`/e source → ${p} (${gitAt(p)}) — restarting to run it (wrapper restart needed first time)`);
-    if (typeof ctx.exitClean === 'function') setTimeout(() => ctx.exitClean(43), 150);
     return true;
   }
 
@@ -736,7 +423,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]');
     return true;
   }
 

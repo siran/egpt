@@ -34,7 +34,6 @@ export function createDaemonRuntime(opts = {}) {
 
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
-  const sourceFile = opts.sourceFile ?? join(egptHome, 'source-root.txt');
 
   const headless = argv.includes('--headless');
   const shellArgs = argv.filter((a) => a !== '--headless');
@@ -42,19 +41,9 @@ export function createDaemonRuntime(opts = {}) {
   let stopping = false;
   let backoff = RESTART_MIN_MS;
   let child = null;
-  let srcCrashes = 0;
-  let spawnAt = 0;
 
   function log(msg) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
-  }
-
-  function activeRoot() {
-    try {
-      const p = readFileSync(sourceFile, 'utf8').trim();
-      if (p && existsSync(join(p, 'egpt.mjs'))) return p;
-    } catch { /* missing/unreadable -> stable */ }
-    return root;
   }
 
   function gitVersion(cwd = root) {
@@ -81,25 +70,24 @@ export function createDaemonRuntime(opts = {}) {
   }
 
   async function runUpgrade() {
-    const appRoot = activeRoot();
-    const before = gitVersion(appRoot).sha;
-    log(`upgrade requested — git pull (currently ${before})${appRoot !== root ? `  [source: ${appRoot}]` : ''}`);
-    const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: appRoot, stdio: 'inherit' });
+    const before = gitVersion(root).sha;
+    log(`upgrade requested — git pull (currently ${before})`);
+    const pull = spawnSync('git', ['pull', '--ff-only'], { cwd: root, stdio: 'inherit' });
     if (pull.status !== 0) {
       log('git pull failed; continuing with current code');
       return false;
     }
-    const after = gitVersion(appRoot);
+    const after = gitVersion(root);
     if (after.sha !== before) {
       log(`pulled ${before} -> ${after.sha} — running npm install`);
-      const r = spawnSync('npm install', { cwd: appRoot, stdio: 'inherit', shell: true });
+      const r = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
       if (r.status !== 0) {
         log(`npm install exited ${r.status}${r.error ? `: ${r.error.message}` : ''}; continuing with current deps`);
       }
     } else {
       log(`already up to date at ${after.sha} (${after.tag}, branch ${after.branch}) — rebuilding dist anyway`);
     }
-    await buildExtension(appRoot);
+    await buildExtension(root);
     log(`upgrade complete — now at ${after.sha} (${after.tag}, branch ${after.branch})`);
     return true;
   }
@@ -121,32 +109,29 @@ export function createDaemonRuntime(opts = {}) {
       log(`rewind ref ${JSON.stringify(ref)} doesn't look like a git ref; refusing — restarting with current code`);
       return false;
     }
-    const appRoot = activeRoot();
-    log(`rewind requested → git checkout ${ref} && npm install && build:ext${appRoot !== root ? `  [source: ${appRoot}]` : ''}`);
-    const co = spawnSync('git', ['checkout', ref], { cwd: appRoot, stdio: 'inherit' });
+    log(`rewind requested → git checkout ${ref} && npm install && build:ext`);
+    const co = spawnSync('git', ['checkout', ref], { cwd: root, stdio: 'inherit' });
     if (co.status !== 0) {
       log(`rewind step failed (git checkout ${ref})${co.error ? `: ${co.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
-    const ni = spawnSync('npm install', { cwd: appRoot, stdio: 'inherit', shell: true });
+    const ni = spawnSync('npm install', { cwd: root, stdio: 'inherit', shell: true });
     if (ni.status !== 0) {
       log(`rewind step failed (npm install)${ni.error ? `: ${ni.error.message}` : ''}; restarting anyway with current code`);
       return false;
     }
-    await buildExtension(appRoot);
+    await buildExtension(root);
     log(`rewind to ${ref} complete`);
     return true;
   }
 
   function spawnShell() {
     if (stopping) return null;
-    const appRoot = activeRoot();
-    const appPath = join(appRoot, 'egpt.mjs');
+    const appPath = join(root, 'egpt.mjs');
     const args = [appPath, ...shellArgs, ...(headless ? ['--headless'] : [])];
-    log(`starting node egpt.mjs${appRoot !== root ? `  [source: ${appRoot}]` : ''}`);
-    spawnAt = now();
+    log('starting node egpt.mjs');
     child = spawn('node', args, {
-      cwd: appRoot,
+      cwd: root,
       stdio: headless ? 'ignore' : 'inherit',
       env: { ...processObj.env, EGPT_SUPERVISED: '1' },
     });
@@ -161,7 +146,6 @@ export function createDaemonRuntime(opts = {}) {
         processObj.exit(0);
         return;
       }
-      srcCrashes = 0;
 
       if (code === UPGRADE_EXIT_CODE) {
         await runUpgrade();
@@ -184,17 +168,6 @@ export function createDaemonRuntime(opts = {}) {
         return;
       }
 
-      const ranMs = now() - spawnAt;
-      if (appRoot !== root && ranMs < 60_000) {
-        srcCrashes += 1;
-        if (srcCrashes >= 3) {
-          log(`source ${appRoot} crash-looped ${srcCrashes}× on boot — reverting to stable (${root})`);
-          try { unlinkSync(sourceFile); } catch {}
-          srcCrashes = 0;
-        }
-      } else {
-        srcCrashes = 0;
-      }
       log(`crash — restarting in ${backoff}ms`);
       setTimeoutFn(() => {
         backoff = Math.min(backoff * 2, RESTART_MAX_MS);
@@ -239,15 +212,13 @@ export function createDaemonRuntime(opts = {}) {
   function start() {
     registerSignals();
     if (!checkSingleton()) return null;
-    const appRoot = activeRoot();
-    const v = gitVersion(appRoot);
-    log(`egpt-daemon up — wrapper in ${root}; running app from ${appRoot}`);
+    const v = gitVersion(root);
+    log(`egpt-daemon up — running app from ${root}`);
     log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
     return spawnShell();
   }
 
   return {
-    activeRoot,
     buildExtension,
     checkSingleton,
     gitVersion,
@@ -258,6 +229,6 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, srcCrashes, spawnAt, headless, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, headless, shellArgs: [...shellArgs] }; },
   };
 }

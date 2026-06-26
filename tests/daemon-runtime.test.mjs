@@ -90,24 +90,19 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(0);
   });
 
-  it('spawns the active source root in headless supervised mode', () => {
-    const sourceRoot = 'D:/work/egpt-dev';
+  it('spawns from the fixed root in headless supervised mode', () => {
+    const root = 'C:/repo/egpt';
     const { runtime, children } = makeRuntime({
       argv: ['--headless', '--foo'],
-      readFileSync: (path) => {
-        if (path.endsWith('source-root.txt')) return sourceRoot;
-        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
-      },
-      existsSync: (path) => path === join(sourceRoot, 'egpt.mjs'),
     });
 
     runtime.start();
 
     expect(children).toHaveLength(1);
     expect(children[0].cmd).toBe('node');
-    expect(children[0].args).toEqual([join(sourceRoot, 'egpt.mjs'), '--foo', '--headless']);
+    expect(children[0].args).toEqual([join(root, 'egpt.mjs'), '--foo', '--headless']);
     expect(children[0].opts).toMatchObject({
-      cwd: sourceRoot,
+      cwd: root,
       stdio: 'ignore',
       env: expect.objectContaining({ EGPT_SUPERVISED: '1' }),
     });
