@@ -66,6 +66,26 @@ const SEEN_COMPACT_EVERY = 1000;   // appends between jsonl compactions
 const RECONNECT_MIN_MS = 3_000;
 const RECONNECT_MAX_MS = 60_000;
 
+// Normalize a body for SELF-ECHO comparison (used by rememberSent/isEcho). The
+// bridge echoes our OWN sends back HTML-formatted ("🦙 l<br>…") with a DIFFERENT
+// final id than the POST's pendingMessageID — so a raw id/text compare misses it.
+// WORSE: WhatsApp/Beeper REWRITES list markers on the echo — an ordered "1)"/"2)"
+// prompt comes back as "- " bullets — so even a tag-stripped compare missed it and
+// the echoed prompt re-entered dispatch as fresh input (operator 2026-06-25: the
+// add-agent wizard echo-looped in the Self DM, flooding). Fix: strip HTML, decode
+// entities, AND flatten every LEADING list marker (-, *, •, "N.", "N)") to nothing,
+// so the sent form and any re-marked echo compare equal. Per-line, before
+// whitespace collapses — hence <br> → newline first.
+export function normEchoText(t) {
+  return String(t ?? '')
+    .replace(/<br\s*\/?>/gi, '\n')                       // <br> → newline so per-line marker stripping works
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>').replace(/&#39;/g, "'").replace(/&quot;/gi, '"')
+    .replace(/^[ \t]*(?:[-*•‣◦]|\d+[.)])[ \t]+/gm, '')   // drop leading list marker (WhatsApp swaps "N)" ↔ "- " on echo)
+    .replace(/\s+/g, ' ').trim();
+}
+
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
@@ -266,21 +286,9 @@ export async function startBeeperBridge(opts = {}) {
   // in-place edits). Our live edits re-upsert the message; without this guard the
   // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
   const _ourStreamIds = new Set();
-  // Normalize for echo matching: egpt SENDS plain text ("🦙 l\n…") but Beeper
-  // echoes our OWN message back HTML-formatted ("🦙 l<br>…") with a DIFFERENT
-  // final id than the POST's pendingMessageID — so a raw id/text compare misses
-  // it, the echo gets treated as a fresh incoming, and a sibling whose reply
-  // mentions itself (e.g. @l discussing "@l ron") re-dispatches to itself and
-  // loops forever (operator 2026-06-11). Strip tags + entities + collapse
-  // whitespace so the sent and echoed forms compare equal.
-  function _normEcho(t) {
-    return String(t ?? '')
-      .replace(/<br\s*\/?>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>').replace(/&#39;/g, "'").replace(/&quot;/gi, '"')
-      .replace(/\s+/g, ' ').trim();
-  }
+  // Normalize for echo matching — module-scope normEchoText (strips HTML/entities
+  // AND flattens list markers so a re-marked echo still compares equal).
+  const _normEcho = normEchoText;
   function rememberSent(id, chatID, text) {
     if (id) { const key = msgKeyOf(chatID, id); _sentIds.add(key); _capSet(_sentIds, SEEN_SENT_CAP); _persistSeen('s', key); }
     if (text) {
