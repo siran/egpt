@@ -618,6 +618,54 @@ export function getContact(state, surface, jid) {
   return r ? { jid: r.primaryJid, slug: r.entry.slug, entry: r.entry, surface } : null;
 }
 
+// ── per-being view (#2: per-resident conversation shape) ────────────────────
+// A conversation can host several resident beings (E + custom agents), each its own
+// sub-block: `<being>: { mode, readonly: { model, effort, personality }, threadId,
+// threadCreatedAt, identityInjectedAt }`. `mode` is the hot reply-gate; `readonly` is
+// how the thread was started (changing it reloads the agent via /e new|identity|brain).
+//
+// READER-CONVERGENCE (stage 1): read the nested block, falling back to today's FLAT
+// fields for the default 'e' so an un-migrated conversation resolves identically. No
+// writer or migration yet — nothing nested exists until the migrate stage, so every
+// read still lands on the flat fallback. Behavior-neutral by construction.
+const _FLAT_ENTRY_KEYS = new Set([
+  'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
+  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe',
+]);
+
+// Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;
+// for 'e' it falls back to the legacy flat fields. Returns null when there's no contact.
+export function getBeing(state, surface, jid, being = 'e') {
+  const c = getContact(state, surface, jid);
+  if (!c) return null;
+  const e = c.entry ?? {};
+  const b = (e[being] && typeof e[being] === 'object' && !Array.isArray(e[being])) ? e[being] : null;
+  const flat = being === 'e' ? e : {};
+  const ro = b?.readonly ?? {};
+  return {
+    jid: c.jid, slug: c.slug, surface, being,
+    present:            !!b || being === 'e',                                   // 'e' is the implicit legacy resident
+    mode:               b?.mode               ?? flat.mode               ?? null,
+    threadId:           b?.threadId           ?? flat.threadId           ?? null,
+    threadCreatedAt:    b?.threadCreatedAt    ?? flat.threadCreatedAt    ?? null,
+    identityInjectedAt: b?.identityInjectedAt ?? flat.identityInjectedAt ?? null,
+    personality:        ro.personality        ?? flat.personality        ?? 'default',
+    model:              ro.model              ?? null,
+    effort:             ro.effort             ?? null,
+  };
+}
+
+// The resident being names configured on an entry: the nested per-being keys, plus an
+// implicit 'e' for a legacy flat entry (which has no nested blocks). 'e' is always first.
+export function residentsOf(entry) {
+  if (!entry || typeof entry !== 'object') return [];
+  const named = Object.keys(entry).filter(
+    (k) => !_FLAT_ENTRY_KEYS.has(k) && entry[k] && typeof entry[k] === 'object' && !Array.isArray(entry[k]),
+  );
+  if (!named.length) return ['e'];
+  return named.includes('e') ? named : ['e', ...named];
+}
+
 // Look up a contact by its slug WITHIN one surface (linear scan; N small).
 function _findByslug(state, surface, slug) {
   const bucket = state.contacts?.[surface] ?? {};
