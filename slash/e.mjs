@@ -24,8 +24,6 @@
 //   /e heartbeat [<slug>] on|off   — enable/disable a conversation's heartbeat
 //   /e heartbeat [<slug>] interval <min> — set its cadence (writes <slug>/config.yaml)
 //                                    (minutes; default 30)
-//   /e butler <prompt>             — ephemeral haiku sub-agent (no
-//                                    session memory, default all-tools)
 //
 //   /e confirm [<jid>] on|off|status [self|shell|egptbot|all]
 //                                  — watcher/wiretap on <jid>: mirror VERBATIM
@@ -59,10 +57,6 @@ import {
 import { readConfig, writeConfig } from '../src/tools/config-io.mjs';
 import { AUTO_MODES, DEFAULT_AUTO_MODE } from '../src/auto-mode.mjs';
 import { Room, normalizeMemberState, DEFAULT_MEMBER_STATE } from '../src/room-core.mjs';
-import {
-  loadGrants, saveGrants, grantedEntries, addGrant, removeGrant, normalizeAccess,
-} from '../src/conv-grants.mjs';
-import { loadRooms, roomsForMember } from '../src/rooms.mjs';
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 
@@ -70,7 +64,7 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>] | /e cmd allow|deny <command>|status | /e path [list|add|rm] [<path>] [<slug>]',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, daemon source, heartbeat, transcription, wiretap, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
@@ -78,15 +72,10 @@ export const meta = {
     { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
     { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>] | show-think on|off [<chat>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats; show-think on/off toggles two-message Telegram mode (thinking stream frozen 💭, final sent as new reply)', example: '/e auto show-think on' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
-    { name: 'llama',      usage: '/e llama on|off',                                          desc: 'enable/disable the local @l brain (alias: /e local)', example: '/e llama on' },
     { name: 'source',     usage: '/e source [<path>]',                                       desc: 'which checkout the daemon runs the app from; no arg reports running + persisted source (relative paths resolve under ~/src/, first switch needs a wrapper restart)', example: '/e source egpt-dev' },
     { name: 'heartbeat',  usage: '/e heartbeat [<slug>] [on|off|interval <min>]',      desc: 'per-conversation heartbeat (writes <slug>/config.yaml); bare or <slug> alone shows status; needs a heartbeat.md prompt in the folder to fire', example: '/e heartbeat diego on' },
     { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global', example: '/e transcribe on' },
     { name: 'confirm',    usage: '/e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]', desc: 'wiretap a chat: mirror VERBATIM what each resident brain is fed and its raw reply to the chosen destination(s)', example: '/e confirm on self' },
-    { name: 'tool',       usage: '/e tool allow|deny|ask [all|<toolname>]',                  desc: "per-tool permission for E's brain (e.g. /e tool deny all, then /e tool allow read_file)", example: '/e tool deny all' },
-    { name: 'cmd',        usage: '/e cmd allow|deny <command> | status',                     desc: 'which slash commands conversation-e may EXECUTE from its own reply (allowlist; default /react). Known-but-unlisted commands are stripped, never run', example: '/e cmd allow react' },
-    { name: 'path',       usage: '/e path [list|add|rm] [<path>] [ro|rw] [<slug>]',          desc: 'custom directory grants for conversation-e (conversations/config.yaml, outside its sandbox). access ro=read-only, rw/full=read+write (default). Bare /e path lists effective access; <slug> defaults to the current chat', example: '/e path add C:\\refs\\manual ro' },
-    { name: 'butler',     usage: '/e butler <prompt>',                                       desc: 'ephemeral haiku sub-agent — no session memory, default all-tools', example: '/e butler summarize my unread chats' },
     { name: 'supervisor', usage: '/e supervisor [status|restart|bounce|install|uninstall]',   desc: 'manage the NSSM egpt-daemon service: status; restart (in-band exit-43 spine reload); bounce/install/uninstall print the elevated command', example: '/e supervisor status' },
   ],
 };
@@ -275,96 +264,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       const r = String(reply ?? '').trim();
       sysOut(`✓ /e persona ${slug}: injected ${personaName}/${injected.name}${r && r !== '...' && r !== '…' ? ` — @e: "${r.slice(0, 80)}"` : ''}`);
     } catch (e) { sysOut(`!! /e persona inject: ${e?.message ?? e}`); }
-    return true;
-  }
-
-  // ── /e path [list|add|rm] [<path>] [<slug>] ─────────────────────
-  // Manage conversation-e's custom directory grants (conversations/config.yaml,
-  // outside its sandbox). Bare `/e path` lists the current chat's effective
-  // access. <slug> defaults to the current chat; from the shell, pass it.
-  if (sub === 'path') {
-    const action = tokens[1] && /^(list|add|rm|remove|ls)$/i.test(tokens[1]) ? tokens[1].toLowerCase() : 'list';
-    const cs = await readConvState(CONV_YAML_PATH);
-    const here = dispatchMeta?.waChatId ? findContactByJid(cs, 'whatsapp', dispatchMeta.waChatId) : null;
-
-    // Collect every jid that maps to a slug (for the room-membership view).
-    const jidsForSlug = (slug) => {
-      const out = new Set();
-      for (const surf of Object.keys(cs.contacts ?? {})) {
-        for (const [key, e] of Object.entries(cs.contacts[surf] ?? {})) {
-          if (e?.slug === slug) { out.add(key); for (const j of e?.jids ?? []) out.add(j); }
-        }
-      }
-      return [...out];
-    };
-
-    if (action === 'list' || action === 'ls') {
-      const slug = tokens[2] || here;
-      if (!slug) { sysOut('!! /e path: no chat context — pass a slug: `/e path list <slug>`'); return true; }
-      const grants = await loadGrants();
-      const custom = grantedEntries(grants, slug);
-      const ownDir = slugDir('whatsapp', slug);
-      let roomNames = [];
-      try {
-        const rs = await loadRooms();
-        const seen = new Set();
-        for (const j of jidsForSlug(slug)) for (const r of roomsForMember(rs, j)) seen.add(r.name);
-        roomNames = [...seen];
-      } catch { /* best effort */ }
-      const lines = [`📂 conversation-e access for "${slug}":`];
-      lines.push(`  own   (full) · ${ownDir}`);
-      for (const n of roomNames) lines.push(`  room  (full) · ${join(homedir(), '.egpt', 'rooms', n)}   — member of "${n}"`);
-      if (custom.length) for (const e of custom) lines.push(`  grant (${e.access}) · ${e.path}`);
-      else lines.push('  (no custom grants — add with `/e path add <path> [ro]`)');
-      sysOut(lines.join('\n'));
-      return true;
-    }
-
-    // add | rm: `<path> [<access>] [<slug>]`. An access token (ro/read/rw/full)
-    // anywhere in the tail is pulled out first; then, of what remains, an
-    // explicit slug is the LAST token (so a path with spaces survives) and the
-    // path is everything before it. With no explicit slug, the whole remainder
-    // is the path and the target is the current chat. (rm ignores access.)
-    let tail = tokens.slice(2);
-    let access = 'full';
-    const accIdx = tail.findIndex(t => /^(ro|read|readonly|read-only|rw|full|write)$/i.test(t));
-    if (accIdx !== -1) { access = normalizeAccess(tail[accIdx]); tail = tail.filter((_, i) => i !== accIdx); }
-    if (!tail.length) { sysOut(`usage: /e path ${action} <path> [ro|rw] [<slug>]`); return true; }
-    let path, slug;
-    if (tail.length >= 2) { slug = tail[tail.length - 1]; path = tail.slice(0, -1).join(' '); }
-    else { path = tail[0]; slug = here; }
-    if (!slug) { sysOut(`!! /e path ${action}: no chat context — pass a slug: \`/e path ${action} <path> [ro|rw] <slug>\``); return true; }
-    if (!isAbsolute(path)) { sysOut(`!! /e path ${action}: "${path}" is not an absolute path`); return true; }
-
-    const grants = await loadGrants();
-    try {
-      const next = action === 'add' ? addGrant(grants, slug, path, access) : removeGrant(grants, slug, path);
-      await saveGrants(next);
-      const now = grantedEntries(next, slug);
-      const shown = now.length ? now.map(e => `${e.path} (${e.access})`).join(', ') : '(none)';
-      const what = action === 'add' ? `granted ${path} (${access})` : `removed ${path}`;
-      sysOut(`✓ /e path ${action} "${slug}": ${what}\n  grants now: ${shown}\n  (takes effect on this contact's next turn)`);
-    } catch (e) { sysOut(`!! /e path ${action}: ${e?.message ?? e}`); }
-    return true;
-  }
-
-  // ── /e butler <prompt> ──────────────────────────────────────────
-  // Ephemeral haiku sub-agent. No session memory; default all-tools.
-  // Prints the result to the shell (operator-facing). Programmatic
-  // invocations should use the `butler-task` outbox event instead so
-  // the result can be relayed back to a specific contact thread.
-  if (sub === 'butler') {
-    const prompt = arg.replace(/^\s*butler\s*/, '').trim();
-    if (!prompt) { sysOut('usage: /e butler <prompt>'); return true; }
-    sysOut(`(butler-e working… haiku, no session memory, default all-tools)`);
-    try {
-      const { runButler } = await import('../src/tools/butler.mjs');
-      const r = await runButler({ prompt });
-      const head = r.error ? `!! butler: ${r.error}` : `butler-e (${r.durationMs}ms):`;
-      sysOut([head, '', r.text || '(no output)'].join('\n'));
-    } catch (e) {
-      sysOut(`!! /e butler: ${e?.message ?? e}`);
-    }
     return true;
   }
 
@@ -698,78 +597,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     return true;
   }
 
-  // ── /e tool allow|deny|ask [all|<toolname>] | status ────────────
-  // Per-tool permission for the agentic loop (the @l local operator and any
-  // future tool-using brain). Modes: allow (runs freely), ask (confirm via
-  // the operator Self DM before running), deny (blocked). 'all' sets the
-  // DEFAULT applied to any tool not explicitly listed — so `/e tool deny all`
-  // then `/e tool allow read_file` is whitelist mode. SAFETY: an unleashed
-  // local model won't self-refuse a destructive tool call, so the HOST gates
-  // here — this is the operator's control surface over what @l may do.
-  if (sub === 'tool') {
-    const rest = tokens.slice(1);
-    const MODES = new Set(['allow', 'deny', 'ask']);
-    const mode = rest.map(t => t.toLowerCase()).find(t => MODES.has(t)) ?? null;
-    const target = rest.find(t => !MODES.has(t.toLowerCase())) ?? null;   // 'all' | tool name
-    if (!EGPT_CONFIG.tools || typeof EGPT_CONFIG.tools !== 'object') EGPT_CONFIG.tools = {};
-    const t = EGPT_CONFIG.tools;
-
-    if (!mode) {
-      const def = t.default ?? 'ask';
-      const lines = Object.entries(t).filter(([k]) => k !== 'default').map(([k, v]) => `  - ${k}: ${v}`);
-      sysOut(`/e tool (default: ${def}):\n${lines.length ? lines.join('\n') : '  (no per-tool overrides)'}`);
-      return true;
-    }
-    if (!target) {
-      sysOut("usage: /e tool allow|deny|ask <toolname>|all   (e.g. `/e tool deny all`, then `/e tool allow read_file`)");
-      return true;
-    }
-    if (target.toLowerCase() === 'all') t.default = mode;
-    else t[target] = mode;
-    try {
-      const saved = await readConfig();
-      saved.tools = t;
-      await writeConfig(saved);
-    } catch (e) { sysOut(`!! /e tool: persist failed: ${e.message}`); return true; }
-    sysOut(`/e tool ${mode}: ${target.toLowerCase() === 'all' ? `default → ${mode}` : target}`);
-    return true;
-  }
-
-  // /e cmd allow|deny|status [<command>] — which SLASH COMMANDS conversation-e
-  // may execute when it emits one on its own line in a reply (whatsapp.e_commands
-  // allowlist). SAFETY: E's output is model-generated and it reads messages from
-  // chat partners, so a crafted message could try to coax a command out of it.
-  // The allowlist is the gate — default ['react'] only; known-but-unlisted
-  // commands are stripped + logged, never run, never leaked to the chat.
-  if (sub === 'cmd') {
-    const action = (tokens[1] ?? '').toLowerCase();
-    const name = (tokens[2] ?? '').replace(/^\//, '').toLowerCase();
-    const cur = Array.isArray(EGPT_CONFIG.whatsapp?.e_commands)
-      ? EGPT_CONFIG.whatsapp.e_commands.map(s => String(s).replace(/^\//, '').toLowerCase())
-      : ['react'];
-    if (!action || action === 'status' || action === 'list') {
-      sysOut(`/e cmd allowlist (whatsapp.e_commands): ${cur.length ? cur.map(c => '/' + c).join(' ') : '(none)'}`);
-      return true;
-    }
-    if ((action !== 'allow' && action !== 'deny') || !name) {
-      sysOut('usage: /e cmd allow|deny <command> | status   (e.g. `/e cmd allow react`)');
-      return true;
-    }
-    const next = action === 'allow'
-      ? Array.from(new Set([...cur, name]))
-      : cur.filter(c => c !== name);
-    try {
-      const saved = await readConfig();
-      if (!saved.whatsapp || typeof saved.whatsapp !== 'object') saved.whatsapp = {};
-      saved.whatsapp.e_commands = next;
-      await writeConfig(saved);
-      if (!EGPT_CONFIG.whatsapp || typeof EGPT_CONFIG.whatsapp !== 'object') EGPT_CONFIG.whatsapp = {};
-      EGPT_CONFIG.whatsapp.e_commands = next;
-    } catch (e) { sysOut(`!! /e cmd: persist failed: ${e.message}`); return true; }
-    sysOut(`/e cmd ${action}: /${name} → allowlist now ${next.length ? next.map(c => '/' + c).join(' ') : '(none)'}`);
-    return true;
-  }
-
   // /e source [path] — which checkout the daemon runs the app from. No arg:
   // report the running source (dir + branch + commit) and the persisted
   // setting. With a path (relative to ~/src/, or absolute, fwd or back slash):
@@ -816,29 +643,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
     } catch (e) { sysOut(`!! /e source: ${e.message}`); return true; }
     sysOut(`/e source → ${p} (${gitAt(p)}) — restarting to run it (wrapper restart needed first time)`);
     if (typeof ctx.exitClean === 'function') setTimeout(() => ctx.exitClean(43), 150);
-    return true;
-  }
-
-  // Enable/disable the local llama-server (@l's backend). Persists
-  // local_llm.enabled; takes effect on the next /restart (the supervisor reads
-  // enabled at boot). whisper-server has the parallel toggle via /e transcribe.
-  if (sub === 'llama' || sub === 'local') {
-    if (!EGPT_CONFIG.local_llm || typeof EGPT_CONFIG.local_llm !== 'object') EGPT_CONFIG.local_llm = {};
-    const ll = EGPT_CONFIG.local_llm;
-    const a = String(action ?? '').toLowerCase();
-    if (a === 'on' || a === 'off') {
-      ll.enabled = (a === 'on');
-      try {
-        const saved = await readConfig();
-        if (!saved.local_llm || typeof saved.local_llm !== 'object') saved.local_llm = {};
-        saved.local_llm.enabled = ll.enabled;
-        await writeConfig(saved);
-      } catch (e) { sysOut(`!! /e llama: persist failed: ${e.message}`); return true; }
-      sysOut(`/e llama ${a}: local_llm.enabled = ${ll.enabled} (takes effect on /restart)`);
-    } else {
-      const state = ll.enabled === false ? 'off' : 'on';
-      sysOut(`/e llama: ${state} — port ${ll.port ?? 11434}, model ${String(ll.model_path ?? '?').split(/[\\/]/).pop()}. Usage: /e llama on|off`);
-    }
     return true;
   }
 
@@ -932,7 +736,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e llama on|off | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all] | /e tool allow|deny|ask [all|<toolname>]');
+    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e source [<path>] | /e heartbeat [<slug>] [on|off|interval <min>] | /e transcribe on|off|status|global [--streaming] | /e confirm [<name|jid>] on|off|status [self|shell|egptbot|all]');
     return true;
   }
 
