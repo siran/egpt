@@ -39,6 +39,7 @@ import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUr
 import * as conversationsState from './conversations-state.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
+import { initWizard, wizardStep, wizardPrompt } from './src/agent-wizard.mjs';
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers } from './src/rooms.mjs';
 import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
@@ -2176,6 +2177,8 @@ function startSpineRuntime() {
   const _helpMenuRef = ref(null);
   const _helpMode = ref(new Map());   // chatKey -> { state, ts }
   const _HELP_TTL_MS = 3 * 60 * 1000;
+  const _wizardMode = ref(new Map());   // chatKey -> { state, surface, chatId, ts } (add-agent wizard)
+  const _WIZARD_TTL_MS = 5 * 60 * 1000;
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
@@ -2213,6 +2216,47 @@ function startSpineRuntime() {
       return true;
     }
     return false;
+  };
+
+  // ── add-agent wizard ────────────────────────────────────────────
+  // Mirrors the help menu: `/e <chat> agent` ARMS it (slash side, via ctx.armAgentWizard),
+  // then the operator's numbered/typed answers route through wizardStep until a resident
+  // spec is complete, which we write into that conversation's per-being block. Safe in a
+  // Self DM since 2026-06-26: the bridge's hardened isEcho (normEchoText) drops our own
+  // prompt echoes — including WhatsApp's "N)" → "- " list-marker rewrite — before they
+  // re-enter here as fake operator answers (the earlier flood).
+  const _writeResident = async ({ jid, name, brain, model, effort, personality }) => {
+    const cs = await _loadConvState();
+    const e = cs?.contacts?.whatsapp?.[jid];
+    if (!e) return false;
+    const prev = (e[name] && typeof e[name] === 'object') ? e[name] : {};
+    e[name] = { ...prev, mode: prev.mode ?? 'mention', readonly: { brain, model, effort, personality } };
+    if (name !== 'e' && e[name].threadId == null) e[name].threadId = null;
+    await _writeConvState(cs);
+    await _loadConvState();
+    return true;
+  };
+  const _maybeHandleWizard = (text, { surface, chatKey, isOperator, chatId }) => {
+    if (!isOperator) return false;
+    const wm = _wizardMode.current.get(chatKey);
+    if (!wm) return false;
+    const t = String(text ?? '').trim();
+    if (t.startsWith('/')) return false;                       // slash commands pass through
+    if (Date.now() - wm.ts > _WIZARD_TTL_MS) { _wizardMode.current.delete(chatKey); return false; }
+    const r = wizardStep(wm.state, t);
+    if (r.cancelled) { _wizardMode.current.delete(chatKey); _helpReply(surface, chatId, '(agent wizard cancelled)'); return true; }
+    if (r.done) {
+      _wizardMode.current.delete(chatKey);
+      _writeResident(r.result)
+        .then((ok) => _helpReply(surface, chatId, ok
+          ? `✅ ${r.result.name} → «${r.result.slug}»: ${r.result.brain}/${r.result.model}/${r.result.effort} · identity:${r.result.personality}\n(reply mode: mention; it replies in this chat once the daemon next reloads)`
+          : `!! agent "${r.result.name}": no contact for that chat — send a message there first`))
+        .catch((e) => _helpReply(surface, chatId, `!! agent write failed: ${e?.message ?? e}`));
+      return true;
+    }
+    wm.state = r.state; wm.ts = Date.now();
+    _helpReply(surface, chatId, r.prompt);
+    return true;
   };
 
   // Mode note: a ONE-LINE statement of the chat's current reply mode, told to
@@ -3331,6 +3375,8 @@ function startSpineRuntime() {
           // Interactive help menu — only the account owner (authorized) drives
           // it, in whichever chat /help was invoked. Consumes the owner's
           // numbers/text before the auto-mode broadcast; others pass through.
+          // The add-agent wizard (armed by `/e <chat> agent`) gets first refusal.
+          if (_maybeHandleWizard(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) return;
           if (_maybeHandleHelp(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
             return;
           }
@@ -4886,6 +4932,13 @@ function startSpineRuntime() {
         // the file; this re-reads through the runtime, which fires onStateChange →
         // the reader (_convChatMode) sees the change immediately, not next message.
         refreshConvState:   async () => { await _loadConvState(); },
+        // Arm the add-agent wizard for a chat — the operator's next numbered/typed
+        // answers (in chatKey) route through it until a resident spec is written.
+        armAgentWizard:     ({ chatKey, surface = 'whatsapp', chatId, slug, jid, options }) => {
+          const state = initWizard({ slug, jid, options });
+          _wizardMode.current.set(chatKey, { state, surface, chatId, ts: Date.now() });
+          _helpReply(surface, chatId, `🧩 add agent to «${slug}»\n${wizardPrompt(state)}`);
+        },
         APP_DIR,
         EGPT_HOME,
         // announceBounce (slash/lifecycle.mjs) falls back to the operator's
@@ -6392,7 +6445,11 @@ function startSpineRuntime() {
     if (!text) return;
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
-    // re-dispatch) goes through the interactive help menu first.
+    // re-dispatch) goes through the add-agent wizard, then the help menu.
+    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
+        && _maybeHandleWizard(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
+      return;
+    }
     if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
         && _maybeHandleHelp(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
       return;
