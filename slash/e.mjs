@@ -30,6 +30,8 @@ import {
   findContactByJid,
   resolveChatTarget,
   normalizeResidents,
+  getBeing,
+  residentsOf,
   patchContact,
   installIdentity,
   resolveIdentityDir,
@@ -179,6 +181,37 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   // binding this run's live WA bridge. Used by every jid-taking /e subcommand.
   const _resolveChatTarget = (term, surface = 'whatsapp') =>
     resolveChatTarget(term, { waBridge: waBridgeRef?.current ?? null, surface });
+
+  // ── /e <slug>  — per-conversation console (from Self) ────────────
+  // When the first token isn't a known subcommand, treat the whole arg as a chat
+  // name/jid and render its resident roster + state (#2 console, read-only v1; the
+  // numbered actions arrive with per-conversation targeting + the add-agent wizard).
+  const KNOWN_SUBS = new Set(['new', 'identity', 'auto', 'residents', 'transcribe']);
+  if (sub && !KNOWN_SUBS.has(sub)) {
+    const r = await _resolveChatTarget(arg.trim());
+    if (r?.error || !r?.jid) {
+      sysOut(`/e: no chat matches "${arg.trim()}" — use an action (new|identity|auto|residents|transcribe) or a chat name/jid.`);
+      return true;
+    }
+    const cs = await readConvState(CONV_YAML_PATH);
+    const entry = cs.contacts?.whatsapp?.[r.jid] ?? null;
+    const dbModel = EGPT_CONFIG.default_brain?.model ?? '?';
+    const lines = residentsOf(entry).map((bn) => {
+      const b = getBeing(cs, 'whatsapp', r.jid, bn);
+      const model = b.model ?? (bn === 'e' ? dbModel : '?');
+      const effort = b.effort ? `/${b.effort}` : '';
+      const th = b.threadId ? String(b.threadId).slice(0, 8) : '(none)';
+      return `  ${bn}: ${b.mode ?? 'mention'} · ${model}${effort} · identity:${b.personality} · thread:${th}`;
+    });
+    const tx = entry?.transcribe ?? '(default on)';
+    sysOut(
+      `«${r.name ?? r.jid}»  [${r.jid}]\n`
+      + `siblings:\n${lines.join('\n') || '  (none)'}\n`
+      + `transcribe: ${tx}\n`
+      + `─ actions (coming) ─ 1) new  2) identity  3) auto  4) transcribe`,
+    );
+    return true;
+  }
 
   // ── /e new [<persona>] ──────────────────────────────────────────
   // Reset the thread, rebuild the WHOLE identity.d bundle (manifest +
