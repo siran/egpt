@@ -187,15 +187,26 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   // name/jid and render its resident roster + state (#2 console, read-only v1; the
   // numbered actions arrive with per-conversation targeting + the add-agent wizard).
   const KNOWN_SUBS = new Set(['new', 'identity', 'auto', 'residents', 'transcribe']);
+  const ACTION_KEYS = new Set([...KNOWN_SUBS, 'agent']);
   if (sub && !KNOWN_SUBS.has(sub)) {
-    // /e <name> [<action> ...] — the chat name is every token BEFORE the first known
-    // action keyword. With an action, run it with that chat as the context (so all the
-    // existing per-chat handlers just work); without one, render the console overview.
-    const actionIdx = tokens.findIndex((t) => KNOWN_SUBS.has(t));
+    // /e <name> [<action> ...] — the chat name is every token BEFORE the first action
+    // keyword. `agent` arms the add-agent wizard; another action runs with that chat as
+    // the context (existing per-chat handlers just work); none → the console overview.
+    const actionIdx = tokens.findIndex((t) => ACTION_KEYS.has(t));
     const nameTerm = (actionIdx >= 0 ? tokens.slice(0, actionIdx) : tokens).join(' ').trim();
-    const r = await _resolveChatTarget(nameTerm);
-    if (r?.error || !r?.jid) {
-      sysOut(`/e: no chat matches "${nameTerm}" — try a chat name/jid, optionally + an action (new|identity|auto|residents|transcribe).`);
+    const r = nameTerm
+      ? await _resolveChatTarget(nameTerm)
+      : (dispatchMeta?.waChatId ? await _resolveChatTarget(dispatchMeta.waChatId) : null);
+    if (!r || r.error || !r.jid) {
+      sysOut(`/e: no chat matches "${nameTerm}" — try a chat name/jid, optionally + an action (new|identity|auto|residents|transcribe|agent).`);
+      return true;
+    }
+    if (actionIdx >= 0 && tokens[actionIdx] === 'agent') {
+      ctx.armAgentWizard?.({
+        chatKey: dispatchMeta?.waChatId ?? 'shell', surface: 'whatsapp', chatId: dispatchMeta?.waChatId,
+        slug: r.name ?? nameTerm ?? r.jid, jid: r.jid,
+        options: { brains: ['claude-code', 'codex'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'], identities: ['default', 'banter'] },
+      });
       return true;
     }
     if (actionIdx >= 0) {
@@ -217,7 +228,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       `«${r.name ?? r.jid}»  [${r.jid}]\n`
       + `siblings:\n${lines.join('\n') || '  (none)'}\n`
       + `transcribe: ${tx}\n`
-      + `actions:  /e ${nameTerm} new | identity [<id>] | auto <mode> | transcribe on|off`,
+      + `actions:  /e ${nameTerm} new | identity [<id>] | auto <mode> | transcribe on|off | agent`,
     );
     return true;
   }
