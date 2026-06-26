@@ -188,10 +188,19 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   // numbered actions arrive with per-conversation targeting + the add-agent wizard).
   const KNOWN_SUBS = new Set(['new', 'identity', 'auto', 'residents', 'transcribe']);
   if (sub && !KNOWN_SUBS.has(sub)) {
-    const r = await _resolveChatTarget(arg.trim());
+    // /e <name> [<action> ...] — the chat name is every token BEFORE the first known
+    // action keyword. With an action, run it with that chat as the context (so all the
+    // existing per-chat handlers just work); without one, render the console overview.
+    const actionIdx = tokens.findIndex((t) => KNOWN_SUBS.has(t));
+    const nameTerm = (actionIdx >= 0 ? tokens.slice(0, actionIdx) : tokens).join(' ').trim();
+    const r = await _resolveChatTarget(nameTerm);
     if (r?.error || !r?.jid) {
-      sysOut(`/e: no chat matches "${arg.trim()}" — use an action (new|identity|auto|residents|transcribe) or a chat name/jid.`);
+      sysOut(`/e: no chat matches "${nameTerm}" — try a chat name/jid, optionally + an action (new|identity|auto|residents|transcribe).`);
       return true;
+    }
+    if (actionIdx >= 0) {
+      // Re-dispatch the action with the resolved chat as the live context.
+      return await run({ arg: tokens.slice(actionIdx).join(' '), meta: { ...(dispatchMeta ?? {}), waChatId: r.jid }, ctx });
     }
     const cs = await readConvState(CONV_YAML_PATH);
     const entry = cs.contacts?.whatsapp?.[r.jid] ?? null;
@@ -208,7 +217,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       `«${r.name ?? r.jid}»  [${r.jid}]\n`
       + `siblings:\n${lines.join('\n') || '  (none)'}\n`
       + `transcribe: ${tx}\n`
-      + `─ actions (coming) ─ 1) new  2) identity  3) auto  4) transcribe`,
+      + `actions:  /e ${nameTerm} new | identity [<id>] | auto <mode> | transcribe on|off`,
     );
     return true;
   }
