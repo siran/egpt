@@ -39,7 +39,6 @@ import { recordSession, startNew, rewind, listHistory, summarize, setBrain, isUr
 import * as conversationsState from './conversations-state.mjs';
 import { parseInput, helpText, helpHtml, COMMANDS } from './src/interpreter.mjs';
 import { buildMenu, initState, view as helpView, step as helpStep, searchView as helpSearchView, renderText as helpRenderText } from './src/help-menu.mjs';
-import { initWizard, wizardStep, wizardPrompt } from './src/agent-wizard.mjs';
 import { loadRooms, saveRooms, roomsForMember, sanitizeName, createRoom, getRoom, addMember, sessionsMapFromMembers } from './src/rooms.mjs';
 import { Room } from './src/room-core.mjs';
 import { resolveRoster, residentsFromMembers } from './src/conversation-members.mjs';
@@ -2177,33 +2176,14 @@ function startSpineRuntime() {
   const _helpMenuRef = ref(null);
   const _helpMode = ref(new Map());   // chatKey -> { state, ts }
   const _HELP_TTL_MS = 3 * 60 * 1000;
-  const _wizardMode = ref(new Map());   // chatKey -> { state, surface, chatId, ts } (add-agent wizard)
-  const _WIZARD_TTL_MS = 5 * 60 * 1000;
-  // Self-DM echo guard: egpt's OWN menu/wizard replies re-enter onIncoming as operator
-  // messages in a self-chat (the remembered send id ≠ the echoed final id). Track recent
-  // reply bodies per chat so we can swallow their echoes — else a deterministic prompt
-  // re-feeds the wizard and tight-loops (the agent-wizard flood, 2026-06-26).
-  const _menuSelfSends = new Map();   // chatId -> { bodies:Set<string>, ts }
-  const _MENU_ECHO_TTL_MS = 60 * 1000;
-  const _isMenuEcho = (chatId, text) => {
-    const rec = _menuSelfSends.get(chatId);
-    if (!rec || Date.now() - rec.ts > _MENU_ECHO_TTL_MS) return false;
-    return rec.bodies.has(String(text ?? '').trim());
-  };
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
     { surface: 'shell' },   // shell + WA/TG run host commands; hides extension-only
   ));
   const _helpReply = (surface, chatId, body) => {
-    if (surface === 'whatsapp' && chatId && waBridgeRef.current) {
-      const rec = _menuSelfSends.get(chatId) ?? { bodies: new Set(), ts: 0 };
-      rec.bodies.add(String(body ?? '').trim());
-      if (rec.bodies.size > 24) rec.bodies = new Set([...rec.bodies].slice(-24));
-      rec.ts = Date.now();
-      _menuSelfSends.set(chatId, rec);
-      waBridgeRef.current.send(body, { chatId });
-    } else sysOut(body);
+    if (surface === 'whatsapp' && chatId && waBridgeRef.current) waBridgeRef.current.send(body, { chatId });
+    else sysOut(body);
   };
   // Returns true if the message was consumed by the menu (caller stops).
   // Only the account OWNER (isOperator) drives it — others' messages pass through.
@@ -2222,7 +2202,6 @@ function startSpineRuntime() {
     }
     const hm = _helpMode.current.get(chatKey);
     if (hm && !t.startsWith('/')) {
-      if (_isMenuEcho(chatId, t)) return true;                 // own echoed menu view — swallow, don't loop
       if (Date.now() - hm.ts > _HELP_TTL_MS) { _helpMode.current.delete(chatKey); return false; }
       const r = helpStep(menu, hm.state, t);
       if (r.exit) { _helpMode.current.delete(chatKey); _helpReply(surface, chatId, '(help closed)'); return true; }
@@ -2234,45 +2213,6 @@ function startSpineRuntime() {
       return true;
     }
     return false;
-  };
-
-  // ── add-agent wizard ────────────────────────────────────────────
-  // Mirrors the help menu: `/e <chat> agent` ARMS it (slash side, via ctx.armAgentWizard),
-  // then the operator's numbered/typed answers route through wizardStep until a resident
-  // spec is complete, which we write into that conversation's per-being block.
-  const _writeResident = async ({ jid, name, brain, model, effort, personality }) => {
-    const cs = await _loadConvState();
-    const e = cs?.contacts?.whatsapp?.[jid];
-    if (!e) return false;
-    const prev = (e[name] && typeof e[name] === 'object') ? e[name] : {};
-    e[name] = { ...prev, mode: prev.mode ?? 'mention', readonly: { brain, model, effort, personality } };
-    if (name !== 'e' && e[name].threadId == null) e[name].threadId = null;
-    await _writeConvState(cs);
-    await _loadConvState();
-    return true;
-  };
-  const _maybeHandleWizard = (text, { surface, chatKey, isOperator, chatId }) => {
-    if (!isOperator) return false;
-    const wm = _wizardMode.current.get(chatKey);
-    if (!wm) return false;
-    const t = String(text ?? '').trim();
-    if (_isMenuEcho(chatId, t)) return true;                   // egpt's own echoed prompt — swallow, don't loop
-    if (t.startsWith('/')) return false;                       // slash commands pass through
-    if (Date.now() - wm.ts > _WIZARD_TTL_MS) { _wizardMode.current.delete(chatKey); return false; }
-    const r = wizardStep(wm.state, t);
-    if (r.cancelled) { _wizardMode.current.delete(chatKey); _helpReply(surface, chatId, '(agent wizard cancelled)'); return true; }
-    if (r.done) {
-      _wizardMode.current.delete(chatKey);
-      _writeResident(r.result)
-        .then((ok) => _helpReply(surface, chatId, ok
-          ? `✅ ${r.result.name} → «${r.result.slug}»: ${r.result.brain}/${r.result.model}/${r.result.effort} · identity:${r.result.personality}\n(reply mode: mention; full dispatch activation lands with multi-resident support)`
-          : `!! agent "${r.result.name}": no contact for that chat — send a message there first`))
-        .catch((e) => _helpReply(surface, chatId, `!! agent write failed: ${e?.message ?? e}`));
-      return true;
-    }
-    wm.state = r.state; wm.ts = Date.now();
-    _helpReply(surface, chatId, r.prompt);
-    return true;
   };
 
   // Mode note: a ONE-LINE statement of the chat's current reply mode, told to
@@ -3391,7 +3331,6 @@ function startSpineRuntime() {
           // Interactive help menu — only the account owner (authorized) drives
           // it, in whichever chat /help was invoked. Consumes the owner's
           // numbers/text before the auto-mode broadcast; others pass through.
-          if (_maybeHandleWizard(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) return;
           if (_maybeHandleHelp(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
             return;
           }
@@ -4932,13 +4871,6 @@ function startSpineRuntime() {
         // the file; this re-reads through the runtime, which fires onStateChange →
         // the reader (_convChatMode) sees the change immediately, not next message.
         refreshConvState:   async () => { await _loadConvState(); },
-        // Arm the add-agent wizard for a chat — the operator's next numbered/typed
-        // answers (in chatKey) route through it until a resident spec is written.
-        armAgentWizard:     ({ chatKey, surface = 'whatsapp', chatId, slug, jid, options }) => {
-          const state = initWizard({ slug, jid, options });
-          _wizardMode.current.set(chatKey, { state, surface, chatId, ts: Date.now() });
-          _helpReply(surface, chatId, `🧩 add agent to «${slug}»\n${wizardPrompt(state)}`);
-        },
         APP_DIR,
         EGPT_HOME,
         // announceBounce (slash/lifecycle.mjs) falls back to the operator's
@@ -6446,10 +6378,6 @@ function startSpineRuntime() {
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
     // re-dispatch) goes through the interactive help menu first.
-    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
-        && _maybeHandleWizard(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
-      return;
-    }
     if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
         && _maybeHandleHelp(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
       return;
