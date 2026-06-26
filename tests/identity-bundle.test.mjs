@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   readIdentityBundle,
   buildIdentityAnnouncement,
-  buildPersonaAnnouncement,
 } from '../conversations-state.mjs';
 
 describe('readIdentityBundle', () => {
@@ -28,11 +27,5 @@ describe('announcement builders', () => {
     expect(out).toMatch(/Installing persona: default/);
     expect(out).toMatch(/MANIFEST/);
     expect(out).toMatch(/RULES/);
-  });
-  it('buildPersonaAnnouncement is personality-only (no manifest frame)', () => {
-    const out = buildPersonaAnnouncement('banter', 'be playful');
-    expect(out).toMatch(/Persona updated: banter/);
-    expect(out).toMatch(/be playful/);
-    expect(out).not.toMatch(/Installing persona/);
   });
 });

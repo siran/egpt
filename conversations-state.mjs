@@ -1097,27 +1097,6 @@ export async function readIdentityFeed(name) {
   return files.map(f => f.content.trim()).filter(Boolean).join('\n\n');
 }
 
-// Inject ONE file from identity <name> into the slug-dir (de-prefixed). The
-// token may be the source name (40-rules.md), the de-prefixed name (rules.md),
-// or a bare stem (rules). Returns { name, content } or null. Lets the operator
-// pull a single file from any identity without disturbing the rest.
-export async function injectIdentityFile(surface, slug, name, fileToken) {
-  const dir = resolveIdentityDir(name);
-  if (!dir) return null;
-  const files = await _readIdentityFiles(dir);
-  const tok = String(fileToken ?? '').toLowerCase();
-  const stem = tok.replace(/\.md$/, '').replace(/^\d+[-_]/, '');
-  const hit = files.find(f =>
-    f.name.toLowerCase() === tok ||
-    f.src.toLowerCase() === tok ||
-    f.name.replace(/\.md$/, '').toLowerCase() === stem);
-  if (!hit) return null;
-  const slugd = slugDir(surface, slug);
-  await mkdir(slugd, { recursive: true });
-  await writeFile(join(slugd, hit.name), hit.content, 'utf8');
-  return { name: hit.name, content: hit.content };
-}
-
 // Full-install announcement: the whole identity.d bundle (manifest +
 // personality + rules + pointers + any extras), re-grounding the model.
 export function buildIdentityAnnouncement(personalityName, feed) {
@@ -1126,15 +1105,6 @@ export function buildIdentityAnnouncement(personalityName, feed) {
     `Installing persona: ${personalityName}`,
     '',
     String(feed ?? '').trim(),
-  ].join('\n');
-}
-
-// Personality-only announcement (for /e persona — no manifest re-send).
-export function buildPersonaAnnouncement(personalityName, personality) {
-  return [
-    `Persona updated: ${personalityName}`,
-    '',
-    String(personality ?? '').trim(),
   ].join('\n');
 }
 

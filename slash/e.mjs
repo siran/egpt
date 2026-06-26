@@ -32,10 +32,8 @@ import {
   normalizeResidents,
   patchContact,
   installIdentity,
-  injectIdentityFile,
   resolveIdentityDir,
   buildIdentityAnnouncement,
-  buildPersonaAnnouncement,
   slugDir,
   slugTranscriptPath,
 } from '../conversations-state.mjs';
@@ -48,12 +46,11 @@ export const meta = {
   cmd: '/e',
   section: 'PERSONA',
   surface: 'both',
-  usage: '/e new [<identity>] | /e identity [<identity>] | /e persona [<identity>] [<file>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]',
+  usage: '/e new [<identity>] | /e identity [<identity>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>|all] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]',
   desc: 'operator controls for conversation-e in the current chat: reboot/persona, reply mode, residents, local @l, transcription, tool perms',
   subs: [
     { name: 'new',        usage: '/e new [<identity>]',                                      desc: 'reset thread + install identity folder (all its files from identities/<name>/, fed in NN order)', example: '/e new default' },
     { name: 'identity',   usage: '/e identity [<identity>]',                                 desc: 'reinstall/refresh the identity folder, KEEP the thread — after editing identities/<name>/', example: '/e identity' },
-    { name: 'persona',    usage: '/e persona [<identity>] [<file>]',                         desc: 'no file: switch identity (keep thread). with file: inject ONE file from any identity (e.g. /e persona banter personality) — pull a file without the rest', example: '/e persona banter' },
     { name: 'auto',       usage: '/e auto <on|accum|mute|mention-direct|mention|off> [<name|jid>|all] | pause|resume|status [<search>] | show-think on|off [<chat>]', desc: 'per-chat reply mode (default mention; reply GATE, not reception); pause/resume dispatch globally; status [<search>] lists chats; show-think on/off toggles two-message Telegram mode (thinking stream frozen 💭, final sent as new reply)', example: '/e auto show-think on' },
     { name: 'residents',  usage: '/e residents <e,l|e|l|off> [<name|jid>]',                   desc: 'which beings reply in this chat — conversation-e and/or local @l', example: '/e residents e,l' },
     { name: 'transcribe', usage: '/e transcribe on|off|status|global [--streaming|--batch] [<jid>]', desc: 'voice-note transcription, per chat or global', example: '/e transcribe on' },
@@ -211,40 +208,6 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
     return await _runReboot({ mode: 'identity', personaName, targetJid, sysOut, ctx, originJid: targetJid });
-  }
-
-  // ── /e persona [<persona>] [<file>] ─────────────────────────────
-  // No file → switch to identity <persona> (full install, keep thread) = alias
-  // of /e identity. With a file → inject ONLY that file from identity <persona>
-  // (e.g. `/e persona banter 20-personality.md`, or `/e persona banter
-  // personality`) — pull one file from any identity without disturbing the rest.
-  if (sub === 'persona') {
-    const personaName = tokens[1] || 'default';
-    const fileTok = tokens[2] || null;
-    const targetJid = dispatchMeta?.waChatId;
-    if (!targetJid) {
-      sysOut('!! /e persona: no chat context. Use `/egpt persona [<persona>] <name-search>` from the shell instead.');
-      return true;
-    }
-    if (!fileTok) {
-      return await _runReboot({ mode: 'persona', personaName, targetJid, sysOut, ctx, originJid: targetJid });
-    }
-    // Single-file inject from identity <persona>.
-    const cs = await readConvState(CONV_YAML_PATH);
-    const slug = findContactByJid(cs, 'whatsapp', targetJid);
-    if (!slug) { sysOut(`!! /e persona: no contact for ${targetJid} — send a message there first`); return true; }
-    if (!resolveIdentityDir(personaName)) { sysOut(`!! /e persona: no identity "${personaName}"`); return true; }
-    const injected = await injectIdentityFile('whatsapp', slug, personaName, fileTok);
-    if (!injected) { sysOut(`!! /e persona: no file "${fileTok}" in identity "${personaName}"`); return true; }
-    try {
-      const pushedName = cs.contacts?.whatsapp?.[targetJid]?.pushedName ?? slug;
-      const reply = await ctx.computeBrainTurn('e', buildPersonaAnnouncement(`${personaName}/${injected.name}`, injected.content), {
-        threadId: targetJid, surface: 'wa', slug, name: pushedName, bypassAutoWrap: true,
-      });
-      const r = String(reply ?? '').trim();
-      sysOut(`✓ /e persona ${slug}: injected ${personaName}/${injected.name}${r && r !== '...' && r !== '…' ? ` — @e: "${r.slice(0, 80)}"` : ''}`);
-    } catch (e) { sysOut(`!! /e persona inject: ${e?.message ?? e}`); }
-    return true;
   }
 
   // ── /e transcribe on|off|status [--streaming] [<jid>] ─────────────
@@ -423,7 +386,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   if (sub !== 'auto') {
-    sysOut('usage: /e new [<persona>] | /e persona [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]');
+    sysOut('usage: /e new [<persona>] | /e identity [<persona>] | /e auto on|accum|mute|mention-direct|mention|off [<name|jid>] | /e auto pause|resume|status | /e residents <e,l|e|l|off> [<name|jid>] | /e transcribe on|off|status|global [--streaming]');
     return true;
   }
 
