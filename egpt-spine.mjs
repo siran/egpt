@@ -3582,17 +3582,32 @@ function startSpineRuntime() {
               // path keeps the resident list un-mode-filtered (per-message reply
               // gating stays downstream via baseMeta.replyAllowed, unchanged).
               // See src/conversation-members.mjs.
-              const _explicitMembers = await _explicitMembersForChat(from.network ?? 'whatsapp', from.chatId);
-              let residents = _explicitMembers.length
-                ? residentsFromMembers(_explicitMembers)
-                : resolveRoster({
-                    chatId:           from.chatId,
-                    // residents_per_chat removed (migrated to per-conversation members[]);
-                    // with no explicit members[], seed from global residents > persona.
-                    globalResidents:  EGPT_CONFIG.whatsapp?.residents,
-                    personaBeing:     _personaBeing,
-                    siblings:         EGPT_CONFIG.siblings,
-                  });
+              // PER-CONVERSATION RESIDENTS (#2 dispatch fan-out, Phase 1). The
+              // conversations.yaml entry's nested being blocks — written by
+              // `/e <slug> agent <name> …` — name who replies HERE. residentsOf
+              // returns ['e'] for every flat (un-configured) entry AND for an entry
+              // that only configures E, so this is a STRUCTURAL guard: a chat grows
+              // extra residents ONLY once the operator adds a non-E being via the
+              // console. Until then _convResidents is length-1 and we fall through to
+              // the unchanged members[]/roster path — existing single-E chats are
+              // byte-identical. 'e' maps to the configured persona being.
+              const _convEntry = conversationsState.getContact(await _loadConvState(), from.network ?? 'whatsapp', from.chatId)?.entry ?? null;
+              const _convResidents = (_convEntry ? conversationsState.residentsOf(_convEntry) : ['e'])
+                .map((b) => (b === 'e' ? _personaBeing : b));
+              const _explicitMembers = _convResidents.length > 1
+                ? [] : await _explicitMembersForChat(from.network ?? 'whatsapp', from.chatId);
+              let residents = _convResidents.length > 1
+                ? _convResidents
+                : _explicitMembers.length
+                  ? residentsFromMembers(_explicitMembers)
+                  : resolveRoster({
+                      chatId:           from.chatId,
+                      // residents_per_chat removed (migrated to per-conversation members[]);
+                      // with no explicit members[], seed from global residents > persona.
+                      globalResidents:  EGPT_CONFIG.whatsapp?.residents,
+                      personaBeing:     _personaBeing,
+                      siblings:         EGPT_CONFIG.siblings,
+                    });
               if (!residents.length) residents = [_personaBeing];
               // UNIFIED @<mention> ROUTING (Wren, 2026-06-10): a message that
               // explicitly @<mention>s a registered sibling NOT already resident
