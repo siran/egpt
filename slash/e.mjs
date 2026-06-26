@@ -202,15 +202,27 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
     if (actionIdx >= 0 && tokens[actionIdx] === 'agent') {
-      // STATELESS add-agent: a single slash command. An in-chat numbered menu echo-loops
-      // in a self-DM (egpt's own prompt re-enters as operator input, and WhatsApp even
-      // reformats it so content-matching can't catch the echo — the 2026-06-26 flood). No
-      // args → show the fill-in template + numbered options; 5 args (name brain# model#
-      // effort# identity#) → write the resident. name "e" configures E (no blank needed).
+      // add-agent — two ways in. `/e <chat> agent` (no args) ARMS the guided wizard:
+      // step-by-step name → brain → model → effort → identity, answered in THIS chat.
+      // Safe in a self-DM since 2026-06-26 (the bridge drops our own prompt echoes,
+      // incl. WhatsApp's "N)" → "- " rewrite that defeated the old content match and
+      // caused the flood). `/e <chat> agent <name> <brain#> <model#> <effort#>
+      // <identity#>` is the one-shot for power users — name "e" configures E.
       const A = { brains: ['claude-code', 'codex'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'], identities: ['default', 'banter'] };
       const args = tokens.slice(actionIdx + 1);
       const nameForCmd = nameTerm || r.name || r.jid;
       if (args.length < 5) {
+        const onWa = !!dispatchMeta?.waChatId;
+        if (ctx.armAgentWizard) {
+          ctx.armAgentWizard({
+            chatKey: dispatchMeta?.waChatId ?? 'shell',
+            surface: onWa ? 'whatsapp' : 'shell',
+            chatId:  dispatchMeta?.waChatId,
+            slug:    r.name ?? nameForCmd, jid: r.jid, options: A,
+          });
+          return true;
+        }
+        // Host without the wizard hook — fall back to the one-shot template.
         const fmt = (lbl, arr) => `  ${lbl}: ${arr.map((o, i) => `${i + 1})${o}`).join('  ')}`;
         sysOut(
           `add agent to «${r.name ?? nameForCmd}» — reply with ONE command:\n`
