@@ -202,11 +202,41 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       return true;
     }
     if (actionIdx >= 0 && tokens[actionIdx] === 'agent') {
-      ctx.armAgentWizard?.({
-        chatKey: dispatchMeta?.waChatId ?? 'shell', surface: 'whatsapp', chatId: dispatchMeta?.waChatId,
-        slug: r.name ?? nameTerm ?? r.jid, jid: r.jid,
-        options: { brains: ['claude-code', 'codex'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'], identities: ['default', 'banter'] },
-      });
+      // STATELESS add-agent: a single slash command. An in-chat numbered menu echo-loops
+      // in a self-DM (egpt's own prompt re-enters as operator input, and WhatsApp even
+      // reformats it so content-matching can't catch the echo — the 2026-06-26 flood). No
+      // args → show the fill-in template + numbered options; 5 args (name brain# model#
+      // effort# identity#) → write the resident. name "e" configures E (no blank needed).
+      const A = { brains: ['claude-code', 'codex'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'], identities: ['default', 'banter'] };
+      const args = tokens.slice(actionIdx + 1);
+      const nameForCmd = nameTerm || r.name || r.jid;
+      if (args.length < 5) {
+        const fmt = (lbl, arr) => `  ${lbl}: ${arr.map((o, i) => `${i + 1})${o}`).join('  ')}`;
+        sysOut(
+          `add agent to «${r.name ?? nameForCmd}» — reply with ONE command:\n`
+          + `  /e ${nameForCmd} agent <name> <brain#> <model#> <effort#> <identity#>\n`
+          + `  name = any @handle, or "e" to configure E\n`
+          + `${fmt('brain', A.brains)}\n${fmt('model', A.models)}\n${fmt('effort', A.efforts)}\n${fmt('identity', A.identities)}\n`
+          + `  e.g.  /e ${nameForCmd} agent wren 2 3 3 2`,
+        );
+        return true;
+      }
+      const pick = (arr, tok) => (/^\d+$/.test(tok) ? arr[parseInt(tok, 10) - 1] : (arr.includes(tok) ? tok : null));
+      const name = args[0];
+      const brain = pick(A.brains, args[1]), model = pick(A.models, args[2]), effort = pick(A.efforts, args[3]), personality = pick(A.identities, args[4]);
+      if (!brain || !model || !effort || !personality) {
+        sysOut('!! /e agent: invalid pick — use the option numbers (run `/e <chat> agent` with no args to see them).');
+        return true;
+      }
+      const cs = await readConvState(CONV_YAML_PATH);
+      const ent = cs.contacts?.whatsapp?.[r.jid];
+      if (!ent) { sysOut(`!! /e agent: no contact for «${r.name ?? r.jid}» — send a message there first.`); return true; }
+      const prev = (ent[name] && typeof ent[name] === 'object') ? ent[name] : {};
+      ent[name] = { ...prev, mode: prev.mode ?? 'mention', readonly: { brain, model, effort, personality } };
+      if (name !== 'e' && ent[name].threadId == null) ent[name].threadId = null;
+      await writeConvState(CONV_YAML_PATH, cs);
+      await ctx.refreshConvState?.();
+      sysOut(`✅ ${name} → «${r.name ?? r.jid}»: ${brain}/${model}/${effort} · identity:${personality}`);
       return true;
     }
     if (actionIdx >= 0) {
