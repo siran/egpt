@@ -15,7 +15,12 @@
 //   brain/model/effort/personality → e.readonly:
 //       brain       = default_brain.type (canonical)
 //       model       = the model recorded in the thread's .jsonl (GROUND TRUTH), else default_brain.model
-//       effort      = default_brain.effort ?? null
+//       effort      = default_brain.effort ?? per-brain default (claude-code:medium, codex:low).
+//                     NOTE: effort is a launch-time knob (--effort / reasoningEffort), NOT recorded
+//                     in the session .jsonl — so it can't be "recovered" from a thread the way model
+//                     can. egpt only defaults codex (low); claude-code passes none → engine default.
+//                     We record the per-brain default here so the registry shows a real value, not
+//                     null. Change a chat's effort via the console; it doesn't alter dispatch yet.
 //       personality = entry.personality ?? 'default'
 //                     [PINS the chat to that brain/model — only written with --readonly]
 //
@@ -72,11 +77,16 @@ const discoverThread = (surface, slug) => {
   } catch { return null; }
 };
 
+// Per-brain DEFAULT effort. egpt only defines codex (low); claude-code passes no
+// --effort so it runs at the engine default — we record 'medium' as the established
+// claude-code default so the registry shows a real value instead of null.
+const BRAIN_DEFAULT_EFFORT = { 'claude-code': 'medium', codex: 'low' };
+
 const cfg = await readConfig();
 const db = cfg.default_brain ?? {};
 const dbBrain = canonicalBrain(db.type);
 const dbModel = db.model ?? null;
-const dbEffort = db.effort ?? null;
+const dbEffort = db.effort ?? BRAIN_DEFAULT_EFFORT[dbBrain] ?? 'medium';
 
 const state = await readState(CONV_YAML_PATH);
 let entriesTouched = 0, fieldChanges = 0, drift = 0;
@@ -119,6 +129,12 @@ for (const surface of Object.keys(state.contacts ?? {})) {
     const readonly = { brain: dbBrain, model, effort: dbEffort, personality: entry.personality ?? 'default' };
     const modelSrc = jsonlPath && modelFromJsonl(jsonlPath) ? 'jsonl' : 'default_brain';
     if (!hasReadonly && READONLY) patch.e = { ...(eBlock ?? {}), mode: eBlock?.mode ?? entry.mode ?? 'mention', readonly };
+    // Fill a null/missing effort on an ALREADY-written readonly (effort isn't thread-recoverable;
+    // record the per-brain default so the registry shows a real value).
+    else if (hasReadonly && READONLY && (eBlock.readonly.effort == null)) {
+      const brainHere = canonicalBrain(eBlock.readonly.brain ?? dbBrain);
+      patch.e = { ...eBlock, readonly: { ...eBlock.readonly, effort: BRAIN_DEFAULT_EFFORT[brainHere] ?? dbEffort } };
+    }
 
     const willChange = Object.keys(patch).length > 0;
     if (willChange || !hasReadonly || notes.length) {
@@ -128,6 +144,7 @@ for (const surface of Object.keys(state.contacts ?? {})) {
       if (patch.threadId)          console.log(`    threadId          → ${patch.threadId}`);
       if (patch.threadCwd)         console.log(`    threadCwd         → ${patch.threadCwd}`);
       if (!hasReadonly)            console.log(`    e.readonly        ${READONLY ? '→' : '(determined)'} ${JSON.stringify(readonly)}  [model from ${modelSrc}]`);
+      else if (patch.e)            console.log(`    e.readonly.effort → ${patch.e.readonly.effort}  (filled null)`);
       else                         console.log(`    e.readonly        (already set) ${JSON.stringify(eBlock.readonly)}`);
       for (const n of notes) console.log(`    ! ${n}`);
       fieldChanges += Object.keys(patch).length;
