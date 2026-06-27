@@ -79,8 +79,8 @@ describe('transcription pipeline (declarative fallback chain)', () => {
     advance(2000); down = false;
     await pipe.transcribe('e');                                // remote — recover transition
     expect(transitions).toEqual([
-      { from: 'remote', to: 'cli', recovered: false },
-      { from: 'cli', to: 'remote', recovered: true },
+      { from: 'remote', to: 'cli', recovered: false, reason: 'down' },   // surfaces WHY remote fell back
+      { from: 'cli', to: 'remote', recovered: true, reason: null },      // a recovery carries no failure reason
     ]);
   });
 
@@ -123,6 +123,22 @@ describe('transcription pipeline (declarative fallback chain)', () => {
     const out = await Promise.all([pipe.transcribe('a'), pipe.transcribe('b'), pipe.transcribe('c')]);
     expect(out).toEqual(['LOCAL', 'LOCAL', 'LOCAL']);
     expect(maxActive).toBe(1);                                   // never two decodes at once
+  });
+
+  it('surfaces the local failure reason (e.g. a timeout) on the fall-back to cli', async () => {
+    let failNow = false;
+    const { pipe, transitions } = mk({
+      profile: LOCAL_CLI,
+      makeWhisperServerTranscriber: () => async (audioPath, cfg, log) => {
+        if (failNow) { log('whisper-server: transcribe failed — The operation was aborted due to timeout'); return null; }
+        return 'LOCAL';
+      },
+    });
+    await pipe.transcribe('warm'); await tick();          // local warming → lands on cli
+    expect(await pipe.transcribe('a')).toBe('LOCAL');     // local now resident + winning
+    failNow = true;
+    expect(await pipe.transcribe('b')).toBe('CLI');       // local times out → cli
+    expect(transitions.pop()).toEqual({ from: 'local', to: 'cli', recovered: false, reason: 'The operation was aborted due to timeout' });
   });
 
   it('returns null when every engine declines', async () => {

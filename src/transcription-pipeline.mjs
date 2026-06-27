@@ -32,6 +32,7 @@ export function buildTranscriptionPipeline({
 
   const breaker = new Map();       // remote name -> downUntil (ms)
   const local = new Map();         // local name -> { server, transcribe, starting, error }
+  const failReason = new Map();    // engine name -> last failure reason (surfaced to Self on fallback)
   let lastWinner = null;
 
   async function tryRemote(eng, audioPath, log, meta) {
@@ -42,16 +43,18 @@ export function buildTranscriptionPipeline({
     // to transcribe a long note, so timeout_ms must be generous, not a fail-fast.
     if (reachable && !(await reachable(eng.endpoint, eng.connect_timeout_ms ?? 3000))) {
       breaker.set(eng.name, now() + (eng.cooldown_ms ?? 30_000));
+      failReason.set(eng.name, 'unreachable');
       onLog(`pipeline: remote "${eng.name}" unreachable — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
       return null;
     }
     try {
       const t = await transcribeViaEndpoint(
         audioPath, { endpoint: eng.endpoint, keyB64: eng.token, timeoutMs: eng.timeout_ms ?? 120_000 }, log, meta);
-      breaker.delete(eng.name);                                  // healthy again
+      breaker.delete(eng.name); failReason.delete(eng.name);     // healthy again
       return t || null;
     } catch (e) {
       breaker.set(eng.name, now() + (eng.cooldown_ms ?? 30_000));
+      failReason.set(eng.name, e?.message ?? String(e));
       onLog(`pipeline: remote "${eng.name}" failed (${e?.message ?? e}) — cooldown ${eng.cooldown_ms ?? 30_000}ms`);
       return null;
     }
@@ -85,8 +88,17 @@ export function buildTranscriptionPipeline({
     h.tail = new Promise((r) => { release = r; });
     try {
       await prev.catch(() => {});                                // wait our turn (ignore prior outcome)
-      return (await h.transcribe(audioPath, cfg, log, meta)) || null;
+      // The transcriber swallows its error (null) but LOGS "transcribe failed — <why>"
+      // (we don't change its contract — the worker relies on null-on-error). Tap that
+      // line so the actual reason (e.g. a timeout) reaches Self, not just egpt.log.
+      let why = null;
+      const tap = (m) => { const mm = /transcribe failed — (.+)$/.exec(String(m)); if (mm) why = mm[1]; log(m); };
+      const t = (await h.transcribe(audioPath, cfg, tap, meta)) || null;
+      if (t) failReason.delete(eng.name);
+      else failReason.set(eng.name, why ?? 'no transcript');
+      return t;
     } catch (e) {
+      failReason.set(eng.name, e?.message ?? String(e));
       onLog(`pipeline: local "${eng.name}" transcribe failed: ${e?.message ?? e}`);
       return null;
     } finally {
@@ -108,7 +120,11 @@ export function buildTranscriptionPipeline({
       else { onLog(`pipeline: "${eng.name}" has unknown type "${eng.type}" — skipping`); continue; }
       if (t) {
         if (lastWinner && lastWinner !== eng.name) {
-          onTransition({ from: lastWinner, to: eng.name, recovered: idxOf(eng.name) < idxOf(lastWinner) });
+          const recovered = idxOf(eng.name) < idxOf(lastWinner);
+          // On a fall-BACK, surface WHY the prior engine failed this note (the
+          // timeout/error), not just "engine unavailable" — operator wants the
+          // reason on Self, not buried in egpt.log.
+          onTransition({ from: lastWinner, to: eng.name, recovered, reason: recovered ? null : (failReason.get(lastWinner) ?? null) });
         }
         lastWinner = eng.name;
         return t;

@@ -496,13 +496,13 @@ function _resolveTxProfile() {
   }
   return _synthLegacyTxProfile();
 }
-const _postTxTransition = ({ from, to, recovered }) => {
-  _txlog(recovered ? `recovered "${from}" → "${to}"` : `fell back "${from}" → "${to}"`);
+const _postTxTransition = ({ from, to, recovered, reason }) => {
+  _txlog(recovered ? `recovered "${from}" → "${to}"` : `fell back "${from}" → "${to}"${reason ? ` (${reason})` : ''}`);
   const selfDm = EGPT_CONFIG.whatsapp?.chat_id;
   if (!selfDm) return;
   const body = recovered
     ? `✅ transcription back on "${to}" (was on "${from}")`
-    : `⚠️ transcription fell back: "${from}" → "${to}" — engine unavailable`;
+    : `⚠️ transcription fell back: "${from}" → "${to}" — ${reason || 'engine unavailable'}`;
   const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
   writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'),
     JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid: selfDm, body })).catch(() => {});
