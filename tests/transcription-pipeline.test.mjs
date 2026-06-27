@@ -92,6 +92,39 @@ describe('transcription pipeline (declarative fallback chain)', () => {
     await pipe.transcribe('b'); expect(posts).toBe(0);// still in cooldown
   });
 
+  const LOCAL_CLI = {
+    fallback_order: ['local', 'cli'],
+    local: { type: 'whisper-server-local', command: 'ws', model: 'm', host: '127.0.0.1', port: 8089, timeout_ms: 300000 },
+    cli: { type: 'whisper-cli', command: 'wc', model_path: 'm' },
+  };
+
+  it('threads the local engine timeout_ms into the server transcriber (was dropped → stuck at 120s)', async () => {
+    let seenTimeout;
+    const { pipe } = mk({
+      profile: LOCAL_CLI,
+      makeWhisperServerTranscriber: ({ timeoutMs }) => { seenTimeout = timeoutMs; return async () => 'LOCAL'; },
+    });
+    await pipe.transcribe('warm');   // kicks the lazy spawn, lands on cli
+    await tick();                    // spawn resolves → transcriber built with the timeout
+    expect(seenTimeout).toBe(300000);
+  });
+
+  it('serializes concurrent notes to the single-threaded local server (no overlapping decodes)', async () => {
+    let active = 0, maxActive = 0;
+    const { pipe } = mk({
+      profile: LOCAL_CLI,
+      makeWhisperServerTranscriber: () => async () => {
+        active++; maxActive = Math.max(maxActive, active);
+        await new Promise((r) => setTimeout(r, 5));
+        active--; return 'LOCAL';
+      },
+    });
+    await pipe.transcribe('warm'); await tick();                 // local resident
+    const out = await Promise.all([pipe.transcribe('a'), pipe.transcribe('b'), pipe.transcribe('c')]);
+    expect(out).toEqual(['LOCAL', 'LOCAL', 'LOCAL']);
+    expect(maxActive).toBe(1);                                   // never two decodes at once
+  });
+
   it('returns null when every engine declines', async () => {
     const { pipe } = mk({
       profile: { fallback_order: ['remote'], remote: { type: 'whisper-server-remote', endpoint: 'x', token: 'k' } },
