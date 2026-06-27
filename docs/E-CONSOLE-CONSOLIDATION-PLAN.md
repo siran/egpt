@@ -43,6 +43,7 @@ Only TWO entry points remain. Everything else is a menu choice.
    3) reply mode    — on / accum / mute / mention / off
    4) residents     — which beings reply here
    5) transcribe    — on / off / streaming
+   6) config        — this conversation's full config + heartbeat + stats (read-only)
    (number · b back · q quit)
   ```
 
@@ -90,6 +91,23 @@ always navigate. Keep it solid and simple.
 ### 5) transcribe (replaces `/e transcribe`)
 - on / off / streaming, per chat (global toggle under the `✦ @egpt` console).
 
+### 6) config (read-only) — view this conversation's full configuration + stats
+A single read-only view of everything known about the conversation:
+- **Registry block** (`conversations.yaml`, keyed by Beeper group id): slug · jids/aliases
+  · `conversation_path` · `threadId` / `threadCreatedAt` / `threadCwd` · `identityInjectedAt`
+  · `firstSeenAt` · `pushedName` · `mode` · `personality` · `transcribe` · `e.readonly`
+  {brain,model,effort,personality} · `residentsOf()`.
+- **Heartbeat**: `heartbeatEnabled` · `heartbeatIntervalMin` · `heartbeatLastFiredAt`.
+- **Stats** (computed, see Stats module): transcript size + line/message count · thread age ·
+  last-activity time · media count · archived-transcripts count · past-conversations count.
+
+### Stats module (`src/conversation-stats.mjs`, NEW)
+Pure functions that compute per-conversation metrics from the slug folder + entry, so the
+config view (and a future `✦ @egpt` global dashboard) render from ONE source: transcript
+bytes/lines/messages, thread age, last-activity timestamp, media file count, archived
+transcript count, `past-conversations.yaml` entry count. No I/O in the pure layer (paths
++ stats passed in); a thin reader gathers the fs facts. Testable in isolation.
+
 ## Store changes (prerequisite for #2)
 
 Per operator (2026-06-27): the conversation path must be **stored, not derived**, and
@@ -134,11 +152,14 @@ every started conversation has a conversation-e thread, so `threadCwd` must not 
    old block to `past-conversations.yaml`; make the wizard the #2 action.
 5. **Personality action** — deliver the personality text via the bridge as a real
    message (replace the marker+hidden-feed split with one delivered message).
-6. **Fold `/egpt` globals** — `✦ @egpt` console: brain / sessions / rewind / status +
+6. **Stats module + config action** — `src/conversation-stats.mjs` (pure, tested) +
+   the #6 `config` action: a read-only view of the registry block + heartbeat + computed
+   stats. The same stats feed the browser's per-row summary and a future global dashboard.
+7. **Fold `/egpt` globals** — `✦ @egpt` console: brain / sessions / rewind / status +
    global pause/resume/transcribe.
-7. **Retire typed verbs** — remove `agent`/`new`/`identity`/`persona`/`auto`/`residents`/
+8. **Retire typed verbs** — remove `agent`/`new`/`identity`/`persona`/`auto`/`residents`/
    `transcribe` as typed verbs; update `meta`/help so `/e` and `/egpt` advertise the menu.
-8. **Boot-verify** on REVE (outbox `/restart`) + a Self-DM walkthrough.
+9. **Boot-verify** on REVE (outbox `/restart`) + a Self-DM walkthrough.
 
 ## Parked / related (don't forget)
 
