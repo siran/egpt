@@ -119,7 +119,13 @@ every started conversation has a conversation-e thread, so `threadCwd` must not 
 ## Migration (multistep)
 
 1. **Store fields** — add `conversation_path` (stored) + populate `threadCwd`;
-   read-fallbacks for old entries. Tests. *(no behavior change yet)*
+   read-fallbacks for old entries. Tests. *(no behavior change yet)* — **DONE** (`3db15bf`).
+   - **1b. Backfill script** — `setup/backfill-conversations.mjs`: deterministic one-shot
+     that fills `conversation_path` + `threadCwd`, **discovers** a missing `threadId`
+     from `~/.claude/projects/`, and DETERMINES `e.readonly {brain,model,effort,personality}`
+     (model read from the thread's `.jsonl` = ground truth, else `default_brain`). Dry-run
+     by default; `--apply` writes the safe fields, `--readonly` also pins brain/model.
+     Run with the daemon stopped (avoids the live-write race). **DONE.**
 2. **Browser** — `/e` / `/egpt` (no args) → numbered list of 10 recent conversations
    + pinned `✦ @egpt`. Number → open console.
 3. **Console menu** — `/e <slug>` → state line + numbered actions; wire actions to the
@@ -133,6 +139,16 @@ every started conversation has a conversation-e thread, so `threadCwd` must not 
 7. **Retire typed verbs** — remove `agent`/`new`/`identity`/`persona`/`auto`/`residents`/
    `transcribe` as typed verbs; update `meta`/help so `/e` and `/egpt` advertise the menu.
 8. **Boot-verify** on REVE (outbox `/restart`) + a Self-DM walkthrough.
+
+## Parked / related (don't forget)
+
+- **Heartbeats boot-scan → `heartbeats.readonly.md`.** On every spine boot, an async
+  process should scan all per-conversation heartbeat configs (`heartbeatEnabled` /
+  `heartbeatIntervalMin` / `heartbeatLastFiredAt` on each entry) and write a consolidated
+  `heartbeats.readonly.md` that is loaded into memory — so heartbeats actually fire. This
+  is the missing wiring that makes heartbeats work (operator 2026-06-27). Separate
+  subsystem from the `/e` console, parked here so it isn't lost; schedule after the
+  console lands (or as its own track).
 
 ## Non-goals / open
 
