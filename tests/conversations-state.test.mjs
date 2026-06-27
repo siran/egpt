@@ -14,6 +14,8 @@ import {
   findContactByJid,
   findContactsByName,
   ensureContact,
+  conversationPathOf,
+  slugDir,
   isPlaceholderSlug,
   patchContact,
   recordThread,
@@ -156,6 +158,44 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
     expect(r.slug).toMatch(/^morgan-\d{10}$/);
     expect(isPlaceholderSlug(r.slug)).toBe(false);
+  });
+});
+
+describe('conversation_path (stored) + threadCwd backfill', () => {
+  it('conversationPathOf returns the posix path relative to ~/.egpt', () => {
+    expect(conversationPathOf(WA, 'diego-2606101647')).toBe('conversations/whatsapp/diego-2606101647');
+    expect(conversationPathOf(TG, 'jay-2605200416')).toBe('conversations/telegram/jay-2605200416');
+  });
+
+  it('stores conversation_path on a fresh contact', () => {
+    const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
+    expect(r.entry.conversation_path).toBe(conversationPathOf(WA, r.slug));
+    expect(r.entry.conversation_path.startsWith('conversations/whatsapp/')).toBe(true);
+  });
+
+  it('backfills conversation_path + a populated threadCwd on a legacy entry that lacks them', () => {
+    // legacy shape: a started thread but threadCwd:null and no conversation_path
+    const s = { contacts: { [WA]: { '111@s.whatsapp.net': {
+      slug: 'Mom-2605200520', personality: 'default', threadId: 'sess-mom', threadCwd: null, pushedName: 'Mom',
+    } } } };
+    const r = ensureContact(s, WA, '111@s.whatsapp.net', { pushedName: 'Mom' });
+    expect(r.changed).toBe(true);
+    expect(r.entry.conversation_path).toBe(conversationPathOf(WA, 'Mom-2605200520'));
+    expect(r.entry.threadCwd).toBe(slugDir(WA, 'Mom-2605200520'));
+  });
+
+  it('is stable — a second pass with everything already set makes no change', () => {
+    const r1 = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan' });
+    const r2 = ensureContact(r1.state, WA, '!room:beeper.local', { pushedName: 'morgan' });
+    expect(r2.changed).toBe(false);
+  });
+
+  it('a rename updates conversation_path to the new slug (and nulls threadCwd)', () => {
+    const r1 = ensureContact(emptyState(), WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
+    const r2 = ensureContact(r1.state, WA, '26087681749235@lid', { pushedName: 'Diego Pérez' });
+    expect(r2.renamedTo).toBeTruthy();
+    expect(r2.entry.conversation_path).toBe(conversationPathOf(WA, r2.slug));
+    expect(r2.entry.threadCwd ?? null).toBe(null);
   });
 });
 
