@@ -67,14 +67,31 @@ export function buildTranscriptionPipeline({
         language: eng.language, extraArgs: eng.extra_args, antiRepetition: eng.anti_repetition !== false, onLog,
       })).then((s) => {
         h.server = s; h.starting = false;
-        h.transcribe = makeWhisperServerTranscriber({ url: s.url, ffmpeg: eng.ffmpeg_command, language: eng.language });
+        // Thread the engine's decode budget through (was dropped → stuck at the 120s
+        // default, so large-v3-on-CPU notes longer than that aborted mid-encode →
+        // "whisper_full_with_state: failed to encode" + a local→cli flap). Set it
+        // generously in config; cli stays the floor for anything still stuck.
+        h.transcribe = makeWhisperServerTranscriber({ url: s.url, ffmpeg: eng.ffmpeg_command, language: eng.language, timeoutMs: eng.timeout_ms });
         onLog(`pipeline: local "${eng.name}" resident at ${s.url}`);
       }).catch((e) => { h.starting = false; h.error = e; onLog(`pipeline: local "${eng.name}" spawn failed: ${e?.message ?? e}`); });
       return null;                                               // warming → fall through (cli covers the gap)
     }
     if (!h.transcribe) return null;                              // still warming / failed → fall through
-    try { return (await h.transcribe(audioPath, cfg, log, meta)) || null; }
-    catch (e) { onLog(`pipeline: local "${eng.name}" transcribe failed: ${e?.message ?? e}`); return null; }
+    // SERIALIZE per server: whisper-server decodes ONE note at a time. Two concurrent
+    // POSTs corrupt its shared state ("failed to encode") and the second waits past its
+    // timeout. Chain each note behind the previous so a burst queues instead of colliding.
+    const prev = h.tail ?? Promise.resolve();
+    let release;
+    h.tail = new Promise((r) => { release = r; });
+    try {
+      await prev.catch(() => {});                                // wait our turn (ignore prior outcome)
+      return (await h.transcribe(audioPath, cfg, log, meta)) || null;
+    } catch (e) {
+      onLog(`pipeline: local "${eng.name}" transcribe failed: ${e?.message ?? e}`);
+      return null;
+    } finally {
+      release();                                                 // let the next queued note run
+    }
   }
 
   async function tryCli(eng, audioPath, log, meta) {
