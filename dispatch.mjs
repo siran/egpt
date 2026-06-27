@@ -1165,6 +1165,7 @@ export function createDispatchRuntime({
                 threadId: newThreadId,
                 threadCreatedAt: now,
                 identityInjectedAt: now,
+                threadCwd: sessionOpts.cwd,   // the cwd this thread actually ran in (was left null → derived; now stored)
               });
           return { state: next, write: true };
         });

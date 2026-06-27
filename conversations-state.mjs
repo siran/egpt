@@ -17,7 +17,7 @@
 
 import { readFile, writeFile, mkdir, stat, rename, appendFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -69,6 +69,16 @@ export function slugDir(surface, slug) {
 }
 export function slugTranscriptPath(surface, slug) {
   return join(slugDir(surface, slug), 'transcript.md');
+}
+
+// Per-entry STORED conversation path — relative to ~/.egpt, posix-style, so the
+// registry (keyed by Beeper group id) is self-describing + portable instead of
+// forcing every reader to re-derive the folder from surface+slug (operator
+// 2026-06-27: "it should be STORED, of course"). Same layout slugDir produces, so
+// it stays a stable pointer to the conversation's transcript.md / config / media.
+const _EGPT_HOME = join(homedir(), '.egpt');
+export function conversationPathOf(surface, slug) {
+  return relative(_EGPT_HOME, slugDir(surface, slug)).split(/[\\/]/).join('/');
 }
 
 // Move a contact's on-disk slug folder old→new (transcript.md, media/, identity
@@ -437,7 +447,7 @@ export async function migrateSlugsToCurrentName() {
       // Collision guard within this (in-progress) bucket — never two on one slug.
       if (_findByslug({ contacts: { [surface]: bucket } }, surface, candidate)) continue;
       await renameSlugDir(surface, entry.slug, candidate, 'name changed (boot repair)');
-      bucket[jid] = { ...entry, slug: candidate, threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
+      bucket[jid] = { ...entry, slug: candidate, conversation_path: conversationPathOf(surface, candidate), threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
       bucketTouched = true; renamed++;
     }
     if (bucketTouched) { nextContacts[surface] = bucket; touched = true; }
@@ -630,7 +640,7 @@ export function getContact(state, surface, jid) {
 // read still lands on the flat fallback. Behavior-neutral by construction.
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
-  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe',
+  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe', 'conversation_path',
 ]);
 
 // Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;
@@ -805,6 +815,14 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
+    // Backfill the STORED conversation_path + a populated threadCwd for an already-
+    // started thread (operator 2026-06-27: the path must be stored, and every started
+    // conversation has a conversation-e cwd — null is nonsensical). One-time per entry:
+    // once written they equal the desired value, so this stops churning. A rename below
+    // overrides both for the new slug.
+    const _wantPath = conversationPathOf(surface, cur.slug);
+    if (cur.conversation_path !== _wantPath) { patch = { ...patch, conversation_path: _wantPath }; changed = true; }
+    if (cur.threadId && !cur.threadCwd) { patch = { ...patch, threadCwd: slugDir(surface, cur.slug) }; changed = true; }
     // Track the CURRENT name (operator 2026-06-14: "the slug must be updated with
     // the current contact/group name, not frozen"). Whenever the chat's title
     // (pushedName) changes — including a 'contact-<ts>' placeholder finally
@@ -827,7 +845,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       if (candidate !== cur.slug && !_findByslug(state, surface, candidate)) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
-        patch = { ...patch, slug: candidate, threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
+        patch = { ...patch, slug: candidate, conversation_path: conversationPathOf(surface, candidate), threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
         changed = true;
       }
     }
@@ -875,6 +893,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   //    never overwritten on /e new.
   const entry = {
     slug: candidateSlug,
+    conversation_path: conversationPathOf(surface, candidateSlug),
     personality: ctx.personality ?? 'default',
     threadId: null,
     threadCreatedAt: null,
