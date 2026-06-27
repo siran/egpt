@@ -640,7 +640,7 @@ export function getContact(state, surface, jid) {
 // read still lands on the flat fallback. Behavior-neutral by construction.
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
-  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe', 'conversation_path',
+  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe',
 ]);
 
 // Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;
