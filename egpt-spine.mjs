@@ -20,6 +20,7 @@ import { stripFrontMatter } from './src/transcript-meta.mjs';
 import { configWarnings } from './src/config-validate.mjs';
 import { transcriptAppend, replyLine } from './src/transcript-log.mjs';
 import { DEFAULT_AUTO_MODE, replyAllowed as autoReplyAllowed, receives as autoReceives, isAutoMode as autoIsMode, mayEmit as autoMayEmit, mayEmitChat as autoMayEmitChat, mentionStatus as autoMentionStatus, resolveBeingMode } from './src/auto-mode.mjs';
+import { conversationStats, renderStats } from './src/conversation-stats.mjs';
 import { formatDispatchLine } from './src/dispatch-line.mjs';
 import { renderThink, isThinkingPlaceholder } from './src/show-think.mjs';
 import { mediaFileName, mediaIndexLine } from './src/media-save.mjs';
@@ -2415,7 +2416,15 @@ function startSpineRuntime() {
         _consoleMode.current.delete(chatKey);
         _loadConvState().then((cs) => {
           const entry = conversationsState.getContact(cs, 'whatsapp', cm.jid)?.entry ?? {};
-          _helpReply(surface, chatId, `«${cm.slug}» config\n${YAML.stringify(entry).trim()}`);
+          // gather fs facts for the stats (the pure module does the rest)
+          const dir = conversationsState.slugDir('whatsapp', cm.slug);
+          let transcriptText = '', transcriptMtimeMs = null, mediaCount = 0, archiveCount = 0;
+          try { transcriptText = readFileSync(join(dir, 'transcript.md'), 'utf8'); } catch { /* none */ }
+          try { transcriptMtimeMs = statSync(join(dir, 'transcript.md')).mtimeMs; } catch { /* none */ }
+          try { mediaCount = readdirSync(join(dir, 'media')).length; } catch { /* none */ }
+          try { archiveCount = readdirSync(join(dir, 'transcripts')).filter((f) => f.endsWith('.md')).length; } catch { /* none */ }
+          const stats = conversationStats({ entry, transcriptText, transcriptMtimeMs, mediaCount, archiveCount });
+          _helpReply(surface, chatId, `«${cm.slug}» config\n${YAML.stringify(entry).trim()}\n\nstats:\n${renderStats(stats)}`);
         }).catch((e) => errOut(`console config: ${e?.message ?? e}`));
         return true;
       }
