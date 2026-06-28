@@ -600,6 +600,11 @@ export function createDispatchRuntime({
   // scoping: each contact gets the tool subset its personality
   // declares (system → 'all', default → read-only, etc.).
   readPersonalityMeta = null,
+  // (surface, slug) -> the conversation-e identity, framed for the SYSTEM prompt (the
+  // brain's operating context — NOT a user-turn roleplay request). '' to skip. Sent every
+  // spawn (stable text → prompt-cached, so ~free after the first turn) so E holds character
+  // on resumed threads instead of reverting to "I'm Claude" (operator 2026-06-28).
+  readChatIdentity = null,
   recordDefaultSession = null,
   resolveBrain = null,
   routeContext = {},
@@ -1012,6 +1017,16 @@ export function createDispatchRuntime({
           _bins.length ? `You may also RUN these binaries (via Bash, inside this folder): ${_bins.join(', ')}. Just use them; don't ask permission.` : '',
         ].filter(Boolean).join(' ');
         if (_caps) sessionOpts.appendSystemPrompt = [sessionOpts.appendSystemPrompt, _caps].filter(Boolean).join('\n\n');
+      }
+      // IDENTITY in the SYSTEM prompt (the brain's grounding), every spawn. Goes FIRST so
+      // it frames everything; stable text → prompt-cached, so it costs a cache-write once
+      // then ~10% reads. This is what makes E stay eGPT on resumed threads (a user-turn
+      // identity gets forgotten/refused — "I'm Claude"). operator 2026-06-28.
+      if (readChatIdentity) {
+        try {
+          const _idSys = await readChatIdentity(surface, convSlug);
+          if (_idSys) sessionOpts.appendSystemPrompt = [_idSys, sessionOpts.appendSystemPrompt].filter(Boolean).join('\n\n');
+        } catch (e) { logger?.error?.(`!! identity system-prompt: ${e?.message ?? e}`); }
       }
     }
 
