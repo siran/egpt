@@ -2339,11 +2339,11 @@ function startSpineRuntime() {
   // then (for value actions) pick a value → run the existing slash handler. Stateful per
   // chatKey; echo-safe via the bridge word-set guard. Wizard/config actions hand off.
   const _CONSOLE_ACTIONS = [
-    { label: 'personality', verb: 'identity',   options: ['default', 'banter', 'serious', 'joke', 'silent', 'vesna'] },
-    { label: 'new thread',  special: 'wizard' },
+    { label: 'new thread (reset + identity)', special: 'newthread' },
     { label: 'reply mode',  verb: 'auto',        options: ['on', 'accum', 'mute', 'mention-direct', 'mention', 'off'] },
     { label: 'residents',   verb: 'residents',   options: ['e', 'e,l', 'l', 'off'] },
     { label: 'transcribe',  verb: 'transcribe',  options: ['on', 'off'] },
+    { label: 'configure brain (wizard)', special: 'wizard' },
     { label: 'config',      special: 'config' },
   ];
   const _armConsole = async ({ chatKey, surface = 'whatsapp', chatId, jid, slug }) => {
@@ -2372,6 +2372,7 @@ function startSpineRuntime() {
     if (cm.level === 'top') {
       const a = _CONSOLE_ACTIONS[n - 1];
       if (!a) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+      if (a.special === 'newthread') { _consoleMode.current.delete(chatKey); handleSlash(`/e ${cm.jid} new`, meta).catch((e) => errOut(`console newthread: ${e?.message ?? e}`)); return true; }
       if (a.special === 'wizard') { _consoleMode.current.delete(chatKey); handleSlash(`/e ${cm.jid} agent`, meta).catch((e) => errOut(`console wizard: ${e?.message ?? e}`)); return true; }
       if (a.special === 'config') {
         _consoleMode.current.delete(chatKey);
