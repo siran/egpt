@@ -2179,6 +2179,8 @@ function startSpineRuntime() {
   const _HELP_TTL_MS = 3 * 60 * 1000;
   const _wizardMode = ref(new Map());   // chatKey -> { state, surface, chatId, ts } (add-agent wizard)
   const _WIZARD_TTL_MS = 5 * 60 * 1000;
+  const _browserMode = ref(new Map());   // chatKey -> { items, surface, chatId, ts } (conversation browser)
+  const _BROWSER_TTL_MS = 5 * 60 * 1000;
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
@@ -2256,6 +2258,42 @@ function startSpineRuntime() {
     }
     wm.state = r.state; wm.ts = Date.now();
     _helpReply(surface, chatId, r.prompt);
+    return true;
+  };
+
+  // ── conversation browser (E-console step 2) ─────────────────────
+  // `/e` / `/egpt` (no args) → a numbered list of the 10 most-recently-active
+  // conversations + a pinned `0) @egpt` global. The operator's next number opens that
+  // console (renders `/e <jid>`, or `/egpt status` for 0). Stateful per chatKey like the
+  // wizard; echo-safe in the Self DM via the bridge's normEchoText guard.
+  const _convRecencyOf = (surface, slug) => { try { return statSync(slugTranscriptPath(surface, slug)).mtimeMs; } catch { return 0; } };
+  const _armBrowser = async ({ chatKey, surface = 'whatsapp', chatId }) => {
+    const cs = await _loadConvState();
+    const items = conversationsState.recentContacts(cs, { limit: 10, recencyOf: _convRecencyOf });
+    const lines = items.map((it, i) => {
+      const b = conversationsState.getBeing(cs, it.surface, it.jid, 'e');
+      return ` ${String(i + 1).padStart(2)}) ${it.pushedName}  ·  e:${b?.model ?? '?'}/${b?.mode ?? 'mention'}`;
+    });
+    _browserMode.current.set(chatKey, { items, surface, chatId, ts: Date.now() });
+    _helpReply(surface, chatId,
+      `egpt · conversations (newest first)\n   0) ✦ @egpt — global default brain\n${lines.join('\n') || '  (no conversations yet)'}\n(reply a number · q quit)`);
+  };
+  const _maybeHandleBrowser = (text, { surface, chatKey, isOperator, chatId, slashMeta }) => {
+    if (!isOperator) return false;
+    const bm = _browserMode.current.get(chatKey);
+    if (!bm) return false;
+    const t = String(text ?? '').trim();
+    if (t.startsWith('/')) return false;                                  // slash passes through
+    if (/^(q|quit|exit)$/i.test(t)) { _browserMode.current.delete(chatKey); _helpReply(surface, chatId, '(browser closed)'); return true; }
+    if (!/^\d+$/.test(t)) { _browserMode.current.delete(chatKey); return false; }   // not a selection → release the mode
+    if (Date.now() - bm.ts > _BROWSER_TTL_MS) { _browserMode.current.delete(chatKey); return false; }
+    const n = parseInt(t, 10);
+    _browserMode.current.delete(chatKey);
+    const meta = slashMeta ?? {};
+    if (n === 0) { handleSlash('/egpt status', meta).catch((e) => errOut(`browser /egpt: ${e?.message ?? e}`)); return true; }
+    const sel = bm.items[n - 1];
+    if (!sel) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+    handleSlash(`/e ${sel.jid}`, meta).catch((e) => errOut(`browser /e: ${e?.message ?? e}`));   // render that conversation's console
     return true;
   };
 
@@ -3376,6 +3414,7 @@ function startSpineRuntime() {
           // it, in whichever chat /help was invoked. Consumes the owner's
           // numbers/text before the auto-mode broadcast; others pass through.
           // The add-agent wizard (armed by `/e <chat> agent`) gets first refusal.
+          if (_maybeHandleBrowser(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId, slashMeta: { fromWhatsApp: true, waChatId: from.chatId } })) return;
           if (_maybeHandleWizard(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) return;
           if (_maybeHandleHelp(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
             return;
@@ -4939,6 +4978,9 @@ function startSpineRuntime() {
           _wizardMode.current.set(chatKey, { state, surface, chatId, ts: Date.now() });
           _helpReply(surface, chatId, `🧩 add agent to «${slug}»\n${wizardPrompt(state)}`);
         },
+        // Arm the conversation browser (E-console step 2): `/e` / `/egpt` with no args
+        // post the numbered recent-conversations list; the operator's next number opens it.
+        armBrowser:         _armBrowser,
         APP_DIR,
         EGPT_HOME,
         // announceBounce (slash/lifecycle.mjs) falls back to the operator's
@@ -6445,7 +6487,11 @@ function startSpineRuntime() {
     if (!text) return;
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
-    // re-dispatch) goes through the add-agent wizard, then the help menu.
+    // re-dispatch) goes through the browser, the add-agent wizard, then the help menu.
+    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
+        && _maybeHandleBrowser(text, { surface: 'shell', chatKey: 'shell', isOperator: true, slashMeta: {} })) {
+      return;
+    }
     if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
         && _maybeHandleWizard(text, { surface: 'shell', chatKey: 'shell', isOperator: true })) {
       return;

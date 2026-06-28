@@ -15,6 +15,7 @@ import {
   findContactsByName,
   ensureContact,
   conversationPathOf,
+  recentContacts,
   slugDir,
   isPlaceholderSlug,
   patchContact,
@@ -196,6 +197,38 @@ describe('conversation_path (stored) + threadCwd backfill', () => {
     expect(r2.renamedTo).toBeTruthy();
     expect(r2.entry.conversation_path).toBe(conversationPathOf(WA, r2.slug));
     expect(r2.entry.threadCwd ?? null).toBe(null);
+  });
+});
+
+describe('recentContacts — the /e browser list', () => {
+  const mk = () => {
+    let s = emptyState();
+    s = ensureContact(s, WA, '1@s', { pushedName: 'Alice' }).state;
+    s = ensureContact(s, WA, '2@s', { pushedName: 'Bob' }).state;
+    s = ensureContact(s, TG, '3', { pushedName: 'Carol' }).state;
+    // an alias must NOT appear as its own row
+    s = ensureContact(s, WA, '1b@lid', { pushedName: 'Alice', slugHint: 'Alice' }).state;
+    return s;
+  };
+
+  it('returns primaries newest-first by recencyOf, capped at limit, skipping aliases', () => {
+    const s = mk();
+    const rank = { 'Alice': 30, 'Bob': 10, 'Carol': 20 };
+    const recencyOf = (_surface, _slug, entry) => rank[entry.pushedName] ?? 0;
+    const out = recentContacts(s, { limit: 10, recencyOf });
+    expect(out.map((r) => r.pushedName)).toEqual(['Alice', 'Carol', 'Bob']);   // 30, 20, 10
+    expect(out.every((r) => !r.entry.aliasOf)).toBe(true);
+    expect(out).toHaveLength(3);   // alias collapsed into Alice's primary
+  });
+
+  it('honors the limit', () => {
+    const s = mk();
+    const recencyOf = (_s, _sl, e) => ({ Alice: 30, Bob: 10, Carol: 20 })[e.pushedName] ?? 0;
+    expect(recentContacts(s, { limit: 2, recencyOf }).map((r) => r.pushedName)).toEqual(['Alice', 'Carol']);
+  });
+
+  it('no recencyOf → stable (all 0), still returns primaries', () => {
+    expect(recentContacts(mk(), { limit: 10 })).toHaveLength(3);
   });
 });
 

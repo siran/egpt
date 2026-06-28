@@ -182,6 +182,18 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   const _resolveChatTarget = (term, surface = 'whatsapp') =>
     resolveChatTarget(term, { waBridge: waBridgeRef?.current ?? null, surface });
 
+  // ── /e (no args) — conversation browser (E-console step 2) ──────
+  // Arm the numbered recent-conversations list; the operator's next number opens that
+  // console. Alias of `/egpt` with no args. Falls back to a usage line on an older host.
+  if (!tokens.length) {
+    if (ctx.armBrowser) {
+      await ctx.armBrowser({ chatKey: dispatchMeta?.waChatId ?? 'shell', surface: dispatchMeta?.waChatId ? 'whatsapp' : 'shell', chatId: dispatchMeta?.waChatId });
+      return true;
+    }
+    sysOut('/e <chat> — open a conversation console; /e <chat> <action> — new|identity|auto|residents|transcribe|agent');
+    return true;
+  }
+
   // ── /e <slug>  — per-conversation console (from Self) ────────────
   // When the first token isn't a known subcommand, treat the whole arg as a chat
   // name/jid and render its resident roster + state (#2 console, read-only v1; the
