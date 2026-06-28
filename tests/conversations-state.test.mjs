@@ -230,6 +230,14 @@ describe('recentContacts — the /e browser list', () => {
   it('no recencyOf → stable (all 0), still returns primaries', () => {
     expect(recentContacts(mk(), { limit: 10 })).toHaveLength(3);
   });
+
+  it('offset paginates (next page)', () => {
+    const s = mk();
+    const recencyOf = (_s, _sl, e) => ({ Alice: 30, Bob: 10, Carol: 20 })[e.pushedName] ?? 0;
+    expect(recentContacts(s, { limit: 2, offset: 0, recencyOf }).map((r) => r.pushedName)).toEqual(['Alice', 'Carol']);
+    expect(recentContacts(s, { limit: 2, offset: 2, recencyOf }).map((r) => r.pushedName)).toEqual(['Bob']);
+    expect(recentContacts(s, { limit: 2, offset: 4, recencyOf })).toHaveLength(0);
+  });
 });
 
 describe('isPlaceholderSlug — placeholder vs real names', () => {

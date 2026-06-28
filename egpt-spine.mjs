@@ -2267,16 +2267,23 @@ function startSpineRuntime() {
   // console (renders `/e <jid>`, or `/egpt status` for 0). Stateful per chatKey like the
   // wizard; echo-safe in the Self DM via the bridge's normEchoText guard.
   const _convRecencyOf = (surface, slug) => { try { return statSync(conversationsState.slugTranscriptPath(surface, slug)).mtimeMs; } catch { return 0; } };
-  const _armBrowser = async ({ chatKey, surface = 'whatsapp', chatId }) => {
+  const _BROWSER_PAGE = 10;
+  const _armBrowser = async ({ chatKey, surface = 'whatsapp', chatId, offset = 0 }) => {
     const cs = await _loadConvState();
-    const items = conversationsState.recentContacts(cs, { limit: 10, recencyOf: _convRecencyOf });
+    // Fetch one extra to know if a NEXT page exists without a separate count.
+    const page = conversationsState.recentContacts(cs, { limit: _BROWSER_PAGE + 1, offset, recencyOf: _convRecencyOf });
+    const hasMore = page.length > _BROWSER_PAGE;
+    const items = page.slice(0, _BROWSER_PAGE);
     const lines = items.map((it, i) => {
       const b = conversationsState.getBeing(cs, it.surface, it.jid, 'e');
       return ` ${String(i + 1).padStart(2)}) ${it.pushedName}  ·  e:${b?.model ?? '?'}/${b?.mode ?? 'mention'}`;
     });
-    _browserMode.current.set(chatKey, { items, surface, chatId, ts: Date.now() });
-    _helpReply(surface, chatId,
-      `egpt · conversations (newest first)\n   0) ✦ @egpt — global default brain\n${lines.join('\n') || '  (no conversations yet)'}\n(reply a number · q quit)`);
+    const head = offset === 0
+      ? `egpt · conversations (newest first)\n   0) ✦ @egpt — global default brain`
+      : `egpt · conversations ${offset + 1}–${offset + items.length}`;
+    const foot = `(reply a number${hasMore ? ' · m = next 10' : ''} · type a name to open · q quit)`;
+    _browserMode.current.set(chatKey, { items, offset, surface, chatId, ts: Date.now() });
+    _helpReply(surface, chatId, `${head}\n${lines.join('\n') || '  (no more)'}\n${foot}`);
   };
   const _maybeHandleBrowser = (text, { surface, chatKey, isOperator, chatId, slashMeta }) => {
     if (!isOperator) return false;
@@ -2284,16 +2291,32 @@ function startSpineRuntime() {
     if (!bm) return false;
     const t = String(text ?? '').trim();
     if (t.startsWith('/')) return false;                                  // slash passes through
-    if (/^(q|quit|exit)$/i.test(t)) { _browserMode.current.delete(chatKey); _helpReply(surface, chatId, '(browser closed)'); return true; }
-    if (!/^\d+$/.test(t)) { _browserMode.current.delete(chatKey); return false; }   // not a selection → release the mode
     if (Date.now() - bm.ts > _BROWSER_TTL_MS) { _browserMode.current.delete(chatKey); return false; }
-    const n = parseInt(t, 10);
-    _browserMode.current.delete(chatKey);
     const meta = slashMeta ?? {};
-    if (n === 0) { handleSlash('/egpt status', meta).catch((e) => errOut(`browser /egpt: ${e?.message ?? e}`)); return true; }
-    const sel = bm.items[n - 1];
-    if (!sel) { _helpReply(surface, chatId, `no option ${n}`); return true; }
-    handleSlash(`/e ${sel.jid}`, meta).catch((e) => errOut(`browser /e: ${e?.message ?? e}`));   // render that conversation's console
+    if (/^(q|quit|exit)$/i.test(t)) { _browserMode.current.delete(chatKey); _helpReply(surface, chatId, '(browser closed)'); return true; }
+    if (/^(m|more|n|next)$/i.test(t)) {                                   // next page (stays in the browser)
+      _armBrowser({ chatKey, surface, chatId, offset: bm.offset + _BROWSER_PAGE }).catch((e) => errOut(`browser more: ${e?.message ?? e}`));
+      return true;
+    }
+    if (/^\d+$/.test(t)) {                                                // numbered selection
+      const n = parseInt(t, 10);
+      _browserMode.current.delete(chatKey);
+      if (n === 0) { handleSlash('/egpt status', meta).catch((e) => errOut(`browser /egpt: ${e?.message ?? e}`)); return true; }
+      const sel = bm.items[n - 1];
+      if (!sel) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+      handleSlash(`/e ${sel.jid}`, meta).catch((e) => errOut(`browser /e: ${e?.message ?? e}`));   // render that conversation's console
+      return true;
+    }
+    // Anything else = a name/slug to open. Resolve to a JID first (a jid is never a
+    // /e subcommand, so "new"/"auto"/etc. typed as a name can't trigger an action),
+    // then render that console. Clears the browser.
+    _browserMode.current.delete(chatKey);
+    conversationsState.resolveChatTarget(t, { waBridge: waBridgeRef.current ?? null, surface: surface === 'shell' ? 'whatsapp' : surface })
+      .then((r) => {
+        if (!r || r.error || !r.jid) { _helpReply(surface, chatId, `no chat matches "${t}" — type /e to reopen the list`); return; }
+        return handleSlash(`/e ${r.jid}`, meta);
+      })
+      .catch((e) => errOut(`browser open "${t}": ${e?.message ?? e}`));
     return true;
   };
 
