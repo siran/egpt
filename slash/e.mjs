@@ -267,6 +267,12 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       // Re-dispatch the action with the resolved chat as the live context.
       return await run({ arg: tokens.slice(actionIdx).join(' '), meta: { ...(dispatchMeta ?? {}), waChatId: r.jid }, ctx });
     }
+    // No action keyword → open the per-conversation CONSOLE menu (E-console step 3).
+    if (ctx.armConsole) {
+      await ctx.armConsole({ chatKey: dispatchMeta?.waChatId ?? 'shell', surface: dispatchMeta?.waChatId ? 'whatsapp' : 'shell', chatId: dispatchMeta?.waChatId, jid: r.jid, slug: r.name ?? r.jid });
+      return true;
+    }
+    // Fallback: the read-only overview (host without the console hook).
     const cs = await readConvState(CONV_YAML_PATH);
     const entry = cs.contacts?.whatsapp?.[r.jid] ?? null;
     const dbModel = EGPT_CONFIG.default_brain?.model ?? '?';
