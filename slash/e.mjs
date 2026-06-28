@@ -111,7 +111,9 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const archiveName = `${stamp}${oldThreadId ? '_' + String(oldThreadId).slice(0, 8) : ''}.md`;
         await rename(tpath, join(arcDir, archiveName));
-        sysOut(`/e new: archived transcript → transcripts/${archiveName}`);
+        // NB: never start a system ack with "/" — if it echoes in the Self DM it would be
+        // re-parsed as a slash command (operator 2026-06-28). Lead with ✓.
+        sysOut(`✓ /e ${mode}: archived transcript → transcripts/${archiveName}`);
       }
     } catch (e) { sysOut(`!! /e new: transcript archive failed — ${e.message}`); }
   }
