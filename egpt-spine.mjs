@@ -2338,7 +2338,44 @@ function startSpineRuntime() {
   // `/e <slug>` → resident overview + a numbered ACTION menu. Two levels: pick an action,
   // then (for value actions) pick a value → run the existing slash handler. Stateful per
   // chatKey; echo-safe via the bridge word-set guard. Wizard/config actions hand off.
+  // Available personalities (shipped config/personalities/ + operator ~/.egpt/personalities/).
+  const _listPersonalities = () => {
+    const names = new Set();
+    for (const dir of [join(APP_DIR, 'config', 'personalities'), join(EGPT_HOME, 'personalities')]) {
+      try { for (const f of readdirSync(dir)) if (f.endsWith('.md')) names.add(f.replace(/\.md$/, '')); } catch { /* dir absent */ }
+    }
+    return [...names].sort();
+  };
+  // Inject a personality by DELIVERING its text into the target chat via the bridge — E
+  // reads it as a real message and adopts the voice (operator 2026-06-28: one path, no
+  // hidden feed). Keeps the thread; re-stamps identityInjectedAt + records the choice.
+  const _deliverPersonality = async (jid, name) => {
+    const body = (await conversationsState.readPersonality(name))?.trim();
+    if (!body) return false;
+    // 1) post the personality text into the chat (visible record, operator's choice).
+    const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'),
+      JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid, body: `🧠 eGPT personality → ${name}\n\n${body}` }));
+    // record the choice (keep the thread; this is a refresh).
+    let slug = null;
+    try {
+      const cs = await _loadConvState();
+      const c = conversationsState.getContact(cs, 'whatsapp', jid);
+      if (c) { slug = c.slug; const e = cs.contacts.whatsapp[c.jid]; e.identityInjectedAt = new Date().toISOString(); e.personality = name; await _writeConvState(cs); }
+    } catch (e) { errOut(`personality restamp: ${e?.message ?? e}`); }
+    // 2) FEED it into E's thread so it actually adopts the voice — a posted message is
+    //    fromMe → echo-dropped → never enters E's session; only a brain turn does.
+    try {
+      await runDefaultBrainTurn(
+        `Operating instruction for THIS chat from here on — adopt this voice/personality (mode "${name}"):\n\n${body}\n\n(Acknowledge to yourself only — reply with just "…".)`,
+        () => {},
+        { threadId: jid, surface: 'wa', slug, name: slug },
+      );
+    } catch (e) { errOut(`personality feed: ${e?.message ?? e}`); }
+    return true;
+  };
   const _CONSOLE_ACTIONS = [
+    { label: 'personality', special: 'personality' },
     { label: 'new thread (reset + identity)', special: 'newthread' },
     { label: 'reply mode',  verb: 'auto',        options: ['on', 'accum', 'mute', 'mention-direct', 'mention', 'off'] },
     { label: 'residents',   verb: 'residents',   options: ['e', 'e,l', 'l', 'off'] },
@@ -2382,11 +2419,28 @@ function startSpineRuntime() {
         }).catch((e) => errOut(`console config: ${e?.message ?? e}`));
         return true;
       }
+      if (a.special === 'personality') {                                  // dynamic sub-list
+        const ps = _listPersonalities();
+        if (!ps.length) { _consoleMode.current.delete(chatKey); _helpReply(surface, chatId, '(no personalities found)'); return true; }
+        cm.level = 'action'; cm.actionIdx = -1; cm.personalities = ps; cm.ts = Date.now();   // -1 = personality picker
+        _helpReply(surface, chatId, `personality (delivered into «${cm.slug}»):\n${ps.map((o, i) => ` ${i + 1}) ${o}`).join('\n')}\n([N] · b back · q quit)`);
+        return true;
+      }
       cm.level = 'action'; cm.actionIdx = n - 1; cm.ts = Date.now();
       _helpReply(surface, chatId, `${a.label}:\n${a.options.map((o, i) => ` ${i + 1}) ${o}`).join('\n')}\n([N] · b back · q quit)`);
       return true;
     }
-    // level === 'action' → pick a value, run the existing slash handler
+    // level === 'action'
+    if (cm.actionIdx === -1) {                                           // personality picker → deliver
+      const name = cm.personalities?.[n - 1];
+      if (!name) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+      _consoleMode.current.delete(chatKey);
+      _deliverPersonality(cm.jid, name)
+        .then((ok) => _helpReply(surface, chatId, ok ? `✓ delivered personality "${name}" into «${cm.slug}»` : `!! personality "${name}": empty / not found`))
+        .catch((e) => errOut(`console personality: ${e?.message ?? e}`));
+      return true;
+    }
+    // value action → run the existing slash handler
     const a = _CONSOLE_ACTIONS[cm.actionIdx];
     const val = a?.options?.[n - 1];
     if (!val) { _helpReply(surface, chatId, `no option ${n}`); return true; }
