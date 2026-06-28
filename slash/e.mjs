@@ -20,7 +20,7 @@
 //   /e auto pause|resume           — globally suspend / re-enable dispatch
 //   /e auto status                 — list configured chats + paused state
 
-import { writeFile, mkdir, rename } from 'node:fs/promises';
+import { writeFile, readFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -80,7 +80,7 @@ async function _persistWaConfig() {
 //                     (swap flavor; no manifest re-send), keep the thread.
 // Back-compat: callers passing `resetThread` map to 'new' / 'persona'.
 // Exported so /egpt can call it with a JID resolved from a name-search.
-export async function _runReboot({ resetThread, mode, personaName, targetJid, sysOut, ctx, originJid, surface = 'whatsapp' }) {
+export async function _runReboot({ resetThread, mode, personaName, targetJid, sysOut, ctx, originJid, surface = 'whatsapp', identityOnly = false }) {
   const { computeBrainTurn } = ctx;
   if (!mode) mode = resetThread ? 'new' : 'persona';
 
@@ -129,8 +129,16 @@ export async function _runReboot({ resetThread, mode, personaName, targetJid, sy
   let ackDetail;
   try {
     const { feed, files } = await installIdentity(surface, slug, personaName);
-    announcement = buildIdentityAnnouncement(personaName, feed);
-    ackDetail = `identity:${personaName} (${files.join(', ') || 'empty'})`;
+    // identityOnly (new thread): feed ONLY the identity ("I am eGPT"), not rules/pointers
+    // — they're still COPIED to the slug dir, and E reads ./pointers.md on demand (operator
+    // 2026-06-28: a fresh thread shouldn't be front-loaded with the whole bundle).
+    let kickoffFeed = feed;
+    if (identityOnly) {
+      try { kickoffFeed = (await readFile(join(slugDir(surface, slug), 'identity.md'), 'utf8')).trim() || feed; }
+      catch { kickoffFeed = feed; }
+    }
+    announcement = buildIdentityAnnouncement(personaName, kickoffFeed);
+    ackDetail = `identity:${personaName} (${identityOnly ? 'identity.md only' : (files.join(', ') || 'empty')})`;
   } catch (e) {
     sysOut(`!! /e ${mode} ${slug}: installing identity failed — ${e?.message ?? e}`);
     return true;
@@ -294,8 +302,9 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
   }
 
   // ── /e new [<persona>] ──────────────────────────────────────────
-  // Reset the thread, rebuild the WHOLE identity.d bundle (manifest +
-  // personality + rules + pointers), feed it to a fresh thread.
+  // Reset the thread (archive transcript → fresh thread) and feed ONLY the identity
+  // ("I am eGPT") — rules/pointers are copied to the slug dir but not front-loaded
+  // (operator 2026-06-28). E reads ./pointers.md on demand.
   if (sub === 'new') {
     const personaName = tokens[1] || 'default';
     const targetJid = dispatchMeta?.waChatId;
@@ -303,7 +312,7 @@ export async function run({ arg, meta: dispatchMeta, ctx }) {
       sysOut('!! /e new: no chat context. Use `/egpt new [<persona>] <name-search>` from the shell instead.');
       return true;
     }
-    return await _runReboot({ mode: 'new', personaName, targetJid, sysOut, ctx, originJid: targetJid });
+    return await _runReboot({ mode: 'new', personaName, targetJid, sysOut, ctx, originJid: targetJid, identityOnly: true });
   }
 
   // ── /e identity [<persona>] ─────────────────────────────────────
