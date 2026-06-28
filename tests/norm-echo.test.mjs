@@ -40,6 +40,12 @@ describe('wordBag / bagContains — reformat-proof self-echo', () => {
     expect(bagContains(wordBag(sent), wordBag(echo))).toBe(true);
   });
 
+  it('an HTML-wrapped echo, normalized first, still matches the send (no tag-token dilution)', () => {
+    const s = '/e new: archived transcript to transcripts folder file b5a8081c dot md done now ok';
+    const htmlEcho = `<p>${s}</p>`;   // raw wordBag(htmlEcho) would gain a "p" token → dilution
+    expect(bagContains(wordBag(normEchoText(s)), wordBag(normEchoText(htmlEcho)))).toBe(true);
+  });
+
   it('an unrelated multi-word message (mostly non-menu words) is NOT contained', () => {
     expect(bagContains(wordBag(sent), wordBag('hey can you send me the report from yesterday afternoon please thanks'))).toBe(false);
   });

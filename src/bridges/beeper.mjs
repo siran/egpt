@@ -318,7 +318,9 @@ export async function startBeeperBridge(opts = {}) {
       if (_sentText.size > 50) { for (const [k, exp] of _sentText) { if (exp < now) _sentText.delete(k); } }
       _sentText.set(`${chatID}|${_normEcho(text)}`, now + 60000);
       // Word-set fingerprint for multi-word sends (menus) — survives WhatsApp's reformat.
-      const bag = wordBag(text);
+      // Fingerprint the NORMALIZED text (HTML stripped) so the incoming echo's bag —
+      // also normalized in isEcho — isn't diluted by tag tokens (<p>/<br>/<a…>).
+      const bag = wordBag(_normEcho(text));
       if (bag.size >= 8) {
         if (_sentBags.length > 40) _sentBags.splice(0, _sentBags.length - 40);
         for (let i = _sentBags.length - 1; i >= 0; i--) if (_sentBags[i].exp < now) _sentBags.splice(i, 1);
@@ -331,7 +333,8 @@ export async function startBeeperBridge(opts = {}) {
     const exp = _sentText.get(`${chatID}|${_normEcho(text)}`);   // don't delete — receipts re-fire the same upsert; let it expire
     if (exp && exp > Date.now()) return true;
     // Reformat-proof fallback: a reformatted echo of our own menu — same words, same chat.
-    const inBag = wordBag(text);
+    // Normalize first (strip HTML) so tag tokens don't dilute the containment ratio.
+    const inBag = wordBag(_normEcho(text));
     if (inBag.size >= 5) {
       const nowMs = Date.now();
       for (const s of _sentBags) {
