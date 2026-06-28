@@ -676,6 +676,24 @@ export function residentsOf(entry) {
   return named.includes('e') ? named : ['e', ...named];
 }
 
+// Top-N primary contacts across surfaces, newest first — the `/e` / `/egpt` browser.
+// `recencyOf(surface, slug, entry) → ms` is supplied by the caller (the spine uses the
+// transcript.md mtime, falling back to firstSeenAt) so this stays pure + testable. Skips
+// aliases and slug-less entries.
+export function recentContacts(state, { limit = 10, recencyOf } = {}) {
+  const rows = [];
+  for (const surface of Object.keys(state?.contacts ?? {})) {
+    if (!KNOWN_SURFACES.includes(surface)) continue;
+    for (const [jid, entry] of Object.entries(state.contacts[surface] ?? {})) {
+      if (!entry || entry.aliasOf || !entry.slug) continue;
+      const recency = recencyOf ? Number(recencyOf(surface, entry.slug, entry)) || 0 : 0;
+      rows.push({ surface, jid, slug: entry.slug, pushedName: entry.pushedName || entry.slug, entry, recency });
+    }
+  }
+  rows.sort((a, b) => b.recency - a.recency);
+  return rows.slice(0, Math.max(0, limit));
+}
+
 // Look up a contact by its slug WITHIN one surface (linear scan; N small).
 function _findByslug(state, surface, slug) {
   const bucket = state.contacts?.[surface] ?? {};

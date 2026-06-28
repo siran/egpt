@@ -65,6 +65,14 @@ export async function run({ arg, meta, ctx }) {
   const subArg = parts.slice(1).join(' ').trim();
   const state = readDefaultBrainState();
 
+  // ── /egpt (no args) — conversation browser (E-console step 2) ───
+  // Arm the numbered recent-conversations list (option 0 = this @egpt global console).
+  // Older host without the hook falls through to the legacy `status` default below.
+  if (!arg.trim() && ctx.armBrowser) {
+    await ctx.armBrowser({ chatKey: meta?.waChatId ?? 'shell', surface: meta?.waChatId ? 'whatsapp' : 'shell', chatId: meta?.waChatId });
+    return true;
+  }
+
   if (sub === 'help') {
     sysOut('usage: /egpt [status | new | list | brain <type> [<ref>] | rewind [<n>|<ref-prefix>]]');
     return true;
