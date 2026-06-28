@@ -2181,6 +2181,8 @@ function startSpineRuntime() {
   const _WIZARD_TTL_MS = 5 * 60 * 1000;
   const _browserMode = ref(new Map());   // chatKey -> { items, surface, chatId, ts } (conversation browser)
   const _BROWSER_TTL_MS = 5 * 60 * 1000;
+  const _consoleMode = ref(new Map());   // chatKey -> { jid, slug, surface, chatId, level, actionIdx, ts } (per-conversation console)
+  const _CONSOLE_TTL_MS = 5 * 60 * 1000;
   const _getHelpMenu = () => (_helpMenuRef.current ??= buildMenu(
     _mergedHelpCommands(),
     Object.entries(CONFIG_SCHEMA).map(([key, v]) => ({ key, doc: typeof v === 'string' ? v : (v?.doc ?? '') })),
@@ -2329,6 +2331,66 @@ function startSpineRuntime() {
         return handleSlash(`/e ${r.jid}`, meta);
       })
       .catch((e) => errOut(`browser open "${t}": ${e?.message ?? e}`));
+    return true;
+  };
+
+  // ── per-conversation console menu (E-console step 3) ────────────
+  // `/e <slug>` → resident overview + a numbered ACTION menu. Two levels: pick an action,
+  // then (for value actions) pick a value → run the existing slash handler. Stateful per
+  // chatKey; echo-safe via the bridge word-set guard. Wizard/config actions hand off.
+  const _CONSOLE_ACTIONS = [
+    { label: 'personality', verb: 'identity',   options: ['default', 'banter', 'serious', 'joke', 'silent', 'vesna'] },
+    { label: 'new thread',  special: 'wizard' },
+    { label: 'reply mode',  verb: 'auto',        options: ['on', 'accum', 'mute', 'mention-direct', 'mention', 'off'] },
+    { label: 'residents',   verb: 'residents',   options: ['e', 'e,l', 'l', 'off'] },
+    { label: 'transcribe',  verb: 'transcribe',  options: ['on', 'off'] },
+    { label: 'config',      special: 'config' },
+  ];
+  const _armConsole = async ({ chatKey, surface = 'whatsapp', chatId, jid, slug }) => {
+    const cs = await _loadConvState();
+    const resLines = conversationsState.residentsOf(conversationsState.getContact(cs, 'whatsapp', jid)?.entry ?? null).map((bn) => {
+      const b = conversationsState.getBeing(cs, 'whatsapp', jid, bn);
+      return `   ${bn}: ${b?.mode ?? 'mention'} · ${b?.model ?? '?'}${b?.effort ? '/' + b.effort : ''} · ${b?.personality ?? 'default'}`;
+    });
+    const acts = _CONSOLE_ACTIONS.map((a, i) => ` ${i + 1}) ${a.label}`);
+    _consoleMode.current.set(chatKey, { jid, slug, surface, chatId, level: 'top', actionIdx: null, ts: Date.now() });
+    _helpReply(surface, chatId, `«${slug}»\n${resLines.join('\n')}\nactions:\n${acts.join('\n')}\n([N] · b back · q quit)`);
+  };
+  const _maybeHandleConsole = (text, { surface, chatKey, isOperator, chatId, slashMeta }) => {
+    if (!isOperator) return false;
+    const cm = _consoleMode.current.get(chatKey);
+    if (!cm) return false;
+    const t = String(text ?? '').trim();
+    if (t.startsWith('/')) return false;
+    if (Date.now() - cm.ts > _CONSOLE_TTL_MS) { _consoleMode.current.delete(chatKey); return false; }
+    if (t.includes('\n') || t.length > 40) { _consoleMode.current.delete(chatKey); return false; }   // echo guard
+    const meta = slashMeta ?? {};
+    if (/^(q|quit|exit)$/i.test(t)) { _consoleMode.current.delete(chatKey); _helpReply(surface, chatId, '(console closed)'); return true; }
+    if (/^(b|back)$/i.test(t) && cm.level === 'action') { _armConsole({ chatKey, surface, chatId, jid: cm.jid, slug: cm.slug }).catch((e) => errOut(`console back: ${e?.message ?? e}`)); return true; }
+    if (!/^\d+$/.test(t)) { _consoleMode.current.delete(chatKey); return false; }
+    const n = parseInt(t, 10);
+    if (cm.level === 'top') {
+      const a = _CONSOLE_ACTIONS[n - 1];
+      if (!a) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+      if (a.special === 'wizard') { _consoleMode.current.delete(chatKey); handleSlash(`/e ${cm.jid} agent`, meta).catch((e) => errOut(`console wizard: ${e?.message ?? e}`)); return true; }
+      if (a.special === 'config') {
+        _consoleMode.current.delete(chatKey);
+        _loadConvState().then((cs) => {
+          const entry = conversationsState.getContact(cs, 'whatsapp', cm.jid)?.entry ?? {};
+          _helpReply(surface, chatId, `«${cm.slug}» config\n${YAML.stringify(entry).trim()}`);
+        }).catch((e) => errOut(`console config: ${e?.message ?? e}`));
+        return true;
+      }
+      cm.level = 'action'; cm.actionIdx = n - 1; cm.ts = Date.now();
+      _helpReply(surface, chatId, `${a.label}:\n${a.options.map((o, i) => ` ${i + 1}) ${o}`).join('\n')}\n([N] · b back · q quit)`);
+      return true;
+    }
+    // level === 'action' → pick a value, run the existing slash handler
+    const a = _CONSOLE_ACTIONS[cm.actionIdx];
+    const val = a?.options?.[n - 1];
+    if (!val) { _helpReply(surface, chatId, `no option ${n}`); return true; }
+    _consoleMode.current.delete(chatKey);
+    handleSlash(`/e ${cm.jid} ${a.verb} ${val}`, meta).catch((e) => errOut(`console ${a.verb}: ${e?.message ?? e}`));
     return true;
   };
 
@@ -3449,6 +3511,7 @@ function startSpineRuntime() {
           // it, in whichever chat /help was invoked. Consumes the owner's
           // numbers/text before the auto-mode broadcast; others pass through.
           // The add-agent wizard (armed by `/e <chat> agent`) gets first refusal.
+          if (_maybeHandleConsole(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId, slashMeta: { fromWhatsApp: true, waChatId: from.chatId } })) return;
           if (_maybeHandleBrowser(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId, slashMeta: { fromWhatsApp: true, waChatId: from.chatId } })) return;
           if (_maybeHandleWizard(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) return;
           if (_maybeHandleHelp(text, { surface: 'whatsapp', chatKey: from.chatId, isOperator: !!from.authorized, chatId: from.chatId })) {
@@ -5016,6 +5079,9 @@ function startSpineRuntime() {
         // Arm the conversation browser (E-console step 2): `/e` / `/egpt` with no args
         // post the numbered recent-conversations list; the operator's next number opens it.
         armBrowser:         _armBrowser,
+        // Arm the per-conversation console menu (E-console step 3): `/e <slug>` posts the
+        // resident overview + numbered actions; the operator's numbers drive them.
+        armConsole:         _armConsole,
         APP_DIR,
         EGPT_HOME,
         // announceBounce (slash/lifecycle.mjs) falls back to the operator's
@@ -6523,6 +6589,10 @@ function startSpineRuntime() {
 
     // Shell user input (bare meta — not a bridge arrival or a broadcast
     // re-dispatch) goes through the browser, the add-agent wizard, then the help menu.
+    if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
+        && _maybeHandleConsole(text, { surface: 'shell', chatKey: 'shell', isOperator: true, slashMeta: {} })) {
+      return;
+    }
     if (!meta.fromWhatsApp && !meta.forceTarget && !meta.autoDispatched
         && _maybeHandleBrowser(text, { surface: 'shell', chatKey: 'shell', isOperator: true, slashMeta: {} })) {
       return;
