@@ -2281,7 +2281,11 @@ function startSpineRuntime() {
     const head = offset === 0
       ? `egpt · conversations (newest first)\n   0) ✦ @egpt — global default brain`
       : `egpt · conversations ${offset + 1}–${offset + items.length}`;
-    const foot = `(reply a number${hasMore ? ' · m = next 10' : ''} · type a name to open · q quit)`;
+    const nav = ['[N] open'];
+    if (hasMore) nav.push('[n] next');
+    if (offset > 0) nav.push('[p] prev');
+    nav.push('<slug> search', '[q] quit');
+    const foot = nav.join(' · ');
     _browserMode.current.set(chatKey, { items, offset, surface, chatId, ts: Date.now() });
     _helpReply(surface, chatId, `${head}\n${lines.join('\n') || '  (no more)'}\n${foot}`);
   };
@@ -2294,8 +2298,12 @@ function startSpineRuntime() {
     if (Date.now() - bm.ts > _BROWSER_TTL_MS) { _browserMode.current.delete(chatKey); return false; }
     const meta = slashMeta ?? {};
     if (/^(q|quit|exit)$/i.test(t)) { _browserMode.current.delete(chatKey); _helpReply(surface, chatId, '(browser closed)'); return true; }
-    if (/^(m|more|n|next)$/i.test(t)) {                                   // next page (stays in the browser)
-      _armBrowser({ chatKey, surface, chatId, offset: bm.offset + _BROWSER_PAGE }).catch((e) => errOut(`browser more: ${e?.message ?? e}`));
+    if (/^(n|next|m|more)$/i.test(t)) {                                   // next page (stays in the browser)
+      _armBrowser({ chatKey, surface, chatId, offset: bm.offset + _BROWSER_PAGE }).catch((e) => errOut(`browser next: ${e?.message ?? e}`));
+      return true;
+    }
+    if (/^(p|prev|previous)$/i.test(t)) {                                 // previous page
+      _armBrowser({ chatKey, surface, chatId, offset: Math.max(0, bm.offset - _BROWSER_PAGE) }).catch((e) => errOut(`browser prev: ${e?.message ?? e}`));
       return true;
     }
     if (/^\d+$/.test(t)) {                                                // numbered selection
