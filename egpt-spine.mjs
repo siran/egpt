@@ -2266,7 +2266,7 @@ function startSpineRuntime() {
   // conversations + a pinned `0) @egpt` global. The operator's next number opens that
   // console (renders `/e <jid>`, or `/egpt status` for 0). Stateful per chatKey like the
   // wizard; echo-safe in the Self DM via the bridge's normEchoText guard.
-  const _convRecencyOf = (surface, slug) => { try { return statSync(slugTranscriptPath(surface, slug)).mtimeMs; } catch { return 0; } };
+  const _convRecencyOf = (surface, slug) => { try { return statSync(conversationsState.slugTranscriptPath(surface, slug)).mtimeMs; } catch { return 0; } };
   const _armBrowser = async ({ chatKey, surface = 'whatsapp', chatId }) => {
     const cs = await _loadConvState();
     const items = conversationsState.recentContacts(cs, { limit: 10, recencyOf: _convRecencyOf });
