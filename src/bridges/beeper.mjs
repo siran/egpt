@@ -86,6 +86,25 @@ export function normEchoText(t) {
     .replace(/\s+/g, ' ').trim();
 }
 
+// Word-set fingerprint for self-echo. WhatsApp can reformat our OWN multi-line menu
+// into ONE line with " - " bullets and reordered punctuation, so even normEchoText
+// (which only flattens LEADING markers) won't make the sent and echoed forms compare
+// equal — the /e browser + add-agent menus echo-looped in the Self DM (2026-06-28).
+// A menu's WORDS survive any reformatting, so fingerprint by the lowercased token SET:
+// an incoming whose words are almost entirely contained in a recent multi-word send is
+// that send echoing back. Short operator replies (a number, "n", a name) have too few
+// words to ever match a menu, so they're never false-dropped.
+export function wordBag(t) {
+  return new Set(String(t ?? '').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+}
+// True iff `inBag` (incoming) is ≥ `threshold` contained in `sentBag` (a recent send).
+export function bagContains(sentBag, inBag, threshold = 0.85) {
+  if (!sentBag || !inBag || inBag.size === 0) return false;
+  let hit = 0;
+  for (const w of inBag) if (sentBag.has(w)) hit++;
+  return hit / inBag.size >= threshold;
+}
+
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
@@ -282,6 +301,7 @@ export async function startBeeperBridge(opts = {}) {
   // differ from the POST's pendingMessageID). Operator's OWN messages are NOT
   // suppressed — so the operator can @e themselves.
   const _sentText = new Map();   // `${chatID}|${normalizedText}` -> expiry ms
+  const _sentBags = [];          // [{ chatID, bag:Set, exp }] — word-set fingerprints of recent multi-word sends (reformat-proof echo guard)
   // Chat-qualified ids of OUR OWN streaming placeholders (meta-engineer 🤔→reply
   // in-place edits). Our live edits re-upsert the message; without this guard the
   // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
@@ -297,12 +317,29 @@ export async function startBeeperBridge(opts = {}) {
       // 24/7 daemon (entries "expire" logically but were never deleted).
       if (_sentText.size > 50) { for (const [k, exp] of _sentText) { if (exp < now) _sentText.delete(k); } }
       _sentText.set(`${chatID}|${_normEcho(text)}`, now + 60000);
+      // Word-set fingerprint for multi-word sends (menus) — survives WhatsApp's reformat.
+      const bag = wordBag(text);
+      if (bag.size >= 8) {
+        if (_sentBags.length > 40) _sentBags.splice(0, _sentBags.length - 40);
+        for (let i = _sentBags.length - 1; i >= 0; i--) if (_sentBags[i].exp < now) _sentBags.splice(i, 1);
+        _sentBags.push({ chatID, bag, exp: now + 60000 });
+      }
     }
   }
   function isEcho(id, chatID, text) {
     if (id && _sentIds.has(msgKeyOf(chatID, id))) return true;
     const exp = _sentText.get(`${chatID}|${_normEcho(text)}`);   // don't delete — receipts re-fire the same upsert; let it expire
-    return !!(exp && exp > Date.now());
+    if (exp && exp > Date.now()) return true;
+    // Reformat-proof fallback: a reformatted echo of our own menu — same words, same chat.
+    const inBag = wordBag(text);
+    if (inBag.size >= 5) {
+      const nowMs = Date.now();
+      for (const s of _sentBags) {
+        if (s.exp < nowMs || s.chatID !== chatID) continue;
+        if (bagContains(s.bag, inBag)) return true;
+      }
+    }
+    return false;
   }
 
   // Message timestamp (ms) from the upsert payload, schema-tolerantly:

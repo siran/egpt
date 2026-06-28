@@ -2315,6 +2315,10 @@ function startSpineRuntime() {
       handleSlash(`/e ${sel.jid}`, meta).catch((e) => errOut(`browser /e: ${e?.message ?? e}`));   // render that conversation's console
       return true;
     }
+    // Defense-in-depth: a real selection/name is short + single-line. A long/multiline
+    // blob is our own menu echoing back (the bridge should already drop it) — release the
+    // mode and pass through, never resolve it as a "name".
+    if (t.includes('\n') || t.length > 60) { _browserMode.current.delete(chatKey); return false; }
     // Anything else = a name/slug to open. Resolve to a JID first (a jid is never a
     // /e subcommand, so "new"/"auto"/etc. typed as a name can't trigger an action),
     // then render that console. Clears the browser.
