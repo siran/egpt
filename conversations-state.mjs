@@ -680,7 +680,7 @@ export function residentsOf(entry) {
 // `recencyOf(surface, slug, entry) → ms` is supplied by the caller (the spine uses the
 // transcript.md mtime, falling back to firstSeenAt) so this stays pure + testable. Skips
 // aliases and slug-less entries.
-export function recentContacts(state, { limit = 10, recencyOf } = {}) {
+export function recentContacts(state, { limit = 10, offset = 0, recencyOf } = {}) {
   const rows = [];
   for (const surface of Object.keys(state?.contacts ?? {})) {
     if (!KNOWN_SURFACES.includes(surface)) continue;
@@ -691,7 +691,8 @@ export function recentContacts(state, { limit = 10, recencyOf } = {}) {
     }
   }
   rows.sort((a, b) => b.recency - a.recency);
-  return rows.slice(0, Math.max(0, limit));
+  const start = Math.max(0, offset);
+  return rows.slice(start, start + Math.max(0, limit));
 }
 
 // Look up a contact by its slug WITHIN one surface (linear scan; N small).
