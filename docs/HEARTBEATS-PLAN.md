@@ -85,34 +85,67 @@ Executor, per due beat:
 - Then update `heartbeat.state.json.lastFiredAt` + refresh the digest. One global lock so a
   slow beat can't stack across ticks.
 
-### Errors → Self (the only feedback channel)
+### Errors → an `egpt-logs` channel (via a Logger)
 A heartbeat runs unattended, so a failure (permission denied, non-zero command exit, brain
-error) is **posted to the Self DM** — that's the only way the operator learns a beat broke.
-If beats error repeatedly, the existing **flood-guard** trips and pauses the loop (the
-backstop against a misconfigured beat hammering Self / burning tokens).
+error) must surface somewhere. Rather than dump into Self, introduce a dedicated **`egpt-logs`
+chat**: a Logger posts system warnings/errors there THROUGH THE BRIDGE (so it's auto-logged
+to the transcript like any conversation) — and **never swallow** an error that would be
+useful or insightful. The Logger is leveled (future: levels routed to different `egpt-*`
+chats); for now one `egpt-logs` channel is enough — don't over-pollute. Every Logger send
+runs **inside the flood-safe lock**, so a misconfigured beat erroring in a tight loop trips
+the flood-guard and pauses, never firing indefinitely.
 
-## Permissions (NOT in the heartbeat block)
+## Permissions — SAFE BY DEFAULT (NOT in the heartbeat block)
 
 Per `docs/IDEAS.md` ("Permissions belong in config, not `/e`", 2026-06-25): per-being
 permissions — tools, **runnable commands (bash)**, path grants — live in the **siblings
 registry** or a **`conversations.yaml` per-being override**, folded into the #2 per-being
-config shape. A heartbeat with a `command:` therefore requires bash to be granted to
-conversation-e THERE; the `heartbeat:` block never carries permissions itself.
+config shape. The `heartbeat:` block never carries permissions.
+
+**Default is DENY.** A `command:` does NOT run unless conversation-e has been explicitly
+granted command/bash permission in its per-being config. The operator may run dangerously
+for THEIR OWN chats, but egpt must be safe by default — a contact (whose intentions egpt
+can't vouch for) editing/triggering a heartbeat must not get arbitrary command execution.
+So: no grant → the `command:` is skipped and an `egpt-logs` line says it was denied.
+Granting is a deliberate per-being operator action, never implied by writing a `command:`.
+
+## `heartbeats.readonly.md` layout
+
+The generated digest is self-documenting so the operator never has to leave the file:
+- **Top line:** `> You can find documentation of the heartbeat options at the bottom of this file.`
+- **Middle:** the real, active heartbeats (one row each — conversation · when · next due · action).
+- **Bottom:** a `## Options` reference + **example configs for every key** (`frequency`, `at`,
+  `default_time`, `prompt` + `prompt_opts`, `command`), below the real heartbeats so examples
+  are never mistaken for live ones.
+
+## `alive.txt` IS a heartbeat (heartbeat-zero)
+
+The supervisor-liveness beat (`_writeAliveNow` → `state/alive.txt`, tic/toc each tick) becomes
+the FIRST built-in system heartbeat. Its tick loop (the existing `startAliveHeartbeat`, ~60s)
+is the SAME loop that checks every other heartbeat's due-ness — unifying the mechanism: one
+loop, one set of heartbeats, `alive` is just the always-on system one that writes the tic/toc.
+(Granularity stays minute-level, which suits cron/`at`.) Note for monitoring: alive.txt is
+rewritten in place (tic truncates, toc appends), so `tail -f` won't follow it — `while sleep 5;
+do clear; cat state/alive.txt; done` (or watch it via `egpt-logs`).
 
 ## Steps
 
 1. **Strip orphan fields** from `conversations.yaml`. — **DONE** (42 entries).
 2. **`src/heartbeats.mjs`** — `scanHeartbeats` + `renderHeartbeatsReadonly` +
    `writeHeartbeatsReadonly`. Pure parts tested against a temp dir.
-3. **Boot wiring** — async scan on boot → write `heartbeats.readonly.md` → memory ref.
-4. **Due-check in the spine loop** — in the existing aliveness-beat tick, check the
-   in-memory heartbeats and hand due ones to the executor (no separate timer).
-5. **Executor** — `command` (shell, under E's bash grant) and/or `prompt` (resident-E turn,
-   `fresh` → parallel context-free E). Errors → Self; flood-guard backstops.
-6. **`at` parser** — the lenient timezone-aware grammar above (pure + tested).
-7. **Console `heartbeat` action** — set enabled/when/prompt/command per conversation from
+3. **`egpt-logs` Logger** — a leveled logger that posts warnings/errors to the `egpt-logs`
+   chat through the bridge, inside the flood-safe lock. (Used by heartbeat errors + general
+   system logging; don't over-pollute — one channel for now.)
+4. **Boot wiring** — async scan on boot → write `heartbeats.readonly.md` (self-documenting
+   layout) → memory ref.
+5. **alive.txt as heartbeat-zero** — fold the aliveness write into the heartbeat set; its
+   ~60s tick loop becomes the single due-check loop for ALL heartbeats (no separate timer).
+6. **Executor** — `command` (shell, ONLY with E's bash grant, else denied + logged) and/or
+   `prompt` (resident-E turn; `fresh` → parallel context-free E). Errors → `egpt-logs`.
+7. **`at` parser** — the lenient timezone-aware grammar above (pure + tested).
+8. **Console `heartbeat` action** — set enabled/when/prompt/command per conversation from
    the `/e <slug>` menu (ties into the E-console consolidation).
-8. **Boot-verify** on REVE.
+9. **Boot-verify** on REVE.
 
 ## Open decisions
 
