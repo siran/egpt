@@ -97,10 +97,9 @@ the flood-guard and pauses, never firing indefinitely.
 
 ## Permissions — SAFE BY DEFAULT (NOT in the heartbeat block)
 
-Per `docs/IDEAS.md` ("Permissions belong in config, not `/e`", 2026-06-25): per-being
-permissions — tools, **runnable commands (bash)**, path grants — live in the **siblings
-registry** or a **`conversations.yaml` per-being override**, folded into the #2 per-being
-config shape. The `heartbeat:` block never carries permissions.
+Per-being permissions — tools, **runnable commands (bash)**, path grants — live in the
+per-being config (the siblings registry or a `conversations.yaml` per-being override), not
+in transient slash commands and not in the `heartbeat:` block.
 
 **Default is DENY.** A `command:` does NOT run unless conversation-e has been explicitly
 granted command/bash permission in its per-being config. The operator may run dangerously
@@ -114,9 +113,11 @@ Granting is a deliberate per-being operator action, never implied by writing a `
 The generated digest is self-documenting so the operator never has to leave the file:
 - **Top line:** `> You can find documentation of the heartbeat options at the bottom of this file.`
 - **Middle:** the real, active heartbeats (one row each — conversation · when · next due · action).
-- **Bottom:** a `## Options` reference + **example configs for every key** (`frequency`, `at`,
-  `default_time`, `prompt` + `prompt_opts`, `command`), below the real heartbeats so examples
-  are never mistaken for live ones.
+- **Bottom:** the heartbeat options reference + example configs for every key — **NOT hardcoded
+  in the generator**, but read from a shipped, operator-editable file `config/heartbeat.docs.md`
+  and appended verbatim (so docs change without touching code, and examples sit below the real
+  heartbeats where they can't be mistaken for live ones). That file is self-contained user-facing
+  documentation — it references no internal planning docs.
 
 ## `alive.txt` IS a heartbeat (heartbeat-zero)
 
@@ -132,7 +133,10 @@ do clear; cat state/alive.txt; done` (or watch it via `egpt-logs`).
 
 1. **Strip orphan fields** from `conversations.yaml`. — **DONE** (42 entries).
 2. **`src/heartbeats.mjs`** — `scanHeartbeats` + `renderHeartbeatsReadonly` +
-   `writeHeartbeatsReadonly`. Pure parts tested against a temp dir.
+   `writeHeartbeatsReadonly`. The render appends `config/heartbeat.docs.md` verbatim as the
+   bottom section (not hardcoded). Pure parts tested against a temp dir.
+   - **2b. `config/heartbeat.docs.md`** — shipped, operator-editable, self-contained options
+     reference + per-key examples.
 3. **`egpt-logs` Logger** — a leveled logger that posts warnings/errors to the `egpt-logs`
    chat through the bridge, inside the flood-safe lock. (Used by heartbeat errors + general
    system logging; don't over-pollute — one channel for now.)
