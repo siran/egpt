@@ -34,7 +34,7 @@ export function createCommands({
     const code = lifecycleExit(line, { writeRewindTarget });
     if (code != null) {
       onLog(`${line} -> exit ${code}`);
-      exit(code);                          // process leaves; the daemon respawns (43) / upgrades (42) / rewinds (44)
+      await exit(code);                    // process leaves (after the bridge's "restarting…" announce); the daemon respawns
       return;
     }
     const tok = line.split(/\s+/)[0];

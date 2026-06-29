@@ -51,7 +51,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
       const body = opts.bodyEmoji ? `${opts.bodyEmoji} ${text}` : text;
-      return real.send(body, { chatId: chat });
+      return real.send(body, { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
     // In-place edit-stream. Returns the §2b { update, finish } plus delivered /
@@ -63,7 +63,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // body_emoji is stamped onto every streamed edit + final here — the 🤔
     // placeholder (init) stays unstamped so the thinking marker reads cleanly.
     startStream(chat, init, opts = {}) {
-      const h = real.startStreamMessage(init, { chatId: chat, showThink: opts.showThink, persona: opts.persona });
+      const h = real.startStreamMessage(init, { chatId: chat, showThink: opts.showThink, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
       return {
         update: (t) => h.update(stamp(t)),

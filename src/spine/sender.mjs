@@ -17,19 +17,20 @@ export function createSender({ bridge, bodyEmojiOf = () => null, showThink = tru
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
-    open(chatId, { being = 'e' } = {}) {
+    open(chatId, { being = 'e', replyTo = null } = {}) {
       const bodyEmoji = bodyEmojiOf(being);
       // Post 🤔 now (the thinking marker); the bridge edits it into the reply live.
-      const stream = bridge.startStream?.(chatId, PLACEHOLDER, { showThink, bodyEmoji, persona: being });
+      // replyTo threads the triggering message id so a mention reply quotes it.
+      const stream = bridge.startStream?.(chatId, PLACEHOLDER, { showThink, bodyEmoji, persona: being, replyTo });
       return {
         update(partial) { const t = textOf(partial); if (t) stream?.update?.(t); },
         async finish(reply) {
           const t = textOf(reply);
           if (stream) {
             await stream.finish?.(t);
-            if (!stream.delivered && t) await bridge.send(chatId, t, { bodyEmoji });   // §7 fallback
+            if (!stream.delivered && t) await bridge.send(chatId, t, { bodyEmoji, replyTo });   // §7 fallback
           } else if (t) {
-            await bridge.send(chatId, t, { bodyEmoji });   // no streaming bridge → one-shot
+            await bridge.send(chatId, t, { bodyEmoji, replyTo });   // no streaming bridge → one-shot
           }
         },
         fail: (e) => { try { stream?.fail?.(e); } catch { /* already torn down */ } },

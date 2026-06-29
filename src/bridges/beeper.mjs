@@ -819,8 +819,8 @@ export async function startBeeperBridge(opts = {}) {
 
   return {
     chatId: null,
-    async send(text, { chatId, chatName } = {}) {
-      return await sendMessage(chatId ?? chatName, text, {});
+    async send(text, { chatId, chatName, replyToMessageID = null } = {}) {
+      return await sendMessage(chatId ?? chatName, text, { replyToMessageID });
     },
     // Post a message and resolve its CONFIRMED Beeper message id (polls the
     // message list — same path startStreamMessage uses). Returns null on failure.
@@ -856,7 +856,7 @@ export async function startBeeperBridge(opts = {}) {
     // adds the 🤔 placeholder + "✅ Done" marker (engineers); a plain reply (E)
     // finalizes to just its text. The host skips its fallback send only when the
     // stream reports `delivered`, so the handle MUST expose delivered (+ lastError).
-    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false, existingMsgId = null } = {}) {
+    startStreamMessage(initialText, { chatId, chatName, persona, showThink = false, existingMsgId = null, replyToMessageID = null } = {}) {
       // ── universal in-place editor (every bot reply) ──────────────────────────
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
@@ -877,7 +877,7 @@ export async function startBeeperBridge(opts = {}) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             return;
           }
-          const r = await sendMessage(cid, latest, {});
+          const r = await sendMessage(cid, latest, { replyToMessageID });
           if (!r) { handle.lastError = 'placeholder send failed'; return; }
           realId = await resolveSentMessageId(cid, latest);
           if (realId) {

@@ -58,7 +58,7 @@ describe('beeper-port adapter', () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     await port.send('!room', 'echo back');
-    expect(spy.sent).toEqual([{ text: 'echo back', opts: { chatId: '!room' } }]);
+    expect(spy.sent).toEqual([{ text: 'echo back', opts: { chatId: '!room', replyToMessageID: null } }]);
   });
 
   it('startStream wraps the real handle: update/finish proxy, delivered/lastError pass through', async () => {
@@ -70,7 +70,7 @@ describe('beeper-port adapter', () => {
     s.finish('done');
     const h = spy.streams[0];
     expect(h.init).toBe('⌛');
-    expect(h.opts).toEqual({ chatId: '!room' });
+    expect(h.opts).toMatchObject({ chatId: '!room' });
     expect(h.updates).toEqual(['partial']);
     expect(h.finals).toEqual(['done']);
     expect(s.delivered).toBe(true);          // reflects the live handle
@@ -93,7 +93,16 @@ describe('beeper-port adapter', () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     await port.send('!room', 'hola', { bodyEmoji: '🐶' });
-    expect(spy.sent).toEqual([{ text: '🐶 hola', opts: { chatId: '!room' } }]);
+    expect(spy.sent).toEqual([{ text: '🐶 hola', opts: { chatId: '!room', replyToMessageID: null } }]);
+  });
+
+  it('threads replyTo → replyToMessageID on both stream + send (mention reply quotes the message)', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });
+    port.startStream('!room', '🤔', { replyTo: 'm7' });
+    await port.send('!room', 'hi', { replyTo: 'm7' });
+    expect(spy.streams[0].opts.replyToMessageID).toBe('m7');
+    expect(spy.sent[0].opts.replyToMessageID).toBe('m7');
   });
 
   it('onEdit verdict flows back to the bridge; default is false when unwired', async () => {

@@ -8,8 +8,9 @@
 // the claude session factory, conv-state IO), so boot() itself is testable
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { createSpine } from '../../spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -85,6 +86,20 @@ export async function boot({
   const media = createMedia({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[media] ${m}`) });
   bridge.onMedia((m) => media.save(m));
 
+  // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
+  //     on the next boot. The bounce is otherwise invisible to the operator. ---
+  const sidecar = join(EGPT_HOME, 'state', 'restart-announce.json');
+  const KIND_OF = { 43: '/restart', 42: '/upgrade', 44: '/rewind' };
+  const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
+  const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
+  async function announceAndExit(code) {
+    const selfDm = cfg.whatsapp?.chat_id;
+    try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha() })); } catch {}
+    // best-effort going-down (capped so a slow POST can't wedge the exit)
+    try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}…`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
+    exit(code);
+  }
+
   const pool = createWarmPool({
     makeSession,
     max: cfg.warm?.max ?? 6,
@@ -108,13 +123,27 @@ export async function boot({
   const commands = createCommands({
     getConfig,
     send: (chatId, text) => bridge.send(chatId, text),
-    exit,
+    exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 
   const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs });
   spine.start();
+
+  // Back-up announce: if we respawned from a lifecycle command, tell Self (with
+  // the commit we came up on). Fire-and-forget — a cold boot has no sidecar.
+  // Gated on the real-node flag so tests don't read/send through it.
+  if (ingest) (async () => {
+    let sc; try { sc = JSON.parse(await readFile(sidecar, 'utf8')); } catch { return; }
+    try { await unlink(sidecar); } catch {}
+    if (!sc?.chatId) return;
+    const nowSha = shortSha();
+    const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
+    const subject = gitOut(['log', '-1', '--format=%s']);
+    try { await bridge.send(sc.chatId, `✅ egpt back up! (${head})${subject ? `\n\n${subject}` : ''}`); }
+    catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
+  })();
 
   // Liveness beat: "<tic|toc> <iso> <pid>" to EGPT_HOME/state/alive.txt, the
   // contract daemon-singleton/daemon-runtime read. The alternating tic/toc lets
@@ -138,7 +167,7 @@ export async function boot({
       onLog: (m) => log.line?.(`[ingest] ${m}`),
       handle: async (line) => {
         const code = lifecycleExit(line, { writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8') });
-        if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); exit(code); }
+        if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); await announceAndExit(code); }
         else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);
       },
     });

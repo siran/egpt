@@ -140,9 +140,11 @@ export function createSpine({
     if (!gating.mayReply(to, ev)) { await transcript.log(ev); return; }
 
     // Stream the reply live: open a sink, feed the brain's partials into it as
-    // they arrive (no placeholder — the message is the reply from its first
-    // token), then finalize. transcript records the final text.
-    const out = sender.open(ev.chatId, { being: to });
+    // they arrive, then finalize. A mention reply quotes the triggering message
+    // (operator: "mentions should always be replied to the message").
+    const m = ev.mention ?? {};
+    const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
+    const out = sender.open(ev.chatId, { being: to, replyTo });
     let reply;
     try {
       reply = await brain.turn(to, ev, (partial) => out.update(partial));
