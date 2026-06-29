@@ -1,7 +1,7 @@
-# uninstall-nssm-service.ps1 — remove one egpt v2 node's NSSM service.
+# uninstall-nssm-service.ps1 - remove one egpt v2 node's NSSM service.
 #
 # Removes only the named service (default 'egpt-daemon'). Never kills stray
-# node.exe and never touches other nodes — independent profiles are independent.
+# node.exe and never touches other nodes - independent profiles are independent.
 # No egpt code, config, or auth state is touched; service logs are preserved.
 #
 # Run from an ELEVATED PowerShell:
@@ -32,7 +32,7 @@ if ($svc) {
     Write-Host "Removing $ServiceName via NSSM..." -ForegroundColor Yellow
     & $nssm remove $ServiceName confirm | Out-Null
   } else {
-    Write-Host "NSSM not on PATH — falling back to sc.exe delete..." -ForegroundColor Yellow
+    Write-Host "NSSM not on PATH - falling back to sc.exe delete..." -ForegroundColor Yellow
     sc.exe delete $ServiceName | Out-Null
   }
   Write-Host "Removed $ServiceName." -ForegroundColor Green

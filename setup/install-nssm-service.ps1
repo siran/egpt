@@ -1,12 +1,12 @@
-# install-nssm-service.ps1 — install an egpt v2 node as a Windows Service via NSSM.
+# install-nssm-service.ps1 - install an egpt v2 node as a Windows Service via NSSM.
 #
 # A node is one profile: EGPT_HOME selects its config/conversations/state/sessions
-# (default ~/.egpt). Independent nodes coexist by using different profiles — each
+# (default ~/.egpt). Independent nodes coexist by using different profiles - each
 # gets its own service, its own ~/.egptN. This installs ONE such node.
 #
 # The service runs:  node egpt-daemon.mjs   (the supervisor; it spawns `node
 # egpt.mjs` = boot(), respawns on crash, restarts a wedged spine, handles the
-# /upgrade /restart /rewind exit codes). No --headless, no role flags — boot()
+# /upgrade /restart /rewind exit codes). No --headless, no role flags - boot()
 # IS the node. EGPT_HOME is set in the service environment and inherited by the
 # spine, so the whole node follows the one profile.
 #
@@ -69,7 +69,7 @@ $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $daemonPath = Join-Path $repoRoot 'egpt-daemon.mjs'
 $node       = 'C:\Program Files\nodejs\node.exe'
 if (-not (Test-Path $daemonPath)) { throw "egpt-daemon.mjs not found at $daemonPath" }
-if (-not (Test-Path $node))       { throw "node.exe not found at $node — install Node.js or edit `$node in this script" }
+if (-not (Test-Path $node))       { throw "node.exe not found at $node - install Node.js or edit the node path in this script" }
 
 Write-Host ""
 Write-Host "About to install node:" -ForegroundColor Cyan
@@ -102,7 +102,7 @@ Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cya
 & $nssm set $ServiceName AppDirectory        $repoRoot
 & $nssm set $ServiceName AppEnvironmentExtra  "EGPT_HOME=$EgptHome"      # the one knob that selects the profile
 & $nssm set $ServiceName DisplayName          "egpt node ($ServiceName)"
-& $nssm set $ServiceName Description           "egpt v2 node — node egpt-daemon.mjs (supervisor) -> egpt.mjs (boot). Profile $EgptHome."
+& $nssm set $ServiceName Description           "egpt v2 node - node egpt-daemon.mjs (supervisor) -> egpt.mjs (boot). Profile $EgptHome."
 & $nssm set $ServiceName Start                SERVICE_AUTO_START
 & $nssm set $ServiceName ObjectName           $cred.UserName $cred.GetNetworkCredential().Password
 & $nssm set $ServiceName AppStdout            $stdoutLog
@@ -114,7 +114,7 @@ Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cya
 & $nssm set $ServiceName AppRotateBytes       10485760   # 10 MB
 & $nssm set $ServiceName AppExit Default      Restart
 & $nssm set $ServiceName AppRestartDelay      5000       # 5s before restart on crash
-& $nssm set $ServiceName AppStopMethodConsole 10000      # 10s graceful Ctrl+C (SIGTERM → boot stop)
+& $nssm set $ServiceName AppStopMethodConsole 10000      # 10s graceful Ctrl+C (SIGTERM -> boot stop)
 
 # SCM-level recovery: restart the wrapper if it (not just the node child) is killed.
 & sc.exe failure $ServiceName reset=86400 actions=restart/5000/restart/5000/restart/5000 | Out-Null
