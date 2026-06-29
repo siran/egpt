@@ -26,7 +26,7 @@ function fakeBridge() {
   };
 }
 function fakeBrain() {
-  return { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, being }; } };
+  return { calls: [], async turn(being, ev, onPartial) { this.calls.push({ being, ev }); onPartial?.(`↩ ${ev.body}`); return { text: `↩ ${ev.body}`, being }; } };
 }
 function memTranscript() {
   let state = emptyState();

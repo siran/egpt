@@ -70,7 +70,7 @@
  * @property {{ resolve: (ev: InboundEvent) => string }} router          @being → local being target
  * @property {{ mayReceive: (being: string, ev: InboundEvent) => boolean,
  *             mayReply:   (being: string, ev: InboundEvent) => boolean }} gating   per-chat mode + pause + mention
- * @property {{ deliver: (chatId: string, reply: any) => void|Promise<void> }} sender   stream-edit / one-shot delivery
+ * @property {{ open: (chatId: string) => { update: (partial: any) => void, finish: (reply: any) => Promise<void>, fail?: (e: any) => void } }} sender   live-stream delivery (open → update* → finish)
  * @property {{ log: (ev: InboundEvent, reply?: any) => void }} transcript   "file is the conversation"
  * @property {{ runDue: (now: number) => void }} heartbeats               due-heartbeat scan + accum flush
  */
@@ -131,8 +131,18 @@ export function createSpine({
     // lands when the real gating service is wired in Phase 3.
     if (!gating.mayReply(to, ev)) { await transcript.log(ev); return; }
 
-    const reply = await brain.turn(to, ev);
-    await sender.deliver(ev.chatId, reply);
+    // Stream the reply live: open a sink, feed the brain's partials into it as
+    // they arrive (no placeholder — the message is the reply from its first
+    // token), then finalize. transcript records the final text.
+    const out = sender.open(ev.chatId);
+    let reply;
+    try {
+      reply = await brain.turn(to, ev, (partial) => out.update(partial));
+    } catch (e) {
+      await out.fail?.(e);
+      throw e;
+    }
+    await out.finish(reply);
     await transcript.log(ev, reply);
     await store?.recordThread?.({ ev, reply, being: to });
   }

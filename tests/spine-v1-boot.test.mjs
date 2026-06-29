@@ -27,7 +27,7 @@ function fakeStart() {
 
 // fake claude session: the warm pool calls makeSession(brainOptions) → { turn, close, sessionId }.
 function fakeSession(opts) {
-  return { sessionId: opts.sessionId ?? 'sess-1', async turn(message) { return { text: `↩ ${message}`, sessionId: this.sessionId }; }, close() {} };
+  return { sessionId: opts.sessionId ?? 'sess-1', async turn(message, onUpdate) { onUpdate?.(`↩ ${message}`); return { text: `↩ ${message}`, sessionId: this.sessionId }; }, close() {} };
 }
 
 // in-memory fs seam so the test NEVER writes into the real ~/.egpt profile.

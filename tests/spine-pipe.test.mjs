@@ -37,7 +37,10 @@ function fakeGating({ receive = true, reply = true } = {}) {
 
 function fakeTranscript() { return { entries: [], log(ev, reply) { this.entries.push({ ev, reply }); } }; }
 // sender wraps the bridge — a real round-trip: inbound via bridge, outbound via bridge.
-function fakeSender(bridge) { return { deliver(chatId, reply) { bridge.send(chatId, reply.text); } }; }
+// open→update*→finish; this fake one-shots on finish (the fake brain doesn't stream).
+function fakeSender(bridge) {
+  return { open(chatId) { return { update() {}, async finish(reply) { const t = typeof reply === 'string' ? reply : reply?.text; if (t) bridge.send(chatId, t); } }; } };
+}
 function fakeHeartbeats() { return { ran: [], runDue(now) { this.ran.push(now); } }; }
 function fakeStore() { return { threads: [], recordThread(rec) { this.threads.push(rec); } }; }
 
