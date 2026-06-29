@@ -16,7 +16,9 @@ const DEFAULT_ROOT = dirname(fileURLToPath(new URL('../egpt-daemon.mjs', import.
 
 export function createDaemonRuntime(opts = {}) {
   const root = opts.root ?? DEFAULT_ROOT;
-  const egptHome = opts.egptHome ?? join(homedir(), '.egpt');
+  // Profile-aware: EGPT_HOME selects the node, so independent nodes (each its own
+  // ~/.egptN) get their own singleton + alive.txt and don't fight each other.
+  const egptHome = opts.egptHome ?? process.env.EGPT_HOME ?? join(homedir(), '.egpt');
   const argv = opts.argv ?? process.argv.slice(2);
   const platform = opts.platform ?? process.platform;
   const spawn = opts.spawn ?? nodeSpawn;
@@ -29,14 +31,24 @@ export function createDaemonRuntime(opts = {}) {
   const stdout = opts.stdout ?? process.stdout;
   const setTimeoutFn = opts.setTimeout ?? setTimeout;
   const setImmediateFn = opts.setImmediate ?? setImmediate;
+  const setIntervalFn = opts.setInterval ?? setInterval;
+  const clearIntervalFn = opts.clearInterval ?? clearInterval;
   const importModule = opts.importModule ?? ((url) => import(url));
   const now = opts.now ?? Date.now;
 
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
 
-  const headless = argv.includes('--headless');
-  const shellArgs = argv.filter((a) => a !== '--headless');
+  // Wedge check: the spine beats alive.txt (~60s). If a running child stops
+  // beating (alive process, dead loop), restart it. graceMs covers boot before
+  // the first beat; staleMs ~ a couple missed beats.
+  const livenessIntervalMs = opts.livenessIntervalMs ?? 30_000;
+  const aliveStaleMs = opts.aliveStaleMs ?? 150_000;
+  const aliveGraceMs = opts.aliveGraceMs ?? 90_000;
+  let childStartedAt = 0, livenessTimer = null;
+
+  // v2 entry takes no role flags; pass argv straight through (egpt.mjs ignores it).
+  const shellArgs = argv;
 
   let stopping = false;
   let backoff = RESTART_MIN_MS;
@@ -44,6 +56,30 @@ export function createDaemonRuntime(opts = {}) {
 
   function log(msg) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
+  }
+
+  // Newest beat's epoch ms from alive.txt ("<tic|toc> <iso> <pid>"), or null.
+  function newestBeatMs(content) {
+    const beats = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+(\S+)\s+\d+\s*$/gm)];
+    if (!beats.length) return null;
+    const ts = Date.parse(beats[beats.length - 1][1]);
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  // The wedge check: a running child that stopped beating gets a SIGTERM, which
+  // routes through the normal exit handler → respawn. Honors a boot grace window
+  // so a just-spawned (still-booting) child is never killed for not-yet-beating.
+  function checkLiveness() {
+    if (stopping || !child) return;
+    if (now() - childStartedAt < aliveGraceMs) return;
+    let content = '';
+    try { content = readFileSync(alivePath, 'utf8'); } catch { /* no beat file yet */ }
+    const beat = newestBeatMs(content);
+    const age = beat == null ? Infinity : now() - beat;
+    if (age > aliveStaleMs) {
+      log(`spine wedged — alive beat ${beat == null ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s) — restarting`);
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    }
   }
 
   function gitVersion(cwd = root) {
@@ -128,11 +164,12 @@ export function createDaemonRuntime(opts = {}) {
   function spawnShell() {
     if (stopping) return null;
     const appPath = join(root, 'egpt.mjs');
-    const args = [appPath, ...shellArgs, ...(headless ? ['--headless'] : [])];
+    const args = [appPath, ...shellArgs];
     log('starting node egpt.mjs');
+    childStartedAt = now();
     child = spawn('node', args, {
       cwd: root,
-      stdio: headless ? 'ignore' : 'inherit',
+      stdio: 'inherit',   // NSSM captures stdout/stderr to the service logs
       env: { ...processObj.env, EGPT_SUPERVISED: '1' },
     });
 
@@ -184,6 +221,7 @@ export function createDaemonRuntime(opts = {}) {
   function shutdown(sig) {
     stopping = true;
     log(`${sig} received — stopping egpt-daemon`);
+    if (livenessTimer) { clearIntervalFn(livenessTimer); livenessTimer = null; }
     if (child) {
       try { child.kill('SIGTERM'); } catch {}
     }
@@ -213,13 +251,19 @@ export function createDaemonRuntime(opts = {}) {
     registerSignals();
     if (!checkSingleton()) return null;
     const v = gitVersion(root);
-    log(`egpt-daemon up — running app from ${root}`);
+    log(`egpt-daemon up — running app from ${root} (profile ${egptHome})`);
     log(`version: ${v.sha} (${v.tag}, branch ${v.branch})`);
-    return spawnShell();
+    const c = spawnShell();
+    if (livenessIntervalMs > 0 && !livenessTimer) {
+      livenessTimer = setIntervalFn(checkLiveness, livenessIntervalMs);
+      livenessTimer?.unref?.();
+    }
+    return c;
   }
 
   return {
     buildExtension,
+    checkLiveness,
     checkSingleton,
     gitVersion,
     registerSignals,
@@ -229,6 +273,6 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, headless, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, shellArgs: [...shellArgs] }; },
   };
 }

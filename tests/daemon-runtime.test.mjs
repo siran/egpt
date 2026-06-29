@@ -74,6 +74,11 @@ function makeRuntime(extra = {}) {
     liveDaemonPid: extra.liveDaemonPid ?? (() => null),
     setImmediate: extra.setImmediate ?? ((fn) => fn()),
     setTimeout: extra.setTimeout ?? (() => {}),
+    setInterval: extra.setInterval ?? (() => 1),       // recording id; no real timer
+    clearInterval: extra.clearInterval ?? (() => {}),
+    livenessIntervalMs: extra.livenessIntervalMs,
+    aliveStaleMs: extra.aliveStaleMs,
+    aliveGraceMs: extra.aliveGraceMs,
     importModule: extra.importModule ?? (async () => ({})),
     now: extra.now ?? (() => Date.UTC(2026, 5, 18, 12, 0, 0)),
   });
@@ -90,22 +95,59 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(0);
   });
 
-  it('spawns from the fixed root in headless supervised mode', () => {
+  it('spawns the v2 entry (node egpt.mjs) from the fixed root — no role flags, stdio inherit', () => {
     const root = 'C:/repo/egpt';
-    const { runtime, children } = makeRuntime({
-      argv: ['--headless', '--foo'],
-    });
+    const { runtime, children } = makeRuntime({ argv: [] });
 
     runtime.start();
 
     expect(children).toHaveLength(1);
     expect(children[0].cmd).toBe('node');
-    expect(children[0].args).toEqual([join(root, 'egpt.mjs'), '--foo', '--headless']);
+    expect(children[0].args).toEqual([join(root, 'egpt.mjs')]);   // no --headless, no flags
     expect(children[0].opts).toMatchObject({
       cwd: root,
-      stdio: 'ignore',
+      stdio: 'inherit',   // NSSM captures stdout/stderr to the service logs
       env: expect.objectContaining({ EGPT_SUPERVISED: '1' }),
     });
+  });
+
+  it('wedge check: a stale alive beat past the grace window restarts the child', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999\n',  // ~1h-old beat
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;                 // past the 1s grace; beat is ~1h stale
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual(['SIGTERM']);
+  });
+
+  it('wedge check: still inside the boot grace window → child is left alone (no beat yet)', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      readFileSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      aliveGraceMs: 90_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 1_000;                 // well within grace
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual([]);
+  });
+
+  it('wedge check: a fresh beat leaves a healthy child running', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      readFileSync: () => `toc ${new Date(clock - 5_000).toISOString()} 999\n`,  // 5s old
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual([]);
   });
 
   it('exit code 43 restarts immediately without upgrade work', async () => {

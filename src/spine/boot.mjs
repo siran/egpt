@@ -8,7 +8,7 @@
 // the claude session factory, conv-state IO), so boot() itself is testable
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { createSpine } from '../../spine.mjs';
@@ -33,9 +33,11 @@ export async function boot({
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
   makeSession = createWarmCliSession, // the warm-session factory (null-safe for tests)
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
+  io = {},                            // fs seam for transcript + brainpool ({appendFile,mkdir,existsSync}); real fs by default. Tests inject in-memory so they never touch the profile.
   log = { line: (s) => { try { console.error(s); } catch {} } },
   now = () => Date.now(),
   tickMs = 5 * 60_000,
+  aliveMs = 0,                        // >0: beat EGPT_HOME/state/alive.txt so the daemon's wedge check sees liveness
 } = {}) {
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
@@ -69,13 +71,30 @@ export async function boot({
     identity: createIdentity({ now }),
     gating: createGating({ getConfig }),
     router: createRouter(),
-    transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge }),
     heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
   };
-  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   const spine = createSpine({ bridge, brain, ...services, clock: { now }, log, tickMs });
   spine.start();
-  return { spine, bridge, pool, cfg, stop: () => spine.stop() };
+
+  // Liveness beat: "<tic|toc> <iso> <pid>" to EGPT_HOME/state/alive.txt, the
+  // contract daemon-singleton/daemon-runtime read. The alternating tic/toc lets
+  // a reader confirm the file is actually being rewritten, not just timestamped.
+  let aliveTimer = null, beat = 0;
+  const alivePath = join(EGPT_HOME, 'state', 'alive.txt');
+  async function writeAlive() {
+    try {
+      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+      await writeFile(alivePath, `${beat++ % 2 ? 'toc' : 'tic'} ${new Date(now()).toISOString()} ${process.pid}\n`);
+    } catch (e) { log.line?.(`[alive] ${e?.message ?? e}`); }
+  }
+  if (aliveMs > 0) { await writeAlive(); aliveTimer = setInterval(writeAlive, aliveMs); aliveTimer.unref?.(); }
+
+  return {
+    spine, bridge, pool, cfg,
+    stop: () => { if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; } spine.stop(); },
+  };
 }

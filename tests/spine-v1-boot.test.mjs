@@ -30,6 +30,9 @@ function fakeSession(opts) {
   return { sessionId: opts.sessionId ?? 'sess-1', async turn(message) { return { text: `↩ ${message}`, sessionId: this.sessionId }; }, close() {} };
 }
 
+// in-memory fs seam so the test NEVER writes into the real ~/.egpt profile.
+const memIo = () => ({ appendFile: async () => {}, mkdir: async () => {}, existsSync: () => false });
+
 describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
@@ -42,6 +45,7 @@ describe('boot()', () => {
       makeSession: fakeSession,
       loadState: async () => state,
       writeState: async (s) => { state = s; },
+      io: memIo(),
       now: () => Date.UTC(2026, 5, 29, 14, 5),
       tickMs: 0,
       log: { line: () => {} },
@@ -81,7 +85,7 @@ describe('boot()', () => {
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
-      tickMs: 0, log: { line: () => {} },
+      io: memIo(), tickMs: 0, log: { line: () => {} },
     });
     await spy.onIncoming('hola', { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', msgKey: 'm1' });
     expect(spy.streams).toHaveLength(0);

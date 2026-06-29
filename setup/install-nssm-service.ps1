@@ -1,35 +1,42 @@
-# install-nssm-service.ps1 - install egpt-daemon as a Windows Service via NSSM.
+# install-nssm-service.ps1 — install an egpt v2 node as a Windows Service via NSSM.
 #
-# Why: on Modern Standby (S0 Low Power Idle) hardware where Task Scheduler
-# wakes are aggressively suppressed (operator 2026-06-05 testing on Ryzen
-# 7 7730U), a continuously-running Windows Service has a better chance of
-# being granted execution windows during sleep - particularly to service
-# the live WebSocket connection to web.whatsapp.com. The Task Scheduler
-# approach is left intact and stopped (not deleted), so this can be backed
-# out by running uninstall-nssm-service.ps1 + re-enabling the task.
+# A node is one profile: EGPT_HOME selects its config/conversations/state/sessions
+# (default ~/.egpt). Independent nodes coexist by using different profiles — each
+# gets its own service, its own ~/.egptN. This installs ONE such node.
 #
-# Architecture mirrors the current Task Scheduler setup:
-#   - Runs node.exe egpt-daemon.mjs --headless
-#   - As the configured user (REVE\an), so WA auth state + ~/.egpt access work
-#   - Auto-restart on crash, similar effect to TS RestartOnFailure
-#   - Writes service stdout/stderr to ~/.egpt/service-{stdout,stderr}.log
+# The service runs:  node egpt-daemon.mjs   (the supervisor; it spawns `node
+# egpt.mjs` = boot(), respawns on crash, restarts a wedged spine, handles the
+# /upgrade /restart /rewind exit codes). No --headless, no role flags — boot()
+# IS the node. EGPT_HOME is set in the service environment and inherited by the
+# spine, so the whole node follows the one profile.
 #
-# Run from an ELEVATED PowerShell:
-#     powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1
+# Run from an ELEVATED PowerShell, from the repo root:
+#   # production node (default profile ~/.egpt, service 'egpt-daemon'):
+#   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1
+#   # a second, isolated node on profile ~/.egpt2 (service 'egpt2-daemon'):
+#   powershell -ExecutionPolicy Bypass -File .\setup\install-nssm-service.ps1 -EgptHome "$env:USERPROFILE\.egpt2"
 #
-# After install, verify with:
-#     Get-Service egpt-daemon
-#     Get-Content $env:USERPROFILE\.egpt\service-stdout.log -Tail 20
-#     Get-Content $env:USERPROFILE\.egpt\wa-bridge.log -Tail 20
-#
-# To remove: setup\uninstall-nssm-service.ps1
+# Remove:  setup\uninstall-nssm-service.ps1 -ServiceName <name>
+
+param(
+  [string]$EgptHome    = $(if ($env:EGPT_HOME) { $env:EGPT_HOME } else { Join-Path $env:USERPROFILE '.egpt' }),
+  [string]$ServiceName = ''
+)
 
 $ErrorActionPreference = 'Stop'
+
+# Derive the service name from the profile folder: ~/.egpt -> egpt-daemon,
+# ~/.egpt2 -> egpt2-daemon. Keeps nodes from colliding on one machine.
+if (-not $ServiceName) {
+  $base = (Split-Path $EgptHome -Leaf) -replace '^\.', ''   # ".egpt2" -> "egpt2"
+  if (-not $base) { $base = 'egpt' }
+  $ServiceName = "$base-daemon"
+}
 
 # --- 1. ensure elevated ---
 $me = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Host "This script must be run from an ELEVATED PowerShell. Right-click PowerShell -> Run as administrator." -ForegroundColor Red
+  Write-Host "This script must be run from an ELEVATED PowerShell (Run as administrator)." -ForegroundColor Red
   exit 1
 }
 
@@ -38,168 +45,96 @@ $nssm = (Get-Command nssm -ErrorAction SilentlyContinue).Source
 if (-not $nssm) {
   Write-Host "NSSM not found. Installing via winget..." -ForegroundColor Yellow
   winget install --id NSSM.NSSM --silent --accept-source-agreements --accept-package-agreements
-  # Refresh PATH so this session can find it
   $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')
   $nssm = (Get-Command nssm -ErrorAction SilentlyContinue).Source
-  if (-not $nssm) { throw "NSSM install via winget didn't put nssm on the PATH. Install manually from https://nssm.cc/download and re-run." }
+  if (-not $nssm) { throw "NSSM install via winget didn't put nssm on the PATH. Install from https://nssm.cc/download and re-run." }
 }
 Write-Host "NSSM: $nssm" -ForegroundColor Cyan
 
-# --- 2b. copy nssm.exe to a renamed binary so Task Manager shows
-#         'egpt-service.exe' instead of 'nssm.exe' for the service host.
-#         The renamed copy still IS nssm — the binary just has a friendlier
-#         name. NSSM honors any rename of its executable: SCM launches
-#         whatever path is registered as the service ImagePath, so we point
-#         that at the renamed copy. All `nssm set/start/stop/remove` commands
-#         in the rest of this script still use the canonical $nssm (those
-#         are admin operations that don't care which copy is invoked). ---
-# The renamed nssm copy lives in the repo (setup/bin, gitignored) — NOT in ~/.egpt,
-# which is for config/state/personal data only (operator 2026-06-23).
+# --- 2b. host the service from a renamed nssm copy so Task Manager shows a
+#         friendly name (egpt-service.exe) instead of nssm.exe. The copy lives in
+#         the repo (setup/bin, gitignored), not in the profile dir. ---
 $serviceBinDir = Join-Path $PSScriptRoot 'bin'
 if (-not (Test-Path $serviceBinDir)) { New-Item -ItemType Directory -Path $serviceBinDir -Force | Out-Null }
 $serviceBin = Join-Path $serviceBinDir 'egpt-service.exe'
-# Resolve $nssm if it's a winget shim symlink — symlinks can't be SCM ImagePath
-# (SCM derefs the link but Get-Command may have returned the link target via
-# the shim binary). Copy from the actual file either way.
 $nssmReal = (Get-Item $nssm).FullName
 if (-not (Test-Path $serviceBin) -or
     (Get-Item $serviceBin).Length -ne (Get-Item $nssmReal).Length -or
     (Get-Item $serviceBin).LastWriteTime -lt (Get-Item $nssmReal).LastWriteTime) {
-  Write-Host "Copying $nssmReal -> $serviceBin (so the service appears in Task Manager as egpt-service.exe)..." -ForegroundColor Cyan
   Copy-Item -Path $nssmReal -Destination $serviceBin -Force
-} else {
-  Write-Host "Reusing existing $serviceBin (matches winget NSSM)." -ForegroundColor DarkGray
 }
 
-# --- 3. resolve egpt paths ---
+# --- 3. resolve paths (THIS repo checkout runs the node) ---
 $repoRoot   = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $daemonPath = Join-Path $repoRoot 'egpt-daemon.mjs'
 $node       = 'C:\Program Files\nodejs\node.exe'
 if (-not (Test-Path $daemonPath)) { throw "egpt-daemon.mjs not found at $daemonPath" }
-if (-not (Test-Path $node))       { throw "node.exe not found at $node - install Node.js or edit this script's `\$node path" }
+if (-not (Test-Path $node))       { throw "node.exe not found at $node — install Node.js or edit `$node in this script" }
 
-# --- 4. remove any legacy egpt-spine Task Scheduler entry so we don't run
-#        TWO daemons. The XML definition stays in setup/egpt-spine.xml as
-#        the documented fallback path; a user who wants to revert can
-#        re-import it with schtasks /Create /XML setup\egpt-spine.xml. ---
-# Use the ScheduledTasks cmdlets, NOT native schtasks. Under
-# $ErrorActionPreference='Stop', schtasks' stderr on a missing task is wrapped
-# in a terminating NativeCommandError, so the old `schtasks /Query ... 2>$null`
-# THREW on a machine that never had the egpt-spine task (a fresh worker),
-# aborting the whole install (operator 2026-06-10). Get-ScheduledTask returns
-# $null (with SilentlyContinue) instead of erroring; existence is the object,
-# not an exit code.
-$existingTask = Get-ScheduledTask -TaskName egpt-spine -ErrorAction SilentlyContinue
-if ($existingTask) {
-  Write-Host "Removing legacy egpt-spine Task Scheduler task..." -ForegroundColor Yellow
-  try { Stop-ScheduledTask -TaskName egpt-spine -ErrorAction SilentlyContinue } catch {}
-  Unregister-ScheduledTask -TaskName egpt-spine -Confirm:$false -ErrorAction SilentlyContinue
-  Write-Host "  (Re-create with: schtasks /Create /XML setup\egpt-spine.xml /TN egpt-spine /RU <user> /RP *)" -ForegroundColor DarkGray
-}
+Write-Host ""
+Write-Host "About to install node:" -ForegroundColor Cyan
+Write-Host "  service : $ServiceName"
+Write-Host "  repo    : $repoRoot"
+Write-Host "  profile : $EgptHome   (EGPT_HOME)"
+Write-Host ""
 
-# --- 5. kill any leftover node.exe so the new service starts cleanly ---
-Get-Process node -ErrorAction SilentlyContinue | ForEach-Object {
-  Write-Host "Killing leftover node pid $($_.Id)..." -ForegroundColor DarkGray
-  Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-}
-Start-Sleep -Seconds 2
-
-# --- 6. credentials for service principal (so it can read ~/.egpt) ---
+# --- 4. credentials: the service runs as you, so it can read the profile + your
+#        `claude` login. ---
 $svcUser = "$env:USERDOMAIN\$env:USERNAME"
-$cred = Get-Credential -UserName $svcUser -Message "Password for $svcUser (the service runs as this user so it can access ~/.egpt)"
+$cred = Get-Credential -UserName $svcUser -Message "Password for $svcUser (the service runs as you so it can read $EgptHome and your claude login)"
 
-# --- 7. if the service already exists, remove it first (clean slate) ---
-$existing = Get-Service -Name 'egpt-daemon' -ErrorAction SilentlyContinue
-if ($existing) {
-  Write-Host "Removing existing egpt-daemon service (clean reinstall)..." -ForegroundColor Yellow
-  # No `2>&1`: redirecting native stderr into the PS pipeline wraps it in a
-  # terminating NativeCommandError under $ErrorActionPreference='Stop' (same
-  # class as the schtasks fix above). Plain `| Out-Null` silences stdout;
-  # any nssm stderr just prints to the console, harmless on cleanup.
-  & $nssm stop   egpt-daemon confirm | Out-Null
-  & $nssm remove egpt-daemon confirm | Out-Null
+# --- 5. clean reinstall of THIS service only (never touches other nodes/processes) ---
+if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+  Write-Host "Removing existing $ServiceName service (clean reinstall)..." -ForegroundColor Yellow
+  & $nssm stop   $ServiceName confirm | Out-Null
+  & $nssm remove $ServiceName confirm | Out-Null
   Start-Sleep -Seconds 1
 }
 
-# --- 8. install + configure the service ---
-$logDir = Join-Path $env:USERPROFILE '.egpt\logs'
+# --- 6. install + configure ---
+$logDir = Join-Path $EgptHome 'logs'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $stdoutLog = Join-Path $logDir 'service-stdout.log'
 $stderrLog = Join-Path $logDir 'service-stderr.log'
 
-Write-Host "Installing egpt-daemon service (host: $serviceBin)..." -ForegroundColor Cyan
-# Use the renamed binary for `install` so SCM records ImagePath = egpt-service.exe.
-# All subsequent `nssm set/start/stop` calls can use either copy — they're
-# admin operations that just talk to SCM about config; they don't change
-# which exe is the service host.
-& $serviceBin install egpt-daemon $node "$daemonPath" --headless
-& $nssm set egpt-daemon AppDirectory       $repoRoot
-& $nssm set egpt-daemon DisplayName        'egpt personal AI bridge daemon'
-& $nssm set egpt-daemon Description        'Node.js egpt-daemon.mjs wrapped via NSSM. Holds the WhatsApp bridge + engine. Equivalent to the egpt-spine Task Scheduler task; replaces it on Modern Standby hardware where TS wakes are suppressed during sleep.'
-& $nssm set egpt-daemon Start              SERVICE_AUTO_START
-& $nssm set egpt-daemon ObjectName         $cred.UserName $cred.GetNetworkCredential().Password
-& $nssm set egpt-daemon AppStdout          $stdoutLog
-& $nssm set egpt-daemon AppStderr          $stderrLog
-& $nssm set egpt-daemon AppStdoutCreationDisposition 4   # OPEN_ALWAYS (append)
-& $nssm set egpt-daemon AppStderrCreationDisposition 4   # OPEN_ALWAYS (append)
-& $nssm set egpt-daemon AppRotateFiles     1
-& $nssm set egpt-daemon AppRotateOnline    1
-& $nssm set egpt-daemon AppRotateBytes     10485760   # 10 MB per rotation
-& $nssm set egpt-daemon AppExit Default    Restart
-& $nssm set egpt-daemon AppRestartDelay    5000      # 5 s before restart on crash
-& $nssm set egpt-daemon AppStopMethodSkip  0          # use all stop methods (Ctrl+C, WM_CLOSE, terminate)
-& $nssm set egpt-daemon AppStopMethodConsole 10000    # 10 s for graceful Ctrl+C
-& $nssm set egpt-daemon AppStopMethodWindow  5000     # 5 s for WM_CLOSE
-& $nssm set egpt-daemon AppStopMethodThreads 5000     # 5 s for thread termination
+Write-Host "Installing $ServiceName (host: $serviceBin)..." -ForegroundColor Cyan
+& $serviceBin install $ServiceName $node "$daemonPath"
+& $nssm set $ServiceName AppDirectory        $repoRoot
+& $nssm set $ServiceName AppEnvironmentExtra  "EGPT_HOME=$EgptHome"      # the one knob that selects the profile
+& $nssm set $ServiceName DisplayName          "egpt node ($ServiceName)"
+& $nssm set $ServiceName Description           "egpt v2 node — node egpt-daemon.mjs (supervisor) -> egpt.mjs (boot). Profile $EgptHome."
+& $nssm set $ServiceName Start                SERVICE_AUTO_START
+& $nssm set $ServiceName ObjectName           $cred.UserName $cred.GetNetworkCredential().Password
+& $nssm set $ServiceName AppStdout            $stdoutLog
+& $nssm set $ServiceName AppStderr            $stderrLog
+& $nssm set $ServiceName AppStdoutCreationDisposition 4   # OPEN_ALWAYS (append)
+& $nssm set $ServiceName AppStderrCreationDisposition 4
+& $nssm set $ServiceName AppRotateFiles       1
+& $nssm set $ServiceName AppRotateOnline      1
+& $nssm set $ServiceName AppRotateBytes       10485760   # 10 MB
+& $nssm set $ServiceName AppExit Default      Restart
+& $nssm set $ServiceName AppRestartDelay      5000       # 5s before restart on crash
+& $nssm set $ServiceName AppStopMethodConsole 10000      # 10s graceful Ctrl+C (SIGTERM → boot stop)
 
-# --- 8b. SCM-level failure actions ---
-# NSSM's AppExit/AppRestartDelay handle the case where the wrapped node.exe
-# child crashes (NSSM sees its child die and respawns it). They do NOT
-# handle the case where the wrapper itself (egpt-service.exe) dies - e.g.
-# someone End-Tasks it from Task Manager. For that we need SCM-level
-# recovery: actions registered with the Service Control Manager that fire
-# when the service process terminates unexpectedly.
-#
-# Without this, an End-Task on egpt-service.exe leaves the service stopped
-# until next reboot. With this, SCM restarts the wrapper after 5s, NSSM
-# starts back up, NSSM spawns node, normal operation resumes within ~10s.
-#
-# reset=86400 - reset the failure counter after a day of uptime so a long
-#               stable run doesn't accumulate phantom failures.
-# actions=restart/5000/restart/5000/restart/5000
-#             - first 3 failures: restart with 5s delay between attempts.
-# failureflag=1 - apply the actions even on "non-crash" stops (which is
-#                 how SCM categorizes a kill-from-Task-Manager). Default
-#                 is to only apply on crash; flag=1 enables for any
-#                 unexpected stop.
-Write-Host "Configuring SCM failure actions (restart 3x with 5s delay if wrapper killed)..." -ForegroundColor Cyan
-& sc.exe failure egpt-daemon reset=86400 actions=restart/5000/restart/5000/restart/5000 | Out-Null
-& sc.exe failureflag egpt-daemon 1 | Out-Null
+# SCM-level recovery: restart the wrapper if it (not just the node child) is killed.
+& sc.exe failure $ServiceName reset=86400 actions=restart/5000/restart/5000/restart/5000 | Out-Null
+& sc.exe failureflag $ServiceName 1 | Out-Null
 
-# --- 9. start it ---
-Write-Host "Starting egpt-daemon service..." -ForegroundColor Cyan
-& $nssm start egpt-daemon
-
+# --- 7. start ---
+Write-Host "Starting $ServiceName..." -ForegroundColor Cyan
+& $nssm start $ServiceName
 Start-Sleep -Seconds 3
-$svc = Get-Service egpt-daemon
+$svc = Get-Service $ServiceName
 Write-Host ""
 Write-Host "Service state: $($svc.Status)" -ForegroundColor $(if ($svc.Status -eq 'Running') {'Green'} else {'Red'})
 
 if ($svc.Status -eq 'Running') {
   Write-Host ""
-  Write-Host "Done. egpt is now running as a Windows Service." -ForegroundColor Green
-  Write-Host ""
-  Write-Host "Verify:" -ForegroundColor Cyan
-  Write-Host "  Get-Service egpt-daemon"
-  Write-Host "  Get-Content $stdoutLog -Tail 20 -Wait"
-  Write-Host "  Get-Content $env:USERPROFILE\.egpt\wa-bridge.log -Tail 20 -Wait"
-  Write-Host ""
-  Write-Host "Stop the service:    Stop-Service egpt-daemon"
-  Write-Host "Start the service:   Start-Service egpt-daemon"
-  Write-Host "Remove + restore TS: setup\uninstall-nssm-service.ps1"
+  Write-Host "Done. '$ServiceName' is running egpt from $repoRoot on profile $EgptHome." -ForegroundColor Green
+  Write-Host "  Get-Content `"$stdoutLog`" -Tail 20 -Wait"
+  Write-Host "  Stop:   Stop-Service $ServiceName"
+  Write-Host "  Remove: setup\uninstall-nssm-service.ps1 -ServiceName $ServiceName"
 } else {
-  Write-Host ""
-  Write-Host "Service did not reach Running state. Check the stderr log:" -ForegroundColor Red
-  Write-Host "  Get-Content $stderrLog -Tail 40"
+  Write-Host "Service did not reach Running. Check: Get-Content `"$stderrLog`" -Tail 40" -ForegroundColor Red
   exit 1
 }
