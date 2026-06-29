@@ -59,20 +59,25 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // ONLY when the stream did not deliver in place (§7 invariant — "the host
     // skips its fallback send only when the stream reports delivered").
     //
-    // opts: { showThink (adds the ✅ Done marker), persona, bodyEmoji }. The
-    // body_emoji is stamped onto every streamed edit + final here — the 🤔
-    // placeholder (init) stays unstamped so the thinking marker reads cleanly.
+    // B — the streaming REPLY (two-message train, operator 2026-06-29). Replies to
+    // the question (replyTo), body_emoji stamped on every frame, and a trailing ⏳
+    // marks "still streaming" — dropped on finish. No ✅ here: the ✅ lives on the
+    // status message A (postStatus/editStatus). opts: { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
-      const h = real.startStreamMessage(init, { chatId: chat, showThink: opts.showThink, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
+      const h = real.startStreamMessage(`${stamp(init)} ⏳`, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       return {
-        update: (t) => h.update(stamp(t)),
+        update: (t) => h.update(`${stamp(t)} ⏳`),
         finish: (t) => h.finish(stamp(t)),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
         fail: (e) => h.fail?.(e),
       };
     },
+
+    // A — the status message: post "🤔 Thinking…" and edit it to add a ✅ on finish.
+    async postStatus(chat, text) { return real.sendAndGetId ? real.sendAndGetId(text, { chatId: chat }) : null; },
+    editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
 
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),
