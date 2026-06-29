@@ -24,19 +24,20 @@ import { createHash } from 'node:crypto';
 import * as YAML from 'yaml';
 import { sanitizeSlug } from './src/sanitize.mjs';
 import { Room } from './src/room-core.mjs';
+import { EGPT_HOME } from './src/egpt-home.mjs';
 
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
-const PERSONALITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'personalities');
+const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 // Identity folders (operator 2026-05-26): an identity is a folder of NN-*.md
 // files (NN- orders the injection); operator overrides shipped, per folder.
 const IDENTITIES_SHIPPED_DIR  = join(_here, 'identities');
-const IDENTITIES_OPERATOR_DIR = join(homedir(), '.egpt', 'identities');
+const IDENTITIES_OPERATOR_DIR = join(EGPT_HOME, 'identities');
 // Canonical location of the per-contact YAML registry. Exported so
 // daemon + slashes + tools all agree. The registry sits OUTSIDE the
 // per-conversation dirs so conversation-e (cwd-locked to its own
 // slug dir) can't read it.
-export const CONV_YAML_PATH = join(homedir(), '.egpt', 'conversations.yaml');
+export const CONV_YAML_PATH = join(EGPT_HOME, 'conversations.yaml');
 
 // Known surfaces — used as the first dir level under conversations/
 // and the first key level under contacts: in the YAML. Adding a new
@@ -76,7 +77,7 @@ export function slugTranscriptPath(surface, slug) {
 // forcing every reader to re-derive the folder from surface+slug (operator
 // 2026-06-27: "it should be STORED, of course"). Same layout slugDir produces, so
 // it stays a stable pointer to the conversation's transcript.md / config / media.
-const _EGPT_HOME = join(homedir(), '.egpt');
+const _EGPT_HOME = join(EGPT_HOME);
 export function conversationPathOf(surface, slug) {
   return relative(_EGPT_HOME, slugDir(surface, slug)).split(/[\\/]/).join('/');
 }
@@ -117,7 +118,7 @@ export async function appendRenameLog(dir, from, to, reason = '') {
 // Once migrateToSurfaceLayout has run, callers use slugDir(surface, slug)
 // for the new ~/.egpt/conversations/<surface>/<slug>/ shape.
 function _legacySlugDir(slug) {
-  return join(homedir(), '.egpt', 'conversations', sanitizeSlug(slug));
+  return join(EGPT_HOME, 'conversations', sanitizeSlug(slug));
 }
 
 // system-e shared dir. All operator-DM contacts with personality='system'
@@ -125,7 +126,7 @@ function _legacySlugDir(slug) {
 // thread and ONE transcript file living here. Operator (2026-05-21):
 // "system-e is a same conversation thread" across surfaces — distinct from
 // per-chat conversation-e which stays surface-scoped under whatsapp/, etc.
-export const SYSTEM_SLUG_DIR = join(homedir(), '.egpt', 'conversations', '_system', 'system-e');
+export const SYSTEM_SLUG_DIR = join(EGPT_HOME, 'conversations', '_system', 'system-e');
 
 // Shared system-e thread state — sits at the YAML root, sibling to
 // `contacts:`. All system-personality dispatches read from / write to here
@@ -147,7 +148,7 @@ export function setSystemThread(state, patch) {
 // permissioning purposes we add it to conversation-e's --add-dir set).
 export function jidMediaDir(jid) {
   const sanitized = String(jid ?? '').replace(/@/g, '_').replace(/[^A-Za-z0-9_.-]/g, '_');
-  return join(homedir(), '.egpt', 'media', sanitized);
+  return join(EGPT_HOME, 'media', sanitized);
 }
 
 // Best-effort reverse of claude-code's project-dir sanitization.
@@ -390,7 +391,7 @@ export async function migrateToSurfaceLayout() {
 
   // Move slug-dirs: ~/.egpt/conversations/<slug>/ → conversations/whatsapp/<slug>/.
   // Iterate by primary entries (those with `.slug`, not aliases).
-  const newSurfaceRoot = join(homedir(), '.egpt', 'conversations', 'whatsapp');
+  const newSurfaceRoot = join(EGPT_HOME, 'conversations', 'whatsapp');
   await mkdir(newSurfaceRoot, { recursive: true });
   let dirsMoved = 0, missingDirs = 0;
   for (const [_jid, entry] of Object.entries(flat)) {
@@ -1048,8 +1049,8 @@ export async function readPersonalityMeta(name, opts = {}) {
 // Operator-editable rules + pointers files. These live in ~/.egpt/ but
 // get COPIED into <slug-dir>/ at /e new and /e persona so conversation-e
 // (sandboxed to its slug-dir) can `cat ./rules.md ./pointers.md`.
-const RULES_OPERATOR_PATH    = join(homedir(), '.egpt', 'rules.md');
-const POINTERS_OPERATOR_PATH = join(homedir(), '.egpt', 'pointers.md');
+const RULES_OPERATOR_PATH    = join(EGPT_HOME, 'rules.md');
+const POINTERS_OPERATOR_PATH = join(EGPT_HOME, 'pointers.md');
 
 // Read identity/rules/pointers content. Returns { identity, rules, pointers }
 // with empty strings (not null) for any missing file — easier downstream.
@@ -1308,7 +1309,7 @@ export function migrateJsonToYaml(jsonMap) {
 import { readdirSync } from 'node:fs';
 export async function migrateLayoutIfNeeded() {
   const newRegistry    = CONV_YAML_PATH;
-  const oldDirRoot     = join(homedir(), '.egpt', 'conversations', 'e');
+  const oldDirRoot     = join(EGPT_HOME, 'conversations', 'e');
   const oldYaml        = join(oldDirRoot, 'conversations.yaml');
   const oldJson        = join(oldDirRoot, 'conversations.json');
   if (existsSync(newRegistry)) return { skipped: 'new layout already in place' };

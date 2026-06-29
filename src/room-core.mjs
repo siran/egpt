@@ -21,6 +21,7 @@
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { EGPT_HOME } from "./egpt-home.mjs";
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 import { sanitizeSlug, sanitizeName } from './sanitize.mjs';
@@ -177,7 +178,7 @@ export class ConversationRoom extends Room {
     this.slug = slug;
   }
   baseDir() {
-    return join(homedir(), '.egpt', 'conversations', this.surface, sanitizeSlug(this.slug));
+    return join(EGPT_HOME, 'conversations', this.surface, sanitizeSlug(this.slug));
   }
 }
 
@@ -192,6 +193,6 @@ export class NamedRoom extends Room {
     this.name = name;
   }
   baseDir() {
-    return join(homedir(), '.egpt', 'rooms', sanitizeName(this.name));
+    return join(EGPT_HOME, 'rooms', sanitizeName(this.name));
   }
 }

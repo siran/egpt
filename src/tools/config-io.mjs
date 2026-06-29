@@ -11,15 +11,16 @@
 import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { EGPT_HOME } from "../egpt-home.mjs";
 import { homedir } from 'node:os';
 import * as YAML from 'yaml';
 
 // Canonical config now lives under ~/.egpt/config/ (operator 2026-06-23). Read
 // resolves the new location first, then the pre-move root path (~/.egpt/config.yaml)
 // so the migration can't brick boot; writes always go to the new config/ location.
-export const CONFIG_YAML_PATH = join(homedir(), '.egpt', 'config', 'config.yaml');
-const LEGACY_CONFIG_YAML = join(homedir(), '.egpt', 'config.yaml');
-export const CONFIG_JSON_LEGACY = join(homedir(), '.egpt', 'config.json');
+export const CONFIG_YAML_PATH = join(EGPT_HOME, 'config', 'config.yaml');
+const LEGACY_CONFIG_YAML = join(EGPT_HOME, 'config.yaml');
+export const CONFIG_JSON_LEGACY = join(EGPT_HOME, 'config.json');
 
 // The config.yaml to READ from — new config/ location, else the legacy root.
 function _readConfigYamlPath() {
@@ -77,8 +78,8 @@ export async function writeConfig(cfg) {
 // EGPT_CONFIG.siblings — every reader uses EGPT_CONFIG.siblings unchanged.
 // Sibling configs moved under ~/.egpt/config/agents/ (operator 2026-06-23); reads
 // fall back to the pre-move ~/.egpt/agent/ so the migration can't lose siblings.
-export const AGENT_DIR = join(homedir(), '.egpt', 'config', 'agents');
-const LEGACY_AGENT_DIR = join(homedir(), '.egpt', 'agent');
+export const AGENT_DIR = join(EGPT_HOME, 'config', 'agents');
+const LEGACY_AGENT_DIR = join(EGPT_HOME, 'agent');
 function _readAgentDir(dir) {
   if (dir !== AGENT_DIR) return dir;             // explicit override (tests) — honor it
   return existsSync(AGENT_DIR) ? AGENT_DIR : (existsSync(LEGACY_AGENT_DIR) ? LEGACY_AGENT_DIR : AGENT_DIR);

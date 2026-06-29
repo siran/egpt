@@ -9,8 +9,10 @@
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
 import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { createSpine } from '../../spine.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';
 import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
@@ -51,6 +53,7 @@ export async function boot({
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     isAllowedUser: (id) => (cfg.whatsapp?.allowed_users ?? []).includes(id),
     media: cfg.whatsapp?.media ?? {},
+    stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
 
