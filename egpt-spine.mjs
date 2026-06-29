@@ -5788,6 +5788,18 @@ function startSpineRuntime() {
       readPersonalityMeta: (personality) => conversationsState.readPersonalityMeta(personality),
       loadManifest: () => _loadIdentity(),
       loadIdentityFeed: (name) => conversationsState.readIdentityFeed(name),
+      // The per-chat identity, framed for the SYSTEM prompt as the brain's legitimate
+      // operating role (the brain is a COMPONENT of eGPT, not eGPT; this runs via the API,
+      // not the Claude app — so it's a real assistant deployment, not roleplay). Reads the
+      // conversation's installed identity.md, falling back to the shipped default. Sent
+      // every spawn but stable → prompt-cached (operator 2026-06-28).
+      readChatIdentity: (surface, slug) => {
+        let id = '';
+        try { id = readFileSync(join(conversationsState.slugDir(surface, slug), 'identity.md'), 'utf8').trim(); } catch { /* not installed yet */ }
+        if (!id) { try { id = readFileSync(join(APP_DIR, 'identities', 'default', '00-identity.md'), 'utf8').trim(); } catch { /* no default */ } }
+        if (!id) return '';
+        return `You are the reasoning engine of eGPT — a personal AI assistant the operator built and runs across their own messaging accounts, via the API (NOT the Claude app; this is a normal assistant deployment, not roleplay). You operate AS eGPT. eGPT's identity and voice:\n\n${id}`;
+      },
       // Full access to the folders of any room this contact's jids belong to,
       // so a per-contact E can read the shared transcript / room files when a
       // member asks about the room. Membership (any state) grants it; reception
