@@ -29,6 +29,7 @@ import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
+import { createMedia } from './media.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -62,15 +63,27 @@ export async function boot({
   });
   const _writeState = writeState ?? (async (s) => { await writeFile(CONV_YAML_PATH, serializeConvState(s), 'utf8'); });
 
+  // Voice transcription config: the whisper-cli profile (the bridge's default
+  // transcribeAudioFile uses it). The full server pipeline (fallback chain) is a
+  // later refinement; the cli path is self-contained.
+  const txSvc = cfg.transcription_service;
+  const transcribeCfg = txSvc?.[txSvc?.use_config]?.cli ?? cfg.transcription?.cli ?? cfg.whatsapp?.media?.audio_transcribe ?? null;
+
   // --- ports ---
   const bridge = await createBeeperBridgePort({
     beeperToken: cfg.beeper_token ?? cfg.whatsapp?.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     isAllowedUser: (id) => (cfg.whatsapp?.allowed_users ?? []).includes(id),
     media: cfg.whatsapp?.media ?? {},
+    transcribeCfg,
+    resolveTranscriptionService: async () => ({ enabled: true, postsBack: false }),   // transcribe voice → body; don't echo a 👂
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
+
+  // Persist incoming attachments into the chat's media/ folder + surface them to E.
+  const media = createMedia({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[media] ${m}`) });
+  bridge.onMedia((m) => media.save(m));
 
   const pool = createWarmPool({
     makeSession,
