@@ -45,7 +45,7 @@ describe('boot()', () => {
       makeSession: fakeSession,
       loadState: async () => state,
       writeState: async (s) => { state = s; },
-      io: memIo(),
+      io: memIo(), ingest: false,
       now: () => Date.UTC(2026, 5, 29, 14, 5),
       tickMs: 0,
       log: { line: () => {} },
@@ -85,7 +85,7 @@ describe('boot()', () => {
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
-      io: memIo(), tickMs: 0, log: { line: () => {} },
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
     });
     await spy.onIncoming('hola', { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', msgKey: 'm1' });
     expect(spy.streams).toHaveLength(0);

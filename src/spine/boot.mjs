@@ -27,6 +27,7 @@ import { createRouter } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
+import { createIngest, lifecycleExit } from './ingest.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -38,6 +39,8 @@ export async function boot({
   now = () => Date.now(),
   tickMs = 5 * 60_000,
   aliveMs = 0,                        // >0: beat EGPT_HOME/state/alive.txt so the daemon's wedge check sees liveness
+  ingest = true,                      // watch EGPT_HOME/ingest for /restart, /upgrade, /rewind (tests pass false)
+  exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
 } = {}) {
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
@@ -102,8 +105,28 @@ export async function boot({
   }
   if (aliveMs > 0) { await writeAlive(); aliveTimer = setInterval(writeAlive, aliveMs); aliveTimer.unref?.(); }
 
+  // Command ingest: drop /restart, /upgrade, or /rewind <ref> into EGPT_HOME/ingest.
+  let ingestWatcher = null;
+  if (ingest) {
+    ingestWatcher = createIngest({
+      dir: join(EGPT_HOME, 'ingest'),
+      io,
+      onLog: (m) => log.line?.(`[ingest] ${m}`),
+      handle: async (line) => {
+        const code = lifecycleExit(line, { writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8') });
+        if (code != null) { log.line?.(`[ingest] ${line} -> exit ${code}`); exit(code); }
+        else log.line?.(`[ingest] ignored: ${JSON.stringify(line)}`);
+      },
+    });
+    await ingestWatcher.start();
+  }
+
   return {
     spine, bridge, pool, cfg,
-    stop: () => { if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; } spine.stop(); },
+    stop: () => {
+      if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }
+      ingestWatcher?.stop();
+      spine.stop();
+    },
   };
 }
