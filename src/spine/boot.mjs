@@ -28,6 +28,7 @@ import { createTranscript } from './transcript.mjs';
 import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
+import { createCommands } from './commands.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -89,7 +90,17 @@ export async function boot({
   };
   const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
-  const spine = createSpine({ bridge, brain, ...services, clock: { now }, log, tickMs });
+  // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
+  // the same exit codes the daemon respawns on.
+  const commands = createCommands({
+    getConfig,
+    send: (chatId, text) => bridge.send(chatId, text),
+    exit,
+    writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
+    onLog: (m) => log.line?.(`[command] ${m}`),
+  });
+
+  const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs });
   spine.start();
 
   // Liveness beat: "<tic|toc> <iso> <pid>" to EGPT_HOME/state/alive.txt, the

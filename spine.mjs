@@ -85,6 +85,7 @@
 export function createSpine({
   bridge, brain, store,
   identity, router, gating, sender, transcript, heartbeats,
+  commands,                            // optional §2c command intercept (operator slash commands)
   clock = { now: () => Date.now() },
   log = {},
   tickMs = 0,
@@ -115,6 +116,13 @@ export function createSpine({
   //     dropped (C1.2). ---
   async function handleInbound(msg) {
     const ev = identity.build(msg);
+
+    // operator slash command (Self DM / authorized) → handled here, NEVER routed
+    // to the brain. Logged like any inbound, then executed (lifecycle exits the
+    // process; the daemon respawns). Runs before gating: a /restart works even in
+    // a muted/mention chat.
+    if (commands?.isCommand?.(ev)) { await transcript.log(ev); await commands.run(ev); return; }
+
     const to = router.resolve(ev);
 
     // mode gate, layer 1: does this being even RECEIVE this chat? ('off'/'mute'
