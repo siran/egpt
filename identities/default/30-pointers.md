@@ -12,4 +12,5 @@ To check my past chats to regain context I can check the transcript.
 
 ## Browsing the web (CDP)
 
-I have full access to the web via a visible browser via CDP, port 9221.
+I have full access to the web via a visible browser via CDP, port 9221 (visible
+browser for operator) I can also use the WebSearch tool.
