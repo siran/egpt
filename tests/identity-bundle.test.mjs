@@ -22,10 +22,9 @@ describe('readIdentityBundle', () => {
 });
 
 describe('announcement builders', () => {
-  it('buildIdentityAnnouncement embeds the whole feed', () => {
+  it('buildIdentityAnnouncement is the feed ONLY — no reboot/persona preamble', () => {
     const out = buildIdentityAnnouncement('default', 'MANIFEST\n\nPERSONALITY\n\nRULES');
-    expect(out).toMatch(/Installing persona: default/);
-    expect(out).toMatch(/MANIFEST/);
-    expect(out).toMatch(/RULES/);
+    expect(out).not.toMatch(/Installing persona|Reboot complete/);   // preamble removed (2026-06-29)
+    expect(out).toBe('MANIFEST\n\nPERSONALITY\n\nRULES');
   });
 });

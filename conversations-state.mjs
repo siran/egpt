@@ -1186,12 +1186,9 @@ export async function readIdentityFeed(name) {
 // Full-install announcement: the whole identity.d bundle (manifest +
 // personality + rules + pointers + any extras), re-grounding the model.
 export function buildIdentityAnnouncement(personalityName, feed) {
-  return [
-    'Reboot complete. All systems operational.',
-    `Installing persona: ${personalityName}`,
-    '',
-    String(feed ?? '').trim(),
-  ].join('\n');
+  // Feed ONLY the identity text — no "Reboot complete / Installing persona" preamble
+  // (operator 2026-06-29: that framing reads like a roleplay setup the model declines).
+  return String(feed ?? '').trim();
 }
 
 // Legacy frame kept for slash/egpt.mjs (the cross-chat @egpt variant) until it
