@@ -860,7 +860,7 @@ export async function startBeeperBridge(opts = {}) {
       // ── universal in-place editor (every bot reply) ──────────────────────────
       let latest = initialText, finished = false, cid = null, realId = null;
       let lastEditAt = 0, editTimer = null, pendingText = null, chain = Promise.resolve();
-      const EDIT_MIN_MS = 1500;   // debounce live edits so we don't hammer the API
+      const EDIT_MIN_MS = 400;   // debounce live edits (operator 2026-06-29: 1.5s felt sluggish; local Beeper API is fast)
       const handle = { delivered: false, lastError: null };
       const serial = (fn) => (chain = chain.then(fn, fn));   // never overlap PUTs (final edit wins)
 

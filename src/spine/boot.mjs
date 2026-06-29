@@ -42,6 +42,15 @@ export async function boot({
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
 
+  // The being's body_emoji (the bridge enforces it on outbound). E/persona →
+  // emojis.persona (default 🐶); siblings → their body_emoji.
+  const personaName = String(cfg.persona ?? 'e').toLowerCase();
+  const bodyEmojiOf = (being) => {
+    const b = String(being ?? '').toLowerCase();
+    if (b === 'e' || b === 'egpt' || b === personaName) return cfg.emojis?.persona ?? cfg.siblings?.e?.body_emoji ?? '🐶';
+    return cfg.siblings?.[b]?.body_emoji ?? cfg.emojis?.persona ?? '🐶';
+  };
+
   // conv-state YAML IO — default to the real file, missing = empty state.
   const _loadState = loadState ?? (async () => {
     try { return parseConvState(await readFile(CONV_YAML_PATH, 'utf8')); }
@@ -72,7 +81,7 @@ export async function boot({
     gating: createGating({ getConfig }),
     router: createRouter(),
     transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge }),
+    sender: createSender({ bridge, bodyEmojiOf }),
     heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
   };
   const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[brain] ${m}`) });

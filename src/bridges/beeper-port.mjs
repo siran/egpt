@@ -47,19 +47,30 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     onMedia(cb) { onMediaCb = cb; },
 
     // chat may be a room id, exact title, or slug — the real send resolves it.
-    send(chat, text) { return real.send(text, { chatId: chat }); },
+    // The bridge ENFORCES the being's body_emoji (operator contract): prefix it
+    // here so no caller can omit it.
+    send(chat, text, opts = {}) {
+      const body = opts.bodyEmoji ? `${opts.bodyEmoji} ${text}` : text;
+      return real.send(body, { chatId: chat });
+    },
 
     // In-place edit-stream. Returns the §2b { update, finish } plus delivered /
     // lastError passthrough: the sender's fallback-send (Phase 3) must send fresh
     // ONLY when the stream did not deliver in place (§7 invariant — "the host
     // skips its fallback send only when the stream reports delivered").
-    startStream(chat, init) {
-      const h = real.startStreamMessage(init, { chatId: chat });
+    //
+    // opts: { showThink (adds the ✅ Done marker), persona, bodyEmoji }. The
+    // body_emoji is stamped onto every streamed edit + final here — the 🤔
+    // placeholder (init) stays unstamped so the thinking marker reads cleanly.
+    startStream(chat, init, opts = {}) {
+      const h = real.startStreamMessage(init, { chatId: chat, showThink: opts.showThink, persona: opts.persona });
+      const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
       return {
-        update: (t) => h.update(t),
-        finish: (t) => h.finish(t),
+        update: (t) => h.update(stamp(t)),
+        finish: (t) => h.finish(stamp(t)),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
+        fail: (e) => h.fail?.(e),
       };
     },
 

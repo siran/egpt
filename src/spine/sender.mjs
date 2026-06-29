@@ -1,37 +1,35 @@
-// sender.mjs — the §2c sender service: deliver a being's reply as a LIVE stream.
+// sender.mjs — the §2c sender service: deliver a being's reply as a LIVE stream
+// with the thinking train (operator 2026-06-29, the beta-20 contract): post a
+// lone 🤔 immediately (renders big = "working"), stream the reply in place as the
+// brain writes it, and finish with a ✅ Done marker. Default ON — a surfaced
+// reply (every mention reply is surfaced) shows the train.
 //
-// No placeholder (operator 2026-06-29: "not even a placeholder, and streaming"):
-// nothing is posted until the brain's first token. The chat message IS the reply
-// from its first chunk and edits in place as more arrives (the bridge owns the
-// edit lifecycle + debounce). A brain that doesn't stream (no partials) falls
-// back to one finished send. The §7 invariant holds: a fresh send fires only when
-// the in-place stream did not deliver.
+// The body_emoji is the BEING's, resolved from config and handed to the bridge,
+// which ENFORCES it on every edit/final/fallback (see beeper-port). The §7
+// invariant holds: a fresh send fires only when the in-place stream didn't deliver.
 //
-// Usage from the loop:  const out = sender.open(chatId);
-//                       reply = await brain.turn(to, ev, out.update);
-//                       await out.finish(reply);
-export function createSender({ bridge } = {}) {
+// Loop usage:  const out = sender.open(chatId, { being });
+//              reply = await brain.turn(being, ev, out.update);
+//              await out.finish(reply);
+const PLACEHOLDER = '🤔';
+
+export function createSender({ bridge, bodyEmojiOf = () => null, showThink = true } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
+  const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
-    open(chatId) {
-      let stream = null;   // opened lazily on the first non-empty partial
-      const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
+    open(chatId, { being = 'e' } = {}) {
+      const bodyEmoji = bodyEmojiOf(being);
+      // Post 🤔 now (the thinking marker); the bridge edits it into the reply live.
+      const stream = bridge.startStream?.(chatId, PLACEHOLDER, { showThink, bodyEmoji, persona: being });
       return {
-        // each partial is the full text SO FAR (warm-cli accumulates), so the
-        // first one posts the message and the rest edit it.
-        update(partial) {
-          const t = textOf(partial);
-          if (!t) return;
-          if (!stream) stream = bridge.startStream?.(chatId, t);
-          else stream.update?.(t);
-        },
+        update(partial) { const t = textOf(partial); if (t) stream?.update?.(t); },
         async finish(reply) {
           const t = textOf(reply);
           if (stream) {
             await stream.finish?.(t);
-            if (!stream.delivered && t) await bridge.send(chatId, t);   // §7 fallback
+            if (!stream.delivered && t) await bridge.send(chatId, t, { bodyEmoji });   // §7 fallback
           } else if (t) {
-            await bridge.send(chatId, t);   // brain didn't stream → one-shot
+            await bridge.send(chatId, t, { bodyEmoji });   // no streaming bridge → one-shot
           }
         },
         fail: (e) => { try { stream?.fail?.(e); } catch { /* already torn down */ } },

@@ -134,7 +134,7 @@ export function createSpine({
     // Stream the reply live: open a sink, feed the brain's partials into it as
     // they arrive (no placeholder — the message is the reply from its first
     // token), then finalize. transcript records the final text.
-    const out = sender.open(ev.chatId);
+    const out = sender.open(ev.chatId, { being: to });
     let reply;
     try {
       reply = await brain.turn(to, ev, (partial) => out.update(partial));

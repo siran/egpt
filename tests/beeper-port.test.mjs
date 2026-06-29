@@ -76,6 +76,26 @@ describe('beeper-port adapter', () => {
     expect(s.delivered).toBe(true);          // reflects the live handle
   });
 
+  it('ENFORCES body_emoji: stamps every streamed edit + final, passes showThink/persona, leaves the 🤔 placeholder clean', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });
+    const s = port.startStream('!room', '🤔', { showThink: true, persona: 'e', bodyEmoji: '🐶' });
+    s.update('Aquí');
+    s.finish('Aquí estoy');
+    const h = spy.streams[0];
+    expect(h.init).toBe('🤔');                                    // placeholder unstamped
+    expect(h.opts).toMatchObject({ chatId: '!room', showThink: true, persona: 'e' });
+    expect(h.updates).toEqual(['🐶 Aquí']);                       // every edit stamped
+    expect(h.finals).toEqual(['🐶 Aquí estoy']);
+  });
+
+  it('ENFORCES body_emoji on a one-shot send too', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });
+    await port.send('!room', 'hola', { bodyEmoji: '🐶' });
+    expect(spy.sent).toEqual([{ text: '🐶 hola', opts: { chatId: '!room' } }]);
+  });
+
   it('onEdit verdict flows back to the bridge; default is false when unwired', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
