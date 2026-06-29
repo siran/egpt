@@ -55,9 +55,14 @@ describe('boot()', () => {
       userId: 'u-1', senderName: 'An', authorized: true, msgKey: 'm1',
     });
 
-    // delivered as a stream-edit carrying the brain's reply (dispatch line in, reply out)
+    // delivered as a stream-edit carrying the brain's reply. This is a FRESH
+    // contact, so the brain's first turn is identity-wrapped (the beta-1 kickoff,
+    // via the real readIdentityFeed / e_identity.md) — proven by the live-message
+    // envelope + the dispatch line both reaching the (echoing fake) brain.
     expect(spy.streams).toHaveLength(1);
-    expect(spy.streams[0].finals[0]).toBe('↩ An@[fam].wa (14:05) #m1: hola E');
+    const delivered = spy.streams[0].finals[0];
+    expect(delivered).toContain('Live message from the chat (envelope');   // identity kickoff wrap
+    expect(delivered).toContain('An@[fam].wa (14:05) #m1: hola E');        // the dispatch line
     expect(spy.streams[0].chatId).toBe('!room:beeper.com');
     expect(spy.sent).toHaveLength(0);   // stream delivered → no fallback send
 

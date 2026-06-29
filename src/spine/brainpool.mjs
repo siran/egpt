@@ -12,13 +12,30 @@
 //     result error, OR returned verbatim as the result text — evicts the warm
 //     entry and retries ONCE on a FRESH session (no resume). The transcript is
 //     the durable record; the chat never sees the overflow string.
+//   - identity kickoff: on a FRESH conversation thread, the FIRST user turn is
+//     prefixed with the personality's identity feed — the mechanism in place
+//     since beta-1 (buildLineagePrelude) and today (readIdentityFeed). NOT a
+//     system prompt: that was tried (0b6eecd) and reverted (c46466d) as
+//     "unnecessary AND wasteful — the brain accepts being eGPT through the normal
+//     conversation." A resumed thread already holds it, so it isn't re-sent.
 //
 // v1 is the E persona on the ccode engine. Sibling beings (per-being session
 // persistence) and codex/URL brains layer in later; emitted-command stripping is
 // the comm-handler's job (Phase 4), not the brain's.
-import { slugDir, getContact, ensureContact, getBeing, recordThread } from '../../conversations-state.mjs';
+import { slugDir, getContact, ensureContact, getBeing, recordThread, readIdentityFeed } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
-import { mkdir as fsMkdir } from 'node:fs/promises';
+import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
+
+// Default identity manifest: the shipped e_identity.md (honoring a config
+// brains.identity override / 'off'). The fallback when a personality has no
+// identities/<name>/ folder feed.
+async function defaultLoadManifest(getConfig) {
+  const p = (getConfig() ?? {}).brains?.identity;
+  if (p === 'off') return '';
+  try {
+    return await fsReadFile(p && p !== 'off' ? p : new URL('../../e_identity.md', import.meta.url), 'utf8');
+  } catch { return ''; }
+}
 
 export function createBrainPool({
   pool,                              // a createWarmPool instance ({ run, evict })
@@ -27,14 +44,17 @@ export function createBrainPool({
   brainType = 'ccode',
   io = {},
   isOverflow = isContextOverflowError,
+  loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
+  loadManifest = null,              // () -> e_identity.md fallback (default below)
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
   if (typeof loadState !== 'function' || typeof writeState !== 'function') throw new Error('createBrainPool: loadState + writeState are required');
   const mkdir = io.mkdir ?? fsMkdir;
+  const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
 
-  // chatId → { slug, sessionId }, registering the contact on first sight (the
-  // brain runs before transcript.log, so it can be the one that registers).
+  // chatId → { slug, sessionId, personality }, registering the contact on first
+  // sight (the brain runs before transcript.log, so it can be the registrar).
   async function resolveConv(ev, being) {
     let state = await loadState();
     let slug = getContact(state, ev.surface, ev.chatId)?.slug ?? null;
@@ -44,13 +64,13 @@ export function createBrainPool({
       if (slug && ens.state !== state) { state = ens.state; await writeState(state); }
     }
     const b = slug ? getBeing(state, ev.surface, ev.chatId, being) : null;
-    return { slug, sessionId: b?.threadId ?? null };
+    return { slug, sessionId: b?.threadId ?? null, personality: b?.personality ?? 'default' };
   }
 
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId } = await resolveConv(ev, being);
+      const { slug, sessionId, personality } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const db = (getConfig() ?? {}).default_brain ?? {};
@@ -66,19 +86,35 @@ export function createBrainPool({
         allowedTools: db.allowed_tools ?? 'all',
         ...(db.model ? { model: db.model } : {}),
         ...(db.system_prompt ? { appendSystemPrompt: db.system_prompt } : {}),
-        sessionId: sessionId ?? db.session_id ?? null,
+        // Resume the conversation's OWN thread, or null = fresh. NOT
+        // default_brain.session_id — that would cross-wire every chat onto one
+        // session; the auto-dispatch path keys the session per conversation
+        // (dispatch.mjs: convEntry.threadId ?? null).
+        sessionId: sessionId ?? null,
       };
-      const run = (opts) => pool.run(key, ev.line ?? ev.body, onPartial, { brainOptions: opts, klass: 'conversation' });
+
+      // Identity kickoff: prefix the first turn of a fresh thread with the feed,
+      // framed as a plain live message (no "installing persona" preamble). The
+      // overflow-reset retry re-wraps because its fresh session needs the identity.
+      const line = ev.line ?? ev.body;
+      const wrapFresh = async () => {
+        let feed = (await loadFeed(personality)) || '';
+        if (!feed.trim()) feed = (await _loadManifest()) || '';
+        if (!feed.trim()) return line;   // no identity configured → raw line
+        return `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${line}`;
+      };
+
+      const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation' });
 
       let r, overflow = false;
-      try { r = await run(baseOpts); }
+      try { r = await run(sessionId ? line : await wrapFresh(), baseOpts); }
       catch (e) { if (isOverflow(e?.message)) overflow = true; else throw e; }
       // overflow can also arrive as the RESULT text (returned, not thrown).
       if (!overflow && isOverflow(typeof r === 'string' ? r : r?.text)) overflow = true;
       if (overflow) {
         onLog(`brainpool: context overflow on ${key} — reset + retry once fresh`);
         pool.evict?.(key);
-        r = await run({ ...baseOpts, sessionId: null });
+        r = await run(await wrapFresh(), { ...baseOpts, sessionId: null });
       }
 
       const text = typeof r === 'string' ? r : (r?.text ?? '');
