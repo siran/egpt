@@ -2353,10 +2353,11 @@ function startSpineRuntime() {
   const _deliverPersonality = async (jid, name) => {
     const body = (await conversationsState.readPersonality(name))?.trim();
     if (!body) return false;
-    // 1) post the personality text into the chat (visible record, operator's choice).
+    // 1) post the personality text into the chat AS EGPT (from:'e' → recorded "egpt@[chat]"
+    //    with the persona voice, operator 2026-06-29 — not a 'system' line).
     const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     await writeFile(join(EGPT_HOME, 'state', 'outbox', id + '.json'),
-      JSON.stringify({ type: 'wa-send', from: 'system', ts: Date.now(), jid, body: `🧠 eGPT personality → ${name}\n\n${body}` }));
+      JSON.stringify({ type: 'wa-send', from: 'e', ts: Date.now(), jid, body: `🧠 eGPT personality → ${name}\n\n${body}` }));
     // record the choice (keep the thread; this is a refresh).
     let slug = null;
     try {
