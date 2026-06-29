@@ -118,8 +118,9 @@ export function createSpine({
     const to = router.resolve(ev);
 
     // mode gate, layer 1: does this being even RECEIVE this chat? ('off'/'mute'
-    // reception). Recorded either way.
-    if (!gating.mayReceive(to, ev)) { transcript.log(ev); return; }
+    // reception). Recorded either way. The log is AWAITED so the transcript write
+    // can't race the next message (durability + serial ordering, C1.2).
+    if (!gating.mayReceive(to, ev)) { await transcript.log(ev); return; }
 
     // mesh-target forwarding (gating.isMeshTarget → mesh.forward) is layered in
     // at Phase 4b — a local-being target falls through to the brain here.
@@ -128,12 +129,12 @@ export function createSpine({
     // (C4.1). NOTE (v1): this is the skeleton gate — the richer "invoke for
     // context but withhold fan-out" nuance (auto-mode.fanOutDecision / accum)
     // lands when the real gating service is wired in Phase 3.
-    if (!gating.mayReply(to, ev)) { transcript.log(ev); return; }
+    if (!gating.mayReply(to, ev)) { await transcript.log(ev); return; }
 
     const reply = await brain.turn(to, ev);
     await sender.deliver(ev.chatId, reply);
-    transcript.log(ev, reply);
-    store?.recordThread?.({ ev, reply, being: to });
+    await transcript.log(ev, reply);
+    await store?.recordThread?.({ ev, reply, being: to });
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---
