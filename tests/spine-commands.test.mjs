@@ -75,6 +75,22 @@ describe('commands.run', () => {
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);
     expect(sent[0].text).toMatch(/unknown mode/);
   });
+
+  it('/e auto <mode> <target> from Self sets the NAMED chat (not the Self DM)', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on hfm', chatId: '!self', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('on');   // the NAMED chat
+    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);                     // Self DM untouched (not even a contact)
+    expect(sent[0].text).toMatch(/HFM.*→ on/);
+  });
+
+  it('/e auto <mode> <unknown> reports no match', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent } = harness({ state });
+    await cmds.run({ body: '/e auto on zzz', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/no chat matches/);
+  });
 });
 
 describe('loop intercept', () => {
