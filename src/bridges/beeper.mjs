@@ -669,12 +669,16 @@ export async function startBeeperBridge(opts = {}) {
         // whenever enabled; postsBack only gates the 👂. See src/incoming-media.mjs.
         const svc = await resolveTranscriptionService(chatID);
         const vmeta = {};
+        // The note's sender, for the 👂 echo header ("👂 <author> (<Ns>): <text>").
+        // Owner's own sends carry the matrix id as senderName — substitute userName.
+        const voiceAuthor = (msg.isSender && userName) ? userName : (msg.senderName || null);
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
           enabled: svc.enabled,
           postsBack: svc.postsBack,
           muted: info.isMuted,
+          author: voiceAuthor,
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN
           // delayed 👂 transcript, posted as a reply to ITSELF — never coalesced
           // with other notes into one block (operator 2026-06-24). The delay is

@@ -36,6 +36,17 @@ describe('transcribeVoiceNote — room service (enabled + postsBack)', () => {
     expect(sent).toEqual(['👂 hola que tal']);
   });
 
+  it('includes author + duration in the 👂 ack when provided', async () => {
+    const sent = [];
+    const t = await transcribeVoiceNote({
+      localPath: '/tmp/n.ogg',
+      transcribe: async (_p, _cfg, _log, meta) => { meta.durationSec = 8; return 'hola que tal'; },
+      reply: (x) => sent.push(x), enabled: true, postsBack: true, author: 'An',
+    });
+    expect(t).toBe('hola que tal');
+    expect(sent).toEqual(['👂 An (8s): hola que tal']);
+  });
+
   it('postsBack:false → transcript still returns, but NO ack (heard, not spoken)', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({

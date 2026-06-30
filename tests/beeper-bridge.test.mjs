@@ -405,8 +405,8 @@ describe('beeper bridge', () => {
     // …but only the posts_back chat got the in-chat 👂 reply.
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('chat-enrolled'));
-    expect(fake.posts[0].text).toBe('👂 fake transcript');
-    expect(fake.posts[0].replyToMessageID).toBeTruthy();
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');   // echo carries the note's author
+    expect(fake.posts[0].replyToMessageID).toBeTruthy();         // …as a reply to the audio note
   });
 
   it('👂 verdict is keyed on the STABLE id — the bridge passes it nothing but the id', async () => {

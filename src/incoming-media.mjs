@@ -38,11 +38,21 @@ export const POSTS_BACK_DELAY_MS = 5 * 60 * 1000;
 const _pendingAcks = new Map();
 const _defaultScheduler = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) };
 
-function _queueAck(key, transcript, reply, onLog, delayMs, scheduler) {
+// Format ONE 👂-ack line's BODY — without the 👂 prefix, which the firing/immediate
+// paths add once: "<author> (<Ns>): <transcript>". Author + duration are omitted
+// when unknown, so a bare transcript stays "<transcript>" (callers that pass
+// neither are unaffected).
+function _ackItem({ author, durationSec, transcript } = {}) {
+  const dur = (Number.isFinite(durationSec) && durationSec > 0) ? ` (${Math.round(durationSec)}s)` : '';
+  const head = author ? `${author}${dur}: ` : '';
+  return `${head}${transcript}`;
+}
+
+function _queueAck(key, line, reply, onLog, delayMs, scheduler) {
   let e = _pendingAcks.get(key);
   if (e) scheduler.clear(e.handle);                       // reset the trailing window
   else { e = { handle: null, items: [], reply, onLog, scheduler }; _pendingAcks.set(key, e); }
-  e.items.push(transcript);
+  e.items.push(line);
   e.reply = reply; e.onLog = onLog; e.scheduler = scheduler;   // keep the freshest closures
   e.handle = scheduler.set(() => _firePendingAck(key), delayMs);
   if (e.handle && typeof e.handle.unref === 'function') e.handle.unref();   // don't pin the event loop (no-op in browser)
@@ -94,6 +104,9 @@ export function _resetPostsBackDebounce() {
  * @param {boolean}  [o.postsBack] service: surface the 👂 ack (default false —
  *                                  fail-closed; the host supplies the real verdict)
  * @param {boolean}  [o.muted]     transport mute → suppress the ack send
+ * @param {string}   [o.author]    voice note sender's display name → shown in the
+ *                                  👂 ack as "👂 <author> (<Ns>): <text>" (omitted
+ *                                  when absent, so the ack stays "👂 <text>")
  * @param {string}   [o.debounceKey] stable chat id → debounce + coalesce the 👂
  *                                  echo per chat. Omit/null → post immediately.
  * @param {number}   [o.postsBackDelayMs] trailing-debounce window for the echo.
@@ -112,6 +125,7 @@ export async function transcribeVoiceNote({
   enabled = true,
   postsBack = false,
   muted = false,
+  author = null,
   debounceKey = null,
   postsBackDelayMs = POSTS_BACK_DELAY_MS,
   scheduler = _defaultScheduler,
@@ -134,12 +148,13 @@ export async function transcribeVoiceNote({
   const flagged = flagDegenerateTranscript(transcript);
   if (flagged !== transcript) { onLog(`transcription flagged unreliable (repetition loop): ${JSON.stringify(transcript.slice(0, 80))}`); transcript = flagged; }
   if (reply && postsBack && !muted) {
+    const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
     if (debounceKey && postsBackDelayMs > 0) {
       // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.
-      _queueAck(debounceKey, transcript, reply, onLog, postsBackDelayMs, scheduler);
+      _queueAck(debounceKey, line, reply, onLog, postsBackDelayMs, scheduler);
       onLog(`👂 ack queued (debounced ${Math.round(postsBackDelayMs / 1000)}s, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
     } else {
-      try { await reply(`👂 ${transcript}`); }
+      try { await reply(`👂 ${line}`); }
       catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }
     }
   } else if (!postsBack) {
