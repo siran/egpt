@@ -83,7 +83,8 @@ export async function boot({
   }, startBridge ? { start: startBridge } : {});
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
-  const media = createMedia({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[media] ${m}`) });
+  // For a video: keyframes (ffmpeg) + audio transcript so E can see it (Route A).
+  const media = createMedia({ loadState: _loadState, writeState: _writeState, io, transcribeCfg: transcribeCfg ?? {}, onLog: (m) => log.line?.(`[media] ${m}`) });
   bridge.onMedia((m) => media.save(m));
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"

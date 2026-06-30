@@ -39,6 +39,25 @@ describe('media.save', () => {
     expect(await media.save({ localPath: '/x' })).toBe(null);
   });
 
+  it('a video gets Route-A: keyframes (ffmpeg from config) + audio transcript → augmented descriptor', async () => {
+    let state = emptyState();
+    const io = { copyFile: async () => {}, mkdir: async () => {}, appendFile: async () => {} };
+    const frameCalls = [], txCalls = [];
+    const media = createMedia({
+      loadState: async () => state, writeState: async (s) => { state = s; }, io,
+      transcribeCfg: { ffmpeg_command: 'C:/ff/ffmpeg.exe', language: 'es' },
+      extractFrames: async (path, opts) => { frameCalls.push({ path, opts }); return [`${opts.outDir}/v-frame-01.jpg`, `${opts.outDir}/v-frame-02.jpg`]; },
+      transcribe: async (path, cfg) => { txCalls.push({ path, cfg }); return '(video) gol de Enciso'; },
+    });
+    const r = await media.save({ ...META, kind: 'video', mime: 'video/mp4', fileName: 'clip.mp4', localPath: '/tmp/clip.mp4' });
+    expect(r.savedPath).toMatch(/media[\\/].*\.mp4$/);
+    expect(r.framePaths).toEqual(expect.arrayContaining([expect.stringContaining('v-frame-01.jpg')]));
+    expect(r.transcript).toBe('(video) gol de Enciso');
+    expect(frameCalls[0].opts.ffmpeg).toBe('C:/ff/ffmpeg.exe');   // ffmpeg path from config
+    expect(frameCalls[0].opts.count).toBe(3);
+    expect(txCalls).toHaveLength(1);                              // audio transcribed
+  });
+
   it('swallows a copy failure → null (media must never block text)', async () => {
     let state = emptyState();
     const io = { copyFile: async () => { throw new Error('disk full'); }, mkdir: async () => {}, appendFile: async () => {} };
