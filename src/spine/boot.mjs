@@ -97,9 +97,9 @@ export async function boot({
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
   async function announceAndExit(code) {
     const selfDm = cfg.whatsapp?.chat_id;
-    try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha() })); } catch {}
-    // best-effort going-down (capped so a slow POST can't wedge the exit)
-    try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}…`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
+    try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
+    // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the exit)
+    try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
     exit(code);
   }
 
@@ -144,8 +144,9 @@ export async function boot({
     if (!sc?.chatId) return;
     const nowSha = shortSha();
     const head = (sc.preSha && sc.preSha !== nowSha) ? `${sc.preSha} → ${nowSha}` : nowSha;
+    const pids = (sc.pid && sc.pid !== process.pid) ? `pid ${sc.pid} → ${process.pid}` : `pid ${process.pid}`;
     const subject = gitOut(['log', '-1', '--format=%s']);
-    try { await bridge.send(sc.chatId, `✅ egpt back up! (${head})${subject ? `\n\n${subject}` : ''}`); }
+    try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 
