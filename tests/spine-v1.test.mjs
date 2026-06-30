@@ -95,11 +95,23 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(t).not.toContain('[@e');                          // no reply
   });
 
-  it("'off': not received — inbound still logged (C1.2), no brain", async () => {
+  it("'off': not received — NOT logged, no brain, no send", async () => {
     const { bridge, brain, files } = harness(cfgWithMode('off'));
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(0);
-    expect(onlyFile(files)).toContain('#m1: hola');
+    expect(bridge.sent).toHaveLength(0);
+    expect(files.size).toBe(0);   // 'off' is not received at all
+  });
+
+  it("send_to_egpt=always in a mute chat: E RUNS for context, reply recorded NOT surfaced, NO send", async () => {
+    const { bridge, brain, files } = harness(cfgWithMode('mute', { send_to_egpt: 'always' }));
+    await bridge.emit(msg());
+    expect(brain.calls).toHaveLength(1);              // E ran despite mute
+    expect(bridge.sent).toHaveLength(0);              // nothing surfaced
+    expect(bridge.streams).toHaveLength(0);           // no train for a non-surfacing turn
+    const t = onlyFile(files);
+    expect(t).toContain('#m1: hola');                                  // inbound logged
+    expect(t).toContain('[@e (14:05)]: (not surfaced) ↩ hola');        // reply recorded, withheld
   });
 
   it("'mention' without @e: logged, withheld (no brain, no send)", async () => {

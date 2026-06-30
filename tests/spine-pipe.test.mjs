@@ -30,21 +30,30 @@ function fakeBrain() {
 const fakeIdentity = { build: (msg) => ({ ...msg, line: `${msg.senderName}@[${msg.chatName}]: ${msg.body}` }) };
 const fakeRouter = { resolve: () => 'e' };
 
-// gating with togglable receive/reply, so each branch is exercised independently.
-function fakeGating({ receive = true, reply = true } = {}) {
-  return { mayReceive: () => receive, mayReply: () => reply };
+// gating with togglable knobs, so each branch is exercised independently.
+//   receive — mayReceive ('off' = false)
+//   reply   — mayReply (would the reply surface at all)
+//   send    — sendToEgpt ('always' | 'mode')
+//   surface — surfaces() result; defaults to `reply` unless given (on-mode '...').
+function fakeGating({ receive = true, reply = true, send = 'mode', surface } = {}) {
+  return {
+    mayReceive: () => receive,
+    mayReply: () => reply,
+    sendToEgpt: () => send,
+    surfaces: () => (surface === undefined ? reply : surface),
+  };
 }
 
 function fakeTranscript() { return { entries: [], log(ev, reply) { this.entries.push({ ev, reply }); } }; }
 // sender wraps the bridge — a real round-trip: inbound via bridge, outbound via bridge.
-// open→update*→finish; this fake one-shots on finish (the fake brain doesn't stream).
+// open→update*→finish; honors the surface flag (not surfaced → nothing sent).
 function fakeSender(bridge) {
-  return { open(chatId) { return { update() {}, async finish(reply) { const t = typeof reply === 'string' ? reply : reply?.text; if (t) bridge.send(chatId, t); } }; } };
+  return { open(chatId) { return { update() {}, fail() {}, async finish(reply, { surface = true } = {}) { const t = typeof reply === 'string' ? reply : reply?.text; if (surface && t) bridge.send(chatId, t); } }; } };
 }
 function fakeHeartbeats() { return { ran: [], runDue(now) { this.ran.push(now); } }; }
 function fakeStore() { return { threads: [], recordThread(rec) { this.threads.push(rec); } }; }
 
-function build({ receive = true, reply = true } = {}) {
+function build({ receive = true, reply = true, send = 'mode', surface } = {}) {
   const bridge = fakeBridge();
   const brain = fakeBrain();
   const transcript = fakeTranscript();
@@ -53,7 +62,7 @@ function build({ receive = true, reply = true } = {}) {
   const spine = createSpine({
     bridge, brain, store,
     identity: fakeIdentity, router: fakeRouter,
-    gating: fakeGating({ receive, reply }),
+    gating: fakeGating({ receive, reply, send, surface }),
     sender: fakeSender(bridge), transcript, heartbeats,
     clock: { now: () => 1000 },
   });
@@ -81,32 +90,53 @@ describe('spine pipe', () => {
     expect(brain.calls[0].being).toBe('e');
     expect(bridge.sent).toEqual([{ chat: 'chat-1@g.us', text: '↩ hola' }]);   // out via the same bridge
     expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1' });
+    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: true });
     expect(store.threads).toHaveLength(1);
     expect(store.threads[0].being).toBe('e');
   });
 
-  it('mayReceive=false (off/mute): no brain, no send, but STILL logged (C1.2)', async () => {
+  it('mayReceive=false (off): NOT received — no brain, no send, NOT logged', async () => {
     const { spine, bridge, brain, transcript, store } = build({ receive: false });
     spine.start();
     await bridge.emit(MSG);
 
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
-    expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toBeUndefined();   // inbound recorded, no reply
+    expect(transcript.entries).toHaveLength(0);   // 'off' is not received at all
     expect(store.threads).toHaveLength(0);
   });
 
-  it('mayReply=false (mention not matched): receives + logs, but does NOT invoke the brain or send', async () => {
-    const { spine, bridge, brain, transcript } = build({ reply: false });
+  it('mayReply=false + send_to_egpt=mode (default): logs, but does NOT run the brain or send', async () => {
+    const { spine, bridge, brain, transcript } = build({ reply: false, send: 'mode' });
     spine.start();
     await bridge.emit(MSG);
 
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
     expect(transcript.entries).toHaveLength(1);
-    expect(transcript.entries[0].reply).toBeUndefined();
+    expect(transcript.entries[0].reply).toBeUndefined();   // logged only — 'not contacted yet'
+  });
+
+  it('mayReply=false + send_to_egpt=always: E RUNS (context), reply recorded not-surfaced, NOT sent', async () => {
+    const { spine, bridge, brain, transcript, store } = build({ reply: false, send: 'always' });
+    spine.start();
+    await bridge.emit(MSG);
+
+    expect(brain.calls).toHaveLength(1);                          // E ran on the message
+    expect(bridge.sent).toHaveLength(0);                          // but nothing surfaced
+    expect(transcript.entries).toHaveLength(1);
+    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
+    expect(store.threads).toHaveLength(1);                        // thread recorded — E engaged
+  });
+
+  it("on-mode silence (surfaces=false): brain runs, reply recorded not-surfaced, NOT sent", async () => {
+    const { spine, bridge, brain, transcript } = build({ reply: true, surface: false });
+    spine.start();
+    await bridge.emit(MSG);
+
+    expect(brain.calls).toHaveLength(1);
+    expect(bridge.sent).toHaveLength(0);                          // '...' not surfaced
+    expect(transcript.entries[0].reply).toEqual({ text: '↩ hola', sessionId: 's1', surfaced: false });
   });
 
   it('processes inbound serially (queue drains one at a time)', async () => {
