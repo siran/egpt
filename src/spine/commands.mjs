@@ -9,12 +9,15 @@
 // built (Phase 4c); until then they are RECOGNIZED (not leaked to E) and answered
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
+import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
+import { patchContact } from '../../conversations-state.mjs';
 
 export function createCommands({
   getConfig = () => ({}),
   send,                                  // (chatId, text) -> deliver a plain system reply
   exit = (code) => process.exit(code),
   writeRewindTarget,
+  loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
@@ -37,8 +40,23 @@ export function createCommands({
       await exit(code);                    // process leaves (after the bridge's "restarting…" announce); the daemon respawns
       return;
     }
+
+    // /e auto <mode> — set THIS conversation's E reply-mode in conversations.yaml
+    // (modes live there now). Typed in the chat itself, by an authorized operator.
+    const auto = /^\/(?:e|egpt)\s+auto\s+(\S+)\s*$/i.exec(line);
+    if (auto) {
+      const mode = auto[1].toLowerCase();
+      if (!isAutoMode(mode)) { await send?.(ev.chatId, `/e auto: unknown mode "${mode}" — use one of: ${AUTO_MODES.join(', ')}`); return; }
+      if (!loadState || !writeState) { await send?.(ev.chatId, '/e auto: conversation state not wired'); return; }
+      try {
+        await writeState(patchContact(await loadState(), ev.surface, ev.chatId, { mode }));
+        await send?.(ev.chatId, `✅ E mode here → ${mode}`);
+      } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
+      return;
+    }
+
     const tok = line.split(/\s+/)[0];
-    await send?.(ev.chatId, `${tok}: recognized — only lifecycle (/restart, /upgrade, /rewind) is wired in v2 so far.`);
+    await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> are wired in v2 so far.`);
   }
 
   return { isCommand, run };

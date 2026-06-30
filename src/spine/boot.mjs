@@ -128,6 +128,7 @@ export async function boot({
     send: (chatId, text) => bridge.send(chatId, text),
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
+    loadState: _loadState, writeState: _writeState,   // /e auto <mode> persists into conversations.yaml
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 

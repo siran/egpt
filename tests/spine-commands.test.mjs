@@ -3,16 +3,20 @@
 import { describe, it, expect } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../spine.mjs';
+import { emptyState, ensureContact, getBeing } from '../conversations-state.mjs';
 
-function harness({ config = {} } = {}) {
+function harness({ config = {}, state = null } = {}) {
   const sent = [], exits = [], rewinds = [];
+  let st = state;
   const cmds = createCommands({
     getConfig: () => config,
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: (code) => exits.push(code),
     writeRewindTarget: (ref) => rewinds.push(ref),
+    loadState: state ? async () => st : null,
+    writeState: state ? async (s) => { st = s; } : null,
   });
-  return { cmds, sent, exits, rewinds };
+  return { cmds, sent, exits, rewinds, getState: () => st };
 }
 
 describe('commands.isCommand', () => {
@@ -55,6 +59,22 @@ describe('commands.run', () => {
     expect(exits).toEqual([]);
     expect(sent[0].text).toMatch(/channels: recognized/);
   });
+
+  it('/e auto <mode> persists the conversation mode into conversations.yaml', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
+    expect(sent[0].text).toMatch(/E mode here → on/);
+  });
+
+  it('/e auto <bad> is rejected and leaves the mode unchanged', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto loud', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);
+    expect(sent[0].text).toMatch(/unknown mode/);
+  });
 });
 
 describe('loop intercept', () => {
@@ -69,7 +89,7 @@ describe('loop intercept', () => {
       brain, commands: cmds,
       identity: { build: (m) => ({ ...m }) },
       router: { resolve: () => 'e' },
-      gating: { mayReceive: () => true, mayReply: () => true },
+      gating: { decide: async () => ({ mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }), surfaces: () => true },
       sender: { open: () => ({ update() {}, async finish() {} }) },
       transcript, heartbeats: { runDue() {} },
     });
