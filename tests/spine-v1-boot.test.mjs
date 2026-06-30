@@ -6,7 +6,15 @@
 // Phase 3 verify gate, offline half.)
 import { describe, it, expect } from 'vitest';
 import { boot } from '../src/spine/boot.mjs';
-import { emptyState } from '../conversations-state.mjs';
+import { emptyState, ensureContact } from '../conversations-state.mjs';
+
+// Pre-seed a conversation's E mode in the shared state (modes live in
+// conversations.yaml now, not config.auto_modes). No threadId → still "fresh".
+function seedMode(state, mode, chatId = '!room:beeper.com', name = 'fam') {
+  const ens = ensureContact(state, 'whatsapp', chatId, { pushedName: name, slugHint: name });
+  ens.state.contacts.whatsapp[chatId].mode = mode;
+  return ens.state;
+}
 
 // fake Beeper transport: captures the host onIncoming so the test can drive inbound.
 function fakeStart() {
@@ -36,8 +44,8 @@ const memIo = () => ({ appendFile: async () => {}, mkdir: async () => {}, exists
 describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
-    let state = emptyState();
-    const config = { auto_modes: { '!room:beeper.com': { e: 'on' } }, whatsapp: {}, default_brain: { type: 'ccode' } };
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
 
     const app = await boot({
       readConfig: () => config,
@@ -80,8 +88,8 @@ describe('boot()', () => {
 
   it("respects gating: a 'mute' chat invokes no brain and sends nothing", async () => {
     const { start, spy } = fakeStart();
-    let state = emptyState();
-    const config = { auto_modes: { '!room:beeper.com': { e: 'mute' } }, whatsapp: {} };
+    let state = seedMode(emptyState(), 'mute');
+    const config = { whatsapp: {} };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },

@@ -31,16 +31,14 @@ const fakeIdentity = { build: (msg) => ({ ...msg, line: `${msg.senderName}@[${ms
 const fakeRouter = { resolve: () => 'e' };
 
 // gating with togglable knobs, so each branch is exercised independently.
-//   receive — mayReceive ('off' = false)
-//   reply   — mayReply (would the reply surface at all)
-//   send    — sendToEgpt ('always' | 'mode')
-//   surface — surfaces() result; defaults to `reply` unless given (on-mode '...').
+//   receive — decide().receives ('off' = false)
+//   reply   — decide().mayReply (would the reply surface at all)
+//   send    — decide().sendToEgpt ('always' | 'mode')
+//   surface — surfaces() result; defaults to `mayReply` unless given (on-mode '...').
 function fakeGating({ receive = true, reply = true, send = 'mode', surface } = {}) {
   return {
-    mayReceive: () => receive,
-    mayReply: () => reply,
-    sendToEgpt: () => send,
-    surfaces: () => (surface === undefined ? reply : surface),
+    async decide() { return { mode: reply ? 'on' : 'mention', receives: receive, mayReply: reply, sendToEgpt: send }; },
+    surfaces: (d, _text) => (surface === undefined ? d.mayReply : surface),
   };
 }
 

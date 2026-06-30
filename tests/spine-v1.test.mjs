@@ -9,7 +9,7 @@ import { createGating } from '../src/spine/gating.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createRouter } from '../src/spine/router.mjs';
-import { emptyState } from '../conversations-state.mjs';
+import { emptyState, ensureContact } from '../conversations-state.mjs';
 
 function fakeBridge() {
   let cb = null;
@@ -28,31 +28,37 @@ function fakeBridge() {
 function fakeBrain() {
   return { calls: [], async turn(being, ev, onPartial) { this.calls.push({ being, ev }); onPartial?.(`↩ ${ev.body}`); return { text: `↩ ${ev.body}`, being }; } };
 }
-function memTranscript() {
+// Build a spine with the real services. ONE in-memory conv-state is shared by
+// transcript + gating; the room's E `mode` is pre-seeded there (modes now live in
+// conversations.yaml, not config). `config` carries only the globals (auto_e_paused,
+// send_to_egpt default, …).
+function harness(config = {}, mode) {
   let state = emptyState();
+  if (mode !== undefined) {
+    const ens = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' });
+    state = ens.state;
+    if (mode) state.contacts.whatsapp['!room:beeper.com'].mode = mode;   // '' → leave default
+  }
+  const loadState = async () => state;
+  const writeState = async (s) => { state = s; };
+
   const files = new Map();
   const io = {
     appendFile: async (p, data) => { files.set(p, (files.get(p) ?? '') + data); },
     mkdir: async () => {},
     existsSync: (p) => files.has(p),
   };
-  const svc = createTranscript({ loadState: async () => state, writeState: async (s) => { state = s; }, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
-  return { svc, files };
-}
+  const transcript = createTranscript({ loadState, writeState, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
 
-// Build a spine with the real services and a config the test controls.
-function harness(config) {
   const bridge = fakeBridge();
   const brain = fakeBrain();
-  const { svc: transcript, files } = memTranscript();
-  const heartbeats = { runDue() {} };
   const spine = createSpine({
     bridge, brain,
     identity: createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5) }),
-    gating: createGating({ getConfig: () => config }),
+    gating: createGating({ getConfig: () => config, loadState }),
     router: createRouter(),
     sender: createSender({ bridge }),
-    transcript, heartbeats,
+    transcript, heartbeats: { runDue() {} },
   });
   spine.start();
   return { bridge, brain, files };
@@ -69,11 +75,9 @@ const msg = ({ body = 'hola', atE = false } = {}) =>
 // so assert on content not path).
 const onlyFile = (files) => { const v = [...files.values()]; expect(v).toHaveLength(1); return v[0]; };
 
-const cfgWithMode = (mode, extra = {}) => ({ auto_modes: { '!room:beeper.com': { e: mode } }, whatsapp: { ...extra } });
-
 describe('v1 pipe — gated receive → brain → reply → send, per mode', () => {
   it("'on': brain runs, reply stream-edited, inbound + reply both transcribed", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('on'));
+    const { bridge, brain, files } = harness({}, 'on');
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('e');
@@ -85,7 +89,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it("'mute': receives + logs inbound, but NO brain, NO send", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('mute'));
+    const { bridge, brain, files } = harness({}, 'mute');
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(0);
     expect(bridge.streams).toHaveLength(0);
@@ -96,7 +100,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it("'off': not received — NOT logged, no brain, no send", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('off'));
+    const { bridge, brain, files } = harness({}, 'off');
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
@@ -104,7 +108,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it("send_to_egpt=always in a mute chat: E RUNS for context, reply recorded NOT surfaced, NO send", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('mute', { send_to_egpt: 'always' }));
+    const { bridge, brain, files } = harness({ whatsapp: { send_to_egpt: 'always' } }, 'mute');
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(1);              // E ran despite mute
     expect(bridge.sent).toHaveLength(0);              // nothing surfaced
@@ -115,7 +119,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it("'mention' without @e: logged, withheld (no brain, no send)", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('mention'));
+    const { bridge, brain, files } = harness({}, 'mention');
     await bridge.emit(msg({ body: 'just chatting' }));
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);
@@ -123,7 +127,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it("'mention' WITH @e: brain runs, reply delivered", async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('mention'));
+    const { bridge, brain, files } = harness({}, 'mention');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
     expect(bridge.streams[0].finals).toEqual(['↩ @e estas? ∎']);
@@ -131,7 +135,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
   });
 
   it('auto_e_paused: absolute kill — even @e in on-mode is withheld but logged', async () => {
-    const { bridge, brain, files } = harness(cfgWithMode('on', { auto_e_paused: true }));
+    const { bridge, brain, files } = harness({ whatsapp: { auto_e_paused: true } }, 'on');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(0);
     expect(bridge.sent).toHaveLength(0);

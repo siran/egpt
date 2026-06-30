@@ -1,65 +1,55 @@
-// gating.mjs — the §2c gating service: the per-chat mode + pause + mention gate
-// (contracts C4.1–C4.5). A thin wrapper over auto-mode.mjs (kept verbatim, its
-// logic already test-locked) that resolves WHICH mode applies to a being in a
-// chat from the LIVE config (so the operator can re-tune without restart) and
-// exposes the loop's questions:
+// gating.mjs — the §2c gating service: resolve a being's per-CONVERSATION policy
+// (mode + send_to_egpt, both read from conversations.yaml — the per-conversation
+// home, operator 2026-06-30) and turn it into the loop's decisions. The
+// mode→decision LOGIC is the kept, test-locked auto-mode.mjs; this service only
+// resolves WHICH mode/policy applies and packages the per-message decision:
 //
-//   mayReceive(being, ev)     — does this being see this chat at all? ('off' = no)
-//   mayReply(being, ev)       — COULD its reply surface? (mode + mention + the
-//                               absolute auto_e_paused kill). Pre-brain check.
-//   sendToEgpt(being, ev)     — does E actually RUN on this message? 'always' |
-//                               'mode' (config whatsapp.send_to_egpt). 'mode' =
-//                               only when mayReply; 'always' = every received msg.
-//   surfaces(being, ev, text) — POST-brain: may THIS reply reach the chat? =
-//                               mayReply + the 'on'-mode '...' silence cosmetic.
+//   decide(being, ev)            -> { mode, receives, mayReply, sendToEgpt }   (ONE conv-state read)
+//   surfaces(decision, replyText)-> boolean    POST-brain: mayReply + the 'on'-'...' silence cosmetic
 //
-// The loop runs the brain when mayReply OR send_to_egpt='always', then surfaces
-// the reply per surfaces(). accum BUFFERING (flush once per heartbeat) still
-// layers in with heartbeats — until then accum is gated like mention (immediate).
-import { resolveBeingMode, receives, replyAllowed, mayEmitChat, isSilenceReply } from '../auto-mode.mjs';
+// `mode` is the conversation's `<being>.mode` (conversations.yaml), defaulting to
+// config.whatsapp.auto_e_default (E) / 'mention' (sibling). `sendToEgpt` is the
+// conversation's `<being>.send_to_egpt` override, else the global config default
+// (whatsapp.send_to_egpt), else 'mode'. `auto_e_paused` (config) is the absolute
+// kill. The old config.auto_modes route is GONE — modes live in conversations.yaml.
+import { getBeing } from '../../conversations-state.mjs';
+import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
 
-export function createGating({ getConfig = () => ({}) } = {}) {
+const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
+
+export function createGating({ getConfig = () => ({}), loadState = null } = {}) {
   const cfg = () => getConfig() ?? {};
 
-  function modeFor(being, ev) {
+  function defaultMode(being, c) {
+    const def = being === 'e' ? c.whatsapp?.auto_e_default : 'mention';
+    return isAutoMode(def) ? def : DEFAULT_AUTO_MODE;
+  }
+
+  async function beingView(being, ev) {
+    if (!loadState) return null;
+    try { return getBeing(await loadState(), ev.surface, ev.chatId, being); } catch { return null; }
+  }
+
+  // The single per-message decision. ONE conversations.yaml read resolves the
+  // conversation's mode + send_to_egpt; the rest is pure auto-mode logic.
+  async function decide(being, ev) {
     const c = cfg();
-    return resolveBeingMode({
-      autoModes: c.auto_modes ?? {},
-      autoEModes: c.whatsapp?.auto_e_modes ?? {},
-      chatId: ev.chatId,
-      being,
-      // E's chat default falls to the config default; siblings default to 'mention'.
-      defaultMode: being === 'e' ? c.whatsapp?.auto_e_default : 'mention',
-    });
-  }
-
-  function mayReply(being, ev) {
-    const mode = modeFor(being, ev);
-    const paused = !!cfg().whatsapp?.auto_e_paused;
+    const bv = await beingView(being, ev);
+    const mode = isAutoMode(bv?.mode) ? bv.mode : defaultMode(being, c);
+    const paused = !!c.whatsapp?.auto_e_paused;
     const allowed = replyAllowed(mode, ev.mention ?? {});
-    return mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
+    const mayReply = mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
+    const sendToEgpt = _send(bv?.send_to_egpt) ?? _send(c.whatsapp?.send_to_egpt) ?? 'mode';
+    return { mode, receives: receives(mode), mayReply, sendToEgpt };
   }
 
-  // send_to_egpt: 'always' | 'mode' (default 'mode'). Decides only whether E RUNS,
-  // never whether its reply surfaces. Per-chat override (send_to_egpt_chats[chatId])
-  // wins over the global whatsapp.send_to_egpt.
-  function sendToEgpt(being, ev) {
-    const w = cfg().whatsapp ?? {};
-    const v = w.send_to_egpt_chats?.[ev.chatId] ?? w.send_to_egpt ?? 'mode';
-    return v === 'always' ? 'always' : 'mode';
+  // POST-brain surfacing: the reply surfaces when mayReply held AND it isn't an
+  // 'on'-mode '...' silence (E free to post but declining to add noise — recorded,
+  // not surfaced). Every other mode is already fully decided by mayReply.
+  function surfaces(decision, replyText) {
+    if (!decision?.mayReply) return false;
+    return !(decision.mode === 'on' && isSilenceReply(replyText));
   }
 
-  return {
-    modeFor,
-    mayReceive(being, ev) { return receives(modeFor(being, ev)); },
-    mayReply,
-    sendToEgpt,
-    // POST-brain surfacing: mayReply plus the 'on'-mode '...' silence cosmetic (E
-    // free to post but declining to add noise — recorded, not surfaced). Every
-    // other mode is already fully decided by mayReply; the reply text never gates it.
-    surfaces(being, ev, replyText) {
-      if (!mayReply(being, ev)) return false;
-      return !(modeFor(being, ev) === 'on' && isSilenceReply(replyText));
-    },
-  };
+  return { decide, surfaces };
 }

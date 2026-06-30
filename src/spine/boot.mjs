@@ -113,7 +113,7 @@ export async function boot({
   // --- services (each DI-wired; none closes over another) ---
   const services = {
     identity: createIdentity({ now }),
-    gating: createGating({ getConfig }),
+    gating: createGating({ getConfig, loadState: _loadState }),
     router: createRouter(),
     transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf }),

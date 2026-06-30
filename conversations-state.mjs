@@ -641,7 +641,7 @@ export function getContact(state, surface, jid) {
 // read still lands on the flat fallback. Behavior-neutral by construction.
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
-  'pushedName', 'firstSeenAt', 'mode', 'aliasOf', 'jids', 'transcribe',
+  'pushedName', 'firstSeenAt', 'mode', 'send_to_egpt', 'aliasOf', 'jids', 'transcribe',
 ]);
 
 // Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;
@@ -657,6 +657,7 @@ export function getBeing(state, surface, jid, being = 'e') {
     jid: c.jid, slug: c.slug, surface, being,
     present:            !!b || being === 'e',                                   // 'e' is the implicit legacy resident
     mode:               b?.mode               ?? flat.mode               ?? null,
+    send_to_egpt:       b?.send_to_egpt       ?? flat.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? flat.threadId           ?? null,
     threadCreatedAt:    b?.threadCreatedAt    ?? flat.threadCreatedAt    ?? null,
     identityInjectedAt: b?.identityInjectedAt ?? flat.identityInjectedAt ?? null,

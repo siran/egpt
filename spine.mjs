@@ -68,10 +68,8 @@
  * @typedef {object} Services
  * @property {{ build: (msg: any) => InboundEvent }} identity            classify + build the dispatch line
  * @property {{ resolve: (ev: InboundEvent) => string }} router          @being → local being target
- * @property {{ mayReceive: (being: string, ev: InboundEvent) => boolean,
- *             mayReply:   (being: string, ev: InboundEvent) => boolean,
- *             sendToEgpt: (being: string, ev: InboundEvent) => 'always'|'mode',
- *             surfaces:   (being: string, ev: InboundEvent, replyText: string) => boolean }} gating   per-chat mode + pause + mention + run/surface decisions
+ * @property {{ decide: (being: string, ev: InboundEvent) => Promise<{mode: string, receives: boolean, mayReply: boolean, sendToEgpt: 'always'|'mode'}>,
+ *             surfaces: (decision: object, replyText: string) => boolean }} gating   per-conversation mode + send_to_egpt → run/surface decisions
  * @property {{ open: (chatId: string) => { update: (partial: any) => void, finish: (reply: any) => Promise<void>, fail?: (e: any) => void } }} sender   live-stream delivery (open → update* → finish)
  * @property {{ log: (ev: InboundEvent, reply?: any) => void }} transcript   "file is the conversation"
  * @property {{ runDue: (now: number) => void }} heartbeats               due-heartbeat scan + accum flush
@@ -127,22 +125,25 @@ export function createSpine({
 
     const to = router.resolve(ev);
 
+    // ONE conversation-state read resolves this message's policy (mode +
+    // send_to_egpt, both from conversations.yaml) and the derived gate flags.
+    const d = await gating.decide(to, ev);
+
     // 'off' → not received: not logged, not processed (C4). Every OTHER mode is
     // logged below — a received message is never silently dropped (C1.2).
-    if (!gating.mayReceive(to, ev)) return;
+    if (!d.receives) return;
 
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
     // even when it won't reply). Otherwise the message is logged only — E reads
     // transcript.md for back-context if it later engages ('not contacted yet').
-    const willReply = gating.mayReply(to, ev);
-    const runE = willReply || gating.sendToEgpt(to, ev) === 'always';
+    const runE = d.mayReply || d.sendToEgpt === 'always';
     if (!runE) { await transcript.log(ev); return; }
 
     // mesh-target forwarding (gating.isMeshTarget → mesh.forward) is layered in at
     // Phase 4b — a local-being target falls through to the brain here.
 
-    if (willReply) {
+    if (d.mayReply) {
       // Surfacing branch: stream the reply live (the reply train), then surface it
       // unless it's 'on'-mode silence ('...'). A reply quotes its triggering
       // message (operator: "mentions should always be replied to the message").
@@ -158,7 +159,7 @@ export function createSpine({
         note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`);
         return;
       }
-      const surfaced = gating.surfaces(to, ev, reply.text);
+      const surfaced = gating.surfaces(d, reply.text);
       await out.finish(reply, { surface: surfaced });
       await transcript.log(ev, { ...reply, surfaced });
       await store?.recordThread?.({ ev, reply, being: to });
