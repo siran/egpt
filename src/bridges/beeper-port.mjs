@@ -65,7 +65,10 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // status message A (postStatus/editStatus). opts: { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
-      const h = real.startStreamMessage(`${stamp(init)} ⏳`, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
+      // init is a FIXED placeholder ("⏳") posted as-is, so the bridge resolves its
+      // id before any edit (a variable placeholder raced resolveSentMessageId →
+      // duplicate sends). The ⏳ streaming suffix rides only the edits.
+      const h = real.startStreamMessage(init, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       return {
         update: (t) => h.update(`${stamp(t)} ⏳`),
         finish: (t) => h.finish(stamp(t)),

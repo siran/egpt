@@ -21,19 +21,16 @@ export function createSender({ bridge, bodyEmojiOf = () => null } = {}) {
       const bodyEmoji = bodyEmojiOf(being);
       // A: status message — immediate "🤔 Thinking…" (best-effort id for the ✅ edit).
       const statusP = Promise.resolve(bridge.postStatus?.(chatId, THINKING)).catch(() => null);
-      // B: the reply stream — opened lazily on the first token so the message is
-      // the reply from its first chunk.
-      let stream = null;
+      // B: the reply stream — post a FIXED "⏳" placeholder NOW (eager) so the
+      // bridge can resolve its message id before the first edit; streaming edits
+      // then replace it IN PLACE (one message). Lazy/variable placeholders raced
+      // the id resolution and produced a partial + a duplicate.
+      const stream = bridge.startStream?.(chatId, '⏳', { bodyEmoji, replyTo, persona: being });
       const finalizeStatus = async () => {
         try { const id = await statusP; if (id) await bridge.editStatus?.(chatId, id, DONE); } catch { /* best effort */ }
       };
       return {
-        update(partial) {
-          const t = textOf(partial);
-          if (!t) return;
-          if (!stream) stream = bridge.startStream?.(chatId, t, { bodyEmoji, replyTo, persona: being });
-          else stream.update?.(t);
-        },
+        update(partial) { const t = textOf(partial); if (t) stream?.update?.(t); },
         async finish(reply) {
           const t = textOf(reply);
           if (stream) {

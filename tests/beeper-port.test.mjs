@@ -71,7 +71,7 @@ describe('beeper-port adapter', () => {
     s.update('partial');
     s.finish('done');
     const h = spy.streams[0];
-    expect(h.init).toBe('⌛ ⏳');                     // init + streaming ⏳
+    expect(h.init).toBe('⌛');                        // fixed placeholder, posted as-is
     expect(h.opts).toMatchObject({ chatId: '!room' });
     expect(h.updates).toEqual(['partial ⏳']);       // streaming frames carry ⏳
     expect(h.finals).toEqual(['done']);              // clean on finish
@@ -81,11 +81,11 @@ describe('beeper-port adapter', () => {
   it('B reply stream: body_emoji stamped + ⏳ while streaming, clean on finish, replies-to', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
-    const s = port.startStream('!room', 'Aquí', { persona: 'e', bodyEmoji: '🐶', replyTo: 'm7' });
+    const s = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', replyTo: 'm7' });
     s.update('Aquí estoy');
     s.finish('Aquí estoy bien');
     const h = spy.streams[0];
-    expect(h.init).toBe('🐶 Aquí ⏳');                              // first frame: stamped + streaming ⏳
+    expect(h.init).toBe('⏳');                                     // fixed placeholder, posted as-is
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
     expect(h.updates).toEqual(['🐶 Aquí estoy ⏳']);               // every edit stamped + ⏳
     expect(h.finals).toEqual(['🐶 Aquí estoy bien']);             // clean — no ⏳, no ✅
