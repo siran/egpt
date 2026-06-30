@@ -8,20 +8,22 @@ import { createBeeperBridgePort } from '../src/bridges/beeper-port.mjs';
 // A fake real-bridge that captures the host callbacks it was constructed with,
 // so a test can drive inbound by invoking the captured onIncoming.
 function fakeStart() {
-  const spy = { captured: null, sent: [], streams: [], statusPosts: [], statusEdits: [], stopped: false, alive: true };
+  const spy = { captured: null, sent: [], streams: [], statusPosts: [], statusEdits: [], statusDeletes: [], stopped: false, alive: true };
   const start = async (opts) => {
     spy.captured = opts;   // { onIncoming, onMessageEdit, onMedia, ...passthrough }
     return {
       async send(text, o) { spy.sent.push({ text, opts: o }); return { ok: true }; },
       startStreamMessage(init, o) {
-        const h = { delivered: false, lastError: null, updates: [], finals: [], init, opts: o };
+        const h = { delivered: false, lastError: null, deleted: false, updates: [], finals: [], init, opts: o };
         h.update = (t) => h.updates.push(t);
         h.finish = (t) => { h.finals.push(t); h.delivered = true; };
+        h.delete = () => { h.deleted = true; };
         spy.streams.push(h);
         return h;
       },
       async sendAndGetId(text, o) { const id = `id-${spy.statusPosts.length + 1}`; spy.statusPosts.push({ text, chatId: o?.chatId }); return id; },
       editMessage(chatId, msgId, text) { spy.statusEdits.push({ chatId, msgId, text }); },
+      deleteMessage(chatId, msgId) { spy.statusDeletes.push({ chatId, msgId }); },
       isAlive: () => spy.alive,
       stop: () => { spy.stopped = true; },
     };
@@ -73,31 +75,41 @@ describe('beeper-port adapter', () => {
     const h = spy.streams[0];
     expect(h.init).toBe('⌛');                        // fixed placeholder, posted as-is
     expect(h.opts).toMatchObject({ chatId: '!room' });
-    expect(h.updates).toEqual(['partial ⏳']);       // streaming frames carry ⏳
-    expect(h.finals).toEqual(['done']);              // clean on finish
+    expect(h.updates).toEqual(['partial']);          // markers are the sender's job — port only stamps
+    expect(h.finals).toEqual(['done']);
     expect(s.delivered).toBe(true);          // reflects the live handle
   });
 
-  it('B reply stream: body_emoji stamped + ⏳ while streaming, clean on finish, replies-to', async () => {
+  it('B reply stream: body_emoji stamped on every frame (markers owned by sender), replies-to', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     const s = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', replyTo: 'm7' });
-    s.update('Aquí estoy');
-    s.finish('Aquí estoy bien');
+    s.update('Aquí estoy ⏳');                                     // sender supplies the ⏳ marker
+    s.finish('Aquí estoy bien ∎');                                // sender supplies the ∎ end-mark
     const h = spy.streams[0];
     expect(h.init).toBe('⏳');                                     // fixed placeholder, posted as-is
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
-    expect(h.updates).toEqual(['🐶 Aquí estoy ⏳']);               // every edit stamped + ⏳
-    expect(h.finals).toEqual(['🐶 Aquí estoy bien']);             // clean — no ⏳, no ✅
+    expect(h.updates).toEqual(['🐶 Aquí estoy ⏳']);               // every frame body_emoji-stamped
+    expect(h.finals).toEqual(['🐶 Aquí estoy bien ∎']);
   });
 
-  it('A status: postStatus posts a line + returns its id; editStatus edits it', async () => {
+  it('stream.delete proxies to the real handle (tearing down a withheld reply)', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
-    const id = await port.postStatus('!room', '🤔 Thinking…');
-    await port.editStatus('!room', id, '🤔 Thinking… ✅');
-    expect(spy.statusPosts).toContainEqual({ text: '🤔 Thinking…', chatId: '!room' });
-    expect(spy.statusEdits).toContainEqual({ chatId: '!room', msgId: id, text: '🤔 Thinking… ✅' });
+    const s = port.startStream('!room', '⏳');
+    await s.delete();
+    expect(spy.streams[0].deleted).toBe(true);
+  });
+
+  it('A status: postStatus posts + returns id; editStatus edits; deleteStatus deletes', async () => {
+    const { start, spy } = fakeStart();
+    const port = await createBeeperBridgePort({}, { start });
+    const id = await port.postStatus('!room', '📨 Sending to E...');
+    await port.editStatus('!room', id, '📨 Sending to E... ✅');
+    await port.deleteStatus('!room', id);
+    expect(spy.statusPosts).toContainEqual({ text: '📨 Sending to E...', chatId: '!room' });
+    expect(spy.statusEdits).toContainEqual({ chatId: '!room', msgId: id, text: '📨 Sending to E... ✅' });
+    expect(spy.statusDeletes).toContainEqual({ chatId: '!room', msgId: id });
   });
 
   it('ENFORCES body_emoji on a one-shot send too', async () => {

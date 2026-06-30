@@ -54,33 +54,37 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       return real.send(body, { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
-    // In-place edit-stream. Returns the §2b { update, finish } plus delivered /
-    // lastError passthrough: the sender's fallback-send (Phase 3) must send fresh
+    // In-place edit-stream. Returns the §2b { update, finish, delete } plus
+    // delivered / lastError passthrough: the sender's fallback-send must send fresh
     // ONLY when the stream did not deliver in place (§7 invariant — "the host
     // skips its fallback send only when the stream reports delivered").
     //
-    // B — the streaming REPLY (two-message train, operator 2026-06-29). Replies to
-    // the question (replyTo), body_emoji stamped on every frame, and a trailing ⏳
-    // marks "still streaming" — dropped on finish. No ✅ here: the ✅ lives on the
-    // status message A (postStatus/editStatus). opts: { persona, bodyEmoji, replyTo }.
+    // B — the streaming REPLY (the reply train, operator 2026-06-30). Replies to
+    // the question (replyTo). This layer ENFORCES the body_emoji prefix + threads
+    // the reply-to; the train markers (⏳ / ∎ / "… ❌ Sending failed.") are the
+    // sender's job, so update/finish only stamp + pass text through. opts:
+    // { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
       // init is a FIXED placeholder ("⏳") posted as-is, so the bridge resolves its
       // id before any edit (a variable placeholder raced resolveSentMessageId →
-      // duplicate sends). The ⏳ streaming suffix rides only the edits.
+      // duplicate sends).
       const h = real.startStreamMessage(init, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       return {
-        update: (t) => h.update(`${stamp(t)} ⏳`),
+        update: (t) => h.update(stamp(t)),
         finish: (t) => h.finish(stamp(t)),
+        delete: () => h.delete?.(),
         get delivered() { return h.delivered; },
         get lastError() { return h.lastError; },
         fail: (e) => h.fail?.(e),
       };
     },
 
-    // A — the status message: post "🤔 Thinking…" and edit it to add a ✅ on finish.
+    // A — the knee-jerk status message: post it (returns the confirmed id), edit
+    // it, or delete it (the train deletes it once the reply starts streaming).
     async postStatus(chat, text) { return real.sendAndGetId ? real.sendAndGetId(text, { chatId: chat }) : null; },
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
+    deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),

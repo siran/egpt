@@ -77,8 +77,8 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('e');
-    expect(bridge.streams[0].finals).toEqual(['↩ hola']);   // delivered via stream-edit
-    expect(bridge.sent).toHaveLength(0);                    // no fallback send
+    expect(bridge.streams[0].finals).toEqual(['↩ hola ∎']);   // delivered via stream-edit, ends with ∎
+    expect(bridge.sent).toHaveLength(0);                      // no fallback send
     const t = onlyFile(files);
     expect(t).toContain('An@[fam].wa (14:05) #m1: hola');    // inbound dispatch line
     expect(t).toContain('[@e (14:05)]: ↩ hola');             // reply line
@@ -126,8 +126,8 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     const { bridge, brain, files } = harness(cfgWithMode('mention'));
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
-    expect(bridge.streams[0].finals).toEqual(['↩ @e estas?']);
-    expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');
+    expect(bridge.streams[0].finals).toEqual(['↩ @e estas? ∎']);
+    expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');   // transcript has no ∎ — that's a chat-only marker
   });
 
   it('auto_e_paused: absolute kill — even @e in on-mode is withheld but logged', async () => {
