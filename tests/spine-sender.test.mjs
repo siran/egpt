@@ -52,7 +52,7 @@ describe('sender — single-message reply train', () => {
     bridge.startStream = (chat, init, opts) => { const h = { update() {}, async finish() {}, async delete() {}, delivered: false }; bridge.streams.push(h); return h; };
     const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open('!c', { being: 'e', replyTo: 'm1' });
     await out.finish({ text: 'reply' });
-    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply ∎', opts: { bodyEmoji: '🐶', replyTo: 'm1' } }]);
+    expect(bridge.sent).toEqual([{ chat: '!c', text: 'reply ∎', opts: { bodyEmoji: '🐶', label: null, replyTo: 'm1' } }]);
   });
 
   it('send failure ends the message with ❌', async () => {

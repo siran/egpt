@@ -22,6 +22,18 @@ import { createFloodGuard } from '../flood-guard.mjs';
 // unique nonce makes it match THIS turn's message or nothing (→ clean fresh send).
 let _streamSeq = 0;
 
+// The bridge-ENFORCED persona identifier: body_emoji + persona name as the FIRST
+// LINE, then the reply. A leading model-written self-label ("egpt:") is stripped so
+// the identifier is the bridge's, not the model's. No body_emoji (system sends) →
+// text passes through untouched.
+const _escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function personaStamp(bodyEmoji, label, text) {
+  if (!bodyEmoji) return text;
+  if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no header line
+  const clean = String(text).replace(new RegExp(`^\\s*${_escapeRe(label)}\\s*[:：]\\s*`, 'i'), '');
+  return `${bodyEmoji} ${label}\n${clean}`;      // persona line: "🐶 egpt" then the reply
+}
+
 /**
  * @param {object} opts  forwarded verbatim to startBeeperBridge (beeperToken,
  *   networks, isAllowedUser, userName, media, holdGraceMs, …). The three host
@@ -72,8 +84,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
       if (!floodGuard.allow(chat)) { onLog(`flood-guard: send to ${chat} BLOCKED (flood pause)`); return { blocked: true }; }
-      const body = opts.bodyEmoji ? `${opts.bodyEmoji} ${text}` : text;
-      return real.send(body, { chatId: chat, replyToMessageID: opts.replyTo ?? null });
+      return real.send(personaStamp(opts.bodyEmoji, opts.label, text), { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
 
     // In-place edit-stream. Returns the §2b { update, finish, delete } plus
@@ -90,7 +101,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       // A stream OPEN counts as a send for the flood guard (a reply loop = many
       // opens); a flood-paused chat gets an inert handle so the sender no-ops.
       if (!floodGuard.allow(chat)) { onLog(`flood-guard: stream to ${chat} BLOCKED (flood pause)`); return NOOP_STREAM; }
-      const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
+      const stamp = (t) => personaStamp(opts.bodyEmoji, opts.label, t);
       // The placeholder carries the body_emoji (so a re-ingested copy is caught by
       // the persona-marker echo-suppression) + a UNIQUE nonce (so resolveSentMessageId
       // matches THIS message, never an old stuck placeholder). Edits (update/finish)

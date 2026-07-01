@@ -59,6 +59,13 @@ export async function boot({
     if (b === 'e' || b === 'egpt' || b === personaName) return cfg.emojis?.persona ?? cfg.siblings?.e?.body_emoji ?? '🐶';
     return cfg.siblings?.[b]?.body_emoji ?? cfg.emojis?.persona ?? '🐶';
   };
+  // The persona NAME shown on the enforced first line (🐶 <label>). E → persona_name
+  // (default 'egpt'); siblings → their configured name.
+  const labelOf = (being) => {
+    const b = String(being ?? '').toLowerCase();
+    if (b === 'e' || b === 'egpt' || b === personaName) return cfg.persona_name ?? 'egpt';
+    return cfg.siblings?.[b]?.name ?? b;
+  };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
   const _loadState = loadState ?? (async () => {
@@ -127,7 +134,7 @@ export async function boot({
     gating: createGating({ getConfig, loadState: _loadState }),
     router: createRouter(),
     transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge, bodyEmojiOf }),
+    sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
   };
   // Brain registry: resolves the default brain (config.default_brain, YAML defs in

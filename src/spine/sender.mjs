@@ -13,13 +13,15 @@ const END_MARK = '∎';
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
 
-export function createSender({ bridge, bodyEmojiOf = () => null } = {}) {
+export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
     open(chatId, { being = 'e', replyTo = null } = {}) {
       const bodyEmoji = bodyEmojiOf(being);
-      const stream = bridge.startStream?.(chatId, THINKING, { bodyEmoji, replyTo, persona: being });
+      const label = labelOf(being);
+      const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona line (emoji + label) from these
+      const stream = bridge.startStream?.(chatId, THINKING, { ...tag, persona: being });
       let acc = '';
       return {
         update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ⏳`); },
@@ -28,15 +30,15 @@ export function createSender({ bridge, bodyEmojiOf = () => null } = {}) {
           if (!surface || !t) { if (stream) await stream.delete?.(); return; }   // withheld ('...') / empty → no message
           if (stream) {
             await stream.finish?.(`${t} ${END_MARK}`);
-            if (!stream.delivered) await bridge.send(chatId, `${t} ${END_MARK}`, { bodyEmoji, replyTo });   // §7 fallback
+            if (!stream.delivered) await bridge.send(chatId, `${t} ${END_MARK}`, tag);   // §7 fallback
           } else {
-            await bridge.send(chatId, `${t} ${END_MARK}`, { bodyEmoji, replyTo });
+            await bridge.send(chatId, `${t} ${END_MARK}`, tag);
           }
         },
         async fail() {                                 // visible failure: the message ends with ❌
           try {
             if (stream) await stream.finish?.(`${acc ? `${acc} ` : ''}${FAIL_SUFFIX}`);
-            else await bridge.send(chatId, FAIL_SUFFIX, { bodyEmoji, replyTo });
+            else await bridge.send(chatId, FAIL_SUFFIX, tag);
           } catch { /* best effort */ }
         },
       };
