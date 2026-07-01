@@ -23,7 +23,7 @@
 // v1 is the E persona on the ccode engine. Sibling beings (per-being session
 // persistence) and codex/URL brains layer in later; emitted-command stripping is
 // the comm-handler's job (Phase 4), not the brain's.
-import { slugDir, getContact, ensureContact, getBeing, recordThread, readIdentityFeed, patchContact } from '../../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 
@@ -41,6 +41,7 @@ async function defaultLoadManifest(getConfig) {
 export function createBrainPool({
   pool,                              // a createWarmPool instance ({ run, evict })
   getConfig = () => ({}),
+  contacts,                          // the shared contact-resolver (createContacts) — slug + rename self-heal
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
@@ -52,21 +53,21 @@ export function createBrainPool({
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
+  if (typeof contacts?.resolve !== 'function') throw new Error('createBrainPool: contacts (createContacts) is required');
   if (typeof loadState !== 'function' || typeof writeState !== 'function') throw new Error('createBrainPool: loadState + writeState are required');
   const mkdir = io.mkdir ?? fsMkdir;
   const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
 
-  // chatId → { slug, sessionId, personality }, registering the contact on first
-  // sight (the brain runs before transcript.log, so it can be the registrar).
+  // chatId → { slug, sessionId, personality }. The shared resolver registers the
+  // contact on first sight AND re-arms the name-tracking rename; the slug it
+  // returns is the CURRENT one. When a rename fired, the warm-pool key below embeds
+  // that new slug, so the conversation naturally re-keys onto a fresh warm entry —
+  // the stale entry ages out via the pool's LRU, no extra eviction machinery. We
+  // then re-read state fresh (the resolver may have just rewritten it — a rename
+  // nulls the thread state) for the per-being view.
   async function resolveConv(ev, being) {
-    let state = await loadState();
-    let slug = getContact(state, ev.surface, ev.chatId)?.slug ?? null;
-    if (!slug) {
-      const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
-      slug = ens?.slug ?? null;
-      if (slug && ens.state !== state) { state = ens.state; await writeState(state); }
-    }
-    const b = slug ? getBeing(state, ev.surface, ev.chatId, being) : null;
+    const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
+    const b = slug ? getBeing(await loadState(), ev.surface, ev.chatId, being) : null;
     return {
       slug,
       sessionId: b?.threadId ?? null,

@@ -7,8 +7,9 @@
 // that flows through the normal pipe; this service only persists files.
 //
 // The pure naming/index helpers are kept (media-save.mjs); the effectful copy +
-// conv-state resolution are injected so the save is testable in-memory.
-import { slugDir, getContact, ensureContact } from '../../conversations-state.mjs';
+// conv-state resolution (via the shared contacts resolver) are injected so the
+// save is testable in-memory.
+import { slugDir } from '../../conversations-state.mjs';
 import { surfaceOf } from './identity.mjs';
 import { mediaFileName, mediaIndexLine } from '../media-save.mjs';
 import { extractKeyframes } from '../video-frames.mjs';
@@ -17,30 +18,19 @@ import { copyFile as fsCopyFile, mkdir as fsMkdir, appendFile as fsAppendFile } 
 import { join } from 'node:path';
 
 export function createMedia({
-  loadState, writeState, surface = 'whatsapp',   // fallback surface when a save's meta carries no network
+  contacts, surface = 'whatsapp',       // shared contact-resolver + fallback surface when a save's meta carries no network
   transcribeCfg = {},                   // whisper-cli profile (ffmpeg_command, command, model_path, language)
   transcribe = transcribeAudioFile,     // (path, cfg, log) -> transcript (reads video audio too)
   extractFrames = extractKeyframes,     // (path, { ffmpeg, outDir, baseName, count, log }) -> [absolute frame paths]
   frameCount = 3,
   io = {}, onLog = () => {},
 } = {}) {
-  if (typeof loadState !== 'function' || typeof writeState !== 'function') {
-    throw new Error('createMedia: loadState + writeState are required');
+  if (typeof contacts?.resolve !== 'function') {
+    throw new Error('createMedia: contacts (createContacts) is required');
   }
   const copyFile = io.copyFile ?? fsCopyFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const appendFile = io.appendFile ?? fsAppendFile;
-
-  async function resolveSlug(saveSurface, chatID, chatName) {
-    let state = await loadState();
-    let slug = getContact(state, saveSurface, chatID)?.slug ?? null;
-    if (!slug) {
-      const ens = ensureContact(state, saveSurface, chatID, { pushedName: chatName, slugHint: chatName });
-      slug = ens?.slug ?? null;
-      if (slug && ens.state !== state) { state = ens.state; await writeState(state); }
-    }
-    return slug;
-  }
 
   return {
     // The bridge's onMedia(meta): meta = { chatID, chatName, msgId, senderName,
@@ -54,7 +44,7 @@ export function createMedia({
         // conversations/telegram/<slug>/media/, matching the chat's transcript +
         // the brain's cwd. No network on meta → the constructor's fallback surface.
         const saveSurface = meta.network ? surfaceOf(meta.network) : surface;
-        const slug = await resolveSlug(saveSurface, meta.chatID, meta.chatName);
+        const slug = await contacts.resolve(saveSurface, meta.chatID, { chatName: meta.chatName });
         if (!slug) return null;
         const dir = join(slugDir(saveSurface, slug), 'media');
         await mkdir(dir, { recursive: true });

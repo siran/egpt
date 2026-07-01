@@ -23,6 +23,7 @@ import {
 } from '../../conversations-state.mjs';
 
 import { createIdentity } from './identity.mjs';
+import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
 import { createRouter } from './router.mjs';
 import { createTranscript } from './transcript.mjs';
@@ -40,7 +41,7 @@ export async function boot({
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
   makeSession = createWarmCliSession, // the warm-session factory (null-safe for tests)
   loadState = null, writeState = null,// conv-state IO (null = real CONV_YAML_PATH)
-  io = {},                            // fs seam for transcript + brainpool ({appendFile,mkdir,existsSync}); real fs by default. Tests inject in-memory so they never touch the profile.
+  io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
   log = { line: (s) => { try { console.error(s); } catch {} } },
   now = () => Date.now(),
   tickMs = 5 * 60_000,
@@ -74,6 +75,11 @@ export async function boot({
   });
   const _writeState = writeState ?? (async (s) => { await writeFile(CONV_YAML_PATH, serializeConvState(s), 'utf8'); });
 
+  // The ONE shared contact-resolver: every service that needs a chat's slug goes
+  // through here, so the pushedName refresh + rename self-heal (move the slug dir
+  // old→new + write renames.log) run for KNOWN chats too, not just new ones.
+  const contacts = createContacts({ loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[contacts] ${m}`) });
+
   // Voice/video transcription: the fallback CHAIN (remote node → local whisper-
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
@@ -97,7 +103,7 @@ export async function boot({
 
   // Persist incoming attachments into the chat's media/ folder + surface them to E.
   // For a video: keyframes (ffmpeg) + audio transcript (via the same chain) — Route A.
-  const media = createMedia({ loadState: _loadState, writeState: _writeState, io, transcribe: tx.transcribe, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
+  const media = createMedia({ contacts, io, transcribe: tx.transcribe, transcribeCfg: tx.cliCfg, onLog: (m) => log.line?.(`[media] ${m}`) });
   bridge.onMedia((m) => media.save(m));
 
   // --- lifecycle announce: "restarting…" to Self before exit, "back up! <commit>"
@@ -133,7 +139,7 @@ export async function boot({
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState }),
     router: createRouter(),
-    transcript: createTranscript({ loadState: _loadState, writeState: _writeState, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
   };
@@ -144,7 +150,7 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, brains, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.

@@ -5,40 +5,28 @@
 // the kept pure libs (conversations-state for the slug/path, transcript-log for
 // the bytes).
 //
-// Effectful deps are injected (conv-state load/write, fs) so the service is
-// testable in-memory; the pure path helpers are imported directly.
-import { slugDir, getContact, ensureContact } from '../../conversations-state.mjs';
+// Effectful deps are injected (conv-state load/write via the shared contacts
+// resolver, fs) so the service is testable in-memory; the pure path helpers are
+// imported directly.
+import { slugDir } from '../../conversations-state.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 import { join } from 'node:path';
 
 export function createTranscript({
-  loadState, writeState,                 // conversations-state YAML IO (injected)
+  contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
   persona = null,
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
   now = () => new Date(),
   onLog = () => {},
 } = {}) {
-  if (typeof loadState !== 'function' || typeof writeState !== 'function') {
-    throw new Error('createTranscript: loadState + writeState are required');
+  if (typeof contacts?.resolve !== 'function') {
+    throw new Error('createTranscript: contacts (createContacts) is required');
   }
   const appendFile = io.appendFile ?? fsAppendFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const existsSync = io.existsSync ?? fsExistsSync;
-
-  // chatId → slug, registering the contact on first sight (same self-heal path
-  // _logChatLine used: a new chat gets a contact + slug, and we persist it).
-  async function resolveSlug(ev) {
-    const state = await loadState();
-    let slug = getContact(state, ev.surface, ev.chatId)?.slug ?? null;
-    if (!slug) {
-      const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
-      slug = ens?.slug ?? null;
-      if (slug && ens.state !== state) await writeState(ens.state);
-    }
-    return slug;
-  }
 
   return {
     /**
@@ -50,7 +38,7 @@ export function createTranscript({
     async log(ev, reply) {
       try {
         if (!ev?.chatId) return false;
-        const slug = await resolveSlug(ev);
+        const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
         const dir = slugDir(ev.surface, slug);
         await mkdir(dir, { recursive: true });

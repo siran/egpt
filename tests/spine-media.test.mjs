@@ -2,6 +2,7 @@
 // with a meaningful name + index line. In-memory io + conv-state; no disk.
 import { describe, it, expect } from 'vitest';
 import { createMedia } from '../src/spine/media.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
 import { emptyState } from '../conversations-state.mjs';
 
 function harness() {
@@ -12,7 +13,8 @@ function harness() {
     mkdir: async () => {},
     appendFile: async (p, data) => appends.push({ p, data }),
   };
-  const media = createMedia({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+  const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+  const media = createMedia({ contacts, io });
   return { media, copies, appends };
 }
 
@@ -45,7 +47,8 @@ describe('media.save', () => {
       mkdir: async () => {},
       appendFile: async (p, data) => appends.push({ p, data }),
     };
-    const media = createMedia({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+    const contacts = createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+    const media = createMedia({ contacts, io });
     const dest = await media.save({ ...META, network: 'telegram' });
     expect(dest).toMatch(/telegram[\\/]fam-\d{10}[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
     expect(dest).not.toMatch(/whatsapp/);
@@ -70,7 +73,7 @@ describe('media.save', () => {
     const io = { copyFile: async () => {}, mkdir: async () => {}, appendFile: async () => {} };
     const frameCalls = [], txCalls = [];
     const media = createMedia({
-      loadState: async () => state, writeState: async (s) => { state = s; }, io,
+      contacts: createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io }), io,
       transcribeCfg: { ffmpeg_command: 'C:/ff/ffmpeg.exe', language: 'es' },
       extractFrames: async (path, opts) => { frameCalls.push({ path, opts }); return [`${opts.outDir}/v-frame-01.jpg`, `${opts.outDir}/v-frame-02.jpg`]; },
       transcribe: async (path, cfg) => { txCalls.push({ path, cfg }); return '(video) gol de Enciso'; },
@@ -87,7 +90,7 @@ describe('media.save', () => {
   it('swallows a copy failure → null (media must never block text)', async () => {
     let state = emptyState();
     const io = { copyFile: async () => { throw new Error('disk full'); }, mkdir: async () => {}, appendFile: async () => {} };
-    const media = createMedia({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+    const media = createMedia({ contacts: createContacts({ loadState: async () => state, writeState: async (s) => { state = s; }, io }), io });
     expect(await media.save(META)).toBe(null);
   });
 });

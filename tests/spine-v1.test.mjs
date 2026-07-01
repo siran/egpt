@@ -7,6 +7,7 @@ import { createSpine } from '../spine.mjs';
 import { createIdentity } from '../src/spine/identity.mjs';
 import { createGating } from '../src/spine/gating.mjs';
 import { createTranscript } from '../src/spine/transcript.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
 import { createSender } from '../src/spine/sender.mjs';
 import { createRouter } from '../src/spine/router.mjs';
 import { emptyState, ensureContact } from '../conversations-state.mjs';
@@ -43,12 +44,15 @@ function harness(config = {}, mode) {
   const writeState = async (s) => { state = s; };
 
   const files = new Map();
+  const renames = [];
   const io = {
     appendFile: async (p, data) => { files.set(p, (files.get(p) ?? '') + data); },
     mkdir: async () => {},
     existsSync: (p) => files.has(p),
+    rename: async (from, to) => { renames.push({ from, to }); },
   };
-  const transcript = createTranscript({ loadState, writeState, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
+  const contacts = createContacts({ loadState, writeState, io });
+  const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
 
   const bridge = fakeBridge();
   const brain = fakeBrain();
@@ -61,7 +65,7 @@ function harness(config = {}, mode) {
     transcript, heartbeats: { runDue() {} },
   });
   spine.start();
-  return { bridge, brain, files };
+  return { bridge, brain, files, renames };
 }
 
 const baseFrom = {
@@ -141,5 +145,23 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(bridge.sent).toHaveLength(0);
     expect(bridge.streams).toHaveLength(0);
     expect(onlyFile(files)).toContain('#m1: @e estas?');
+  });
+
+  it('a renamed chat: transcript continues in the NEW slug dir, old dir moved via the injected io', async () => {
+    // The contact was registered as 'fam'; a message now arrives with the chat
+    // retitled 'crew'. The shared resolver re-slugs on the title change, moves the
+    // folder old→new (io.rename), and the turn's transcript lands under the new slug.
+    const { bridge, files, renames } = harness({}, 'on');
+    await bridge.emit({ body: 'hola', from: { ...baseFrom, chatName: 'crew', atEStart: false, atEAnywhere: false, replyToBot: false } });
+
+    expect(renames).toHaveLength(1);
+    expect(renames[0].from).toMatch(/whatsapp[\\/]fam-\d{10}$/);
+    expect(renames[0].to).toMatch(/whatsapp[\\/]crew-\d{10}$/);
+
+    const paths = [...files.keys()];
+    const transcriptPath = paths.find((p) => /transcript\.md$/.test(p));
+    expect(transcriptPath).toMatch(/crew-\d{10}[\\/]transcript\.md$/);   // lands in the NEW dir
+    expect(paths.some((p) => /fam-\d{10}[\\/]transcript\.md$/.test(p))).toBe(false);  // nothing left in the old dir
+    expect(files.get(transcriptPath)).toContain('An@[crew].wa (14:05) #m1: hola');
   });
 });

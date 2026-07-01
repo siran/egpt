@@ -4,6 +4,7 @@
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect } from 'vitest';
 import { createBrainPool } from '../src/spine/brainpool.mjs';
+import { createContacts } from '../src/spine/contacts.mjs';
 import { emptyState, getBeing, ensureContact, recordThread } from '../conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
@@ -30,11 +31,14 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     state = recordThread(ens.state, ev.surface, ev.chatId, seedSession);
   }
   const pool = fakePool(scriptedResults);
+  const loadState = async () => state;
+  const writeState = async (s) => { state = s; };
   const brain = createBrainPool({
     pool,
     getConfig: () => config,
-    loadState: async () => state,
-    writeState: async (s) => { state = s; },
+    contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
+    loadState,
+    writeState,
     io: { mkdir: async () => {} },                 // don't touch disk
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
