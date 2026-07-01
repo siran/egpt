@@ -16,6 +16,12 @@
 import { startBeeperBridge } from './beeper.mjs';
 import { createFloodGuard } from '../flood-guard.mjs';
 
+// Monotonic per-turn nonce for stream placeholders. A placeholder's text is
+// otherwise identical every turn, so resolveSentMessageId (text-match, newest-id)
+// can lock onto an OLD stuck placeholder in a busy chat and edit THAT message. A
+// unique nonce makes it match THIS turn's message or nothing (→ clean fresh send).
+let _streamSeq = 0;
+
 /**
  * @param {object} opts  forwarded verbatim to startBeeperBridge (beeperToken,
  *   networks, isAllowedUser, userName, media, holdGraceMs, …). The three host
@@ -85,10 +91,12 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       // opens); a flood-paused chat gets an inert handle so the sender no-ops.
       if (!floodGuard.allow(chat)) { onLog(`flood-guard: stream to ${chat} BLOCKED (flood pause)`); return NOOP_STREAM; }
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
-      // init is a FIXED placeholder ("⏳") posted as-is, so the bridge resolves its
-      // id before any edit (a variable placeholder raced resolveSentMessageId →
-      // duplicate sends).
-      const h = real.startStreamMessage(init, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
+      // The placeholder carries the body_emoji (so a re-ingested copy is caught by
+      // the persona-marker echo-suppression) + a UNIQUE nonce (so resolveSentMessageId
+      // matches THIS message, never an old stuck placeholder). Edits (update/finish)
+      // drop the nonce — the id is already resolved.
+      const placeholder = `${stamp(init)} ·${(++_streamSeq).toString(36)}`;
+      const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
       return {
         update: (t) => h.update(stamp(t)),
         finish: (t) => h.finish(stamp(t)),

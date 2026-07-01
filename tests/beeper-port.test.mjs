@@ -73,9 +73,9 @@ describe('beeper-port adapter', () => {
     s.update('partial');
     s.finish('done');
     const h = spy.streams[0];
-    expect(h.init).toBe('⌛');                        // fixed placeholder, posted as-is
+    expect(h.init).toMatch(/^⌛ ·[a-z0-9]+$/);        // fixed placeholder + a UNIQUE per-turn nonce
     expect(h.opts).toMatchObject({ chatId: '!room' });
-    expect(h.updates).toEqual(['partial']);          // markers are the sender's job — port only stamps
+    expect(h.updates).toEqual(['partial']);          // markers are the sender's job — port only stamps; edits drop the nonce
     expect(h.finals).toEqual(['done']);
     expect(s.delivered).toBe(true);          // reflects the live handle
   });
@@ -87,7 +87,7 @@ describe('beeper-port adapter', () => {
     s.update('Aquí estoy ⏳');                                     // sender supplies the ⏳ marker
     s.finish('Aquí estoy bien ∎');                                // sender supplies the ∎ end-mark
     const h = spy.streams[0];
-    expect(h.init).toBe('⏳');                                     // fixed placeholder, posted as-is
+    expect(h.init).toMatch(/^🐶 ⏳ ·[a-z0-9]+$/);                  // body_emoji-stamped placeholder + unique nonce
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
     expect(h.updates).toEqual(['🐶 Aquí estoy ⏳']);               // every frame body_emoji-stamped
     expect(h.finals).toEqual(['🐶 Aquí estoy bien ∎']);

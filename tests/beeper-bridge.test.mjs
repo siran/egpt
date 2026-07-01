@@ -191,6 +191,14 @@ describe('beeper bridge', () => {
     expect(incoming.some((i) => i.from.isStageDirection)).toBe(false);
   });
 
+  it("suppresses an incoming that starts with the persona body_emoji (E's own re-ingested message)", async () => {
+    const { incoming } = await startBridge({ personaEmoji: '🐶' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: '🐶 egpt: roger', senderName: 'An' })] });   // E's own reply, echoed
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel-human' })] });                   // a real human message
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel-human'));
+    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt: roger');   // the persona-marked message was dropped
+  });
+
   it('converts inbound HTML message text to markdown before dispatch', async () => {
     // Beeper delivers text as HTML; the model + transcript must see prose/markdown,
     // not markup (operator 2026-06-16, the morgan thread).

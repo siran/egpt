@@ -133,6 +133,11 @@ export async function startBeeperBridge(opts = {}) {
     // Trailing-debounce window for the 👂 echo (per chat, coalesced). The
     // transcript still reaches the model instantly; only the chat echo waits.
     postsBackDelayMs = POSTS_BACK_DELAY_MS,
+    // The persona body_emoji (🐶). Every message E sends is stamped with it, so any
+    // INCOMING that starts with it is E's own — suppress it (in the self-chat E
+    // posts as the operator's account, so id/text echo-suppression can race; this
+    // content marker never does, and it keeps transcript.md linear).
+    personaEmoji = null,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions)? Host-supplied (reads whatsapp.allowed_users live). Beeper does
     // NOT reliably tag the owner's OWN sends as isSender — it fails even in the
@@ -737,6 +742,15 @@ export async function startBeeperBridge(opts = {}) {
     if (_mediaLines.length) text = [text, ..._mediaLines].filter(Boolean).join('\n');
 
     if (text == null) return;   // nothing to route — no text, no announceable media
+
+    // Own-message suppression by persona MARKER: every message E sends starts with
+    // its body_emoji, so an incoming that does is E's own (a re-ingested reply /
+    // streamed edit). Drop it — reliable where the id/text echo race isn't (the
+    // self-chat, where E posts as the operator). Keeps E out of its own context.
+    if (personaEmoji && String(text).trimStart().startsWith(personaEmoji)) {
+      onLog(`beeper: suppressed own persona message in [${info.title}] (marker ${personaEmoji})`);
+      return;
+    }
 
     const st = mentionStatus(text || '');
     const from = {
