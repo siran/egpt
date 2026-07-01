@@ -14,6 +14,7 @@
 // unit-testable with a fake bridge — no Beeper, no network, no live account
 // (tests/beeper-port.test.mjs). The live echo verify is tests-manual/phase2-echo.mjs.
 import { startBeeperBridge } from './beeper.mjs';
+import { createFloodGuard } from '../flood-guard.mjs';
 
 /**
  * @param {object} opts  forwarded verbatim to startBeeperBridge (beeperToken,
@@ -29,8 +30,22 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
   // call time rather than capturing it at construction.
   let onMsg = null, onEditCb = null, onMediaCb = null;
 
+  // Flood guard — the LAST line of defense against a send flood (a reply loop, a
+  // backlog replay, an echo-suppression miss). Every outbound (send + stream open)
+  // passes through it; > `limit` to one chat within `windowMs` PAUSES that chat for
+  // `cooldownMs`. This is port-level, so it is not forwarded to startBeeperBridge.
+  const { flood = {}, ...rest } = opts;
+  const onLog = opts.onLog ?? (() => {});
+  const floodGuard = createFloodGuard({
+    limit: Number(flood.limit ?? 10) || 10,
+    windowMs: Number(flood.window_ms ?? 3_000) || 3_000,
+    cooldownMs: Number(flood.cooldown_ms ?? 60_000) || 60_000,
+    onTrip: (chat, n, win) => onLog(`flood-guard: ⛔ FLOOD on ${chat} — ${n} sends in ${win / 1000}s; sends PAUSED (cooldown)`),
+  });
+  const NOOP_STREAM = { update() {}, finish() {}, delete() {}, get delivered() { return false; }, get lastError() { return 'flood-paused'; }, fail() {} };
+
   const real = await start({
-    ...opts,
+    ...rest,
     onIncoming: async (body, from) => { if (onMsg) await onMsg({ body, from }); },
     // Raw edit hook → port onEdit. Returns the host's truthy-if-consumed verdict
     // straight back to the bridge (used later by mesh to mirror streamed edits).
@@ -50,6 +65,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // The bridge ENFORCES the being's body_emoji (operator contract): prefix it
     // here so no caller can omit it.
     send(chat, text, opts = {}) {
+      if (!floodGuard.allow(chat)) { onLog(`flood-guard: send to ${chat} BLOCKED (flood pause)`); return { blocked: true }; }
       const body = opts.bodyEmoji ? `${opts.bodyEmoji} ${text}` : text;
       return real.send(body, { chatId: chat, replyToMessageID: opts.replyTo ?? null });
     },
@@ -65,6 +81,9 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     // sender's job, so update/finish only stamp + pass text through. opts:
     // { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
+      // A stream OPEN counts as a send for the flood guard (a reply loop = many
+      // opens); a flood-paused chat gets an inert handle so the sender no-ops.
+      if (!floodGuard.allow(chat)) { onLog(`flood-guard: stream to ${chat} BLOCKED (flood pause)`); return NOOP_STREAM; }
       const stamp = (t) => (opts.bodyEmoji ? `${opts.bodyEmoji} ${t}` : t);
       // init is a FIXED placeholder ("⏳") posted as-is, so the bridge resolves its
       // id before any edit (a variable placeholder raced resolveSentMessageId →

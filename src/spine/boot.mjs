@@ -82,6 +82,7 @@ export async function boot({
     transcribeCfg: tx.cliCfg,
     resolveTranscriptionService: tx.resolveTranscriptionService,// { enabled, postsBack } per chat
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
+    flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
