@@ -53,6 +53,13 @@ export function createDaemonRuntime(opts = {}) {
   let stopping = false;
   let backoff = RESTART_MIN_MS;
   let child = null;
+  // Set by checkLiveness right before it SIGTERMs a wedged child, so the exit
+  // handler can tell that kill apart from an operator-initiated stop. On POSIX a
+  // wedged child traps SIGTERM and exits 0 (egpt.mjs) — identical to a clean
+  // /exit — so without this flag the daemon would stop the whole service instead
+  // of respawning. (On Windows kill() hard-terminates with a non-0 code, so it
+  // "worked" there by accident; this makes the wedge-restart path uniform.)
+  let wedgeKilled = false;
 
   function log(msg) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
@@ -78,6 +85,7 @@ export function createDaemonRuntime(opts = {}) {
     const age = beat == null ? Infinity : now() - beat;
     if (age > aliveStaleMs) {
       log(`spine wedged — alive beat ${beat == null ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s) — restarting`);
+      wedgeKilled = true;   // exit handler: respawn, don't read a SIGTERM-induced exit 0 as an operator stop
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
     }
   }
@@ -177,6 +185,17 @@ export function createDaemonRuntime(opts = {}) {
       child = null;
       if (stopping) return;
       log(`shell exited code=${code} signal=${signal ?? '-'}`);
+
+      // A wedge-kill must respawn regardless of exit code: on POSIX the SIGTERM'd
+      // child exits 0, which would otherwise fall into the clean-exit branch and
+      // stop the whole daemon. Immediate respawn + backoff reset, like RESTART.
+      if (wedgeKilled) {
+        wedgeKilled = false;
+        log('wedge restart — respawning the killed child');
+        backoff = RESTART_MIN_MS;
+        setImmediateFn(spawnShell);
+        return;
+      }
 
       if (code === CLEAN_EXIT_CODE) {
         log('clean exit — egpt-daemon stopping (user wanted out)');

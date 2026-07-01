@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import {
+  CLEAN_EXIT_CODE,
   RESTART_EXIT_CODE,
   UPGRADE_EXIT_CODE,
   createDaemonRuntime,
@@ -148,6 +149,25 @@ describe('daemon runtime fake-world harness', () => {
     clock += 5_000;
     runtime.checkLiveness();
     expect(children[0].child.killed).toEqual([]);
+  });
+
+  it('wedge kill → child exits 0 (POSIX SIGTERM trap) → daemon respawns, does not stop', async () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, children, processObj } = makeRuntime({
+      now: () => clock,
+      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999\n',  // ~1h-old beat
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;                 // past grace; beat is stale
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual(['SIGTERM']);
+
+    // POSIX: the trapped SIGTERM makes the child exit 0 — same as a clean /exit.
+    // The wedge flag must route this to a respawn, NOT stop the daemon.
+    await children[0].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');
+    expect(children).toHaveLength(2);          // respawned
+    expect(processObj.exits).toEqual([]);      // daemon did NOT stop
   });
 
   it('exit code 43 restarts immediately without upgrade work', async () => {
