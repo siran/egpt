@@ -652,7 +652,10 @@ export function getBeing(state, surface, jid, being = 'e') {
   const e = c.entry ?? {};
   const b = (e[being] && typeof e[being] === 'object' && !Array.isArray(e[being])) ? e[being] : null;
   const flat = being === 'e' ? e : {};
-  const ro = b?.readonly ?? {};
+  // `readonly` (the instanced brain + personality) reads from the nested being
+  // block, or — for the legacy flat 'e' — a flat `readonly` (which is where the
+  // brainpool instances it, so we never have to migrate a flat entry to nested).
+  const ro = b?.readonly ?? (being === 'e' ? (flat.readonly ?? {}) : {});
   return {
     jid: c.jid, slug: c.slug, surface, being,
     present:            !!b || being === 'e',                                   // 'e' is the implicit legacy resident
@@ -664,6 +667,9 @@ export function getBeing(state, surface, jid, being = 'e') {
     personality:        ro.personality        ?? flat.personality        ?? 'default',
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
+    brain:              ro.brain              ?? null,   // the brain-def name this thread was instanced from
+    brainType:          ro.type               ?? null,   // the engine (frozen); null = not instanced yet
+    allowedTools:       ro.allowed_tools      ?? null,
   };
 }
 

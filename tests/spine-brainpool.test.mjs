@@ -23,7 +23,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains } = {}) {
   let state = emptyState();
   if (seedSession) {           // pre-register the contact WITH a stored thread (a resumed, non-fresh conv)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -38,6 +38,7 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     io: { mkdir: async () => {} },                 // don't touch disk
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
+    ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(isOverflow ? { isOverflow } : {}),
   });
   return { brain, pool, getState: () => state };
@@ -74,6 +75,28 @@ describe('brainpool.turn', () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
     await brain.turn('e', ev);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'claude-x', appendSystemPrompt: 'you are E', cwd: 'C:/work', allowedTools: 'Read,Edit' });
+  });
+
+  // --- brain registry: instance-on-first-turn + freeze ---
+  it('instances the default brain from the registry into readonly, keys by its engine', async () => {
+    const brains = { resolve: () => ({ name: 'default', type: 'codex', model: 'gpt-5.4-mini', allowed_tools: 'all' }) };
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].key).toMatch(/^e:codex:whatsapp:SPOILER-\d{10}$/);       // engine from the brain, not hardcoded ccode
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: 'all' });
+    const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
+    expect(view.brain).toBe('default');
+    expect(view.brainType).toBe('codex');                                        // frozen into readonly
+  });
+
+  it('a re-pointed default does NOT retro-alter an already-instanced conversation', async () => {
+    let type = 'ccode';
+    const brains = { resolve: () => ({ name: 'default', type }) };
+    const { brain, pool } = harness([{ text: 'a', sessionId: 's' }, { text: 'b', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);            // instances ccode
+    type = 'codex';                       // operator re-points the default
+    await brain.turn('e', ev);            // …but this conv stays frozen on ccode
+    expect(pool.calls[1].key).toMatch(/:ccode:/);
   });
 
   // --- identity kickoff (the beta-1 mechanism: first user turn, not a system prompt) ---

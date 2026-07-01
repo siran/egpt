@@ -32,6 +32,7 @@ import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
+import { createBrains } from './brains.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -119,7 +120,11 @@ export async function boot({
     sender: createSender({ bridge, bodyEmojiOf }),
     heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
   };
-  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // Brain registry: resolves the default brain (config.default_brain, YAML defs in
+  // src/brains ← ~/.egpt2/config/brains ← <slug>/brains) a fresh conversation is
+  // instanced from.
+  const brains = createBrains({ onLog: (m) => log.line?.(`[brains] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, brains, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.
