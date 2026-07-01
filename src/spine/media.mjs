@@ -9,6 +9,7 @@
 // The pure naming/index helpers are kept (media-save.mjs); the effectful copy +
 // conv-state resolution are injected so the save is testable in-memory.
 import { slugDir, getContact, ensureContact } from '../../conversations-state.mjs';
+import { surfaceOf } from './identity.mjs';
 import { mediaFileName, mediaIndexLine } from '../media-save.mjs';
 import { extractKeyframes } from '../video-frames.mjs';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
@@ -16,7 +17,7 @@ import { copyFile as fsCopyFile, mkdir as fsMkdir, appendFile as fsAppendFile } 
 import { join } from 'node:path';
 
 export function createMedia({
-  loadState, writeState, surface = 'whatsapp',
+  loadState, writeState, surface = 'whatsapp',   // fallback surface when a save's meta carries no network
   transcribeCfg = {},                   // whisper-cli profile (ffmpeg_command, command, model_path, language)
   transcribe = transcribeAudioFile,     // (path, cfg, log) -> transcript (reads video audio too)
   extractFrames = extractKeyframes,     // (path, { ffmpeg, outDir, baseName, count, log }) -> [absolute frame paths]
@@ -30,11 +31,11 @@ export function createMedia({
   const mkdir = io.mkdir ?? fsMkdir;
   const appendFile = io.appendFile ?? fsAppendFile;
 
-  async function resolveSlug(chatID, chatName) {
+  async function resolveSlug(saveSurface, chatID, chatName) {
     let state = await loadState();
-    let slug = getContact(state, surface, chatID)?.slug ?? null;
+    let slug = getContact(state, saveSurface, chatID)?.slug ?? null;
     if (!slug) {
-      const ens = ensureContact(state, surface, chatID, { pushedName: chatName, slugHint: chatName });
+      const ens = ensureContact(state, saveSurface, chatID, { pushedName: chatName, slugHint: chatName });
       slug = ens?.slug ?? null;
       if (slug && ens.state !== state) { state = ens.state; await writeState(state); }
     }
@@ -48,9 +49,14 @@ export function createMedia({
     async save(meta) {
       try {
         if (!meta?.localPath || !meta?.chatID) return null;
-        const slug = await resolveSlug(meta.chatID, meta.chatName);
+        // Bucket by the message's ORIGIN network (meta.network from the bridge),
+        // via the SAME surfaceOf identity uses — so a Telegram photo saves under
+        // conversations/telegram/<slug>/media/, matching the chat's transcript +
+        // the brain's cwd. No network on meta → the constructor's fallback surface.
+        const saveSurface = meta.network ? surfaceOf(meta.network) : surface;
+        const slug = await resolveSlug(saveSurface, meta.chatID, meta.chatName);
         if (!slug) return null;
-        const dir = join(slugDir(surface, slug), 'media');
+        const dir = join(slugDir(saveSurface, slug), 'media');
         await mkdir(dir, { recursive: true });
         const name = mediaFileName(meta);
         const dest = join(dir, name);

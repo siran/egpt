@@ -33,6 +33,32 @@ describe('media.save', () => {
     expect(appends[0].data).toContain('look');                                // caption
   });
 
+  it("routes the save to the surface of meta.network — a telegram photo lands under telegram, not whatsapp", async () => {
+    // Bug: media hardcoded the 'whatsapp' surface, so a non-WhatsApp attachment
+    // registered a duplicate contact in the whatsapp bucket and saved under
+    // conversations/whatsapp/<slug>/media/, while the transcript + brain cwd live
+    // under telegram/. The save must bucket by the message's origin network.
+    let state = emptyState();
+    const copies = [], appends = [];
+    const io = {
+      copyFile: async (src, dest) => copies.push({ src, dest }),
+      mkdir: async () => {},
+      appendFile: async (p, data) => appends.push({ p, data }),
+    };
+    const media = createMedia({ loadState: async () => state, writeState: async (s) => { state = s; }, io });
+    const dest = await media.save({ ...META, network: 'telegram' });
+    expect(dest).toMatch(/telegram[\\/]fam-\d{10}[\\/]media[\\/]20260629-140530-an-image-m5\.jpg$/);
+    expect(dest).not.toMatch(/whatsapp/);
+    expect(state.contacts.telegram?.['!room:beeper.com']).toBeTruthy();   // contact registered in the telegram bucket
+    expect(state.contacts.whatsapp).toBeUndefined();                       // NOT the whatsapp bucket
+  });
+
+  it("falls back to the constructor surface when meta carries no network", async () => {
+    const { media } = harness();
+    const dest = await media.save(META);   // META has no `network`
+    expect(dest).toMatch(/whatsapp[\\/]fam-\d{10}[\\/]media[\\/]/);
+  });
+
   it('returns null (never throws) when localPath or chatID is missing', async () => {
     const { media } = harness();
     expect(await media.save({ chatID: '!r' })).toBe(null);

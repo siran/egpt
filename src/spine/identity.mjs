@@ -20,6 +20,18 @@ function netKey(network) {
   return n;
 }
 
+// THE network→surface map, exported so identity (transcript/brain cwd) and the
+// media service (media/ folder) can't drift — a Telegram photo must bucket under
+// the SAME surface as the chat's transcript, not silently fall into 'whatsapp'
+// (they did diverge: media hardcoded 'whatsapp', so a TG photo's media/<file> was
+// announced under a path the brain's telegram cwd never had). Returns a
+// KNOWN_SURFACES member; anything unrecognized falls back to 'whatsapp' for v1
+// (slugDir rejects non-members).
+export function surfaceOf(network) {
+  const key = netKey(network);
+  return KNOWN_SURFACES.includes(key) ? key : 'whatsapp';
+}
+
 export function createIdentity({ formatLine = formatDispatchLine, now = () => Date.now() } = {}) {
   return {
     /** @param {{ body: string, from: object }} payload @returns {import('../../spine.mjs').InboundEvent} */
@@ -27,7 +39,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       const f = from ?? {};
       const key = netKey(f.network);
       const node = NODE_OF[key] ?? key;
-      const surface = KNOWN_SURFACES.includes(key) ? key : 'whatsapp';
+      const surface = surfaceOf(f.network);
       const kind = f.isReaction ? 'reaction' : f.isStageDirection ? 'edit' : 'text';
       const ts = f.ts ?? now();
       const senderName = f.senderName ?? f.firstName ?? null;

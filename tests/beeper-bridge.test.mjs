@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { startBeeperBridge } from '../src/bridges/beeper.mjs';
+import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -274,8 +274,21 @@ describe('beeper bridge', () => {
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [att] })] });
     await waitFor(() => incoming.length === 1);
-    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'image' });
+    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'image', network: 'whatsapp' });   // meta carries the origin network (default chat = whatsapp)
     expect(incoming[0].text).toMatch(/\(image[^)]*\) \[saved: /);   // path announced to E
+  });
+
+  // The onMedia meta must carry the message's ORIGIN network so the media service
+  // buckets the file under the SAME surface as the transcript (a Telegram photo
+  // must not fall into the whatsapp media/ folder — the bug). Derived like
+  // from.network: msg.accountID || the chat's accountID || 'whatsapp'.
+  it('onMedia meta carries the origin network (a telegram chat → network:"telegram")', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'TeleFam', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { media } = await startBridge();
+    const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-tg'), type: 'IMAGE', text: null, attachments: [att] })] });
+    await waitFor(() => media.length === 1);
+    expect(media[0]).toMatchObject({ chatID: CHAT('chat-tg'), kind: 'image', network: 'telegram' });
   });
 
   // ROUTE A (operator 2026-06-16): a video is handed to E with keyframes (Read
@@ -491,5 +504,31 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
     await waitFor(() => second.incoming.some((i) => i.text === 'sentinel'));
     expect(second.incoming.filter((i) => i.text === 'once only')).toHaveLength(0);
+  });
+});
+
+// resolveSentMessageId reduces its text matches with newerMsgId to pick the NEWEST
+// (largest-id) match. Beeper ids are per-chat sequence numbers, so the pick must be
+// NUMERIC — a string compare ranks "9" > "10" and resolves the OLDER message, so the
+// stream placeholder edits the wrong line. This unit-tests the pure reducer directly.
+describe('newerMsgId (resolveSentMessageId newest-match reducer)', () => {
+  it('null incumbent yields the candidate', () => {
+    expect(newerMsgId(null, '5')).toBe('5');
+    expect(newerMsgId('5', null)).toBe('5');
+  });
+  it('numeric compare wins where string order disagrees (9 vs 10, 99 vs 100)', () => {
+    expect(newerMsgId('9', '10')).toBe('10');    // string order would pick "9" — the older message
+    expect(newerMsgId('10', '9')).toBe('10');
+    expect(newerMsgId('99', '100')).toBe('100');
+    expect(newerMsgId('100', '99')).toBe('100');
+    // numeric ids too (Beeper delivers them as numbers), not only strings
+    expect(newerMsgId(9, 10)).toBe(10);
+  });
+  it('ties keep the incumbent (strict-greater, matching the original comparator)', () => {
+    expect(newerMsgId('7', '7')).toBe('7');
+  });
+  it('falls back to string order when an id is not a clean number', () => {
+    expect(newerMsgId('a', 'b')).toBe('b');
+    expect(newerMsgId('b', 'a')).toBe('b');
   });
 });

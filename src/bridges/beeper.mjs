@@ -105,6 +105,21 @@ export function bagContains(sentBag, inBag, threshold = 0.85) {
   return hit / inBag.size >= threshold;
 }
 
+// Pick the NEWER of two Beeper message ids — the "largest id wins" reduction
+// resolveSentMessageId runs over its text matches. Beeper ids are per-chat
+// SEQUENCE numbers, so compare NUMERICALLY when both are finite numbers: a plain
+// string compare ranks "9" > "10" and would resolve the OLDER of two matches, so
+// the stream placeholder edits the wrong (earlier) message. Fall back to string
+// order only when an id isn't a clean number (schema-tolerant). Ties keep `a`
+// (the incumbent best), matching the original strict-greater comparator.
+export function newerMsgId(a, b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  const na = Number(a), nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return nb > na ? b : a;
+  return String(b) > String(a) ? b : a;
+}
+
 export async function startBeeperBridge(opts = {}) {
   const {
     onIncoming,
@@ -413,6 +428,11 @@ export async function startBeeperBridge(opts = {}) {
           chatID: msg.chatID,
           chatName: info.title,
           chatType: info.type === 'group' ? 'group' : 'private',
+          // Origin network (Beeper accountID) — SAME derivation dispatchMessage
+          // uses for `from.network`, so the media service buckets the file under
+          // the identical surface as the transcript (identity.surfaceOf); without
+          // it a non-WhatsApp attachment fell to media's 'whatsapp' default.
+          network: msg.accountID || info.accountID || 'whatsapp',
           msgId: msg.id ?? null,
           senderName: msg.senderName ?? null,
           isSender: !!msg.isSender,
@@ -491,7 +511,7 @@ export async function startBeeperBridge(opts = {}) {
         for (const m of items) {
           if (!m?.id) continue;
           if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
-          if (best == null || Number(m.id) > Number(best) || String(m.id) > String(best)) best = m.id;
+          best = newerMsgId(best, m.id);
         }
         if (best != null) return best;
       } catch { /* retry */ }
