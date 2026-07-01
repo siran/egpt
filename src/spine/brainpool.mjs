@@ -48,6 +48,7 @@ export function createBrainPool({
   isOverflow = isContextOverflowError,
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
   loadManifest = null,              // () -> e_identity.md fallback (default below)
+  afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
   onLog = () => {},
 } = {}) {
   if (!pool || typeof pool.run !== 'function') throw new Error('createBrainPool: pool (createWarmPool) is required');
@@ -157,6 +158,9 @@ export function createBrainPool({
       if (newSession && newSession !== sessionId) {
         await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession));
       }
+      // Auto-compaction hook: after a cooling period the service /compacts this
+      // session in place if it grew past ratio. Fire-and-forget — never block the reply.
+      try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
     },
   };

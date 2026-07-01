@@ -33,6 +33,7 @@ import { createCommands } from './commands.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
+import { createCompaction } from './compaction.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -131,7 +132,10 @@ export async function boot({
   // src/brains ← ~/.egpt2/config/brains ← <slug>/brains) a fresh conversation is
   // instanced from.
   const brains = createBrains({ onLog: (m) => log.line?.(`[brains] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, brains, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  // Auto-compaction: keep each conversation's warm session thin (native /compact a
+  // cooling period after the last reply, once it's over ratio of the window).
+  const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, loadState: _loadState, writeState: _writeState, brains, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.
@@ -196,6 +200,7 @@ export async function boot({
     stop: () => {
       if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }
       ingestWatcher?.stop();
+      compaction.stop();
       spine.stop();
     },
   };

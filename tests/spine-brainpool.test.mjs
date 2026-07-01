@@ -23,7 +23,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains, afterTurn } = {}) {
   let state = emptyState();
   if (seedSession) {           // pre-register the contact WITH a stored thread (a resumed, non-fresh conv)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -39,6 +39,7 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
+    ...(afterTurn ? { afterTurn } : {}),
     ...(isOverflow ? { isOverflow } : {}),
   });
   return { brain, pool, getState: () => state };
@@ -97,6 +98,15 @@ describe('brainpool.turn', () => {
     type = 'codex';                       // operator re-points the default
     await brain.turn('e', ev);            // …but this conv stays frozen on ccode
     expect(pool.calls[1].key).toMatch(/:ccode:/);
+  });
+
+  it('fires the afterTurn hook with the key + final session (auto-compaction trigger)', async () => {
+    const seen = [];
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-9' }], { afterTurn: (x) => seen.push(x) });
+    await brain.turn('e', ev);
+    expect(seen).toHaveLength(1);
+    expect(seen[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
+    expect(seen[0].sessionId).toBe('sid-9');
   });
 
   // --- identity kickoff (the beta-1 mechanism: first user turn, not a system prompt) ---
