@@ -1,7 +1,7 @@
 // Per-chat auto-mode semantics: standalone @e detection (no email false
 // positives) and the reply gate for each mode.
 import { describe, it, expect } from 'vitest';
-import { mentionStatus, replyAllowed, receives, accumulates, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
+import { mentionStatus, replyAllowed, receives, isAutoMode, DEFAULT_AUTO_MODE, mayEmit, mayEmitChat, isSilenceReply, fanOutDecision } from '../src/auto-mode.mjs';
 
 describe('mentionStatus', () => {
   it('detects @e as a standalone token, anywhere and at start', () => {
@@ -25,10 +25,15 @@ describe('replyAllowed', () => {
   it('on always allows (personality decides downstream)', () => {
     expect(replyAllowed('on', M())).toBe(true);
   });
-  it('accum uses mention semantics over the flushed batch', () => {
+  it('legacy accum degrades to mention semantics (retired 2026-07-01, unknown→mention)', () => {
+    // 'accum' is no longer a known mode; a value still stored in conversations.yaml
+    // falls through replyAllowed's `default:`, which is identical to 'mention'.
     expect(replyAllowed('accum', M({ atEAnywhere: true }))).toBe(true);
     expect(replyAllowed('accum', M({ replyToBot: true }))).toBe(true);
-    expect(replyAllowed('accum', M())).toBe(false);           // batch had no mention → no reply
+    expect(replyAllowed('accum', M())).toBe(false);
+    // proves it truly routes through default: same output as 'mention' in every case.
+    expect(replyAllowed('accum', M({ atEAnywhere: true }))).toBe(replyAllowed('mention', M({ atEAnywhere: true })));
+    expect(replyAllowed('accum', M())).toBe(replyAllowed('mention', M()));
   });
   it('mute / off never allow', () => {
     expect(replyAllowed('mute', M({ atEStart: true, atEAnywhere: true, replyToBot: true }))).toBe(false);
@@ -51,18 +56,15 @@ describe('replyAllowed', () => {
   });
 });
 
-describe('receives / accumulates / isAutoMode', () => {
+describe('receives / isAutoMode', () => {
   it('receives is true for everything except off', () => {
-    for (const m of ['on', 'accum', 'mute', 'mention-direct', 'mention']) expect(receives(m)).toBe(true);
+    for (const m of ['on', 'mute', 'mention-direct', 'mention']) expect(receives(m)).toBe(true);
     expect(receives('off')).toBe(false);
   });
-  it('accumulates only for accum', () => {
-    expect(accumulates('accum')).toBe(true);
-    expect(accumulates('on')).toBe(false);
-  });
-  it('isAutoMode + default', () => {
+  it('isAutoMode + default; retired accum is no longer a known mode', () => {
     expect(isAutoMode('mention')).toBe(true);
     expect(isAutoMode('nope')).toBe(false);
+    expect(isAutoMode('accum')).toBe(false);   // retired 2026-07-01 → guards fall through to default
     expect(DEFAULT_AUTO_MODE).toBe('mention');
   });
 });
@@ -157,7 +159,7 @@ describe('mayEmit — outbound backstop', () => {
     expect(mayEmit('mention', { replyAllowed: true })).toBe(true);
     expect(mayEmit('mention', { replyAllowed: false })).toBe(false);
     expect(mayEmit('mention-direct', { replyAllowed: true })).toBe(true);
-    expect(mayEmit('accum', { replyAllowed: true })).toBe(true);
+    expect(mayEmit('accum', { replyAllowed: true })).toBe(true);   // legacy accum → unknown-mode path, defers like mention
   });
   it('fails CLOSED for mention modes when the flag is absent', () => {
     expect(mayEmit('mention', {})).toBe(false);

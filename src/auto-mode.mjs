@@ -3,14 +3,24 @@
 // *reply*. One enum captures both. Default (unconfigured chat) is 'mention'.
 //
 //   on             receive every burst; reply per personality (free-post)
-//   accum          buffer; flush to E once per heartbeat; reply ONLY if the
-//                  batch was mentioned (mention semantics), and the reply
-//                  carries the accumulated messages as context
 //   mute           receive every burst; never reply
 //   mention-direct receive; reply only when @e is at the START, or it's a reply to E
 //   mention        receive; reply only when @e appears anywhere, or a reply to E
 //   off            don't receive at all; never reply (even @e is ignored)
-export const AUTO_MODES = ['on', 'accum', 'mute', 'mention-direct', 'mention', 'off'];
+//
+// RETIRED — 'accum' (operator 2026-07-01): it buffered a chat's bursts and
+// flushed the batch to E once per heartbeat, replying only if the batch was
+// mentioned. Dead: "there is no need to 'buffer messages' since there's the
+// transcript" — the transcript.md IS the buffer (E reads it for back-context
+// when it engages), and send_to_egpt:'always' keeps E current on a busy chat as
+// per-message context turns. accum was legacy from when EVERY prompt was sent to
+// E even when unmentioned in mention mode; batching prompts serves nothing now.
+// A 'mode: accum' still stored in conversations.yaml (live nodes have them)
+// degrades cleanly: isAutoMode('accum') is now false, so every reader guarding
+// with isAutoMode(...) — createGating.decide() and resolveBeingMode below —
+// falls through to its default ('mention' for E). That fallthrough IS the
+// migration: a legacy accum chat simply behaves as a mention chat.
+export const AUTO_MODES = ['on', 'mute', 'mention-direct', 'mention', 'off'];
 export const DEFAULT_AUTO_MODE = 'mention';
 
 export function isAutoMode(m) { return AUTO_MODES.includes(String(m)); }
@@ -41,8 +51,6 @@ export function resolveBeingMode({ autoModes = {}, autoEModes = {}, chatId, bein
 
 // E sees the chat at all? (everything except 'off')
 export function receives(mode) { return mode !== 'off'; }
-// Buffer-and-flush-per-heartbeat instead of dispatching each burst?
-export function accumulates(mode) { return mode === 'accum'; }
 
 // Standalone @e / @egpt wake-word detection. Must be a real mention token:
 // preceded by start-or-whitespace and followed by a word boundary — so
@@ -60,9 +68,9 @@ export function mentionStatus(text) {
 
 // Given the chat's mode and the triggering message's mention status
 // ({ atEStart, atEAnywhere, replyToBot }), should E's reply be SENT to the
-// chat? (E may still be invoked for context even when this is false.) For
-// 'accum' the status is the COMBINED status of the flushed batch (did any
-// buffered message mention @e?), so accum uses the same gate as 'mention'.
+// chat? (E may still be invoked for context even when this is false.) A stored
+// legacy 'accum' is no longer a known mode, so it lands on `default:` → mention
+// semantics (exactly its retired reply behavior).
 export function replyAllowed(mode, status = {}) {
   const { atEStart = false, atEAnywhere = false, replyToBot = false } = status;
   switch (mode) {
@@ -70,7 +78,6 @@ export function replyAllowed(mode, status = {}) {
     case 'mute':
     case 'off':            return false;
     case 'mention-direct': return atEStart   || replyToBot;
-    case 'accum':
     case 'mention':        return atEAnywhere || replyToBot;
     default:               return atEAnywhere || replyToBot;   // unknown → treat as 'mention'
   }
@@ -83,8 +90,8 @@ export function replyAllowed(mode, status = {}) {
 //   1. HARD: 'mute'/'off' can NEVER emit — independent of `replyAllowed`, so a
 //      path that forgot to thread the flag (the voice-note bug) still can't
 //      message a muted chat.
-//   2. mention / mention-direct / accum: emit only when the per-turn
-//      `replyAllowed` gate already passed. Fail-closed when the flag is absent.
+//   2. mention / mention-direct: emit only when the per-turn `replyAllowed`
+//      gate already passed. Fail-closed when the flag is absent.
 // `mode` is the chat's resolved auto-mode; `replyAllowed` is the per-turn flag.
 export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } = {}) {
   // I5 REVISED (operator 2026-06-16, MESSAGES-FIRST-CLASS-PLAN Phase 2): a reaction

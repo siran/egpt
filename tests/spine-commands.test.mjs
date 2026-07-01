@@ -76,6 +76,15 @@ describe('commands.run', () => {
     expect(sent[0].text).toMatch(/unknown mode/);
   });
 
+  it('/e auto accum is now the unknown-mode error (accum retired 2026-07-01)', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto accum', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);   // not persisted
+    expect(sent[0].text).toMatch(/unknown mode "accum"/);
+    expect(sent[0].text).toMatch(/on, mute, mention-direct, mention, off/);   // the surviving enum, accum gone from the list
+  });
+
   it('/e auto <mode> <target> from Self sets the NAMED chat (not the Self DM)', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, getState } = harness({ state });

@@ -138,6 +138,27 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');   // transcript has no ∎ — that's a chat-only marker
   });
 
+  it("legacy 'accum': stored mode degrades to mention — received + logged, withheld without @e", async () => {
+    // A live node may still carry `mode: accum` in conversations.yaml. accum is
+    // retired (operator 2026-07-01): isAutoMode('accum') is false, so decide()'s
+    // `isAutoMode(bv?.mode) ? bv.mode : defaultMode(...)` falls through to the E
+    // default ('mention'). So a legacy accum chat behaves EXACTLY as a mention
+    // chat: it receives (logged), but a non-@e burst is withheld.
+    const { bridge, brain, files } = harness({}, 'accum');
+    await bridge.emit(msg({ body: 'just chatting' }));
+    expect(brain.calls).toHaveLength(0);                 // mention gate closed → no brain
+    expect(bridge.sent).toHaveLength(0);
+    expect(onlyFile(files)).toContain('just chatting');  // still received + logged (not 'off')
+  });
+
+  it("legacy 'accum' WITH @e: mention gate opens — brain runs, reply delivered", async () => {
+    const { bridge, brain, files } = harness({}, 'accum');
+    await bridge.emit(msg({ body: '@e estas?', atE: true }));
+    expect(brain.calls).toHaveLength(1);
+    expect(bridge.streams[0].finals).toEqual(['↩ @e estas? ∎']);
+    expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');
+  });
+
   it('auto_e_paused: absolute kill — even @e in on-mode is withheld but logged', async () => {
     const { bridge, brain, files } = harness({ whatsapp: { auto_e_paused: true } }, 'on');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
