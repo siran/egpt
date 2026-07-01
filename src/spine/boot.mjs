@@ -107,9 +107,14 @@ export async function boot({
   const pool = createWarmPool({
     makeSession,
     max: cfg.warm?.max ?? 6,
-    // Keep a conversation's session warm between human-paced messages. 3 min was
-    // far too short — every reply re-spawned cold. 30 min default (operator-tunable).
-    idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,
+    // E runs as a PERSISTENT background agent: the claude process stays resident
+    // (context in memory) instead of re-spawning + `--resume`-ing (which reloads
+    // the whole thread — the slow part) per message. idle_ttl_by_class: ms-of-idle
+    // before a class is evicted; 0 = never idle-evict, bounded only by `max` LRU.
+    // E's chats are 'conversation'. (egpt uses this shape; v2 defaults conversation
+    // to 0 so E doesn't go cold between human-paced messages.)
+    idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
+    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 0, resident: 0, conversation: 0, sibling: 0 },
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 
