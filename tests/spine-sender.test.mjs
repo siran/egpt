@@ -28,16 +28,16 @@ function fakeBridge() {
 }
 
 describe('sender — two-message reply train (eager)', () => {
-  it('posts the knee-jerk + an eager reply placeholder; first token deletes the knee-jerk; ends with ∎', async () => {
+  it('posts the knee-jerk + a text-bearing eager placeholder; deletes the knee-jerk when the hourglass appears; ends with ∎', async () => {
     const bridge = fakeBridge();
     const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open('!c', { being: 'e', replyTo: 'm1' });
     expect(bridge.statusPosts[0].text).toBe('📨 Sending to E...');   // knee-jerk, posted immediately
-    expect(bridge.streams[0].init).toBe('⏳');                        // eager reply placeholder (id resolves during spin-up)
+    expect(bridge.streams[0].init).toBe('⏳ Thinking…');             // eager placeholder carries text (no lone-emoji amplification)
     expect(bridge.streams[0].opts).toMatchObject({ replyTo: 'm1', bodyEmoji: '🐶', persona: 'e' });
+    await new Promise((r) => setTimeout(r, 0));                      // let the knee-jerk delete (fired at open) settle
+    expect(bridge.statusDeletes).toHaveLength(1);                    // hourglass is up → knee-jerk deleted
     out.update('Hola');
-    expect(bridge.streams[0].frames).toEqual(['Hola ⏳']);           // (synchronous)
-    await new Promise((r) => setTimeout(r, 0));                      // let the async knee-jerk delete settle
-    expect(bridge.statusDeletes).toHaveLength(1);                    // streaming started → knee-jerk deleted
+    expect(bridge.streams[0].frames).toEqual(['Hola ⏳']);
     await out.finish({ text: 'Hola mundo' });
     expect(bridge.streams[0].finals).toEqual(['Hola mundo ∎']);      // ends with ∎
     expect(bridge.sent).toHaveLength(0);                             // delivered in place — no fallback

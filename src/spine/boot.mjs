@@ -107,7 +107,9 @@ export async function boot({
   const pool = createWarmPool({
     makeSession,
     max: cfg.warm?.max ?? 6,
-    idleTtlMs: cfg.warm?.idle_ttl_ms ?? 180_000,
+    // Keep a conversation's session warm between human-paced messages. 3 min was
+    // far too short — every reply re-spawned cold. 30 min default (operator-tunable).
+    idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 

@@ -22,23 +22,28 @@ export function createSender({ bridge, bodyEmojiOf = () => null, displayOf = dis
   return {
     open(chatId, { being = 'e', replyTo = null } = {}) {
       const bodyEmoji = bodyEmojiOf(being);
-      // A — knee-jerk status (best-effort id, so we can delete it later).
+      // A — knee-jerk status (best-effort id, so we can delete it later). Covers the
+      // instant BEFORE the reply placeholder is up.
       const statusP = Promise.resolve(bridge.postStatus?.(chatId, `📨 Sending to ${displayOf(being)}...`)).catch(() => null);
       let statusKilled = false;
       const killStatus = async () => {
         if (statusKilled) return; statusKilled = true;
         try { const id = await statusP; if (id) await bridge.deleteStatus?.(chatId, id); } catch { /* best effort */ }
       };
-      // B — reply stream, EAGER: FIXED "⏳" placeholder posted NOW so the bridge
-      // resolves its id before any edit (the race fix) AND during spin-up (smooth).
-      const stream = bridge.startStream?.(chatId, '⏳', { bodyEmoji, replyTo, persona: being });
+      // B — reply stream, EAGER: FIXED placeholder posted NOW so the bridge resolves
+      // its id before any edit (the race fix) AND during spin-up (smooth). Carries
+      // TEXT, not a lone "⏳" (a single emoji renders oversized in some clients).
+      const stream = bridge.startStream?.(chatId, '⏳ Thinking…', { bodyEmoji, replyTo, persona: being });
+      // The hourglass is up now → drop the knee-jerk (operator: delete the knee-jerk
+      // once the hourglass appears). killStatus awaits the knee-jerk's own id, which
+      // resolves after the (faster) hourglass POST, so the hourglass is already shown.
+      killStatus();
       let acc = '';
       return {
         update(partial) {
           const t = textOf(partial);
           if (!t) return;
           acc = t;
-          killStatus();                        // reply is streaming → drop the knee-jerk
           stream?.update?.(`${t} ⏳`);
         },
         async finish(reply, { surface = true } = {}) {
