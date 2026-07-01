@@ -480,7 +480,7 @@ export async function startBeeperBridge(opts = {}) {
     if (!chatID || !want) return null;
     for (let i = 0; i < tries; i++) {
       try {
-        const r = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}/messages?limit=8`);
+        const r = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}/messages?limit=25`);
         const items = Array.isArray(r?.items) ? r.items : [];
         let best = null;
         for (const m of items) {
