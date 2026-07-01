@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact } from '../../conversations-state.mjs';
+import { patchContact, getContact } from '../../conversations-state.mjs';
 
 // Resolve a target chat for `/e auto <mode> <target>` (so the operator can set a
 // remote chat's mode from the Self DM). A verbatim @jid / room-id is used as-is;
@@ -18,7 +18,14 @@ import { patchContact } from '../../conversations-state.mjs';
 // exactly one must match (else: not-found / ambiguous). Conv-state only: the chat
 // you'd set a mode for is one E has already seen, so it is a contact.
 function resolveTarget(state, term, surface) {
-  if (/[@!]|:beeper/.test(term)) return { jid: term, name: term };
+  if (/[@!]|:beeper/.test(term)) {
+    // A verbatim jid must still be a chat E has seen — else patchContact silently
+    // no-ops (returns state unchanged) and we'd report a false "✅" for a typo'd or
+    // never-seen id. Resolve it through getContact so a bad id fails loudly here.
+    const c = getContact(state, surface, term);
+    if (!c) return { error: `no chat matches "${term}" — E hasn't seen that chat id` };
+    return { jid: c.jid, name: c.slug };
+  }
   const bucket = state?.contacts?.[surface] ?? {};
   const needle = term.toLowerCase();
   const hits = [];

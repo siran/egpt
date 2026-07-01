@@ -6,7 +6,7 @@ import { createSpine } from '../spine.mjs';
 import { emptyState, ensureContact, getBeing } from '../conversations-state.mjs';
 
 function harness({ config = {}, state = null } = {}) {
-  const sent = [], exits = [], rewinds = [];
+  const sent = [], exits = [], rewinds = [], writes = [];
   let st = state;
   const cmds = createCommands({
     getConfig: () => config,
@@ -14,9 +14,9 @@ function harness({ config = {}, state = null } = {}) {
     exit: (code) => exits.push(code),
     writeRewindTarget: (ref) => rewinds.push(ref),
     loadState: state ? async () => st : null,
-    writeState: state ? async (s) => { st = s; } : null,
+    writeState: state ? async (s) => { writes.push(s); st = s; } : null,
   });
-  return { cmds, sent, exits, rewinds, getState: () => st };
+  return { cmds, sent, exits, rewinds, writes, getState: () => st };
 }
 
 describe('commands.isCommand', () => {
@@ -90,6 +90,25 @@ describe('commands.run', () => {
     const { cmds, sent } = harness({ state });
     await cmds.run({ body: '/e auto on zzz', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/no chat matches/);
+  });
+
+  it('/e auto <mode> <unknown-jid> errors and does NOT write state (no false ✅)', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent, writes } = harness({ state });
+    // A verbatim jid E has never seen: patchContact would silently no-op, so the
+    // old code replied "✅" for a chat it never touched. Now it must fail loudly.
+    await cmds.run({ body: '/e auto mute !nope:beeper.local', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/no chat matches/);
+    expect(writes).toHaveLength(0);
+  });
+
+  it('/e auto <mode> <known-jid> succeeds and writes state', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent, writes, getState } = harness({ state });
+    await cmds.run({ body: '/e auto mute !hfm:beeper.local', chatId: '!self', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e').mode).toBe('mute');
+    expect(writes).toHaveLength(1);
+    expect(sent[0].text).toMatch(/→ mute/);
   });
 });
 
