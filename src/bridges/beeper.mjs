@@ -868,9 +868,15 @@ export async function startBeeperBridge(opts = {}) {
       const handle = { delivered: false, lastError: null };
       const serial = (fn) => (chain = chain.then(fn, fn));   // never overlap PUTs (final edit wins)
 
-      // Post the placeholder NOW (so 🤔 shows immediately) + resolve its CONFIRMED
+      // Post the placeholder NOW (so it shows immediately) + resolve its CONFIRMED
       // id (POST returns only a pending id). Mark it OURS so our live edits don't
       // surface as incoming edits, and rememberSent so the re-upsert is deduped.
+      // CRUCIAL: post + resolve the FIXED `initialText`, NOT `latest` — update()
+      // overwrites `latest` with partials before this resolves, so matching `latest`
+      // hunts text the placeholder never had and fails ("could not resolve
+      // placeholder id" → edits no-op → fallback fresh send). The edits (applyEdit,
+      // which await `ready`) carry `latest` and land AFTER the id is known.
+      const placeholder = initialText;
       const ready = (async () => {
         try {
           cid = await resolveChatId(chatId ?? chatName);
@@ -881,13 +887,13 @@ export async function startBeeperBridge(opts = {}) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             return;
           }
-          const r = await sendMessage(cid, latest, { replyToMessageID });
+          const r = await sendMessage(cid, placeholder, { replyToMessageID });
           if (!r) { handle.lastError = 'placeholder send failed'; return; }
-          realId = await resolveSentMessageId(cid, latest);
+          realId = await resolveSentMessageId(cid, placeholder);
           if (realId) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
-            rememberSent(realId, cid, latest);
-          } else { handle.lastError = 'could not resolve placeholder id'; onLog(`beeper: stream could not resolve placeholder id in ${cid} — edits will no-op (text: ${JSON.stringify(String(latest).slice(0, 60))})`); }
+            rememberSent(realId, cid, placeholder);
+          } else { handle.lastError = 'could not resolve placeholder id'; onLog(`beeper: stream could not resolve placeholder id in ${cid} — edits will no-op (placeholder: ${JSON.stringify(String(placeholder).slice(0, 40))})`); }
         } catch (e) { handle.lastError = e?.message ?? String(e); }
       })();
 
