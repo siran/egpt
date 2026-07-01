@@ -85,6 +85,44 @@ describe('/config schema vs. EGPT_CONFIG references', () => {
   }
 });
 
+describe('/config schema vs. v2 spine config references', () => {
+  // The scan above only watches the legacy egpt-spine.mjs, so keys the NEW v2
+  // spine (spine.mjs + src/spine/*.mjs) reads shipped unregistered (`flood`,
+  // `persona_name`). boot() is the ONE place config is threaded from: it holds
+  // the raw object as `const cfg = readConfig()` and reads top-level keys as
+  // `cfg.<key>`; the services receive `getConfig` and read `getConfig().<key>`.
+  // Scan both forms — no static analyzer, just the same cheap regex approach —
+  // and hold every top-level key to the schema.
+  const SPINE_DIR = join(ROOT, 'src/spine');
+  const referencedKeys = new Set();
+  // boot's raw-config reads: `cfg.<key>`. Case-sensitive, so it never matches the
+  // `getConfig` closure nor capital-C ...Cfg locals (transcribeCfg / tx.cliCfg).
+  const BOOT_SRC = readFileSync(join(SPINE_DIR, 'boot.mjs'), 'utf8');
+  for (const m of BOOT_SRC.matchAll(/\bcfg\.([a-zA-Z_][a-zA-Z0-9_]*)/g)) {
+    referencedKeys.add(m[1]);
+  }
+  // service reads: `getConfig().<key>` / `getConfig()?.<key>` across src/spine/*.mjs.
+  // The `\??\.` requires a real property access, so `getConfig() ?? {}` (and the
+  // `(getConfig() ?? {}).<key>` fallback form) do NOT match — only direct reads.
+  for (const f of readdirSync(SPINE_DIR)) {
+    if (!f.endsWith('.mjs')) continue;
+    const src = readFileSync(join(SPINE_DIR, f), 'utf8');
+    for (const m of src.matchAll(/\bgetConfig\(\)\s*\??\.\s*([a-zA-Z_][a-zA-Z0-9_]*)/g)) {
+      referencedKeys.add(m[1]);
+    }
+  }
+
+  it('finds at least the known v2 config references (sanity)', () => {
+    expect(referencedKeys.size).toBeGreaterThanOrEqual(4);
+  });
+
+  for (const key of [...referencedKeys].sort()) {
+    it(`v2 spine config.${key} is registered in CONFIG_SCHEMA`, () => {
+      expect(CONFIG_SCHEMA, `${key} read by the v2 spine but not in CONFIG_SCHEMA`).toHaveProperty(key);
+    });
+  }
+});
+
 // ── Command dispatch coverage ─────────────────────────────────────────────
 
 describe('every command in COMMANDS has a dispatch site on its surface', () => {
