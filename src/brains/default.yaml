@@ -1,0 +1,14 @@
+# default — the shipped default brain: the warm Claude Code CLI (no API key; uses
+# your existing `claude` login). A brain is an ENGINE config; a conversation is
+# INSTANCED from one on its first turn (frozen into conversations.yaml `readonly`),
+# and can be re-pointed later with the `/e` wizard.
+#
+# Override or extend without touching the repo:
+#   ~/.egpt2/config/brains/<name>.yaml   — profile-wide (a partial file overrides
+#                                           just the fields it sets)
+#   <slug>/brains/<name>.yaml            — one conversation only
+# and point `default_brain: <name>` (config.yaml) at whichever you want new
+# conversations to start on.
+type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
+model: null           # null → the model your `claude` login defaults to
+allowed_tools: all
