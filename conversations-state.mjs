@@ -642,6 +642,11 @@ export function getContact(state, surface, jid) {
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
   'pushedName', 'firstSeenAt', 'mode', 'send_to_egpt', 'aliasOf', 'jids', 'transcribe',
+  // `readonly` is object-valued but FLAT: it's the instanced-brain block the
+  // brainpool writes for the default 'e' (getBeing reads flat.readonly), NOT a
+  // nested resident-being. Without this, residentsOf would list a phantom
+  // "readonly" resident on any v2-instanced conversation.
+  'readonly',
 ]);
 
 // Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;

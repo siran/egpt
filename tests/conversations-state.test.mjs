@@ -30,6 +30,7 @@ import {
   DEFAULT_PERSONALITY_TOOLS,
   readPersonality,
   readPersonalityMeta,
+  residentsOf,
 } from '../conversations-state.mjs';
 
 const WA = 'whatsapp';
@@ -462,6 +463,21 @@ describe('isMuted predicate', () => {
     expect(isMuted({ personality: 'default' })).toBe(false);
     expect(isMuted({ personality: 'silent' })).toBe(false);
     expect(isMuted(null)).toBe(false);
+  });
+});
+
+describe('residentsOf — resident beings vs flat blocks', () => {
+  it('a flat `readonly` (instanced-brain) block is NOT a resident — only ["e"]', () => {
+    // Shape the brainpool writes into the entry for the default 'e' being.
+    const entry = {
+      slug: 'fam', pushedName: 'fam', mode: 'on',
+      readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
+    };
+    expect(residentsOf(entry)).toEqual(['e']);
+  });
+  it('a real nested being block IS a resident (with implicit "e" first)', () => {
+    const entry = { slug: 'fam', dora: { mode: 'on', readonly: { model: 'x' } } };
+    expect(residentsOf(entry)).toEqual(['e', 'dora']);
   });
 });
 
