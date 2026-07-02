@@ -56,10 +56,13 @@ import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { EGPT_HOME } from '../egpt-home.mjs';
 
-const _BEEPER_LOG = join(homedir(), '.egpt', 'logs', 'beeper.log');
+// Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
+// nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
+// writes into the SAME bridge log. Exported so a test can lock the derivation.
+export const _BEEPER_LOG = join(EGPT_HOME, 'logs', 'beeper.log');
 const SEEN_PROCESSED_CAP = 3000;
 const SEEN_SENT_CAP = 500;
 const SEEN_COMPACT_EVERY = 1000;   // appends between jsonl compactions
@@ -168,7 +171,7 @@ export async function startBeeperBridge(opts = {}) {
     // Hold-on-reconnect grace (ms): messages older than bridgeStart - grace
     // are backlog — seen, never dispatched. Mirrors the baileys/TG semantic.
     holdGraceMs = 5_000,
-    stateDir = join(homedir(), '.egpt', 'state'),
+    stateDir = join(EGPT_HOME, 'state'),   // profile-aware default (boot injects it; a caller that omits it still lands in THIS node's profile, never ~/.egpt)
     transcribe = transcribeAudioFile,
     // Whisper binary/model config — now sourced from transcription.whisper (the
     // host resolves it; falls back to the legacy whatsapp.media.audio_transcribe
