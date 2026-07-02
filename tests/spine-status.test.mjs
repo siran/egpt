@@ -61,14 +61,15 @@ describe('/status', () => {
 
     expect(sent).toHaveLength(1);
     const { text } = sent[0];
-    expect(text).toContain(String(process.pid));
+    expect(text).toContain(`pid: ${process.pid}`);
     expect(text).toContain('abc1234');
     expect(text).toContain('spine /status ops line');
-    expect(text).toMatch(/2 heartbeats/);
-    expect(text).toMatch(/2 conversations/);
-    expect(text).toMatch(/beat \d+s ago/);
-    // one message = a single \n-joined block, no extra sends
-    expect(text.split('\n')).toHaveLength(2);
+    expect(text).toMatch(/heartbeats: 2/);
+    expect(text).toMatch(/conversations: 2/);
+    expect(text).toMatch(/beat: \d+s ago/);
+    // one message = a single fenced yaml block, no extra sends
+    expect(text.startsWith('```yaml\n')).toBe(true);
+    expect(text.endsWith('\n```')).toBe(true);
   });
 
   it('degrades every failing probe to "?" and still replies once', async () => {
@@ -85,11 +86,11 @@ describe('/status', () => {
 
     expect(sent).toHaveLength(1);
     const { text } = sent[0];
-    expect(text).toContain(String(process.pid));       // pid always available
-    expect(text).toContain('egpt ?');                  // sha degraded
-    expect(text).toMatch(/beat \? ago/);               // beat age degraded
-    expect(text).toMatch(/\? heartbeats/);             // heartbeat count degraded
-    expect(text).toMatch(/\? conversations/);          // conversation count degraded
+    expect(text).toContain(`pid: ${process.pid}`);     // pid always available
+    expect(text).toContain('egpt: ?');                 // sha degraded
+    expect(text).toMatch(/beat: \? ago/);              // beat age degraded
+    expect(text).toMatch(/heartbeats: \?/);            // heartbeat count degraded
+    expect(text).toMatch(/conversations: \?/);         // conversation count degraded
   });
 
   it('never throws even when loadState itself throws', async () => {
@@ -101,7 +102,22 @@ describe('/status', () => {
 
     await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
     expect(sent).toHaveLength(1);
-    expect(sent[0].text).toMatch(/\? conversations/);
+    expect(sent[0].text).toMatch(/conversations: \?/);
+  });
+
+  it('truncates the egpt line to ~60 chars + … for a long subject', async () => {
+    const longSubject = 'agents: ONE registry for persona + local beings + relay targets and more';
+    const { cmds, sent } = harness({
+      io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML },
+      gitOut: (args) => (args.includes('--short') ? '099bd06' : longSubject),
+      loadState: async () => threeContacts(),
+    });
+
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const first = sent[0].text.split('\n')[1];   // line after the ```yaml fence
+    expect(first).toBe('egpt: 099bd06 · agents: ONE registry for persona + local bei…');
+    expect(first.endsWith('…')).toBe(true);
+    expect(first.length).toBeLessThanOrEqual(61);   // 60 chars + the …
   });
 
   it('includes this chat\'s E mode when the contact has one set', async () => {
@@ -114,7 +130,7 @@ describe('/status', () => {
     });
 
     await cmds.run({ body: '/status', chatId: '!fam:beeper.local', surface: 'whatsapp' });
-    expect(sent[0].text).toMatch(/mode mute/);
+    expect(sent[0].text).toMatch(/mode: mute/);
   });
 
   it('/status is intercepted only from an authorized chat (isCommand gate)', () => {

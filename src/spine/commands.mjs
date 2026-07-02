@@ -129,9 +129,11 @@ export function createCommands({
     await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
   }
 
-  // Assemble the two-line /status report. Runs IN the spine process, so it reads
-  // process-local liveness (pid/uptime) + this profile's state files. Each probe
-  // is independently guarded; a degraded probe shows '?', never aborts the reply.
+  // Assemble the /status report as a fenced YAML block (operator 2026-07-02: the
+  // old prose line inlined the full git subject and rendered as a wall of text —
+  // fences render as monospace in WhatsApp/Beeper). Runs IN the spine process, so
+  // it reads process-local liveness (pid/uptime) + this profile's state files.
+  // Each probe is independently guarded; a degraded probe shows '?', never aborts.
   async function status(ev) {
     let sha = '?', subject = '';
     try { sha = gitOut(['rev-parse', '--short', 'HEAD']) || '?'; } catch { sha = '?'; }
@@ -172,9 +174,23 @@ export function createCommands({
       }
     } catch { convs = '?'; }
 
-    const head = subject ? `egpt ${sha} "${subject}"` : `egpt ${sha}`;
-    return `${head} · pid ${pid} · up ${up}\n`
-      + `beat ${beat} ago · ${hb} heartbeats · ${convs} conversations${mode ? ` · mode ${mode}` : ''}`;
+    // First line "egpt: <sha> · <subject>" with the WHOLE line truncated to 60
+    // chars + '…' (the untruncated subject was the wall the operator flagged).
+    // No subject → "egpt: <sha>"; a failed sha probe → "egpt: ?".
+    const val = sha === '?' ? '?' : (subject ? `${sha} · ${subject}` : sha);
+    let egptLine = `egpt: ${val}`;
+    if (egptLine.length > 60) egptLine = `${egptLine.slice(0, 60)}…`;
+
+    const lines = [
+      egptLine,
+      `pid: ${pid}`,
+      `up: ${up}`,
+      `beat: ${beat} ago`,
+      `heartbeats: ${hb}`,
+      `conversations: ${convs}`,
+    ];
+    if (mode) lines.push(`mode: ${mode}`);
+    return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
   return { isCommand, run };
