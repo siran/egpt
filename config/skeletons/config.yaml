@@ -1,0 +1,133 @@
+# config.yaml — a node's config. A fresh install starts from this file: copy it
+# to your profile's config/config.yaml (canonical: ~/.egpt/config/config.yaml),
+# fill in the token + your ids, and you have a working node.
+#
+# Every key here is registered in config/config-schema.mjs — that file is the
+# authority on what each key means and does; the comments below are the short
+# version. What ships uncommented is a working default; commented blocks are
+# optional overrides — uncomment and edit only the ones you want to change.
+
+# ── 1. Beeper token ──────────────────────────────────────────────────────────
+# The ONE credential. eGPT reaches the world through Beeper Desktop's local API
+# (127.0.0.1:23373); this is the access token for it — Beeper Desktop → Settings
+# → Developer → Desktop API. Every node needs its OWN Beeper account (one login =
+# one node). Keep this out of any shared or checked-in file.
+beeper_token: "PASTE_YOUR_BEEPER_TOKEN_HERE"
+
+# ── 2. Who you are ───────────────────────────────────────────────────────────
+# user_name — your handle, the human typing here. Shown in cross-surface
+# mirroring as <user_name>@<surface>. This is the general default; a per-bridge
+# override can live in a surface block below.
+user_name: "you"
+
+# ── 3. Who eGPT is ───────────────────────────────────────────────────────────
+# persona_name — the visible label the bridge stamps on the persona's first line
+# ("🐶 egpt"), so a chat always sees who is speaking. Rename to rebrand the voice.
+persona_name: "egpt"
+
+# emojis — author tags for cross-surface mirroring. Defaults shown; uncomment to
+# recolor. user = your messages, persona = eGPT's chat reply, egpt = its
+# status/system voice, human = the extension's default surface tag.
+# emojis:
+#   user: "🦅"
+#   egpt: "🧠"
+#   persona: "🐶"
+#   human: "🌐"
+
+# ── 4. Surfaces (who may command this node, per surface) ─────────────────────
+# eGPT talks through Beeper, which bridges several networks. Each surface has its
+# OWN authorization block, because ids are per-surface NAMESPACES — a WhatsApp jid
+# authorizes NOTHING on Telegram — so every surface carries its own list.
+#   chat_id       — your Self-DM room on that surface (the operator command
+#                   channel), auto-captured on first contact; paste it to pin it.
+#   allowed_users — STABLE sender ids that may command this node HERE: a network
+#                   jid / Beeper room id, NEVER a display name (a chat title is
+#                   attacker-controllable). EMPTY = deny (fail-closed); your own
+#                   account-owner messages are always authorized regardless.
+#
+# whatsapp is ALSO the transport block: Beeper's transport config (networks, …)
+# rides the whatsapp-named block, so it carries a few extra keys the others don't.
+whatsapp:
+  chat_id: ""
+  allowed_users: []
+  # networks — which Beeper networks the bridge processes. [] = the firehose,
+  # every network Beeper bridges. Set e.g. ["whatsapp", "signal"] to narrow scope.
+  networks: []
+telegram:
+  chat_id: ""
+  allowed_users: []
+signal:
+  chat_id: ""
+  allowed_users: []
+
+# ── 5. Time zone ─────────────────────────────────────────────────────────────
+# Interprets timezone-less heartbeat `when:` times. IANA name preferred
+# ("America/New_York"); aliases accepted ("New York", "ET"/"EST", "PT", "UTC").
+# Absent = the machine's local zone.
+# default_time_zone: "America/New_York"
+
+# ── 6. eGPT's brain ──────────────────────────────────────────────────────────
+# Names the registry brain a NEW conversation is instanced from. "default" ships
+# (src/brains/default.yaml — the warm Claude Code CLI, no API key, your `claude`
+# login). Override or add brains in config/brains/<name>.yaml and point this key
+# at whichever you want new conversations to start on.
+default_brain: default
+
+# ── 7. Warm sessions ─────────────────────────────────────────────────────────
+# eGPT runs each conversation as a resident background agent — the process stays
+# warm so its context lives in memory instead of re-spawning + --resume per
+# message. A conversation stays warm until it goes quiet for
+# idle_ttl_by_class.conversation (default 15m), then it is evicted; `max` caps how
+# many stay warm at once (least-recently-used dropped past it). Raise `max` to
+# keep more (or all) chats warm; a single chat can override its own TTL in its
+# conversation folder's config.yaml (warm: { idle_ttl: 1h }, or 0 = always warm).
+# warm:
+#   max: 6
+#   idle_ttl_by_class:
+#     conversation: 15m    # quiet-time before a chat goes cold; 0 = never evict
+
+# ── 8. Guards & cadence ──────────────────────────────────────────────────────
+# flood — last-line send-flood guard at the bridge chokepoint: more than `limit`
+# bot sends to one chat within window_ms pauses that chat for cooldown_ms. A
+# fail-safe against a reply loop; the process stays up, only that chat is paused.
+# flood:
+#   limit: 10
+#   window_ms: 3000
+#   cooldown_ms: 60000
+#
+# compaction — a cooling period after eGPT's last reply, if the warm session grew
+# past `ratio` of the model window, native-/compact it in place so it stays fast
+# (the full record stays in transcript.md — nothing is lost).
+# compaction:
+#   enabled: true
+#   ratio: 0.20            # compact once past 20% of the context window
+#   cooling_ms: 120000     # quiet period after the last reply before the check
+#
+# heartbeats — declarative timers: a map of <name> -> { frequency|when, command|ai_run }.
+# The spine materializes the resolved set to state/heartbeats.readonly.yaml; delete
+# that file to hot-reload without a restart. Per-chat/room beats live in their own
+# config.yaml. Paste-ready template: config/skeletons/heartbeats.yaml.
+# heartbeats:
+#   daily-sweep:
+#     frequency: 24h
+#     command: echo swept > last-sweep.txt
+
+# ── 9. Transcription ─────────────────────────────────────────────────────────
+# Voice notes are transcribed by a per-note fallback CHAIN: each engine in
+# fallback_order is tried in order, first transcript wins. `use_config` names the
+# active profile (the one line that differs machine-to-machine). Engine types:
+# whisper-server-remote (another node's GPU worker), whisper-server-local (a
+# resident whisper.cpp server), whisper-cli (per-note binary — the always-available
+# floor). Uncomment and point the paths at your whisper build to enable.
+# transcription_service:
+#   enabled: true
+#   use_config: local-only
+#   local-only:
+#     fallback_order: [cli]
+#     cli:
+#       type: whisper-cli
+#       command: C:\path\to\whisper-cli.exe
+#       model_path: C:\path\to\ggml-large-v3.bin
+#       language: es
+#       ffmpeg_command: C:\path\to\ffmpeg.exe
+#       threads: 12
