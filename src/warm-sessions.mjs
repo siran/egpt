@@ -8,6 +8,13 @@
 //     the Node process + context RAM. Never keep every conversation-e warm.
 //     Per-class TTL: system=persistent (0), conversation=short follow-up window,
 //     sibling=medium. 0 = never idle-evict.
+//     PER-RUN OVERRIDE (operator 2026-07-02: "keep any conversation as a
+//     background agent 15m after the last message, configurable … honor override
+//     per configuration"): run() takes an optional `idleTtlMs` that stamps THIS
+//     entry's own TTL, overriding the class TTL (0 still = never evict). It is
+//     re-stamped on every run that specifies one, so a changed per-conversation
+//     config takes effect on the next turn; a run that OMITS it leaves the stamp
+//     as-is (so the compactor's own pool.run never clobbers the last real turn's).
 //   - maxWarm: hard ceiling → LRU-evict the least-recently-used. Memory is
 //     bounded by `max`, NOT by total conversations.
 //   - TIMEOUT: a turn with no result within `dispatchTimeoutMs` fails AND evicts
@@ -52,7 +59,7 @@ export function createWarmPool({
     const e = _s.get(key);
     if (!e) return;
     if (e.idleTimer) clearTimeout(e.idleTimer);
-    const ttl = _ttlFor(e.klass);
+    const ttl = e.idleTtlMs ?? _ttlFor(e.klass);   // per-run override wins; 0 = never idle-evict
     if (ttl > 0) { e.idleTimer = setTimeout(() => _evict(key, `idle ${ttl}ms`), ttl); e.idleTimer.unref?.(); }
   }
 
@@ -101,8 +108,9 @@ export function createWarmPool({
 
   // Run a turn on the warm session for `key`, opening it lazily. brainOptions is
   // passed to the warm primitive (model, sessionId/resume, cwd, allowedTools,
-  // confineToDirs, …). klass ∈ {system, conversation, sibling} selects the TTL.
-  function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs } = {}) {
+  // confineToDirs, …). klass ∈ {system, conversation, sibling} selects the TTL;
+  // `idleTtlMs` (optional) overrides that class TTL for this entry (0 = never evict).
+  function run(key, message, onUpdate = () => {}, { brainOptions = {}, klass = 'sibling', timeoutMs, idleTtlMs } = {}) {
     let e = _s.get(key);
     if (e && e.errored) { _evict(key, 'reopen after error'); e = null; }
     // SESSION-IDENTITY GUARD (operator 2026-06-21): a warm entry stays bound to
@@ -140,10 +148,15 @@ export function createWarmPool({
     }
     if (!e) {
       _lruEvictIfFull(key);
-      e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve() };
+      e = { session: makeSession({ ...brainOptions, onLog }), klass, lastUsed: Date.now(), idleTimer: null, busy: false, errored: false, chain: Promise.resolve(), idleTtlMs: undefined };
       _s.set(key, e);
       onLog(`warm: opened ${key} (klass=${klass}); size=${_s.size}/${max}`);
     }
+    // Stamp the per-run idle override whenever the caller SPECIFIES one (undefined =
+    // "leave as stamped", so the compactor's own pool.run, which omits it, never
+    // clobbers the ttl the last real turn set). A changed config re-stamps here, so
+    // it takes effect on the NEXT _armIdle. 0 = never idle-evict.
+    if (idleTtlMs !== undefined) e.idleTtlMs = idleTtlMs;
     const p = e.chain.then(() => _doTurn(key, message, onUpdate, timeoutMs ?? dispatchTimeoutMs));
     e.chain = p.then(() => {}, () => {});   // keep the per-key chain alive across failures
     return p;

@@ -145,10 +145,25 @@ export async function boot({
     // (context in memory) instead of re-spawning + `--resume`-ing (which reloads
     // the whole thread — the slow part) per message. idle_ttl_by_class: ms-of-idle
     // before a class is evicted; 0 = never idle-evict, bounded only by `max` LRU.
-    // E's chats are 'conversation'. (egpt uses this shape; v2 defaults conversation
-    // to 0 so E doesn't go cold between human-paced messages.)
+    // E's chats are 'conversation'.
+    //
+    // CONVERSATION DEFAULT = 15m (operator 2026-07-02, verbatim: "keep any
+    // conversation as a background agent 15m after the last message, configurable.
+    // i like that you can keep a number or all agents warm. probably we should
+    // honor override per configuration"). This SUPERSEDES the earlier never-evict
+    // default (commit 4eaceaf "E is a persistent background agent — never idle-evict
+    // conversations", which set conversation: 0): a conversation now goes cold 15m
+    // after its last turn, and the transcript + `--resume` make the next turn
+    // correct, just colder. system/resident stay 0 (truly persistent). `sibling`
+    // stays 0 — the operator only ruled on conversations, so it is left untouched.
+    //
+    // `warm.max` is the "keep a number — or, with a high max, all — agents warm"
+    // knob the operator likes: the LRU cap bounds how many warm sessions live at
+    // once, independent of the idle TTL. Per-conversation override: a conversation
+    // folder's own config.yaml `warm: { idle_ttl }` beats the class TTL (resolved in
+    // brainpool, passed per-run to the pool); 0 there = keep THAT conversation warm.
     idleTtlMs: cfg.warm?.idle_ttl_ms ?? 1_800_000,   // fallback for any unlisted class
-    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 0, resident: 0, conversation: 0, sibling: 0 },
+    idleTtlByClass: cfg.warm?.idle_ttl_by_class ?? { system: 0, resident: 0, conversation: 900_000, sibling: 0 },
     onLog: (m) => log.line?.(`[warm] ${m}`),
   });
 

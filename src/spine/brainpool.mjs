@@ -25,7 +25,31 @@
 // the comm-handler's job (Phase 4), not the brain's.
 import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
+import { parseFrequency } from './heartbeat-loader.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import * as YAML from 'yaml';
+
+// Pure: a conversation folder's config.yaml text (or null/'' when absent) →
+// { idleTtlMs }. The `warm: { idle_ttl }` override (operator 2026-07-02) sets THIS
+// conversation's warm idle TTL, beating the class TTL: a ms number or a
+// "<qty><unit>" duration (ms/s/m/h), with `0` = keep this conversation always warm
+// (never idle-evict). Absent block / malformed YAML / unparseable value → null (the
+// conversation falls through to the class TTL). Reuses heartbeat-loader's
+// parseFrequency for the duration grammar, but parseFrequency rejects 0/negative,
+// so 0 is accepted here explicitly BEFORE delegating (0 is a valid value, not garbage).
+export function parseWarmBlock(yamlText) {
+  let doc = {};
+  if (yamlText && yamlText.trim()) {
+    try { doc = YAML.parse(yamlText) ?? {}; } catch { doc = {}; }
+  }
+  const w = (doc && typeof doc === 'object' && doc.warm && typeof doc.warm === 'object' && !Array.isArray(doc.warm))
+    ? doc.warm : {};
+  const v = w.idle_ttl;
+  if (v === undefined || v === null) return { idleTtlMs: null };
+  if (v === 0) return { idleTtlMs: 0 };               // 0 = never evict (parseFrequency rejects it)
+  return { idleTtlMs: parseFrequency(v) ?? null };    // garbage / negative → null
+}
 
 // Default identity manifest: the shipped e_identity.md (honoring a config
 // brains.identity override / 'off'). The fallback when a personality has no
@@ -56,7 +80,16 @@ export function createBrainPool({
   if (typeof contacts?.resolve !== 'function') throw new Error('createBrainPool: contacts (createContacts) is required');
   if (typeof loadState !== 'function' || typeof writeState !== 'function') throw new Error('createBrainPool: loadState + writeState are required');
   const mkdir = io.mkdir ?? fsMkdir;
+  const readFile = io.readFile ?? fsReadFile;
   const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
+
+  // Best-effort read of a conversation folder's config.yaml warm override (never
+  // throws): absent / unreadable / malformed → null → the class TTL applies.
+  async function readWarmTtl(convDir) {
+    let text = null;
+    try { text = await readFile(join(convDir, 'config.yaml'), 'utf8'); } catch { /* none = no override */ }
+    return parseWarmBlock(text).idleTtlMs;
+  }
 
   // chatId → { slug, sessionId, personality }. The shared resolver registers the
   // contact on first sight AND re-arms the name-tracking rename; the slug it
@@ -139,7 +172,16 @@ export function createBrainPool({
         return `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${line}`;
       };
 
-      const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation' });
+      // Per-conversation warm-idle override (operator 2026-07-02): this
+      // conversation's own config.yaml `warm: { idle_ttl }` overrides the class TTL
+      // (0 = keep it always warm). Read per turn — the file is tiny and a turn
+      // already does heavier IO — and re-stamped on the warm entry every run so an
+      // edited config takes effect next turn. Applied to BOTH the normal turn and
+      // the overflow retry below. (compaction.afterTurn's own pool.run reuses this
+      // same warm entry but OMITS idleTtlMs, so it keeps the ttl stamped here — no
+      // need to thread the override through it.)
+      const idleTtlMs = await readWarmTtl(convDir);
+      const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation', idleTtlMs });
 
       let r, overflow = false;
       try { r = await run(sessionId ? line : await wrapFresh(), baseOpts); }

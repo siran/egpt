@@ -3,7 +3,7 @@
 // (fresh thread → first turn wrapped with the feed; resumed thread → raw).
 // Against a fake warm pool + in-memory conv-state. No claude, no spawn.
 import { describe, it, expect } from 'vitest';
-import { createBrainPool } from '../src/spine/brainpool.mjs';
+import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { emptyState, getBeing, ensureContact, recordThread } from '../conversations-state.mjs';
 
@@ -14,7 +14,7 @@ function fakePool(scriptedResults) {
   return {
     calls, evicted,
     run(key, message, onPartial, opts) {
-      calls.push({ key, message, brainOptions: opts.brainOptions, klass: opts.klass });
+      calls.push({ key, message, brainOptions: opts.brainOptions, klass: opts.klass, idleTtlMs: opts.idleTtlMs });
       const r = scriptedResults[Math.min(i, scriptedResults.length - 1)]; i++;
       return typeof r === 'function' ? r() : Promise.resolve(r);
     },
@@ -24,7 +24,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains, afterTurn } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains, afterTurn, io } = {}) {
   let state = emptyState();
   if (seedSession) {           // pre-register the contact WITH a stored thread (a resumed, non-fresh conv)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -39,7 +39,8 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState,
     writeState,
-    io: { mkdir: async () => {} },                 // don't touch disk
+    // don't touch disk; readFile defaults to "no config.yaml" → no warm override
+    io: io ?? { mkdir: async () => {}, readFile: async () => null },
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
@@ -170,5 +171,45 @@ describe('brainpool.turn', () => {
   it('a non-overflow error is NOT swallowed — it propagates', async () => {
     const { brain } = harness([() => Promise.reject(new Error('claude exited 1 mid-turn'))]);
     await expect(brain.turn('e', ev)).rejects.toThrow(/exited 1/);
+  });
+
+  // --- per-conversation warm idle_ttl override (operator 2026-07-02) ---
+  it('passes the conversation folder warm idle_ttl override to pool.run (normal + overflow retry)', async () => {
+    const yaml = 'warm:\n  idle_ttl: 5m\n';
+    const { brain, pool } = harness([
+      () => Promise.reject(new Error('claude: error_during_execution\n  Prompt is too long')),
+      { text: 'fresh ok', sessionId: 'sid-2' },
+    ], { seedSession: 'huge', io: { mkdir: async () => {}, readFile: async () => yaml } });
+    const out = await brain.turn('e', ev);
+    expect(out.text).toBe('fresh ok');
+    expect(pool.calls).toHaveLength(2);
+    expect(pool.calls[0].idleTtlMs).toBe(300000);   // normal turn carries the override
+    expect(pool.calls[1].idleTtlMs).toBe(300000);   // AND the overflow-retry path
+  });
+
+  it('no config.yaml → idleTtlMs null (class TTL applies)', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);   // default io: readFile → null
+    await brain.turn('e', ev);
+    expect(pool.calls[0].idleTtlMs).toBe(null);
+  });
+});
+
+describe('parseWarmBlock', () => {
+  it('absent block / malformed / garbage → null', () => {
+    expect(parseWarmBlock('').idleTtlMs).toBe(null);
+    expect(parseWarmBlock(null).idleTtlMs).toBe(null);
+    expect(parseWarmBlock('foo: bar').idleTtlMs).toBe(null);          // no warm block
+    expect(parseWarmBlock('warm: not-a-map').idleTtlMs).toBe(null);   // warm not an object
+    expect(parseWarmBlock('warm:\n  idle_ttl: nonsense').idleTtlMs).toBe(null);   // unparseable value
+    expect(parseWarmBlock('warm:\n  idle_ttl: -5').idleTtlMs).toBe(null);         // negative → null
+    expect(parseWarmBlock(': : bad yaml :').idleTtlMs).toBe(null);    // malformed YAML
+  });
+  it('duration string → ms via parseFrequency', () => {
+    expect(parseWarmBlock('warm:\n  idle_ttl: 1h').idleTtlMs).toBe(3_600_000);
+    expect(parseWarmBlock('warm:\n  idle_ttl: 5m').idleTtlMs).toBe(300_000);
+    expect(parseWarmBlock('warm:\n  idle_ttl: 900000').idleTtlMs).toBe(900_000);   // bare ms number
+  });
+  it('idle_ttl: 0 → 0 (never evict — accepted despite parseFrequency rejecting 0)', () => {
+    expect(parseWarmBlock('warm:\n  idle_ttl: 0').idleTtlMs).toBe(0);
   });
 });

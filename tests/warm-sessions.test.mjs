@@ -87,6 +87,56 @@ describe('warm-session pool', () => {
     expect(pool.has('self')).toBe(true);
   });
 
+  // PER-RUN IDLE OVERRIDE (operator 2026-07-02): a per-conversation config.yaml can
+  // set its own warm idle TTL; brainpool passes it as run()'s `idleTtlMs`. It beats
+  // the class TTL for that entry; 0 = never evict; omitted = class TTL; a later run
+  // with a different value re-stamps the entry (takes effect next turn).
+  it('per-run idleTtlMs overrides the class TTL (arms with the override, not the class)', async () => {
+    const { makeSession, made } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 0 } });   // class = never
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 20 });          // override = 20ms
+    expect(pool.has('k')).toBe(true);
+    await sleep(60);
+    expect(pool.has('k')).toBe(false);          // evicted by the override despite class 0
+    expect(made[0].closed).toBe(true);
+  });
+
+  it('idleTtlMs: 0 never arms the idle timer (keep-always-warm override)', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });   // class would evict
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });           // override = never
+    await sleep(60);
+    expect(pool.has('k')).toBe(true);
+  });
+
+  it('omitted idleTtlMs falls back to the class TTL', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation' });   // no override
+    await sleep(60);
+    expect(pool.has('k')).toBe(false);          // class TTL applied
+  });
+
+  it('a later run with a different override updates the entry (next turn re-stamps)', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 0 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });   // keep warm
+    await sleep(30);
+    expect(pool.has('k')).toBe(true);
+    await pool.run('k', 'b', () => {}, { klass: 'conversation', idleTtlMs: 20 });   // now short TTL
+    await sleep(60);
+    expect(pool.has('k')).toBe(false);          // the changed override evicted it
+  });
+
+  it('a later run that OMITS idleTtlMs keeps the stamped override (compactor path)', async () => {
+    const { makeSession } = fakeFactory();
+    const pool = createWarmPool({ makeSession, idleTtlByClass: { conversation: 20 } });
+    await pool.run('k', 'a', () => {}, { klass: 'conversation', idleTtlMs: 0 });   // stamp keep-warm
+    await pool.run('k', 'b', () => {}, { klass: 'conversation' });                  // omit → keep the stamp
+    await sleep(60);
+    expect(pool.has('k')).toBe(true);           // still warm; the omit did NOT revert to class TTL
+  });
+
   // CONTRACT (operator 2026-06-12): a warm claude session can stay open
   // INDEFINITELY (like the CLI). There is NO turn timeout — a long/thinking turn
   // is never guillotined, and warmth is never evicted for being slow.
