@@ -10,7 +10,24 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact, getContact } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing } from '../../conversations-state.mjs';
+import { stat as fsStat, readFile as fsReadFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+import * as YAML from 'yaml';
+import { EGPT_HOME } from '../egpt-home.mjs';
+
+// Compact uptime: "2h13m" / "13m05s" / "42s". Whole seconds; drops the finest
+// unit once hours are in play so /status stays a terse ops line.
+function humanizeUptime(sec) {
+  const t = Math.max(0, Math.floor(Number(sec) || 0));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = t % 60;
+  if (h > 0) return `${h}h${m}m`;
+  if (m > 0) return `${m}m${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
 
 // Resolve a target chat for `/e auto <mode> <target>` (so the operator can set a
 // remote chat's mode from the Self DM). A verbatim @jid / room-id is used as-is;
@@ -45,9 +62,15 @@ export function createCommands({
   exit = (code) => process.exit(code),
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
+  io = {},                               // { stat, readFile } — real fs by default; /status probes alive.txt + heartbeats.readonly.yaml through here
+  // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
+  // fakeable in tests without threading spawnSync through createCommands.
+  gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
   onLog = () => {},
 } = {}) {
   const cfg = () => getConfig() ?? {};
+  const stat = io.stat ?? fsStat;
+  const readFile = io.readFile ?? fsReadFile;
 
   // Same id in any form counts as the Self DM (lid vs phone-form — a /restart
   // often arrives as the @lid self-jid). The Self DM is PER-SURFACE now (operator
@@ -94,8 +117,64 @@ export function createCommands({
       return;
     }
 
+    // /status — one compact ops line with live node health. Every probe is
+    // wrapped: any failure degrades to '?' so /status NEVER throws (a broken git
+    // checkout / missing profile file must still yield a reply).
+    if (/^\/status\b/i.test(line)) {
+      await send?.(ev.chatId, await status(ev));
+      return;
+    }
+
     const tok = line.split(/\s+/)[0];
-    await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> are wired in v2 so far.`);
+    await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
+  }
+
+  // Assemble the two-line /status report. Runs IN the spine process, so it reads
+  // process-local liveness (pid/uptime) + this profile's state files. Each probe
+  // is independently guarded; a degraded probe shows '?', never aborts the reply.
+  async function status(ev) {
+    let sha = '?', subject = '';
+    try { sha = gitOut(['rev-parse', '--short', 'HEAD']) || '?'; } catch { sha = '?'; }
+    try { subject = gitOut(['log', '-1', '--format=%s']) || ''; } catch { subject = ''; }
+
+    const pid = process.pid;
+    let up = '?';
+    try { up = humanizeUptime(process.uptime()); } catch { up = '?'; }
+
+    // Liveness = the alive.txt MTIME age (boot's alive heartbeat rewrites it each tick).
+    let beat = '?';
+    try {
+      const s = await stat(join(EGPT_HOME, 'state', 'alive.txt'));
+      beat = `${Math.max(0, Math.round((Date.now() - s.mtimeMs) / 1000))}s`;
+    } catch { beat = '?'; }
+
+    // Heartbeat count = entries in the spine-written readonly view (tolerate absence).
+    let hb = '?';
+    try {
+      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'state', 'heartbeats.readonly.yaml'), 'utf8'));
+      if (Array.isArray(doc?.heartbeats)) hb = String(doc.heartbeats.length);
+    } catch { hb = '?'; }
+
+    // Conversations = non-alias, slugged contacts across every surface. Reuse the
+    // same loaded state for THIS chat's E mode (cheap; omitted if unresolvable).
+    let convs = '?', mode = null;
+    try {
+      const st = loadState ? await loadState() : null;
+      if (st) {   // null = state unresolvable → leave convs '?', not a false 0
+        let n = 0;
+        for (const bucket of Object.values(st.contacts ?? {})) {
+          for (const entry of Object.values(bucket ?? {})) {
+            if (entry && !entry.aliasOf && entry.slug) n++;
+          }
+        }
+        convs = String(n);
+        try { mode = getBeing(st, ev.surface, ev.chatId, 'e')?.mode ?? null; } catch { mode = null; }
+      }
+    } catch { convs = '?'; }
+
+    const head = subject ? `egpt ${sha} "${subject}"` : `egpt ${sha}`;
+    return `${head} · pid ${pid} · up ${up}\n`
+      + `beat ${beat} ago · ${hb} heartbeats · ${convs} conversations${mode ? ` · mode ${mode}` : ''}`;
   }
 
   return { isCommand, run };
