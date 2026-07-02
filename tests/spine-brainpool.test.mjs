@@ -95,6 +95,15 @@ describe('brainpool.turn', () => {
     expect(view.brainType).toBe('codex');                                        // frozen into readonly
   });
 
+  it('instancing freezes the def under readonly.agent (vocabulary rename — no readonly.brain written)', async () => {
+    const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const ro = getState().contacts.whatsapp['!room:beeper.com'].readonly;
+    expect(ro.agent).toBe('default');       // the new key
+    expect('brain' in ro).toBe(false);      // the legacy key is NOT written going forward
+  });
+
   it('persona agent type (agents block) supplies E\'s fresh-conversation def, resolved through the registry', async () => {
     // the persona agent points at type "sonnet-high"; the registry resolves that type file
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) : null };
@@ -253,6 +262,21 @@ describe('brainpool.turn — local sibling beings', () => {
     expect(pool.calls[0].message).toBe(ev.line);   // a local agent is an engineer — no identity kickoff
     const entry = getState().contacts.whatsapp['!room:beeper.com'];
     expect(entry['don-local']?.readonly).toBeUndefined();   // def lives in config → not instanced
+  });
+});
+
+describe('getBeing — readonly.brain / readonly.agent back-read (vocabulary rename)', () => {
+  const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', readonly: ro } } } });
+  it('resolves the def name from a LEGACY readonly.brain entry (un-migrated state)', () => {
+    const v = getBeing(mk({ brain: 'default', type: 'ccode', model: null }), 'whatsapp', '!r:beeper.local', 'e');
+    expect(v.brain).toBe('default');
+    expect(v.agent).toBe('default');     // the alias resolves too
+    expect(v.brainType).toBe('ccode');
+  });
+  it('resolves the def name from a NEW readonly.agent entry (migrated / freshly instanced state)', () => {
+    const v = getBeing(mk({ agent: 'sonnet-high', type: 'ccode' }), 'whatsapp', '!r:beeper.local', 'e');
+    expect(v.brain).toBe('sonnet-high');
+    expect(v.agent).toBe('sonnet-high');
   });
 });
 

@@ -208,8 +208,11 @@ export function createBrainPool({
         def = instanced;
         if (!def) {
           def = resolveDefaultBrain(convDir);
+          // Freeze the instanced def under readonly.agent (operator 2026-07-02: the
+          // conversations.yaml vocabulary is "agent" now; getBeing back-reads the legacy
+          // readonly.brain, and migrateReadonlyBrainToAgent renames existing entries).
           await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-            readonly: { brain: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all', personality },
+            readonly: { agent: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all', personality },
           }));
         }
       }

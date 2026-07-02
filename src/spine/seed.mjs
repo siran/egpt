@@ -33,6 +33,22 @@ export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a bra
 # allowed_tools: all    # "all" | a space-separated allow-list | ["Read", "Edit", ...]
 `;
 
+// The WORKING default agent-type file. UNlike the example above this is UNcommented
+// (a live def) so agents.egpt.type: default resolves from the PROFILE the operator can
+// open. Mirrors the repo's built-in src/brains/default.yaml (which stays the fallback);
+// seeded copy-if-missing so an operator edit here is sacred and wins over the built-in.
+export const DEFAULT_TYPE_FILE = `# default — the persona's shipped AGENT TYPE (a brain def): the warm Claude Code CLI
+# (no API key; uses your existing \`claude\` login). config.yaml's agents.egpt.type:
+# default points here. A conversation is INSTANCED from this on its first turn (frozen
+# into conversations.yaml \`readonly\`) and can be re-pointed later with the \`/e\` wizard.
+#
+# This is the canonical, EDITABLE home for the default type; the repo's built-in
+# src/brains/default.yaml is the fallback this mirrors. Seeding never overwrites it.
+type: ccode            # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
+model: null            # null → the model your \`claude\` login defaults to
+allowed_tools: all     # "all" | a space-separated allow-list | ["Read", "Edit", ...]
+`;
+
 export function seedSkeletons({
   repoDir = REPO_SKELETONS_DIR,
   profileSkeletonsDir = PROFILE_SKELETONS_DIR,
@@ -67,4 +83,8 @@ export function seedSkeletons({
 
   // 2. the commented example agent-type file.
   copyIfMissing(join(agentsDir, 'sonnet-high.yaml'), () => EXAMPLE_TYPE_FILE);
+
+  // 3. the WORKING default agent-type file (UNcommented) so agents.egpt.type: default
+  //    resolves from the profile the operator can open; copy-if-missing keeps edits sacred.
+  copyIfMissing(join(agentsDir, 'default.yaml'), () => DEFAULT_TYPE_FILE);
 }

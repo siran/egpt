@@ -35,9 +35,10 @@ persona_name: "egpt"
 #   human: "🌐"
 
 # ── 3b. Agents (the modern unified registry) ─────────────────────────────────
-# `agents:` is the ONE block that unifies what used to be three separate things:
-# the persona pointer (persona_name above), the local sibling beings, and mesh
-# addressing. An AGENT = { type, handles, and — for a relay — relay_channel }.
+# `agents:` IS the configuration (operator 2026-07-02): the ONE block that unifies
+# what used to be three separate things — the persona pointer, the local sibling
+# beings, and mesh addressing. An AGENT = { type, handles, and — for a relay —
+# relay_channel }.
 #
 #   type          — names an AGENT-TYPE file (a brain def) in config/agents/<type>
 #                   .yaml (see §6), OR the literal "relay" for a forwarding agent.
@@ -51,15 +52,15 @@ persona_name: "egpt"
 # PERSONA agent (handles include e/egpt) is the persona — its label/emoji show, but
 # routing still yields the canonical "e" being so warm sessions stay stable.
 #
-# LEAVE THIS COMMENTED to keep the classic persona_name + siblings behavior. Uncomment
-# to adopt agents (the operator's example shape):
-# agents:
-#   egpt:
-#     type: sonnet-high        # the persona's brain — an agent-type file (config/agents/)
-#     handles: [e, egpt]
-#   don:
-#     type: relay
-#     relay_channel: Rodz      # a chat name or a room id — @don forwards there
+# The SHIPPED default: `egpt` is the persona; its type resolves to config/agents/
+# default.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
+agents:
+  egpt:
+    type: default            # the persona's brain — config/agents/default.yaml
+    handles: [e, egpt]
+  # don:                     # a REMOTE agent: mentions of @don forward over the relay
+  #   type: relay
+  #   relay_channel: Rodz    # a chat name or a room id — @don forwards there
 
 # ── 4. Surfaces (who may command this node, per surface) ─────────────────────
 # eGPT talks through Beeper, which bridges several networks. Each surface has its
@@ -93,18 +94,18 @@ signal:
 # Absent = the machine's local zone.
 # default_time_zone: "America/New_York"
 
-# ── 6. eGPT's brain ──────────────────────────────────────────────────────────
-# Names the registry brain a NEW conversation is instanced from. "default" ships
-# (src/brains/default.yaml — the warm Claude Code CLI, no API key, your `claude`
-# login). Brain defs (a.k.a. agent TYPES) are YAML files resolved across layers,
-# most-specific winning: src/brains (built-in) < config/brains < config/agents <
-# a conversation's own brains/. config/agents/<type>.yaml is the canonical home for
-# type files (config/agents/sonnet-high.yaml is seeded as a commented example).
+# ── 6. Agent types (a.k.a. brains) ───────────────────────────────────────────
+# An agent's `type` (§3b) names a TYPE file — an ENGINE config — resolved across
+# layers, most-specific winning: src/brains (built-in) < config/brains < config/
+# agents < a conversation's own brains/. config/agents/<type>.yaml is the canonical
+# home. `default` ships seeded there (config/agents/default.yaml — the warm Claude
+# Code CLI, no API key, your `claude` login); config/agents/sonnet-high.yaml is
+# seeded as a commented example. Point agents.egpt.type at whichever you want new
+# conversations to start on.
 #
-# MODERN FORM: define the persona as an agent (§3b) and let its `type` pick the
-# brain — that supersedes this key for the persona. default_brain still applies to
-# any conversation whose persona has no agent-type set.
-default_brain: default
+# The legacy `default_brain` top-level key is superseded by agents.egpt.type (§3b) and
+# is no longer shipped here; config/config-schema.mjs documents it as a fallback still
+# honored for a persona with no agent type.
 
 # ── 7. Warm sessions ─────────────────────────────────────────────────────────
 # eGPT runs each conversation as a resident background agent — the process stays

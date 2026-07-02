@@ -22,6 +22,9 @@ import {
   recordThread,
   isMuted,
   migrateJsonToYaml,
+  migrateReadonlyBrainToAgent,
+  readState,
+  writeState,
   parse,
   serialize,
   nowIsoString,
@@ -579,6 +582,81 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   it('returns null for non-object input', () => {
     expect(migrateJsonToYaml(null)).toBe(null);
     expect(migrateJsonToYaml('garbage')).toBe(null);
+  });
+});
+
+describe('migrateReadonlyBrainToAgent — readonly.brain → readonly.agent', () => {
+  const tmpDirs = [];
+  async function writeTmp(state) {
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-agent-'));
+    tmpDirs.push(dir);
+    const fp = join(dir, 'conversations.yaml');
+    await writeState(fp, state);
+    return fp;
+  }
+
+  it('renames a FLAT e readonly.brain to readonly.agent (agent takes brain\'s slot, other fields intact)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'diego', readonly: { brain: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' } },
+    } } });
+    const r = await migrateReadonlyBrainToAgent(fp);
+    expect(r.migrated).toBe(1);
+    const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
+    expect('brain' in ro).toBe(false);
+    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' });
+  });
+
+  it('renames a NESTED being block readonly.brain too (sibling\'s other fields intact)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', wren: { mode: 'mention', readonly: { brain: 'sonnet-high', type: 'ccode' }, threadId: 'T' } },
+    } } });
+    const r = await migrateReadonlyBrainToAgent(fp);
+    expect(r.migrated).toBe(1);
+    const wren = (await readState(fp)).contacts.whatsapp.j.wren;
+    expect(wren.readonly.agent).toBe('sonnet-high');
+    expect('brain' in wren.readonly).toBe(false);
+    expect(wren.threadId).toBe('T');
+  });
+
+  it('counts flat + nested changes on one contact as ONE conversation touched', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', readonly: { brain: 'default', type: 'ccode' }, wren: { readonly: { brain: 'sonnet-high', type: 'ccode' } } },
+    } } });
+    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(1);
+    const e = (await readState(fp)).contacts.whatsapp.j;
+    expect(e.readonly.agent).toBe('default');
+    expect(e.wren.readonly.agent).toBe('sonnet-high');
+  });
+
+  it('is idempotent — a second pass changes nothing (already on agent)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', readonly: { brain: 'default', type: 'ccode' } },
+    } } });
+    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(1);
+    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+  });
+
+  it('leaves an already-migrated readonly.agent untouched (migrated 0)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode' } },
+    } } });
+    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+  });
+
+  it('empty state → migrated 0', async () => {
+    const fp = await writeTmp(emptyState());
+    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+  });
+
+  it('missing registry file → skipped, never throws', async () => {
+    const r = await migrateReadonlyBrainToAgent(join(tmpdir(), 'egpt-no-such-registry-xyz.yaml'));
+    expect(r).toEqual({ migrated: 0, skipped: 'no registry' });
+  });
+
+  it('temp dirs cleaned up', async () => {
+    const dirs = tmpDirs.splice(0);
+    await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
+    for (const d of dirs) expect(existsSync(d)).toBe(false);
   });
 });
 

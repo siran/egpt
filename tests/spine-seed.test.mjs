@@ -4,7 +4,7 @@
 // sacred). Fully in-memory io — nothing hits the real profile.
 import { describe, it, expect } from 'vitest';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE } from '../src/spine/seed.mjs';
+import { seedSkeletons, EXAMPLE_TYPE_FILE, DEFAULT_TYPE_FILE } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
 const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents');
@@ -49,19 +49,31 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
+  it('seeds the WORKING default agent-type file config/agents/default.yaml (so agents.egpt.type: default resolves)', () => {
+    const files = run({ [join(REPO, 'config.yaml')]: 'A' });
+    expect(files[join(AGENTS, 'default.yaml')]).toBe(DEFAULT_TYPE_FILE);
+  });
+
   it('NEVER touches an existing file (operator edits are sacred)', () => {
     const files = run({
       [join(REPO, 'config.yaml')]: 'FRESH',
       [join(SKEL, 'config.yaml')]: 'OPERATOR EDIT',          // already present
       [join(AGENTS, 'sonnet-high.yaml')]: 'MY OWN TYPE',     // already present
+      [join(AGENTS, 'default.yaml')]: 'MY OWN DEFAULT',      // already present
     });
     expect(files[join(SKEL, 'config.yaml')]).toBe('OPERATOR EDIT');   // untouched
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe('MY OWN TYPE');
+    expect(files[join(AGENTS, 'default.yaml')]).toBe('MY OWN DEFAULT');
   });
 
   it('the example type file is inert (all comments → YAML parses to null, so the registry ignores it)', async () => {
     const YAML = await import('yaml');
     expect(YAML.parse(EXAMPLE_TYPE_FILE)).toBeNull();
+  });
+
+  it('the default type file is a LIVE def (parses to { type: ccode, ... }), unlike the commented example', async () => {
+    const YAML = await import('yaml');
+    expect(YAML.parse(DEFAULT_TYPE_FILE)).toMatchObject({ type: 'ccode', model: null, allowed_tools: 'all' });
   });
 
   it('a missing repo dir is tolerated (still seeds the example type file)', () => {

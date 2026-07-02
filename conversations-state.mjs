@@ -514,6 +514,52 @@ export async function migrateSlugSuffix() {
   return { renamed, skipped };
 }
 
+// One-time migration (operator 2026-07-02): the fresh-conversation instancing now
+// freezes the def under `readonly.agent` (was `readonly.brain`). Rename the legacy key
+// on every stored conversation — the FLAT 'e' readonly AND any nested per-being block's
+// readonly — so a state written before the rename resolves through the new key without
+// waiting to be re-instanced. `agent` takes `brain`'s slot (same field order the
+// brainpool writes). Idempotent: an entry already on `agent`, or with no readonly, is
+// left untouched; write back only if something changed. Never fatal (readState swallows
+// a missing/garbage file → emptyState → 0). Returns { migrated } = # conversations touched.
+export async function migrateReadonlyBrainToAgent(yamlPath = CONV_YAML_PATH) {
+  if (!existsSync(yamlPath)) return { migrated: 0, skipped: 'no registry' };
+  const state = await readState(yamlPath);
+  // brain → agent on ONE readonly block; returns a NEW object if it changed, else the same ref.
+  const renameRO = (ro) => {
+    if (!ro || typeof ro !== 'object' || Array.isArray(ro)) return ro;
+    if (!('brain' in ro) || 'agent' in ro) return ro;
+    const { brain, ...rest } = ro;
+    return { agent: brain, ...rest };   // agent takes brain's slot
+  };
+  let migrated = 0;
+  const nextContacts = {};
+  for (const [surface, bucket] of Object.entries(state.contacts ?? {})) {
+    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) { nextContacts[surface] = bucket; continue; }
+    const nextBucket = {};
+    for (const [jid, entry] of Object.entries(bucket)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { nextBucket[jid] = entry; continue; }
+      let entryChanged = false;
+      const nextEntry = { ...entry };
+      // flat readonly (the default 'e' instancing)
+      const flatRO = renameRO(entry.readonly);
+      if (flatRO !== entry.readonly) { nextEntry.readonly = flatRO; entryChanged = true; }
+      // nested per-being blocks — each may carry its own readonly
+      for (const [k, v] of Object.entries(entry)) {
+        if (_FLAT_ENTRY_KEYS.has(k)) continue;                       // skips 'readonly' (handled above) + scalar fields
+        if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+        const nestedRO = renameRO(v.readonly);
+        if (nestedRO !== v.readonly) { nextEntry[k] = { ...v, readonly: nestedRO }; entryChanged = true; }
+      }
+      if (entryChanged) migrated++;
+      nextBucket[jid] = nextEntry;
+    }
+    nextContacts[surface] = nextBucket;
+  }
+  if (migrated > 0) await writeState(yamlPath, { ...state, contacts: nextContacts });
+  return { migrated };
+}
+
 // ── State shape ─────────────────────────────────────────────────────────────
 
 // emptyState() returns the empty registry.
@@ -672,7 +718,12 @@ export function getBeing(state, surface, jid, being = 'e') {
     personality:        ro.personality        ?? flat.personality        ?? 'default',
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
-    brain:              ro.brain              ?? null,   // the brain-def name this thread was instanced from
+    // The def name this thread was instanced from. VOCABULARY RENAME (operator
+    // 2026-07-02): the brainpool now writes readonly.agent; the legacy readonly.brain is
+    // still back-read so an un-migrated entry resolves identically. `brain` stays the
+    // returned property (callers/tests consume it); `agent` is a cheap alias.
+    brain:              ro.agent              ?? ro.brain ?? null,
+    agent:              ro.agent              ?? ro.brain ?? null,
     brainType:          ro.type               ?? null,   // the engine (frozen); null = not instanced yet
     allowedTools:       ro.allowed_tools      ?? null,
   };
