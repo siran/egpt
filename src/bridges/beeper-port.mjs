@@ -114,7 +114,11 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
       // already resolve an identical-text match to THIS turn's message (see the
       // module-top note).
       const placeholder = stamp(init);
-      const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null });
+      // existingMsgId + showThink pass through for the mesh living-mirror (Phase 4b):
+      // the ORIGIN edits an ALREADY-posted placeholder (post_id) in place instead of
+      // posting a fresh one, and showThink appends "✅ Done" on the final frame. Default
+      // null/false → every existing caller (the reply train) is unaffected.
+      const h = real.startStreamMessage(placeholder, { chatId: chat, persona: opts.persona, replyToMessageID: opts.replyTo ?? null, existingMsgId: opts.existingMsgId ?? null, showThink: opts.showThink ?? false });
       return {
         update: (t) => h.update(stamp(t)),
         finish: (t) => h.finish(stamp(t)),

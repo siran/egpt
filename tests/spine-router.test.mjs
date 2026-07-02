@@ -61,4 +61,56 @@ describe('router.resolve — sibling @name routing', () => {
     const r = bare.resolve(ev('@wren do X'));
     expect(r.being).toBe('e');
   });
+
+  it('mesh disabled (default): a qualified @being.node is NOT a mesh target', () => {
+    // meshEnabled defaults false → v1 behavior; @don.do falls to local routing (don is
+    // a routable sibling, matched on the first segment) — NOT a phantom mesh target.
+    const r = router.resolve(ev('@don.do hi'));
+    expect(r.mesh).toBeUndefined();
+    expect(r.being).toBe('don');
+  });
+});
+
+describe('router.resolve — cross-node mesh targets (Phase 4b)', () => {
+  const sibs = {
+    wren: { type: 'ccode', name: 'wren' },              // local
+    don:  { node: 'do', name: 'don' },                  // remote (lives at node do)
+    proxy:{ to: 'jay.mo', name: 'proxy' },              // relay record → jay.mo
+  };
+  const mrouter = createRouter({ getSiblings: () => sibs, getNode: () => 'kg', meshEnabled: () => true });
+
+  it('a qualified @being.node on another node → mesh target { being, node }, no local being', () => {
+    const r = mrouter.resolve(ev('@don.do do X'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toMatchObject({ being: 'don', node: 'do', target: 'don.do' });
+    expect(r.mention).toMatchObject({ atEStart: true });     // it IS addressed → gates as a mention
+  });
+
+  it('a bare @name mapped to a remote sibling → mesh target', () => {
+    const r = mrouter.resolve(ev('@don hola'));
+    expect(r.mesh).toMatchObject({ being: 'don', node: 'do' });
+  });
+
+  it('a relay-record sibling → mesh target at its mapped being.node', () => {
+    const r = mrouter.resolve(ev('@proxy ping'));
+    expect(r.mesh).toMatchObject({ being: 'jay', node: 'mo' });
+  });
+
+  it('a LOCAL sibling still routes locally (no mesh) even with mesh enabled', () => {
+    const r = mrouter.resolve(ev('@wren do X'));
+    expect(r.mesh).toBeUndefined();
+    expect(r.being).toBe('wren');
+  });
+
+  it('a same-node qualified @being.node resolves LOCAL, not mesh', () => {
+    const r = mrouter.resolve(ev('@wren.kg do X'));
+    expect(r.mesh).toBeUndefined();
+    expect(r.being).toBe('wren');
+  });
+
+  it('an @being.node whose being is unknown here → falls through to e (no mesh, no phantom)', () => {
+    const r = mrouter.resolve(ev('@ghost do X'));    // bare, unknown → missing → e
+    expect(r.mesh).toBeUndefined();
+    expect(r.being).toBe('e');
+  });
 });

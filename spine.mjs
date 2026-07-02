@@ -86,6 +86,8 @@ export function createSpine({
   bridge, brain, store,
   identity, router, gating, sender, transcript, heartbeats,
   commands,                            // optional §2c command intercept (operator slash commands)
+  mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
+  defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
   tickMs = 0,
@@ -131,11 +133,21 @@ export function createSpine({
     // a muted/mention chat.
     if (commands?.isCommand?.(ev)) { await transcript.log(ev); await commands.run(ev); return; }
 
+    // Inbound mesh envelope: a message carrying a provenance tail is relay traffic,
+    // not chat — decode + act on it (a request at the responder, a reply/mirror-update
+    // at the origin) and stop. Detected EARLY, before gating: an envelope is ADDRESSED
+    // traffic, so it bypasses this chat's ambient reply modes (the responder's own
+    // being-turn still respects that being's availability, inside mesh.handle). Logged
+    // like any received message first (C1.2).
+    if (mesh?.isEnvelope?.(ev)) { await transcript.log(ev); return mesh.handle(ev); }
+
     // Router picks the being + the mention that being's gate should see. The real
-    // router returns { being, mention }; a bare-string return (older/other fakes)
-    // is tolerated as the being with ev.mention unchanged.
+    // router returns { being, mention } (with an optional { mesh } target for an
+    // @being.node on ANOTHER node); a bare-string return (older/other fakes) is
+    // tolerated as the being with ev.mention unchanged.
     const routed = router.resolve(ev);
-    const to = typeof routed === 'string' ? routed : routed.being;
+    const meshTarget = (routed && typeof routed === 'object') ? (routed.mesh ?? null) : null;
+    const to = (typeof routed === 'string' ? routed : routed.being) ?? defaultBeing;
     const mention = (typeof routed === 'string' ? null : routed.mention) ?? ev.mention;
 
     // ONE conversation-state read resolves this message's policy (mode +
@@ -155,8 +167,12 @@ export function createSpine({
     const runE = d.mayReply || d.sendToEgpt === 'always';
     if (!runE) { await transcript.log(ev); return; }
 
-    // mesh-target forwarding (gating.isMeshTarget → mesh.forward) is layered in at
-    // Phase 4b — a local-being target falls through to the brain here.
+    // mesh-target forwarding (Phase 4b): an @being.node that lives on ANOTHER node is
+    // not a local brain. Once gating has decided this chat is received+replyable, relay
+    // the message to the target's node (a visible envelope) and stop — the reply streams
+    // back into this chat as a living mirror. A local-being target has meshTarget=null
+    // and falls through to the brain below.
+    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); return mesh.forward(ev, meshTarget); }
 
     if (d.mayReply) {
       // Surfacing branch: stream the reply live (the reply train), then surface it

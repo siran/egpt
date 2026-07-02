@@ -34,6 +34,7 @@ import { createCommands } from './commands.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
+import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseHeartbeatsBlock } from './heartbeat-loader.mjs';
@@ -180,7 +181,9 @@ export async function boot({
   const services = {
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState }),
-    router: createRouter({ getSiblings: () => cfg.siblings ?? {} }),
+    // Router also resolves cross-node @being.node targets (Phase 4b) — inert unless
+    // cfg.mesh is configured (meshEnabled), so a plain node routes exactly as v1.
+    router: createRouter({ getSiblings: () => cfg.siblings ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
@@ -198,6 +201,13 @@ export async function boot({
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
   const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+
+  // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
+  // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
+  // config (node_name/siblings/mesh.nodes routes). onEdit is registered here (its ONE
+  // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
+  const mesh = createMeshService({ bridge, brain, getConfig, bodyEmojiOf, onLog: (m) => log.line?.(`[mesh] ${m}`) });
+  bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));
 
   // operator slash commands (Self DM / authorized) — lifecycle wired now; reuses
   // the same exit codes the daemon respawns on.
@@ -278,7 +288,7 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
 
   // PHASE 2 — bind each command action + register every heartbeat onto the
   // registry the spine ticks + write the readonly.yaml. The alive beat is a
