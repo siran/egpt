@@ -1,0 +1,28 @@
+# heartbeats.yaml — paste this `heartbeats:` block into a chat folder's
+# config.yaml (~/.egpt/conversations/<surface>/<slug>/config.yaml, or a room's
+# ~/.egpt/rooms/<name>/config.yaml). The spine collects it at boot and lists the
+# resolved set in state/heartbeats.readonly.yaml.
+#
+# Each entry has ONE trigger and ONE action:
+#   trigger — `when:` (a one-shot wall-clock time) OR `frequency:` (recurring)
+#   action  — `ai_run:` (a *.x.md textecutable) OR `command:` (a shell line)
+#
+# `when:` times are wall-clock in the zone from config `default_time_zone`
+# (e.g. America/New_York, or an alias like "New York" / "ET"); with no config
+# zone set, the machine's local zone is used. Accepted forms:
+#   7/2/2026 8:20a   (12-hour am/pm)   7/2/2026 08:20   (24-hour)
+#   2026-07-02T08:20 (ISO, optional :seconds)
+#
+# HOT RELOAD: delete state/heartbeats.readonly.yaml and the spine re-reads every
+# heartbeat within ~30s — no restart. New chat folders are picked up too.
+
+heartbeats:
+  # one-shot: run a textecutable once, at/after the given time, then never again
+  morning-report:
+    when: 7/2/2026 8:20a
+    ai_run: script.x.md
+
+  # recurring: run a shell command on a fixed cadence (ms/s/m/h)
+  daily-sweep:
+    frequency: 24h
+    command: echo swept > last-sweep.txt

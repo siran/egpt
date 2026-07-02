@@ -209,4 +209,27 @@ describe('boot()', () => {
 
     app.stop();
   });
+
+  it('registers the internal heartbeats-reload entry (shown in the readonly view for transparency)', async () => {
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
+    const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
+
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false,
+      now: () => Date.UTC(2026, 5, 29, 14, 5),
+      tickMs: 0, aliveMs: 60_000, spawn: fakeSpawn,
+      log: { line: () => {} },
+    });
+
+    const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
+    expect(readonly).toContain('name: heartbeats-reload');
+    expect(readonly).toContain('source: spine (internal)');
+    expect(readonly).toContain('reload heartbeats when this file is deleted');
+
+    app.stop();
+  });
 });

@@ -223,7 +223,7 @@ export async function boot({
   const aliveCommand = 'echo beat > state/alive.txt';
 
   const heartbeatLoader = createHeartbeatLoader({
-    getConfig, aliveMs, aliveCommand,
+    getConfig, aliveMs, aliveCommand, now,
     listEntityDirs, readEntityConfig,
     // Command beats inherit process.env + EGPT_HOME + the queue-stats vars (the
     // loader adds those). The spine pid is no longer an env var — identity lives in
@@ -251,7 +251,7 @@ export async function boot({
   // (a legit long brain turn must never get the node guillotined). Pump depth/age
   // still ride every command beat's env (spine.stats() → EGPT_QUEUE_*) for custom
   // beats that want them.
-  await heartbeatLoader.activate({ registry: services.heartbeats, stats: spine.stats });
+  await heartbeatLoader.activate({ registry: services.heartbeats, stats: spine.stats, tickMs: effectiveTickMs });
 
   spine.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once
