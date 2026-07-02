@@ -8,9 +8,9 @@
 // the claude session factory, conv-state IO), so boot() itself is testable
 // end-to-end against fakes — the real services + real warm pool, fakes only at
 // the transport + process boundary (tests/spine-boot.test.mjs).
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 
 import { createSpine } from '../../spine.mjs';
 import { EGPT_HOME } from '../egpt-home.mjs';
@@ -19,7 +19,7 @@ import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES,
 } from '../../conversations-state.mjs';
 
 import { createIdentity } from './identity.mjs';
@@ -36,6 +36,7 @@ import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
+import { createHeartbeatLoader, parseHeartbeatsBlock } from './heartbeat-loader.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -52,6 +53,8 @@ export async function boot({
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   ingest = true,                      // watch EGPT_HOME/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
+  setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
+  clearInterval: clearIntervalFn = globalThis.clearInterval,
 } = {}) {
   const cfg = readConfig() ?? {};
   const getConfig = () => cfg;
@@ -145,9 +148,10 @@ export async function boot({
     router: createRouter(),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
-    // The cadence registry the spine's tick() drives. The alive-file writer is
-    // registered onto it below (after the spine exists), so the beat rides the
-    // loop's own tick instead of a side timer (operator 2026-07-01).
+    // The cadence registry the spine's tick() drives. The heartbeat LOADER
+    // (below, after the spine exists) collects every declarative heartbeat and
+    // registers it here, so each beat rides the loop's own tick instead of a side
+    // timer (operator 2026-07-01).
     heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
   // Brain registry: resolves the default brain (config.default_brain, YAML defs in
@@ -170,17 +174,60 @@ export async function boot({
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 
-  const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs });
+  // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
+  // them from the node config.heartbeats block + every conversation/room folder's
+  // config.yaml heartbeats: block, materializes state/heartbeats.readonly.yaml,
+  // and registers each onto services.heartbeats. The alive-file writer is no
+  // longer special-cased here — it is the loader's default `alive` builtin.
+  //
+  // Enumerate the entity folders (conversations/<surface>/<slug>/ + rooms/<name>/).
+  // Rooms live at EGPT_HOME/rooms/<name>/ (Room.named → NamedRoom.baseDir, src/
+  // room-core.mjs); the sibling rooms/config.yaml roster FILE is skipped (dirs
+  // only). Missing dirs are tolerated (a fresh profile has none).
+  async function listEntityDirs() {
+    const out = [];
+    const convRoot = join(EGPT_HOME, 'conversations');
+    for (const surface of KNOWN_SURFACES) {
+      let ents = [];
+      try { ents = await readdir(join(convRoot, surface), { withFileTypes: true }); } catch { continue; }
+      for (const ent of ents) if (ent.isDirectory()) out.push({ dir: join(convRoot, surface, ent.name), ns: `${surface}/${ent.name}` });
+    }
+    let rooms = [];
+    try { rooms = await readdir(join(EGPT_HOME, 'rooms'), { withFileTypes: true }); } catch { rooms = []; }
+    for (const ent of rooms) if (ent.isDirectory()) out.push({ dir: join(EGPT_HOME, 'rooms', ent.name), ns: `room/${ent.name}` });
+    return out;
+  }
+  const readEntityConfig = async (dir) => {
+    try { return parseHeartbeatsBlock(await readFile(join(dir, 'config.yaml'), 'utf8')); }
+    catch { return {}; }
+  };
 
-  // Liveness beat, now the FIRST HEARTBEAT (operator 2026-07-01): the writer runs
-  // on the spine's OWN tick, so a fresh alive.txt beat attests the loop's
-  // time-driven half is actually turning — not merely that the process is up. The
-  // line carries pump depth/age (spine.stats()) so a stuck pump is VISIBLE in
-  // alive.txt WITHOUT coupling respawn to turn duration: a legit long brain turn
-  // must never get the node guillotined (same principle as the warm pool's
-  // no-fake-timeout rule). Registered AFTER createSpine so writeAlive can read
-  // spine.stats(); registration is just a list append onto the heartbeats object
-  // already wired into the spine.
+  const heartbeatLoader = createHeartbeatLoader({
+    getConfig, aliveMs,
+    listEntityDirs, readEntityConfig,
+    spawn, env: process.env, egptHome: EGPT_HOME, procCwd: process.cwd(),
+    io: { writeFile, mkdir },
+    onLog: (m) => log.line?.(`[heartbeat] ${m}`),
+  });
+
+  // PHASE 1 — collect + parse BEFORE createSpine so the tick can be sized to the
+  // finest cadence. The tick is the loop's pulse; every cadence rides it, so a
+  // cadence finer than the tick can't be honored. Tighten tickMs down to finestMs
+  // (floored at 500ms — the registry can't beat finer than the tick anyway).
+  // tickMs<=0 (tests drive tick() by hand) stays 0 = no auto-timer.
+  const { finestMs } = await heartbeatLoader.collect();
+  const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
+
+  const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+
+  // The `alive` builtin: the tic/toc writer, run on the spine's OWN tick so a
+  // fresh alive.txt beat attests the loop's time-driven half is actually turning
+  // — not merely that the process is up. The line carries pump depth/age
+  // (spine.stats()) so a stuck pump is VISIBLE in alive.txt WITHOUT coupling
+  // respawn to turn duration: a legit long brain turn must never get the node
+  // guillotined (same principle as the warm pool's no-fake-timeout rule). Defined
+  // AFTER createSpine so it can read spine.stats(); handed to the loader as the
+  // named builtin below. The DAEMON CONTRACT line format is unchanged.
   let beat = 0;
   const alivePath = join(EGPT_HOME, 'state', 'alive.txt');
   async function writeAlive() {
@@ -190,7 +237,10 @@ export async function boot({
       await writeFile(alivePath, `${beat++ % 2 ? 'toc' : 'tic'} ${new Date(now()).toISOString()} ${process.pid} q=${queueDepth} oldest=${Math.round(oldestMs / 1000)}s\n`);
     } catch (e) { log.line?.(`[alive] ${e?.message ?? e}`); }
   }
-  if (aliveMs > 0) services.heartbeats.register('alive', aliveMs, writeAlive);
+
+  // PHASE 2 — bind actions (writeAlive needs spine.stats), register every
+  // heartbeat onto the registry the spine ticks, write the readonly.yaml.
+  await heartbeatLoader.activate({ registry: services.heartbeats, builtins: { alive: writeAlive }, stats: spine.stats });
 
   spine.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once

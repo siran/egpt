@@ -167,4 +167,41 @@ describe('boot()', () => {
 
     app.stop();
   });
+
+  it('a declared heartbeats.alive frequency tightens the effective tick below the default, and beats still land', async () => {
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    // config declares alive at 1s — finer than boot's default 30s tick. The loader
+    // must size the tick DOWN to the finest cadence. An explicit config alive loads
+    // even though aliveMs is unset (0). Observe the effective tick via a fake
+    // setInterval (only the spine's tick timer flows through this seam).
+    const config = { whatsapp: {}, default_brain: { type: 'ccode' }, heartbeats: { alive: { frequency: '1s' } } };
+    const intervals = [];
+
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false,
+      now: () => Date.UTC(2026, 5, 29, 14, 5),
+      setInterval: (fn, ms) => { intervals.push(ms); return 0; },
+      clearInterval: () => {},
+      log: { line: () => {} },
+    });
+
+    // tightened to the 1s cadence, not the 30s default
+    expect(intervals.length).toBeGreaterThan(0);
+    expect(Math.min(...intervals)).toBeLessThanOrEqual(1000);
+
+    // the immediate boot tick still beats alive.txt (the config alive → builtin writer)
+    const alivePath = join(tmpHome, 'state', 'alive.txt');
+    await waitFor(async () => { try { return (await fs.readFile(alivePath, 'utf8')).length > 0; } catch { return false; } });
+    expect(await fs.readFile(alivePath, 'utf8')).toMatch(/^tic /);
+
+    // the spine also materialized the readonly view of the loaded heartbeats
+    const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
+    expect(readonly).toContain('DO NOT EDIT');
+    expect(readonly).toContain('name: alive');
+
+    app.stop();
+  });
 });
