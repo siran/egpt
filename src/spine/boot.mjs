@@ -10,6 +10,7 @@
 // the transport + process boundary (tests/spine-boot.test.mjs).
 import { readFile, writeFile, mkdir, unlink, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync, spawn } from 'node:child_process';
 
 import { createSpine } from '../../spine.mjs';
@@ -51,6 +52,7 @@ export async function boot({
   // beat be honored (a 5-min tick never could).
   tickMs = 30_000,
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
+  spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
   ingest = true,                      // watch EGPT_HOME/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
@@ -178,7 +180,8 @@ export async function boot({
   // them from the node config.heartbeats block + every conversation/room folder's
   // config.yaml heartbeats: block, materializes state/heartbeats.readonly.yaml,
   // and registers each onto services.heartbeats. The alive-file writer is no
-  // longer special-cased here — it is the loader's default `alive` builtin.
+  // longer special-cased here — it is the loader's default `alive` command
+  // (node src/tools/alive.mjs), visible in the readonly view like any other.
   //
   // Enumerate the entity folders (conversations/<surface>/<slug>/ + rooms/<name>/).
   // Rooms live at EGPT_HOME/rooms/<name>/ (Room.named → NamedRoom.baseDir, src/
@@ -202,10 +205,20 @@ export async function boot({
     catch { return {}; }
   };
 
+  // The default alive beat is now a real, visible command — `node <abs path to
+  // src/tools/alive.mjs>` — not an in-process closure. The loader stays path-
+  // agnostic: boot resolves + quotes the path and hands it in. cwd = the checkout
+  // (procCwd), consistent with the other node-level beats.
+  const aliveCommand = `node "${fileURLToPath(new URL('../tools/alive.mjs', import.meta.url))}"`;
+
   const heartbeatLoader = createHeartbeatLoader({
-    getConfig, aliveMs,
+    getConfig, aliveMs, aliveCommand,
     listEntityDirs, readEntityConfig,
-    spawn, env: process.env, egptHome: EGPT_HOME, procCwd: process.cwd(),
+    // EGPT_SPINE_PID rides every command-beat's env so the alive script writes the
+    // SPINE's long-lived pid into alive.txt (daemon-singleton refuses a second
+    // daemon by checking that pid is a LIVE process; a dead script pid would let a
+    // second daemon start). Cleanest seam: fold it into boot's env dep here.
+    spawn: spawnFn, env: { ...process.env, EGPT_SPINE_PID: String(process.pid) }, egptHome: EGPT_HOME, procCwd: process.cwd(),
     io: { writeFile, mkdir },
     onLog: (m) => log.line?.(`[heartbeat] ${m}`),
   });
@@ -220,27 +233,14 @@ export async function boot({
 
   const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
 
-  // The `alive` builtin: the tic/toc writer, run on the spine's OWN tick so a
-  // fresh alive.txt beat attests the loop's time-driven half is actually turning
-  // — not merely that the process is up. The line carries pump depth/age
-  // (spine.stats()) so a stuck pump is VISIBLE in alive.txt WITHOUT coupling
-  // respawn to turn duration: a legit long brain turn must never get the node
-  // guillotined (same principle as the warm pool's no-fake-timeout rule). Defined
-  // AFTER createSpine so it can read spine.stats(); handed to the loader as the
-  // named builtin below. The DAEMON CONTRACT line format is unchanged.
-  let beat = 0;
-  const alivePath = join(EGPT_HOME, 'state', 'alive.txt');
-  async function writeAlive() {
-    try {
-      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-      const { queueDepth, oldestMs } = spine.stats();
-      await writeFile(alivePath, `${beat++ % 2 ? 'toc' : 'tic'} ${new Date(now()).toISOString()} ${process.pid} q=${queueDepth} oldest=${Math.round(oldestMs / 1000)}s\n`);
-    } catch (e) { log.line?.(`[alive] ${e?.message ?? e}`); }
-  }
-
-  // PHASE 2 — bind actions (writeAlive needs spine.stats), register every
-  // heartbeat onto the registry the spine ticks, write the readonly.yaml.
-  await heartbeatLoader.activate({ registry: services.heartbeats, builtins: { alive: writeAlive }, stats: spine.stats });
+  // PHASE 2 — bind each command action + register every heartbeat onto the
+  // registry the spine ticks + write the readonly.yaml. The alive beat is a
+  // spawned command now (src/tools/alive.mjs), not an in-process closure; it
+  // reads pump depth/age off spine.stats() via the injected env so a stuck pump
+  // stays VISIBLE in alive.txt WITHOUT coupling respawn to turn duration (a legit
+  // long brain turn must never get the node guillotined). The DAEMON CONTRACT
+  // line format is unchanged — the script writes it (see src/tools/alive.mjs).
+  await heartbeatLoader.activate({ registry: services.heartbeats, stats: spine.stats });
 
   spine.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once

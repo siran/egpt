@@ -11,16 +11,19 @@
 // written readonly view (state/heartbeats.readonly.yaml, the same house pattern
 // as the instanced-brain `readonly` block: a snapshot the operator reads but
 // edits at the source), and registers each onto the dumb cadence registry
-// (heartbeats.mjs). The alive-file writer is no longer special-cased: it is just
-// the DEFAULT entry (a `builtin: 'alive'` action) injected when the node config
-// declares none.
+// (heartbeats.mjs). The alive-file writer is no longer special-cased NOR a
+// `builtin:` action — actions are COMMANDS only now. The alive beat is just the
+// DEFAULT command entry (boot's `aliveCommand`, `node src/tools/alive.mjs`)
+// injected when the node config declares no `alive`. This is the point: the
+// readonly.yaml shows the REAL command for EVERY entry, alive included — nothing
+// is hidden behind an opaque builtin label (operator 2026-07-02).
 //
 // Two phases, one module, because of a boot ordering constraint (see boot.mjs):
 //   collect()  — pure-ish: read config + entity dirs, parse cadences → { entries,
 //                finestMs }. Runs BEFORE createSpine so boot can size the tick to
 //                the finest cadence.
-//   activate() — bind each entry's ACTION (which needs spine.stats() + the
-//                injected builtin writers), register them, write the readonly.yaml.
+//   activate() — bind each entry's command ACTION (the beat reads spine.stats()
+//                for the pump env), register them, write the readonly.yaml.
 //                Runs AFTER createSpine.
 //
 // Every effectful edge is injected (listEntityDirs / readEntityConfig / spawn /
@@ -64,11 +67,11 @@ export function parseHeartbeatsBlock(yamlText) {
   return (hb && typeof hb === 'object' && !Array.isArray(hb)) ? hb : {};
 }
 
-// Normalize one raw `{ frequency, command?, builtin? }` declaration into a
-// registered entry, or null (skipped + logged) when it names no runnable action
-// or its cadence won't parse. `isAlive` gives the default builtin its identity:
-// an `alive` entry with no command falls back to the in-process writer.
-function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, onLog }) {
+// Normalize one raw `{ frequency, command? }` declaration into a registered
+// command entry, or null (skipped + logged) when it names no command or its
+// cadence won't parse. `isAlive` gives the deadman its defaults: an `alive` entry
+// with no command falls back to `aliveCommand` (boot's `node src/tools/alive.mjs`).
+function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, onLog }) {
   const everyMs = parseFrequency(raw?.frequency);
   // The alive beat is the deadman — never let a bad/absent cadence disable it;
   // fall back to the boot aliveMs (or 60s). Every other entry with an unparseable
@@ -76,15 +79,15 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, onL
   const ms = everyMs ?? (isAlive ? aliveFallbackMs : null);
   if (ms == null) { onLog(`${name}: invalid frequency ${JSON.stringify(raw?.frequency)} — skipped`); return null; }
 
-  if (typeof raw?.command === 'string' && raw.command.trim()) {
-    // A command REPLACES the builtin (operator's prerogative even for alive; the
-    // deadman consequences are theirs). Shell line, run as written.
-    return { name, source, everyMs: ms, rawFrequency: raw.frequency, action: { kind: 'command', command: raw.command, cwd } };
-  }
-  const builtin = typeof raw?.builtin === 'string' ? raw.builtin : (isAlive ? 'alive' : null);
-  if (builtin) return { name, source, everyMs: ms, rawFrequency: raw.frequency, action: { kind: 'builtin', builtin } };
+  // A command is run as written (operator's shell line). `alive` with no command
+  // falls back to the default alive command so a config `alive:` block that only
+  // tunes the cadence still arms the deadman (never let a typo disarm it).
+  const command = (typeof raw?.command === 'string' && raw.command.trim())
+    ? raw.command
+    : (isAlive ? aliveCommand : null);
+  if (command) return { name, source, everyMs: ms, rawFrequency: raw.frequency, action: { kind: 'command', command, cwd } };
 
-  onLog(`${name}: no command or builtin — skipped`);
+  onLog(`${name}: no command — skipped`);
   return null;
 }
 
@@ -92,6 +95,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, onL
  * @param {object} deps
  * @param {() => object} deps.getConfig                 node config (reads config.heartbeats)
  * @param {number} [deps.aliveMs]                       boot's aliveMs; 0 = don't inject the default alive (test contract)
+ * @param {string} [deps.aliveCommand]                  the default alive command boot passes in (keeps the loader path-agnostic): `node src/tools/alive.mjs`
  * @param {() => Promise<Array<{dir:string, ns:string}>>} deps.listEntityDirs  conversation + room folders (ns = the namespace prefix)
  * @param {(dir:string) => Promise<object>} deps.readEntityConfig              a folder's heartbeats: map ({} when none)
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
@@ -104,6 +108,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, onL
 export function createHeartbeatLoader({
   getConfig,
   aliveMs = 0,
+  aliveCommand = '',
   listEntityDirs = async () => [],
   readEntityConfig = async () => ({}),
   spawn,
@@ -139,15 +144,17 @@ export function createHeartbeatLoader({
         if (raw === false) { onLog('alive disabled (heartbeats.alive: false) — the supervisor will respawn-loop with backoff until restored'); continue; }
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
-      const e = _normalizeEntry({ name, source: 'config', cwd: procCwd, raw, isAlive, aliveFallbackMs, onLog });
+      const e = _normalizeEntry({ name, source: 'config', cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, onLog });
       if (e) entries.push(e);
     }
 
-    // 2. Default alive: inject the builtin writer when the node config declares
-    //    no `alive` AND boot asked for it (aliveMs > 0). aliveMs === 0 (tests)
-    //    means "don't inject" — but an explicit config alive above still loads.
+    // 2. Default alive: inject the default alive COMMAND (boot's aliveCommand,
+    //    `node src/tools/alive.mjs`, cwd = the checkout) when the node config
+    //    declares no `alive` AND boot asked for it (aliveMs > 0). aliveMs === 0
+    //    (tests) means "don't inject" — but an explicit config alive above still
+    //    loads. No builtin: the readonly view will show this real command.
     if (!aliveDeclared && aliveMs > 0) {
-      entries.push({ name: 'alive', source: 'config', everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'builtin', builtin: 'alive' } });
+      entries.push({ name: 'alive', source: 'config', everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: procCwd } });
     }
 
     // 3. Entity entries: every conversation/room folder's config.yaml heartbeats:
@@ -189,18 +196,11 @@ export function createHeartbeatLoader({
     };
   }
 
-  // ── phase 2: bind actions + register + materialize the readonly view ──────
-  async function activate({ registry, builtins = {}, stats } = {}) {
+  // ── phase 2: bind command actions + register + materialize the readonly view ──
+  async function activate({ registry, stats } = {}) {
     const entries = _entries ?? (await collect()).entries;
     for (const entry of entries) {
-      let fn;
-      if (entry.action.kind === 'builtin') {
-        fn = builtins[entry.action.builtin];
-        if (typeof fn !== 'function') { onLog(`${entry.name}: unknown builtin '${entry.action.builtin}' — not registered`); continue; }
-      } else {
-        fn = _makeCommandBeat(entry, stats);
-      }
-      registry.register(entry.name, entry.everyMs, fn);
+      registry.register(entry.name, entry.everyMs, _makeCommandBeat(entry, stats));
     }
     await _writeReadonly(entries);
     return { entries, finestMs: entries.length ? Math.min(...entries.map((e) => e.everyMs)) : null };
@@ -213,17 +213,16 @@ export function createHeartbeatLoader({
       '# config.yaml heartbeats: block + each conversation/room config.yaml\n' +
       '# heartbeats: block. To change one, edit config.yaml (or the entity\'s own\n' +
       '# config.yaml) and /restart. Regenerated on every boot, overwriting.\n\n';
-    const list = entries.map((e) => {
-      const row = {
-        name: e.name,
-        source: e.source,
-        frequency: e.rawFrequency,
-        frequency_ms: e.everyMs,
-        action: e.action.kind === 'builtin' ? `builtin: ${e.action.builtin}` : `command: ${e.action.command}`,
-      };
-      if (e.action.kind === 'command') row.cwd = e.action.cwd;
-      return row;
-    });
+    // Every entry is a command now (alive included) — the row shows the REAL
+    // command + cwd, nothing hidden behind a builtin label (operator 2026-07-02).
+    const list = entries.map((e) => ({
+      name: e.name,
+      source: e.source,
+      frequency: e.rawFrequency,
+      frequency_ms: e.everyMs,
+      action: `command: ${e.action.command}`,
+      cwd: e.action.cwd,
+    }));
     const path = join(egptHome, 'state', 'heartbeats.readonly.yaml');
     try {
       await mkdir(dirname(path), { recursive: true });

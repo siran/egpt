@@ -72,11 +72,11 @@ describe('createHeartbeatLoader.collect', () => {
     expect(c.action).toEqual({ kind: 'command', command: 'node cleanup.js', cwd: '/checkout' });
   });
 
-  it('injects the default alive builtin when the node config declares none (aliveMs>0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 60_000 });
+  it('injects the default alive command when the node config declares none (aliveMs>0)', async () => {
+    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 60_000, aliveCommand: 'node alive.mjs', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ name: 'alive', source: 'config', everyMs: 60_000, action: { kind: 'builtin', builtin: 'alive' } });
+    expect(entries[0]).toMatchObject({ name: 'alive', source: 'config', everyMs: 60_000, action: { kind: 'command', command: 'node alive.mjs', cwd: '/co' } });
   });
 
   it('does NOT inject the default alive when aliveMs=0 (test contract)', async () => {
@@ -84,14 +84,14 @@ describe('createHeartbeatLoader.collect', () => {
     expect((await loader.collect()).entries).toEqual([]);
   });
 
-  it('an explicit config alive wins entirely — its frequency applies, builtin kept with no command (even at aliveMs=0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0 });
+  it('an explicit config alive with no command falls back to the default alive command (even at aliveMs=0)', async () => {
+    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0, aliveCommand: 'node alive.mjs', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ name: 'alive', everyMs: 1000, action: { kind: 'builtin', builtin: 'alive' } });
+    expect(entries[0]).toMatchObject({ name: 'alive', everyMs: 1000, action: { kind: 'command', command: 'node alive.mjs', cwd: '/co' } });
   });
 
-  it('an explicit config alive command REPLACES the builtin writer (no double-inject)', async () => {
+  it('an explicit config alive command REPLACES the default alive script (no double-inject)', async () => {
     const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '2s', command: 'node alive.js' } } }), aliveMs: 60_000, procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries.filter((e) => e.name === 'alive')).toHaveLength(1);
@@ -147,40 +147,29 @@ describe('createHeartbeatLoader.collect', () => {
 
 // ── activate() ────────────────────────────────────────────────────────────
 describe('createHeartbeatLoader.activate', () => {
-  it('registers every entry and writes the readonly.yaml with the do-not-edit header', async () => {
+  it('registers every entry as a command beat and writes the readonly.yaml showing the REAL alive command + cwd (nothing hidden)', async () => {
     const writes = [];
     const registry = makeRegistry();
-    const writeAlive = () => {};
     const loader = createHeartbeatLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
-      aliveMs: 0, egptHome: '/home',
+      aliveMs: 0, aliveCommand: 'node src/tools/alive.mjs', egptHome: '/home', procCwd: '/co',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
     });
     await loader.collect();
-    await loader.activate({ registry, builtins: { alive: writeAlive }, stats: () => ({ queueDepth: 0, oldestMs: 0 }) });
+    await loader.activate({ registry, stats: () => ({ queueDepth: 0, oldestMs: 0 }) });
 
     expect(registry.registered).toHaveLength(1);
-    expect(registry.registered[0]).toMatchObject({ name: 'alive', everyMs: 1000, fn: writeAlive });
+    expect(registry.registered[0]).toMatchObject({ name: 'alive', everyMs: 1000 });
+    expect(registry.registered[0].fn).toBeTypeOf('function');   // the command beat, not an opaque builtin
 
     expect(writes).toHaveLength(1);
     expect(writes[0].p).toContain(join('state', 'heartbeats.readonly.yaml'));
     expect(writes[0].c).toContain('DO NOT EDIT');
     expect(writes[0].c).toContain('name: alive');
     expect(writes[0].c).toContain('source: config');
-    expect(writes[0].c).toContain('builtin: alive');
-  });
-
-  it('does not register a builtin with no matching writer (logged)', async () => {
-    const logs = [];
-    const registry = makeRegistry();
-    const loader = createHeartbeatLoader({
-      getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
-      aliveMs: 0, io: noopIo(), onLog: (m) => logs.push(m),
-    });
-    await loader.collect();
-    await loader.activate({ registry, builtins: {} });   // no alive writer supplied
-    expect(registry.registered).toHaveLength(0);
-    expect(logs.some((l) => l.includes('unknown builtin'))).toBe(true);
+    expect(writes[0].c).toContain('command: node src/tools/alive.mjs');   // the real command, visible
+    expect(writes[0].c).toContain('cwd: /co');
+    expect(writes[0].c).not.toContain('builtin');
   });
 
   it('a command beat spawns a shell line with entity cwd + pump-stats env; overlap guard skips while running; non-zero exit only logs', async () => {
@@ -195,7 +184,7 @@ describe('createHeartbeatLoader.activate', () => {
       io: noopIo(), onLog: (m) => logs.push(m),
     });
     await loader.collect();
-    await loader.activate({ registry, builtins: {}, stats: () => ({ queueDepth: 3, oldestMs: 12000 }) });
+    await loader.activate({ registry, stats: () => ({ queueDepth: 3, oldestMs: 12000 }) });
     const beat = registry.registered.find((r) => r.name === 'whatsapp/x:job').fn;
 
     beat();   // first due tick → spawn the shell line

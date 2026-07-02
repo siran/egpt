@@ -5,10 +5,12 @@
 // production wires it, minus Beeper and minus claude. (SPINE-REWRITE-PLAN.md
 // Phase 3 verify gate, offline half.)
 //
-// Runs against an isolated EGPT_HOME so the alive-beat heartbeat writes
-// state/alive.txt into a throwaway profile, never the real ~/.egpt. egpt-home.mjs
-// reads EGPT_HOME once at module load, so it's set BEFORE boot (which imports it)
-// is dynamically imported below.
+// Runs against an isolated EGPT_HOME so the spine's boot-time writes (the
+// heartbeats.readonly.yaml snapshot, the announce sidecar) land in a throwaway
+// profile, never the real ~/.egpt. The alive beat is a spawned command now, so
+// the heartbeat tests observe it via an injected fake spawn (no real alive.txt).
+// egpt-home.mjs reads EGPT_HOME once at module load, so it's set BEFORE boot
+// (which imports it) is dynamically imported below.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
@@ -26,15 +28,6 @@ afterAll(async () => {
   delete process.env.EGPT_HOME;
   try { await fs.rm(tmpHome, { recursive: true, force: true }); } catch {}
 });
-
-async function waitFor(pred, timeout = 1000) {
-  const t0 = Date.now();
-  for (;;) {
-    if (await pred()) return;
-    if (Date.now() - t0 > timeout) throw new Error('waitFor timeout');
-    await new Promise((r) => setTimeout(r, 5));
-  }
-}
 
 // Pre-seed a conversation's E mode in the shared state (modes live in
 // conversations.yaml now, not config.auto_modes). No threadId → still "fresh".
@@ -129,11 +122,17 @@ describe('boot()', () => {
     app.stop();
   });
 
-  it('beats alive.txt via the tick heartbeat: immediate first beat, cadence honored, tic/toc alternates', async () => {
+  it('registers the alive beat as a spawned command: immediate first beat on tick, cadence honored, env carries the spine pid + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
     const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
     let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
+
+    // Observe the beat as a SPAWN, not a written alive.txt — the alive beat is a
+    // command now (node src/tools/alive.mjs). The fake child completes each spawn
+    // (exit 0) so the overlap guard clears and the cadence can advance.
+    const spawnCalls = [];
+    const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
 
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
@@ -141,34 +140,32 @@ describe('boot()', () => {
       io: memIo(), ingest: false,
       now: () => clock,
       tickMs: 0,          // no auto-timer; we drive tick() by hand
-      aliveMs: 60_000,    // register the alive writer as a 60s heartbeat
+      aliveMs: 60_000,    // register the alive script as a 60s command heartbeat
+      spawn: fakeSpawn,   // no real alive.mjs process
       log: { line: () => {} },
     });
 
-    const alivePath = join(tmpHome, 'state', 'alive.txt');
-    const read = async () => { try { return await fs.readFile(alivePath, 'utf8'); } catch { return ''; } };
+    // boot fired one immediate beat (spine.tick() right after start) → one spawn
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnCalls[0].cmd).toMatch(/^node ".*[/\\]tools[/\\]alive\.mjs"$/);
+    expect(spawnCalls[0].opts).toMatchObject({ shell: true, cwd: process.cwd() });
+    expect(spawnCalls[0].opts.env.EGPT_HOME).toBe(tmpHome);
+    expect(spawnCalls[0].opts.env.EGPT_SPINE_PID).toBe(String(process.pid));   // the long-lived SPINE pid (singleton contract)
+    expect(spawnCalls[0].opts.env.EGPT_QUEUE_DEPTH).toBe('0');
 
-    // boot fired one immediate beat (spine.tick() right after start)
-    await waitFor(async () => (await read()).length > 0);
-    const first = await read();
-    expect(first).toMatch(/^tic 2026-06-29T14:05:00\.000Z \d+ q=0 oldest=0s\n$/);
-    expect(Number(first.match(/ (\d+) q=/)[1])).toBe(process.pid);   // carries our pid
-
-    // a second tick INSIDE the 60s window → still not due → no new beat
+    // a second tick INSIDE the 60s window → still not due → no new spawn
     app.spine.tick();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(await read()).toBe(first);   // unchanged — cadence honored
+    expect(spawnCalls).toHaveLength(1);   // cadence honored
 
-    // advance past the cadence → next tick beats again, alternating to 'toc'
+    // advance past the cadence → next tick beats again
     clock += 60_000;
     app.spine.tick();
-    await waitFor(async () => (await read()).startsWith('toc'));
-    expect(await read()).toMatch(/^toc 2026-06-29T14:06:00\.000Z \d+ q=0 oldest=0s\n$/);
+    expect(spawnCalls).toHaveLength(2);
 
     app.stop();
   });
 
-  it('a declared heartbeats.alive frequency tightens the effective tick below the default, and beats still land', async () => {
+  it('a declared heartbeats.alive frequency tightens the effective tick below the default; the alive command still spawns and the readonly shows the REAL command', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
     // config declares alive at 1s — finer than boot's default 30s tick. The loader
@@ -177,12 +174,15 @@ describe('boot()', () => {
     // setInterval (only the spine's tick timer flows through this seam).
     const config = { whatsapp: {}, default_brain: { type: 'ccode' }, heartbeats: { alive: { frequency: '1s' } } };
     const intervals = [];
+    const spawnCalls = [];
+    const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
 
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
       io: memIo(), ingest: false,
       now: () => Date.UTC(2026, 5, 29, 14, 5),
+      spawn: fakeSpawn,
       setInterval: (fn, ms) => { intervals.push(ms); return 0; },
       clearInterval: () => {},
       log: { line: () => {} },
@@ -192,15 +192,16 @@ describe('boot()', () => {
     expect(intervals.length).toBeGreaterThan(0);
     expect(Math.min(...intervals)).toBeLessThanOrEqual(1000);
 
-    // the immediate boot tick still beats alive.txt (the config alive → builtin writer)
-    const alivePath = join(tmpHome, 'state', 'alive.txt');
-    await waitFor(async () => { try { return (await fs.readFile(alivePath, 'utf8')).length > 0; } catch { return false; } });
-    expect(await fs.readFile(alivePath, 'utf8')).toMatch(/^tic /);
+    // the immediate boot tick spawned the alive command (config alive → default script)
+    expect(spawnCalls.some((c) => /alive\.mjs/.test(c.cmd))).toBe(true);
 
-    // the spine also materialized the readonly view of the loaded heartbeats
+    // the spine materialized the readonly view — the alive row shows the REAL
+    // command, nothing hidden behind a builtin label
     const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
     expect(readonly).toContain('DO NOT EDIT');
     expect(readonly).toContain('name: alive');
+    expect(readonly).toContain('command: node');
+    expect(readonly).not.toContain('builtin');
 
     app.stop();
   });
