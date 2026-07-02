@@ -73,9 +73,9 @@ describe('beeper-port adapter', () => {
     s.update('partial');
     s.finish('done');
     const h = spy.streams[0];
-    expect(h.init).toMatch(/^⌛ ·[a-z0-9]+$/);        // fixed placeholder + a UNIQUE per-turn nonce
+    expect(h.init).toBe('⌛');                        // placeholder is exactly the stamped init — no nonce suffix
     expect(h.opts).toMatchObject({ chatId: '!room' });
-    expect(h.updates).toEqual(['partial']);          // markers are the sender's job — port only stamps; edits drop the nonce
+    expect(h.updates).toEqual(['partial']);          // markers are the sender's job — port only stamps
     expect(h.finals).toEqual(['done']);
     expect(s.delivered).toBe(true);          // reflects the live handle
   });
@@ -88,7 +88,7 @@ describe('beeper-port adapter', () => {
     s.update('egpt: Aquí estoy bien ⏳');                          // model wrote "egpt:" → bridge strips it
     s.finish('Aquí estoy bien ∎');                                // sender supplies the ∎ end-mark
     const h = spy.streams[0];
-    expect(h.init).toMatch(/^🐶 egpt\n⏳ ·[a-z0-9]+$/);            // persona line + placeholder + unique nonce
+    expect(h.init).toBe('🐶 egpt\n⏳');                            // persona line + placeholder, no nonce suffix
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
     expect(h.updates).toEqual(['🐶 egpt\nAquí estoy ⏳', '🐶 egpt\nAquí estoy bien ⏳']);   // header on every frame; "egpt:" stripped
     expect(h.finals).toEqual(['🐶 egpt\nAquí estoy bien ∎']);

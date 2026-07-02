@@ -14,6 +14,7 @@ import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
   const chats = new Map();   // chatID -> chat info served by GET
+  const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -22,6 +23,12 @@ async function startFakeBeeper() {
       if (req.method === 'POST' && post) {
         posts.push({ chatID: decodeURIComponent(post[1]), ...JSON.parse(body) });
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
+        return;
+      }
+      // Recent-message list (resolveSentMessageId polls it to confirm a sent id).
+      const msgList = req.url.match(/^\/v1\/chats\/([^/]+)\/messages(?:\?.*)?$/);
+      if (req.method === 'GET' && msgList) {
+        res.end(JSON.stringify({ items: messages.get(decodeURIComponent(msgList[1])) ?? [] }));
         return;
       }
       if (req.method === 'GET' && req.url === '/v1/chats') {
@@ -48,7 +55,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, chats,
+    port, posts, chats, messages,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
@@ -504,6 +511,39 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'sentinel' })] });
     await waitFor(() => second.incoming.some((i) => i.text === 'sentinel'));
     expect(second.incoming.filter((i) => i.text === 'once only')).toHaveLength(0);
+  });
+
+  // resolveSentMessageId (via sendAndGetId) confirms the id of a message WE just
+  // posted by text-matching the recent list. With the placeholder nonce removed,
+  // several messages can share the placeholder's exact text — so the resolver must
+  // still land on THIS turn's message: pick the NEWEST (numeric) match AND ignore a
+  // same-text message that isn't ours (isSender:false). This is the stuck-placeholder
+  // scenario the nonce used to guard against, now covered by newest-id + isSender.
+  it('resolves a just-sent id to the newest isSender match — not an old placeholder, not a foreign echo', async () => {
+    const { bridge } = await startBridge();
+    const chat = CHAT('chat-1');
+    const TXT = '🐶 egpt\n⏳ Thinking…';   // the exact reply-train placeholder (no nonce)
+    // The recent list holds an OLD identical-text placeholder (lower id) + the
+    // just-posted one (higher id) + a non-sender copy (someone quoted our line).
+    fake.messages.set(chat, [
+      { id: '9',  text: TXT, isSender: true },    // old stuck placeholder (lower numeric id)
+      { id: '10', text: TXT, isSender: true },    // THIS turn's placeholder (newest ours)
+      { id: '11', text: TXT, isSender: false },   // same text but NOT our send — must be ignored
+    ]);
+    const id = await bridge.sendAndGetId(TXT, { chatId: chat });
+    expect(id).toBe('10');   // newest isSender match — not '9' (older), not '11' (foreign)
+  });
+
+  it('resolveSentMessageId tolerates list items lacking isSender (schema drift): matches by newest id', async () => {
+    const { bridge } = await startBridge();
+    const chat = CHAT('chat-1');
+    const TXT = 'plain placeholder text';
+    fake.messages.set(chat, [
+      { id: '4', text: TXT },    // no isSender field → absent is acceptable
+      { id: '5', text: TXT },
+    ]);
+    const id = await bridge.sendAndGetId(TXT, { chatId: chat });
+    expect(id).toBe('5');
   });
 });
 

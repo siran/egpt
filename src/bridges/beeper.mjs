@@ -500,6 +500,13 @@ export async function startBeeperBridge(opts = {}) {
   //     never resolved its id, so post_id was empty in the tail and the origin couldn't
   //     stream the relayed reply in place.
   // Normalise BOTH sides identically so the just-sent message is found regardless.
+  // BELT-AND-SUSPENDERS (2026-07-02): a message WE sent always comes back
+  // isSender:true, so require it when the list item carries the field — this
+  // cheaply excludes a same-text message from someone ELSE (e.g. a quote/echo of
+  // our line). Items lacking the field are tolerated (schema drift) — absent is
+  // acceptable, so we never reject our own send just because the flag is missing.
+  // No time-window: clock skew + the retry loop make it fragile; isSender +
+  // newest-id (numeric, via newerMsgId) is enough to land on THIS turn's message.
   const _matchKey = (s) => _normEcho(
     String(s ?? '').replace(/`+/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'),
   );
@@ -513,6 +520,7 @@ export async function startBeeperBridge(opts = {}) {
         let best = null;
         for (const m of items) {
           if (!m?.id) continue;
+          if (m.isSender === false) continue;   // present-and-false → not our send (absent tolerated)
           if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
           best = newerMsgId(best, m.id);
         }
