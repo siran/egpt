@@ -221,14 +221,26 @@ export function createMeshService({
 
     // ORIGIN: relay a human's "@being.node …" to the target's node. Arms the origin-
     // wait timeout; relayOut posts the "🤔" placeholder + the request envelope.
+    //
+    // Two target shapes are accepted:
+    //   { being, node }            — the mesh.nodes scheme: relayOut resolves the route
+    //                                via config.mesh.nodes.<node>.routes[0].
+    //   { being, route:{room_id} } — the ROUTE-DIRECT variant (a `type: relay` agent):
+    //                                the relay_channel IS the route, so relayOut posts
+    //                                the envelope straight into that chat. No node; the
+    //                                envelope carries no `to:` → the owner of `being` on
+    //                                the other end answers (open-channel), reply mirrors
+    //                                home through the same awaiting/re: machinery.
     async forward(ev, target) {
       const being = target?.being;
       const toNode = target?.node;
-      if (!being || !toNode) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
+      const route = target?.route;                              // route-direct (relay agent)
+      if (!being || (!toNode && !route)) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
       const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
       const sender = ev.senderName ?? 'someone';
-      armTimeout(ev.chatId, `${being}.${toNode}`);
-      const ok = await relay.relayOut({ being, toNode, body: ev.body, origin, sender });
+      const label = toNode ? `${being}.${toNode}` : `${being} (${chatOf(route)})`;
+      armTimeout(ev.chatId, label);
+      const ok = await relay.relayOut({ being, toNode, route, body: ev.body, origin, sender });
       if (!ok) clearTimeoutFor(ev.chatId);                      // relayOut already surfaced the failure
       return ok;
     },

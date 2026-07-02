@@ -114,15 +114,51 @@ export function createBrainPool({
     };
   }
 
-  // A sibling being's brain def comes from config.siblings[<being>] — NOT the brains
-  // registry, and it is NEVER frozen into readonly (the def LIVES in config, so there
-  // is nothing per-conversation to instance). `claude-code` is normalized to the
-  // canonical `ccode` engine token; missing fields fall back as the persona's do.
-  function siblingDef(being) {
+  // The `agents:` block (operator 2026-07-02): the unified registry. Read lazily so a
+  // config edit takes effect next turn. A LOCAL agent (type ≠ 'relay') keyed by being
+  // name supplies that being's TYPE, resolved through the brains registry (config/agents
+  // layer). The PERSONA agent (handles include e/egpt) supplies E's default type.
+  const agents = () => (getConfig() ?? {}).agents ?? {};
+  const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
+  // The persona agent's TYPE (agents block), or null when no persona agent is declared.
+  function personaAgentType() {
+    for (const [name, a] of Object.entries(agents())) {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+      if (String(a.type ?? '').toLowerCase() === 'relay') continue;   // relay isn't a brain
+      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return a.type ?? null;
+    }
+    return null;
+  }
+  // Shape a resolved registry def into the brainpool's def contract, letting the agent
+  // entry override the display name. `claude-code` normalizes to the `ccode` token.
+  function shapeDef(name, def, agent = {}) {
+    const type = String(def?.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (def?.type ?? brainType);
+    return {
+      name: agent.name ?? def?.name ?? name,
+      type,
+      model: def?.model ?? null,
+      effort: def?.effort ?? null,
+      allowed_tools: def?.allowed_tools ?? 'all',
+      cwd: def?.cwd ?? undefined,
+      system_prompt: def?.system_prompt ?? undefined,
+    };
+  }
+
+  // A local (sibling) being's brain def. MODERN: a LOCAL agent (agents[<being>], type ≠
+  // relay) — its `type` names an agent-type file resolved through the registry. LEGACY
+  // fallback: config.siblings[<being>] inline shape. Either way NOT frozen into readonly
+  // (the def LIVES in config, nothing per-conversation to instance).
+  function siblingDef(being, convDir) {
+    const agent = agents()[being];
+    if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.type ?? '').toLowerCase() !== 'relay') {
+      const def = brains?.resolve?.(agent.type, { convDir }) ?? null;
+      if (def) return shapeDef(being, def, agent);
+      // type named but no file → fall through to the legacy shape (keeps the being runnable)
+    }
     const s = (getConfig() ?? {}).siblings?.[being] ?? {};
     const type = String(s.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (s.type ?? brainType);
     return {
-      name: s.name ?? being,
+      name: (agent && typeof agent === 'object' ? agent.name : null) ?? s.name ?? being,
       type,
       model: s.model ?? null,
       effort: s.effort ?? null,
@@ -132,10 +168,18 @@ export function createBrainPool({
     };
   }
 
-  // The DEFAULT brain a fresh conversation is instanced from: config.default_brain
-  // names a registry brain (string), or is an inline def (legacy object) merged over
-  // the shipped 'default'. Falls back to a bare ccode def if the registry is absent.
+  // The DEFAULT brain a fresh conversation is instanced from, in order:
+  //   1. the PERSONA agent's `type` (agents block) resolved through the registry,
+  //   2. config.default_brain (a registry brain name, or a legacy inline def),
+  //   3. the shipped 'default'.
+  // Falls back to a bare ccode def if the registry is absent.
   function resolveDefaultBrain(convDir) {
+    const pType = personaAgentType();
+    if (pType) {
+      const def = brains?.resolve?.(pType, { convDir });
+      if (def) return def;                                     // persona type file wins
+      // named but unresolvable → fall through to default_brain / 'default'
+    }
     const db = (getConfig() ?? {}).default_brain;
     const fallback = { name: 'default', type: brainType };
     if (typeof db === 'string') return brains?.resolve?.(db, { convDir }) ?? brains?.resolve?.('default', { convDir }) ?? { name: db, type: brainType };
@@ -153,8 +197,9 @@ export function createBrainPool({
       const isSibling = being !== 'e';
       let def;
       if (isSibling) {
-        // Sibling: def straight from config.siblings[being]; no readonly instancing.
-        def = siblingDef(being);
+        // Sibling / local agent: def from the agents block (type file) or the legacy
+        // config.siblings[being] inline shape; never frozen into readonly.
+        def = siblingDef(being, convDir);
       } else {
         // The conversation's brain: its instanced (frozen) brain, or — on the first
         // turn — the default, which we instance into conversations.yaml `readonly` now

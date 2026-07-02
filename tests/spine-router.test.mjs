@@ -114,3 +114,78 @@ describe('router.resolve — cross-node mesh targets (Phase 4b)', () => {
     expect(r.being).toBe('e');
   });
 });
+
+describe('router.resolve — agents registry (operator 2026-07-02)', () => {
+  // The operator's exact shape: a persona agent (handles e/egpt) + a relay agent, plus
+  // a local (non-persona) agent to prove being = its own name.
+  const agents = {
+    egpt: { type: 'sonnet-high', handles: ['e', 'egpt'] },   // persona
+    don:  { type: 'relay', relay_channel: 'Rodz' },          // relay → chat "Rodz"
+    'don-local': { type: 'sonnet-high', name: 'Don' },       // local being, hyphenated name
+    off:  { type: 'sonnet-high', enabled: false },           // disabled → not routable
+    _note: 'a comment key, never routable',
+  };
+  const arouter = createRouter({ getAgents: () => agents });
+
+  it('@e (persona handle) → the CANONICAL being "e", ev.mention preserved (display identity ≠ routing)', () => {
+    const m = { atEStart: true, atEAnywhere: true, replyToBot: false };
+    const r = arouter.resolve(ev('@e hola', m));
+    expect(r.being).toBe('e');       // NOT "egpt" — the persona key is display only
+    expect(r.mesh).toBeUndefined();
+    expect(r.mention).toBe(m);       // persona keeps the bridge-computed mention
+  });
+
+  it('@egpt (persona name key) also → being "e"', () => {
+    expect(arouter.resolve(ev('@egpt yo')).being).toBe('e');
+  });
+
+  it('a LOCAL agent @don-local → being "don-local" with a synthetic mention', () => {
+    const r = arouter.resolve(ev('@don-local do X'));
+    expect(r.being).toBe('don-local');
+    expect(r.mesh).toBeUndefined();
+    expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+  });
+
+  it('a RELAY agent @don → a mesh target routed by relay_channel (route-direct), no local being', () => {
+    const r = arouter.resolve(ev('@don ping'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+    expect(r.mention).toMatchObject({ atEStart: true });
+  });
+
+  it('case-insensitive on handles and names: @Don-Local → don-local, @DON → relay target', () => {
+    expect(arouter.resolve(ev('@Don-Local hi')).being).toBe('don-local');
+    expect(arouter.resolve(ev('@DON hi')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+  });
+
+  it('a disabled agent falls through (→ e); a _note key never routes', () => {
+    expect(arouter.resolve(ev('@off hi')).being).toBe('e');
+    expect(arouter.resolve(ev('@_note hi')).being).toBe('e');
+  });
+
+  it('an unknown @token falls through to e', () => {
+    expect(arouter.resolve(ev('@nobody hi')).being).toBe('e');
+  });
+
+  it('agents win over a legacy sibling of the same name (both-worlds precedence)', () => {
+    const r = createRouter({
+      getAgents: () => ({ wren: { type: 'relay', relay_channel: 'R' } }),
+      getSiblings: () => ({ wren: { type: 'ccode', name: 'wren' } }),
+    }).resolve(ev('@wren hi'));
+    expect(r.mesh).toEqual({ being: 'wren', route: { room_id: 'R' } });   // agent, not the sibling
+  });
+
+  it('a legacy sibling NOT shadowed by an agent stays routable when a block exists', () => {
+    const r = createRouter({
+      getAgents: () => ({ egpt: { type: 'sonnet-high', handles: ['e', 'egpt'] } }),
+      getSiblings: () => ({ wren: { type: 'ccode', name: 'wren' } }),
+    }).resolve(ev('@wren do X'));
+    expect(r.being).toBe('wren');     // fell through the agents block into legacy siblings
+    expect(r.mesh).toBeUndefined();
+  });
+
+  it('no agents block → byte-identical legacy behavior (siblings still route)', () => {
+    const r = createRouter({ getSiblings: () => ({ wren: { type: 'ccode', name: 'wren' } }) }).resolve(ev('@wren do X'));
+    expect(r.being).toBe('wren');
+  });
+});

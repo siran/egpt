@@ -215,9 +215,14 @@ export function createMeshRelay({
   }
 
   // ── ORIGIN: relay a human's @being message to the channel where its node listens ──
-  async function relayOut({ being, toNode, body = '', origin = null, sender = '' } = {}) {
-    const route = resolveRoute(toNode);
-    if (!route) { await surface(origin, `!! mesh: no route to ${toNode}`); return false; }
+  // `route` (route-direct) short-circuits resolveRoute(toNode): a `type: relay` agent
+  // supplies the relay_channel directly, with no node. When there's no toNode the
+  // envelope carries an EMPTY `to:` — the open-channel path (the owner of `being` on the
+  // other end answers, everyone else stays silent) — and the labels drop the `.node`.
+  async function relayOut({ being, toNode, route: directRoute = null, body = '', origin = null, sender = '' } = {}) {
+    const route = directRoute ?? resolveRoute(toNode);
+    const tgt = toNode ? `${being}.${toNode}` : being;         // human-readable label
+    if (!route) { await surface(origin, `!! mesh: no route to ${tgt}`); return false; }
     const fromName = (origin && origin.name) || '';
     // Post the placeholder FIRST so we can capture its msgId as post_id. The responder
     // echoes post_id back in every reply frame so the origin knows which message to edit
@@ -239,10 +244,11 @@ export function createMeshRelay({
       // `to: being.node` (e.g. "don.do") encodes both target being and node so the responder
       // can identify without relying on @mention parsing.
       const mid = makeMeshRequestId({ node });
-      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to: `${being}.${toNode}`, post_id: postId || '', mid }));
-      if (!ok) { await surface(origin, `!! mesh: too many sends to ${being}.${toNode}'s channel — paused (loop guard)`); return false; }
+      const to = toNode ? `${being}.${toNode}` : '';            // route-direct: open-channel (no target node)
+      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', mid }));
+      if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
-    catch (e) { await surface(origin, `!! mesh relay to ${being}.${toNode} failed: ${e?.message ?? e}`); return false; }
+    catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
     if (fromName && origin) awaiting.set(fromName, origin);
     return true;
   }

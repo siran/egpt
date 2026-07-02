@@ -5,12 +5,12 @@ import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { createBrains } from '../src/spine/brains.mjs';
 
-const BUILTIN = '/builtin', PROFILE = '/profile';
+const BUILTIN = '/builtin', PROFILE = '/profile', AGENTS = '/agents';
 
 function harness(files) {
   // files: { '<absolute path>': '<yaml text>' }
   return createBrains({
-    builtinDir: BUILTIN, profileDir: PROFILE,
+    builtinDir: BUILTIN, profileDir: PROFILE, agentsDir: AGENTS,
     exists: (p) => p in files,
     readFile: (p) => files[p],
   });
@@ -42,6 +42,23 @@ describe('brain registry', () => {
   it('returns null for an unknown brain', () => {
     const brains = harness({ [join(BUILTIN, 'default.yaml')]: 'type: ccode\n' });
     expect(brains.resolve('codex')).toBeNull();
+  });
+
+  it('config/agents (the NEW canonical type-file layer) overrides config/brains overrides built-in', () => {
+    const brains = harness({
+      [join(BUILTIN, 'sonnet-high.yaml')]: 'type: ccode\nmodel: sonnet\neffort: low\nallowed_tools: all\n',
+      [join(PROFILE, 'sonnet-high.yaml')]: 'effort: medium\n',   // config/brains layer
+      [join(AGENTS,  'sonnet-high.yaml')]: 'effort: high\n',     // config/agents layer wins
+    });
+    expect(brains.resolve('sonnet-high')).toEqual({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' });
+  });
+
+  it('a conversation brains/ still wins over config/agents', () => {
+    const brains = harness({
+      [join(AGENTS, 'sonnet-high.yaml')]: 'type: ccode\neffort: high\n',
+      [join('/conv/slug', 'brains', 'sonnet-high.yaml')]: 'effort: max\n',
+    });
+    expect(brains.resolve('sonnet-high', { convDir: '/conv/slug' })).toMatchObject({ effort: 'max', type: 'ccode' });
   });
 
   it('the shipped default.yaml really loads (real fs)', () => {

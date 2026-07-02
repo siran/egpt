@@ -18,6 +18,18 @@
 // spine forwards it (mesh.forward); a LOCAL resolution falls through to the existing
 // sibling/E routing unchanged. Gated on meshEnabled() so an unconfigured node behaves
 // exactly as v1 (a bare @name never becomes a phantom mesh target).
+//
+// Agents (operator 2026-07-02): the `agents:` config block is the ONE registry that
+// unifies the persona pointer + siblings + mesh addressing. resolve() consults it
+// FIRST — a leading @token matching an agent's name or any handle wins over legacy
+// siblings + mesh.nodes. A LOCAL agent (type ≠ 'relay') routes like a sibling being
+// (being = agent name); a RELAY agent routes to a mesh target whose ROUTE is the
+// agent's relay_channel; the PERSONA agent (handles include e/egpt) routes to the
+// canonical default being 'e' (its key is display identity only — routing keeps 'e'
+// so warm keys / threads / transcripts stay stable). BACK-COMPAT: no agents block →
+// this whole branch is skipped and routing is byte-identical to v1 (siblings + mesh
+// .nodes + persona). With a block, agents win but legacy siblings not shadowed by an
+// agent name stay routable (both worlds during migration).
 import { resolveMeshAddress } from '../mesh/names.mjs';
 
 // Only a ccode/claude-code sibling is a local brain the pool can run; codex/URL
@@ -33,14 +45,60 @@ function isRoutable(def) {
     && def.enabled !== false;
 }
 
-export function createRouter({ getSiblings = () => ({}), defaultBeing = 'e', getNode = () => null, meshEnabled = () => false } = {}) {
+// An agent's routable identity tokens: its map KEY plus any `handles:` aliases, all
+// lowercased. Used to match a leading @token and to spot the persona agent.
+function agentIds(name, agent) {
+  const hs = Array.isArray(agent?.handles) ? agent.handles : [];
+  return [name, ...hs].map((h) => String(h).toLowerCase());
+}
+
+// Find the agent whose name/handle matches `token` (case-insensitive). Skips `_note`
+// comment keys and disabled agents (enabled:false) so they fall through to legacy.
+// Returns { name, agent } with `name` = the canonical (lowercased) key, or null.
+function findAgent(agents, token) {
+  for (const [name, agent] of Object.entries(agents)) {
+    if (!agent || typeof agent !== 'object' || Array.isArray(agent) || name.startsWith('_')) continue;
+    if (agent.enabled === false) continue;
+    if (agentIds(name, agent).includes(token)) return { name: name.toLowerCase(), agent };
+  }
+  return null;
+}
+
+export function createRouter({ getSiblings = () => ({}), getAgents = () => ({}), defaultBeing = 'e', getNode = () => null, meshEnabled = () => false } = {}) {
   return {
     /** @param {import('../../spine.mjs').InboundEvent} ev
      *  @returns {{ being: string|null, mesh?: object, mention: object|undefined }} */
     resolve(ev) {
       const body = ev?.body ?? '';
 
-      // Mesh first: a leading @being.node (dot allowed) that resolves to another node.
+      // Agents FIRST. A leading @token (word-boundary; hyphens allowed since agent
+      // names may carry them, e.g. `don-local`) that matches an agent's name/handle
+      // wins over everything below.
+      const agents = getAgents() ?? {};
+      if (agents && typeof agents === 'object' && Object.keys(agents).length) {
+        const at = /^@([a-z0-9_-]+)/i.exec(body);
+        if (at) {
+          const found = findAgent(agents, at[1].toLowerCase());
+          if (found) {
+            const { name, agent } = found;
+            if (String(agent.type ?? '').toLowerCase() === 'relay') {
+              // RELAY agent → a mesh target whose ROUTE is the relay_channel (a chat
+              // NAME or a raw room id — the bridge send/stream resolves names via
+              // resolveChatId, so BOTH work; we pass it through as room_id). No node:
+              // mesh.forward uses this route directly (route-direct variant).
+              return { being: null, mesh: { being: name, route: { room_id: agent.relay_channel } }, mention: { ...MENTION } };
+            }
+            // The PERSONA agent routes to the canonical default being (stable keys).
+            if (agentIds(name, agent).some((h) => h === defaultBeing || h === 'e' || h === 'egpt')) {
+              return { being: defaultBeing, mention: ev?.mention };
+            }
+            // Any other LOCAL agent → being = its name, with a synthetic mention.
+            return { being: name, mention: { ...MENTION } };
+          }
+        }
+      }
+
+      // Mesh next: a leading @being.node (dot allowed) that resolves to another node.
       // Inert unless mesh is configured. A local / missing / invalid resolution falls
       // through to the v1 local routing below (a bare local @wren keeps working).
       if (meshEnabled()) {

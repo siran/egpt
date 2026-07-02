@@ -92,6 +92,27 @@ describe('mesh service — outbound (origin relays @being.node)', () => {
     expect(ok).toBe(false);
     expect(bridge.sent.some((s) => s.chat === 'CHAT' && /no route/i.test(s.text))).toBe(true);
   });
+
+  it('ROUTE-DIRECT (a relay agent): forward posts the envelope straight to the relay_channel chat, open-channel (empty `to`)', async () => {
+    // The router hands mesh.forward a route-direct target { being, route } — no node,
+    // no mesh.nodes config needed. The envelope lands in the relay_channel chat.
+    const { bridge, mesh } = svc({ node: 'kg', meshCfg: {} });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@don hola' };
+
+    const ok = await mesh.forward(ev, { being: 'don', route: { room_id: 'Rodz' } });
+    expect(ok).toBe(true);
+
+    // origin placeholder still posted (the living mirror will edit it)
+    expect(bridge.statusPosts).toEqual([{ chat: 'CHAT', text: '🤔 thinking…', id: 'post-1' }]);
+
+    // ONE envelope, posted into the relay_channel "Rodz"
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0].chat).toBe('Rodz');
+    const p = parseMesh(bridge.sent[0].text);
+    expect(p).toMatchObject({ from: 'HFM', from_node: 'kg', by: 'An', body: '@don hola', post_id: 'post-1' });
+    expect(p.to).toBe('');                     // open-channel: the owner of "don" answers, others silent
+    expect(p.mid).toMatch(/^mesh-kg-/);        // return-correlation id minted as usual
+  });
 });
 
 describe('mesh service — responder (a request arrives at the owning node)', () => {

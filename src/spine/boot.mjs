@@ -38,6 +38,7 @@ import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
 import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseHeartbeatsBlock } from './heartbeat-loader.mjs';
+import { seedSkeletons } from './seed.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -71,19 +72,48 @@ export async function boot({
     await writeFile(join(EGPT_HOME, 'state', 'spine.pid'), String(process.pid), 'utf8');
   } catch (e) { log.line?.(`[boot] spine.pid write failed: ${e?.message ?? e}`); }
 
-  // The being's body_emoji (the bridge enforces it on outbound). E/persona →
-  // emojis.persona (default 🐶); siblings → their body_emoji.
+  // Seed the profile's paste-ready templates (config/skeletons/*) + a commented example
+  // agent-type file (config/agents/sonnet-high.yaml) — COPY-IF-MISSING, so operator edits
+  // are never touched. Real-node only (ingest-gated, like the other boot side effects) so
+  // tests don't write into a profile. Never fatal.
+  if (ingest) { try { seedSkeletons({ onLog: (m) => log.line?.(`[seed] ${m}`) }); } catch (e) { log.line?.(`[boot] seed failed: ${e?.message ?? e}`); } }
+
+  // The being's body_emoji + display label (the bridge enforces the emoji on
+  // outbound; the label rides the persona's first line "🐶 <label>"). The `agents:`
+  // block (operator 2026-07-02) wins when present: the PERSONA agent (handles include
+  // e/egpt) supplies E's emoji/label; a LOCAL/RELAY agent keyed by being name supplies
+  // its own. Legacy fallbacks (emojis.persona / persona_name / siblings[b]) stay intact
+  // so a node with NO agents block behaves byte-identically.
   const personaName = String(cfg.persona ?? 'e').toLowerCase();
+  const agents = () => cfg.agents ?? {};
+  const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
+  const personaAgent = () => {
+    for (const [name, a] of Object.entries(agents())) {
+      if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
+      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt' || h === personaName)) return { name, agent: a };
+    }
+    return null;
+  };
   const bodyEmojiOf = (being) => {
     const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt' || b === personaName) return cfg.emojis?.persona ?? cfg.siblings?.e?.body_emoji ?? '🐶';
+    if (b === 'e' || b === 'egpt' || b === personaName) {
+      const pa = personaAgent();
+      if (pa?.agent?.body_emoji) return pa.agent.body_emoji;
+      return cfg.emojis?.persona ?? cfg.siblings?.e?.body_emoji ?? '🐶';
+    }
+    const a = agents()[b];
+    if (a && typeof a === 'object' && a.body_emoji) return a.body_emoji;
     return cfg.siblings?.[b]?.body_emoji ?? cfg.emojis?.persona ?? '🐶';
   };
-  // The persona NAME shown on the enforced first line (🐶 <label>). E → persona_name
-  // (default 'egpt'); siblings → their configured name.
   const labelOf = (being) => {
     const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt' || b === personaName) return cfg.persona_name ?? 'egpt';
+    if (b === 'e' || b === 'egpt' || b === personaName) {
+      const pa = personaAgent();
+      if (pa) return pa.agent.name ?? pa.name;
+      return cfg.persona_name ?? 'egpt';
+    }
+    const a = agents()[b];
+    if (a && typeof a === 'object') return a.name ?? b;
     return cfg.siblings?.[b]?.name ?? b;
   };
 
@@ -181,9 +211,10 @@ export async function boot({
   const services = {
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState }),
-    // Router also resolves cross-node @being.node targets (Phase 4b) — inert unless
-    // cfg.mesh is configured (meshEnabled), so a plain node routes exactly as v1.
-    router: createRouter({ getSiblings: () => cfg.siblings ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
+    // Router consults the unified `agents:` block first (operator 2026-07-02), then
+    // the legacy siblings + cross-node @being.node mesh targets (Phase 4b, inert unless
+    // cfg.mesh is configured). No agents block → routing is byte-identical to v1.
+    router: createRouter({ getSiblings: () => cfg.siblings ?? {}, getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
