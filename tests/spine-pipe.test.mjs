@@ -154,6 +154,39 @@ describe('spine pipe', () => {
     expect(heartbeats.ran).toEqual([1000]);
   });
 
+  it('stats() reports zeros for an empty queue', () => {
+    const { spine } = build();
+    spine.start();
+    expect(spine.stats()).toEqual({ queueDepth: 0, oldestMs: 0 });
+  });
+
+  it('stats() reflects a backed-up queue; the oldest pending wait grows with the clock', async () => {
+    const bridge = fakeBridge();
+    let now = 1000;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const brain = { async turn() { await gate; return { text: 'x' }; } };
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender: fakeSender(bridge), transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => now },
+    });
+    spine.start();
+
+    // first msg is in-flight (shifted, parked on the never-yet-resolved brain);
+    // the second stays pending in the queue.
+    const drained = bridge.emit({ ...MSG, msgId: 'a', body: 'one' });
+    bridge.emit({ ...MSG, msgId: 'b', body: 'two' });
+    expect(spine.stats().queueDepth).toBe(1);
+    now = 5000;
+    expect(spine.stats().oldestMs).toBe(4000);   // pending msg enqueued at 1000
+
+    release();
+    await drained;
+    expect(spine.stats()).toEqual({ queueDepth: 0, oldestMs: 0 });
+  });
+
   it('throws when a required dependency is missing', () => {
     expect(() => createSpine({ bridge: fakeBridge() })).toThrow(/missing required dependency/);
   });

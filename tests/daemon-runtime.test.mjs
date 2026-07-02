@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import {
   CLEAN_EXIT_CODE,
   RESTART_EXIT_CODE,
+  RESTART_MIN_MS,
+  RESTART_MAX_MS,
   UPGRADE_EXIT_CODE,
   createDaemonRuntime,
 } from '../src/daemon-runtime.mjs';
@@ -153,8 +155,10 @@ describe('daemon runtime fake-world harness', () => {
 
   it('wedge kill → child exits 0 (POSIX SIGTERM trap) → daemon respawns, does not stop', async () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const timers = [];
     const { runtime, children, processObj } = makeRuntime({
       now: () => clock,
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
       readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999\n',  // ~1h-old beat
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
@@ -164,10 +168,84 @@ describe('daemon runtime fake-world harness', () => {
     expect(children[0].child.killed).toEqual(['SIGTERM']);
 
     // POSIX: the trapped SIGTERM makes the child exit 0 — same as a clean /exit.
-    // The wedge flag must route this to a respawn, NOT stop the daemon.
+    // The wedge flag must route this to a respawn (after the first-wedge delay),
+    // NOT stop the daemon.
     await children[0].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');
-    expect(children).toHaveLength(2);          // respawned
-    expect(processObj.exits).toEqual([]);      // daemon did NOT stop
+    expect(timers).toHaveLength(1);
+    expect(timers[0].ms).toBe(RESTART_MIN_MS);   // first wedge = RESTART_MIN_MS
+    timers[0].fn();
+    expect(children).toHaveLength(2);            // respawned
+    expect(processObj.exits).toEqual([]);        // daemon did NOT stop
+  });
+
+  it('wedge log carries the newest beat line (queue state) when it kills', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime, logs } = makeRuntime({
+      now: () => clock,
+      setTimeout: () => {},   // don't respawn — we only inspect the wedge log
+      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999 q=5 oldest=42s\n',  // stale, extended
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;
+    runtime.checkLiveness();
+    const wedgeLog = logs.find((l) => l.includes('spine wedged'));
+    expect(wedgeLog).toContain('q=5 oldest=42s');   // last-known queue state in the daemon log
+  });
+
+  it('newestBeatMs tolerates the extended line; newest of mixed old+new lines wins', () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const content =
+      'tic 2026-06-18T11:00:00.000Z 999\n' +                                  // old bare form, stale
+      `toc ${new Date(clock - 5_000).toISOString()} 999 q=2 oldest=7s\n`;     // new extended form, fresh (newest)
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      readFileSync: () => content,
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+    clock += 5_000;
+    runtime.checkLiveness();
+    expect(children[0].child.killed).toEqual([]);   // newest (fresh, extended) beat → no kill
+  });
+
+  it('consecutive wedge kills escalate the respawn delay; a fresh beat resets the streak', async () => {
+    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    let content = 'tic 2026-06-18T11:00:00.000Z 999 q=0 oldest=0s\n';   // stale
+    const timers = [];
+    const { runtime, children } = makeRuntime({
+      now: () => clock,
+      setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+      readFileSync: () => content,
+      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
+    });
+    runtime.spawnShell();
+
+    // wedge #1 → first-wedge delay
+    clock += 5_000;
+    runtime.checkLiveness();
+    await children[0].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');
+    expect(timers).toHaveLength(1);
+    expect(timers[0].ms).toBe(RESTART_MIN_MS);
+    timers[0].fn();                                   // respawn child #2
+    expect(children).toHaveLength(2);
+
+    // wedge #2, still no fresh beat → escalated delay
+    clock += 5_000;
+    runtime.checkLiveness();
+    await children[1].child.handlers.exit(CLEAN_EXIT_CODE, 'SIGTERM');
+    expect(timers).toHaveLength(2);
+    expect(timers[1].ms).toBe(Math.min(RESTART_MIN_MS * 2, RESTART_MAX_MS));   // doubled
+    timers[1].fn();                                   // respawn child #3
+    expect(children).toHaveLength(3);
+    expect(runtime.state.wedgeStreak).toBe(2);
+
+    // heartbeat restored: checkLiveness sees a fresh beat → no kill, streak reset
+    content = `toc ${new Date(clock).toISOString()} 999 q=1 oldest=3s\n`;
+    clock += 5_000;
+    runtime.checkLiveness();
+    expect(children[2].child.killed).toEqual([]);
+    expect(runtime.state.wedgeStreak).toBe(0);
   });
 
   it('exit code 43 restarts immediately without upgrade work', async () => {

@@ -98,17 +98,25 @@ export function createSpine({
   const note = (s) => { try { log.line?.(s); } catch {} };
 
   // --- the inbound queue (event-driven half). Bridge callbacks push; one async
-  //     pump drains serially so handleInbound never interleaves two messages. ---
+  //     pump drains serially so handleInbound never interleaves two messages.
+  //     Each entry carries its enqueue time so stats() can report the oldest
+  //     pending message's age — the alive beat surfaces a stuck pump. ---
   const queue = [];
   let pumping = null;
-  function enqueue(msg) { queue.push(msg); return pump(); }
+  function enqueue(msg) { queue.push({ msg, at: clock.now() }); return pump(); }
   function pump() {
     if (pumping) return pumping;
     pumping = (async () => {
-      try { while (queue.length) await handleInbound(queue.shift()); }
+      try { while (queue.length) await handleInbound(queue.shift().msg); }
       finally { pumping = null; }
     })();
     return pumping;
+  }
+  // Pump observability: depth of the (not-yet-started) queue and how long its
+  // oldest entry has waited. 0/0 when empty. Bookkeeping, not machinery.
+  function stats() {
+    const oldest = queue[0];
+    return { queueDepth: queue.length, oldestMs: oldest ? clock.now() - oldest.at : 0 };
   }
 
   // --- the receive → gate → brain → reply → send pipe (§2a). Every RECEIVED
@@ -194,5 +202,5 @@ export function createSpine({
     note('spine: stopped');
   }
 
-  return { start, stop, tick, handleInbound };
+  return { start, stop, tick, handleInbound, stats };
 }

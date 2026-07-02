@@ -13,7 +13,9 @@
 
 import { spawnSync } from 'node:child_process';
 
-const BEAT_RE = /^(?:tic|toc)\s+(\S+)\s+(\d+)\s*$/gm;
+// Trailing fields after the pid (the spine appends q=.. oldest=..) are tolerated;
+// the bare old form still matches, so mixed lines during an upgrade parse fine.
+const BEAT_RE = /^(?:tic|toc)\s+(\S+)\s+(\d+)(?:[ \t].*)?$/gm;
 
 export function liveDaemonPid(content, {
   now = Date.now(),

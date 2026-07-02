@@ -9,7 +9,7 @@
 // ~/.egpt). Supervised by egpt-daemon.mjs; run it directly to drive a node by hand.
 import { boot } from './src/spine/boot.mjs';
 
-const app = await boot({ aliveMs: 60_000 });   // beat state/alive.txt so the daemon can see we're not wedged
+const app = await boot({ aliveMs: 60_000 });   // beat state/alive.txt every 60s via a spine heartbeat so the daemon sees the loop isn't wedged
 
 let stopping = false;
 function stop(code = 0) {

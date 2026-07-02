@@ -53,6 +53,13 @@ export function createDaemonRuntime(opts = {}) {
   let stopping = false;
   let backoff = RESTART_MIN_MS;
   let child = null;
+  // Consecutive wedge kills without a fresh beat in between. Each one escalates
+  // the respawn delay (RESTART_MIN_MS·2^(streak-1), capped at RESTART_MAX_MS) so a
+  // permanently-dead heartbeat (e.g. heartbeats disabled) doesn't hot-loop
+  // kill+respawn every few minutes forever — it backs off calmly and keeps
+  // respawning "until the service is stopped or the heartbeat restored" (operator
+  // 2026-07-01). A fresh beat observed by checkLiveness resets it.
+  let wedgeStreak = 0;
   // Set by checkLiveness right before it SIGTERMs a wedged child, so the exit
   // handler can tell that kill apart from an operator-initiated stop. On POSIX a
   // wedged child traps SIGTERM and exits 0 (egpt.mjs) — identical to a clean
@@ -65,12 +72,22 @@ export function createDaemonRuntime(opts = {}) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
   }
 
-  // Newest beat's epoch ms from alive.txt ("<tic|toc> <iso> <pid>"), or null.
+  // Newest beat's epoch ms from alive.txt ("<tic|toc> <iso> <pid> [q=.. oldest=..]"),
+  // or null. Trailing fields after the pid (pump depth/age the spine now appends)
+  // are tolerated; the bare old form is still accepted so mixed lines during an
+  // upgrade parse fine.
   function newestBeatMs(content) {
-    const beats = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+(\S+)\s+\d+\s*$/gm)];
+    const beats = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+(\S+)\s+\d+(?:[ \t].*)?$/gm)];
     if (!beats.length) return null;
     const ts = Date.parse(beats[beats.length - 1][1]);
     return Number.isFinite(ts) ? ts : null;
+  }
+
+  // The newest beat's full line (incl. the q=.. oldest=.. tail), for the wedge log
+  // — so the last-known queue state is in the daemon log when it kills.
+  function newestBeatLine(content) {
+    const lines = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+.*$/gm)];
+    return lines.length ? lines[lines.length - 1][0].trim() : null;
   }
 
   // The wedge check: a running child that stopped beating gets a SIGTERM, which
@@ -84,10 +101,13 @@ export function createDaemonRuntime(opts = {}) {
     const beat = newestBeatMs(content);
     const age = beat == null ? Infinity : now() - beat;
     if (age > aliveStaleMs) {
-      log(`spine wedged — alive beat ${beat == null ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s) — restarting`);
+      const tail = newestBeatLine(content);
+      log(`spine wedged — alive beat ${beat == null ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s)${tail ? ` — last beat: ${tail}` : ''} — restarting`);
       wedgeKilled = true;   // exit handler: respawn, don't read a SIGTERM-induced exit 0 as an operator stop
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      return;
     }
+    wedgeStreak = 0;   // a fresh beat — heartbeat restored, clear the escalation
   }
 
   function gitVersion(cwd = root) {
@@ -188,12 +208,14 @@ export function createDaemonRuntime(opts = {}) {
 
       // A wedge-kill must respawn regardless of exit code: on POSIX the SIGTERM'd
       // child exits 0, which would otherwise fall into the clean-exit branch and
-      // stop the whole daemon. Immediate respawn + backoff reset, like RESTART.
+      // stop the whole daemon. Respawn — but ESCALATE the delay per consecutive
+      // wedge so a permanently-dead heartbeat backs off instead of hot-looping.
       if (wedgeKilled) {
         wedgeKilled = false;
-        log('wedge restart — respawning the killed child');
-        backoff = RESTART_MIN_MS;
-        setImmediateFn(spawnShell);
+        wedgeStreak += 1;
+        const delay = Math.min(RESTART_MIN_MS * 2 ** (wedgeStreak - 1), RESTART_MAX_MS);
+        log(`no heartbeat from the spine — respawn #${wedgeStreak} in ${Math.round(delay / 1000)}s (stop the service or restore the heartbeat)`);
+        setTimeoutFn(spawnShell, delay);
         return;
       }
 
@@ -292,6 +314,6 @@ export function createDaemonRuntime(opts = {}) {
     spawnShell,
     start,
     get child() { return child; },
-    get state() { return { stopping, backoff, shellArgs: [...shellArgs] }; },
+    get state() { return { stopping, backoff, wedgeStreak, shellArgs: [...shellArgs] }; },
   };
 }

@@ -35,6 +35,7 @@ import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
 import { createCompaction } from './compaction.mjs';
+import { createHeartbeats } from './heartbeats.mjs';
 
 export async function boot({
   readConfig = readConfigSync,
@@ -44,8 +45,11 @@ export async function boot({
   io = {},                            // fs seam for transcript + brainpool + contacts ({appendFile,mkdir,existsSync,rename}); real fs by default. Tests inject in-memory so they never touch the profile.
   log = { line: (s) => { try { console.error(s); } catch {} } },
   now = () => Date.now(),
-  tickMs = 5 * 60_000,
-  aliveMs = 0,                        // >0: beat EGPT_HOME/state/alive.txt so the daemon's wedge check sees liveness
+  // The tick is the loop's PULSE now — every registered heartbeat's cadence rides
+  // on it, so tickMs must be finer than the finest cadence. 30s lets the 60s alive
+  // beat be honored (a 5-min tick never could).
+  tickMs = 30_000,
+  aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   ingest = true,                      // watch EGPT_HOME/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
 } = {}) {
@@ -141,7 +145,10 @@ export async function boot({
     router: createRouter(),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
-    heartbeats: { runDue() {} },   // v1 stub — §11 decision 4 hook (auto-compact lands here)
+    // The cadence registry the spine's tick() drives. The alive-file writer is
+    // registered onto it below (after the spine exists), so the beat rides the
+    // loop's own tick instead of a side timer (operator 2026-07-01).
+    heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
   // Brain registry: resolves the default brain (config.default_brain, YAML defs in
   // src/brains ← ~/.egpt2/config/brains ← <slug>/brains) a fresh conversation is
@@ -164,7 +171,29 @@ export async function boot({
   });
 
   const spine = createSpine({ bridge, brain, ...services, commands, clock: { now }, log, tickMs });
+
+  // Liveness beat, now the FIRST HEARTBEAT (operator 2026-07-01): the writer runs
+  // on the spine's OWN tick, so a fresh alive.txt beat attests the loop's
+  // time-driven half is actually turning — not merely that the process is up. The
+  // line carries pump depth/age (spine.stats()) so a stuck pump is VISIBLE in
+  // alive.txt WITHOUT coupling respawn to turn duration: a legit long brain turn
+  // must never get the node guillotined (same principle as the warm pool's
+  // no-fake-timeout rule). Registered AFTER createSpine so writeAlive can read
+  // spine.stats(); registration is just a list append onto the heartbeats object
+  // already wired into the spine.
+  let beat = 0;
+  const alivePath = join(EGPT_HOME, 'state', 'alive.txt');
+  async function writeAlive() {
+    try {
+      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
+      const { queueDepth, oldestMs } = spine.stats();
+      await writeFile(alivePath, `${beat++ % 2 ? 'toc' : 'tic'} ${new Date(now()).toISOString()} ${process.pid} q=${queueDepth} oldest=${Math.round(oldestMs / 1000)}s\n`);
+    } catch (e) { log.line?.(`[alive] ${e?.message ?? e}`); }
+  }
+  if (aliveMs > 0) services.heartbeats.register('alive', aliveMs, writeAlive);
+
   spine.start();
+  spine.tick();   // fire the first beat immediately so alive.txt exists at once
 
   // Back-up announce: if we respawned from a lifecycle command, tell Self (with
   // the commit we came up on). Fire-and-forget — a cold boot has no sidecar.
@@ -180,19 +209,6 @@ export async function boot({
     try { await bridge.send(sc.chatId, `✅ egpt back up! (${head}) ${pids}${subject ? `\n\n${subject}` : ''}`); }
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
-
-  // Liveness beat: "<tic|toc> <iso> <pid>" to EGPT_HOME/state/alive.txt, the
-  // contract daemon-singleton/daemon-runtime read. The alternating tic/toc lets
-  // a reader confirm the file is actually being rewritten, not just timestamped.
-  let aliveTimer = null, beat = 0;
-  const alivePath = join(EGPT_HOME, 'state', 'alive.txt');
-  async function writeAlive() {
-    try {
-      await mkdir(join(EGPT_HOME, 'state'), { recursive: true });
-      await writeFile(alivePath, `${beat++ % 2 ? 'toc' : 'tic'} ${new Date(now()).toISOString()} ${process.pid}\n`);
-    } catch (e) { log.line?.(`[alive] ${e?.message ?? e}`); }
-  }
-  if (aliveMs > 0) { await writeAlive(); aliveTimer = setInterval(writeAlive, aliveMs); aliveTimer.unref?.(); }
 
   // Command ingest: drop /restart, /upgrade, or /rewind <ref> into EGPT_HOME/ingest.
   let ingestWatcher = null;
@@ -213,7 +229,8 @@ export async function boot({
   return {
     spine, bridge, pool, cfg,
     stop: () => {
-      if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }
+      // No alive-timer teardown: the beat is a heartbeat now, riding the spine's
+      // tick timer, which spine.stop() clears.
       ingestWatcher?.stop();
       compaction.stop();
       spine.stop();

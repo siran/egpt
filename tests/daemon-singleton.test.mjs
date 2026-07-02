@@ -37,6 +37,11 @@ describe('liveDaemonPid', () => {
     expect(liveDaemonPid(content, { now: NOW, selfPid: 999, isAlive: (p) => p === 555 })).toBe(555);
   });
 
+  it('tolerates the extended beat line (trailing q=.. oldest=.. after the pid)', () => {
+    const extended = `toc ${new Date(NOW - 1000).toISOString()} 333 q=0 oldest=0s\n`;
+    expect(liveDaemonPid(extended, { now: NOW, selfPid: 999, isAlive: () => true })).toBe(333);
+  });
+
   it('ignores malformed / non-beat lines', () => {
     const content = `stopped ${new Date(NOW).toISOString()} 111\n${beat(333)}`;
     expect(liveDaemonPid(content, { now: NOW, selfPid: 999, isAlive: () => true })).toBe(333);

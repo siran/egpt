@@ -4,9 +4,37 @@
 // to a streamed reply with the transcript written — the v1 pipe, exactly as
 // production wires it, minus Beeper and minus claude. (SPINE-REWRITE-PLAN.md
 // Phase 3 verify gate, offline half.)
-import { describe, it, expect } from 'vitest';
-import { boot } from '../src/spine/boot.mjs';
-import { emptyState, ensureContact } from '../conversations-state.mjs';
+//
+// Runs against an isolated EGPT_HOME so the alive-beat heartbeat writes
+// state/alive.txt into a throwaway profile, never the real ~/.egpt. egpt-home.mjs
+// reads EGPT_HOME once at module load, so it's set BEFORE boot (which imports it)
+// is dynamically imported below.
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { join } from 'node:path';
+import os from 'node:os';
+
+const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+process.env.EGPT_HOME = tmpHome;
+
+let boot, emptyState, ensureContact;
+beforeAll(async () => {
+  ({ boot } = await import('../src/spine/boot.mjs'));
+  ({ emptyState, ensureContact } = await import('../conversations-state.mjs'));
+});
+afterAll(async () => {
+  delete process.env.EGPT_HOME;
+  try { await fs.rm(tmpHome, { recursive: true, force: true }); } catch {}
+});
+
+async function waitFor(pred, timeout = 1000) {
+  const t0 = Date.now();
+  for (;;) {
+    if (await pred()) return;
+    if (Date.now() - t0 > timeout) throw new Error('waitFor timeout');
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 // Pre-seed a conversation's E mode in the shared state (modes live in
 // conversations.yaml now, not config.auto_modes). No threadId → still "fresh".
@@ -98,6 +126,45 @@ describe('boot()', () => {
     await spy.onIncoming('hola', { chatId: '!room:beeper.com', chatName: 'fam', network: 'whatsapp', userId: 'u-1', senderName: 'An', msgKey: 'm1' });
     expect(spy.streams).toHaveLength(0);
     expect(spy.sent).toHaveLength(0);
+    app.stop();
+  });
+
+  it('beats alive.txt via the tick heartbeat: immediate first beat, cadence honored, tic/toc alternates', async () => {
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
+    let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
+
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: false,
+      now: () => clock,
+      tickMs: 0,          // no auto-timer; we drive tick() by hand
+      aliveMs: 60_000,    // register the alive writer as a 60s heartbeat
+      log: { line: () => {} },
+    });
+
+    const alivePath = join(tmpHome, 'state', 'alive.txt');
+    const read = async () => { try { return await fs.readFile(alivePath, 'utf8'); } catch { return ''; } };
+
+    // boot fired one immediate beat (spine.tick() right after start)
+    await waitFor(async () => (await read()).length > 0);
+    const first = await read();
+    expect(first).toMatch(/^tic 2026-06-29T14:05:00\.000Z \d+ q=0 oldest=0s\n$/);
+    expect(Number(first.match(/ (\d+) q=/)[1])).toBe(process.pid);   // carries our pid
+
+    // a second tick INSIDE the 60s window → still not due → no new beat
+    app.spine.tick();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await read()).toBe(first);   // unchanged — cadence honored
+
+    // advance past the cadence → next tick beats again, alternating to 'toc'
+    clock += 60_000;
+    app.spine.tick();
+    await waitFor(async () => (await read()).startsWith('toc'));
+    expect(await read()).toMatch(/^toc 2026-06-29T14:06:00\.000Z \d+ q=0 oldest=0s\n$/);
+
     app.stop();
   });
 });
