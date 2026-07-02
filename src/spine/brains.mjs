@@ -44,6 +44,9 @@ export function createBrains({
     // Resolve a brain def / agent type by name across the layers (built-in ←
     // profile brains ← profile agents ← conv). convDir is the chat's slug folder;
     // its brains/ wins. Returns { name, ...def } or null when no layer defines <name>.
+    // No legacy 'default' alias (operator 2026-07-02: "no legacy, no baggage") — the
+    // type was renamed to 'egpt'; stored records are PORTED by migrateConversationVocabulary,
+    // not aliased. So resolve('default') is null unless the operator keeps a real default.yaml.
     resolve(name, { convDir = null } = {}) {
       const dirs = [builtinDir, profileDir, agentsDir, convDir && join(convDir, 'brains')].filter(Boolean);
       let def = null;

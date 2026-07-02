@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
+import { buildClaudeArgs } from '../src/claude-args.mjs';
 import { emptyState, getBeing, ensureContact, recordThread } from '../conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
@@ -154,12 +155,12 @@ describe('brainpool.turn', () => {
     expect(view.brain).toBe('sonnet-high');    // instanced from the persona agent type
   });
 
-  it('persona agent type that does NOT resolve falls through to default_brain', async () => {
-    const brains = { resolve: (name) => name === 'default' ? ({ name: 'default', type: 'codex' }) : null };
+  it('persona agent type that does NOT resolve falls through to the shipped "egpt" type', async () => {
+    const brains = { resolve: (name) => name === 'egpt' ? ({ name: 'egpt', type: 'codex' }) : null };
     const config = { agents: { egpt: { type: 'ghost-type', handles: ['e', 'egpt'] } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
-    expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to default_brain → 'default' (codex)
+    expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to the last-resort 'egpt' type (codex)
   });
 
   it('a re-pointed default does NOT retro-alter an already-instanced conversation', async () => {
@@ -302,6 +303,99 @@ describe('brainpool.turn — local sibling beings', () => {
     expect(entry['don-local']?.readonly).toBeUndefined();   // def lives in config → not instanced
   });
 });
+
+// Read every value that follows a given flag in a flat argv.
+const argVals = (args, flag) => args.reduce((acc, a, i) => (a === flag ? [...acc, args[i + 1]] : acc), []);
+
+describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_paths', () => {
+  it('a LIST allowed_tools def → brainOptions carry confineToDirs [the conversation dir]; buildClaudeArgs sandboxes it', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: ['Read', 'Grep', 'WebFetch'] }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.confineToDirs).toEqual([opts.cwd]);            // confined to the conversation dir
+    expect(opts.allowedTools).toEqual(['Read', 'Grep', 'WebFetch']);
+    // end-to-end through the tested arg builder: sandbox flags, cwd added, file tools path-confined
+    const args = buildClaudeArgs(opts);
+    expect(argVals(args, '--add-dir')).toContain(opts.cwd);
+    expect(argVals(args, '--setting-sources')).toEqual(['']);  // no ~/.claude inherit (sandbox)
+    expect(argVals(args, '--permission-mode')).toEqual(['default']);
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    const allow = argVals(args, '--allowedTools')[0].split(' ');
+    expect(allow).toContain('WebFetch');                       // non-file tool pre-approved
+    expect(allow).not.toContain('Read');                       // file tool stays path-confined
+  });
+
+  it('allowed_paths: null grant → --add-dir (full access); tool list w/o write tools → deny rules (read-only), end-to-end', async () => {
+    const brains = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read', 'Edit'],
+      allowed_paths: {
+        '/c/work/project':   null,                                     // full access (read + write)
+        '/c/work/reference': { allowed_tools: ['Read', 'Glob', 'Grep'] },   // READ-ONLY (omits write tools)
+      },
+    }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expect(opts.addDirs).toEqual(['C:/work/project']);          // msys → windows, full access
+    expect(opts.readOnlyDirs).toEqual(['C:/work/reference']);   // read-only
+    const args = buildClaudeArgs(opts);
+    // all three roots readable via --add-dir
+    expect(argVals(args, '--add-dir')).toEqual(expect.arrayContaining([opts.cwd, 'C:/work/project', 'C:/work/reference']));
+    // the RO root is write-denied; the full-access root is NOT
+    const deny = JSON.parse(argVals(args, '--settings')[0]).permissions.deny;
+    expect(deny).toContain('Write(C:/work/reference/**)');
+    expect(deny).toContain('Edit(C:/work/reference/**)');
+    expect(deny.some((r) => r.includes('C:/work/project'))).toBe(false);
+  });
+
+  it('per-path tool list WITH write tools → treated as full access (+ logged), not read-only', async () => {
+    const logs = [];
+    const brains = { resolve: () => ({
+      name: 'egpt', type: 'ccode', allowed_tools: ['Read'],
+      allowed_paths: { '/c/work/rw': { allowed_tools: ['Read', 'Write'] } },   // includes a write tool
+    }) };
+    const { brain, pool } = harnessWithLog(logs, brains);
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.addDirs).toEqual(['C:/work/rw']);               // full access, not RO
+    expect(opts.readOnlyDirs).toBeUndefined();
+    expect(logs.join('\n')).toMatch(/per-path tool granularity beyond read-only isn't native/);
+  });
+
+  it("'all' def → TRUSTED/unconfined: no confineToDirs/addDirs/readOnlyDirs, bypass permissions (regression lock)", async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: 'all' }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const opts = pool.calls[0].brainOptions;
+    expect(opts.confineToDirs).toBeUndefined();
+    expect(opts.addDirs).toBeUndefined();
+    expect(opts.readOnlyDirs).toBeUndefined();
+    const args = buildClaudeArgs(opts);
+    expect(args).toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--add-dir')).toEqual([]);            // unconfined — no dir roots
+  });
+});
+
+// A harness variant that captures onLog (the write-tools-in-allowed_paths log line).
+function harnessWithLog(logs, brains) {
+  let state = emptyState();
+  const pool = fakePool([{ text: 'ok', sessionId: 's' }]);
+  const loadState = async () => state;
+  const writeState = async (s) => { state = s; };
+  const brain = createBrainPool({
+    pool,
+    getConfig: () => ({}),
+    contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
+    loadState, writeState,
+    io: { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
+    loadFeed: async () => '', loadManifest: async () => '',
+    brains,
+    onLog: (m) => logs.push(String(m)),
+  });
+  return { brain, pool };
+}
 
 describe('getBeing — readonly.brain / readonly.agent back-read (vocabulary rename)', () => {
   const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', readonly: ro } } } });

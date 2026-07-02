@@ -62,9 +62,24 @@ describe('brain registry', () => {
     expect(brains.resolve('sonnet-high', { convDir: '/conv/slug' })).toMatchObject({ effort: 'max', type: 'ccode' });
   });
 
-  it('the shipped default.yaml really loads (real fs)', () => {
-    const brains = createBrains({ profileDir: '/nonexistent-profile-dir' });   // real builtin, empty profile
-    expect(brains.resolve('default')).toMatchObject({ name: 'default', type: 'ccode', allowed_tools: 'all' });
+  it('the shipped egpt.yaml built-in really loads (real fs)', () => {
+    // Override both profile layers so only the repo built-in is seen (independent of the
+    // real operator profile, which we must not depend on).
+    const brains = createBrains({ profileDir: '/nonexistent-profile-dir', agentsDir: '/nonexistent-agents-dir' });
+    const egpt = brains.resolve('egpt');
+    expect(egpt).toMatchObject({ name: 'egpt', type: 'ccode' });
+    expect(Array.isArray(egpt.allowed_tools)).toBe(true);          // shipped as a LIST → confined-by-default
+  });
+
+  it('the name "default" NO LONGER resolves — no legacy alias (operator 2026-07-02: no baggage)', () => {
+    // The shipped type was renamed to 'egpt'; there is no built-in default.yaml and no alias.
+    // Stored readonly.agent:"default" records are PORTED by migrateConversationVocabulary instead.
+    const brains = createBrains({ profileDir: '/nonexistent-profile-dir', agentsDir: '/nonexistent-agents-dir' });
+    expect(brains.resolve('default')).toBeNull();
+    // …but if an operator deliberately keeps a real default.yaml layer, it resolves normally
+    // (generic layer mechanism, not a special-case alias).
+    const withDefault = harness({ [join(PROFILE, 'default.yaml')]: 'type: codex\nmodel: gpt\n' });
+    expect(withDefault.resolve('default')).toMatchObject({ name: 'default', type: 'codex', model: 'gpt' });
   });
 
   it('a VERTICAL allowed_tools list flows end-to-end: type file → resolve (array) → buildClaudeArgs --allowedTools', () => {

@@ -29,9 +29,48 @@
 import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
+import { WRITE_TOOLS } from '../claude-args.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
+
+// MSYS2/Cygwin "/c/Users/.." → "C:/Users/.." (mirror of warm-cli's normalizeCwd) so an
+// msys-form allowed_paths key becomes a real --add-dir root the CLI can match.
+function normalizeCwd(p) {
+  if (!p) return p;
+  const m = String(p).match(/^\/([a-zA-Z])\/(.*)$/);
+  return m ? `${m[1].toUpperCase()}:/${m[2]}` : p;
+}
+
+// Confinement contract (operator 2026-07-02, "make the comment true"): allowed_tools
+// 'all'/'*' (or any non-list value) = TRUSTED/unconfined — buildClaudeArgs bypasses
+// permissions and gives full filesystem access. A LIST (a YAML vertical list → an Array)
+// = CONFINED: file tools stay path-limited to the conversation dir (cwd) PLUS the def's
+// allowed_paths. This is the honest reading of the type file's "by default agents can
+// access their conversation directory" comment. Returns brainOptions confinement fields
+// ({} when unconfined) to spread into baseOpts → buildClaudeArgs.
+//   allowed_paths (a map): key = a path (msys `/c/..` or windows form, normalized); value
+//     null/empty        → full-access root   (→ addDirs)
+//     { allowed_tools: [list-with-NO-write-tools] } → read-only root (→ readOnlyDirs)
+//     { allowed_tools: [list-WITH-write-tools]   } → full access + one log line (per-path
+//         tool granularity beyond read-only isn't native — honest approximation)
+function confinementFor(def, cwd, onLog) {
+  if (!Array.isArray(def?.allowed_tools)) return {};   // 'all'/'*'/string/absent → unconfined
+  const addDirs = [], readOnlyDirs = [];
+  const paths = (def.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
+  for (const [rawPath, grant] of Object.entries(paths)) {
+    const p = normalizeCwd(String(rawPath).trim());
+    if (!p) continue;
+    const tools = (grant && typeof grant === 'object' && !Array.isArray(grant) && Array.isArray(grant.allowed_tools)) ? grant.allowed_tools : null;
+    if (tools && !tools.some((t) => WRITE_TOOLS.includes(t))) {
+      readOnlyDirs.push(p);   // a tool list with NO write-class tools → read-only
+    } else {
+      if (tools) onLog(`brainpool: allowed_paths ${p} lists write tools — per-path tool granularity beyond read-only isn't native; granting full access`);
+      addDirs.push(p);        // null/empty grant, or a list WITH write tools → full access
+    }
+  }
+  return { confineToDirs: [cwd], ...(addDirs.length ? { addDirs } : {}), ...(readOnlyDirs.length ? { readOnlyDirs } : {}) };
+}
 
 // Pure: a conversation folder's config.yaml text (or null/'' when absent) →
 // { idleTtlMs }. The `warm: { idle_ttl }` override (operator 2026-07-02) sets THIS
@@ -142,6 +181,7 @@ export function createBrainPool({
       model: def?.model ?? null,
       effort: def?.effort ?? null,
       allowed_tools: def?.allowed_tools ?? 'all',
+      allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
       cwd: def?.cwd ?? undefined,
       system_prompt: def?.system_prompt ?? undefined,
     };
@@ -166,6 +206,7 @@ export function createBrainPool({
       model: s.model ?? null,
       effort: s.effort ?? null,
       allowed_tools: s.allowed_tools ?? 'all',
+      allowed_paths: s.allowed_paths ?? undefined,
       cwd: s.cwd ?? undefined,
       system_prompt: s.system_prompt ?? undefined,
     };
@@ -174,19 +215,20 @@ export function createBrainPool({
   // The DEFAULT brain a fresh conversation is instanced from, in order:
   //   1. the PERSONA agent's `type` (agents block) resolved through the registry,
   //   2. config.default_brain (a registry brain name, or a legacy inline def),
-  //   3. the shipped 'default'.
+  //   3. the shipped 'egpt' type (renamed from 'default' 2026-07-02; the brains registry
+  //      still aliases 'default' → 'egpt' for legacy configs).
   // Falls back to a bare ccode def if the registry is absent.
   function resolveDefaultBrain(convDir) {
     const pType = personaAgentType();
     if (pType) {
       const def = brains?.resolve?.(pType, { convDir });
       if (def) return def;                                     // persona type file wins
-      // named but unresolvable → fall through to default_brain / 'default'
+      // named but unresolvable → fall through to default_brain / 'egpt'
     }
     const db = (getConfig() ?? {}).default_brain;
-    const fallback = { name: 'default', type: brainType };
-    if (typeof db === 'string') return brains?.resolve?.(db, { convDir }) ?? brains?.resolve?.('default', { convDir }) ?? { name: db, type: brainType };
-    const base = brains?.resolve?.('default', { convDir }) ?? fallback;
+    const fallback = { name: 'egpt', type: brainType };
+    if (typeof db === 'string') return brains?.resolve?.(db, { convDir }) ?? brains?.resolve?.('egpt', { convDir }) ?? { name: db, type: brainType };
+    const base = brains?.resolve?.('egpt', { convDir }) ?? fallback;
     return (db && typeof db === 'object') ? { ...base, ...db, name: db.name ?? base.name } : base;
   }
 
@@ -255,6 +297,9 @@ export function createBrainPool({
         // session; the auto-dispatch path keys the session per conversation
         // (dispatch.mjs: convEntry.threadId ?? null).
         sessionId: sessionId ?? null,
+        // Confine-by-default: a LIST allowed_tools sandboxes file tools to the conversation
+        // dir (cwd) + the def's allowed_paths; 'all' stays trusted/unconfined ({} spread).
+        ...confinementFor(def, cwd, onLog),
       };
 
       // Identity kickoff: prefix the first turn of a fresh thread with the feed,

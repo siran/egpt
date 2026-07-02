@@ -675,17 +675,20 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
     expect('brain' in ro).toBe(false);
     expect('personality' in ro).toBe(false);   // the retired key is gone
-    // model/effort were null → backfilled to the deterministic constants (never left null)
-    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
+    // model/effort were null → backfilled to the deterministic constants (never left null);
+    // the renamed shipped type 'default' is PORTED to 'egpt' in the same pass.
+    expect(ro).toEqual({ agent: 'egpt', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
   });
 
-  it('backfills null readonly.model/effort from the agent type when a registry is provided', async () => {
+  it('backfills null readonly.model/effort from the agent type when a registry is provided (resolved on the PORTED name)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
       j: { slug: 'diego', readonly: { agent: 'default', type: 'ccode', model: null } },   // effort absent, model null
     } } });
-    const resolveAgentDef = (name) => name === 'default' ? { model: 'opus', effort: 'medium' } : null;
+    // agent 'default' is ported to 'egpt' before the backfill resolves the type
+    const resolveAgentDef = (name) => name === 'egpt' ? { model: 'opus', effort: 'medium' } : null;
     expect((await migrateConversationVocabulary(fp, { resolveAgentDef })).migrated).toBe(1);
     const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
+    expect(ro.agent).toBe('egpt');     // ported from 'default'
     expect(ro.model).toBe('opus');     // from the resolved type
     expect(ro.effort).toBe('medium');
   });
@@ -722,9 +725,9 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
     const e = (await readState(fp)).contacts.whatsapp.j;
     expect('personality' in e).toBe(false);
-    expect(e.readonly.agent).toBe('default');
+    expect(e.readonly.agent).toBe('egpt');   // ported 'default' → 'egpt'
     expect('personality' in e.readonly).toBe(false);
-    expect(e.wren.readonly.agent).toBe('sonnet-high');
+    expect(e.wren.readonly.agent).toBe('sonnet-high');   // a non-default type is untouched
     expect('personality' in e.wren.readonly).toBe(false);
   });
 
@@ -736,12 +739,25 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
-  it('leaves a fully-slim entry untouched (readonly.agent w/ model+effort, pointer present → migrated 0)', async () => {
+  it('leaves a fully-slim entry untouched (readonly.agent egpt w/ model+effort, pointer present → migrated 0)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' } },
+      j: { slug: 'x', readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high' } },
     } } });
     // writeTmp's serialize already stamps conversation_path + home_dir; readonly carries concrete
-    // model/effort and no personality → nothing left to migrate.
+    // model/effort, the current 'egpt' type name, and no personality → nothing left to migrate.
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
+  });
+
+  it('ports readonly.agent "default" → "egpt" (flat + nested), idempotently (operator 2026-07-02: no legacy)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' },
+           wren: { readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' } } },
+    } } });
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
+    const e = (await readState(fp)).contacts.whatsapp.j;
+    expect(e.readonly.agent).toBe('egpt');        // flat 'e' record ported
+    expect(e.wren.readonly.agent).toBe('egpt');   // nested being record ported too
+    // idempotent — a second pass finds nothing left to port
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
@@ -772,7 +788,7 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     expect(e.threadId).toBe('T-1');
     expect(e.conversation_path).toBe(conversationPathOf(WA, 'SPOILER-2606291920'));
     expect(e.home_dir).toBe(homeDirMsys());
-    expect(e.readonly).toEqual({ agent: 'default', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
+    expect(e.readonly).toEqual({ agent: 'egpt', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
 
     // stats.yaml written with the moved facts
     const stats = YAML.parse(await readFile(join(dir, 'conv', WA, 'SPOILER-2606291920', 'stats.yaml'), 'utf8'));

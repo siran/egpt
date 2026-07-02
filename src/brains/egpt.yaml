@@ -1,0 +1,26 @@
+# egpt — the shipped persona AGENT TYPE (a brain def): the warm Claude Code CLI (no API
+# key; uses your existing `claude` login). config.yaml's agents.egpt.type: egpt points
+# here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
+# `readonly`), re-pointable later with `/e`. Override without touching the repo in
+# ~/.egpt2/config/agents/egpt.yaml (profile) or <slug>/brains/egpt.yaml (one conversation).
+type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
+model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
+effort: high          # reasoning effort (engine-dependent)
+allowed_tools:        # a LIST = CONFINED (file tools path-limited to allowed_paths); `allowed_tools: all` = TRUSTED/unconfined (every tool, no prompts, full filesystem)
+  - Read           # read files
+  - Write          # create / overwrite files
+  - Edit           # in-place edits
+  - Glob           # find files by pattern
+  - Grep           # search file contents
+  - WebSearch      # web search
+  - WebFetch       # fetch a URL
+  - Task           # sub-agents
+  #- Bash(git:*)    # SCOPED shell — the house rule is Bash(<bin>:*), never bare Bash
+allowed_paths:
+  # by default agents can access their conversation directory (the one listed in
+  # conversations.yaml) — that root is granted automatically. Add extra roots here:
+  #  /c/Users/you/project:               # full access (read + write)
+  #  /c/Users/you/reference:             # READ-ONLY (a tool list that omits write tools)
+  #    allowed_tools: [Read, Glob, Grep]
+# personality: default  # identity feed a fresh conversation boots from (identities/<name>/);
+                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.

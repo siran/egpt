@@ -4,7 +4,7 @@
 // sacred). Fully in-memory io — nothing hits the real profile.
 import { describe, it, expect } from 'vitest';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE, DEFAULT_TYPE_FILE } from '../src/spine/seed.mjs';
+import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
 const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents');
@@ -49,9 +49,10 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
-  it('seeds the WORKING default agent-type file config/agents/default.yaml (so agents.egpt.type: default resolves)', () => {
+  it('seeds the WORKING egpt agent-type file config/agents/egpt.yaml (so agents.egpt.type: egpt resolves), and NOT the old default.yaml', () => {
     const files = run({ [join(REPO, 'config.yaml')]: 'A' });
-    expect(files[join(AGENTS, 'default.yaml')]).toBe(DEFAULT_TYPE_FILE);
+    expect(files[join(AGENTS, 'egpt.yaml')]).toBe(EGPT_TYPE_FILE);
+    expect(files[join(AGENTS, 'default.yaml')]).toBeUndefined();   // renamed 2026-07-02 — never recreated
   });
 
   it('NEVER touches an existing file (operator edits are sacred)', () => {
@@ -59,11 +60,11 @@ describe('seedSkeletons', () => {
       [join(REPO, 'config.yaml')]: 'FRESH',
       [join(SKEL, 'config.yaml')]: 'OPERATOR EDIT',          // already present
       [join(AGENTS, 'sonnet-high.yaml')]: 'MY OWN TYPE',     // already present
-      [join(AGENTS, 'default.yaml')]: 'MY OWN DEFAULT',      // already present
+      [join(AGENTS, 'egpt.yaml')]: 'MY OWN EGPT',            // already present
     });
     expect(files[join(SKEL, 'config.yaml')]).toBe('OPERATOR EDIT');   // untouched
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe('MY OWN TYPE');
-    expect(files[join(AGENTS, 'default.yaml')]).toBe('MY OWN DEFAULT');
+    expect(files[join(AGENTS, 'egpt.yaml')]).toBe('MY OWN EGPT');
   });
 
   it('the example type file is inert (all comments → YAML parses to null, so the registry ignores it)', async () => {
@@ -71,9 +72,13 @@ describe('seedSkeletons', () => {
     expect(YAML.parse(EXAMPLE_TYPE_FILE)).toBeNull();
   });
 
-  it('the default type file is a LIVE def (parses to { type: ccode, ... }), unlike the commented example', async () => {
+  it('the egpt type file is a LIVE def (parses to { type: ccode, ... }, allowed_tools a LIST = confined), unlike the commented example', async () => {
     const YAML = await import('yaml');
-    expect(YAML.parse(DEFAULT_TYPE_FILE)).toMatchObject({ type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' });
+    const def = YAML.parse(EGPT_TYPE_FILE);
+    expect(def).toMatchObject({ type: 'ccode', model: 'sonnet', effort: 'high' });
+    expect(Array.isArray(def.allowed_tools)).toBe(true);            // a LIST → confined-by-default
+    expect(def.allowed_tools).toContain('Read');
+    expect(def.allowed_paths).toBeNull();                           // the block is all-commented (conversation dir is implicit)
   });
 
   it('a missing repo dir is tolerated (still seeds the example type file)', () => {

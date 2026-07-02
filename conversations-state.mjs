@@ -605,6 +605,9 @@ export async function migrateSlugSuffix() {
 //   (a) readonly.brain → readonly.agent — the fresh-conversation instancing freezes the def
 //       under `readonly.agent` now (was `readonly.brain`); rename the legacy key on the FLAT
 //       'e' readonly AND any nested per-being block's readonly. `agent` takes `brain`'s slot.
+//       ALSO port the renamed shipped type value 'default' → 'egpt' (operator 2026-07-02: "no
+//       legacy, no baggage" — the type was renamed, resolve('default') no longer resolves, so
+//       stored records are PORTED here rather than aliased at resolve time).
 //   (b) DROP the retired `personality` key (flat entry-level + every readonly.personality) —
 //       the identity feed is a property of the AGENT TYPE now, not the conversation.
 //   (c) BACKFILL a null/absent readonly.model / readonly.effort from the entry's agent type
@@ -630,15 +633,21 @@ export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH, {
   const state = await readState(yamlPath);
   // Normalize ONE readonly block: rename brain→agent (agent takes brain's slot) AND drop the
   // retired `personality`. Returns a NEW object when it changed, else the SAME ref (idempotent).
+  const port = (v) => (v === 'default' ? 'egpt' : v);             // renamed shipped type
   const cleanRO = (ro) => {
     if (!ro || typeof ro !== 'object' || Array.isArray(ro)) return ro;
     const needsRename = ('brain' in ro) && !('agent' in ro);
     const dropPersonality = 'personality' in ro;
-    if (!needsRename && !dropPersonality) return ro;
+    // The current agent value (already-migrated readonly.agent, or the legacy readonly.brain
+    // about to be renamed) — port it 'default' → 'egpt' below.
+    const curAgent = ('agent' in ro) ? ro.agent : (needsRename ? ro.brain : undefined);
+    const portAgent = curAgent === 'default';
+    if (!needsRename && !dropPersonality && !portAgent) return ro;
     const out = {};
     for (const [k, v] of Object.entries(ro)) {
       if (k === 'personality') continue;                            // drop the retired key
-      if (k === 'brain' && needsRename) { out.agent = v; continue; } // agent takes brain's slot
+      if (k === 'brain' && needsRename) { out.agent = port(v); continue; } // rename + port to the new value
+      if (k === 'agent') { out.agent = port(v); continue; }               // port in place
       out[k] = v;
     }
     return out;

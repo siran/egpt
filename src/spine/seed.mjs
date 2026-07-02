@@ -33,40 +33,36 @@ export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a bra
 # allowed_tools: all    # "all" | a space-separated allow-list | ["Read", "Edit", ...]
 `;
 
-// The WORKING default agent-type file. UNlike the example above this is UNcommented
-// (a live def) so agents.egpt.type: default resolves from the PROFILE the operator can
-// open. Mirrors the repo's built-in src/brains/default.yaml (which stays the fallback);
-// seeded copy-if-missing so an operator edit here is sacred and wins over the built-in.
-export const DEFAULT_TYPE_FILE = `# default — the persona's shipped AGENT TYPE (a brain def): the warm Claude Code CLI
-# (no API key; uses your existing \`claude\` login). config.yaml's agents.egpt.type:
-# default points here. A conversation is INSTANCED from this on its first turn (frozen
-# into conversations.yaml \`readonly\`) and can be re-pointed later with the \`/e\` wizard.
-#
-# This is the canonical, EDITABLE home for the default type; the repo's built-in
-# src/brains/default.yaml is the fallback this mirrors. Seeding never overwrites it.
-type: ccode            # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
-# eGPT ships model + effort PINNED so every instanced conversation records a DETERMINISTIC
-# engine — edit these two lines to repoint; don't rely on an ambient \`claude\` login default
-# (a bare \`model: null\` still works but is NOT recommended: it makes the frozen def non-deterministic).
-model: sonnet          # concrete model the engine runs
-effort: high           # reasoning effort (engine-dependent)
-allowed_tools: all      # trusted: every tool, no permission prompts (→ --dangerously-skip-permissions)
-# Or a SCOPED allow-list — Anthropic/Claude Code tool NAMES, CASE-SENSITIVE. An inline
-# ["Read","Edit"], a space-string "Read Edit", or the vertical YAML-list form all work:
-# allowed_tools:
-#   - Read           # read files
-#   - Write          # create / overwrite files
-#   - Edit           # in-place edits
-#   - Glob           # find files by pattern
-#   - Grep           # search file contents
-#   - WebSearch      # web search
-#   - WebFetch       # fetch a URL
-#   - Bash(git:*)    # SCOPED shell — only \`git …\`; the house rule is Bash(<bin>:*), never bare Bash
-#   - Task           # sub-agents
-# Under a sandbox (confineToDirs) the file tools (Read/Write/Edit/Glob/Grep) stay
-# path-confined even if listed — they are NOT pre-approved (the Read-leak fix).
-# personality: default # identity feed a fresh conversation boots from (identities/<name>/);
-                       # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
+// The WORKING egpt agent-type file. UNlike the example above this is UNcommented (a
+// live def) so agents.egpt.type: egpt resolves from the PROFILE the operator can open.
+// Mirrors the repo's built-in src/brains/egpt.yaml (which stays the fallback); seeded
+// copy-if-missing so an operator edit here is sacred and wins over the built-in.
+export const EGPT_TYPE_FILE = `# egpt — the shipped persona AGENT TYPE (a brain def): the warm Claude Code CLI (no API
+# key; uses your existing \`claude\` login). config.yaml's agents.egpt.type: egpt points
+# here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
+# \`readonly\`), re-pointable later with \`/e\`. This is the canonical, EDITABLE home; the
+# repo's built-in src/brains/egpt.yaml is the fallback it mirrors. Seeding never overwrites it.
+type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
+model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
+effort: high          # reasoning effort (engine-dependent)
+allowed_tools:        # a LIST = CONFINED (file tools path-limited to allowed_paths); \`allowed_tools: all\` = TRUSTED/unconfined (every tool, no prompts, full filesystem)
+  - Read           # read files
+  - Write          # create / overwrite files
+  - Edit           # in-place edits
+  - Glob           # find files by pattern
+  - Grep           # search file contents
+  - WebSearch      # web search
+  - WebFetch       # fetch a URL
+  - Task           # sub-agents
+  #- Bash(git:*)    # SCOPED shell — the house rule is Bash(<bin>:*), never bare Bash
+allowed_paths:
+  # by default agents can access their conversation directory (the one listed in
+  # conversations.yaml) — that root is granted automatically. Add extra roots here:
+  #  /c/Users/you/project:               # full access (read + write)
+  #  /c/Users/you/reference:             # READ-ONLY (a tool list that omits write tools)
+  #    allowed_tools: [Read, Glob, Grep]
+# personality: default  # identity feed a fresh conversation boots from (identities/<name>/);
+                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
 `;
 
 export function seedSkeletons({
@@ -104,7 +100,8 @@ export function seedSkeletons({
   // 2. the commented example agent-type file.
   copyIfMissing(join(agentsDir, 'sonnet-high.yaml'), () => EXAMPLE_TYPE_FILE);
 
-  // 3. the WORKING default agent-type file (UNcommented) so agents.egpt.type: default
-  //    resolves from the profile the operator can open; copy-if-missing keeps edits sacred.
-  copyIfMissing(join(agentsDir, 'default.yaml'), () => DEFAULT_TYPE_FILE);
+  // 3. the WORKING egpt agent-type file (UNcommented) so agents.egpt.type: egpt resolves
+  //    from the profile the operator can open; copy-if-missing keeps edits sacred. (The old
+  //    default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate default.yaml.)
+  copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
 }

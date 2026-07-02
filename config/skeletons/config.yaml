@@ -53,10 +53,10 @@ persona_name: "egpt"
 # routing still yields the canonical "e" being so warm sessions stay stable.
 #
 # The SHIPPED default: `egpt` is the persona; its type resolves to config/agents/
-# default.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
+# egpt.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
 agents:
   egpt:
-    type: default            # the persona's brain — config/agents/default.yaml
+    type: egpt               # the persona's brain — config/agents/egpt.yaml
     handles: [e, egpt]
   # don:                     # a REMOTE agent: mentions of @don forward over the relay
   #   type: relay
@@ -98,10 +98,11 @@ signal:
 # An agent's `type` (§3b) names a TYPE file — an ENGINE config — resolved across
 # layers, most-specific winning: src/brains (built-in) < config/brains < config/
 # agents < a conversation's own brains/. config/agents/<type>.yaml is the canonical
-# home. `default` ships seeded there (config/agents/default.yaml — the warm Claude
-# Code CLI, no API key, your `claude` login); config/agents/sonnet-high.yaml is
-# seeded as a commented example. Point agents.egpt.type at whichever you want new
-# conversations to start on.
+# home. `egpt` ships seeded there (config/agents/egpt.yaml — the warm Claude Code
+# CLI, no API key, your `claude` login); config/agents/sonnet-high.yaml is seeded as
+# a commented example. Point agents.egpt.type at whichever you want new conversations
+# to start on. A type's allowed_tools LIST confines its file tools to each conversation
+# dir + allowed_paths; `allowed_tools: all` makes it trusted/unconfined.
 #
 # The legacy `default_brain` top-level key is superseded by agents.egpt.type (§3b) and
 # is no longer shipped here; config/config-schema.mjs documents it as a fallback still

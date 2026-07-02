@@ -78,7 +78,7 @@ describe('config/skeletons/config.yaml', () => {
   it('ships the agents registry uncommented, and no longer sets default_brain (agent type supersedes)', () => {
     const doc = YAML.parse(text);
     // agents is the shipped centerpiece now (operator 2026-07-02) — the persona agent
-    expect(doc.agents?.egpt).toMatchObject({ type: 'default', handles: ['e', 'egpt'] });
+    expect(doc.agents?.egpt).toMatchObject({ type: 'egpt', handles: ['e', 'egpt'] });
     // default_brain was removed from the skeleton (documented as a legacy fallback only)
     expect(Object.keys(doc)).not.toContain('default_brain');
   });
