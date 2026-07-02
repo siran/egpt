@@ -10,11 +10,10 @@
 //   Body text with {{variable}} substitutions.
 
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EGPT_HOME } from '../egpt-home.mjs';   // profile-aware: EGPT_HOME selects the node
 
-const EGPT_HOME   = join(homedir(), '.egpt');
 const COMMANDS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'commands');
 
 // Load a template by command name. Returns { path, body } or null.

@@ -17,13 +17,13 @@
 import * as bus from './bus.mjs';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { EGPT_HOME } from '../egpt-home.mjs';   // profile-aware: EGPT_HOME selects the node
 
 const DEFAULT_FROM = 'sibling-subproc';
 
 async function readEgptConfig() {
-  const p = path.join(os.homedir(), '.egpt', 'config.json');
+  const p = path.join(EGPT_HOME, 'config.json');
   return JSON.parse(await fs.readFile(p, 'utf8'));
 }
 

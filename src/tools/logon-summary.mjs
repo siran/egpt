@@ -33,10 +33,11 @@
 
 import { promises as fs, existsSync, writeFileSync, readFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { assignWaIndex, waListToStableCache } from './wa-bindings.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';
 
-const HOME = join(homedir(), '.egpt');
+// profile-aware: HOME follows EGPT_HOME so a test node never touches prod state
+const HOME = EGPT_HOME;
 // Bridge state lives under state/bridge/ (operator 2026-05-22 declutter).
 // Defensive migrations here too — this tool can be run independently
 // of the daemon, so the move shouldn't depend on the bridge having

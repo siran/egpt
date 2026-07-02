@@ -8,11 +8,10 @@
 
 import { readFileSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { EGPT_HOME } from '../egpt-home.mjs';   // profile-aware: EGPT_HOME selects the node
 
-const EGPT_HOME      = join(homedir(), '.egpt');
 export const THEMES_DIR      = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'config', 'themes');
 export const USER_THEMES_DIR = join(EGPT_HOME, 'themes');
 

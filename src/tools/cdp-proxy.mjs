@@ -18,10 +18,9 @@ import { createConnection } from 'node:net';
 import { randomBytes }      from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join }    from 'node:path';
-import { homedir }          from 'node:os';
 import { fileURLToPath }    from 'node:url';
+import { EGPT_HOME }        from '../egpt-home.mjs';  // profile-aware: EGPT_HOME selects the node
 
-const EGPT_HOME   = join(homedir(), '.egpt');
 const TOKEN_FILE  = join(EGPT_HOME, 'config', 'cdp-token');
 const PROXY_DIR   = dirname(fileURLToPath(import.meta.url));
 const BUS_HTML_PATH = join(PROXY_DIR, 'bus.html');

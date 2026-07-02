@@ -17,13 +17,12 @@
 //   const text = await browser.getText(id);
 //   await browser.closeTab(id);
 
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { findTab, openTab, closeTab, cdpHost } from './cdp.mjs';
+import { EGPT_HOME } from '../egpt-home.mjs';   // profile-aware: EGPT_HOME selects the node
 
-export { openTab, closeTab, cdpHost };
-export const EGPT_HOME = join(homedir(), '.egpt');
+export { openTab, closeTab, cdpHost, EGPT_HOME };
 
 // Low-level: open a short-lived WebSocket to a tab and call one CDP method.
 async function cdpCall(targetId, method, params = {}) {
