@@ -45,12 +45,19 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 2. In flight right now
 
-- **Agents-first config migration** (agent running): live config gets the real
-  `agents:` block + `default_time_zone: America/New_York`; `default_brain`
-  removed; `user_name` hoisted top-level; conversations.yaml migrates
-  `readonly.brain` → `readonly.agent` (readers accept both); skeleton ships
-  agents UNcommented; seed config/agents/default.yaml.
-  → then /restart; operator re-inspects config.yaml + conversations.yaml.
+- **CONFIG LEGACY EXCISION — new-config-only** (operator 2026-07-02: "only
+  accept the new config, port it, no legacy nothing"). Inventory DONE, spec +
+  execution plan live in **CONFIG-LEGACY-EXCISION.md** (groups A–K: default_brain,
+  readonly.brain back-read, boot migrations, siblings/persona fallbacks, legacy
+  config locations, personality/threadCwd residue, config/brains layer, schema
+  legacy keys, old-spine integrity-scan retirement). Implementation NOT yet
+  dispatched — session hit the Fable limit right after the inventory. NEXT
+  SESSION: read that doc, dispatch one background Opus agent per its plan.
+  Live profile ~/.egpt2 is ALREADY ported (agents-first config, slim
+  conversations.yaml) — only residue: 4 stray threadCwd keys + a stale
+  conversations.yaml.bak (plan step 3).
+  Landed precursor: agents-first config migration ran live; `default_brain`
+  removed from live config; `user_name` top-level; readonly.agent everywhere.
 
 ## 3. Decided, not yet dispatched
 
