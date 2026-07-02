@@ -514,23 +514,36 @@ export async function migrateSlugSuffix() {
   return { renamed, skipped };
 }
 
-// One-time migration (operator 2026-07-02): the fresh-conversation instancing now
-// freezes the def under `readonly.agent` (was `readonly.brain`). Rename the legacy key
-// on every stored conversation — the FLAT 'e' readonly AND any nested per-being block's
-// readonly — so a state written before the rename resolves through the new key without
-// waiting to be re-instanced. `agent` takes `brain`'s slot (same field order the
-// brainpool writes). Idempotent: an entry already on `agent`, or with no readonly, is
-// left untouched; write back only if something changed. Never fatal (readState swallows
-// a missing/garbage file → emptyState → 0). Returns { migrated } = # conversations touched.
-export async function migrateReadonlyBrainToAgent(yamlPath = CONV_YAML_PATH) {
+// One-time boot migration (operator 2026-07-02): normalize every stored conversation to
+// the current vocabulary IN ONE PASS. Two retirements happen together per entry:
+//   (a) readonly.brain → readonly.agent — the fresh-conversation instancing now freezes the
+//       def under `readonly.agent` (was `readonly.brain`); rename the legacy key on the FLAT
+//       'e' readonly AND any nested per-being block's readonly so a pre-rename state resolves
+//       through the new key without waiting to be re-instanced. `agent` takes `brain`'s slot.
+//   (b) DROP the retired `personality` key — the identity feed a fresh thread boots from is now
+//       a property of the AGENT TYPE, not the conversation. Delete BOTH the flat entry-level
+//       `personality` (ensureContact used to seed it on every new contact) AND every
+//       `readonly.personality` (flat + nested), so the parallel vocabulary disappears.
+// Idempotent: an entry already on `agent` with no `personality` anywhere is left untouched;
+// write back only if something changed. Never fatal (readState swallows a missing/garbage file
+// → emptyState → 0). Returns { migrated } = # conversations (contact entries) touched.
+export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH) {
   if (!existsSync(yamlPath)) return { migrated: 0, skipped: 'no registry' };
   const state = await readState(yamlPath);
-  // brain → agent on ONE readonly block; returns a NEW object if it changed, else the same ref.
-  const renameRO = (ro) => {
+  // Normalize ONE readonly block: rename brain→agent (agent takes brain's slot) AND drop the
+  // retired `personality`. Returns a NEW object when it changed, else the SAME ref (idempotent).
+  const cleanRO = (ro) => {
     if (!ro || typeof ro !== 'object' || Array.isArray(ro)) return ro;
-    if (!('brain' in ro) || 'agent' in ro) return ro;
-    const { brain, ...rest } = ro;
-    return { agent: brain, ...rest };   // agent takes brain's slot
+    const needsRename = ('brain' in ro) && !('agent' in ro);
+    const dropPersonality = 'personality' in ro;
+    if (!needsRename && !dropPersonality) return ro;
+    const out = {};
+    for (const [k, v] of Object.entries(ro)) {
+      if (k === 'personality') continue;                            // drop the retired key
+      if (k === 'brain' && needsRename) { out.agent = v; continue; } // agent takes brain's slot
+      out[k] = v;
+    }
+    return out;
   };
   let migrated = 0;
   const nextContacts = {};
@@ -541,14 +554,16 @@ export async function migrateReadonlyBrainToAgent(yamlPath = CONV_YAML_PATH) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { nextBucket[jid] = entry; continue; }
       let entryChanged = false;
       const nextEntry = { ...entry };
-      // flat readonly (the default 'e' instancing)
-      const flatRO = renameRO(entry.readonly);
+      // flat entry-level personality (seeded by the old ensureContact) — drop it.
+      if ('personality' in nextEntry) { delete nextEntry.personality; entryChanged = true; }
+      // flat readonly (the default 'e' instancing): brain→agent + drop readonly.personality
+      const flatRO = cleanRO(entry.readonly);
       if (flatRO !== entry.readonly) { nextEntry.readonly = flatRO; entryChanged = true; }
       // nested per-being blocks — each may carry its own readonly
       for (const [k, v] of Object.entries(entry)) {
-        if (_FLAT_ENTRY_KEYS.has(k)) continue;                       // skips 'readonly' (handled above) + scalar fields
+        if (_FLAT_ENTRY_KEYS.has(k)) continue;                       // skips 'readonly'/'personality' (handled above) + scalar fields
         if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-        const nestedRO = renameRO(v.readonly);
+        const nestedRO = cleanRO(v.readonly);
         if (nestedRO !== v.readonly) { nextEntry[k] = { ...v, readonly: nestedRO }; entryChanged = true; }
       }
       if (entryChanged) migrated++;
@@ -715,6 +730,11 @@ export function getBeing(state, surface, jid, being = 'e') {
     threadId:           b?.threadId           ?? flat.threadId           ?? null,
     threadCreatedAt:    b?.threadCreatedAt    ?? flat.threadCreatedAt    ?? null,
     identityInjectedAt: b?.identityInjectedAt ?? flat.identityInjectedAt ?? null,
+    // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — the
+    // identity feed a fresh thread boots from is now a property of the AGENT TYPE
+    // (config/agents/<type>.yaml → def.personality), read at kickoff by the brainpool.
+    // This read stays TOLERANT of legacy state: an old entry's readonly.personality /
+    // flat personality still resolves so pre-migration YAML is byte-readable.
     personality:        ro.personality        ?? flat.personality        ?? 'default',
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
@@ -973,11 +993,14 @@ export function ensureContact(state, surface, jid, ctx = {}) {
   }
 
   // 3. Brand-new contact. firstSeenAt set once, drives the slug-suffix,
-  //    never overwritten on /e new.
+  //    never overwritten on /e new. The per-conversation `personality` key is RETIRED
+  //    (operator 2026-07-02): the identity feed a fresh thread boots from is a property
+  //    of the AGENT TYPE (config/agents/<type>.yaml), not the conversation — so we no
+  //    longer seed it. `ctx.personality` (still passed by legacy spine callers) is
+  //    ignored; the signature stays import-compatible.
   const entry = {
     slug: candidateSlug,
     conversation_path: conversationPathOf(surface, candidateSlug),
-    personality: ctx.personality ?? 'default',
     threadId: null,
     threadCreatedAt: null,
     firstSeenAt: firstSeen.toISOString(),

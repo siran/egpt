@@ -22,7 +22,8 @@ import {
   recordThread,
   isMuted,
   migrateJsonToYaml,
-  migrateReadonlyBrainToAgent,
+  migrateConversationVocabulary,
+  getBeing,
   readState,
   writeState,
   parse,
@@ -86,7 +87,9 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     // slug follows the TITLE (pushedName), path-safe — accents/spaces/parens kept
     expect(slug).toMatch(/^Diego Pérez \(Koma\)-\d{10}$/);
     expect(entry.slug).toBe(slug);
-    expect(entry.personality).toBe('default');
+    // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — a fresh
+    // contact is NOT seeded with one; the identity feed is a property of the agent type.
+    expect('personality' in entry).toBe(false);
     expect(entry.firstSeenAt).toBeTruthy();
     expect(entry.pushedName).toBe('Diego Pérez (Koma)');
     expect(entry.jids).toBeUndefined();
@@ -152,11 +155,13 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
       .toThrow(/unknown surface/);
   });
 
-  it('honors ctx.personality on new contact creation', () => {
+  it('IGNORES ctx.personality on new contact creation (key retired; signature stays compatible)', () => {
+    // Legacy spine callers still PASS ctx.personality — it must be silently ignored, never
+    // throw, and never seed a `personality` on the new entry (operator 2026-07-02).
     const r = ensureContact(emptyState(), WA, '34836563681438@lid', {
       pushedName: 'self', slugHint: 'self', personality: 'system',
     });
-    expect(r.entry.personality).toBe('system');
+    expect('personality' in r.entry).toBe(false);
   });
 
   it('a known title produces a named slug, not a placeholder', () => {
@@ -585,71 +590,95 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   });
 });
 
-describe('migrateReadonlyBrainToAgent — readonly.brain → readonly.agent', () => {
+describe('migrateConversationVocabulary — readonly.brain → readonly.agent + drop retired personality', () => {
   const tmpDirs = [];
   async function writeTmp(state) {
-    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-agent-'));
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-vocab-'));
     tmpDirs.push(dir);
     const fp = join(dir, 'conversations.yaml');
     await writeState(fp, state);
     return fp;
   }
 
-  it('renames a FLAT e readonly.brain to readonly.agent (agent takes brain\'s slot, other fields intact)', async () => {
+  it('renames a FLAT e readonly.brain to readonly.agent AND drops readonly.personality (other fields intact)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
       j: { slug: 'diego', readonly: { brain: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' } },
     } } });
-    const r = await migrateReadonlyBrainToAgent(fp);
+    const r = await migrateConversationVocabulary(fp);
     expect(r.migrated).toBe(1);
     const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
     expect('brain' in ro).toBe(false);
-    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' });
+    expect('personality' in ro).toBe(false);   // the retired key is gone
+    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all' });
   });
 
-  it('renames a NESTED being block readonly.brain too (sibling\'s other fields intact)', async () => {
+  it('drops the FLAT entry-level personality (the key ensureContact used to seed)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', wren: { mode: 'mention', readonly: { brain: 'sonnet-high', type: 'ccode' }, threadId: 'T' } },
+      j: { slug: 'diego', personality: 'default', threadId: 'T', pushedName: 'D' },
     } } });
-    const r = await migrateReadonlyBrainToAgent(fp);
+    const r = await migrateConversationVocabulary(fp);
+    expect(r.migrated).toBe(1);
+    const e = (await readState(fp)).contacts.whatsapp.j;
+    expect('personality' in e).toBe(false);
+    expect(e).toEqual({ slug: 'diego', threadId: 'T', pushedName: 'D' });   // everything else intact
+  });
+
+  it('renames a NESTED being block readonly.brain + drops its readonly.personality (sibling fields intact)', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'x', wren: { mode: 'mention', readonly: { brain: 'sonnet-high', type: 'ccode', personality: 'banter' }, threadId: 'T' } },
+    } } });
+    const r = await migrateConversationVocabulary(fp);
     expect(r.migrated).toBe(1);
     const wren = (await readState(fp)).contacts.whatsapp.j.wren;
     expect(wren.readonly.agent).toBe('sonnet-high');
     expect('brain' in wren.readonly).toBe(false);
+    expect('personality' in wren.readonly).toBe(false);
     expect(wren.threadId).toBe('T');
   });
 
-  it('counts flat + nested changes on one contact as ONE conversation touched', async () => {
+  it('cleans flat personality + flat readonly + nested readonly on one contact as ONE touch', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { brain: 'default', type: 'ccode' }, wren: { readonly: { brain: 'sonnet-high', type: 'ccode' } } },
+      j: { slug: 'x', personality: 'default', readonly: { brain: 'default', type: 'ccode', personality: 'default' }, wren: { readonly: { brain: 'sonnet-high', type: 'ccode', personality: 'banter' } } },
     } } });
-    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(1);
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
     const e = (await readState(fp)).contacts.whatsapp.j;
+    expect('personality' in e).toBe(false);
     expect(e.readonly.agent).toBe('default');
+    expect('personality' in e.readonly).toBe(false);
     expect(e.wren.readonly.agent).toBe('sonnet-high');
+    expect('personality' in e.wren.readonly).toBe(false);
   });
 
-  it('is idempotent — a second pass changes nothing (already on agent)', async () => {
+  it('is idempotent — a second pass changes nothing (already on agent, no personality)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { brain: 'default', type: 'ccode' } },
+      j: { slug: 'x', personality: 'default', readonly: { brain: 'default', type: 'ccode', personality: 'default' } },
     } } });
-    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(1);
-    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
-  it('leaves an already-migrated readonly.agent untouched (migrated 0)', async () => {
+  it('leaves an already-migrated entry untouched (readonly.agent, no personality → migrated 0)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
       j: { slug: 'x', readonly: { agent: 'default', type: 'ccode' } },
     } } });
-    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
   it('empty state → migrated 0', async () => {
     const fp = await writeTmp(emptyState());
-    expect((await migrateReadonlyBrainToAgent(fp)).migrated).toBe(0);
+    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
+  });
+
+  it('getBeing still reads a PRE-migration entry\'s personality (legacy back-read)', async () => {
+    // Old on-disk shapes must remain readable before the boot migration runs.
+    const flat = { contacts: { whatsapp: { j: { slug: 'x', personality: 'banter' } } } };
+    expect(getBeing(flat, 'whatsapp', 'j', 'e').personality).toBe('banter');
+    const ro = { contacts: { whatsapp: { j: { slug: 'x', readonly: { agent: 'default', personality: 'system' } } } } };
+    expect(getBeing(ro, 'whatsapp', 'j', 'e').personality).toBe('system');
   });
 
   it('missing registry file → skipped, never throws', async () => {
-    const r = await migrateReadonlyBrainToAgent(join(tmpdir(), 'egpt-no-such-registry-xyz.yaml'));
+    const r = await migrateConversationVocabulary(join(tmpdir(), 'egpt-no-such-registry-xyz.yaml'));
     expect(r).toEqual({ migrated: 0, skipped: 'no registry' });
   });
 

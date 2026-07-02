@@ -12,3 +12,5 @@
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: null           # null → the model your `claude` login defaults to
 allowed_tools: all
+# personality: default  # identity feed a fresh conversation boots from (identities/<name>/);
+                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.

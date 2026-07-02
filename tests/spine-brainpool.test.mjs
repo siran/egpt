@@ -95,13 +95,25 @@ describe('brainpool.turn', () => {
     expect(view.brainType).toBe('codex');                                        // frozen into readonly
   });
 
-  it('instancing freezes the def under readonly.agent (vocabulary rename — no readonly.brain written)', async () => {
+  it('instancing freezes the def under readonly.agent (vocabulary rename — no readonly.brain / personality written)', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
     const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     const ro = getState().contacts.whatsapp['!room:beeper.com'].readonly;
-    expect(ro.agent).toBe('default');       // the new key
-    expect('brain' in ro).toBe(false);      // the legacy key is NOT written going forward
+    expect(ro.agent).toBe('default');            // the new key
+    expect('brain' in ro).toBe(false);           // the legacy key is NOT written going forward
+    expect('personality' in ro).toBe(false);     // the retired personality key is NOT written either
+  });
+
+  it('kickoff feed comes from the TYPE def\'s personality (def.personality reaches loadFeed, not the conversation)', async () => {
+    const seen = [];
+    const brains = { resolve: () => ({ name: 'default', type: 'ccode', personality: 'custom' }) };
+    const { brain } = harness([{ text: 'ok', sessionId: 's' }], {
+      brains,
+      loadFeed: async (p) => { seen.push(p); return `feed-for-${p}`; },
+    });
+    await brain.turn('e', ev);
+    expect(seen).toEqual(['custom']);            // the agent-type def's personality, not 'default'
   });
 
   it('persona agent type (agents block) supplies E\'s fresh-conversation def, resolved through the registry', async () => {

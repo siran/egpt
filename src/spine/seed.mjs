@@ -47,6 +47,8 @@ export const DEFAULT_TYPE_FILE = `# default — the persona's shipped AGENT TYPE
 type: ccode            # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: null            # null → the model your \`claude\` login defaults to
 allowed_tools: all     # "all" | a space-separated allow-list | ["Read", "Edit", ...]
+# personality: default # identity feed a fresh conversation boots from (identities/<name>/);
+                       # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
 `;
 
 export function seedSkeletons({

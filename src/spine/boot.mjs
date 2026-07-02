@@ -20,7 +20,7 @@ import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES,
-  migrateReadonlyBrainToAgent,
+  migrateConversationVocabulary,
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
@@ -79,14 +79,15 @@ export async function boot({
   // tests don't write into a profile. Never fatal.
   if (ingest) { try { seedSkeletons({ onLog: (m) => log.line?.(`[seed] ${m}`) }); } catch (e) { log.line?.(`[boot] seed failed: ${e?.message ?? e}`); } }
 
-  // One-time conversations.yaml migration (operator 2026-07-02): rename readonly.brain →
-  // readonly.agent on every stored conversation so the state speaks the new vocabulary.
-  // Real-node only (ingest-gated, like seed) and never fatal — a failure just logs.
+  // One-time conversations.yaml migration (operator 2026-07-02): normalize every stored
+  // conversation to the current vocabulary in ONE pass — readonly.brain → readonly.agent AND
+  // drop the retired `personality` key (flat + readonly, nested included). Real-node only
+  // (ingest-gated, like seed) and never fatal — a failure just logs.
   if (ingest) {
     try {
-      const r = await migrateReadonlyBrainToAgent();
-      if (r?.migrated > 0) log.line?.(`[migrate] readonly.brain → agent on ${r.migrated} conversations`);
-    } catch (e) { log.line?.(`[boot] brain→agent migration failed: ${e?.message ?? e}`); }
+      const r = await migrateConversationVocabulary();
+      if (r?.migrated > 0) log.line?.(`[migrate] conversations vocabulary: ${r.migrated} entries`);
+    } catch (e) { log.line?.(`[boot] conversations vocabulary migration failed: ${e?.message ?? e}`); }
   }
 
   // The being's body_emoji + display label (the bridge enforces the emoji on

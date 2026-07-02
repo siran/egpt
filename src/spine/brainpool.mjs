@@ -94,20 +94,23 @@ export function createBrainPool({
     return parseWarmBlock(text).idleTtlMs;
   }
 
-  // chatId → { slug, sessionId, personality }. The shared resolver registers the
+  // chatId → { slug, sessionId, brain }. The shared resolver registers the
   // contact on first sight AND re-arms the name-tracking rename; the slug it
   // returns is the CURRENT one. When a rename fired, the warm-pool key below embeds
   // that new slug, so the conversation naturally re-keys onto a fresh warm entry —
   // the stale entry ages out via the pool's LRU, no extra eviction machinery. We
   // then re-read state fresh (the resolver may have just rewritten it — a rename
   // nulls the thread state) for the per-being view.
+  //
+  // VOCABULARY RETIREMENT (operator 2026-07-02): we no longer read the conversation's
+  // `personality` — the identity feed a fresh thread boots from is a property of the
+  // resolved agent-type def (def.personality ?? 'default'), read at kickoff in turn().
   async function resolveConv(ev, being) {
     const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
     const b = slug ? getBeing(await loadState(), ev.surface, ev.chatId, being) : null;
     return {
       slug,
       sessionId: b?.threadId ?? null,
-      personality: b?.personality ?? 'default',
       // The conversation's INSTANCED brain (frozen in readonly), or null on a fresh
       // conversation that hasn't been instanced from the default yet.
       brain: b?.brainType ? { name: b.brain, type: b.brainType, model: b.model, effort: b.effort, allowed_tools: b.allowedTools } : null,
@@ -190,7 +193,7 @@ export function createBrainPool({
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, personality, brain: instanced } = await resolveConv(ev, being);
+      const { slug, sessionId, brain: instanced } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
@@ -210,13 +213,20 @@ export function createBrainPool({
           def = resolveDefaultBrain(convDir);
           // Freeze the instanced def under readonly.agent (operator 2026-07-02: the
           // conversations.yaml vocabulary is "agent" now; getBeing back-reads the legacy
-          // readonly.brain, and migrateReadonlyBrainToAgent renames existing entries).
+          // readonly.brain, and migrateConversationVocabulary renames existing entries).
+          // NO `personality` is written — that key is RETIRED; the identity feed is a
+          // property of the agent type (def.personality), read fresh at kickoff below.
           await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-            readonly: { agent: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all', personality },
+            readonly: { agent: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all' },
           }));
         }
       }
       const engine = def.type ?? brainType;
+      // The identity-feed selector (operator 2026-07-02): a property of the resolved
+      // agent-type def, NOT the conversation. A type file may pin `personality: <name>`;
+      // the shipped default implies 'default'. An already-instanced def carries none →
+      // 'default' (the frozen readonly no longer stores it).
+      const personality = def.personality ?? 'default';
       // E works inside the conversation's own folder unless the brain pins a
       // workspace. The dir must exist before the CLI spawns (warm-cli throws on a
       // missing cwd), and the brain runs before transcript creates it — so mkdir here.
