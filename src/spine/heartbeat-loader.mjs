@@ -27,19 +27,29 @@
 // <script.x.md>`; both set → invalid, skipped + logged). Timezone-less `when:`
 // times resolve in config `default_time_zone` (else the machine's local zone).
 //
-// HOT RELOAD (operator 2026-07-02): the loader also registers ONE internal beat
-// (heartbeats-reload) that, when state/heartbeats.readonly.yaml is DELETED,
-// re-collects everything (node config once-at-boot, but entity folders re-
-// enumerated fresh — so NEW conversations/rooms + edited entity config.yaml ARE
-// picked up), re-registers, and rewrites the file. No restart.
+// HOT RELOAD (operator 2026-07-02): the reload TRIGGER rides the loop's own tick.
+// The loader DECORATES the cadence registry (wrapRegistry) so that every runDue —
+// the moment the loop consults the in-memory heartbeat set — first checks whether
+// state/heartbeats.readonly.yaml is present. Its ABSENCE means the in-memory set
+// is stale ("when the spine is looping and thus needs to check the in-memory
+// heartbeat configuration, it checks whether the file is present. If the file is
+// not present, the in-memory heartbeat is stale, so regenerate the readonly file
+// and load it into memory" — operator 2026-07-02): re-collect everything (node
+// config once-at-boot, but entity folders re-enumerated fresh — so NEW
+// conversations/rooms + edited entity config.yaml ARE picked up), re-register,
+// rewrite the file. No restart, and no self-checking beat — the check belongs to
+// consulting the set, not to a task listed inside it.
 //
-// Two phases, one module, because of a boot ordering constraint (see boot.mjs):
-//   collect()  — pure-ish: read config + entity dirs, parse cadences → { entries,
-//                finestMs }. Runs BEFORE createSpine so boot can size the tick to
-//                the finest cadence.
-//   activate() — bind each entry's command ACTION (the beat reads spine.stats()
-//                for the pump env), register them + the internal reload driver,
-//                write the readonly.yaml. Runs AFTER createSpine.
+// Three seams, one module, because of a boot ordering constraint (see boot.mjs):
+//   collect()      — pure-ish: read config + entity dirs, parse cadences →
+//                    { entries, finestMs }. Runs BEFORE createSpine so boot can
+//                    size the tick to the finest cadence.
+//   wrapRegistry() — decorate the real registry into the heartbeats object the
+//                    spine ticks (inert pass-through until activate). Wired into
+//                    services BEFORE createSpine.
+//   activate()     — bind each entry's command ACTION (the beat reads spine.stats()
+//                    for the pump env), register them, arm the reload check, write
+//                    the readonly.yaml. Runs AFTER createSpine.
 //
 // Every effectful edge is injected (listEntityDirs / readEntityConfig / spawn /
 // io.writeFile / io.mkdir / existsSync / now) so the whole loader is unit-testable
@@ -60,7 +70,6 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 // runs from any entity cwd.
 const TEXTECUTE_PATH = fileURLToPath(new URL('../tools/textecute.mjs', import.meta.url));
 
-const INTERNAL_RELOAD_NAME = 'heartbeats-reload';
 // A `when:` up to this far in the PAST still fires once (a grace window covering a
 // slow boot / brief downtime); older than this at load time is stale — skipped so
 // a long-dead node doesn't re-fire every past one-shot when it finally comes up.
@@ -256,7 +265,6 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {string} [deps.procCwd]                       cwd for node-level command heartbeats (the checkout)
  * @param {{writeFile?:Function, mkdir?:Function}} [deps.io]                   readonly.yaml IO seam
  * @param {(p:string) => boolean} [deps.existsSync]     readonly-file existence probe for hot reload (injectable)
- * @param {number} [deps.reloadIntervalMs]              how often the internal beat checks for the deleted readonly file (default 15s)
  * @param {(m:string) => void} [deps.onLog]
  */
 export function createHeartbeatLoader({
@@ -272,7 +280,6 @@ export function createHeartbeatLoader({
   procCwd = process.cwd(),
   io = {},
   existsSync = fsExistsSync,
-  reloadIntervalMs = 15_000,
   onLog = () => {},
 } = {}) {
   const writeFile = io.writeFile ?? fsWriteFile;
@@ -285,10 +292,11 @@ export function createHeartbeatLoader({
   const readonlyPath = join(egptHome, 'state', 'heartbeats.readonly.yaml');
 
   let _entries = null;    // set by collect(), consumed by activate()
-  let _registry = null;   // bound in activate() — the registry hot reload replaces entries on
+  let _registry = null;   // bound in wrapRegistry() — the real registry reload replaces entries on
   let _stats = null;      // bound in activate() — the pump-stats source for command env
   let _bootTickMs = 0;    // bound in activate() — the fixed boot tick, for the finer-cadence warning
   let _reloading = false; // reentrancy guard: a reload in flight blocks another
+  let _activated = false; // flipped by activate() — before it, the decorated runDue is a pass-through
 
   // finestMs is the min RECURRING cadence — `when:` one-shots ride the tick and
   // must not tighten it (a 30s tick fires them within 30s of the time, which is fine).
@@ -406,7 +414,7 @@ export function createHeartbeatLoader({
     try {
       onLog('state/heartbeats.readonly.yaml deleted — reloading heartbeats');
       const { entries, finestMs } = await collect();
-      _registry.clear((name) => name === INTERNAL_RELOAD_NAME);   // drop old beats, keep the internal driver
+      _registry.clear();   // drop the whole old set — the fresh collect() rebuilds it
       for (const entry of entries) _registerBeat(entry);
       if (finestMs != null && _bootTickMs > 0 && finestMs < _bootTickMs) {
         onLog(`reloaded cadence ${finestMs}ms finer than the boot tick ${_bootTickMs}ms — restart to honor it`);
@@ -419,18 +427,38 @@ export function createHeartbeatLoader({
     }
   }
 
-  // ── phase 2: bind command actions + register + materialize the readonly view ──
-  async function activate({ registry, stats, tickMs = 0 } = {}) {
-    const entries = _entries ?? (await collect()).entries;
+  // ── the decoration seam: turn the real cadence registry into the heartbeats
+  //    object the spine ticks. runDue is where the loop CONSULTS the in-memory set,
+  //    so that is where the staleness check belongs: the readonly file's absence
+  //    means the set is stale, so kick a reload. Inert (pure pass-through) until
+  //    activate() flips it live — before the beats are loaded + the file written,
+  //    there is nothing to reload. Wired into services BEFORE createSpine; keeping
+  //    _registry here (not in activate) means the reload has the real registry the
+  //    whole time. Spread the registry so the object is a full drop-in and only
+  //    runDue is decorated. ──
+  function wrapRegistry(registry) {
     _registry = registry;
+    return {
+      ...registry,
+      runDue: (now) => {
+        // One existsSync per tick (~30s), cost nil. Missing + no reload in flight →
+        // kick the reentrancy-guarded reload FIRE-AND-FORGET: THIS tick still runs
+        // the OLD set (registry.runDue below); the reload swaps entries so the NEXT
+        // tick runs the fresh one.
+        if (_activated && !_reloading && !existsSync(readonlyPath)) _reloadCheck();
+        return registry.runDue(now);
+      },
+    };
+  }
+
+  // ── phase 2: bind command actions + register + materialize the readonly view ──
+  async function activate({ stats, tickMs = 0 } = {}) {
+    const entries = _entries ?? (await collect()).entries;
     _stats = stats;
     _bootTickMs = tickMs;
     for (const entry of entries) _registerBeat(entry);
-    // One internal beat drives hot reload. It's loader infrastructure, not config,
-    // so collect() never returns it and clear() keeps it across reloads. Registered
-    // AFTER collect(), so its cadence never influences the boot tick sizing.
-    registry.register(INTERNAL_RELOAD_NAME, reloadIntervalMs, _reloadCheck);
     await _writeReadonly(entries);
+    _activated = true;   // arm the decorated runDue's staleness check (see wrapRegistry)
     return { entries, finestMs: _finestMs(entries) };
   }
 
@@ -453,20 +481,13 @@ export function createHeartbeatLoader({
       '# config.yaml heartbeats: block + each conversation/room config.yaml\n' +
       '# heartbeats: block. To change one, edit config.yaml (or the entity\'s own\n' +
       '# config.yaml) and /restart. DELETE this file to hot-reload every heartbeat\n' +
-      '# within ~30s (no restart). Regenerated on every boot + reload, overwriting.\n\n';
+      '# within ~30s (one tick, no restart). Regenerated on every boot + reload, overwriting.\n\n';
     const list = entries.map(_readonlyRow);
-    // Everything that ticks is listed (transparency): the internal reload driver too.
-    list.push({
-      name: INTERNAL_RELOAD_NAME,
-      source: 'spine (internal)',
-      frequency_ms: reloadIntervalMs,
-      action: 'reload heartbeats when this file is deleted',
-    });
     try {
       await mkdir(dirname(readonlyPath), { recursive: true });
       await writeFile(readonlyPath, header + YAML.stringify({ heartbeats: list }, { lineWidth: 0 }), 'utf8');
     } catch (e) { onLog(`readonly write: ${e?.message ?? e}`); }
   }
 
-  return { collect, activate };
+  return { collect, wrapRegistry, activate };
 }

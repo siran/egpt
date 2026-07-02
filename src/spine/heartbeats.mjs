@@ -40,14 +40,11 @@ export function createHeartbeats({ onLog = () => {} } = {}) {
     return beats.map(({ name, everyMs, lastRun }) => ({ name, everyMs, lastRun }));
   }
 
-  // Drop registered beats so the loader can replace the whole set on a hot
-  // reload. `keep` is an optional name-predicate: a beat is retained iff
-  // keep(name) is truthy (the loader keeps only its internal reload driver).
-  // No keep = clear everything. Stays dumb: no scheduling, just array surgery.
-  function clear(keep) {
-    for (let i = beats.length - 1; i >= 0; i--) {
-      if (!keep || !keep(beats[i].name)) beats.splice(i, 1);
-    }
+  // Drop every registered beat so the loader can replace the whole set on a hot
+  // reload (the fresh collect() rebuilds it). Stays dumb: no scheduling, just
+  // array surgery.
+  function clear() {
+    beats.length = 0;
   }
 
   return { register, runDue, list, clear };

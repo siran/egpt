@@ -22,12 +22,13 @@ function makeRegistry() {
   const registered = [];
   return {
     register: (name, everyMs, fn) => registered.push({ name, everyMs, fn }),
-    clear: (keep) => { for (let i = registered.length - 1; i >= 0; i--) if (!keep || !keep(registered[i].name)) registered.splice(i, 1); },
+    clear: () => { registered.length = 0; },
+    runDue: () => {},   // the decorated wrapper delegates here; firing beats isn't what the reload tests assert
     registered,
   };
 }
-// non-internal beats (everything the loader collected, minus the reload driver)
-const beatsOf = (registry) => registry.registered.filter((r) => r.name !== 'heartbeats-reload');
+// every beat the loader registered (there is no internal reload row anymore)
+const beatsOf = (registry) => registry.registered;
 const noopIo = () => ({ writeFile: async () => {}, mkdir: async () => {} });
 
 // ── parseFrequency ────────────────────────────────────────────────────────
@@ -162,8 +163,9 @@ describe('createHeartbeatLoader.activate', () => {
       aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
     });
+    loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({ queueDepth: 0, oldestMs: 0 }) });
+    await loader.activate({ stats: () => ({ queueDepth: 0, oldestMs: 0 }) });
 
     const beats = beatsOf(registry);
     expect(beats).toHaveLength(1);
@@ -191,8 +193,9 @@ describe('createHeartbeatLoader.activate', () => {
       spawn, env: { PATH: '/bin' }, egptHome: '/home',
       io: noopIo(), onLog: (m) => logs.push(m),
     });
+    loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({ queueDepth: 3, oldestMs: 12000 }) });
+    await loader.activate({ stats: () => ({ queueDepth: 3, oldestMs: 12000 }) });
     const beat = registry.registered.find((r) => r.name === 'whatsapp/x:job').fn;
 
     beat();   // first due tick → spawn the shell line
@@ -290,8 +293,9 @@ describe('createHeartbeatLoader — when: one-shots', () => {
       aliveMs: 0, spawn, egptHome: '/home', io: noopIo(),
       now: () => whenMs - 5 * 60_000,   // 5 min BEFORE the time → armed (future)
     });
+    loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({}) });
+    await loader.activate({ stats: () => ({}) });
 
     const beat = beatsOf(registry).find((r) => r.name === 'report');
     expect(beat.everyMs).toBe(0);           // one-shots ride the tick, never tighten it
@@ -363,7 +367,8 @@ describe('createHeartbeatLoader — ai_run:', () => {
     expect(e.action.command).toContain('reports/daily.x.md');
     expect(e.action.cwd).toBe('/checkout');            // relative script resolves against this cwd
 
-    await loader.activate({ registry, stats: () => ({}) });
+    loader.wrapRegistry(registry);
+    await loader.activate({ stats: () => ({}) });
     const readonly = writes.at(-1).c;
     expect(readonly).toContain('ai_run: reports/daily.x.md');   // the sugar
     expect(readonly).toContain('textecute.mjs');                // AND the resolved command
@@ -381,9 +386,13 @@ describe('createHeartbeatLoader — ai_run:', () => {
   });
 });
 
-// ── hot reload (delete the readonly file → reload) ──────────────────────────
+// ── hot reload (readonly file gone → the NEXT runDue reloads) ───────────────
+// The trigger rides the decorated runDue now (wrapRegistry), not an internal beat:
+// consulting the in-memory set is where the "is the file still there?" check lives.
 describe('createHeartbeatLoader — hot reload', () => {
-  it('deleting the readonly file re-collects, replaces beats, keeps the internal driver, picks up new entities, rewrites the file', async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0));   // drain a fire-and-forget reload
+
+  it('a runDue with the readonly file MISSING re-collects, replaces beats, picks up new entities, rewrites the file — and NO internal row anywhere', async () => {
     let present = true;
     let dirs = [];
     const writes = [];
@@ -397,35 +406,55 @@ describe('createHeartbeatLoader — hot reload', () => {
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
       now: () => 0,
     });
+    const wrapped = loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({}), tickMs: 30_000 });
+    await loader.activate({ stats: () => ({}), tickMs: 30_000 });
 
-    // the internal driver is registered AND listed in the readonly view (transparency)
-    expect(registry.registered.some((r) => r.name === 'heartbeats-reload')).toBe(true);
-    expect(writes.at(-1).c).toContain('name: heartbeats-reload');
-    expect(writes.at(-1).c).toContain('source: spine (internal)');
-    expect(writes.at(-1).c).toContain('reload heartbeats when this file is deleted');
-
-    const reloadFn = registry.registered.find((r) => r.name === 'heartbeats-reload').fn;
+    // no internal beat is registered, and no internal row is in the readonly view
+    expect(registry.registered.some((r) => r.name === 'heartbeats-reload')).toBe(false);
+    expect(writes.at(-1).c).not.toContain('heartbeats-reload');
+    expect(writes.at(-1).c).not.toContain('spine (internal)');
     const writesAfterActivate = writes.length;
 
-    // file still present → reload is a no-op (no rewrite)
-    await reloadFn(0);
+    // file still present → runDue is a pure pass-through (no reload, no rewrite)
+    wrapped.runDue(0);
+    await settle();
     expect(writes.length).toBe(writesAfterActivate);
 
-    // delete the file + a NEW conversation appears → the reload picks it up
+    // delete the file + a NEW conversation appears → the next runDue triggers reload
     present = false;
     dirs = [{ dir: '/home/conversations/whatsapp/new-chat', ns: 'whatsapp/new-chat' }];
-    await reloadFn(0);
+    wrapped.runDue(0);   // THIS tick still ran the old set; the fire-and-forget reload swaps it
+    await settle();
 
     const names = registry.registered.map((r) => r.name);
-    expect(names).toContain('alive');                                        // re-registered
-    expect(names).toContain('whatsapp/new-chat:ping');                       // new entity picked up
-    expect(names.filter((n) => n === 'heartbeats-reload')).toHaveLength(1);  // internal kept, not duplicated
-    expect(writes.at(-1).c).toContain('whatsapp/new-chat:ping');            // readonly rewritten
+    expect(names).toContain('alive');                              // re-registered
+    expect(names).toContain('whatsapp/new-chat:ping');             // new entity picked up
+    expect(names).not.toContain('heartbeats-reload');              // still no internal row
+    expect(writes.at(-1).c).toContain('whatsapp/new-chat:ping');   // readonly rewritten
   });
 
-  it('guards reentrancy: a reload in flight blocks a concurrent one', async () => {
+  it('a runDue BEFORE activate is a pure pass-through — it never probes the file', async () => {
+    let existsChecks = 0;
+    const writes = [];
+    const registry = makeRegistry();
+    const loader = createHeartbeatLoader({
+      getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
+      aliveMs: 0, aliveCommand: 'echo beat', egptHome: '/home',
+      existsSync: () => { existsChecks++; return false; },   // would trigger a reload IF the check were armed
+      io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
+      now: () => 0,
+    });
+    const wrapped = loader.wrapRegistry(registry);
+    await loader.collect();   // NOT activated
+
+    wrapped.runDue(0);
+    await settle();
+    expect(existsChecks).toBe(0);       // the staleness check is inert pre-activate
+    expect(writes).toHaveLength(0);     // no reload wrote a readonly
+  });
+
+  it('guards reentrancy: a reload in flight blocks a concurrent runDue', async () => {
     let present = false;
     const writes = [];
     const registry = makeRegistry();
@@ -436,14 +465,14 @@ describe('createHeartbeatLoader — hot reload', () => {
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
       now: () => 0,
     });
+    const wrapped = loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({}), tickMs: 30_000 });
-    const reloadFn = registry.registered.find((r) => r.name === 'heartbeats-reload').fn;
+    await loader.activate({ stats: () => ({}), tickMs: 30_000 });
     writes.length = 0;
 
-    const p1 = reloadFn(0);   // starts the reload (sets the guard, awaits collect)
-    const p2 = reloadFn(0);   // guard is set → short-circuits
-    await Promise.all([p1, p2]);
+    wrapped.runDue(0);   // file missing → kicks the reload (sets the guard synchronously)
+    wrapped.runDue(0);   // guard is set → short-circuits, no second reload
+    await settle();
     expect(writes).toHaveLength(1);   // exactly one reload wrote the readonly
   });
 
@@ -459,14 +488,15 @@ describe('createHeartbeatLoader — hot reload', () => {
       existsSync: () => present,
       io: noopIo(), onLog: (m) => logs.push(m), now: () => 0,
     });
+    const wrapped = loader.wrapRegistry(registry);
     await loader.collect();
-    await loader.activate({ registry, stats: () => ({}), tickMs: 30_000 });   // boot tick 30s; 30s cadence is NOT finer
+    await loader.activate({ stats: () => ({}), tickMs: 30_000 });   // boot tick 30s; 30s cadence is NOT finer
     expect(logs.some((l) => l.includes('finer than the boot tick'))).toBe(false);
 
     entBlock = { fast: { frequency: '1s', command: 'y' } };   // a finer cadence appears
     present = false;
-    const reloadFn = registry.registered.find((r) => r.name === 'heartbeats-reload').fn;
-    await reloadFn(0);
+    wrapped.runDue(0);
+    await settle();
     expect(logs.some((l) => l.includes('finer than the boot tick'))).toBe(true);
   });
 });

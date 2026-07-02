@@ -210,7 +210,7 @@ describe('boot()', () => {
     app.stop();
   });
 
-  it('registers the internal heartbeats-reload entry (shown in the readonly view for transparency)', async () => {
+  it('the readonly view has NO internal row; deleting the file and ticking hot-reloads it', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
     const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
@@ -225,10 +225,21 @@ describe('boot()', () => {
       log: { line: () => {} },
     });
 
-    const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
-    expect(readonly).toContain('name: heartbeats-reload');
-    expect(readonly).toContain('source: spine (internal)');
-    expect(readonly).toContain('reload heartbeats when this file is deleted');
+    const readonlyPath = join(tmpHome, 'state', 'heartbeats.readonly.yaml');
+    const before = await fs.readFile(readonlyPath, 'utf8');
+    // the reload trigger rides runDue now — there is no internal beat and no internal row
+    expect(before).not.toContain('heartbeats-reload');
+    expect(before).not.toContain('spine (internal)');
+    expect(before).toContain('name: alive');
+
+    // delete the file → the next tick notices its absence + hot-reloads (regenerates it)
+    await fs.rm(readonlyPath);
+    app.spine.tick();
+    const exists = async () => { try { await fs.access(readonlyPath); return true; } catch { return false; } };
+    let back = false;
+    for (let i = 0; i < 100 && !back; i++) { back = await exists(); if (!back) await new Promise((r) => setTimeout(r, 10)); }
+    expect(back).toBe(true);   // the fire-and-forget reload rewrote the file
+    expect(await fs.readFile(readonlyPath, 'utf8')).toContain('name: alive');
 
     app.stop();
   });

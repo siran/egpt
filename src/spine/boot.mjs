@@ -159,10 +159,11 @@ export async function boot({
     router: createRouter(),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
-    // The cadence registry the spine's tick() drives. The heartbeat LOADER
-    // (below, after the spine exists) collects every declarative heartbeat and
-    // registers it here, so each beat rides the loop's own tick instead of a side
-    // timer (operator 2026-07-01).
+    // The real cadence registry the spine's tick() drives. The heartbeat LOADER
+    // (below) collects every declarative heartbeat and registers it here, so each
+    // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
+    // Boot then REPLACES this slot with the loader's decorated wrapper (wrapRegistry)
+    // so the reload staleness check rides runDue — see below.
     heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
   // Brain registry: resolves the default brain (config.default_brain, YAML defs in
@@ -234,6 +235,17 @@ export async function boot({
     onLog: (m) => log.line?.(`[heartbeat] ${m}`),
   });
 
+  // Decorate the real registry into the heartbeats object the spine ticks. The
+  // decoration puts the hot-reload TRIGGER on runDue itself: when the loop consults
+  // the in-memory heartbeat set, it first checks whether state/heartbeats.readonly
+  // .yaml is present — its ABSENCE means that set is stale (operator 2026-07-02:
+  // "if the file is not present, the in-memory heartbeat is stale, so regenerate the
+  // readonly file and load it into memory"). The check belongs to CONSULTING the
+  // set, not to a beat listed inside it. Wired here (before createSpine) but inert
+  // until activate() flips it live. Spine.mjs stays untouched — it just gets a
+  // heartbeats object with the same shape.
+  services.heartbeats = heartbeatLoader.wrapRegistry(services.heartbeats);
+
   // PHASE 1 — collect + parse BEFORE createSpine so the tick can be sized to the
   // finest cadence. The tick is the loop's pulse; every cadence rides it, so a
   // cadence finer than the tick can't be honored. Tighten tickMs down to finestMs
@@ -251,7 +263,7 @@ export async function boot({
   // (a legit long brain turn must never get the node guillotined). Pump depth/age
   // still ride every command beat's env (spine.stats() → EGPT_QUEUE_*) for custom
   // beats that want them.
-  await heartbeatLoader.activate({ registry: services.heartbeats, stats: spine.stats, tickMs: effectiveTickMs });
+  await heartbeatLoader.activate({ stats: spine.stats, tickMs: effectiveTickMs });
 
   spine.start();
   spine.tick();   // fire the first beat immediately so alive.txt exists at once
