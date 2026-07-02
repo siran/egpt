@@ -73,7 +73,7 @@ describe('seedSkeletons', () => {
 
   it('the default type file is a LIVE def (parses to { type: ccode, ... }), unlike the commented example', async () => {
     const YAML = await import('yaml');
-    expect(YAML.parse(DEFAULT_TYPE_FILE)).toMatchObject({ type: 'ccode', model: null, allowed_tools: 'all' });
+    expect(YAML.parse(DEFAULT_TYPE_FILE)).toMatchObject({ type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' });
   });
 
   it('a missing repo dir is tolerated (still seeds the example type file)', () => {

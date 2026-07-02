@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 import { createBrains } from '../src/spine/brains.mjs';
+import { buildClaudeArgs } from '../src/claude-args.mjs';
 
 const BUILTIN = '/builtin', PROFILE = '/profile', AGENTS = '/agents';
 
@@ -64,5 +65,18 @@ describe('brain registry', () => {
   it('the shipped default.yaml really loads (real fs)', () => {
     const brains = createBrains({ profileDir: '/nonexistent-profile-dir' });   // real builtin, empty profile
     expect(brains.resolve('default')).toMatchObject({ name: 'default', type: 'ccode', allowed_tools: 'all' });
+  });
+
+  it('a VERTICAL allowed_tools list flows end-to-end: type file → resolve (array) → buildClaudeArgs --allowedTools', () => {
+    // The documented vertical YAML-list form (default.yaml / config/agents examples).
+    const brains = harness({
+      [join(AGENTS, 'scoped.yaml')]: 'type: ccode\nallowed_tools:\n  - Read\n  - Grep\n  - "Bash(git:*)"\n',
+    });
+    const def = brains.resolve('scoped');
+    expect(def.allowed_tools).toEqual(['Read', 'Grep', 'Bash(git:*)']);   // array survives resolve
+    // brainpool passes def.allowed_tools straight through as baseOpts.allowedTools (unconfined).
+    const args = buildClaudeArgs({ allowedTools: def.allowed_tools });
+    const i = args.indexOf('--allowedTools');
+    expect(args[i + 1]).toBe('Read Grep Bash(git:*)');
   });
 });

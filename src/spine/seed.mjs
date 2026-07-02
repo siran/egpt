@@ -28,7 +28,7 @@ export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a bra
 #
 # Uncomment + edit to make \`sonnet-high\` a real type:
 # type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama
-# model: sonnet         # the model the engine runs (null = your \`claude\` login default)
+# model: sonnet         # PIN a concrete model — don't rely on a null 'login default' (non-deterministic)
 # effort: high          # reasoning effort, when the engine supports it
 # allowed_tools: all    # "all" | a space-separated allow-list | ["Read", "Edit", ...]
 `;
@@ -45,8 +45,26 @@ export const DEFAULT_TYPE_FILE = `# default — the persona's shipped AGENT TYPE
 # This is the canonical, EDITABLE home for the default type; the repo's built-in
 # src/brains/default.yaml is the fallback this mirrors. Seeding never overwrites it.
 type: ccode            # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
-model: null            # null → the model your \`claude\` login defaults to
-allowed_tools: all     # "all" | a space-separated allow-list | ["Read", "Edit", ...]
+# eGPT ships model + effort PINNED so every instanced conversation records a DETERMINISTIC
+# engine — edit these two lines to repoint; don't rely on an ambient \`claude\` login default
+# (a bare \`model: null\` still works but is NOT recommended: it makes the frozen def non-deterministic).
+model: sonnet          # concrete model the engine runs
+effort: high           # reasoning effort (engine-dependent)
+allowed_tools: all      # trusted: every tool, no permission prompts (→ --dangerously-skip-permissions)
+# Or a SCOPED allow-list — Anthropic/Claude Code tool NAMES, CASE-SENSITIVE. An inline
+# ["Read","Edit"], a space-string "Read Edit", or the vertical YAML-list form all work:
+# allowed_tools:
+#   - Read           # read files
+#   - Write          # create / overwrite files
+#   - Edit           # in-place edits
+#   - Glob           # find files by pattern
+#   - Grep           # search file contents
+#   - WebSearch      # web search
+#   - WebFetch       # fetch a URL
+#   - Bash(git:*)    # SCOPED shell — only \`git …\`; the house rule is Bash(<bin>:*), never bare Bash
+#   - Task           # sub-agents
+# Under a sandbox (confineToDirs) the file tools (Read/Write/Edit/Glob/Grep) stay
+# path-confined even if listed — they are NOT pre-approved (the Read-leak fix).
 # personality: default # identity feed a fresh conversation boots from (identities/<name>/);
                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
 `;
