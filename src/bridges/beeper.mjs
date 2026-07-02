@@ -157,11 +157,15 @@ export async function startBeeperBridge(opts = {}) {
     // content marker never does, and it keeps transcript.md linear).
     personaEmoji = null,
     // Authorization: is this STABLE sender id an operator (may emit commands /
-    // mentions)? Host-supplied (reads whatsapp.allowed_users live). Beeper does
-    // NOT reliably tag the owner's OWN sends as isSender — it fails even in the
-    // self-chat — so authorization must derive from the DELIVERED senderID, not
-    // isSender alone (operator 2026-06-16). Keyed on the stable id, never a
-    // display name (I6). Default deny.
+    // mentions) ON THIS network? Signature is (senderId, network) — the host reads
+    // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
+    // namespaces, so a WhatsApp jid authorizes nothing on Telegram; the bridge
+    // passes the message's origin network so the host resolves the right block).
+    // Beeper does NOT reliably tag the owner's OWN sends as isSender — it fails
+    // even in the self-chat — so authorization must derive from the DELIVERED
+    // senderID, not isSender alone (operator 2026-06-16). Keyed on the stable id,
+    // never a display name (I6). A two-arg-unaware callback ignores the extra arg
+    // harmlessly. Default deny.
     isAllowedUser = () => false,
     // Display name for the ACCOUNT OWNER's own (isSender) messages. Beeper gives
     // the self participant NO fullName — only its matrix id — so without this the
@@ -549,9 +553,9 @@ export async function startBeeperBridge(opts = {}) {
   const _seenText = new Map();         // msgId -> last cleaned text (edit detection, baseline-on-first-sight)
   const REACTION_CAP = 4000;
   function _capMap(m, cap) { while (m.size > cap) m.delete(m.keys().next().value); }
-  function _reactorName(id) {
+  function _reactorName(id, network) {
     if (!id) return 'someone';
-    if (isAllowedUser(id) && userName) return userName;   // the owner → configured name
+    if (isAllowedUser(id, network) && userName) return userName;   // the owner → configured name
     return _idToName.get(id) || id;
   }
   // Sync diff: update the per-message baseline, return the reactions ADDED since
@@ -583,17 +587,18 @@ export async function startBeeperBridge(opts = {}) {
     const fresh = _freshReactions(msg);
     if (!fresh.length) return;
     const info = await chatInfo(msg.chatID);
+    const network = msg.accountID || info.accountID || 'whatsapp';   // origin network (Beeper accountID); default 'whatsapp'
     const snippet = htmlToMarkdown(msg.text) || '';
     for (const { reactor, emoji } of fresh) {
-      const name = _reactorName(reactor);
+      const name = _reactorName(reactor, network);
       const body = reactionAction({ emoji, targetId: msg.id, snippet });
       onLog(`beeper: reaction ${emoji} by ${name} → #${msg.id} [${info.title}]`);
       const from = {
         chatId: msg.chatID, chatName: info.title,
         chatType: info.type === 'group' ? 'group' : 'private',
-        network: msg.accountID || info.accountID || 'whatsapp',   // origin network (Beeper accountID); default 'whatsapp'
+        network,   // per-surface authorization namespace
         userId: reactor, username: undefined, firstName: name, senderName: name,
-        isSender: false, authorized: isAllowedUser(reactor),
+        isSender: false, authorized: isAllowedUser(reactor, network),
         atEStart: false, atEAnywhere: false, replyToBot: false,
         isReaction: true, isTranscriptFromVoice: false,
         msgKey: msg.id || null,   // the reacted-to message id (referenced as #id in the body)
@@ -629,16 +634,17 @@ export async function startBeeperBridge(opts = {}) {
       catch (e) { onLog(`beeper: onMessageEdit threw — ${e?.message ?? e}`); }
     }
     const info = await chatInfo(msg.chatID);
+    const network = msg.accountID || info.accountID || 'whatsapp';   // origin network (Beeper accountID); default 'whatsapp'
     const editor = (msg.isSender && userName) ? userName : (msg.senderName || _idToName.get(msg.senderID) || 'someone');
     const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
     onLog(`beeper: edit #${msg.id} by ${editor} [${info.title}]: ${JSON.stringify(prev.slice(0, 40))} → ${JSON.stringify(cur.slice(0, 40))}`);
     const from = {
       chatId: msg.chatID, chatName: info.title,
       chatType: info.type === 'group' ? 'group' : 'private',
-      network: msg.accountID || info.accountID || 'whatsapp',   // origin network (Beeper accountID); default 'whatsapp'
+      network,   // per-surface authorization namespace
       userId: msg.senderID || msg.chatID, username: msg.senderName || undefined,
       firstName: editor, senderName: editor,
-      isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID),
+      isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID, network),
       atEStart: false, atEAnywhere: false, replyToBot: false,
       isReaction: false, isStageDirection: true, isTranscriptFromVoice: false,
       msgKey: msg.id || null,
@@ -803,8 +809,9 @@ export async function startBeeperBridge(opts = {}) {
       // the delivered senderID being on the operator allowlist — because Beeper's
       // isSender is unreliable for the owner's own sends (fails even in the
       // self-chat, operator 2026-06-16), so we must authorize from the senderID
-      // too. NEVER hardcode true — that authorizes every sender.
-      authorized: !!msg.isSender || isAllowedUser(msg.senderID),
+      // too. NEVER hardcode true — that authorizes every sender. `acct` is the
+      // origin network so the host resolves the per-surface allowed_users.
+      authorized: !!msg.isSender || isAllowedUser(msg.senderID, acct),
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
       replyToBot: false,                    // provable reply-to-persona is a follow-up

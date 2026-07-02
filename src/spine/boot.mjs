@@ -22,7 +22,7 @@ import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES,
 } from '../../conversations-state.mjs';
 
-import { createIdentity } from './identity.mjs';
+import { createIdentity, surfaceOf } from './identity.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
 import { createRouter } from './router.mjs';
@@ -107,7 +107,16 @@ export async function boot({
   const bridge = await createBeeperBridgePort({
     beeperToken: cfg.beeper_token ?? cfg.whatsapp?.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
-    isAllowedUser: (id) => (cfg.whatsapp?.allowed_users ?? []).includes(id),
+    // Per-surface authorization (operator 2026-07-02): ids are per-surface
+    // NAMESPACES — a WhatsApp jid authorizes nothing on Telegram — so the sender
+    // is checked against the origin network's OWN allowed_users (surfaceOf maps
+    // the network → whatsapp|telegram|signal block). Empty list = deny
+    // (fail-closed). isSender (the account owner) still authorizes globally — that
+    // flag is orthogonal, set by the bridge, not here. BACK-COMPAT: a whatsapp
+    // message resolves to cfg.whatsapp.allowed_users exactly as before; other
+    // surfaces move from borrowing whatsapp's list to fail-closed deny, the
+    // operator-intended tightening.
+    isAllowedUser: (id, network) => ((cfg[surfaceOf(network)]?.allowed_users) ?? []).includes(id),
     media: cfg.whatsapp?.media ?? {},
     transcribe: tx.transcribe,                                  // the fallback-chain transcriber
     transcribeCfg: tx.cliCfg,

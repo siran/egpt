@@ -63,18 +63,14 @@ describe('config/skeletons/config.yaml', () => {
   it('every top-level key it SETS (uncommented) is registered in CONFIG_SCHEMA', () => {
     // The skeleton can never drift from the schema: a key set here that /config
     // does not know about would be rejected as 'unknown' on a fresh install.
-    // TODO(per-surface-auth follow-up): the skeleton ships a `signal` surface
-    // block (peer of whatsapp/telegram) whose ENFORCEMENT + schema registration
-    // land in the follow-up code change; allow it as known-pending until then so
-    // the skeleton can be written to the target shape without blocking this test.
-    const PENDING = new Set(['signal']);
+    // The `signal` surface block (peer of whatsapp/telegram) is now registered in
+    // CONFIG_SCHEMA, so it no longer needs a known-pending exemption.
     const doc = YAML.parse(text);
     const keys = Object.keys(doc);
     // sanity: the skeleton actually sets the core keys (not an empty parse)
     expect(keys).toContain('beeper_token');
     expect(keys.length).toBeGreaterThanOrEqual(4);
     for (const key of keys) {
-      if (PENDING.has(key)) continue;
       expect(CONFIG_SCHEMA, `skeleton sets "${key}" but it is not in CONFIG_SCHEMA`).toHaveProperty(key);
     }
   });

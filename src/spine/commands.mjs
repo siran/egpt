@@ -50,12 +50,15 @@ export function createCommands({
   const cfg = () => getConfig() ?? {};
 
   // Same id in any form counts as the Self DM (lid vs phone-form — a /restart
-  // often arrives as the @lid self-jid). Authorized senders (allowed_users /
-  // isSender) can command from anywhere.
+  // often arrives as the @lid self-jid). The Self DM is PER-SURFACE now (operator
+  // 2026-07-02): a /restart typed in the telegram surface's own chat_id is checked
+  // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
+  // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
+  // senders (per-surface allowed_users / isSender) can command from anywhere.
   function isCommand(ev) {
     const body = String(ev?.body ?? '').trim();
     if (!body.startsWith('/')) return false;
-    const selfDm = cfg().whatsapp?.chat_id;
+    const selfDm = cfg()[ev?.surface ?? 'whatsapp']?.chat_id;
     return (selfDm && ev.chatId === selfDm) || !!ev.authorized || !!ev.isSender;
   }
 

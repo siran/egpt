@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
+import { surfaceOf } from '../src/spine/identity.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -544,6 +545,71 @@ describe('beeper bridge', () => {
     ]);
     const id = await bridge.sendAndGetId(TXT, { chatId: chat });
     expect(id).toBe('5');
+  });
+});
+
+// PER-SURFACE AUTHORIZATION (operator 2026-07-02): ids are per-surface NAMESPACES —
+// a WhatsApp jid authorizes NOTHING on Telegram — so the bridge passes the message's
+// origin network to isAllowedUser(senderId, network) and the host resolves the
+// network → that surface's OWN allowed_users. These drive the SAME surfaceOf-based
+// callback boot wires, so what's exercised is the bridge→host network-threading.
+describe('beeper bridge — per-surface authorization', () => {
+  const cfg = {
+    whatsapp: { allowed_users: ['wa-op@beeper.local'] },
+    telegram: { allowed_users: ['tg-op@beeper.local'] },
+  };
+  const perSurfaceAuth = (id, network) => ((cfg[surfaceOf(network)]?.allowed_users) ?? []).includes(id);
+
+  it('a telegram sender in telegram.allowed_users is authorized', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'TeleFam', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { incoming } = await startBridge({ isAllowedUser: perSurfaceAuth });
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ chatID: CHAT('chat-tg'), isSender: false, senderID: 'tg-op@beeper.local', senderName: 'TgOp', text: 'tg' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.authorized).toBe(true);
+  });
+
+  it('a telegram sender whose id is ONLY in whatsapp.allowed_users is NOT authorized (cross-surface namespace)', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'TeleFam', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { incoming } = await startBridge({ isAllowedUser: perSurfaceAuth });
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ chatID: CHAT('chat-tg'), isSender: false, senderID: 'wa-op@beeper.local', senderName: 'WaOp', text: 'tg-cross' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.authorized).toBe(false);   // a wa id must not authorize on telegram
+  });
+
+  it('a whatsapp sender in whatsapp.allowed_users is authorized (unchanged behavior)', async () => {
+    const { incoming } = await startBridge({ isAllowedUser: perSurfaceAuth });   // default chat = whatsapp
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: false, senderID: 'wa-op@beeper.local', senderName: 'WaOp', text: 'wa' }),
+    ] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.authorized).toBe(true);
+  });
+
+  it('the reaction path threads the origin network too (a telegram reactor resolves on telegram)', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'TeleFam', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { incoming } = await startBridge({ isAllowedUser: perSurfaceAuth, userName: 'Owner' });
+    const tgt = `${Math.floor(Math.random() * 1e6)}`;
+    // baseline: the target message's first sight (no reactions yet)
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ id: tgt, chatID: CHAT('chat-tg'), isSender: false, senderID: 'x@beeper.local', senderName: 'X', text: 'hola' }),
+    ] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === tgt));
+    const before = incoming.length;
+    // tg-op reacts → authorized on telegram (in telegram.allowed_users); _reactorName
+    // also gets the network, so an authorized owner reaction resolves to userName.
+    fake.emit({ type: 'message.upserted', entries: [
+      { id: tgt, chatID: CHAT('chat-tg'), type: 'TEXT', text: 'hola', senderName: 'X', timestamp: Date.now(),
+        reactions: [{ participantID: 'tg-op@beeper.local', reactionKey: '👍' }] },
+    ] });
+    await waitFor(() => incoming.length > before);
+    const react = incoming[incoming.length - 1];
+    expect(react.from.isReaction).toBe(true);
+    expect(react.from.authorized).toBe(true);      // network reached isAllowedUser on the reaction path
+    expect(react.from.senderName).toBe('Owner');   // …and reached _reactorName (owner → configured name)
   });
 });
 

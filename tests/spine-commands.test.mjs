@@ -33,6 +33,18 @@ describe('commands.isCommand', () => {
     const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' } } });
     expect(cmds.isCommand({ body: '/restart', chatId: '!group' })).toBe(false);
   });
+  it('recognizes a slash command in the TELEGRAM surface Self DM (per-surface chat_id)', () => {
+    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' }, telegram: { chat_id: '!tg-self' } } });
+    expect(cmds.isCommand({ body: '/restart', chatId: '!tg-self', surface: 'telegram' })).toBe(true);
+  });
+  it('does NOT recognize a slash command from a random telegram chat', () => {
+    const { cmds } = harness({ config: { telegram: { chat_id: '!tg-self' } } });
+    expect(cmds.isCommand({ body: '/restart', chatId: '!tg-group', surface: 'telegram' })).toBe(false);
+  });
+  it('the whatsapp Self chat_id does NOT authorize the same id on the telegram surface (namespace)', () => {
+    const { cmds } = harness({ config: { whatsapp: { chat_id: '!self' } } });
+    expect(cmds.isCommand({ body: '/restart', chatId: '!self', surface: 'telegram' })).toBe(false);
+  });
   it('does NOT treat plain text (or @e) as a command', () => {
     const { cmds } = harness();
     expect(cmds.isCommand({ body: 'hola', chatId: '!self', authorized: true })).toBe(false);
