@@ -194,6 +194,36 @@ describe('brainpool.turn', () => {
   });
 });
 
+describe('brainpool.turn — local sibling beings', () => {
+  const sibCfg = { siblings: { wren: { type: 'ccode', name: 'wren', model: 'claude-y', effort: 'high', allowed_tools: 'Read,Bash' } } };
+
+  it('uses the config def (model/effort/allowed_tools reach brainOptions), keys by being+engine, no identity feed', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { config: sibCfg, loadFeed: async () => 'IGNORED', loadManifest: async () => 'IGNORED' });
+    await brain.turn('wren', ev);
+    expect(pool.calls[0].key).toMatch(/^wren:ccode:whatsapp:SPOILER-\d{10}$/);   // being+engine key
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'claude-y', effort: 'high', allowedTools: 'Read,Bash' });
+    expect(pool.calls[0].message).toBe(ev.line);   // siblings get the raw line — no identity kickoff
+  });
+
+  it('writes NO readonly instancing for a sibling (its def lives in config)', async () => {
+    const { brain, getState } = harness([{ text: 'ok', sessionId: 'w1' }], { config: sibCfg });
+    await brain.turn('wren', ev);
+    const entry = getState().contacts.whatsapp['!room:beeper.com'];
+    expect(entry.readonly).toBeUndefined();         // no flat readonly
+    expect(entry.wren?.readonly).toBeUndefined();    // nor a nested one
+  });
+
+  it('records the sibling thread in a NESTED block (E flat untouched) and RESUMES it next turn', async () => {
+    const { brain, pool, getState } = harness([{ text: 'a', sessionId: 'w1' }, { text: 'b', sessionId: 'w1' }], { config: sibCfg });
+    await brain.turn('wren', ev);
+    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'wren').threadId).toBe('w1');
+    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe(null);   // E's flat thread stays empty
+    await brain.turn('wren', ev);
+    expect(pool.calls[0].brainOptions.sessionId).toBe(null);   // first turn: fresh
+    expect(pool.calls[1].brainOptions.sessionId).toBe('w1');   // second resumes the nested thread
+  });
+});
+
 describe('parseWarmBlock', () => {
   it('absent block / malformed / garbage → null', () => {
     expect(parseWarmBlock('').idleTtlMs).toBe(null);

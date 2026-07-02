@@ -180,7 +180,7 @@ export async function boot({
   const services = {
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState }),
-    router: createRouter(),
+    router: createRouter({ getSiblings: () => cfg.siblings ?? {} }),
     transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER

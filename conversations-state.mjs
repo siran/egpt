@@ -960,13 +960,33 @@ export function patchContact(state, surface, jidOrSlug, patch) {
   return state;
 }
 
-// Record that a new claude thread was just spawned for a contact.
-export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString()) {
+// Record that a new claude thread was just spawned for a contact's resident being.
+// The default 'e' writes the FLAT thread fields exactly as before (an un-migrated
+// conversation is byte-identical). Any OTHER being writes a NESTED `<being>` block
+// so its thread persists alongside E's — merged over the block's existing fields
+// (mode/readonly survive), and it then shows up as a resident (residentsOf), which
+// is the intended per-being conversation shape.
+export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being = 'e') {
+  if (being === 'e') {
+    return patchContact(state, surface, jidOrSlug, {
+      threadId,
+      threadCreatedAt: nowIso,
+      identityInjectedAt: nowIso,
+    });
+  }
+  const existing = _entryByJidOrSlug(state, surface, jidOrSlug)?.[being] ?? {};
   return patchContact(state, surface, jidOrSlug, {
-    threadId,
-    threadCreatedAt: nowIso,
-    identityInjectedAt: nowIso,
+    [being]: { ...existing, threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso },
   });
+}
+
+// Resolve the primary entry for a jid OR slug within a surface (the same lookup
+// order patchContact uses). Returns the entry object or null. Used by the
+// being-aware recordThread to read the current nested block before merging.
+function _entryByJidOrSlug(state, surface, jidOrSlug) {
+  const byJid = _resolveByJid(state, surface, jidOrSlug);
+  if (byJid) return byJid.entry;
+  return _findByslug(state, surface, jidOrSlug)?.entry ?? null;
 }
 
 // ── Predicates ─────────────────────────────────────────────────────────────

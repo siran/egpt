@@ -398,6 +398,38 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     expect(s2.contacts[WA].j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
   });
 
+  // being-aware recordThread: 'e' stays flat (unchanged); any other being writes a
+  // nested per-being block so its thread persists alongside E's.
+  const nestBase = () => ({ contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default', pushedName: 'D' } } } });
+  it("default 'e' still writes FLAT thread fields (no nested block)", () => {
+    const s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z');
+    expect(s.contacts[WA].j.threadId).toBe('thr-e');
+    expect(s.contacts[WA].j.wren).toBeUndefined();
+  });
+  it('a sibling writes a NESTED <being> block, leaving E flat fields intact', () => {
+    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z');          // E flat
+    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');             // wren nested
+    expect(s.contacts[WA].j.threadId).toBe('thr-e');                                          // E untouched
+    expect(s.contacts[WA].j.wren).toEqual({
+      threadId: 'thr-wren', threadCreatedAt: '2026-05-20T10:00:00.000Z', identityInjectedAt: '2026-05-20T10:00:00.000Z',
+    });
+  });
+  it('merges over an existing nested block (a stored mode survives a thread record)', () => {
+    const s0 = { contacts: { whatsapp: { 'j': { slug: 'diego', wren: { mode: 'mention' } } } } };
+    const s = recordThread(s0, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
+    expect(s.contacts[WA].j.wren).toEqual({
+      mode: 'mention', threadId: 'thr-wren', threadCreatedAt: '2026-05-20T10:00:00.000Z', identityInjectedAt: '2026-05-20T10:00:00.000Z',
+    });
+  });
+  it('residentsOf lists the sibling after a nested thread record', () => {
+    const s = recordThread(nestBase(), WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
+    expect(residentsOf(s.contacts[WA].j)).toEqual(['e', 'wren']);
+  });
+  it('being-aware recordThread accepts a slug key too', () => {
+    const s = recordThread(nestBase(), WA, 'diego', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
+    expect(s.contacts[WA].j.wren.threadId).toBe('thr-wren');
+  });
+
   // Regression: root fields (system_thread, etc.) must survive contact
   // mutations. Earlier the rebuild `{ contacts: ... }` was dropping
   // system_thread on every non-system contact dispatch, wiping the

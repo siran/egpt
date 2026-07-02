@@ -19,8 +19,8 @@ function fakeBridge() {
     onMessage(fn) { cb = fn; },
     emit(m) { return cb(m); },
     send(chat, text) { this.sent.push({ chat, text }); },
-    startStream(chat, init) {
-      const h = { chat, init, finals: [], delivered: false, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
+    startStream(chat, init, tag) {
+      const h = { chat, init, tag, finals: [], delivered: false, update() {}, async finish(t) { this.finals.push(t); this.delivered = true; } };
       this.streams.push(h); return h;
     },
     stop() {},
@@ -168,6 +168,13 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(onlyFile(files)).toContain('#m1: @e estas?');
   });
 
+  it('a plain message with no @sibling still routes to e', async () => {
+    const { bridge, brain } = harness({}, 'on');
+    await bridge.emit(msg({ body: 'hola' }));
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('e');
+  });
+
   it('a renamed chat: transcript continues in the NEW slug dir, old dir moved via the injected io', async () => {
     // The contact was registered as 'fam'; a message now arrives with the chat
     // retitled 'crew'. The shared resolver re-slugs on the title change, moves the
@@ -184,5 +191,78 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     expect(transcriptPath).toMatch(/crew-\d{10}[\\/]transcript\.md$/);   // lands in the NEW dir
     expect(paths.some((p) => /fam-\d{10}[\\/]transcript\.md$/.test(p))).toBe(false);  // nothing left in the old dir
     expect(files.get(transcriptPath)).toContain('An@[crew].wa (14:05) #m1: hola');
+  });
+});
+
+// A full-pipe sibling case through the REAL router + gating + transcript + sender
+// (with body_emoji/label), a fake Bridge + fake Brain. Self-contained harness so
+// the E-mode harness above stays untouched: it seeds an optional E mode AND an
+// optional nested sibling mode, and wires config.siblings into router + sender.
+function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
+  let state = emptyState();
+  const ens = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' });
+  state = ens.state;
+  const entry = state.contacts.whatsapp['!room:beeper.com'];
+  if (eMode) entry.mode = eMode;
+  if (wrenMode) entry.wren = { mode: wrenMode };   // a nested resident-being block
+  const loadState = async () => state;
+  const writeState = async (s) => { state = s; };
+
+  const files = new Map();
+  const io = {
+    appendFile: async (p, data) => { files.set(p, (files.get(p) ?? '') + data); },
+    mkdir: async () => {}, existsSync: (p) => files.has(p), rename: async () => {},
+  };
+  const contacts = createContacts({ loadState, writeState, io });
+  const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
+  const bodyEmojiOf = (b) => (b === 'e' ? '🐶' : config.siblings?.[b]?.body_emoji ?? null);
+  const labelOf = (b) => (b === 'e' ? 'egpt' : config.siblings?.[b]?.name ?? b);
+
+  const bridge = fakeBridge();
+  const brain = fakeBrain();
+  const spine = createSpine({
+    bridge, brain,
+    identity: createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5) }),
+    gating: createGating({ getConfig: () => config, loadState }),
+    router: createRouter({ getSiblings: () => config.siblings ?? {} }),
+    sender: createSender({ bridge, bodyEmojiOf, labelOf }),
+    transcript, heartbeats: { runDue() {} },
+  });
+  spine.start();
+  return { bridge, brain, files };
+}
+
+describe('v1 pipe — local sibling routing (@wren)', () => {
+  const cfg = { siblings: { wren: { type: 'ccode', name: 'wren', body_emoji: '🐦' } } };
+
+  it("'@wren do X': brain.turn(being=wren), reply delivered with wren's emoji+label, transcript line [@wren …]", async () => {
+    const { bridge, brain, files } = siblingHarness(cfg);
+    await bridge.emit(msg({ body: '@wren do X' }));
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('wren');
+    // delivered via the reply train, tagged with wren's body_emoji + label
+    expect(bridge.streams[0].finals).toEqual(['↩ @wren do X ∎']);
+    expect(bridge.streams[0].tag).toMatchObject({ bodyEmoji: '🐦', label: 'wren' });
+    // reply-to quote fires (the sibling is mentioned by its own @name)
+    expect(bridge.streams[0].tag.replyTo).toBe('m1');
+    expect(onlyFile(files)).toContain('[@wren (14:05)]: ↩ @wren do X');
+  });
+
+  it('a plain message still routes to e (not the sibling)', async () => {
+    const { bridge, brain } = siblingHarness(cfg, { eMode: 'on' });
+    await bridge.emit(msg({ body: 'hola' }));
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('e');
+  });
+
+  it('a muted sibling stays silent: @wren received + logged, but NO brain, NO send', async () => {
+    const { bridge, brain, files } = siblingHarness(cfg, { wrenMode: 'mute' });
+    await bridge.emit(msg({ body: '@wren do X' }));
+    expect(brain.calls).toHaveLength(0);
+    expect(bridge.streams).toHaveLength(0);
+    expect(bridge.sent).toHaveLength(0);
+    const t = onlyFile(files);
+    expect(t).toContain('#m1: @wren do X');   // inbound still logged
+    expect(t).not.toContain('[@wren');        // …but no reply line
   });
 });

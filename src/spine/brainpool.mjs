@@ -20,9 +20,12 @@
 //     "unnecessary AND wasteful — the brain accepts being eGPT through the normal
 //     conversation." A resumed thread already holds it, so it isn't re-sent.
 //
-// v1 is the E persona on the ccode engine. Sibling beings (per-being session
-// persistence) and codex/URL brains layer in later; emitted-command stripping is
-// the comm-handler's job (Phase 4), not the brain's.
+// v1 is the E persona on the ccode engine. LOCAL sibling beings (@wren, @don) also
+// run here: a sibling's brain def comes from config.siblings[<being>] (NOT the
+// brains registry, and never frozen into readonly), it gets NO identity kickoff
+// (engineers, not the persona), and its thread persists in a per-being NESTED block
+// (recordThread(..., being)). codex/URL brains + emitted-command stripping (the
+// comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
@@ -111,6 +114,24 @@ export function createBrainPool({
     };
   }
 
+  // A sibling being's brain def comes from config.siblings[<being>] — NOT the brains
+  // registry, and it is NEVER frozen into readonly (the def LIVES in config, so there
+  // is nothing per-conversation to instance). `claude-code` is normalized to the
+  // canonical `ccode` engine token; missing fields fall back as the persona's do.
+  function siblingDef(being) {
+    const s = (getConfig() ?? {}).siblings?.[being] ?? {};
+    const type = String(s.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (s.type ?? brainType);
+    return {
+      name: s.name ?? being,
+      type,
+      model: s.model ?? null,
+      effort: s.effort ?? null,
+      allowed_tools: s.allowed_tools ?? 'all',
+      cwd: s.cwd ?? undefined,
+      system_prompt: s.system_prompt ?? undefined,
+    };
+  }
+
   // The DEFAULT brain a fresh conversation is instanced from: config.default_brain
   // names a registry brain (string), or is an inline def (legacy object) merged over
   // the shipped 'default'. Falls back to a bare ccode def if the registry is absent.
@@ -129,16 +150,23 @@ export function createBrainPool({
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
-      // The conversation's brain: its instanced (frozen) brain, or — on the first
-      // turn — the default, which we instance into conversations.yaml `readonly` now
-      // so a later change to the default can't retro-alter this thread (and `/e` can
-      // re-point it per-conversation).
-      let def = instanced;
-      if (!def) {
-        def = resolveDefaultBrain(convDir);
-        await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-          readonly: { brain: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all', personality },
-        }));
+      const isSibling = being !== 'e';
+      let def;
+      if (isSibling) {
+        // Sibling: def straight from config.siblings[being]; no readonly instancing.
+        def = siblingDef(being);
+      } else {
+        // The conversation's brain: its instanced (frozen) brain, or — on the first
+        // turn — the default, which we instance into conversations.yaml `readonly` now
+        // so a later change to the default can't retro-alter this thread (and `/e` can
+        // re-point it per-conversation).
+        def = instanced;
+        if (!def) {
+          def = resolveDefaultBrain(convDir);
+          await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
+            readonly: { brain: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all', personality },
+          }));
+        }
       }
       const engine = def.type ?? brainType;
       // E works inside the conversation's own folder unless the brain pins a
@@ -166,6 +194,7 @@ export function createBrainPool({
       // overflow-reset retry re-wraps because its fresh session needs the identity.
       const line = ev.line ?? ev.body;
       const wrapFresh = async () => {
+        if (isSibling) return line;   // siblings are engineers, not the persona — no identity feed
         let feed = (await loadFeed(personality)) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
         if (!feed.trim()) return line;   // no identity configured → raw line
@@ -196,10 +225,10 @@ export function createBrainPool({
 
       const text = typeof r === 'string' ? r : (r?.text ?? '');
       const newSession = (r && typeof r === 'object' && r.sessionId) || null;
-      // Persist a freshly-minted session so the next turn resumes it (flat 'e'
-      // threadId; per-being persistence for siblings is a later concern).
+      // Persist a freshly-minted session so the next turn resumes it — being-aware:
+      // flat threadId for 'e', a nested <being> block for a sibling.
       if (newSession && newSession !== sessionId) {
-        await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession));
+        await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, undefined, being));
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.

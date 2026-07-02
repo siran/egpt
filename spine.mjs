@@ -67,8 +67,8 @@
 /**
  * @typedef {object} Services
  * @property {{ build: (msg: any) => InboundEvent }} identity            classify + build the dispatch line
- * @property {{ resolve: (ev: InboundEvent) => string }} router          @being → local being target
- * @property {{ decide: (being: string, ev: InboundEvent) => Promise<{mode: string, receives: boolean, mayReply: boolean, sendToEgpt: 'always'|'mode'}>,
+ * @property {{ resolve: (ev: InboundEvent) => { being: string, mention?: object } }} router   @being → { local being target, mention ride-along } (a sibling routed by its own @name rides a synthetic mention for its gate)
+ * @property {{ decide: (being: string, ev: InboundEvent, mention?: object) => Promise<{mode: string, receives: boolean, mayReply: boolean, sendToEgpt: 'always'|'mode'}>,
  *             surfaces: (decision: object, replyText: string) => boolean }} gating   per-conversation mode + send_to_egpt → run/surface decisions
  * @property {{ open: (chatId: string) => { update: (partial: any) => void, finish: (reply: any) => Promise<void>, fail?: (e: any) => void } }} sender   live-stream delivery (open → update* → finish)
  * @property {{ log: (ev: InboundEvent, reply?: any) => void }} transcript   "file is the conversation"
@@ -131,11 +131,18 @@ export function createSpine({
     // a muted/mention chat.
     if (commands?.isCommand?.(ev)) { await transcript.log(ev); await commands.run(ev); return; }
 
-    const to = router.resolve(ev);
+    // Router picks the being + the mention that being's gate should see. The real
+    // router returns { being, mention }; a bare-string return (older/other fakes)
+    // is tolerated as the being with ev.mention unchanged.
+    const routed = router.resolve(ev);
+    const to = typeof routed === 'string' ? routed : routed.being;
+    const mention = (typeof routed === 'string' ? null : routed.mention) ?? ev.mention;
 
     // ONE conversation-state read resolves this message's policy (mode +
-    // send_to_egpt, both from conversations.yaml) and the derived gate flags.
-    const d = await gating.decide(to, ev);
+    // send_to_egpt, both from conversations.yaml) and the derived gate flags. The
+    // routed mention is passed explicitly (it's the sibling's, not @e's, when a
+    // sibling was routed by its own @name).
+    const d = await gating.decide(to, ev, mention);
 
     // 'off' → not received: not logged, not processed (C4). Every OTHER mode is
     // logged below — a received message is never silently dropped (C1.2).
@@ -155,7 +162,8 @@ export function createSpine({
       // Surfacing branch: stream the reply live (the reply train), then surface it
       // unless it's 'on'-mode silence ('...'). A reply quotes its triggering
       // message (operator: "mentions should always be replied to the message").
-      const m = ev.mention ?? {};
+      // Uses the ROUTED mention so a sibling's @name reply quotes correctly too.
+      const m = mention ?? {};
       const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
       const out = sender.open(ev.chatId, { being: to, replyTo });
       let reply;
