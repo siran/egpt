@@ -3,11 +3,12 @@
 // upsert + migration all run in-memory.
 
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as YAML from 'yaml';
 import {
   emptyState,
   sanitizeSlug,
@@ -15,6 +16,14 @@ import {
   findContactsByName,
   ensureContact,
   conversationPathOf,
+  homeDirMsys,
+  toMsysPath,
+  statsPath,
+  appendThreadStat,
+  mergeStats,
+  mergeThreadIntoStats,
+  DETERMINISTIC_MODEL,
+  DETERMINISTIC_EFFORT,
   recentContacts,
   slugDir,
   isPlaceholderSlug,
@@ -90,7 +99,14 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
     // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — a fresh
     // contact is NOT seeded with one; the identity feed is a property of the agent type.
     expect('personality' in entry).toBe(false);
-    expect(entry.firstSeenAt).toBeTruthy();
+    // SLIM shape (operator 2026-07-02): lifecycle timestamps live in stats.yaml now, so a
+    // fresh entry carries NO firstSeenAt/threadCreatedAt/identityInjectedAt — but DOES carry
+    // the relocatable pointer (home_dir + home-relative conversation_path).
+    expect('firstSeenAt' in entry).toBe(false);
+    expect('threadCreatedAt' in entry).toBe(false);
+    expect('identityInjectedAt' in entry).toBe(false);
+    expect(entry.home_dir).toBe(homeDirMsys());
+    expect(entry.conversation_path).toBe(conversationPathOf(WA, slug));
     expect(entry.pushedName).toBe('Diego Pérez (Koma)');
     expect(entry.jids).toBeUndefined();
     expect(state.contacts[WA][jid]).toEqual(entry);
@@ -172,15 +188,23 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
 });
 
 describe('conversation_path (stored) + threadCwd backfill', () => {
-  it('conversationPathOf returns the posix path relative to ~/.egpt', () => {
-    expect(conversationPathOf(WA, 'diego-2606101647')).toBe('conversations/whatsapp/diego-2606101647');
-    expect(conversationPathOf(TG, 'jay-2605200416')).toBe('conversations/telegram/jay-2605200416');
+  it('conversationPathOf is home-relative, includes the profile + surface, basename = slug', () => {
+    // The stored path now includes the PROFILE dir (operator 2026-07-02: `.egpt2/conversations/…`)
+    // and is relative to home_dir — a relocatable pointer. Asserted structurally so it holds
+    // whatever EGPT_HOME the suite runs under.
+    const p = conversationPathOf(WA, 'diego-2606101647');
+    expect(p.endsWith('/conversations/whatsapp/diego-2606101647')).toBe(true);
+    expect(p.split('/').pop()).toBe('diego-2606101647');
+    expect(p.startsWith('/')).toBe(false);                    // home-relative, not absolute
+    expect(/^[A-Za-z]:/.test(p)).toBe(false);                 // …and not a bare drive path
+    expect(conversationPathOf(TG, 'jay-2605200416').endsWith('/conversations/telegram/jay-2605200416')).toBe(true);
   });
 
-  it('stores conversation_path on a fresh contact', () => {
+  it('stores home_dir + a home-relative conversation_path on a fresh contact', () => {
     const r = ensureContact(emptyState(), WA, '!room:beeper.local', { pushedName: 'morgan', slugHint: 'morgan' });
     expect(r.entry.conversation_path).toBe(conversationPathOf(WA, r.slug));
-    expect(r.entry.conversation_path.startsWith('conversations/whatsapp/')).toBe(true);
+    expect(r.entry.conversation_path).toMatch(/\/conversations\/whatsapp\/morgan-\d{10}$/);
+    expect(r.entry.home_dir).toBe(homeDirMsys());
   });
 
   it('backfills conversation_path + a populated threadCwd on a legacy entry that lacks them', () => {
@@ -526,31 +550,63 @@ describe('YAML parse / serialize round-trip', () => {
     const s = emptyState();
     expect(parse(serialize(s))).toEqual(s);
   });
-  it('round-trips a populated, multi-surface state', () => {
+  it('round-trips a populated, multi-surface SLIM state (pushedName as comment, slug from path)', () => {
+    // The on-disk shape is slim: pushedName rides as the jid-key inline comment, slug is derived
+    // from conversation_path's basename, home_dir + conversation_path are stored. In-memory the
+    // fields are all present (this is exactly what parse() re-hydrates).
+    const mk = (surface, slug, extra = {}) => ({
+      slug,
+      conversation_path: conversationPathOf(surface, slug),
+      home_dir: homeDirMsys(),
+      threadId: null,
+      pushedName: '',
+      ...extra,
+    });
     const s = {
+      system_thread: { threadId: 'sys-1', threadCreatedAt: '2026-05-21T22:00:00.000Z' },
       contacts: {
         whatsapp: {
-          '26087681749235@lid': {
-            slug: 'diego-2605200133',
-            personality: 'default',
+          '26087681749235@lid': mk(WA, 'diego-2605200133', {
             threadId: 'abc',
-            threadCreatedAt: '2026-05-19T18:34:00.000Z',
-            identityInjectedAt: '2026-05-19T18:34:00.000Z',
-            pushedName: 'Diego Pérez (Koma)',
-          },
+            threadCwd: 'C:/Users/an/.egpt/conversations/whatsapp/diego-2605200133',
+            readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+            pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
+          }),
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
         },
         telegram: {
-          '88164392': {
-            slug: 'an-self-2605211200',
-            personality: 'system',
-            threadId: null,
-            pushedName: 'An',
-          },
+          '88164392': mk(TG, 'an-self-2605211200', { pushedName: 'An' }),
         },
       },
     };
     expect(parse(serialize(s))).toEqual(s);
+    // The comment carries the exact name; the derived slug is the path basename.
+    expect(serialize(s)).toContain('# Diego Pérez (Koma) 😀 "koma": #1');
+  });
+
+  it('serialize omits slug + lifecycle keys; parse re-derives them (the slim contract)', () => {
+    const s = {
+      contacts: { whatsapp: { j: {
+        slug: 'diego-2605200133',
+        conversation_path: conversationPathOf(WA, 'diego-2605200133'),
+        home_dir: homeDirMsys(),
+        threadId: 'abc',
+        // These MUST NOT reach disk (they live in stats.yaml) — serialize drops them.
+        firstSeenAt: '2026-05-20T01:33:00.000Z',
+        threadCreatedAt: '2026-05-20T01:34:00.000Z',
+        identityInjectedAt: '2026-05-20T01:34:00.000Z',
+        pushedName: 'Diego',
+      } } },
+    };
+    const text = serialize(s);
+    expect(text).not.toContain('firstSeenAt');
+    expect(text).not.toContain('threadCreatedAt');
+    expect(text).not.toContain('identityInjectedAt');
+    expect(text).not.toMatch(/^\s*slug:/m);      // no slug key on disk
+    const back = parse(text).contacts.whatsapp.j;
+    expect(back.slug).toBe('diego-2605200133');   // derived from conversation_path basename
+    expect(back.pushedName).toBe('Diego');        // recovered from the key comment
+    expect('firstSeenAt' in back).toBe(false);    // dropped for good (now a stats.yaml fact)
   });
   it('parse() of empty / garbage returns emptyState', () => {
     expect(parse('')).toEqual(emptyState());
@@ -599,20 +655,42 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     await writeState(fp, state);
     return fp;
   }
+  // Write a PRE-migration file the OLD way (raw YAML.stringify keeps lifecycle keys, pushedName
+  // + slug as data keys) — the new serialize would slim them away before the migration could
+  // move them. This is the exact on-disk shape the operator's live file is in today.
+  async function writeOldTmp(state) {
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-old-'));
+    tmpDirs.push(dir);
+    const fp = join(dir, 'conversations.yaml');
+    await writeFile(fp, YAML.stringify(state), 'utf8');
+    return fp;
+  }
 
-  it('renames a FLAT e readonly.brain to readonly.agent AND drops readonly.personality (other fields intact)', async () => {
+  it('renames a FLAT e readonly.brain to readonly.agent, drops readonly.personality, backfills null model/effort deterministically', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
       j: { slug: 'diego', readonly: { brain: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' } },
     } } });
-    const r = await migrateConversationVocabulary(fp);
+    const r = await migrateConversationVocabulary(fp);   // no resolveAgentDef → deterministic constants
     expect(r.migrated).toBe(1);
     const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
     expect('brain' in ro).toBe(false);
     expect('personality' in ro).toBe(false);   // the retired key is gone
-    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all' });
+    // model/effort were null → backfilled to the deterministic constants (never left null)
+    expect(ro).toEqual({ agent: 'default', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
   });
 
-  it('drops the FLAT entry-level personality (the key ensureContact used to seed)', async () => {
+  it('backfills null readonly.model/effort from the agent type when a registry is provided', async () => {
+    const fp = await writeTmp({ contacts: { whatsapp: {
+      j: { slug: 'diego', readonly: { agent: 'default', type: 'ccode', model: null } },   // effort absent, model null
+    } } });
+    const resolveAgentDef = (name) => name === 'default' ? { model: 'opus', effort: 'medium' } : null;
+    expect((await migrateConversationVocabulary(fp, { resolveAgentDef })).migrated).toBe(1);
+    const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
+    expect(ro.model).toBe('opus');     // from the resolved type
+    expect(ro.effort).toBe('medium');
+  });
+
+  it('drops the FLAT entry-level personality (the key ensureContact used to seed) and slims to the pointer shape', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
       j: { slug: 'diego', personality: 'default', threadId: 'T', pushedName: 'D' },
     } } });
@@ -620,7 +698,8 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     expect(r.migrated).toBe(1);
     const e = (await readState(fp)).contacts.whatsapp.j;
     expect('personality' in e).toBe(false);
-    expect(e).toEqual({ slug: 'diego', threadId: 'T', pushedName: 'D' });   // everything else intact
+    // Slim pointer shape: derived slug + threadId + pushedName + the relocatable pointer.
+    expect(e).toEqual({ slug: 'diego', threadId: 'T', pushedName: 'D', conversation_path: conversationPathOf(WA, 'diego'), home_dir: homeDirMsys() });
   });
 
   it('renames a NESTED being block readonly.brain + drops its readonly.personality (sibling fields intact)', async () => {
@@ -657,16 +736,70 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
-  it('leaves an already-migrated entry untouched (readonly.agent, no personality → migrated 0)', async () => {
+  it('leaves a fully-slim entry untouched (readonly.agent w/ model+effort, pointer present → migrated 0)', async () => {
     const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode' } },
+      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' } },
     } } });
+    // writeTmp's serialize already stamps conversation_path + home_dir; readonly carries concrete
+    // model/effort and no personality → nothing left to migrate.
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
   });
 
   it('empty state → migrated 0', async () => {
     const fp = await writeTmp(emptyState());
     expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
+  });
+
+  it('MOVES lifecycle timestamps into <convdir>/stats.yaml (name/first_seen/threads), slims the registry, idempotent', async () => {
+    const fp = await writeOldTmp({ contacts: { whatsapp: {
+      '!spoiler:beeper.local': {
+        slug: 'SPOILER-2606291920', pushedName: 'SPOILER ALERT',
+        threadId: 'T-1', threadCwd: '/c/x',
+        firstSeenAt: '2026-06-29T19:20:00.000Z', threadCreatedAt: '2026-06-29T19:21:00.000Z', identityInjectedAt: '2026-06-29T19:22:00.000Z',
+        readonly: { agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all' },
+      },
+    } } });
+    const dir = dirname(fp);
+    const statsDirOf = (surface, slug) => join(dir, 'conv', surface, slug);
+    const r = await migrateConversationVocabulary(fp, { statsDirOf });
+    expect(r.migrated).toBe(1);
+
+    // registry slimmed: lifecycle timestamps gone, only the resumable threadId + pointer remain
+    const e = (await readState(fp)).contacts.whatsapp['!spoiler:beeper.local'];
+    expect('firstSeenAt' in e).toBe(false);
+    expect('threadCreatedAt' in e).toBe(false);
+    expect('identityInjectedAt' in e).toBe(false);
+    expect(e.threadId).toBe('T-1');
+    expect(e.conversation_path).toBe(conversationPathOf(WA, 'SPOILER-2606291920'));
+    expect(e.home_dir).toBe(homeDirMsys());
+    expect(e.readonly).toEqual({ agent: 'default', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
+
+    // stats.yaml written with the moved facts
+    const stats = YAML.parse(await readFile(join(dir, 'conv', WA, 'SPOILER-2606291920', 'stats.yaml'), 'utf8'));
+    expect(stats.name).toBe('SPOILER ALERT');
+    expect(stats.first_seen).toBe('2026-06-29T19:20:00.000Z');
+    expect(stats.threads).toEqual([{ id: 'T-1', created: '2026-06-29T19:21:00.000Z', identity_injected: '2026-06-29T19:22:00.000Z' }]);
+
+    // idempotent second pass: registry already slim → migrated 0
+    expect((await migrateConversationVocabulary(fp, { statsDirOf })).migrated).toBe(0);
+  });
+
+  it('stats merge never clobbers existing stats.yaml content (create-or-merge)', async () => {
+    const fp = await writeOldTmp({ contacts: { whatsapp: {
+      j: { slug: 'x-2606010000', pushedName: 'From Registry', firstSeenAt: '2026-06-01T00:00:00.000Z', threadId: 'T-new' },
+    } } });
+    const dir = dirname(fp);
+    const statsDirOf = (surface, slug) => join(dir, 'conv', surface, slug);
+    // pre-existing stats.yaml with an operator-set name + a prior thread
+    const convDir = statsDirOf(WA, 'x-2606010000');
+    await (await import('node:fs/promises')).mkdir(convDir, { recursive: true });
+    await writeFile(join(convDir, 'stats.yaml'), YAML.stringify({ name: 'Operator Name', threads: [{ id: 'T-old', created: 'c0' }] }), 'utf8');
+
+    await migrateConversationVocabulary(fp, { statsDirOf });
+    const stats = YAML.parse(await readFile(join(convDir, 'stats.yaml'), 'utf8'));
+    expect(stats.name).toBe('Operator Name');          // existing scalar preserved, NOT clobbered
+    expect(stats.first_seen).toBe('2026-06-01T00:00:00.000Z');   // new scalar filled in
+    expect(stats.threads.map(t => t.id)).toEqual(['T-old', 'T-new']);   // threads unioned, old kept
   });
 
   it('getBeing still reads a PRE-migration entry\'s personality (legacy back-read)', async () => {
@@ -686,6 +819,61 @@ describe('migrateConversationVocabulary — readonly.brain → readonly.agent + 
     const dirs = tmpDirs.splice(0);
     await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
     for (const d of dirs) expect(existsSync(d)).toBe(false);
+  });
+});
+
+describe('stats module + msys path helpers', () => {
+  it('toMsysPath renders a Windows path msys-style, leaves posix/UNC alone', () => {
+    expect(toMsysPath('C:\\Users\\an')).toBe('/c/Users/an');
+    expect(toMsysPath('D:/work/x')).toBe('/d/work/x');
+    expect(toMsysPath('/already/posix')).toBe('/already/posix');
+  });
+  it('homeDirMsys is the msys form of the user home', () => {
+    expect(homeDirMsys().startsWith('/')).toBe(true);
+    expect(toMsysPath(homeDirMsys())).toBe(homeDirMsys());   // already msys → idempotent
+  });
+  it('statsPath sits inside the conversation folder', () => {
+    expect(statsPath('whatsapp', 'x-2606').endsWith('stats.yaml')).toBe(true);
+    expect(statsPath('whatsapp', 'x-2606')).toContain(slugDir('whatsapp', 'x-2606'));
+  });
+
+  it('mergeStats fills absent scalars, unions threads by id, never clobbers', () => {
+    const out = mergeStats(
+      { name: 'Keep', threads: [{ id: 'a' }] },
+      { name: 'Ignore', first_seen: 'FS', threads: [{ id: 'a' }, { id: 'b' }] },
+    );
+    expect(out.name).toBe('Keep');               // existing scalar wins
+    expect(out.first_seen).toBe('FS');            // absent scalar filled
+    expect(out.threads.map(t => t.id)).toEqual(['a', 'b']);   // 'a' not duplicated, 'b' appended
+  });
+
+  it('mergeThreadIntoStats appends a changed id, no-ops the same latest id', () => {
+    const a = mergeThreadIntoStats({ threads: [{ id: 'T1' }] }, { id: 'T2', created: 'c' });
+    expect(a.changed).toBe(true);
+    expect(a.stats.threads.map(t => t.id)).toEqual(['T1', 'T2']);
+    const b = mergeThreadIntoStats({ threads: [{ id: 'T2' }] }, { id: 'T2' });
+    expect(b.changed).toBe(false);               // same latest id → no-op (mirror is idempotent)
+  });
+
+  it('appendThreadStat writes/updates stats.yaml through the injected io (branch history)', async () => {
+    let written = null;
+    const io = {
+      readFile: async () => YAML.stringify({ name: 'N', threads: [{ id: 'T1', created: 'c1' }] }),
+      writeFile: async (p, data) => { written = { p, data }; },
+      mkdir: async () => {},
+    };
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-appendstat-'));
+    const wrote = await appendThreadStat('whatsapp', 'x-2606', { id: 'T2', created: 'c2', identity_injected: 'c2' }, { io, statsDirOf: () => dir });
+    expect(wrote).toBe(true);
+    expect(written.p).toBe(join(dir, 'stats.yaml'));
+    const parsed = YAML.parse(written.data);
+    expect(parsed.name).toBe('N');                             // existing content preserved
+    expect(parsed.threads.map(t => t.id)).toEqual(['T1', 'T2']);   // old id stays, new appends
+    await rm(dir, { recursive: true, force: true });
+
+    // same latest id → no write at all
+    const io2 = { readFile: async () => YAML.stringify({ threads: [{ id: 'T2' }] }), writeFile: async () => { throw new Error('should not write'); }, mkdir: async () => {} };
+    expect(await appendThreadStat('whatsapp', 'x-2606', { id: 'T2' }, { io: io2, statsDirOf: () => '/nope' })).toBe(false);
   });
 });
 

@@ -79,17 +79,6 @@ export async function boot({
   // tests don't write into a profile. Never fatal.
   if (ingest) { try { seedSkeletons({ onLog: (m) => log.line?.(`[seed] ${m}`) }); } catch (e) { log.line?.(`[boot] seed failed: ${e?.message ?? e}`); } }
 
-  // One-time conversations.yaml migration (operator 2026-07-02): normalize every stored
-  // conversation to the current vocabulary in ONE pass — readonly.brain → readonly.agent AND
-  // drop the retired `personality` key (flat + readonly, nested included). Real-node only
-  // (ingest-gated, like seed) and never fatal — a failure just logs.
-  if (ingest) {
-    try {
-      const r = await migrateConversationVocabulary();
-      if (r?.migrated > 0) log.line?.(`[migrate] conversations vocabulary: ${r.migrated} entries`);
-    } catch (e) { log.line?.(`[boot] conversations vocabulary migration failed: ${e?.message ?? e}`); }
-  }
-
   // The being's body_emoji + display label (the bridge enforces the emoji on
   // outbound; the label rides the persona's first line "🐶 <label>"). The `agents:`
   // block (operator 2026-07-02) wins when present: the PERSONA agent (handles include
@@ -240,6 +229,20 @@ export async function boot({
   // src/brains ← ~/.egpt2/config/brains ← <slug>/brains) a fresh conversation is
   // instanced from.
   const brains = createBrains({ onLog: (m) => log.line?.(`[brains] ${m}`) });
+
+  // One-time conversations.yaml migration (operator 2026-07-02): normalize every stored
+  // conversation to the current vocabulary + slim on-disk shape in ONE pass — readonly.brain →
+  // readonly.agent, drop the retired `personality`, backfill null model/effort to the agent
+  // type's values (else the deterministic constants), move lifecycle timestamps into each
+  // conversation's stats.yaml, and re-base conversation_path + stamp home_dir. Threaded with
+  // the brains registry so the model/effort backfill can resolve the entry's agent type.
+  // Real-node only (ingest-gated, like seed) and never fatal — a failure just logs.
+  if (ingest) {
+    try {
+      const r = await migrateConversationVocabulary(CONV_YAML_PATH, { resolveAgentDef: (name) => (name ? brains.resolve(name) : null) });
+      if (r?.migrated > 0) log.line?.(`[migrate] conversations vocabulary: ${r.migrated} entries`);
+    } catch (e) { log.line?.(`[boot] conversations vocabulary migration failed: ${e?.message ?? e}`); }
+  }
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });

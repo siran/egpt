@@ -54,17 +54,41 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 3. Decided, not yet dispatched
 
-- **Stats module + `/status <target>`** (operator 2026-07-02): a `stats` service
-  the loop notifies after transcript.log(ev) — in-memory per-conversation
-  counters (messages per sender, member first/last-seen = member history,
-  devices when the payload carries them), debounced flush to the conv folder's
-  own `stats.yaml` (entity-folder pattern). Slow facts (admin permissions, bio,
-  participant list) fetched from Beeper ON DEMAND, not tracked per message.
-  `/status <name-fragment|id>` resolves like /e auto's target and replies fenced
-  yaml: name/surface/slug, mode, instanced agent, members + counts + last-seen,
-  that folder's heartbeats, media count, live participants/admins when the API
-  exposes them. Existing pure libs to reuse: conversation-stats.mjs (file-derived
-  render), conversation-members.mjs (roster). Name history = renames.log (done).
+- **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
+  now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
+  data key); `slug` is dropped (derived from `conversation_path`'s basename); the
+  lifecycle timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) MOVED into the
+  conversation's own `stats.yaml`. Each entry stores `home_dir` (msys-style user home)
+  + a home-relative `conversation_path` (`<profile>/conversations/<surface>/<slug>`) so a
+  conversation is individually relocatable (resolution still runs through EGPT_HOME/
+  slugDir — the pointer is self-describing, not the resolver). `readonly` snapshots are
+  DETERMINISTIC (concrete model/effort, never null — falls back to sonnet/high). The
+  one-pass boot migration (`migrateConversationVocabulary`) does the whole conversion +
+  writes stats.yaml, idempotently. parse/serialize round-trip the comment shape (yaml
+  Document API); in-memory state shape is UNCHANGED so every consumer keeps working.
+
+- **Stats module + `/status <target>`** (operator 2026-07-02): `stats.yaml` now EXISTS
+  in each conversation folder (spine-written), created by the reshape migration and
+  appended by the brainpool on every new thread id (branchable `threads:` history):
+  ```yaml
+  # stats.yaml — the conversation's stats module (spine-written)
+  name: <pushedName>
+  first_seen: <iso>
+  threads:
+    - id: <threadId>
+      created: <iso>
+      identity_injected: <iso>
+  ```
+  Builds on this: a `stats` service the loop notifies after transcript.log(ev) —
+  in-memory per-conversation counters (messages per sender, member first/last-seen =
+  member history, devices when the payload carries them), debounced flush INTO this same
+  stats.yaml (merge, never clobber — `mergeStats`/`appendThreadStat` already do this).
+  Slow facts (admin permissions, bio, participant list) fetched from Beeper ON DEMAND,
+  not tracked per message. `/status <name-fragment|id>` resolves like /e auto's target
+  and replies fenced yaml: name/surface/slug, mode, instanced agent, members + counts +
+  last-seen, that folder's heartbeats, media count, live participants/admins when the API
+  exposes them. Existing pure libs to reuse: conversation-stats.mjs (file-derived render),
+  conversation-members.mjs (roster). Name history = renames.log (done).
 
 - **CUTOVER — main becomes v2** (held for operator "go" AFTER re-inspection):
   ```

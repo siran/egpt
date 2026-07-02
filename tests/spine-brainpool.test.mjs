@@ -39,8 +39,9 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     contacts: createContacts({ loadState, writeState, io: { mkdir: async () => {} } }),
     loadState,
     writeState,
-    // don't touch disk; readFile defaults to "no config.yaml" → no warm override
-    io: io ?? { mkdir: async () => {}, readFile: async () => null },
+    // don't touch disk; readFile → "no config.yaml" (no warm override); writeFile is a no-op so
+    // the stats.yaml thread-mirror stays in-memory (never writes into a real profile folder)
+    io: io ?? { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
@@ -95,7 +96,9 @@ describe('brainpool.turn', () => {
     expect(view.brainType).toBe('codex');                                        // frozen into readonly
   });
 
-  it('instancing freezes the def under readonly.agent (vocabulary rename — no readonly.brain / personality written)', async () => {
+  it('instancing freezes the def under readonly.agent with CONCRETE model/effort (no null, no brain/personality)', async () => {
+    // def omits effort and has model:null → the snapshot must be deterministic, never null
+    // (operator 2026-07-02: "make it deterministic").
     const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
     const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
@@ -103,6 +106,29 @@ describe('brainpool.turn', () => {
     expect(ro.agent).toBe('default');            // the new key
     expect('brain' in ro).toBe(false);           // the legacy key is NOT written going forward
     expect('personality' in ro).toBe(false);     // the retired personality key is NOT written either
+    expect(ro.model).toBe('sonnet');             // deterministic fallback (def.model was null)
+    expect(ro.effort).toBe('high');              // deterministic fallback (def.effort absent)
+  });
+
+  it('a type def with concrete model/effort freezes those exact values (fallback only fills the gaps)', async () => {
+    const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low', allowed_tools: 'all' }) };
+    const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
+    await brain.turn('e', ev);
+    const ro = getState().contacts.whatsapp['!room:beeper.com'].readonly;
+    expect(ro).toMatchObject({ agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low' });
+    // the SAME resolved values reach the run (snapshot and run always agree)
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'low' });
+  });
+
+  it('mirrors a freshly-minted thread into stats.yaml (branch history) via the injected io', async () => {
+    const writes = [];
+    const io = { mkdir: async () => {}, readFile: async () => null, writeFile: async (p, data) => writes.push({ p, data }) };
+    const { brain } = harness([{ text: 'ok', sessionId: 'sid-new' }], { io });
+    await brain.turn('e', ev);
+    const statsWrite = writes.find((w) => String(w.p).endsWith('stats.yaml'));
+    expect(statsWrite).toBeTruthy();
+    expect(statsWrite.data).toContain('sid-new');   // the new thread id appended to threads:
+    expect(statsWrite.data).toContain('threads:');
   });
 
   it('kickoff feed comes from the TYPE def\'s personality (def.personality reaches loadFeed, not the conversation)', async () => {
@@ -220,7 +246,7 @@ describe('brainpool.turn', () => {
     const { brain, pool } = harness([
       () => Promise.reject(new Error('claude: error_during_execution\n  Prompt is too long')),
       { text: 'fresh ok', sessionId: 'sid-2' },
-    ], { seedSession: 'huge', io: { mkdir: async () => {}, readFile: async () => yaml } });
+    ], { seedSession: 'huge', io: { mkdir: async () => {}, readFile: async () => yaml, writeFile: async () => {} } });
     const out = await brain.turn('e', ev);
     expect(out.text).toBe('fresh ok');
     expect(pool.calls).toHaveLength(2);

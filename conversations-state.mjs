@@ -72,14 +72,100 @@ export function slugTranscriptPath(surface, slug) {
   return join(slugDir(surface, slug), 'transcript.md');
 }
 
-// Per-entry STORED conversation path — relative to ~/.egpt, posix-style, so the
-// registry (keyed by Beeper group id) is self-describing + portable instead of
-// forcing every reader to re-derive the folder from surface+slug (operator
-// 2026-06-27: "it should be STORED, of course"). Same layout slugDir produces, so
-// it stays a stable pointer to the conversation's transcript.md / config / media.
-const _EGPT_HOME = join(EGPT_HOME);
+// Render a path msys-style: C:\Users\an → /c/Users/an (drive-letter lowercased,
+// backslashes → forward slashes). Pure; an already-posix or UNC path is left alone.
+// Used for the self-describing `home_dir` + the absolute-fallback conversation_path.
+export function toMsysPath(p) {
+  const s = String(p ?? '').replace(/\\/g, '/');
+  const m = s.match(/^([A-Za-z]):\/(.*)$/);
+  return m ? `/${m[1].toLowerCase()}/${m[2]}` : s;
+}
+
+// The user home rendered msys-style — the default `home_dir` stamped on every entry.
+export function homeDirMsys() {
+  return toMsysPath(homedir());
+}
+
+// Per-entry STORED conversation path (operator 2026-07-02): home-relative and INCLUDING
+// the profile dir name — `<profile>/conversations/<surface>/<slug>` — paired with
+// `home_dir` so each conversation is INDIVIDUALLY RELOCATABLE (move a folder + rewrite the
+// two keys). RESOLUTION still runs through EGPT_HOME/slugDir (readers unchanged); this is a
+// self-describing POINTER, not the resolver (a later feature may honor per-entry overrides
+// — intent only, not built here). When EGPT_HOME is not under the user home (a non-standard
+// install), it can't be expressed home-relative, so we fall back to the absolute msys path.
 export function conversationPathOf(surface, slug) {
-  return relative(_EGPT_HOME, slugDir(surface, slug)).split(/[\\/]/).join('/');
+  const abs = slugDir(surface, slug);
+  const rel = relative(homedir(), abs);
+  if (rel && !rel.startsWith('..') && !/^[A-Za-z]:/.test(rel)) {
+    return rel.split(/[\\/]/).join('/');
+  }
+  return toMsysPath(abs);
+}
+
+// Deterministic engine defaults (operator 2026-07-02: "don't do 'null means inherit the
+// login default' — make it deterministic"). A type def that omits model/effort snapshots
+// these CONCRETE values into `readonly` (brainpool), and the vocabulary migration backfills
+// existing null snapshots to them — ONE source so the frozen snapshot and the actual run
+// always agree.
+export const DETERMINISTIC_MODEL = 'sonnet';
+export const DETERMINISTIC_EFFORT = 'high';
+
+// The conversation's stats module file (operator 2026-07-02): lifecycle timestamps +
+// branchable thread history live HERE, sibling to transcript.md, so conversations.yaml
+// stays a slim, human-readable registry.
+export function statsPath(surface, slug) {
+  return join(slugDir(surface, slug), 'stats.yaml');
+}
+
+const STATS_HEADER = '# stats.yaml — the conversation\'s stats module (spine-written)\n';
+
+// Merge migrated lifecycle facts into an existing stats object WITHOUT clobbering content
+// already there (create-or-merge): scalars fill only when absent; `threads:` is unioned by
+// id (existing order kept, new ids appended). Pure — the caller owns the fs.
+export function mergeStats(existing = {}, incoming = {}) {
+  const out = { ...(existing && typeof existing === 'object' ? existing : {}) };
+  if (out.name == null && incoming.name != null) out.name = incoming.name;
+  if (out.first_seen == null && incoming.first_seen != null) out.first_seen = incoming.first_seen;
+  const ex = Array.isArray(out.threads) ? out.threads : [];
+  const inc = Array.isArray(incoming.threads) ? incoming.threads : [];
+  const seen = new Set(ex.map((t) => t?.id));
+  const merged = ex.slice();
+  for (const t of inc) if (t?.id && !seen.has(t.id)) { merged.push(t); seen.add(t.id); }
+  if (merged.length) out.threads = merged;
+  return out;
+}
+
+// Append a thread to stats.threads: when its id isn't already the LATEST (the branch
+// mirror: a changed threadId appends, the old id stays; the same id is a no-op). Pure.
+export function mergeThreadIntoStats(stats, thread) {
+  const out = { ...(stats && typeof stats === 'object' ? stats : {}) };
+  const threads = Array.isArray(out.threads) ? out.threads.slice() : [];
+  const last = threads[threads.length - 1];
+  if (last && last.id === thread.id) return { stats: out, changed: false };
+  threads.push(thread);
+  out.threads = threads;
+  return { stats: out, changed: true };
+}
+
+// Effectful mirror of a freshly-minted thread into <convdir>/stats.yaml (the branchable
+// history). Injectable io + statsDirOf so it's testable in-memory; NEVER fatal (the state
+// write is the durable record — a stats hiccup must not break a reply). Returns whether it
+// wrote. Called by the brainpool right where it records a new session.
+export async function appendThreadStat(surface, slug, thread, { io = {}, statsDirOf = slugDir } = {}) {
+  const dir = statsDirOf(surface, slug);
+  const fp = join(dir, 'stats.yaml');
+  const readFileFn = io.readFile ?? readFile;
+  const writeFileFn = io.writeFile ?? writeFile;
+  const mkdirFn = io.mkdir ?? mkdir;
+  let existing = {};
+  try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+  const { stats, changed } = mergeThreadIntoStats(existing, thread);
+  if (!changed) return false;
+  try {
+    await mkdirFn(dir, { recursive: true });
+    await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+    return true;
+  } catch (e) { console.error(`!! appendThreadStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
 }
 
 // Move a contact's on-disk slug folder old→new (transcript.md, media/, identity
@@ -515,19 +601,31 @@ export async function migrateSlugSuffix() {
 }
 
 // One-time boot migration (operator 2026-07-02): normalize every stored conversation to
-// the current vocabulary IN ONE PASS. Two retirements happen together per entry:
-//   (a) readonly.brain → readonly.agent — the fresh-conversation instancing now freezes the
-//       def under `readonly.agent` (was `readonly.brain`); rename the legacy key on the FLAT
-//       'e' readonly AND any nested per-being block's readonly so a pre-rename state resolves
-//       through the new key without waiting to be re-instanced. `agent` takes `brain`'s slot.
-//   (b) DROP the retired `personality` key — the identity feed a fresh thread boots from is now
-//       a property of the AGENT TYPE, not the conversation. Delete BOTH the flat entry-level
-//       `personality` (ensureContact used to seed it on every new contact) AND every
-//       `readonly.personality` (flat + nested), so the parallel vocabulary disappears.
-// Idempotent: an entry already on `agent` with no `personality` anywhere is left untouched;
-// write back only if something changed. Never fatal (readState swallows a missing/garbage file
-// → emptyState → 0). Returns { migrated } = # conversations (contact entries) touched.
-export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH) {
+// the current vocabulary + on-disk shape IN ONE PASS. Per contact entry:
+//   (a) readonly.brain → readonly.agent — the fresh-conversation instancing freezes the def
+//       under `readonly.agent` now (was `readonly.brain`); rename the legacy key on the FLAT
+//       'e' readonly AND any nested per-being block's readonly. `agent` takes `brain`'s slot.
+//   (b) DROP the retired `personality` key (flat entry-level + every readonly.personality) —
+//       the identity feed is a property of the AGENT TYPE now, not the conversation.
+//   (c) BACKFILL a null/absent readonly.model / readonly.effort from the entry's agent type
+//       (resolved through the injected brains registry), else the DETERMINISTIC_* constants —
+//       operator: "don't do 'null means inherit the login default' — make it deterministic".
+//   (d) MOVE the lifecycle timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) into the
+//       conversation's own <convdir>/stats.yaml (create-or-merge, never clobbering existing
+//       content), mirroring the current threadId as the first entry of its branchable
+//       `threads:` history. The registry keeps only the resumable threadId.
+//   (e) RE-BASE conversation_path onto the home-relative `<profile>/conversations/...` form and
+//       stamp `home_dir`, so each conversation is individually relocatable.
+// (The derived `slug` + comment-borne `pushedName` are slimmed by serialize on write.)
+// Idempotent: a fully-slim entry is left untouched; write back only if something changed. Never
+// fatal. Returns { migrated } = # contact entries touched. `statsDirOf`/`io` are injectable so
+// tests never touch a real profile; `resolveAgentDef(name) → {model,effort}|null` is the brains
+// registry, threaded from boot (where it exists).
+export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH, {
+  resolveAgentDef = null,
+  statsDirOf = slugDir,
+  io = {},
+} = {}) {
   if (!existsSync(yamlPath)) return { migrated: 0, skipped: 'no registry' };
   const state = await readState(yamlPath);
   // Normalize ONE readonly block: rename brain→agent (agent takes brain's slot) AND drop the
@@ -545,6 +643,38 @@ export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH) {
     }
     return out;
   };
+  // cleanRO + deterministic model/effort backfill. Returns { ro, changed }.
+  const normalizeRO = (ro) => {
+    const cleaned = cleanRO(ro);
+    let changed = cleaned !== ro;
+    let out = cleaned;
+    if (out && typeof out === 'object' && !Array.isArray(out) && (out.model == null || out.effort == null)) {
+      const def = resolveAgentDef ? resolveAgentDef(out.agent ?? out.brain) : null;
+      out = { ...out };
+      if (out.model == null) out.model = def?.model ?? DETERMINISTIC_MODEL;
+      if (out.effort == null) out.effort = def?.effort ?? DETERMINISTIC_EFFORT;
+      changed = true;
+    }
+    return { ro: out, changed };
+  };
+  // Move an entry's lifecycle facts into <convdir>/stats.yaml (create-or-merge, never fatal).
+  async function moveLifecycleToStats(surface, slug, entry) {
+    const dir = statsDirOf(surface, slug);
+    const fp = join(dir, 'stats.yaml');
+    const readFileFn = io.readFile ?? readFile, writeFileFn = io.writeFile ?? writeFile, mkdirFn = io.mkdir ?? mkdir;
+    let existing = {};
+    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none → fresh */ }
+    const incoming = {
+      name: entry.pushedName || undefined,
+      first_seen: entry.firstSeenAt ?? undefined,
+      threads: entry.threadId
+        ? [{ id: entry.threadId, created: entry.threadCreatedAt ?? null, identity_injected: entry.identityInjectedAt ?? null }]
+        : [],
+    };
+    const merged = mergeStats(existing, incoming);
+    try { await mkdirFn(dir, { recursive: true }); await writeFileFn(fp, STATS_HEADER + YAML.stringify(merged), 'utf8'); }
+    catch (e) { console.error(`!! migrate stats(${surface}/${slug}): ${e?.message ?? e}`); }
+  }
   let migrated = 0;
   const nextContacts = {};
   for (const [surface, bucket] of Object.entries(state.contacts ?? {})) {
@@ -556,15 +686,30 @@ export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH) {
       const nextEntry = { ...entry };
       // flat entry-level personality (seeded by the old ensureContact) — drop it.
       if ('personality' in nextEntry) { delete nextEntry.personality; entryChanged = true; }
-      // flat readonly (the default 'e' instancing): brain→agent + drop readonly.personality
-      const flatRO = cleanRO(entry.readonly);
-      if (flatRO !== entry.readonly) { nextEntry.readonly = flatRO; entryChanged = true; }
+      // flat readonly (the default 'e' instancing): brain→agent + drop personality + backfill model/effort
+      const flat = normalizeRO(entry.readonly);
+      if (flat.changed) { nextEntry.readonly = flat.ro; entryChanged = true; }
       // nested per-being blocks — each may carry its own readonly
       for (const [k, v] of Object.entries(entry)) {
         if (_FLAT_ENTRY_KEYS.has(k)) continue;                       // skips 'readonly'/'personality' (handled above) + scalar fields
         if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-        const nestedRO = cleanRO(v.readonly);
-        if (nestedRO !== v.readonly) { nextEntry[k] = { ...v, readonly: nestedRO }; entryChanged = true; }
+        const nested = normalizeRO(v.readonly);
+        if (nested.changed) { nextEntry[k] = { ...v, readonly: nested.ro }; entryChanged = true; }
+      }
+      // Slim the on-disk shape: move lifecycle → stats.yaml, re-base conversation_path, stamp
+      // home_dir. Aliases carry none of this — leave them bare.
+      if (!entry.aliasOf) {
+        const slug = (typeof entry.slug === 'string' && entry.slug) ? entry.slug : _pathBasename(entry.conversation_path);
+        if (entry.firstSeenAt != null || entry.threadCreatedAt != null || entry.identityInjectedAt != null) {
+          if (slug) await moveLifecycleToStats(surface, slug, entry);
+          delete nextEntry.firstSeenAt; delete nextEntry.threadCreatedAt; delete nextEntry.identityInjectedAt;
+          entryChanged = true;
+        }
+        if (slug) {
+          const wantPath = conversationPathOf(surface, slug);
+          if (nextEntry.conversation_path !== wantPath) { nextEntry.conversation_path = wantPath; entryChanged = true; }
+        }
+        if (nextEntry.home_dir == null) { nextEntry.home_dir = homeDirMsys(); entryChanged = true; }
       }
       if (entryChanged) migrated++;
       nextBucket[jid] = nextEntry;
@@ -992,19 +1137,19 @@ export function ensureContact(state, surface, jid, ctx = {}) {
     };
   }
 
-  // 3. Brand-new contact. firstSeenAt set once, drives the slug-suffix,
-  //    never overwritten on /e new. The per-conversation `personality` key is RETIRED
-  //    (operator 2026-07-02): the identity feed a fresh thread boots from is a property
-  //    of the AGENT TYPE (config/agents/<type>.yaml), not the conversation — so we no
-  //    longer seed it. `ctx.personality` (still passed by legacy spine callers) is
-  //    ignored; the signature stays import-compatible.
+  // 3. Brand-new contact — the SLIM shape (operator 2026-07-02). `firstSeen` still drives
+  //    the slug-suffix (never overwritten on /e new), but is no longer stored as a key: the
+  //    lifecycle timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) live in the
+  //    conversation's own stats.yaml now, and the slug's -yymmddhhmm suffix already encodes
+  //    firstSeen for the rename logic. We store `home_dir` + the (home-relative) re-based
+  //    `conversation_path` so the conversation is individually relocatable. The
+  //    per-conversation `personality` key is RETIRED — the identity feed is a property of
+  //    the AGENT TYPE — so `ctx.personality` (still passed by legacy callers) is ignored.
   const entry = {
     slug: candidateSlug,
     conversation_path: conversationPathOf(surface, candidateSlug),
+    home_dir: homeDirMsys(),
     threadId: null,
-    threadCreatedAt: null,
-    firstSeenAt: firstSeen.toISOString(),
-    identityInjectedAt: null,
     pushedName: ctx.pushedName ?? '',
   };
   nextBucket[jid] = entry;
@@ -1321,16 +1466,93 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 
 // ── YAML serialization ─────────────────────────────────────────────────────
 
+// The ON-DISK representation is SLIM (operator 2026-07-02): each contact's `pushedName`
+// becomes the INLINE COMMENT on its jid key (` # <name>`, not a data key), the derived
+// `slug` is dropped (recovered from conversation_path's basename), and the lifecycle
+// timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) are dropped (they live in the
+// conversation's stats.yaml). `home_dir` + the home-relative `conversation_path` are always
+// emitted so each entry is a relocatable pointer. The IN-MEMORY shape is UNCHANGED — parse
+// re-hydrates slug + pushedName as fields — so every consumer keeps working; only the FILE
+// slims. Aliases (`{aliasOf}`) pass through untouched.
+const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt']);
+const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
+
 export function serialize(state) {
-  return YAML.stringify(state, { lineWidth: 100 });
+  // Build the slimmed plain object first (drop the derived/moved keys), keeping the jid→name
+  // map so we can re-attach names as key comments on the built Document.
+  const src = state && typeof state === 'object' ? state : emptyState();
+  const names = {};   // `${surface} ${jid}` -> pushedName
+  const outContacts = {};
+  for (const [surface, bucket] of Object.entries(src.contacts ?? {})) {
+    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) { outContacts[surface] = bucket; continue; }
+    const outBucket = {};
+    for (const [jid, entry] of Object.entries(bucket)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.aliasOf) { outBucket[jid] = entry; continue; }
+      const slim = {};
+      for (const [k, v] of Object.entries(entry)) { if (!_SLIM_DROP.has(k)) slim[k] = v; }
+      // Always emit the relocatable pointer: home_dir + a (home-relative) conversation_path
+      // — computed from the slug when absent so the derived slug survives the round-trip.
+      if (slim.conversation_path == null) slim.conversation_path = conversationPathOf(surface, entry.slug);
+      if (slim.home_dir == null) slim.home_dir = homeDirMsys();
+      outBucket[jid] = slim;
+      if (entry.pushedName) names[`${surface} ${jid}`] = String(entry.pushedName).replace(/[\r\n]+/g, ' ');
+    }
+    outContacts[surface] = outBucket;
+  }
+  const slimState = { ...src, contacts: outContacts };
+
+  const doc = new YAML.Document(slimState);
+  const contactsNode = doc.get('contacts');
+  if (contactsNode && contactsNode.items) {
+    for (const surfPair of contactsNode.items) {
+      const surface = String(surfPair.key.value ?? surfPair.key);
+      const bucketNode = surfPair.value;
+      if (!bucketNode || !bucketNode.items) continue;
+      for (const pair of bucketNode.items) {
+        const jid = String(pair.key.value ?? pair.key);
+        const nm = names[`${surface} ${jid}`];
+        if (nm) pair.key.comment = ' ' + nm;   // renders `"<jid>": # <name>` on the key line
+      }
+    }
+  }
+  return doc.toString({ lineWidth: 100 });
 }
 
 export function parse(text) {
   if (!text || !text.trim()) return emptyState();
-  const doc = YAML.parse(text);
-  if (!doc || typeof doc !== 'object') return emptyState();
-  if (!doc.contacts || typeof doc.contacts !== 'object') doc.contacts = {};
-  return doc;
+  const doc = YAML.parseDocument(text);
+  const obj = doc.toJS() ?? {};
+  if (!obj || typeof obj !== 'object') return emptyState();
+  if (!obj.contacts || typeof obj.contacts !== 'object') { obj.contacts = {}; return obj; }
+  // Re-hydrate the in-memory fields the slim file omits: pushedName from the jid key's inline
+  // comment (recovered as the value's commentBefore after a round-trip), slug from
+  // conversation_path's basename. An OLD file that still carries pushedName/slug as KEYS keeps
+  // them (a comment/derivation only fills when the key is absent), so pre-migration YAML reads
+  // byte-for-byte the same in memory.
+  const contactsNode = doc.get('contacts');
+  const commentByJid = {};   // `${surface} ${jid}` -> recovered name
+  if (contactsNode && contactsNode.items) {
+    for (const surfPair of contactsNode.items) {
+      const surface = String(surfPair.key.value ?? surfPair.key);
+      const bucketNode = surfPair.value;
+      if (!bucketNode || !bucketNode.items) continue;
+      for (const pair of bucketNode.items) {
+        const jid = String(pair.key.value ?? pair.key);
+        const c = pair.value?.commentBefore ?? pair.key.comment ?? null;
+        if (c != null) commentByJid[`${surface} ${jid}`] = String(c).trim();
+      }
+    }
+  }
+  for (const [surface, bucket] of Object.entries(obj.contacts)) {
+    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) continue;
+    for (const [jid, entry] of Object.entries(bucket)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.aliasOf) continue;
+      const nm = commentByJid[`${surface} ${jid}`];
+      if (typeof entry.pushedName !== 'string' || (nm != null)) entry.pushedName = nm ?? entry.pushedName ?? '';
+      if (typeof entry.slug !== 'string' || !entry.slug) entry.slug = _pathBasename(entry.conversation_path);
+    }
+  }
+  return obj;
 }
 
 // ── Disk I/O helpers ───────────────────────────────────────────────────────

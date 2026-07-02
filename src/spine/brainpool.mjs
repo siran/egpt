@@ -26,7 +26,7 @@
 // (engineers, not the persona), and its thread persists in a per-being NESTED block
 // (recordThread(..., being)). codex/URL brains + emitted-command stripping (the
 // comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact } from '../../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
@@ -198,26 +198,36 @@ export function createBrainPool({
 
       const convDir = slugDir(ev.surface, slug);
       const isSibling = being !== 'e';
-      let def;
+      let def, runModel, runEffort;
       if (isSibling) {
         // Sibling / local agent: def from the agents block (type file) or the legacy
-        // config.siblings[being] inline shape; never frozen into readonly.
+        // config.siblings[being] inline shape; never frozen into readonly. Its model/effort
+        // stay exactly as configured (may be unset — an engineer, not the persona snapshot).
         def = siblingDef(being, convDir);
+        runModel = def.model; runEffort = def.effort;
       } else {
         // The conversation's brain: its instanced (frozen) brain, or — on the first
         // turn — the default, which we instance into conversations.yaml `readonly` now
         // so a later change to the default can't retro-alter this thread (and `/e` can
         // re-point it per-conversation).
         def = instanced;
-        if (!def) {
-          def = resolveDefaultBrain(convDir);
-          // Freeze the instanced def under readonly.agent (operator 2026-07-02: the
-          // conversations.yaml vocabulary is "agent" now; getBeing back-reads the legacy
-          // readonly.brain, and migrateConversationVocabulary renames existing entries).
-          // NO `personality` is written — that key is RETIRED; the identity feed is a
-          // property of the agent type (def.personality), read fresh at kickoff below.
+        const fresh = !def;
+        if (fresh) def = resolveDefaultBrain(convDir);
+        // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
+        // make it deterministic"): the frozen snapshot AND the actual run must carry CONCRETE
+        // model/effort, never null. A type def that omits either falls back to the module
+        // constants — logged so a mis-specified type is visible.
+        if (def.model == null || def.effort == null) onLog(`type ${def.name} omits model/effort — snapshotting deterministic fallback`);
+        runModel = def.model ?? DETERMINISTIC_MODEL;
+        runEffort = def.effort ?? DETERMINISTIC_EFFORT;
+        if (fresh) {
+          // Freeze the instanced def under readonly.agent with the RESOLVED concrete model/effort
+          // (operator 2026-07-02: vocabulary is "agent" now; getBeing back-reads readonly.brain,
+          // and migrateConversationVocabulary renames + backfills existing entries). NO
+          // `personality` is written — that key is RETIRED; the identity feed is a property of
+          // the agent type (def.personality), read fresh at kickoff below.
           await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-            readonly: { agent: def.name, type: def.type ?? brainType, model: def.model ?? null, effort: def.effort ?? null, allowed_tools: def.allowed_tools ?? 'all' },
+            readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? 'all' },
           }));
         }
       }
@@ -237,8 +247,8 @@ export function createBrainPool({
       const baseOpts = {
         cwd,
         allowedTools: def.allowed_tools ?? 'all',
-        ...(def.model ? { model: def.model } : {}),
-        ...(def.effort ? { effort: def.effort } : {}),
+        ...(runModel ? { model: runModel } : {}),
+        ...(runEffort ? { effort: runEffort } : {}),
         ...(def.system_prompt ? { appendSystemPrompt: def.system_prompt } : {}),
         // Resume the conversation's OWN thread, or null = fresh. NOT
         // default_brain.session_id — that would cross-wire every chat onto one
@@ -286,7 +296,12 @@ export function createBrainPool({
       // Persist a freshly-minted session so the next turn resumes it — being-aware:
       // flat threadId for 'e', a nested <being> block for a sibling.
       if (newSession && newSession !== sessionId) {
-        await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, undefined, being));
+        const nowIso = nowIsoString();
+        await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
+        // Mirror the freshly-minted thread into the conversation's stats.yaml branchable
+        // history (a changed threadId appends; the old id stays addressable so a conversation
+        // can be branched from it). Injectable io, never fatal — the state write is durable.
+        try { await appendThreadStat(ev.surface, slug, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
