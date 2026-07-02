@@ -122,14 +122,14 @@ describe('boot()', () => {
     app.stop();
   });
 
-  it('registers the alive beat as a spawned command: immediate first beat on tick, cadence honored, env carries the spine pid + pump stats', async () => {
+  it('registers the alive beat as a spawned command: spine.pid written, immediate first beat on tick, cadence honored, env carries EGPT_HOME + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
     const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
     let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
 
     // Observe the beat as a SPAWN, not a written alive.txt — the alive beat is a
-    // command now (node src/tools/alive.mjs). The fake child completes each spawn
+    // command now (echo beat > state/alive.txt). The fake child completes each spawn
     // (exit 0) so the overlap guard clears and the cadence can advance.
     const spawnCalls = [];
     const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
@@ -140,17 +140,21 @@ describe('boot()', () => {
       io: memIo(), ingest: false,
       now: () => clock,
       tickMs: 0,          // no auto-timer; we drive tick() by hand
-      aliveMs: 60_000,    // register the alive script as a 60s command heartbeat
-      spawn: fakeSpawn,   // no real alive.mjs process
+      aliveMs: 60_000,    // register the alive one-liner as a 60s command heartbeat
+      spawn: fakeSpawn,   // observe the beat command without running a real shell
       log: { line: () => {} },
     });
 
+    // spine.pid is written once at boot with the long-lived spine pid (the
+    // second-daemon guard reads it; identity ≠ liveness)
+    expect(await fs.readFile(join(tmpHome, 'state', 'spine.pid'), 'utf8')).toBe(String(process.pid));
+
     // boot fired one immediate beat (spine.tick() right after start) → one spawn
     expect(spawnCalls).toHaveLength(1);
-    expect(spawnCalls[0].cmd).toMatch(/^node ".*[/\\]tools[/\\]alive\.mjs"$/);
-    expect(spawnCalls[0].opts).toMatchObject({ shell: true, cwd: process.cwd() });
+    expect(spawnCalls[0].cmd).toBe('echo beat > state/alive.txt');   // the default one-liner
+    expect(spawnCalls[0].opts).toMatchObject({ shell: true, cwd: tmpHome });   // cwd = the profile, so state/ resolves there
     expect(spawnCalls[0].opts.env.EGPT_HOME).toBe(tmpHome);
-    expect(spawnCalls[0].opts.env.EGPT_SPINE_PID).toBe(String(process.pid));   // the long-lived SPINE pid (singleton contract)
+    expect(spawnCalls[0].opts.env.EGPT_SPINE_PID).toBeUndefined();   // pid moved to state/spine.pid — no longer an env var
     expect(spawnCalls[0].opts.env.EGPT_QUEUE_DEPTH).toBe('0');
 
     // a second tick INSIDE the 60s window → still not due → no new spawn
@@ -192,15 +196,15 @@ describe('boot()', () => {
     expect(intervals.length).toBeGreaterThan(0);
     expect(Math.min(...intervals)).toBeLessThanOrEqual(1000);
 
-    // the immediate boot tick spawned the alive command (config alive → default script)
-    expect(spawnCalls.some((c) => /alive\.mjs/.test(c.cmd))).toBe(true);
+    // the immediate boot tick spawned the alive command (config alive → default one-liner)
+    expect(spawnCalls.some((c) => c.cmd.includes('alive.txt'))).toBe(true);
 
     // the spine materialized the readonly view — the alive row shows the REAL
     // command, nothing hidden behind a builtin label
     const readonly = await fs.readFile(join(tmpHome, 'state', 'heartbeats.readonly.yaml'), 'utf8');
     expect(readonly).toContain('DO NOT EDIT');
     expect(readonly).toContain('name: alive');
-    expect(readonly).toContain('command: node');
+    expect(readonly).toContain('command: echo beat > state/alive.txt');
     expect(readonly).not.toContain('builtin');
 
     app.stop();

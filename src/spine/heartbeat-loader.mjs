@@ -13,10 +13,12 @@
 // edits at the source), and registers each onto the dumb cadence registry
 // (heartbeats.mjs). The alive-file writer is no longer special-cased NOR a
 // `builtin:` action — actions are COMMANDS only now. The alive beat is just the
-// DEFAULT command entry (boot's `aliveCommand`, `node src/tools/alive.mjs`)
-// injected when the node config declares no `alive`. This is the point: the
-// readonly.yaml shows the REAL command for EVERY entry, alive included — nothing
-// is hidden behind an opaque builtin label (operator 2026-07-02).
+// DEFAULT command entry (boot's `aliveCommand`, the one-liner `echo beat >
+// state/alive.txt`, cwd = EGPT_HOME) injected when the node config declares no
+// `alive`. This is the point: the readonly.yaml shows the REAL command for EVERY
+// entry, alive included — nothing is hidden behind an opaque builtin label
+// (operator 2026-07-02). Liveness is the alive.txt file's MTIME, so any command
+// that writes the file is a valid beat and its content is freeform.
 //
 // Two phases, one module, because of a boot ordering constraint (see boot.mjs):
 //   collect()  — pure-ish: read config + entity dirs, parse cadences → { entries,
@@ -70,8 +72,8 @@ export function parseHeartbeatsBlock(yamlText) {
 // Normalize one raw `{ frequency, command? }` declaration into a registered
 // command entry, or null (skipped + logged) when it names no command or its
 // cadence won't parse. `isAlive` gives the deadman its defaults: an `alive` entry
-// with no command falls back to `aliveCommand` (boot's `node src/tools/alive.mjs`).
-function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, onLog }) {
+// with no command falls back to `aliveCommand` (boot's `echo beat > state/alive.txt`).
+function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, onLog }) {
   const everyMs = parseFrequency(raw?.frequency);
   // The alive beat is the deadman — never let a bad/absent cadence disable it;
   // fall back to the boot aliveMs (or 60s). Every other entry with an unparseable
@@ -82,10 +84,13 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
   // A command is run as written (operator's shell line). `alive` with no command
   // falls back to the default alive command so a config `alive:` block that only
   // tunes the cadence still arms the deadman (never let a typo disarm it).
-  const command = (typeof raw?.command === 'string' && raw.command.trim())
-    ? raw.command
-    : (isAlive ? aliveCommand : null);
-  if (command) return { name, source, everyMs: ms, rawFrequency: raw.frequency, action: { kind: 'command', command, cwd } };
+  const hasCommand = typeof raw?.command === 'string' && raw.command.trim();
+  const command = hasCommand ? raw.command : (isAlive ? aliveCommand : null);
+  // The DEFAULT alive one-liner writes state/alive.txt relative to the profile,
+  // so it runs with cwd = EGPT_HOME (aliveCwd). An operator's own command keeps
+  // the node-level cwd.
+  const entryCwd = (isAlive && !hasCommand) ? aliveCwd : cwd;
+  if (command) return { name, source, everyMs: ms, rawFrequency: raw.frequency, action: { kind: 'command', command, cwd: entryCwd } };
 
   onLog(`${name}: no command — skipped`);
   return null;
@@ -95,7 +100,7 @@ function _normalizeEntry({ name, source, cwd, raw, isAlive, aliveFallbackMs, ali
  * @param {object} deps
  * @param {() => object} deps.getConfig                 node config (reads config.heartbeats)
  * @param {number} [deps.aliveMs]                       boot's aliveMs; 0 = don't inject the default alive (test contract)
- * @param {string} [deps.aliveCommand]                  the default alive command boot passes in (keeps the loader path-agnostic): `node src/tools/alive.mjs`
+ * @param {string} [deps.aliveCommand]                  the default alive command boot passes in: the one-liner `echo beat > state/alive.txt` (run with cwd = egptHome so the relative state/ resolves into the profile)
  * @param {() => Promise<Array<{dir:string, ns:string}>>} deps.listEntityDirs  conversation + room folders (ns = the namespace prefix)
  * @param {(dir:string) => Promise<object>} deps.readEntityConfig              a folder's heartbeats: map ({} when none)
  * @param {(cmd:string, opts:object) => any} deps.spawn                        child_process.spawn seam (shell:true)
@@ -121,6 +126,10 @@ export function createHeartbeatLoader({
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
   const aliveFallbackMs = aliveMs > 0 ? aliveMs : 60_000;
+  // The default alive one-liner writes state/alive.txt RELATIVE to the profile,
+  // so it must run with cwd = EGPT_HOME (not procCwd). Other node-level beats keep
+  // procCwd (the checkout).
+  const aliveCwd = egptHome;
 
   let _entries = null;   // set by collect(), consumed by activate()
 
@@ -144,17 +153,18 @@ export function createHeartbeatLoader({
         if (raw === false) { onLog('alive disabled (heartbeats.alive: false) — the supervisor will respawn-loop with backoff until restored'); continue; }
       }
       if (!raw || typeof raw !== 'object') { onLog(`${name}: not a heartbeat block — skipped`); continue; }
-      const e = _normalizeEntry({ name, source: 'config', cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, onLog });
+      const e = _normalizeEntry({ name, source: 'config', cwd: procCwd, raw, isAlive, aliveFallbackMs, aliveCommand, aliveCwd, onLog });
       if (e) entries.push(e);
     }
 
     // 2. Default alive: inject the default alive COMMAND (boot's aliveCommand,
-    //    `node src/tools/alive.mjs`, cwd = the checkout) when the node config
-    //    declares no `alive` AND boot asked for it (aliveMs > 0). aliveMs === 0
-    //    (tests) means "don't inject" — but an explicit config alive above still
-    //    loads. No builtin: the readonly view will show this real command.
+    //    `echo beat > state/alive.txt`, cwd = EGPT_HOME so the relative state/
+    //    resolves into the profile) when the node config declares no `alive` AND
+    //    boot asked for it (aliveMs > 0). aliveMs === 0 (tests) means "don't
+    //    inject" — but an explicit config alive above still loads. No builtin:
+    //    the readonly view will show this real command.
     if (!aliveDeclared && aliveMs > 0) {
-      entries.push({ name: 'alive', source: 'config', everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: procCwd } });
+      entries.push({ name: 'alive', source: 'config', everyMs: aliveMs, rawFrequency: aliveMs, action: { kind: 'command', command: aliveCommand, cwd: aliveCwd } });
     }
 
     // 3. Entity entries: every conversation/room folder's config.yaml heartbeats:

@@ -72,11 +72,12 @@ describe('createHeartbeatLoader.collect', () => {
     expect(c.action).toEqual({ kind: 'command', command: 'node cleanup.js', cwd: '/checkout' });
   });
 
-  it('injects the default alive command when the node config declares none (aliveMs>0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 60_000, aliveCommand: 'node alive.mjs', procCwd: '/co' });
+  it('injects the default alive command (echo one-liner, cwd = EGPT_HOME) when the node config declares none (aliveMs>0)', async () => {
+    const loader = createHeartbeatLoader({ getConfig: () => ({}), aliveMs: 60_000, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ name: 'alive', source: 'config', everyMs: 60_000, action: { kind: 'command', command: 'node alive.mjs', cwd: '/co' } });
+    // cwd is the PROFILE, not the checkout — the relative state/ must resolve into ~/.egpt
+    expect(entries[0]).toMatchObject({ name: 'alive', source: 'config', everyMs: 60_000, action: { kind: 'command', command: 'echo beat > state/alive.txt', cwd: '/home' } });
   });
 
   it('does NOT inject the default alive when aliveMs=0 (test contract)', async () => {
@@ -84,11 +85,11 @@ describe('createHeartbeatLoader.collect', () => {
     expect((await loader.collect()).entries).toEqual([]);
   });
 
-  it('an explicit config alive with no command falls back to the default alive command (even at aliveMs=0)', async () => {
-    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0, aliveCommand: 'node alive.mjs', procCwd: '/co' });
+  it('an explicit config alive with no command falls back to the default alive command + EGPT_HOME cwd (even at aliveMs=0)', async () => {
+    const loader = createHeartbeatLoader({ getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }), aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co' });
     const { entries } = await loader.collect();
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ name: 'alive', everyMs: 1000, action: { kind: 'command', command: 'node alive.mjs', cwd: '/co' } });
+    expect(entries[0]).toMatchObject({ name: 'alive', everyMs: 1000, action: { kind: 'command', command: 'echo beat > state/alive.txt', cwd: '/home' } });
   });
 
   it('an explicit config alive command REPLACES the default alive script (no double-inject)', async () => {
@@ -152,7 +153,7 @@ describe('createHeartbeatLoader.activate', () => {
     const registry = makeRegistry();
     const loader = createHeartbeatLoader({
       getConfig: () => ({ heartbeats: { alive: { frequency: '1s' } } }),
-      aliveMs: 0, aliveCommand: 'node src/tools/alive.mjs', egptHome: '/home', procCwd: '/co',
+      aliveMs: 0, aliveCommand: 'echo beat > state/alive.txt', egptHome: '/home', procCwd: '/co',
       io: { writeFile: async (p, c) => writes.push({ p, c }), mkdir: async () => {} },
     });
     await loader.collect();
@@ -167,8 +168,8 @@ describe('createHeartbeatLoader.activate', () => {
     expect(writes[0].c).toContain('DO NOT EDIT');
     expect(writes[0].c).toContain('name: alive');
     expect(writes[0].c).toContain('source: config');
-    expect(writes[0].c).toContain('command: node src/tools/alive.mjs');   // the real command, visible
-    expect(writes[0].c).toContain('cwd: /co');
+    expect(writes[0].c).toContain('command: echo beat > state/alive.txt');   // the real command, visible
+    expect(writes[0].c).toContain('cwd: /home');   // the profile (EGPT_HOME), where state/ resolves
     expect(writes[0].c).not.toContain('builtin');
   });
 

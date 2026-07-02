@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
-import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, unlinkSync as nodeUnlinkSync } from 'node:fs';
+import { existsSync as nodeExistsSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, unlinkSync as nodeUnlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -24,6 +24,7 @@ export function createDaemonRuntime(opts = {}) {
   const spawn = opts.spawn ?? nodeSpawn;
   const spawnSync = opts.spawnSync ?? nodeSpawnSync;
   const readFileSync = opts.readFileSync ?? nodeReadFileSync;
+  const statSync = opts.statSync ?? nodeStatSync;
   const unlinkSync = opts.unlinkSync ?? nodeUnlinkSync;
   const existsSync = opts.existsSync ?? nodeExistsSync;
   const liveDaemonPid = opts.liveDaemonPid ?? defaultLiveDaemonPid;
@@ -38,6 +39,7 @@ export function createDaemonRuntime(opts = {}) {
 
   const rewindSidecar = opts.rewindSidecar ?? join(egptHome, 'rewind-target.txt');
   const alivePath = opts.alivePath ?? join(egptHome, 'state', 'alive.txt');
+  const spinePidPath = opts.spinePidPath ?? join(egptHome, 'state', 'spine.pid');
 
   // Wedge check: the spine beats alive.txt (~60s). If a running child stops
   // beating (alive process, dead loop), restart it. graceMs covers boot before
@@ -72,22 +74,24 @@ export function createDaemonRuntime(opts = {}) {
     stdout.write(`[egpt-daemon ${new Date(now()).toISOString()}] ${msg}\n`);
   }
 
-  // Newest beat's epoch ms from alive.txt ("<tic|toc> <iso> <pid> [q=.. oldest=..]"),
-  // or null. Trailing fields after the pid (pump depth/age the spine now appends)
-  // are tolerated; the bare old form is still accepted so mixed lines during an
-  // upgrade parse fine.
-  function newestBeatMs(content) {
-    const beats = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+(\S+)\s+\d+(?:[ \t].*)?$/gm)];
-    if (!beats.length) return null;
-    const ts = Date.parse(beats[beats.length - 1][1]);
-    return Number.isFinite(ts) ? ts : null;
+  // Liveness is the alive.txt MTIME now, not its content (operator 2026-07-02):
+  // ANY command that writes the file is a valid beat, so the fragile parsed-line
+  // contract + its regexes are gone. beatAge() = ms since the file's mtime; a
+  // missing file → Infinity (absent).
+  function beatAge() {
+    let mtimeMs = null;
+    try { mtimeMs = statSync(alivePath).mtimeMs; } catch { /* no beat file yet */ }
+    return mtimeMs == null ? Infinity : now() - mtimeMs;
   }
 
-  // The newest beat's full line (incl. the q=.. oldest=.. tail), for the wedge log
-  // — so the last-known queue state is in the daemon log when it kills.
-  function newestBeatLine(content) {
-    const lines = [...String(content ?? '').matchAll(/^(?:tic|toc)\s+.*$/gm)];
-    return lines.length ? lines[lines.length - 1][0].trim() : null;
+  // The alive.txt's raw last non-empty line, best-effort, for the wedge log — so
+  // the last-known beat content lands in the daemon log when it kills. The content
+  // is freeform now (for humans); we only read it, never parse it.
+  function lastBeatLine() {
+    try {
+      const lines = readFileSync(alivePath, 'utf8').split(/\r?\n/).filter((l) => l.trim());
+      return lines.length ? lines[lines.length - 1].trim() : null;
+    } catch { return null; }
   }
 
   // The wedge check: a running child that stopped beating gets a SIGTERM, which
@@ -96,13 +100,10 @@ export function createDaemonRuntime(opts = {}) {
   function checkLiveness() {
     if (stopping || !child) return;
     if (now() - childStartedAt < aliveGraceMs) return;
-    let content = '';
-    try { content = readFileSync(alivePath, 'utf8'); } catch { /* no beat file yet */ }
-    const beat = newestBeatMs(content);
-    const age = beat == null ? Infinity : now() - beat;
+    const age = beatAge();
     if (age > aliveStaleMs) {
-      const tail = newestBeatLine(content);
-      log(`spine wedged — alive beat ${beat == null ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s)${tail ? ` — last beat: ${tail}` : ''} — restarting`);
+      const tail = lastBeatLine();
+      log(`spine wedged — alive beat ${age === Infinity ? 'absent' : `${Math.round(age / 1000)}s old`} (> ${Math.round(aliveStaleMs / 1000)}s)${tail ? ` — last beat: ${tail}` : ''} — restarting`);
       wedgeKilled = true;   // exit handler: respawn, don't read a SIGTERM-induced exit 0 as an operator stop
       try { child.kill('SIGTERM'); } catch { /* already gone */ }
       return;
@@ -270,11 +271,13 @@ export function createDaemonRuntime(opts = {}) {
   }
 
   function checkSingleton() {
-    let aliveContent = '';
-    try { aliveContent = readFileSync(alivePath, 'utf8'); } catch {}
-    const otherPid = liveDaemonPid(aliveContent);
+    // Identity from state/spine.pid (written once at boot), liveness from the
+    // alive.txt mtime — the two facts liveDaemonPid decides over.
+    let pidFileContent = '';
+    try { pidFileContent = readFileSync(spinePidPath, 'utf8'); } catch {}
+    const otherPid = liveDaemonPid({ pidFileContent, beatAgeMs: beatAge() });
     if (otherPid) {
-      log(`another egpt daemon is already alive (egpt.mjs pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
+      log(`another egpt daemon is already alive (spine pid ${otherPid}, alive.txt fresh) — refusing to start a second daemon that would fight over WhatsApp. Exiting.`);
       log('to open an interactive shell instead, run `node egpt.mjs` (the app, not this supervisor) — it takes over the running daemon via the pidfile handshake and hands WA back when you /exit.');
       processObj.exit(0);
       return false;

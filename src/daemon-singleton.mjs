@@ -3,35 +3,31 @@
 // getting "replaced"), which kills the bridge — and /restart can't fix it
 // because it only respawns one of the two. See the duplicate-daemon incident.
 //
-// The app (egpt.mjs) beats ~/.egpt/state/alive.txt with "<tic|toc> <iso> <pid>".
-// A daemon is already up iff that beat is FRESH and its pid is a LIVE process.
-// liveDaemonPid returns that pid (so a starting wrapper can refuse), or null
-// when the field is clear: no file, stale beat, dead pid, or it's our own pid.
+// Identity and liveness are SEPARATE files now (operator 2026-07-02):
+//   • state/spine.pid  — the long-lived spine pid, written ONCE at boot.
+//   • state/alive.txt  — beaten every tick; its MTIME is the liveness signal.
+// A daemon is already up iff the beat is FRESH (mtime age < staleMs) AND
+// spine.pid names a LIVE process. liveDaemonPid is PURE over those two injected
+// facts (the caller does the file reads): it returns that pid so a starting
+// wrapper can refuse, or null when the field is clear — no/blank pid file, a
+// stale beat, or a dead pid.
 //
-// Freshness guards against pid reuse: an old beat whose pid now belongs to some
-// unrelated process must NOT be read as "a daemon is alive".
+// Freshness guards against pid reuse: a stale beat whose recorded pid now
+// belongs to some unrelated process must NOT be read as "a daemon is alive".
 
 import { spawnSync } from 'node:child_process';
 
-// Trailing fields after the pid (the spine appends q=.. oldest=..) are tolerated;
-// the bare old form still matches, so mixed lines during an upgrade parse fine.
-const BEAT_RE = /^(?:tic|toc)\s+(\S+)\s+(\d+)(?:[ \t].*)?$/gm;
-
-export function liveDaemonPid(content, {
-  now = Date.now(),
-  selfPid = process.pid,
-  staleMs = 120_000,            // app beats ~every 60s; 2 missed beats = gone
-  isAlive = defaultIsAlive,
+// Pure decision over two injected facts: the spine.pid file's content and the
+// alive.txt beat age (ms since its mtime; Infinity when the file is absent).
+// Returns the live daemon's pid, or null.
+export function liveDaemonPid({ pidFileContent, beatAgeMs } = {}, {
+  staleMs = 120_000,            // alive.txt is beaten ~every 60s; 2 missed beats = gone
+  isProcessAlive = defaultIsAlive,
 } = {}) {
-  if (!content) return null;
-  const beats = [...content.matchAll(BEAT_RE)];
-  if (!beats.length) return null;
-  const [, iso, pidStr] = beats[beats.length - 1];   // newest beat wins
-  const pid = Number(pidStr);
-  const ts = Date.parse(iso);
-  if (!pid || pid === selfPid) return null;
-  if (!Number.isFinite(ts) || now - ts > staleMs) return null;
-  return isAlive(pid) ? pid : null;
+  const pid = Number(String(pidFileContent ?? '').trim());
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (!(beatAgeMs < staleMs)) return null;   // absent (Infinity) / stale / NaN → not fresh
+  return isProcessAlive(pid) ? pid : null;
 }
 
 // process.kill(pid, 0) probes existence without signalling: ESRCH = gone,

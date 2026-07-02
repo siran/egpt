@@ -1,50 +1,47 @@
-// The singleton guard's decision logic: given an alive.txt beat, is another
-// daemon currently alive (so a starting wrapper should refuse)? Liveness is
-// injected so the test never depends on real pids. Regression cover for the
-// duplicate-daemon incident — a 2nd daemon must be refused, but a stale beat
-// or a dead pid must NOT block a legitimate (re)start.
+// The singleton guard's decision logic: given the spine.pid file's content and
+// the alive.txt beat age (ms since its mtime), is another daemon currently alive
+// (so a starting wrapper should refuse)? Identity (spine.pid) and liveness
+// (alive.txt mtime) are separate facts now, both injected so the test never
+// depends on real pids or files. Regression cover for the duplicate-daemon
+// incident — a 2nd daemon must be refused, but a stale beat or a dead pid must
+// NOT block a legitimate (re)start.
 import { describe, it, expect } from 'vitest';
 import { liveDaemonPid, defaultIsAlive } from '../src/daemon-singleton.mjs';
 
-const NOW = Date.UTC(2026, 4, 25, 15, 0, 0);
-const beat = (pid, ageMs = 1000, label = 'tic') =>
-  `${label} ${new Date(NOW - ageMs).toISOString()} ${pid}\n`;
-
 describe('liveDaemonPid', () => {
-  it('returns null when there is no alive content', () => {
-    expect(liveDaemonPid('', { now: NOW })).toBe(null);
-    expect(liveDaemonPid(undefined, { now: NOW })).toBe(null);
+  it('returns null when there is no pid file content', () => {
+    expect(liveDaemonPid({ pidFileContent: '', beatAgeMs: 1000 })).toBe(null);
+    expect(liveDaemonPid({ pidFileContent: undefined, beatAgeMs: 1000 })).toBe(null);
+    expect(liveDaemonPid({}, {})).toBe(null);
+    expect(liveDaemonPid()).toBe(null);
   });
 
-  it('returns the pid when a fresh beat maps to a live, different process', () => {
-    expect(liveDaemonPid(beat(333), { now: NOW, selfPid: 999, isAlive: () => true })).toBe(333);
+  it('returns the pid when the pid file parses and a fresh beat maps to a live process', () => {
+    expect(liveDaemonPid({ pidFileContent: '333\n', beatAgeMs: 1000 }, { isProcessAlive: () => true })).toBe(333);
+    expect(liveDaemonPid({ pidFileContent: '  333  ', beatAgeMs: 1000 }, { isProcessAlive: () => true })).toBe(333);   // trimmed
   });
 
-  it('returns null when the beat is stale (daemon gone, even if pid happens to be alive)', () => {
-    expect(liveDaemonPid(beat(333, 200_000), { now: NOW, selfPid: 999, isAlive: () => true })).toBe(null);
+  it('returns null when the beat is stale (daemon gone, even if the pid happens to be alive)', () => {
+    expect(liveDaemonPid({ pidFileContent: '333', beatAgeMs: 200_000 }, { isProcessAlive: () => true })).toBe(null);
+  });
+
+  it('returns null when the beat file is absent (beatAgeMs Infinity)', () => {
+    expect(liveDaemonPid({ pidFileContent: '333', beatAgeMs: Infinity }, { isProcessAlive: () => true })).toBe(null);
   });
 
   it('returns null when the pid is dead even though the beat is fresh', () => {
-    expect(liveDaemonPid(beat(333), { now: NOW, selfPid: 999, isAlive: () => false })).toBe(null);
+    expect(liveDaemonPid({ pidFileContent: '333', beatAgeMs: 1000 }, { isProcessAlive: () => false })).toBe(null);
   });
 
-  it('returns null when the only beat is our own pid (a /restart respawn race)', () => {
-    expect(liveDaemonPid(beat(222), { now: NOW, selfPid: 222, isAlive: () => true })).toBe(null);
+  it('returns null when the pid file is blank / non-numeric / non-positive', () => {
+    for (const bad of ['   ', 'abc', '0', '-5', '3.5', 'NaN']) {
+      expect(liveDaemonPid({ pidFileContent: bad, beatAgeMs: 1000 }, { isProcessAlive: () => true }), bad).toBe(null);
+    }
   });
 
-  it('reads the NEWEST beat in a tic+toc pair', () => {
-    const content = `${beat(444, 1500, 'tic')}${beat(555, 500, 'toc')}`;
-    expect(liveDaemonPid(content, { now: NOW, selfPid: 999, isAlive: (p) => p === 555 })).toBe(555);
-  });
-
-  it('tolerates the extended beat line (trailing q=.. oldest=.. after the pid)', () => {
-    const extended = `toc ${new Date(NOW - 1000).toISOString()} 333 q=0 oldest=0s\n`;
-    expect(liveDaemonPid(extended, { now: NOW, selfPid: 999, isAlive: () => true })).toBe(333);
-  });
-
-  it('ignores malformed / non-beat lines', () => {
-    const content = `stopped ${new Date(NOW).toISOString()} 111\n${beat(333)}`;
-    expect(liveDaemonPid(content, { now: NOW, selfPid: 999, isAlive: () => true })).toBe(333);
+  it('honors a custom staleMs threshold', () => {
+    expect(liveDaemonPid({ pidFileContent: '333', beatAgeMs: 40_000 }, { staleMs: 30_000, isProcessAlive: () => true })).toBe(null);
+    expect(liveDaemonPid({ pidFileContent: '333', beatAgeMs: 20_000 }, { staleMs: 30_000, isProcessAlive: () => true })).toBe(333);
   });
 });
 

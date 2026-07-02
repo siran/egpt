@@ -72,6 +72,7 @@ function makeRuntime(extra = {}) {
       return child;
     },
     readFileSync: extra.readFileSync ?? (() => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }),
+    statSync: extra.statSync ?? (() => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; }),   // no alive.txt → beat absent (Infinity)
     unlinkSync: extra.unlinkSync ?? (() => {}),
     existsSync: extra.existsSync ?? (() => false),
     liveDaemonPid: extra.liveDaemonPid ?? (() => null),
@@ -98,6 +99,20 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(0);
   });
 
+  it('checkSingleton feeds liveDaemonPid the spine.pid content + the alive.txt beat age', () => {
+    let captured = null;
+    const clock = Date.UTC(2026, 5, 18, 12, 0, 0);
+    const { runtime } = makeRuntime({
+      now: () => clock,
+      // spine.pid → "4242"; anything else (alive.txt content) is absent
+      readFileSync: (p) => { if (String(p).includes('spine.pid')) return '4242\n'; const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      statSync: () => ({ mtimeMs: clock - 10_000 }),   // a 10s-old beat
+      liveDaemonPid: (facts) => { captured = facts; return null; },   // observe, then allow start
+    });
+    runtime.start();
+    expect(captured).toEqual({ pidFileContent: '4242\n', beatAgeMs: 10_000 });
+  });
+
   it('spawns the v2 entry (node egpt.mjs) from the fixed root — no role flags, stdio inherit', () => {
     const root = 'C:/repo/egpt';
     const { runtime, children } = makeRuntime({ argv: [] });
@@ -114,11 +129,11 @@ describe('daemon runtime fake-world harness', () => {
     });
   });
 
-  it('wedge check: a stale alive beat past the grace window restarts the child', () => {
+  it('wedge check: a stale alive beat (old mtime) past the grace window restarts the child', () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
     const { runtime, children } = makeRuntime({
       now: () => clock,
-      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999\n',  // ~1h-old beat
+      statSync: () => ({ mtimeMs: Date.UTC(2026, 5, 18, 11, 0, 0) }),  // ~1h-old beat file
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
@@ -131,7 +146,7 @@ describe('daemon runtime fake-world harness', () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
     const { runtime, children } = makeRuntime({
       now: () => clock,
-      readFileSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },
+      statSync: () => { const e = new Error('missing'); e.code = 'ENOENT'; throw e; },  // no alive.txt yet
       aliveGraceMs: 90_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
@@ -140,11 +155,11 @@ describe('daemon runtime fake-world harness', () => {
     expect(children[0].child.killed).toEqual([]);
   });
 
-  it('wedge check: a fresh beat leaves a healthy child running', () => {
+  it('wedge check: a fresh mtime leaves a healthy child running (content irrelevant)', () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
     const { runtime, children } = makeRuntime({
       now: () => clock,
-      readFileSync: () => `toc ${new Date(clock - 5_000).toISOString()} 999\n`,  // 5s old
+      statSync: () => ({ mtimeMs: clock - 5_000 }),  // 5s old
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
@@ -159,7 +174,7 @@ describe('daemon runtime fake-world harness', () => {
     const { runtime, children, processObj } = makeRuntime({
       now: () => clock,
       setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
-      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999\n',  // ~1h-old beat
+      statSync: () => ({ mtimeMs: Date.UTC(2026, 5, 18, 11, 0, 0) }),  // ~1h-old beat file
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
@@ -178,45 +193,30 @@ describe('daemon runtime fake-world harness', () => {
     expect(processObj.exits).toEqual([]);        // daemon did NOT stop
   });
 
-  it('wedge log carries the newest beat line (queue state) when it kills', () => {
+  it('wedge log carries the alive.txt raw last line (freeform content) when it kills', () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
     const { runtime, logs } = makeRuntime({
       now: () => clock,
       setTimeout: () => {},   // don't respawn — we only inspect the wedge log
-      readFileSync: () => 'tic 2026-06-18T11:00:00.000Z 999 q=5 oldest=42s\n',  // stale, extended
+      statSync: () => ({ mtimeMs: Date.UTC(2026, 5, 18, 11, 0, 0) }),  // stale mtime
+      readFileSync: () => 'beat\nq=5 oldest=42s\n',   // freeform content; last non-empty line surfaces
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
     clock += 5_000;
     runtime.checkLiveness();
     const wedgeLog = logs.find((l) => l.includes('spine wedged'));
-    expect(wedgeLog).toContain('q=5 oldest=42s');   // last-known queue state in the daemon log
+    expect(wedgeLog).toContain('q=5 oldest=42s');   // last-known beat content in the daemon log
   });
 
-  it('newestBeatMs tolerates the extended line; newest of mixed old+new lines wins', () => {
+  it('consecutive wedge kills escalate the respawn delay; a fresh mtime resets the streak', async () => {
     let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
-    const content =
-      'tic 2026-06-18T11:00:00.000Z 999\n' +                                  // old bare form, stale
-      `toc ${new Date(clock - 5_000).toISOString()} 999 q=2 oldest=7s\n`;     // new extended form, fresh (newest)
-    const { runtime, children } = makeRuntime({
-      now: () => clock,
-      readFileSync: () => content,
-      aliveGraceMs: 1_000, aliveStaleMs: 60_000,
-    });
-    runtime.spawnShell();
-    clock += 5_000;
-    runtime.checkLiveness();
-    expect(children[0].child.killed).toEqual([]);   // newest (fresh, extended) beat → no kill
-  });
-
-  it('consecutive wedge kills escalate the respawn delay; a fresh beat resets the streak', async () => {
-    let clock = Date.UTC(2026, 5, 18, 12, 0, 0);
-    let content = 'tic 2026-06-18T11:00:00.000Z 999 q=0 oldest=0s\n';   // stale
+    let mtimeMs = Date.UTC(2026, 5, 18, 11, 0, 0);   // ~1h old (stale)
     const timers = [];
     const { runtime, children } = makeRuntime({
       now: () => clock,
       setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
-      readFileSync: () => content,
+      statSync: () => ({ mtimeMs }),
       aliveGraceMs: 1_000, aliveStaleMs: 60_000,
     });
     runtime.spawnShell();
@@ -240,9 +240,9 @@ describe('daemon runtime fake-world harness', () => {
     expect(children).toHaveLength(3);
     expect(runtime.state.wedgeStreak).toBe(2);
 
-    // heartbeat restored: checkLiveness sees a fresh beat → no kill, streak reset
-    content = `toc ${new Date(clock).toISOString()} 999 q=1 oldest=3s\n`;
+    // heartbeat restored: checkLiveness sees a fresh mtime → no kill, streak reset
     clock += 5_000;
+    mtimeMs = clock;   // age 0
     runtime.checkLiveness();
     expect(children[2].child.killed).toEqual([]);
     expect(runtime.state.wedgeStreak).toBe(0);
