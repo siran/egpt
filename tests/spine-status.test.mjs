@@ -5,7 +5,7 @@
 // another agent — avoid the same-file race.)
 import { describe, it, expect } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
-import { emptyState, ensureContact } from '../conversations-state.mjs';
+import { emptyState, ensureContact, patchContact, recordThread, slugDir } from '../conversations-state.mjs';
 
 // A readonly.yaml with two heartbeat entries (the shape heartbeat-loader writes).
 const READONLY_YAML = `heartbeats:
@@ -33,7 +33,7 @@ function threeContacts() {
   return st;
 }
 
-function harness({ io, gitOut, loadState } = {}) {
+function harness({ io, gitOut, loadState, brains } = {}) {
   const sent = [];
   const cmds = createCommands({
     getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
@@ -42,8 +42,24 @@ function harness({ io, gitOut, loadState } = {}) {
     loadState,
     io,
     gitOut,
+    brains,
   });
   return { cmds, sent };
+}
+
+// Fake readFile keyed by path SUFFIX (transcript.md / heartbeats.readonly.yaml live at
+// different paths but the test doesn't care about EGPT_HOME/slugDir specifics). A
+// mapped Error value means "throw" (degrade to '?'/'unknown', matching the real fs).
+function readFileBySuffix(map) {
+  return async (p) => {
+    for (const [suffix, content] of Object.entries(map)) {
+      if (String(p).endsWith(suffix)) {
+        if (content instanceof Error) throw content;
+        return content;
+      }
+    }
+    throw new Error(`no fixture for path ${p}`);
+  };
 }
 
 describe('/status', () => {
@@ -143,5 +159,122 @@ describe('/status', () => {
     const { cmds, sent } = harness({});
     await cmds.run({ body: '/channels', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/\/status/);
+  });
+});
+
+// /status <fragment> — operator's per-conversation minimum (2026-07-03): target
+// resolved exactly like /e auto's (same resolveTarget), one fenced yaml block with
+// name/surface/slug/conversation_path/mode/agent/personality/thread/members.
+describe('/status <target>', () => {
+  const NO_HEARTBEATS = new Error('no readonly file');
+  const NO_TRANSCRIPT = new Error('ENOENT');
+
+  it('/status: conversation state not wired (loadState absent)', async () => {
+    const { cmds, sent } = harness({});
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/conversation state not wired/);
+  });
+
+  it('reports no match exactly like /e auto (resolveTarget) — no state read failure either', async () => {
+    const { cmds, sent } = harness({ loadState: async () => emptyState() });
+    await cmds.run({ body: '/status zzz', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/^\/status: no chat matches "zzz"/);
+  });
+
+  it('a NEVER-STARTED conversation: every unresolved field degrades independently (agent/personality "?", thread "not started", members "unknown")', async () => {
+    const { state: created } = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const { cmds, sent } = harness({
+      loadState: async () => created,
+      io: { readFile: readFileBySuffix({ 'transcript.md': NO_TRANSCRIPT, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text.startsWith('```yaml\n')).toBe(true);
+    expect(text).toMatch(/name: HFM/);
+    expect(text).toMatch(/surface: whatsapp/);
+    expect(text).toMatch(/slug: HFM-\d{10}/);
+    expect(text).toMatch(/conversation_path: .*conversations\/whatsapp\/HFM-\d{10}/);
+    expect(text).toMatch(/mode: mention \(default\)/);   // no per-conv mode set → global default, marked
+    expect(text).toMatch(/agent: \?/);
+    expect(text).toMatch(/engine: \?/);
+    expect(text).toMatch(/model: \?/);
+    expect(text).toMatch(/effort: \?/);
+    expect(text).toMatch(/allowed_tools: \?/);
+    expect(text).toMatch(/personality: \?/);            // never instanced → no type to resolve
+    expect(text).toMatch(/thread_id: not started/);
+    expect(text).toMatch(/members: unknown/);            // no transcript yet
+    expect(text).not.toMatch(/heartbeats:/);              // omitted, not '?' — matches bare /status's optional `mode` pattern
+  });
+
+  it('an INSTANCED conversation: frozen agent/model/effort/allowed_tools, personality resolved via the brains registry, thread id, and members from the transcript tail', async () => {
+    const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const slug = first.slug;
+    let state = recordThread(first.state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1');
+    state = patchContact(state, 'whatsapp', '!hfm:beeper.local', {
+      mode: 'on',
+      readonly: { agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] },
+    });
+    const transcript = [
+      'An@[HFM].wa (10:00): hola',
+      '',
+      '[@e (10:01)]: hola An',
+      '',
+      'Ron@[HFM].wa (10:02): que tal',
+      '',
+    ].join('\n');
+    const brains = { resolve: (name) => (name === 'sonnet-high' ? { name, type: 'ccode', model: 'opus', effort: 'high', personality: 'poet' } : null) };
+
+    const { cmds, sent } = harness({
+      loadState: async () => state,
+      brains,
+      io: { readFile: readFileBySuffix({ 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(new RegExp(`slug: ${slug}`));
+    expect(text).toMatch(/mode: on/);
+    expect(text).toMatch(/agent: sonnet-high/);
+    expect(text).toMatch(/engine: ccode/);
+    expect(text).toMatch(/model: opus/);
+    expect(text).toMatch(/effort: high/);
+    expect(text).toMatch(/allowed_tools: \[Read\]/);
+    expect(text).toMatch(/personality: poet/);
+    expect(text).toMatch(/thread_id: THREAD-1/);
+    expect(text).toMatch(/members: An, @e, Ron/);   // distinct, first-seen order
+  });
+
+  it('a resolved type file that omits `personality:` falls back to \'egpt\' (same fallback the brainpool applies)', async () => {
+    const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', {
+      readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+    });
+    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', model: 'sonnet', effort: 'high' } : null) };   // no personality field
+    const { cmds, sent } = harness({
+      loadState: async () => state,
+      brains,
+      io: { readFile: readFileBySuffix({ 'transcript.md': NO_TRANSCRIPT, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/personality: egpt/);
+    expect(sent[0].text).toMatch(/allowed_tools: all/);
+  });
+
+  it('this conversation\'s own heartbeat count is included when trivially available (source pinned to its convDir)', async () => {
+    const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const convDir = slugDir('whatsapp', first.slug);
+    const { cmds, sent } = harness({
+      loadState: async () => first.state,
+      io: {
+        readFile: readFileBySuffix({
+          'transcript.md': NO_TRANSCRIPT,
+          'heartbeats.readonly.yaml': `heartbeats:\n  - name: whatsapp/hfm:daily\n    source: ${JSON.stringify(convDir)}\n`,
+        }),
+      },
+    });
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/heartbeats: 1/);
   });
 });

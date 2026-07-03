@@ -9,8 +9,9 @@
 // built (Phase 4c); until then they are RECOGNIZED (not leaked to E) and answered
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
-import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
+import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
+import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
+import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
@@ -225,11 +226,15 @@ export function createCommands({
       return;
     }
 
-    // /status — one compact ops line with live node health. Every probe is
-    // wrapped: any failure degrades to '?' so /status NEVER throws (a broken git
-    // checkout / missing profile file must still yield a reply).
-    if (/^\/status\b/i.test(line)) {
-      await send?.(ev.chatId, await status(ev));
+    // /status [<target>] — bare: one compact ops line with live node health (unchanged
+    // byte-for-byte). `/status <fragment>` targets a SPECIFIC conversation instead —
+    // resolved EXACTLY like `/e auto <mode> <target>` (same resolveTarget) — and reports
+    // that conversation's operator-facing facts (§ statusTarget). Every probe in both
+    // forms is wrapped: any failure degrades to '?' so /status NEVER throws.
+    const statusMatch = /^\/status(?:\s+(.+))?\s*$/i.exec(line);
+    if (statusMatch) {
+      const target = statusMatch[1]?.trim() || null;
+      await send?.(ev.chatId, target ? await statusTarget(ev, target) : await status(ev));
       return;
     }
 
@@ -305,6 +310,97 @@ export function createCommands({
       `conversations: ${convs}`,
     ];
     if (mode) lines.push(`mode: ${mode}`);
+    return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  // Distinct participants seen in a transcript's tail: human senders (the
+  // dispatch-line "Sender@[chat]…" shape, incl. its stage-direction "[ Sender@…" wrap)
+  // and being replies ("[@being (HH:MM)]: …"), being names reported as "@<being>". No
+  // member-roster store exists yet — conversation-members.mjs seeds a BRAIN roster from
+  // config (residents_per_chat + auto-mode), not who actually spoke, so it doesn't answer
+  // "who's in this conversation"; this reads the honest signal that already exists on
+  // disk. Pure; `text` is front-matter-stripped first so `name:`/`---` lines never match.
+  const _HUMAN_SENDER_RE = /^\[?\s*([^@\s][^@]*?)@\[/;
+  const _BEING_REPLY_RE = /^\[@(\S+)\s\(\d{1,2}:\d{2}\)\]:/;
+  function membersFromTranscript(text, { tailLines = 200 } = {}) {
+    const lines = stripFrontMatter(String(text ?? '')).split('\n').slice(-tailLines);
+    const seen = new Set();
+    for (const line of lines) {
+      const h = _HUMAN_SENDER_RE.exec(line);
+      if (h) { seen.add(h[1].trim()); continue; }
+      const b = _BEING_REPLY_RE.exec(line);
+      if (b) seen.add(`@${b[1]}`);
+    }
+    return [...seen];
+  }
+
+  // /status <fragment> — the operator's per-conversation minimum: target resolved
+  // exactly like /e auto's (resolveTarget), one fenced yaml block reporting that
+  // conversation's name/path/mode/agent/personality/thread/members. Every probe is
+  // independently guarded; a degraded probe shows '?' (or 'unknown'/'not started'
+  // where that reads clearer) — this never throws, matching bare /status.
+  async function statusTarget(ev, term) {
+    if (!loadState) return '/status: conversation state not wired';
+    const surface = ev.surface ?? 'whatsapp';
+    let state, r;
+    try {
+      state = await loadState();
+      r = resolveTarget(state, term, surface);
+    } catch (e) { return `/status: failed — ${e?.message ?? e}`; }
+    if (r.error) return `/status: ${r.error}`;
+
+    const c = getContact(state, surface, r.jid);
+    const slug = c?.slug ?? r.name;
+    const displayName = c?.entry?.pushedName ?? r.name;
+
+    let convDir = null;
+    try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+
+    let convPath = c?.entry?.conversation_path;
+    if (!convPath) { try { convPath = conversationPathOf(surface, slug); } catch { convPath = '?'; } }
+
+    const b = getBeing(state, surface, r.jid, 'e');
+    const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
+
+    // Personality: resolved the way the brainpool does — the agent TYPE file's
+    // `personality:` field, else 'egpt' (brains registry, same layered resolution the
+    // /e wizard's preview uses). A never-instanced being has no type to resolve yet.
+    let personality = '?';
+    if (b?.agent) {
+      try { const def = brains?.resolve?.(b.agent, { convDir }); personality = def ? (def.personality ?? 'egpt') : '?'; }
+      catch { personality = '?'; }
+    }
+
+    let members = 'unknown';
+    if (convDir) {
+      try { members = membersFromTranscript(await readFile(join(convDir, 'transcript.md'), 'utf8')).join(', ') || 'unknown'; }
+      catch { members = 'unknown'; }
+    }
+
+    // Optional: this conversation's own heartbeat count (source/cwd pinned to convDir),
+    // omitted when the readonly view is absent (matches bare /status's optional `mode`).
+    let hb = null;
+    try {
+      const doc = YAML.parse(await readFile(join(EGPT_HOME, 'state', 'heartbeats.readonly.yaml'), 'utf8'));
+      if (Array.isArray(doc?.heartbeats) && convDir) hb = doc.heartbeats.filter((h) => h?.source === convDir || h?.cwd === convDir).length;
+    } catch { hb = null; }
+
+    const lines = [
+      `name: ${displayName}`,
+      `surface: ${surface}`,
+      `slug: ${slug}`,
+      `conversation_path: ${convPath}`,
+      `mode: ${mode}`,
+      `agent: ${b?.agent ?? '?'}`,
+      `engine: ${b?.brainType ?? '?'}`,
+      `model: ${b?.model ?? '?'}`,
+      `effort: ${b?.effort ?? '?'}`,
+      `allowed_tools: ${Array.isArray(b?.allowedTools) ? `[${b.allowedTools.join(', ')}]` : (b?.allowedTools ?? '?')}`,
+      `personality: ${personality}`,
+      `thread_id: ${b?.threadId ?? 'not started'}`,
+      `members: ${members}`,
+    ];
+    if (hb != null) lines.push(`heartbeats: ${hb}`);
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 
