@@ -32,12 +32,24 @@ describe('tool limitation + trusted access', () => {
   it("'*' is treated the same as 'all'", () => {
     expect(valsOf(buildClaudeArgs({ allowedTools: '*' }), '--permission-mode')).toEqual(['bypassPermissions']);
   });
-  it('plain allowedTools list (no sandbox) → --allowedTools, NO bypass, NO isolation', () => {
+  it("'all'/'*' are NEVER a bare-Bash/Agent escape hatch — --disallowedTools locks both (operator 2026-07-03)", () => {
+    for (const at of ['all', '*']) {
+      const a = buildClaudeArgs({ allowedTools: at });
+      expect(valsOf(a, '--disallowedTools')).toEqual(['Bash Agent']);
+    }
+  });
+  it('plain allowedTools list (no sandbox) → --allowedTools, NO bypass, NO isolation, NO --disallowedTools', () => {
     const a = buildClaudeArgs({ allowedTools: ['Read', 'WebFetch'] });
     expect(valsOf(a, '--allowedTools')).toEqual(['Read WebFetch']);
     expect(has(a, '--dangerously-skip-permissions')).toBe(false);
     expect(has(a, '--permission-mode')).toBe(false);
     expect(has(a, '--setting-sources')).toBe(false);
+    expect(has(a, '--disallowedTools')).toBe(false);   // a LIST is already fail-closed
+  });
+  it('an explicit list containing a scoped Bash(git:*) keeps working, no --disallowedTools added', () => {
+    const a = buildClaudeArgs({ allowedTools: ['Read', 'Bash(git:*)'] });
+    expect(valsOf(a, '--allowedTools')).toEqual(['Read Bash(git:*)']);
+    expect(has(a, '--disallowedTools')).toBe(false);
   });
 });
 

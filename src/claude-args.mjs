@@ -14,6 +14,9 @@
 //                                     only non-file tools are allow-listed.
 //   allowedTools 'all'|'*'          → --dangerously-skip-permissions +
 //                                     --permission-mode bypassPermissions (trusted)
+//                                     + --disallowedTools "Bash Agent" (the two
+//                                     escape hatches are NEVER implicit, even
+//                                     under 'all' — operator 2026-07-03)
 //   allowedTools list               → --allowedTools "<list>"
 //   readOnlyDirs (write-deny)       → NATIVE permission deny rules via --settings:
 //                                     permissions.deny ["Edit(<dir>/**)","Write(...)",
@@ -73,6 +76,11 @@ export function buildClaudeArgs(options = {}) {
       args.push('--setting-sources', '');
       args.push('--dangerously-skip-permissions');
       args.push('--permission-mode', 'bypassPermissions');
+      // 'all' grants every tool EXCEPT the two escape hatches (operator
+      // 2026-07-03: "all includes Bash? it shouldn't"). Bare Bash/Agent are
+      // NEVER implicit — a scoped Bash(<bin>:*) remains grantable only via an
+      // explicit allowedTools LIST.
+      args.push('--disallowedTools', 'Bash Agent');
     } else {
       const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
       if (confined) {

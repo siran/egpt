@@ -151,8 +151,9 @@ surface in [`config/config-schema.mjs`](config/config-schema.mjs).
         no bare `Bash` + no `Agent`), not a hand-rolled hook.
 
    11.2 An agent-type's `allowed_tools` sets the honest contract: a LIST =
-        confined; `all` = trusted/unconfined; `allowed_paths` grants extra
-        read-only or read-write roots.
+        confined; `all` = trusted/unconfined except bare Bash and Agent,
+        never implicit; `allowed_paths` grants extra read-only or
+        read-write roots.
 
 
 12. Boot is fatal without a persona.

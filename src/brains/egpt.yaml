@@ -6,7 +6,7 @@
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
 effort: high          # reasoning effort (engine-dependent)
-allowed_tools:        # a LIST = CONFINED (file tools path-limited to allowed_paths); `allowed_tools: all` = TRUSTED/unconfined (every tool, no prompts, full filesystem)
+allowed_tools:        # a LIST = CONFINED (file tools path-limited to allowed_paths); `allowed_tools: all` = TRUSTED/unconfined (every tool, no prompts, full filesystem) except bare Bash and Agent — never implicit (operator 2026-07-03)
   - Read           # read files
   - Write          # create / overwrite files
   - Edit           # in-place edits
