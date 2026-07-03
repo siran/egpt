@@ -10,12 +10,47 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir } from '../../conversations-state.mjs';
+import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
+import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { stat as fsStat, readFile as fsReadFile } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
+
+// The `/e` wizard's model/effort menus (operator 2026-07-02: v1's `/e` supplied
+// these same fixed lists — there is no canonical model/effort registry in v2, and
+// the agent TYPE file pins concrete values anyway). The agent-type list (step 1) is
+// discovered from disk. TTL matches v1's armed-wizard window.
+const WIZARD_MODELS = ['haiku', 'sonnet', 'opus', 'fable'];
+const WIZARD_EFFORTS = ['low', 'medium', 'high'];
+const WIZARD_TTL_MS = 5 * 60 * 1000;
+const CCODE = 'ccode';
+
+// Agent-type names for the wizard's first pick: the built-in defs (src/brains/*.yaml)
+// plus the profile's own type files (EGPT_HOME/config/agents/*.yaml), deduped
+// (case-insensitively; a profile override of a built-in shows once) and sorted. Same
+// two layers the brain registry resolves against — a conversation-only brains/ layer
+// is not offered (it's not a reusable type). Never throws (a missing dir is skipped).
+function defaultListAgentTypes() {
+  const seen = new Set();
+  const out = [];
+  for (const dir of [BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR]) {
+    let ents = [];
+    try { ents = readdirSync(dir); } catch { continue; }
+    for (const f of ents) {
+      if (!f.endsWith('.yaml')) continue;
+      const name = f.slice(0, -5);
+      const k = name.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(name);
+    }
+  }
+  return out.sort();
+}
 
 // Compact uptime: "2h13m" / "13m05s" / "42s". Whole seconds; drops the finest
 // unit once hours are in play so /status stays a terse ops line.
@@ -62,6 +97,9 @@ export function createCommands({
   exit = (code) => process.exit(code),
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
+  brains = null,                         // the brain registry (createBrains) — the /e wizard resolves a picked agent type through it
+  evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so a re-point respawns fresh
+  listAgentTypes = defaultListAgentTypes,// () -> string[] agent-type names for the wizard's first pick (injected in tests)
   io = {},                               // { stat, readFile } — real fs by default; /status probes alive.txt + heartbeats.readonly.yaml through here
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
@@ -72,21 +110,59 @@ export function createCommands({
   const stat = io.stat ?? fsStat;
   const readFile = io.readFile ?? fsReadFile;
 
+  // Armed `/e` wizards, keyed by the OPERATOR's chat (where they type the answers) —
+  // NOT the target chat (bare `/e` targets here; `/e <slug>` targets elsewhere). Each
+  // entry carries the resolved target + the engine its live warm session runs under
+  // (for eviction on done) + the arming timestamp (TTL). See armWizard/stepWizard.
+  const wizards = new Map();   // chatKey -> { state, surface, chatId, oldEngine, ts }
+  const chatKey = (ev) => `${ev?.surface ?? 'whatsapp'}:${ev?.chatId}`;
+
+  // The operator gate — reused by isCommand AND the wizard's first-refusal. Same
+  // authorization every slash command uses: the origin surface's own Self DM (ids
+  // are per-surface namespaces), an authorized sender, or the account owner (isSender).
+  function isOperator(ev) {
+    const selfDm = cfg()[ev?.surface ?? 'whatsapp']?.chat_id;
+    return (selfDm && ev?.chatId === selfDm) || !!ev?.authorized || !!ev?.isSender;
+  }
+
+  // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an
+  // abandoned wizard never lingers past its 5-min window).
+  function wizardActive(ev) {
+    const wm = wizards.get(chatKey(ev));
+    if (!wm) return false;
+    if (Date.now() - wm.ts > WIZARD_TTL_MS) { wizards.delete(chatKey(ev)); return false; }
+    return true;
+  }
+
   // Same id in any form counts as the Self DM (lid vs phone-form — a /restart
   // often arrives as the @lid self-jid). The Self DM is PER-SURFACE now (operator
   // 2026-07-02): a /restart typed in the telegram surface's own chat_id is checked
   // against cfg.telegram.chat_id, not whatsapp's — ids are per-surface namespaces.
   // Fall back to the whatsapp block when ev.surface is absent (safety). Authorized
   // senders (per-surface allowed_users / isSender) can command from anywhere.
+  //
+  // An ARMED `/e` wizard gets FIRST REFUSAL on the operator's next message (even a
+  // plain, non-slash one — a numbered pick), so it doesn't fall through to E's brain
+  // turn. A non-operator message never counts (it routes normally, never touching
+  // the wizard). Slash commands while armed still count as commands and route through
+  // run() (v1 lets a slash bypass the wizard without cancelling it — matched below).
   function isCommand(ev) {
     const body = String(ev?.body ?? '').trim();
+    if (isOperator(ev) && wizardActive(ev)) return true;
     if (!body.startsWith('/')) return false;
-    const selfDm = cfg()[ev?.surface ?? 'whatsapp']?.chat_id;
-    return (selfDm && ev.chatId === selfDm) || !!ev.authorized || !!ev.isSender;
+    return isOperator(ev);
   }
 
   async function run(ev) {
     const line = String(ev.body ?? '').trim();
+
+    // Armed `/e` wizard, first refusal: a PLAIN (non-slash) operator message is a
+    // numbered/typed answer — step the wizard and stop (never reach E's brain). A
+    // slash command falls through to normal dispatch (v1 bypass: the wizard stays
+    // armed until answered, cancelled, or TTL-expired). isCommand only routes a plain
+    // message here when a wizard is armed, so a bare return after stepping is safe.
+    if (!line.startsWith('/')) { await stepWizard(ev, line); return; }
+
     const code = lifecycleExit(line, { writeRewindTarget });
     if (code != null) {
       onLog(`${line} -> exit ${code}`);
@@ -124,6 +200,13 @@ export function createCommands({
       await send?.(ev.chatId, await status(ev));
       return;
     }
+
+    // /e (bare) or /e <fragment> — ARM the re-point wizard (v1 parity: a guided
+    // agent-type/model/effort pick, not a flag command). Bare targets THIS chat; a
+    // fragment resolves the target like /e auto does. `/e auto …` is matched above, so
+    // it never reaches here. Must stay AFTER /e auto + /status in the dispatch order.
+    const eWiz = /^\/(?:e|egpt)(?:\s+(.+?))?\s*$/i.exec(line);
+    if (eWiz) { await armWizard(ev, eWiz[1]?.trim() || null); return; }
 
     const tok = line.split(/\s+/)[0];
     await send?.(ev.chatId, `${tok}: recognized — lifecycle (/restart, /upgrade, /rewind) + /e auto <mode> + /status are wired in v2 so far.`);
@@ -191,6 +274,93 @@ export function createCommands({
     ];
     if (mode) lines.push(`mode: ${mode}`);
     return '```yaml\n' + lines.join('\n') + '\n```';
+  }
+
+  // Arm the `/e` re-point wizard for the operator's chat. `targetTerm` null = THIS
+  // chat; otherwise resolve it like /e auto's target (fuzzy slug/name, or a verbatim
+  // @jid). Records the target's slug/jid + the engine its live warm session runs
+  // under (so `done` can evict exactly that entry). Posts the first numbered prompt.
+  async function armWizard(ev, targetTerm) {
+    if (!loadState || !writeState) { await send?.(ev.chatId, '/e: conversation state not wired'); return; }
+    const surface = ev.surface ?? 'whatsapp';
+    let state, jid, slug, displayName;
+    try {
+      state = await loadState();
+      if (targetTerm) {
+        const r = resolveTarget(state, targetTerm, surface);
+        if (r.error) { await send?.(ev.chatId, `/e: ${r.error}`); return; }
+        jid = r.jid;
+      } else {
+        jid = ev.chatId;
+      }
+      const c = getContact(state, surface, jid);
+      if (!c) { await send?.(ev.chatId, `/e: no chat matches "${targetTerm ?? 'this chat'}" — send a message there first`); return; }
+      slug = c.slug; jid = c.jid;
+      displayName = c.entry?.pushedName ?? slug;   // operator-facing label (slug carries a date suffix)
+    } catch (e) { onLog(`/e arm ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e: failed — ${e?.message ?? e}`); return; }
+
+    // Offer only agent types that actually RESOLVE: the seeded example file
+    // (config/agents/sonnet-high.yaml) is all-comments → parses to null, and a
+    // pickable option that then errors on `done` is a poor UX. Keep the raw list only
+    // if resolution surprisingly drops everything (misconfig) so the operator isn't stuck.
+    let convDir = null; try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+    let configurations = listAgentTypes();
+    if (brains?.resolve) {
+      const ok = configurations.filter((n) => { try { return !!brains.resolve(n, { convDir }); } catch { return false; } });
+      if (ok.length) configurations = ok;
+    }
+    if (!configurations.length) { await send?.(ev.chatId, '/e: no agent types found (config/agents or src/brains)'); return; }
+    // The conversation's CURRENT instanced def marks the matching option `(current)`
+    // and its frozen engine keys the warm entry to evict on done (null = never
+    // instanced → fall back to the new def's engine at apply time).
+    const cur = getBeing(state, surface, jid, 'e');
+    const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS };
+    const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null };
+    const wstate = initWizard({ slug, jid, surface, options, current });
+    wizards.set(chatKey(ev), { state: wstate, surface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
+    await send?.(ev.chatId, `🧩 reconfigure «${displayName}»\n${wizardPrompt(wstate)}`);
+  }
+
+  // Feed a plain operator message into the armed wizard. Returns true when consumed
+  // (cancel/back/step/done), false when nothing was armed (or it just expired). Only
+  // reached for a non-slash operator message that isCommand already gated on.
+  async function stepWizard(ev, text) {
+    const key = chatKey(ev);
+    const wm = wizards.get(key);
+    if (!wm) return false;
+    if (Date.now() - wm.ts > WIZARD_TTL_MS) { wizards.delete(key); return false; }
+    const r = wizardStep(wm.state, text);
+    if (r.cancelled) { wizards.delete(key); await send?.(ev.chatId, '(wizard cancelled)'); return true; }
+    if (r.done) { wizards.delete(key); await applyWizard(wm, r.result); return true; }
+    wm.state = r.state; wm.ts = Date.now();
+    await send?.(ev.chatId, r.prompt);
+    return true;
+  }
+
+  // On done: freeze the picked agent type/model/effort into the TARGET conversation's
+  // readonly block (same shape the brainpool instances — keeps the existing threadId,
+  // so context survives the re-point), then evict its warm session so the next turn
+  // respawns with the new def. Reply terse + factual, /status house style.
+  async function applyWizard(wm, result) {
+    const { surface, jid } = result;
+    try {
+      const state = await loadState();
+      const c = getContact(state, surface, jid);
+      const slug = c?.slug ?? result.slug;
+      const displayName = c?.entry?.pushedName ?? slug;
+      let convDir = null;
+      try { convDir = slugDir(surface, slug); } catch { /* non-default surface — resolve without a conv layer */ }
+      const def = brains?.resolve?.(result.configuration, { convDir });
+      if (!def) { await send?.(wm.chatId, `/e: agent type "${result.configuration}" not found`); return; }
+      const engine = def.type ?? CCODE;
+      await writeState(patchContact(state, surface, jid, {
+        readonly: { agent: def.name ?? result.configuration, type: engine, model: result.model, effort: result.effort, allowed_tools: def.allowed_tools ?? 'all' },
+      }));
+      // The live warm session runs under the OLD engine (or the new one on a
+      // never-instanced conversation); the pool keys it `e:<engine>:<surface>:<slug>`.
+      evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
+      await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${result.model}/${result.effort} (respawns next turn)`);
+    } catch (e) { onLog(`/e wizard ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
   return { isCommand, run };

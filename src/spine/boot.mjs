@@ -246,7 +246,9 @@ export async function boot({
     send: (chatId, text) => bridge.send(chatId, text),
     exit: announceAndExit,
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
-    loadState: _loadState, writeState: _writeState,   // /e auto <mode> persists into conversations.yaml
+    loadState: _loadState, writeState: _writeState,   // /e auto <mode> + the /e wizard persist into conversations.yaml
+    brains,                                           // the /e wizard resolves a picked agent type through the registry
+    evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 

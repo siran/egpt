@@ -1,47 +1,43 @@
 import { describe, it, expect } from 'vitest';
 import { initWizard, wizardStep, wizardPrompt } from '../src/agent-wizard.mjs';
 
-const opts = { brains: ['claude-code', 'codex'], models: ['haiku', 'sonnet', 'opus'], efforts: ['low', 'medium', 'high'], identities: ['default', 'banter'] };
-const mk = () => initWizard({ slug: 'spoiler', jid: '!x:beeper.local', options: opts });
+const opts = { configurations: ['egpt', 'sonnet-high'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'] };
+const mk = (extra = {}) => initWizard({ slug: 'spoiler', jid: '!x:beeper.local', surface: 'whatsapp', options: opts, ...extra });
 
-describe('agent wizard', () => {
-  it('walks name → brain → model → effort → identity → done', () => {
-    let r = wizardStep(mk(), 'wren');     // name (free text)
-    r = wizardStep(r.state, '1');         // brain → claude-code
+describe('agent wizard (v2: configuration → model → effort)', () => {
+  it('walks configuration → model → effort → done', () => {
+    let r = wizardStep(mk(), '2');        // configuration → sonnet-high
     r = wizardStep(r.state, '3');         // model → opus
     r = wizardStep(r.state, '3');         // effort → high
-    r = wizardStep(r.state, '2');         // identity → banter
     expect(r.done).toBe(true);
-    expect(r.result).toMatchObject({ slug: 'spoiler', name: 'wren', brain: 'claude-code', model: 'opus', effort: 'high', personality: 'banter' });
-  });
-
-  it('blank name → configures E', () => {
-    expect(wizardStep(mk(), '').state.answers.name).toBe('e');
+    expect(r.result).toMatchObject({ slug: 'spoiler', jid: '!x:beeper.local', surface: 'whatsapp', configuration: 'sonnet-high', model: 'opus', effort: 'high' });
   });
 
   it('accepts a value by text as well as by number', () => {
-    let r = wizardStep(mk(), 'wren');
-    r = wizardStep(r.state, 'codex');     // brain by name
-    expect(r.state.answers.brain).toBe('codex');
+    const r = wizardStep(mk(), 'egpt');   // configuration by name
+    expect(r.state.answers.configuration).toBe('egpt');
   });
 
   it('rejects an out-of-range pick and stays on the step', () => {
-    let r = wizardStep(mk(), 'wren');
-    const before = r.state.idx;
-    r = wizardStep(r.state, '9');         // no brain 9
+    const before = mk().idx;
+    const r = wizardStep(mk(), '9');      // no configuration 9
     expect(r.state.idx).toBe(before);
     expect(r.prompt).toMatch(/pick 1–2/);
   });
 
   it('b goes back, x cancels', () => {
-    let r = wizardStep(mk(), 'wren');     // now on brain
-    r = wizardStep(r.state, 'b');         // back to name
+    let r = wizardStep(mk(), '1');        // now on model
+    r = wizardStep(r.state, 'b');         // back to configuration
     expect(r.state.idx).toBe(0);
     expect(wizardStep(r.state, 'x').cancelled).toBe(true);
   });
 
   it('wizardPrompt numbers the options', () => {
-    let r = wizardStep(mk(), 'wren');
-    expect(wizardPrompt(r.state)).toMatch(/1\) claude-code/);
+    expect(wizardPrompt(mk())).toMatch(/1\) egpt/);
+  });
+
+  it('marks the conversation\'s current value with (current)', () => {
+    const prompt = wizardPrompt(mk({ current: { configurations: 'egpt' } }));
+    expect(prompt).toMatch(/egpt {2}\(current\)/);
   });
 });

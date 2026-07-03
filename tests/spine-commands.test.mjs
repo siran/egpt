@@ -1,12 +1,12 @@
 // Operator slash commands: recognition (Self DM / authorized), lifecycle exits,
 // and the loop intercept (a command is never routed to the brain).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../spine.mjs';
-import { emptyState, ensureContact, getBeing } from '../conversations-state.mjs';
+import { emptyState, ensureContact, getBeing, recordThread, patchContact } from '../conversations-state.mjs';
 
-function harness({ config = {}, state = null } = {}) {
-  const sent = [], exits = [], rewinds = [], writes = [];
+function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains } = {}) {
+  const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
   let st = state;
   const cmds = createCommands({
     getConfig: () => config,
@@ -15,8 +15,11 @@ function harness({ config = {}, state = null } = {}) {
     writeRewindTarget: (ref) => rewinds.push(ref),
     loadState: state ? async () => st : null,
     writeState: state ? async (s) => { writes.push(s); st = s; } : null,
+    listAgentTypes: () => agentTypes,
+    brains: brains ?? { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) },
+    evictWarm: (key) => evicts.push(key),
   });
-  return { cmds, sent, exits, rewinds, writes, getState: () => st };
+  return { cmds, sent, exits, rewinds, writes, evicts, getState: () => st };
 }
 
 describe('commands.isCommand', () => {
@@ -154,5 +157,114 @@ describe('loop intercept', () => {
     expect(brain.calls).toHaveLength(0);   // intercepted — not the persona
     expect(exits).toEqual([43]);
     expect(transcript.entries).toHaveLength(1);
+  });
+});
+
+describe('/e wizard', () => {
+  const contact = () => ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+
+  it('/e (bare) arms the wizard here and posts the first (agent-type) prompt', async () => {
+    const { cmds, sent } = harness({ state: contact() });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });
+    expect(sent[0].text).toMatch(/reconfigure «fam»/);
+    expect(sent[0].text).toMatch(/1\/3  agent type\?/);
+    expect(sent[0].text).toMatch(/1\) egpt/);
+    // armed → a plain pick from the operator now gets first refusal…
+    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(true);
+    // …but a non-operator's message in the same chat never routes to it.
+    expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1' })).toBe(false);
+  });
+
+  it('steps type → model → effort, freezes readonly (threadId preserved), evicts warm', async () => {
+    let state = contact();
+    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');   // existing context
+    state = patchContact(state, 'whatsapp', '!room', { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } });
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: ['Read'] }) };
+    const { cmds, sent, evicts, getState } = harness({ state, brains });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });   // arm
+    await cmds.run({ ...ev, body: '2' });    // type    → sonnet-high
+    await cmds.run({ ...ev, body: '3' });    // model   → opus
+    await cmds.run({ ...ev, body: '3' });    // effort  → high → done
+    const b = getBeing(getState(), 'whatsapp', '!room', 'e');
+    expect(b).toMatchObject({ agent: 'sonnet-high', brainType: 'ccode', model: 'opus', effort: 'high' });
+    expect(b.allowedTools).toEqual(['Read']);
+    expect(b.threadId).toBe('THREAD-1');                       // re-point keeps the thread
+    expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);    // old-engine-keyed warm entry dropped
+    expect(sent.at(-1).text).toMatch(/«fam» → sonnet-high · opus\/high/);   // pushedName, not the slug
+  });
+
+  it('/e <fragment> resolves the target chat (like /e auto) and writes THERE, not the Self DM', async () => {
+    const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
+    const ev = { chatId: '!self', surface: 'whatsapp' };   // typed in the Self DM
+    await cmds.run({ ...ev, body: '/e hfm' });
+    expect(sent[0].text).toMatch(/reconfigure «HFM»/i);
+    await cmds.run({ ...ev, body: '1' });   // type   → egpt
+    await cmds.run({ ...ev, body: '2' });   // model  → sonnet
+    await cmds.run({ ...ev, body: '1' });   // effort → low → done
+    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'low' });
+    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM untouched
+  });
+
+  it('x cancels an armed wizard (nothing written, no longer armed)', async () => {
+    const { cmds, sent, writes } = harness({ state: contact() });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: 'x' });
+    expect(sent.at(-1).text).toMatch(/cancelled/);
+    expect(writes).toHaveLength(0);
+    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(false);
+  });
+
+  it('b steps back to the previous question', async () => {
+    const { cmds, sent } = harness({ state: contact() });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });   // step 1 (type)
+    await cmds.run({ ...ev, body: '1' });    // → step 2 (model)
+    expect(sent.at(-1).text).toMatch(/2\/3  model\?/);
+    await cmds.run({ ...ev, body: 'b' });    // back → step 1
+    expect(sent.at(-1).text).toMatch(/1\/3  agent type\?/);
+  });
+
+  it('an armed wizard expires after its 5-min TTL (inert, not stepped)', async () => {
+    const { cmds, writes } = harness({ state: contact() });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-07-03T00:00:00Z'));
+      await cmds.run({ ...ev, body: '/e' });                     // armed at T0
+      vi.setSystemTime(new Date('2026-07-03T00:06:00Z'));        // +6 min > 5-min TTL
+      expect(cmds.isCommand({ ...ev, body: '1' })).toBe(false);  // expired → not a command
+      await cmds.run({ ...ev, body: '1' });                      // stepping does nothing
+      expect(writes).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a non-operator message never steps or cancels an armed wizard', async () => {
+    const { cmds } = harness({ state: contact() });
+    const op = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...op, body: '/e' });   // armed
+    const stranger = { chatId: '!room', surface: 'whatsapp' };
+    expect(cmds.isCommand({ ...stranger, body: '2' })).toBe(false);
+    expect(cmds.isCommand({ ...stranger, body: 'x' })).toBe(false);
+    expect(cmds.isCommand({ ...op, body: '2' })).toBe(true);   // still armed for the operator
+  });
+
+  it('lists only agent types that resolve (an all-comments/unknown type is dropped)', async () => {
+    const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', allowed_tools: 'all' } : null) };
+    const { cmds, sent } = harness({ state: contact(), agentTypes: ['egpt', 'sonnet-high'], brains });
+    await cmds.run({ body: '/e', chatId: '!room', surface: 'whatsapp', authorized: true });
+    expect(sent[0].text).toMatch(/1\) egpt/);
+    expect(sent[0].text).not.toMatch(/sonnet-high/);   // unresolvable → not offered
+  });
+
+  it('/e auto is NOT intercepted by the wizard arming', async () => {
+    const { cmds, sent, getState } = harness({ state: contact() });
+    await cmds.run({ body: '/e auto on', chatId: '!room', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe('on');
+    expect(sent[0].text).toMatch(/E mode here → on/);
+    expect(sent[0].text).not.toMatch(/reconfigure/);
   });
 });

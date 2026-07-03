@@ -48,26 +48,21 @@ following is LANDED, test-locked, and (where marked) live-verified:
 - Textecutables: `*.x.md` = plain-text script, one fresh claude turn executes it
   (CLI / heartbeat `ai_run:` / ask E — NO /x command, ever)
 - Commands: /restart /upgrade /rewind, /e auto <mode> [target], /status (fenced yaml)
+- **/e wizard landed** — bare `/e` (this chat) / `/e <fragment>` (target resolved like
+  /e auto's) ARM a guided re-point: agent type → model → effort (v1 parity, NOT a flag
+  command). Operator-only, 5-min TTL, b/back · x/cancel; while armed the operator's plain
+  picks get first refusal (never fall through to E), a slash command bypasses WITHOUT
+  cancelling (v1). On done: freezes the conversation's `readonly` (keeps threadId — context
+  survives) + evicts its warm session (respawns next turn, no /restart). Reuses
+  src/agent-wizard.mjs (steps re-vocabularied: `configuration` pick from config/agents +
+  src/brains, current marked); ONE chokepoint in src/spine/commands.mjs isCommand/run.
 - Anti-drift: integrity tests scan v2 config reads; skeleton can't-rot tests
 
 ## 2. In flight right now
 
-- Nothing mid-flight. Next up: the /e wizard (§3 first entry).
+- Nothing mid-flight.
 
 ## 3. Decided, not yet dispatched
-
-- **/e wizard — v1 parity** (operator 2026-07-02): `/e` (bare, current chat) and
-  `/e <slug>` (target chat, resolved like /e auto's target) INVOKE THE WIZARD,
-  like v1. NOT a flag-style command (`/e model <target>` was proposed and
-  REJECTED — operator: v1's wizard is the UX). Reuse `src/agent-wizard.mjs`
-  (live, renderer-neutral state machine: numbered picks, b back / x cancel;
-  v1 armed it per chat with a 5-min TTL and gave it first refusal on operator
-  messages — see egpt-spine.mjs `_maybeHandleWizard`/`armAgentWizard` for the
-  wiring shape). Steps adapt to v2 vocabulary: agent-type pick from
-  config/agents/*.yaml, model, effort (per-conversation personality/identity is
-  retired — it's the agent type's). On done: write the conversation's readonly
-  block + evict/respawn its warm proc so the change takes effect without a full
-  /restart.
 
 - **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
   now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
