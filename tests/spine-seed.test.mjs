@@ -49,7 +49,7 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
-  it('seeds the WORKING egpt agent-type file config/agents/egpt.yaml (so agents.egpt.type: egpt resolves), and NOT the old default.yaml', () => {
+  it('seeds the WORKING egpt agent-type file config/agents/egpt.yaml (so agents.egpt.configuration: egpt resolves), and NOT the old default.yaml', () => {
     const files = run({ [join(REPO, 'config.yaml')]: 'A' });
     expect(files[join(AGENTS, 'egpt.yaml')]).toBe(EGPT_TYPE_FILE);
     expect(files[join(AGENTS, 'default.yaml')]).toBeUndefined();   // renamed 2026-07-02 — never recreated

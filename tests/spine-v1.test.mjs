@@ -197,7 +197,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
 // A full-pipe sibling case through the REAL router + gating + transcript + sender
 // (with body_emoji/label), a fake Bridge + fake Brain. Self-contained harness so
 // the E-mode harness above stays untouched: it seeds an optional E mode AND an
-// optional nested sibling mode, and wires config.siblings into router + sender.
+// optional nested sibling mode, and wires config.agents into router + sender.
 function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
   let state = emptyState();
   const ens = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' });
@@ -215,8 +215,8 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
   };
   const contacts = createContacts({ loadState, writeState, io });
   const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
-  const bodyEmojiOf = (b) => (b === 'e' ? '🐶' : config.siblings?.[b]?.body_emoji ?? null);
-  const labelOf = (b) => (b === 'e' ? 'egpt' : config.siblings?.[b]?.name ?? b);
+  const bodyEmojiOf = (b) => (b === 'e' ? '🐶' : config.agents?.[b]?.body_emoji ?? null);
+  const labelOf = (b) => (b === 'e' ? 'egpt' : config.agents?.[b]?.name ?? b);
 
   const bridge = fakeBridge();
   const brain = fakeBrain();
@@ -224,7 +224,7 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
     bridge, brain,
     identity: createIdentity({ now: () => Date.UTC(2026, 5, 29, 14, 5) }),
     gating: createGating({ getConfig: () => config, loadState }),
-    router: createRouter({ getSiblings: () => config.siblings ?? {} }),
+    router: createRouter({ getAgents: () => config.agents ?? {} }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     transcript, heartbeats: { runDue() {} },
   });
@@ -232,8 +232,8 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
   return { bridge, brain, files };
 }
 
-describe('v1 pipe — local sibling routing (@wren)', () => {
-  const cfg = { siblings: { wren: { type: 'ccode', name: 'wren', body_emoji: '🐦' } } };
+describe('v1 pipe — local agent routing (@wren)', () => {
+  const cfg = { agents: { wren: { configuration: 'sonnet-high', name: 'wren', body_emoji: '🐦' } } };
 
   it("'@wren do X': brain.turn(being=wren), reply delivered with wren's emoji+label, transcript line [@wren …]", async () => {
     const { bridge, brain, files } = siblingHarness(cfg);

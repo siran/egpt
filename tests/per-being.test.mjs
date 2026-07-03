@@ -13,20 +13,19 @@ const state = { contacts: { whatsapp: {
 describe('per-being reader convergence (#2)', () => {
   it('flat entry resolves e through the legacy fields (no nested block needed)', () => {
     expect(getBeing(state, 'whatsapp', '!flat:beeper.local', 'e')).toMatchObject({
-      present: true, being: 'e', mode: 'mention', threadId: 'T1', threadCreatedAt: 'C1',
-      identityInjectedAt: 'I1', personality: 'banter', model: null, effort: null,
+      present: true, being: 'e', mode: 'mention', threadId: 'T1', model: null, effort: null,
     });
   });
 
   it('nested entry resolves e through the e: block', () => {
     expect(getBeing(state, 'whatsapp', '!nested:beeper.local', 'e')).toMatchObject({
-      present: true, mode: 'on', threadId: 'T2', personality: 'default', model: 'opus', effort: 'high',
+      present: true, mode: 'on', threadId: 'T2', model: 'opus', effort: 'high',
     });
   });
 
   it('a named resident resolves through its own block', () => {
     expect(getBeing(state, 'whatsapp', '!nested:beeper.local', 'wren')).toMatchObject({
-      present: true, being: 'wren', mode: 'mention', threadId: 'T3', model: 'haiku', personality: 'banter',
+      present: true, being: 'wren', mode: 'mention', threadId: 'T3', model: 'haiku',
     });
   });
 

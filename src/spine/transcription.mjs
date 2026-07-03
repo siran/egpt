@@ -33,7 +33,7 @@ export function createTranscription({
 } = {}) {
   const cfg = getConfig() ?? {};
   const txSvc = cfg.transcription_service;
-  const profile = txSvc?.[txSvc?.use_config] ?? cfg.transcription ?? {};
+  const profile = txSvc?.[txSvc?.use_config] ?? {};   // transcription_service is canonical (operator 2026-07-02)
 
   const { transcribe, stop } = buildTranscriptionPipeline({
     profile,
@@ -50,7 +50,7 @@ export function createTranscription({
   // as the default cfg the bridge hands the transcriber.
   const cliCfg = profile?.cli ?? cfg.transcription?.cli ?? cfg.whatsapp?.media?.audio_transcribe ?? {};
   // How long after a burst goes quiet before the 👂 transcript echoes to the chat.
-  const postsBackDelayMs = txSvc?.posts_back_delay_ms ?? cfg.transcription?.posts_back_delay_ms ?? cfg.posts_back_delay_ms;
+  const postsBackDelayMs = txSvc?.posts_back_delay_ms ?? cfg.transcription?.posts_back_delay_ms;
 
   // per-chat HEARD/SPOKEN verdict, resolved from the conversation FOLDER's own
   // config.yaml (src/transcription-service.mjs): enabled = transcribe at all

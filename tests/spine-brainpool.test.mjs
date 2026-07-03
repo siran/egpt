@@ -72,19 +72,6 @@ describe('brainpool.turn', () => {
     expect(pool.calls[1].brainOptions.sessionId).toBe('sid-1'); // second turn resumes it (arms the re-pin guard)
   });
 
-  it('does NOT cross-wire onto default_brain.session_id (per-conversation sessions only)', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config: { default_brain: { session_id: 'GLOBAL' } } });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions.sessionId).toBe(null);    // fresh conv → null, NOT the global seed
-  });
-
-  it('passes default_brain model/system_prompt/cwd into brainOptions', async () => {
-    const config = { default_brain: { model: 'claude-x', system_prompt: 'you are E', cwd: 'C:/work', allowed_tools: 'Read,Edit' } };
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { config });
-    await brain.turn('e', ev);
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'claude-x', appendSystemPrompt: 'you are E', cwd: 'C:/work', allowedTools: 'Read,Edit' });
-  });
-
   // --- brain registry: instance-on-first-turn + freeze ---
   it('instances the default brain from the registry into readonly, keys by its engine', async () => {
     const brains = { resolve: () => ({ name: 'default', type: 'codex', model: 'gpt-5.4-mini', allowed_tools: 'all' }) };
@@ -146,18 +133,18 @@ describe('brainpool.turn', () => {
   it('persona agent type (agents block) supplies E\'s fresh-conversation def, resolved through the registry', async () => {
     // the persona agent points at type "sonnet-high"; the registry resolves that type file
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) : null };
-    const config = { agents: { egpt: { type: 'sonnet-high', handles: ['e', 'egpt'] } } };
+    const config = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] } } };
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: 'all' });
     const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
-    expect(view.brain).toBe('sonnet-high');    // instanced from the persona agent type
+    expect(view.brain).toBe('sonnet-high');    // instanced from the persona agent configuration
   });
 
   it('persona agent type that does NOT resolve falls through to the shipped "egpt" type', async () => {
     const brains = { resolve: (name) => name === 'egpt' ? ({ name: 'egpt', type: 'codex' }) : null };
-    const config = { agents: { egpt: { type: 'ghost-type', handles: ['e', 'egpt'] } } };
+    const config = { agents: { egpt: { configuration: 'ghost-type', handles: ['e', 'egpt'] } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to the last-resort 'egpt' type (codex)
@@ -262,38 +249,10 @@ describe('brainpool.turn', () => {
   });
 });
 
-describe('brainpool.turn — local sibling beings', () => {
-  const sibCfg = { siblings: { wren: { type: 'ccode', name: 'wren', model: 'claude-y', effort: 'high', allowed_tools: 'Read,Bash' } } };
-
-  it('uses the config def (model/effort/allowed_tools reach brainOptions), keys by being+engine, no identity feed', async () => {
-    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { config: sibCfg, loadFeed: async () => 'IGNORED', loadManifest: async () => 'IGNORED' });
-    await brain.turn('wren', ev);
-    expect(pool.calls[0].key).toMatch(/^wren:ccode:whatsapp:SPOILER-\d{10}$/);   // being+engine key
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'claude-y', effort: 'high', allowedTools: 'Read,Bash' });
-    expect(pool.calls[0].message).toBe(ev.line);   // siblings get the raw line — no identity kickoff
-  });
-
-  it('writes NO readonly instancing for a sibling (its def lives in config)', async () => {
-    const { brain, getState } = harness([{ text: 'ok', sessionId: 'w1' }], { config: sibCfg });
-    await brain.turn('wren', ev);
-    const entry = getState().contacts.whatsapp['!room:beeper.com'];
-    expect(entry.readonly).toBeUndefined();         // no flat readonly
-    expect(entry.wren?.readonly).toBeUndefined();    // nor a nested one
-  });
-
-  it('records the sibling thread in a NESTED block (E flat untouched) and RESUMES it next turn', async () => {
-    const { brain, pool, getState } = harness([{ text: 'a', sessionId: 'w1' }, { text: 'b', sessionId: 'w1' }], { config: sibCfg });
-    await brain.turn('wren', ev);
-    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'wren').threadId).toBe('w1');
-    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe(null);   // E's flat thread stays empty
-    await brain.turn('wren', ev);
-    expect(pool.calls[0].brainOptions.sessionId).toBe(null);   // first turn: fresh
-    expect(pool.calls[1].brainOptions.sessionId).toBe('w1');   // second resumes the nested thread
-  });
-
+describe('brainpool.turn — local sibling beings (agents registry)', () => {
   it('a LOCAL agent\'s type file (agents block) is resolved through the registry — no readonly instancing', async () => {
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
-    const config = { agents: { 'don-local': { type: 'sonnet-high', name: 'Don' } } };
+    const config = { agents: { 'don-local': { configuration: 'sonnet-high', name: 'Don' } } };
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 'd1' }], { brains, config });
     await brain.turn('don-local', ev);
     expect(pool.calls[0].key).toMatch(/^don-local:ccode:whatsapp:SPOILER-\d{10}$/);
@@ -301,6 +260,18 @@ describe('brainpool.turn — local sibling beings', () => {
     expect(pool.calls[0].message).toBe(ev.line);   // a local agent is an engineer — no identity kickoff
     const entry = getState().contacts.whatsapp['!room:beeper.com'];
     expect(entry['don-local']?.readonly).toBeUndefined();   // def lives in config → not instanced
+  });
+
+  it('records the local agent thread in a NESTED block (E flat untouched) and RESUMES it next turn', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const { brain, pool, getState } = harness([{ text: 'a', sessionId: 'w1' }, { text: 'b', sessionId: 'w1' }], { brains, config });
+    await brain.turn('wren', ev);
+    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'wren').threadId).toBe('w1');
+    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe(null);   // E's flat thread stays empty
+    await brain.turn('wren', ev);
+    expect(pool.calls[0].brainOptions.sessionId).toBe(null);   // first turn: fresh
+    expect(pool.calls[1].brainOptions.sessionId).toBe('w1');   // second resumes the nested thread
   });
 });
 
@@ -397,18 +368,13 @@ function harnessWithLog(logs, brains) {
   return { brain, pool };
 }
 
-describe('getBeing — readonly.brain / readonly.agent back-read (vocabulary rename)', () => {
+describe('getBeing — readonly.agent read (new-config-only)', () => {
   const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', readonly: ro } } } });
-  it('resolves the def name from a LEGACY readonly.brain entry (un-migrated state)', () => {
-    const v = getBeing(mk({ brain: 'default', type: 'ccode', model: null }), 'whatsapp', '!r:beeper.local', 'e');
-    expect(v.brain).toBe('default');
-    expect(v.agent).toBe('default');     // the alias resolves too
-    expect(v.brainType).toBe('ccode');
-  });
-  it('resolves the def name from a NEW readonly.agent entry (migrated / freshly instanced state)', () => {
+  it('resolves the def name from a readonly.agent entry', () => {
     const v = getBeing(mk({ agent: 'sonnet-high', type: 'ccode' }), 'whatsapp', '!r:beeper.local', 'e');
-    expect(v.brain).toBe('sonnet-high');
-    expect(v.agent).toBe('sonnet-high');
+    expect(v.brain).toBe('sonnet-high');   // `brain` stays the returned property
+    expect(v.agent).toBe('sonnet-high');   // `agent` is the alias
+    expect(v.brainType).toBe('ccode');
   });
 });
 

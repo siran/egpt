@@ -328,55 +328,6 @@ describe('dispatch runtime', () => {
     expect(logs.some(line => line.includes('auto-elevated telegram self-DM'))).toBe(true);
   });
 
-  it('recovers a moved thread cwd and retries the brain turn', async () => {
-    const stateDir = await makeTempDir();
-    const oldCwd = join(stateDir, 'old-cwd');
-    const newCwd = join(stateDir, 'new-cwd');
-    await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({
-      contacts: {
-        whatsapp: {
-          'chat-a': {
-            slug: 'alice',
-            personality: 'default',
-            threadId: 'thread-old',
-            threadCwd: oldCwd,
-          },
-        },
-      },
-    }), 'utf8');
-
-    let replyAttempts = 0;
-    let candidateCwds = null;
-    const { brainCalls, runtime, sends } = await makeRuntime({
-      stateDir,
-      findThreadJsonl: (threadId, candidates) => {
-        candidateCwds = candidates;
-        expect(threadId).toBe('thread-old');
-        return { cwd: newCwd };
-      },
-      reply: () => {
-        replyAttempts++;
-        if (replyAttempts === 1) throw new Error('resume failed');
-        return { text: 'recovered' };
-      },
-    });
-
-    await runtime.submitIncoming('@e hello', {
-      fromWhatsApp: true,
-      waChatId: 'chat-a',
-      waChatName: 'alice',   // matches the pre-seeded slug so name-tracking doesn't re-slug mid-recovery
-      waSlug: 'alice',
-    });
-
-    expect(brainCalls).toHaveLength(2);
-    expect(brainCalls[0].sessionOpts.cwd).toBe(oldCwd);
-    expect(brainCalls[1].sessionOpts.cwd).toBe(newCwd);
-    expect(candidateCwds).toContain(join(stateDir, 'conversations', 'whatsapp', 'alice'));
-    expect(sends[0].body).toContain('recovered');
-    const state = await readConvState(stateDir);
-    expect(state.contacts.whatsapp['chat-a'].threadCwd).toBe(newCwd);
-  });
-
   it('clears a stale per-contact resume thread and retries fresh', async () => {
     const stateDir = await makeTempDir();
     await realFs.writeFile(join(stateDir, 'conversations.yaml'), serialize({

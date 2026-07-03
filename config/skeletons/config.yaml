@@ -21,10 +21,10 @@ beeper_token: "PASTE_YOUR_BEEPER_TOKEN_HERE"
 user_name: "you"
 
 # ── 3. Who eGPT is ───────────────────────────────────────────────────────────
-# persona_name — the visible label the bridge stamps on the persona's first line
-# ("🐶 egpt"), so a chat always sees who is speaking. Rename to rebrand the voice.
-persona_name: "egpt"
-
+# The persona's visible label + emoji come from the persona agent (§3b): its `name`
+# is the label the bridge stamps on the first line ("🐶 egpt"), its `body_emoji` the
+# marker. Rename / restyle there to rebrand the voice.
+#
 # emojis — author tags for cross-surface mirroring. Defaults shown; uncomment to
 # recolor. user = your messages, persona = eGPT's chat reply, egpt = its
 # status/system voice, human = the extension's default surface tag.
@@ -35,13 +35,13 @@ persona_name: "egpt"
 #   human: "🌐"
 
 # ── 3b. Agents (the modern unified registry) ─────────────────────────────────
-# `agents:` IS the configuration (operator 2026-07-02): the ONE block that unifies
-# what used to be three separate things — the persona pointer, the local sibling
-# beings, and mesh addressing. An AGENT = { type, handles, and — for a relay —
-# relay_channel }.
+# `agents:` IS the configuration (operator 2026-07-02): the ONE block for the persona
+# identity, the local beings, and mesh addressing. It is REQUIRED — a node without an
+# agents block (or without a persona entry) refuses to boot. An AGENT = { configuration,
+# handles, and — for a relay — relay_channel }.
 #
-#   type          — names an AGENT-TYPE file (a brain def) in config/agents/<type>
-#                   .yaml (see §6), OR the literal "relay" for a forwarding agent.
+#   configuration — names an AGENT-TYPE file (a brain def) in config/agents/<type>.yaml
+#                   (see §6), OR the literal "relay" for a forwarding agent.
 #   handles       — alternate @<token> routes; the map key routes too.
 #   relay_channel — (relay only) the chat this agent forwards to: a chat NAME or a
 #                   raw Beeper room id — both work (names are resolved for you).
@@ -52,14 +52,14 @@ persona_name: "egpt"
 # PERSONA agent (handles include e/egpt) is the persona — its label/emoji show, but
 # routing still yields the canonical "e" being so warm sessions stay stable.
 #
-# The SHIPPED default: `egpt` is the persona; its type resolves to config/agents/
-# egpt.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
+# The SHIPPED default: `egpt` is the persona; its configuration resolves to config/
+# agents/egpt.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
 agents:
   egpt:
-    type: egpt               # the persona's brain — config/agents/egpt.yaml
+    configuration: egpt      # the persona's brain — config/agents/egpt.yaml
     handles: [e, egpt]
   # don:                     # a REMOTE agent: mentions of @don forward over the relay
-  #   type: relay
+  #   configuration: relay
   #   relay_channel: Rodz    # a chat name or a room id — @don forwards there
 
 # ── 4. Surfaces (who may command this node, per surface) ─────────────────────
@@ -95,18 +95,14 @@ signal:
 # default_time_zone: "America/New_York"
 
 # ── 6. Agent types (a.k.a. brains) ───────────────────────────────────────────
-# An agent's `type` (§3b) names a TYPE file — an ENGINE config — resolved across
-# layers, most-specific winning: src/brains (built-in) < config/brains < config/
-# agents < a conversation's own brains/. config/agents/<type>.yaml is the canonical
-# home. `egpt` ships seeded there (config/agents/egpt.yaml — the warm Claude Code
-# CLI, no API key, your `claude` login); config/agents/sonnet-high.yaml is seeded as
-# a commented example. Point agents.egpt.type at whichever you want new conversations
-# to start on. A type's allowed_tools LIST confines its file tools to each conversation
-# dir + allowed_paths; `allowed_tools: all` makes it trusted/unconfined.
-#
-# The legacy `default_brain` top-level key is superseded by agents.egpt.type (§3b) and
-# is no longer shipped here; config/config-schema.mjs documents it as a fallback still
-# honored for a persona with no agent type.
+# An agent's `configuration` (§3b) names a TYPE file — an ENGINE config — resolved
+# across layers, most-specific winning: src/brains (built-in) < config/agents < a
+# conversation's own brains/. config/agents/<type>.yaml is the canonical home. `egpt`
+# ships seeded there (config/agents/egpt.yaml — the warm Claude Code CLI, no API key,
+# your `claude` login); config/agents/sonnet-high.yaml is seeded as a commented example.
+# Point agents.egpt.configuration at whichever you want new conversations to start on. A
+# type's allowed_tools LIST confines its file tools to each conversation dir + allowed_paths;
+# `allowed_tools: all` makes it trusted/unconfined.
 
 # ── 7. Warm sessions ─────────────────────────────────────────────────────────
 # eGPT runs each conversation as a resident background agent — the process stays

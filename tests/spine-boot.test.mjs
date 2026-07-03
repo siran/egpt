@@ -18,14 +18,14 @@ describe('spine boot helpers', () => {
         auto_e_chats: ['self'],
         client_name: 'wa',
       },
-      siblings: {
+      agents: {
         don: { cwd: 'C:/old' },
       },
     }, {
       whatsapp: {
         client_name: 'moto',
       },
-      siblings: {
+      agents: {
         wren: { cwd: 'C:/new' },
       },
     });
@@ -37,7 +37,7 @@ describe('spine boot helpers', () => {
         auto_e_chats: ['self'],
         client_name: 'moto',
       },
-      siblings: {
+      agents: {
         don: { cwd: 'C:/old' },
         wren: { cwd: 'C:/new' },
       },

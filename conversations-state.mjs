@@ -310,6 +310,7 @@ export function findThreadJsonl(threadId, candidateCwds = []) {
 // collision the existing file in slug-dir wins, the legacy stays for
 // audit). Idempotent: skips contacts whose jid-media-dirs no longer
 // exist (already migrated).
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateMediaToSlugDirs() {
   if (!existsSync(CONV_YAML_PATH)) return { migrated: 0, files: 0 };
   const state = await readState(CONV_YAML_PATH);
@@ -403,6 +404,7 @@ function _isSurfaceLayout(state) {
 //         personality: default
 //       B:
 //         aliasOf: A
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateConversationsToJidKey() {
   if (!existsSync(CONV_YAML_PATH)) return null;
   const state = await readState(CONV_YAML_PATH);
@@ -446,6 +448,7 @@ export async function migrateConversationsToJidKey() {
 // dir rename is atomic; partial completion is detectable on next boot
 // (some dirs in new path, some still in old) and the migration will
 // finish the move.
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateToSurfaceLayout() {
   if (!existsSync(CONV_YAML_PATH)) return { skipped: 'no registry yet' };
   const state = await readState(CONV_YAML_PATH);
@@ -511,6 +514,7 @@ export async function migrateToSurfaceLayout() {
 // threadId is nulled on rename (cwd changed ⇒ stale claude session); transcripts
 // move with the folder via renameSlugDir (which logs the rename). Surface-layout
 // only — the earlier boot migrations convert older shapes first.
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateSlugsToCurrentName() {
   if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 'no registry' };
   const state = await readState(CONV_YAML_PATH);
@@ -546,6 +550,7 @@ export async function migrateSlugsToCurrentName() {
 // Rename any contact whose slug lacks the '-yymmddhhmm' suffix.
 // Idempotent: skips entries that already match the pattern. Only runs
 // for slug-keyed state — once converted to JID-keyed, this is a no-op.
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateSlugSuffix() {
   if (!existsSync(CONV_YAML_PATH)) return { renamed: 0, skipped: 0 };
   const state = await readState(CONV_YAML_PATH);
@@ -598,135 +603,6 @@ export async function migrateSlugSuffix() {
     await writeState(CONV_YAML_PATH, { ...state, contacts: nextContacts });
   }
   return { renamed, skipped };
-}
-
-// One-time boot migration (operator 2026-07-02): normalize every stored conversation to
-// the current vocabulary + on-disk shape IN ONE PASS. Per contact entry:
-//   (a) readonly.brain → readonly.agent — the fresh-conversation instancing freezes the def
-//       under `readonly.agent` now (was `readonly.brain`); rename the legacy key on the FLAT
-//       'e' readonly AND any nested per-being block's readonly. `agent` takes `brain`'s slot.
-//       ALSO port the renamed shipped type value 'default' → 'egpt' (operator 2026-07-02: "no
-//       legacy, no baggage" — the type was renamed, resolve('default') no longer resolves, so
-//       stored records are PORTED here rather than aliased at resolve time).
-//   (b) DROP the retired `personality` key (flat entry-level + every readonly.personality) —
-//       the identity feed is a property of the AGENT TYPE now, not the conversation.
-//   (c) BACKFILL a null/absent readonly.model / readonly.effort from the entry's agent type
-//       (resolved through the injected brains registry), else the DETERMINISTIC_* constants —
-//       operator: "don't do 'null means inherit the login default' — make it deterministic".
-//   (d) MOVE the lifecycle timestamps (firstSeenAt/threadCreatedAt/identityInjectedAt) into the
-//       conversation's own <convdir>/stats.yaml (create-or-merge, never clobbering existing
-//       content), mirroring the current threadId as the first entry of its branchable
-//       `threads:` history. The registry keeps only the resumable threadId.
-//   (e) RE-BASE conversation_path onto the home-relative `<profile>/conversations/...` form and
-//       stamp `home_dir`, so each conversation is individually relocatable.
-// (The derived `slug` + comment-borne `pushedName` are slimmed by serialize on write.)
-// Idempotent: a fully-slim entry is left untouched; write back only if something changed. Never
-// fatal. Returns { migrated } = # contact entries touched. `statsDirOf`/`io` are injectable so
-// tests never touch a real profile; `resolveAgentDef(name) → {model,effort}|null` is the brains
-// registry, threaded from boot (where it exists).
-export async function migrateConversationVocabulary(yamlPath = CONV_YAML_PATH, {
-  resolveAgentDef = null,
-  statsDirOf = slugDir,
-  io = {},
-} = {}) {
-  if (!existsSync(yamlPath)) return { migrated: 0, skipped: 'no registry' };
-  const state = await readState(yamlPath);
-  // Normalize ONE readonly block: rename brain→agent (agent takes brain's slot) AND drop the
-  // retired `personality`. Returns a NEW object when it changed, else the SAME ref (idempotent).
-  const port = (v) => (v === 'default' ? 'egpt' : v);             // renamed shipped type
-  const cleanRO = (ro) => {
-    if (!ro || typeof ro !== 'object' || Array.isArray(ro)) return ro;
-    const needsRename = ('brain' in ro) && !('agent' in ro);
-    const dropPersonality = 'personality' in ro;
-    // The current agent value (already-migrated readonly.agent, or the legacy readonly.brain
-    // about to be renamed) — port it 'default' → 'egpt' below.
-    const curAgent = ('agent' in ro) ? ro.agent : (needsRename ? ro.brain : undefined);
-    const portAgent = curAgent === 'default';
-    if (!needsRename && !dropPersonality && !portAgent) return ro;
-    const out = {};
-    for (const [k, v] of Object.entries(ro)) {
-      if (k === 'personality') continue;                            // drop the retired key
-      if (k === 'brain' && needsRename) { out.agent = port(v); continue; } // rename + port to the new value
-      if (k === 'agent') { out.agent = port(v); continue; }               // port in place
-      out[k] = v;
-    }
-    return out;
-  };
-  // cleanRO + deterministic model/effort backfill. Returns { ro, changed }.
-  const normalizeRO = (ro) => {
-    const cleaned = cleanRO(ro);
-    let changed = cleaned !== ro;
-    let out = cleaned;
-    if (out && typeof out === 'object' && !Array.isArray(out) && (out.model == null || out.effort == null)) {
-      const def = resolveAgentDef ? resolveAgentDef(out.agent ?? out.brain) : null;
-      out = { ...out };
-      if (out.model == null) out.model = def?.model ?? DETERMINISTIC_MODEL;
-      if (out.effort == null) out.effort = def?.effort ?? DETERMINISTIC_EFFORT;
-      changed = true;
-    }
-    return { ro: out, changed };
-  };
-  // Move an entry's lifecycle facts into <convdir>/stats.yaml (create-or-merge, never fatal).
-  async function moveLifecycleToStats(surface, slug, entry) {
-    const dir = statsDirOf(surface, slug);
-    const fp = join(dir, 'stats.yaml');
-    const readFileFn = io.readFile ?? readFile, writeFileFn = io.writeFile ?? writeFile, mkdirFn = io.mkdir ?? mkdir;
-    let existing = {};
-    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none → fresh */ }
-    const incoming = {
-      name: entry.pushedName || undefined,
-      first_seen: entry.firstSeenAt ?? undefined,
-      threads: entry.threadId
-        ? [{ id: entry.threadId, created: entry.threadCreatedAt ?? null, identity_injected: entry.identityInjectedAt ?? null }]
-        : [],
-    };
-    const merged = mergeStats(existing, incoming);
-    try { await mkdirFn(dir, { recursive: true }); await writeFileFn(fp, STATS_HEADER + YAML.stringify(merged), 'utf8'); }
-    catch (e) { console.error(`!! migrate stats(${surface}/${slug}): ${e?.message ?? e}`); }
-  }
-  let migrated = 0;
-  const nextContacts = {};
-  for (const [surface, bucket] of Object.entries(state.contacts ?? {})) {
-    if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) { nextContacts[surface] = bucket; continue; }
-    const nextBucket = {};
-    for (const [jid, entry] of Object.entries(bucket)) {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { nextBucket[jid] = entry; continue; }
-      let entryChanged = false;
-      const nextEntry = { ...entry };
-      // flat entry-level personality (seeded by the old ensureContact) — drop it.
-      if ('personality' in nextEntry) { delete nextEntry.personality; entryChanged = true; }
-      // flat readonly (the default 'e' instancing): brain→agent + drop personality + backfill model/effort
-      const flat = normalizeRO(entry.readonly);
-      if (flat.changed) { nextEntry.readonly = flat.ro; entryChanged = true; }
-      // nested per-being blocks — each may carry its own readonly
-      for (const [k, v] of Object.entries(entry)) {
-        if (_FLAT_ENTRY_KEYS.has(k)) continue;                       // skips 'readonly'/'personality' (handled above) + scalar fields
-        if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
-        const nested = normalizeRO(v.readonly);
-        if (nested.changed) { nextEntry[k] = { ...v, readonly: nested.ro }; entryChanged = true; }
-      }
-      // Slim the on-disk shape: move lifecycle → stats.yaml, re-base conversation_path, stamp
-      // home_dir. Aliases carry none of this — leave them bare.
-      if (!entry.aliasOf) {
-        const slug = (typeof entry.slug === 'string' && entry.slug) ? entry.slug : _pathBasename(entry.conversation_path);
-        if (entry.firstSeenAt != null || entry.threadCreatedAt != null || entry.identityInjectedAt != null) {
-          if (slug) await moveLifecycleToStats(surface, slug, entry);
-          delete nextEntry.firstSeenAt; delete nextEntry.threadCreatedAt; delete nextEntry.identityInjectedAt;
-          entryChanged = true;
-        }
-        if (slug) {
-          const wantPath = conversationPathOf(surface, slug);
-          if (nextEntry.conversation_path !== wantPath) { nextEntry.conversation_path = wantPath; entryChanged = true; }
-        }
-        if (nextEntry.home_dir == null) { nextEntry.home_dir = homeDirMsys(); entryChanged = true; }
-      }
-      if (entryChanged) migrated++;
-      nextBucket[jid] = nextEntry;
-    }
-    nextContacts[surface] = nextBucket;
-  }
-  if (migrated > 0) await writeState(yamlPath, { ...state, contacts: nextContacts });
-  return { migrated };
 }
 
 // ── State shape ─────────────────────────────────────────────────────────────
@@ -872,9 +748,9 @@ export function getBeing(state, surface, jid, being = 'e') {
   const e = c.entry ?? {};
   const b = (e[being] && typeof e[being] === 'object' && !Array.isArray(e[being])) ? e[being] : null;
   const flat = being === 'e' ? e : {};
-  // `readonly` (the instanced brain + personality) reads from the nested being
-  // block, or — for the legacy flat 'e' — a flat `readonly` (which is where the
-  // brainpool instances it, so we never have to migrate a flat entry to nested).
+  // `readonly` (the instanced brain) reads from the nested being block, or — for the
+  // legacy flat 'e' — a flat `readonly` (which is where the brainpool instances it, so
+  // we never have to migrate a flat entry to nested).
   const ro = b?.readonly ?? (being === 'e' ? (flat.readonly ?? {}) : {});
   return {
     jid: c.jid, slug: c.slug, surface, being,
@@ -882,22 +758,13 @@ export function getBeing(state, surface, jid, being = 'e') {
     mode:               b?.mode               ?? flat.mode               ?? null,
     send_to_egpt:       b?.send_to_egpt       ?? flat.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
     threadId:           b?.threadId           ?? flat.threadId           ?? null,
-    threadCreatedAt:    b?.threadCreatedAt    ?? flat.threadCreatedAt    ?? null,
-    identityInjectedAt: b?.identityInjectedAt ?? flat.identityInjectedAt ?? null,
-    // The per-conversation `personality` key is RETIRED (operator 2026-07-02) — the
-    // identity feed a fresh thread boots from is now a property of the AGENT TYPE
-    // (config/agents/<type>.yaml → def.personality), read at kickoff by the brainpool.
-    // This read stays TOLERANT of legacy state: an old entry's readonly.personality /
-    // flat personality still resolves so pre-migration YAML is byte-readable.
-    personality:        ro.personality        ?? flat.personality        ?? 'default',
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
-    // The def name this thread was instanced from. VOCABULARY RENAME (operator
-    // 2026-07-02): the brainpool now writes readonly.agent; the legacy readonly.brain is
-    // still back-read so an un-migrated entry resolves identically. `brain` stays the
-    // returned property (callers/tests consume it); `agent` is a cheap alias.
-    brain:              ro.agent              ?? ro.brain ?? null,
-    agent:              ro.agent              ?? ro.brain ?? null,
+    // The def name this thread was instanced from (operator 2026-07-02: new-config-only —
+    // readonly.agent, no readonly.brain back-read). `brain` stays the returned property
+    // (callers/tests consume it); `agent` is a cheap alias.
+    brain:              ro.agent              ?? null,
+    agent:              ro.agent              ?? null,
     brainType:          ro.type               ?? null,   // the engine (frozen); null = not instanced yet
     allowedTools:       ro.allowed_tools      ?? null,
   };
@@ -1072,14 +939,12 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       patch = { ...patch, pushedName: ctx.pushedName };
       changed = true;
     }
-    // Backfill the STORED conversation_path + a populated threadCwd for an already-
-    // started thread (operator 2026-06-27: the path must be stored, and every started
-    // conversation has a conversation-e cwd — null is nonsensical). One-time per entry:
-    // once written they equal the desired value, so this stops churning. A rename below
-    // overrides both for the new slug.
+    // Backfill the STORED conversation_path for an already-known entry (operator 2026-06-27:
+    // the path must be stored). One-time per entry: once written it equals the desired value,
+    // so this stops churning. A rename below overrides it for the new slug. (threadCwd is
+    // retired 2026-07-02 — no v2 reader; _SLIM_DROP purges any stray key on write.)
     const _wantPath = conversationPathOf(surface, cur.slug);
     if (cur.conversation_path !== _wantPath) { patch = { ...patch, conversation_path: _wantPath }; changed = true; }
-    if (cur.threadId && !cur.threadCwd) { patch = { ...patch, threadCwd: slugDir(surface, cur.slug) }; changed = true; }
     // Track the CURRENT name (operator 2026-06-14: "the slug must be updated with
     // the current contact/group name, not frozen"). Whenever the chat's title
     // (pushedName) changes — including a 'contact-<ts>' placeholder finally
@@ -1102,7 +967,7 @@ export function ensureContact(state, surface, jid, ctx = {}) {
       if (candidate !== cur.slug && !_findByslug(state, surface, candidate)) {
         renamedFrom = cur.slug;
         renamedTo = candidate;
-        patch = { ...patch, slug: candidate, conversation_path: conversationPathOf(surface, candidate), threadId: null, threadCreatedAt: null, identityInjectedAt: null, threadCwd: null };
+        patch = { ...patch, slug: candidate, conversation_path: conversationPathOf(surface, candidate), threadId: null, threadCreatedAt: null, identityInjectedAt: null };
         changed = true;
       }
     }
@@ -1483,7 +1348,7 @@ export function buildRebootAnnouncement(personalityName, bundle) {
 // emitted so each entry is a relocatable pointer. The IN-MEMORY shape is UNCHANGED — parse
 // re-hydrates slug + pushedName as fields — so every consumer keeps working; only the FILE
 // slims. Aliases (`{aliasOf}`) pass through untouched.
-const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt']);
+const _SLIM_DROP = new Set(['slug', 'pushedName', 'firstSeenAt', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd']);
 const _pathBasename = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).pop() ?? '';
 
 export function serialize(state) {
@@ -1605,6 +1470,7 @@ export async function writeState(yamlPath, state) {
 //
 // Returns { migrated: <#contacts>, jids: <#total jids merged> } or null
 // when no migration needed.
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export function migrateJsonToYaml(jsonMap) {
   if (!jsonMap || typeof jsonMap !== 'object') return null;
   const state = emptyState();
@@ -1644,6 +1510,7 @@ export function migrateJsonToYaml(jsonMap) {
 // reads the old registry, creates per-slug dirs, moves transcript
 // files in, and writes the registry at its new location.
 import { readdirSync } from 'node:fs';
+// OLD-SPINE ONLY (dead on the v2 path; invoked only from egpt-spine.mjs) — retire with the old spine.
 export async function migrateLayoutIfNeeded() {
   const newRegistry    = CONV_YAML_PATH;
   const oldDirRoot     = join(EGPT_HOME, 'conversations', 'e');

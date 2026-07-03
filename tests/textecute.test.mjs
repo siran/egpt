@@ -41,7 +41,7 @@ describe('textecute — the runner', () => {
   it('builds a fresh session in the SCRIPT dir, all-tools, null session; turns the framed prompt verbatim; closes', async () => {
     const f = fakeSessionFactory({ reply: 'all four steps done' });
     const io = fakeIo({ [SCRIPT]: BODY });
-    const r = await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({}), io });
+    const r = await textecute(SCRIPT, { makeSession: f.make, io });
 
     expect(r).toEqual({ ok: true, text: 'all four steps done' });
     // session options
@@ -56,34 +56,18 @@ describe('textecute — the runner', () => {
     expect(f.rec.closed).toBe(true);
   });
 
-  it('model/effort come from opts, overriding config', async () => {
+  it('model/effort come from opts (new-config-only: no config.default_brain override)', async () => {
     const f = fakeSessionFactory();
     const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { model: 'opus', effort: 'high', makeSession: f.make, readConfig: () => ({ default_brain: { model: 'haiku', effort: 'low' } }), io });
+    await textecute(SCRIPT, { model: 'opus', effort: 'high', makeSession: f.make, io });
     expect(f.rec.opts.model).toBe('opus');
     expect(f.rec.opts.effort).toBe('high');
   });
 
-  it('model/effort fall back to config.default_brain when opts omit them (absent type = ccode)', async () => {
+  it('leaves model/effort undefined (login default) when opts omit them', async () => {
     const f = fakeSessionFactory();
     const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({ default_brain: { model: 'sonnet', effort: 'medium' } }), io });
-    expect(f.rec.opts.model).toBe('sonnet');
-    expect(f.rec.opts.effort).toBe('medium');
-  });
-
-  it('a codex-typed default_brain does NOT leak its model/effort into the claude args — login default instead', async () => {
-    const f = fakeSessionFactory();
-    const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({ default_brain: { type: 'codex', model: 'gpt-5.4-mini', effort: 'high' } }), io });
-    expect(f.rec.opts.model).toBeUndefined();
-    expect(f.rec.opts.effort).toBeUndefined();
-  });
-
-  it('leaves model/effort undefined (login default) when neither opts nor config set them', async () => {
-    const f = fakeSessionFactory();
-    const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({}), io });
+    await textecute(SCRIPT, { makeSession: f.make, io });
     expect(f.rec.opts.model).toBeUndefined();
     expect(f.rec.opts.effort).toBeUndefined();
   });
@@ -91,14 +75,14 @@ describe('textecute — the runner', () => {
   it('opts.tools overrides the all-tools default', async () => {
     const f = fakeSessionFactory();
     const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { tools: 'Read Bash', makeSession: f.make, readConfig: () => ({}), io });
+    await textecute(SCRIPT, { tools: 'Read Bash', makeSession: f.make, io });
     expect(f.rec.opts.allowedTools).toBe('Read Bash');
   });
 
   it('appends a run entry next to the script: ISO header + the final text', async () => {
     const f = fakeSessionFactory({ reply: 'the reply body' });
     const io = fakeIo({ [SCRIPT]: BODY });
-    await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({}), io });
+    await textecute(SCRIPT, { makeSession: f.make, io });
     const log = io.files[`${SCRIPT}.log`];
     expect(log).toMatch(/^--- run \d{4}-\d{2}-\d{2}T[\d:.]+Z ---\nthe reply body\n$/);
   });
@@ -106,7 +90,7 @@ describe('textecute — the runner', () => {
   it('a turn failure logs `!! failed`, still closes, and returns { ok:false, error }', async () => {
     const f = fakeSessionFactory({ fail: 'CDP connect refused' });
     const io = fakeIo({ [SCRIPT]: BODY });
-    const r = await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({}), io });
+    const r = await textecute(SCRIPT, { makeSession: f.make, io });
     expect(r.ok).toBe(false);
     expect(r.error).toBe('CDP connect refused');
     expect(f.rec.closed).toBe(true);
@@ -116,7 +100,7 @@ describe('textecute — the runner', () => {
   it('refuses a plain .md (not .x.md) WITHOUT spawning', async () => {
     const f = fakeSessionFactory();
     const io = fakeIo({ '/work/notes.md': 'not a script' });
-    const r = await textecute('/work/notes.md', { makeSession: f.make, readConfig: () => ({}), io });
+    const r = await textecute('/work/notes.md', { makeSession: f.make, io });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/must end in \.x\.md/);
     expect(f.rec.opts).toBe(null);                        // never built a session
@@ -126,7 +110,7 @@ describe('textecute — the runner', () => {
   it('a missing file returns { ok:false } without spawning', async () => {
     const f = fakeSessionFactory();
     const io = fakeIo();                                   // empty — SCRIPT absent
-    const r = await textecute(SCRIPT, { makeSession: f.make, readConfig: () => ({}), io });
+    const r = await textecute(SCRIPT, { makeSession: f.make, io });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/cannot read/);
     expect(f.rec.opts).toBe(null);

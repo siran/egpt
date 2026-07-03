@@ -12,7 +12,7 @@
 //   relayDispatch / openOriginStream ->  the Bridge port's startStream (edit-stream)
 //   openRelayStream (transit)        ->  the Bridge port's startStream
 //   runBeing (via relayDispatch)     ->  the Brain port (brain.turn), streaming
-//   resolveRoute / isLocalBeing / …  ->  config (node_name, siblings, mesh.nodes)
+//   resolveRoute / isLocalBeing / …  ->  config (node_name, agents, mesh.nodes)
 //
 // The spine wires the three entry points into handleInbound (spine.mjs):
 //   isEnvelope(ev)  — a message carrying a provenance tail is relay traffic, not chat.
@@ -28,7 +28,6 @@
 // relayOut surfaces "no route").
 import { createMeshRelay, encodeMesh, parseMesh } from '../mesh/relay.mjs';
 import { normalizeMeshTtl } from '../mesh/envelope.mjs';
-import { meshSiblingKind } from '../mesh/names.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -46,8 +45,7 @@ export function createMeshService({
   if (!bridge) throw new Error('createMeshService: bridge is required');
   const cfg = () => getConfig() ?? {};
   const node = String(cfg().node_name ?? 'node').toLowerCase();   // this spine's node (boot-stable)
-  const persona = () => String(cfg().persona ?? cfg().persona_name ?? 'e').toLowerCase();
-  const siblings = () => cfg().siblings ?? {};
+  const agents = () => cfg().agents ?? {};                         // the unified registry (new-config-only)
   const ttlCap = () => normalizeMeshTtl(cfg().mesh?.ttl);          // default 3 (max routed hops)
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
@@ -108,21 +106,16 @@ export function createMeshService({
     node,
     log: onLog,
     resolveRoute,
-    // A local being: the persona, or a sibling registered as `local` AND enabled. A
-    // hosted-but-disabled being is treated as not-here (the engine answers "no
-    // <being>.<node> here" — never silence), respecting the being's own availability.
+    // A local being: the persona (e/egpt), or a LOCAL agent (agents[<name>], configuration
+    // ≠ 'relay') that is enabled. A hosted-but-disabled agent is treated as not-here (the
+    // engine answers "no <being>.<node> here" — never silence), respecting availability.
+    // (A relay agent forwards elsewhere via the route-direct path, so it is NOT local.)
     isLocalBeing: (name) => {
       const n = String(name).toLowerCase();
-      if (n === persona() || n === 'e' || n === 'egpt') return true;
-      const s = siblings()[n];
-      return !!s && meshSiblingKind(s) === 'local' && s.enabled !== false;
-    },
-    // A `relay` sibling (siblings.<name>.to = "<being>.<node>") re-resolves + forwards.
-    resolveBeingRelay: (name) => {
-      const s = siblings()[String(name).toLowerCase()];
-      if (!s?.to) return null;
-      const [b, n] = String(s.to).split('.');
-      return (b && n) ? { being: b.toLowerCase(), node: n.toLowerCase() } : null;
+      if (n === 'e' || n === 'egpt') return true;
+      const a = agents()[n];
+      return !!a && typeof a === 'object' && !Array.isArray(a)
+        && String(a.configuration ?? '').toLowerCase() !== 'relay' && a.enabled !== false;
     },
     // Post an envelope into a relay channel. No body_emoji → the port passes the text
     // (the full mesh envelope) through verbatim; the tail must survive untouched.

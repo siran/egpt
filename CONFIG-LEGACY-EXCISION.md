@@ -3,10 +3,10 @@
 > Operator directive: "rewrite to only accept the new config, port it. no legacy
 > nothing. no baggage to keep at this point. egpt must be a lean mean machine."
 >
-> Status: INVENTORY DONE (this doc), implementation NOT yet dispatched — session
-> hit the Fable limit right after the inventory landed. Next session: read this,
-> dispatch ONE background Opus agent with the plan below, review, commit, port
-> the live residue, /restart.
+> Status: IMPLEMENTED 2026-07-02 (background Opus agent). All groups A–K applied;
+> full suite green (`npx vitest run` → 122 files / 1296 tests). Left in the working
+> tree for review — NOT committed. Live-residue port (§Execution 3) + /restart still
+> pending. Per-group DONE notes below.
 >
 > Scope decision: old-spine deletion (egpt-spine.mjs, author-emoji.mjs, slash/,
 > attic/) STAYS a separate post-cutover commit per ROADMAP §3. This excision is
@@ -63,6 +63,10 @@ below:
 
 ## Inventory (Explore agent, 2026-07-02) — delete ALL of this
 
+> **DONE (A):** brainpool `resolveDefaultBrain` collapsed to persona-agent `configuration`
+> → shipped `egpt` type → bare ccode (no `default_brain`); textecute drops the model override
+> (login default); schema keys removed. compact-being left for old-spine (marked dead-on-v2).
+
 ### A. `default_brain` fallback
 - `src/spine/brainpool.mjs:215-233` `resolveDefaultBrain()` — reads
   `(getConfig() ?? {}).default_brain` (line 228; string OR inline object
@@ -76,12 +80,22 @@ below:
   `compactableConversations()`, old-spine-only). Leave for old-spine deletion.
 - Tests locking it: `tests/spine-brainpool.test.mjs:75-86,121`.
 
+> **DONE (B):** getBeing reads `ro.agent` only (no `ro.brain` back-read); `brain`/`agent`
+> return fields kept as aliases. Legacy back-read test deleted.
+
 ### B. `readonly.brain` back-read (brain→agent)
 - `conversations-state.mjs:899-900` `getBeing()` — `ro.agent ?? ro.brain` (both
   the `brain:` and `agent:` return fields). New-only: `ro.agent` only.
 - Writer already new-shape (`src/spine/brainpool.mjs:271-273`).
 - Tests: `tests/spine-brainpool.test.mjs:400-410`,
   `tests/conversations-state.test.mjs:538,571,821-826`.
+
+> **DONE (C):** `migrateConversationVocabulary` deleted (conversations-state.mjs) + its
+> boot.mjs invocation removed; JSON→YAML config migration deleted (config-io.mjs). The
+> dead-on-v2 migrations (`migrateToSurfaceLayout`, `migrateSlugsToCurrentName`, etc.) LEFT
+> IN PLACE for the old-spine deletion commit — egpt-spine.mjs still imports them; not marked
+> individually (they sit together in the same block, all reachable only from egpt-spine).
+> The whole migration `describe` in conversations-state.test.mjs deleted.
 
 ### C. Boot migration layer (excise whole)
 - `src/spine/boot.mjs:240-245` — invokes `migrateConversationVocabulary(...)`.
@@ -104,6 +118,12 @@ below:
 - Tests: `tests/conversations-state.test.mjs:649-830` (whole migration
   describe) — delete.
 
+> **DONE (D):** boot (persona resolution, bodyEmojiOf/labelOf), router, brainpool
+> (siblingDef), mesh (isLocalBeing) now read the agents registry ONLY — persona/persona_name
+> /siblings reads gone. `mesh.nodes` routing kept. Router `getSiblings` param + legacy @name
+> sibling block + `isRoutable`/`ROUTABLE_TYPES` removed; mesh `resolveBeingRelay` callback
+> dropped. Tests rewritten (spine-router, spine-mesh svc→agents, spine-v1 @wren→agents).
+
 ### D. `siblings` / `persona` / `persona_name` legacy resolution
 - `src/spine/boot.mjs:88,103,107,114,118,218,219` — body_emoji/name/persona
   fallbacks + `getSiblings: () => cfg.siblings ?? {}` wiring.
@@ -123,6 +143,11 @@ below:
   `tests/conversation-members.test.mjs:25-32`,
   `tests/config-validate.test.mjs:12-39` (sibling cwd warnings).
 
+> **DONE (E):** config-io.mjs requires `config/config.yaml` (no `LEGACY_CONFIG_YAML` /
+> `CONFIG_JSON_LEGACY` / `_readConfigYamlPath`) and `config/agents/` (no `LEGACY_AGENT_DIR` /
+> `_readAgentDir`). Orphaned `existsSync`/`writeFileSync` imports removed. Pre-existing dead
+> import `homedir` LEFT (not created by this change — mention-don't-delete rule).
+
 ### E. Legacy config LOCATION fallbacks
 - `src/tools/config-io.mjs:21-30` — `LEGACY_CONFIG_YAML` (profile-root
   config.yaml) + `CONFIG_JSON_LEGACY` fallbacks; `_readConfigYamlPath()`.
@@ -130,6 +155,12 @@ below:
   (`EGPT_HOME/agent/`) fallback in `_readAgentDir()`.
 - New-only: require `config/config.yaml` + `config/agents/`. Live profile
   verified clean (no root config.yaml, no config.json, no ~/.egpt2/agent).
+
+> **DONE (F):** getBeing return drops `personality`, `threadCreatedAt`, `identityInjectedAt`.
+> per-being.test + brainpool freeze test updated. NOTE: the `isMuted` predicate (reads
+> `entry.personality === 'mute'`, dispatch-only) is a DIFFERENT concept and stays — its test
+> at :525-528 was left (isMuted is not being removed). dispatch.mjs's own `convEntry.personality`
+> reads are old-spine, out of scope.
 
 ### F. Per-conversation `personality` residue
 - `conversations-state.mjs:892` `getBeing()` — `personality: ro.personality ??
@@ -141,6 +172,14 @@ below:
 - Tests: `tests/conversations-state.test.mjs:821-826` (+ fixtures :525-528),
   `tests/spine-brainpool.test.mjs:100-109,135-143`, `tests/per-being.test.mjs`.
 
+> **DONE (G):** ensureContact `threadCwd` write + rename-null removed; `threadCwd` added to
+> `_SLIM_DROP`. conversations-state.test threadCwd assertions rewritten. COLLATERAL: this
+> purge broke an OLD-SPINE dispatch test (`recovers a moved thread cwd`) that round-tripped
+> threadCwd through serialize — deleted it (dispatch's threadCwd recovery is dead-on-v2; the
+> v2 spine derives cwd from the slug dir). The other threadCwd:null writes at
+> conversations-state.mjs (migrateToSurfaceLayout / migrateSlugsToCurrentName) are old-spine
+> migrations, LEFT for the old-spine commit.
+
 ### G. `threadCwd` (write + residue)
 - `conversations-state.mjs:1082` — ensureContact actively WRITES `threadCwd`
   (and nulls it on rename at :1105). No v2 reader anywhere. Delete both; add
@@ -151,6 +190,10 @@ below:
 - Tests: `tests/conversations-state.test.mjs:190-232` (backfill + rename-null
   assertions get deleted/rewritten), fixtures :571,773.
 
+> **DONE (H):** brains.mjs layer order is now `src/brains` ← `config/agents` ← conv brains/;
+> `PROFILE_BRAINS_DIR` + the `profileDir` param removed. spine-brains.test rewritten to the
+> two-layer shape.
+
 ### H. Brains layering — drop the `config/brains` profile layer
 - `src/spine/brains.mjs:25-27,50-54` — layer order src/brains →
   EGPT_HOME/config/brains (tagged legacy) → EGPT_HOME/config/agents → conv
@@ -158,10 +201,20 @@ below:
   Keep: src/brains built-ins ← config/agents ← conv.
 - Tests: `tests/spine-brains.test.mjs:23-40,58-72`.
 
+> **DONE (I):** the stale `brainpool.mjs` comment claiming a `default`→`egpt` alias is
+> corrected (resolveDefaultBrain doc now states "no alias — records were ported").
+
 ### I. `default` type alias — already clean
 - No alias exists (brains.mjs resolves literally; seed ships egpt.yaml).
 - FIX STALE COMMENT: `src/spine/brainpool.mjs:218-219` claims a default→egpt
   alias that doesn't exist.
+
+> **DONE (J):** deleted schema keys default_brain, default_brain_fallback, meta_brain,
+> siblings, persona, persona_name, main_engineer, auto_modes, transcription_endpoint,
+> transcription_token, posts_back_delay_ms; pruned the dispatch/whatsapp legacy read-fallback
+> notes; rewrote the `agents` doc for `configuration`. integrity.test.mjs: retired the three
+> old-spine scans (launcher boundary, EGPT_CONFIG anti-drift, command-dispatch coverage), kept
+> the v2 scan + bridge-surface. v2 scan passes (all keys boot/spine read are in the schema).
 
 ### J. CONFIG_SCHEMA legacy entries (config/config-schema.mjs)
 - Delete: `default_brain`(:50), `default_brain_fallback`(:54), `meta_brain`
@@ -179,6 +232,13 @@ below:
   keep the v2 scan (:88-124). The v2 scan requires `siblings/persona/
   persona_name` keys only while boot reads them — Group D removes those reads,
   then the schema keys go too.
+
+> **DONE (K):** boot drops the `whatsapp.beeper_token` fallback (top-level only); KEPT
+> `whatsapp.user_name ?? user_name` (canonical per-network override) and `whatsapp.auto_e_*`
+> in gating (canonical — live config uses them). transcription.mjs: dropped the
+> `cfg.transcription` profile fallback (:36) and the bare `cfg.posts_back_delay_ms` (:53),
+> kept `transcription.*`. brainpool `cfg.brains?.identity` manifest override LEFT (defaultLoadManifest
+> — not tied to the config/brains LAYER; the `brains` schema key stays; no test pressure to remove).
 
 ### K. Adjacent legacy-location reads on the v2 path
 - `src/spine/boot.mjs:140-141` — `cfg.whatsapp?.beeper_token` and
@@ -210,3 +270,30 @@ below:
 4. `/restart` via `~/.egpt2/ingest/` (only with a clean committed tree), verify
    beat (`state/alive.txt` mtime) + `/status` in the egpt-an chat.
 5. Update ROADMAP.md (§2/§3) + delete this doc's DONE sections or the whole doc.
+
+## Implementation report (background agent, 2026-07-02 — for the reviewing session)
+
+Diff scale: 28 files changed, +402 / −1149. Suite: `npx vitest run` → 122 files
+/ 1296 tests, all passing (one transient port-contention failure on the first
+run; re-run clean; the two known flakes confirmed in isolation —
+transcriptor 9/9, beeper-bridge 41/41).
+
+Decisions where the spec was ambiguous (review these):
+- `tests/config-validate.test.mjs` + `tests/conversation-members.test.mjs` left
+  unchanged — their sources are old-spine-only and the tests pass `siblings` as
+  an explicit function argument, not a config read. Deferred to the old-spine
+  commit.
+- `isMuted` (`entry.personality === 'mute'`) left — a mode predicate still used
+  by dispatch, distinct from the retired identity-feed `personality`.
+- `cfg.brains?.identity` manifest override left (not the config/brains LAYER;
+  `brains` schema key stays).
+- `tests/dispatch.test.mjs` "recovers a moved thread cwd" DELETED — collateral
+  of `_SLIM_DROP` now purging threadCwd on serialize; that recovery path is
+  dead on v2.
+- `homedir` import in config-io.mjs: pre-existing dead import, left.
+
+Left for the old-spine deletion commit: the 7 dead-on-v2 migrations in
+conversations-state.mjs (reachable only from egpt-spine.mjs), compact-being's
+`default_brain` read, config-validate.mjs + conversation-members.mjs + their
+tests, `threadCwd: null` writes inside migrateToSurfaceLayout/
+migrateSlugsToCurrentName, dispatch.mjs's own personality/threadCwd reads.

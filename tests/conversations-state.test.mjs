@@ -22,8 +22,6 @@ import {
   appendThreadStat,
   mergeStats,
   mergeThreadIntoStats,
-  DETERMINISTIC_MODEL,
-  DETERMINISTIC_EFFORT,
   recentContacts,
   slugDir,
   isPlaceholderSlug,
@@ -31,10 +29,6 @@ import {
   recordThread,
   isMuted,
   migrateJsonToYaml,
-  migrateConversationVocabulary,
-  getBeing,
-  readState,
-  writeState,
   parse,
   serialize,
   nowIsoString,
@@ -187,7 +181,7 @@ describe('ensureContact — surface-aware, new contact, multi-JID merge', () => 
   });
 });
 
-describe('conversation_path (stored) + threadCwd backfill', () => {
+describe('conversation_path (stored) backfill', () => {
   it('conversationPathOf is home-relative, includes the profile + surface, basename = slug', () => {
     // The stored path now includes the PROFILE dir (operator 2026-07-02: `.egpt2/conversations/…`)
     // and is relative to home_dir — a relocatable pointer. Asserted structurally so it holds
@@ -207,15 +201,15 @@ describe('conversation_path (stored) + threadCwd backfill', () => {
     expect(r.entry.home_dir).toBe(homeDirMsys());
   });
 
-  it('backfills conversation_path + a populated threadCwd on a legacy entry that lacks them', () => {
-    // legacy shape: a started thread but threadCwd:null and no conversation_path
+  it('backfills conversation_path on a legacy entry that lacks it (threadCwd is retired — never written)', () => {
+    // legacy shape: a started thread but no conversation_path
     const s = { contacts: { [WA]: { '111@s.whatsapp.net': {
-      slug: 'Mom-2605200520', personality: 'default', threadId: 'sess-mom', threadCwd: null, pushedName: 'Mom',
+      slug: 'Mom-2605200520', threadId: 'sess-mom', pushedName: 'Mom',
     } } } };
     const r = ensureContact(s, WA, '111@s.whatsapp.net', { pushedName: 'Mom' });
     expect(r.changed).toBe(true);
     expect(r.entry.conversation_path).toBe(conversationPathOf(WA, 'Mom-2605200520'));
-    expect(r.entry.threadCwd).toBe(slugDir(WA, 'Mom-2605200520'));
+    expect('threadCwd' in r.entry).toBe(false);   // retired 2026-07-02 — no v2 writer
   });
 
   it('is stable — a second pass with everything already set makes no change', () => {
@@ -224,12 +218,12 @@ describe('conversation_path (stored) + threadCwd backfill', () => {
     expect(r2.changed).toBe(false);
   });
 
-  it('a rename updates conversation_path to the new slug (and nulls threadCwd)', () => {
+  it('a rename updates conversation_path to the new slug', () => {
     const r1 = ensureContact(emptyState(), WA, '26087681749235@lid', { pushedName: '', slugHint: 'diego' });
     const r2 = ensureContact(r1.state, WA, '26087681749235@lid', { pushedName: 'Diego Pérez' });
     expect(r2.renamedTo).toBeTruthy();
     expect(r2.entry.conversation_path).toBe(conversationPathOf(WA, r2.slug));
-    expect(r2.entry.threadCwd ?? null).toBe(null);
+    expect('threadCwd' in r2.entry).toBe(false);   // never written by the rename either
   });
 });
 
@@ -568,8 +562,7 @@ describe('YAML parse / serialize round-trip', () => {
         whatsapp: {
           '26087681749235@lid': mk(WA, 'diego-2605200133', {
             threadId: 'abc',
-            threadCwd: 'C:/Users/an/.egpt/conversations/whatsapp/diego-2605200133',
-            readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+            readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
             pushedName: 'Diego Pérez (Koma) 😀 "koma": #1',
           }),
           '584122182178@s.whatsapp.net': { aliasOf: '26087681749235@lid' },
@@ -643,198 +636,6 @@ describe('migrateJsonToYaml — legacy slug-keyed JSON (pre-surface)', () => {
   it('returns null for non-object input', () => {
     expect(migrateJsonToYaml(null)).toBe(null);
     expect(migrateJsonToYaml('garbage')).toBe(null);
-  });
-});
-
-describe('migrateConversationVocabulary — readonly.brain → readonly.agent + drop retired personality', () => {
-  const tmpDirs = [];
-  async function writeTmp(state) {
-    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-vocab-'));
-    tmpDirs.push(dir);
-    const fp = join(dir, 'conversations.yaml');
-    await writeState(fp, state);
-    return fp;
-  }
-  // Write a PRE-migration file the OLD way (raw YAML.stringify keeps lifecycle keys, pushedName
-  // + slug as data keys) — the new serialize would slim them away before the migration could
-  // move them. This is the exact on-disk shape the operator's live file is in today.
-  async function writeOldTmp(state) {
-    const dir = await mkdtemp(join(tmpdir(), 'egpt-migrate-old-'));
-    tmpDirs.push(dir);
-    const fp = join(dir, 'conversations.yaml');
-    await writeFile(fp, YAML.stringify(state), 'utf8');
-    return fp;
-  }
-
-  it('renames a FLAT e readonly.brain to readonly.agent, drops readonly.personality, backfills null model/effort deterministically', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'diego', readonly: { brain: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all', personality: 'default' } },
-    } } });
-    const r = await migrateConversationVocabulary(fp);   // no resolveAgentDef → deterministic constants
-    expect(r.migrated).toBe(1);
-    const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
-    expect('brain' in ro).toBe(false);
-    expect('personality' in ro).toBe(false);   // the retired key is gone
-    // model/effort were null → backfilled to the deterministic constants (never left null);
-    // the renamed shipped type 'default' is PORTED to 'egpt' in the same pass.
-    expect(ro).toEqual({ agent: 'egpt', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
-  });
-
-  it('backfills null readonly.model/effort from the agent type when a registry is provided (resolved on the PORTED name)', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'diego', readonly: { agent: 'default', type: 'ccode', model: null } },   // effort absent, model null
-    } } });
-    // agent 'default' is ported to 'egpt' before the backfill resolves the type
-    const resolveAgentDef = (name) => name === 'egpt' ? { model: 'opus', effort: 'medium' } : null;
-    expect((await migrateConversationVocabulary(fp, { resolveAgentDef })).migrated).toBe(1);
-    const ro = (await readState(fp)).contacts.whatsapp.j.readonly;
-    expect(ro.agent).toBe('egpt');     // ported from 'default'
-    expect(ro.model).toBe('opus');     // from the resolved type
-    expect(ro.effort).toBe('medium');
-  });
-
-  it('drops the FLAT entry-level personality (the key ensureContact used to seed) and slims to the pointer shape', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'diego', personality: 'default', threadId: 'T', pushedName: 'D' },
-    } } });
-    const r = await migrateConversationVocabulary(fp);
-    expect(r.migrated).toBe(1);
-    const e = (await readState(fp)).contacts.whatsapp.j;
-    expect('personality' in e).toBe(false);
-    // Slim pointer shape: derived slug + threadId + pushedName + the relocatable pointer.
-    expect(e).toEqual({ slug: 'diego', threadId: 'T', pushedName: 'D', conversation_path: conversationPathOf(WA, 'diego'), home_dir: homeDirMsys() });
-  });
-
-  it('renames a NESTED being block readonly.brain + drops its readonly.personality (sibling fields intact)', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', wren: { mode: 'mention', readonly: { brain: 'sonnet-high', type: 'ccode', personality: 'banter' }, threadId: 'T' } },
-    } } });
-    const r = await migrateConversationVocabulary(fp);
-    expect(r.migrated).toBe(1);
-    const wren = (await readState(fp)).contacts.whatsapp.j.wren;
-    expect(wren.readonly.agent).toBe('sonnet-high');
-    expect('brain' in wren.readonly).toBe(false);
-    expect('personality' in wren.readonly).toBe(false);
-    expect(wren.threadId).toBe('T');
-  });
-
-  it('cleans flat personality + flat readonly + nested readonly on one contact as ONE touch', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', personality: 'default', readonly: { brain: 'default', type: 'ccode', personality: 'default' }, wren: { readonly: { brain: 'sonnet-high', type: 'ccode', personality: 'banter' } } },
-    } } });
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
-    const e = (await readState(fp)).contacts.whatsapp.j;
-    expect('personality' in e).toBe(false);
-    expect(e.readonly.agent).toBe('egpt');   // ported 'default' → 'egpt'
-    expect('personality' in e.readonly).toBe(false);
-    expect(e.wren.readonly.agent).toBe('sonnet-high');   // a non-default type is untouched
-    expect('personality' in e.wren.readonly).toBe(false);
-  });
-
-  it('is idempotent — a second pass changes nothing (already on agent, no personality)', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', personality: 'default', readonly: { brain: 'default', type: 'ccode', personality: 'default' } },
-    } } });
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
-  });
-
-  it('leaves a fully-slim entry untouched (readonly.agent egpt w/ model+effort, pointer present → migrated 0)', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high' } },
-    } } });
-    // writeTmp's serialize already stamps conversation_path + home_dir; readonly carries concrete
-    // model/effort, the current 'egpt' type name, and no personality → nothing left to migrate.
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
-  });
-
-  it('ports readonly.agent "default" → "egpt" (flat + nested), idempotently (operator 2026-07-02: no legacy)', async () => {
-    const fp = await writeTmp({ contacts: { whatsapp: {
-      j: { slug: 'x', readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' },
-           wren: { readonly: { agent: 'default', type: 'ccode', model: 'sonnet', effort: 'high' } } },
-    } } });
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(1);
-    const e = (await readState(fp)).contacts.whatsapp.j;
-    expect(e.readonly.agent).toBe('egpt');        // flat 'e' record ported
-    expect(e.wren.readonly.agent).toBe('egpt');   // nested being record ported too
-    // idempotent — a second pass finds nothing left to port
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
-  });
-
-  it('empty state → migrated 0', async () => {
-    const fp = await writeTmp(emptyState());
-    expect((await migrateConversationVocabulary(fp)).migrated).toBe(0);
-  });
-
-  it('MOVES lifecycle timestamps into <convdir>/stats.yaml (name/first_seen/threads), slims the registry, idempotent', async () => {
-    const fp = await writeOldTmp({ contacts: { whatsapp: {
-      '!spoiler:beeper.local': {
-        slug: 'SPOILER-2606291920', pushedName: 'SPOILER ALERT',
-        threadId: 'T-1', threadCwd: '/c/x',
-        firstSeenAt: '2026-06-29T19:20:00.000Z', threadCreatedAt: '2026-06-29T19:21:00.000Z', identityInjectedAt: '2026-06-29T19:22:00.000Z',
-        readonly: { agent: 'default', type: 'ccode', model: null, effort: null, allowed_tools: 'all' },
-      },
-    } } });
-    const dir = dirname(fp);
-    const statsDirOf = (surface, slug) => join(dir, 'conv', surface, slug);
-    const r = await migrateConversationVocabulary(fp, { statsDirOf });
-    expect(r.migrated).toBe(1);
-
-    // registry slimmed: lifecycle timestamps gone, only the resumable threadId + pointer remain
-    const e = (await readState(fp)).contacts.whatsapp['!spoiler:beeper.local'];
-    expect('firstSeenAt' in e).toBe(false);
-    expect('threadCreatedAt' in e).toBe(false);
-    expect('identityInjectedAt' in e).toBe(false);
-    expect(e.threadId).toBe('T-1');
-    expect(e.conversation_path).toBe(conversationPathOf(WA, 'SPOILER-2606291920'));
-    expect(e.home_dir).toBe(homeDirMsys());
-    expect(e.readonly).toEqual({ agent: 'egpt', type: 'ccode', model: DETERMINISTIC_MODEL, effort: DETERMINISTIC_EFFORT, allowed_tools: 'all' });
-
-    // stats.yaml written with the moved facts
-    const stats = YAML.parse(await readFile(join(dir, 'conv', WA, 'SPOILER-2606291920', 'stats.yaml'), 'utf8'));
-    expect(stats.name).toBe('SPOILER ALERT');
-    expect(stats.first_seen).toBe('2026-06-29T19:20:00.000Z');
-    expect(stats.threads).toEqual([{ id: 'T-1', created: '2026-06-29T19:21:00.000Z', identity_injected: '2026-06-29T19:22:00.000Z' }]);
-
-    // idempotent second pass: registry already slim → migrated 0
-    expect((await migrateConversationVocabulary(fp, { statsDirOf })).migrated).toBe(0);
-  });
-
-  it('stats merge never clobbers existing stats.yaml content (create-or-merge)', async () => {
-    const fp = await writeOldTmp({ contacts: { whatsapp: {
-      j: { slug: 'x-2606010000', pushedName: 'From Registry', firstSeenAt: '2026-06-01T00:00:00.000Z', threadId: 'T-new' },
-    } } });
-    const dir = dirname(fp);
-    const statsDirOf = (surface, slug) => join(dir, 'conv', surface, slug);
-    // pre-existing stats.yaml with an operator-set name + a prior thread
-    const convDir = statsDirOf(WA, 'x-2606010000');
-    await (await import('node:fs/promises')).mkdir(convDir, { recursive: true });
-    await writeFile(join(convDir, 'stats.yaml'), YAML.stringify({ name: 'Operator Name', threads: [{ id: 'T-old', created: 'c0' }] }), 'utf8');
-
-    await migrateConversationVocabulary(fp, { statsDirOf });
-    const stats = YAML.parse(await readFile(join(convDir, 'stats.yaml'), 'utf8'));
-    expect(stats.name).toBe('Operator Name');          // existing scalar preserved, NOT clobbered
-    expect(stats.first_seen).toBe('2026-06-01T00:00:00.000Z');   // new scalar filled in
-    expect(stats.threads.map(t => t.id)).toEqual(['T-old', 'T-new']);   // threads unioned, old kept
-  });
-
-  it('getBeing still reads a PRE-migration entry\'s personality (legacy back-read)', async () => {
-    // Old on-disk shapes must remain readable before the boot migration runs.
-    const flat = { contacts: { whatsapp: { j: { slug: 'x', personality: 'banter' } } } };
-    expect(getBeing(flat, 'whatsapp', 'j', 'e').personality).toBe('banter');
-    const ro = { contacts: { whatsapp: { j: { slug: 'x', readonly: { agent: 'default', personality: 'system' } } } } };
-    expect(getBeing(ro, 'whatsapp', 'j', 'e').personality).toBe('system');
-  });
-
-  it('missing registry file → skipped, never throws', async () => {
-    const r = await migrateConversationVocabulary(join(tmpdir(), 'egpt-no-such-registry-xyz.yaml'));
-    expect(r).toEqual({ migrated: 0, skipped: 'no registry' });
-  });
-
-  it('temp dirs cleaned up', async () => {
-    const dirs = tmpDirs.splice(0);
-    await Promise.all(dirs.map(d => rm(d, { recursive: true, force: true })));
-    for (const d of dirs) expect(existsSync(d)).toBe(false);
   });
 });
 

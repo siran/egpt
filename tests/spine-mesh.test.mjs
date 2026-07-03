@@ -54,9 +54,9 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, siblings = {}, meshCfg = {}, brain, timers, logs } = {}) {
+function svc({ node, agents = {}, meshCfg = {}, brain, timers, logs } = {}) {
   const bridge = fakeBridge();
-  const cfg = { node_name: node, siblings, mesh: meshCfg };
+  const cfg = { node_name: node, agents, mesh: meshCfg };
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
     getConfig: () => cfg, bodyEmojiOf,
@@ -118,7 +118,7 @@ describe('mesh service — outbound (origin relays @being.node)', () => {
 describe('mesh service — responder (a request arrives at the owning node)', () => {
   it('(b) runs the target local being (brain.turn) and edit-streams the reply as an envelope (re/post_id/done), mirrored', async () => {
     const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
-    const { bridge, mesh } = svc({ node: 'do', siblings: { don: { type: 'ccode', name: 'don' } }, brain });
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain });
     const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p1', mid: 'M1' });
 
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
@@ -139,7 +139,7 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
   });
 
   it('answers "no <being>.<node> here" (never silence) when the being is disabled', async () => {
-    const { bridge, mesh } = svc({ node: 'do', siblings: { don: { type: 'ccode', name: 'don', enabled: false } } });
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don', enabled: false } } });
     const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', mid: 'M9' });
     await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
     await flush();

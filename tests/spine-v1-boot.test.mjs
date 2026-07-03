@@ -66,7 +66,7 @@ describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
 
     const app = await boot({
       readConfig: () => config,
@@ -110,7 +110,7 @@ describe('boot()', () => {
   it("respects gating: a 'mute' chat invokes no brain and sends nothing", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'mute');
-    const config = { whatsapp: {} };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
@@ -125,7 +125,7 @@ describe('boot()', () => {
   it('registers the alive beat as a spawned command: spine.pid written, immediate first beat on tick, cadence honored, env carries EGPT_HOME + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
     let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
 
     // Observe the beat as a SPAWN, not a written alive.txt — the alive beat is a
@@ -176,7 +176,7 @@ describe('boot()', () => {
     // must size the tick DOWN to the finest cadence. An explicit config alive loads
     // even though aliveMs is unset (0). Observe the effective tick via a fake
     // setInterval (only the spine's tick timer flows through this seam).
-    const config = { whatsapp: {}, default_brain: { type: 'ccode' }, heartbeats: { alive: { frequency: '1s' } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } }, heartbeats: { alive: { frequency: '1s' } } };
     const intervals = [];
     const spawnCalls = [];
     const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
@@ -213,7 +213,7 @@ describe('boot()', () => {
   it('the readonly view has NO internal row; deleting the file and ticking hot-reloads it', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, default_brain: { type: 'ccode' } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
     const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
 
     const app = await boot({

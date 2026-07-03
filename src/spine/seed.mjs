@@ -20,11 +20,11 @@ export const PROFILE_AGENTS_DIR = join(EGPT_HOME, 'config', 'agents');
 // change behavior (an all-comments YAML parses to null → the registry ignores it) — it
 // is documentation the operator uncomments + edits.
 export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a brain def). A type is an ENGINE config; the
-# \`agents:\` block in config.yaml points an agent at one by name (agents.<name>.type:
-# sonnet-high). This file is the canonical home for type files: config/agents/<type>.yaml.
+# \`agents:\` block in config.yaml points an agent at one by name (agents.<name>
+# .configuration: sonnet-high). This file is the canonical home: config/agents/<type>.yaml.
 #
-# Resolution layers (most-specific wins): src/brains (built-in) < config/brains <
-# config/agents < a conversation's own brains/. Set only the fields you want to change.
+# Resolution layers (most-specific wins): src/brains (built-in) < config/agents < a
+# conversation's own brains/. Set only the fields you want to change.
 #
 # Uncomment + edit to make \`sonnet-high\` a real type:
 # type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama
@@ -34,12 +34,12 @@ export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a bra
 `;
 
 // The WORKING egpt agent-type file. UNlike the example above this is UNcommented (a
-// live def) so agents.egpt.type: egpt resolves from the PROFILE the operator can open.
-// Mirrors the repo's built-in src/brains/egpt.yaml (which stays the fallback); seeded
+// live def) so agents.egpt.configuration: egpt resolves from the PROFILE the operator can
+// open. Mirrors the repo's built-in src/brains/egpt.yaml (which stays the fallback); seeded
 // copy-if-missing so an operator edit here is sacred and wins over the built-in.
 export const EGPT_TYPE_FILE = `# egpt — the shipped persona AGENT TYPE (a brain def): the warm Claude Code CLI (no API
-# key; uses your existing \`claude\` login). config.yaml's agents.egpt.type: egpt points
-# here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
+# key; uses your existing \`claude\` login). config.yaml's agents.egpt.configuration: egpt
+# points here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
 # \`readonly\`), re-pointable later with \`/e\`. This is the canonical, EDITABLE home; the
 # repo's built-in src/brains/egpt.yaml is the fallback it mirrors. Seeding never overwrites it.
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
@@ -100,8 +100,8 @@ export function seedSkeletons({
   // 2. the commented example agent-type file.
   copyIfMissing(join(agentsDir, 'sonnet-high.yaml'), () => EXAMPLE_TYPE_FILE);
 
-  // 3. the WORKING egpt agent-type file (UNcommented) so agents.egpt.type: egpt resolves
-  //    from the profile the operator can open; copy-if-missing keeps edits sacred. (The old
-  //    default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate default.yaml.)
+  // 3. the WORKING egpt agent-type file (UNcommented) so agents.egpt.configuration: egpt
+  //    resolves from the profile the operator can open; copy-if-missing keeps edits sacred.
+  //    (The old default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate it.)
   copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
 }

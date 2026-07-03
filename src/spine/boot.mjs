@@ -20,7 +20,6 @@ import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES,
-  migrateConversationVocabulary,
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
@@ -79,43 +78,42 @@ export async function boot({
   // tests don't write into a profile. Never fatal.
   if (ingest) { try { seedSkeletons({ onLog: (m) => log.line?.(`[seed] ${m}`) }); } catch (e) { log.line?.(`[boot] seed failed: ${e?.message ?? e}`); } }
 
-  // The being's body_emoji + display label (the bridge enforces the emoji on
-  // outbound; the label rides the persona's first line "🐶 <label>"). The `agents:`
-  // block (operator 2026-07-02) wins when present: the PERSONA agent (handles include
-  // e/egpt) supplies E's emoji/label; a LOCAL/RELAY agent keyed by being name supplies
-  // its own. Legacy fallbacks (emojis.persona / persona_name / siblings[b]) stay intact
-  // so a node with NO agents block behaves byte-identically.
-  const personaName = String(cfg.persona ?? 'e').toLowerCase();
+  // The `agents:` block is the ONE registry (operator 2026-07-02, new-config-only): the
+  // persona identity + local beings + mesh addressing all live here. It is REQUIRED — a
+  // node without an agents block, or without a persona entry (an agent whose name/handles
+  // include e/egpt), is a fatal misconfiguration, not a silent fallback to a guessed
+  // default. Fail loudly so the operator fixes it (the skeleton ships the block uncommented).
   const agents = () => cfg.agents ?? {};
   const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
   const personaAgent = () => {
     for (const [name, a] of Object.entries(agents())) {
       if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt' || h === personaName)) return { name, agent: a };
+      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return { name, agent: a };
     }
     return null;
   };
+  if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents) || !personaAgent()) {
+    throw new Error('boot: config.agents must declare a persona agent (an entry whose name or handles include "e"/"egpt"). No agents block / no persona entry is a fatal misconfiguration — see config/skeletons/config.yaml.');
+  }
+
+  // The being's body_emoji + display label (the bridge enforces the emoji on outbound; the
+  // label rides the persona's first line "🐶 <label>"), resolved purely from the agents
+  // registry: the PERSONA agent supplies E's emoji/label, a LOCAL agent keyed by being name
+  // supplies its own.
   const bodyEmojiOf = (being) => {
     const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt' || b === personaName) {
-      const pa = personaAgent();
-      if (pa?.agent?.body_emoji) return pa.agent.body_emoji;
-      return cfg.emojis?.persona ?? cfg.siblings?.e?.body_emoji ?? '🐶';
-    }
+    if (b === 'e' || b === 'egpt') return personaAgent()?.agent?.body_emoji ?? '🐶';
     const a = agents()[b];
-    if (a && typeof a === 'object' && a.body_emoji) return a.body_emoji;
-    return cfg.siblings?.[b]?.body_emoji ?? cfg.emojis?.persona ?? '🐶';
+    return (a && typeof a === 'object' && a.body_emoji) ? a.body_emoji : '🐶';
   };
   const labelOf = (being) => {
     const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt' || b === personaName) {
+    if (b === 'e' || b === 'egpt') {
       const pa = personaAgent();
-      if (pa) return pa.agent.name ?? pa.name;
-      return cfg.persona_name ?? 'egpt';
+      return pa ? (pa.agent.name ?? pa.name) : 'egpt';
     }
     const a = agents()[b];
-    if (a && typeof a === 'object') return a.name ?? b;
-    return cfg.siblings?.[b]?.name ?? b;
+    return (a && typeof a === 'object') ? (a.name ?? b) : b;
   };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
@@ -137,7 +135,7 @@ export async function boot({
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
-    beeperToken: cfg.beeper_token ?? cfg.whatsapp?.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+    beeperToken: cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
     // NAMESPACES — a WhatsApp jid authorizes nothing on Telegram — so the sender
@@ -212,11 +210,10 @@ export async function boot({
   const services = {
     identity: createIdentity({ now }),
     gating: createGating({ getConfig, loadState: _loadState }),
-    // Router consults the unified `agents:` block first (operator 2026-07-02), then
-    // the legacy siblings + cross-node @being.node mesh targets (Phase 4b, inert unless
-    // cfg.mesh is configured). No agents block → routing is byte-identical to v1.
-    router: createRouter({ getSiblings: () => cfg.siblings ?? {}, getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
-    transcript: createTranscript({ contacts, persona: cfg.persona ?? null, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    // Router resolves an @token against the unified `agents:` block (operator 2026-07-02),
+    // then cross-node @being.node mesh targets (Phase 4b, inert unless cfg.mesh is configured).
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
+    transcript: createTranscript({ contacts, persona: labelOf('e'), io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
@@ -225,24 +222,11 @@ export async function boot({
     // so the reload staleness check rides runDue — see below.
     heartbeats: createHeartbeats({ onLog: (m) => log.line?.(`[heartbeat] ${m}`) }),
   };
-  // Brain registry: resolves the default brain (config.default_brain, YAML defs in
-  // src/brains ← ~/.egpt2/config/brains ← <slug>/brains) a fresh conversation is
-  // instanced from.
+  // Brain registry: resolves the agent-type file (YAML defs in src/brains ← ~/.egpt2/config
+  // /agents ← <slug>/brains) a fresh conversation is instanced from, named by the persona
+  // agent's `configuration`.
   const brains = createBrains({ onLog: (m) => log.line?.(`[brains] ${m}`) });
 
-  // One-time conversations.yaml migration (operator 2026-07-02): normalize every stored
-  // conversation to the current vocabulary + slim on-disk shape in ONE pass — readonly.brain →
-  // readonly.agent, drop the retired `personality`, backfill null model/effort to the agent
-  // type's values (else the deterministic constants), move lifecycle timestamps into each
-  // conversation's stats.yaml, and re-base conversation_path + stamp home_dir. Threaded with
-  // the brains registry so the model/effort backfill can resolve the entry's agent type.
-  // Real-node only (ingest-gated, like seed) and never fatal — a failure just logs.
-  if (ingest) {
-    try {
-      const r = await migrateConversationVocabulary(CONV_YAML_PATH, { resolveAgentDef: (name) => (name ? brains.resolve(name) : null) });
-      if (r?.migrated > 0) log.line?.(`[migrate] conversations vocabulary: ${r.migrated} entries`);
-    } catch (e) { log.line?.(`[boot] conversations vocabulary migration failed: ${e?.message ?? e}`); }
-  }
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
@@ -250,7 +234,7 @@ export async function boot({
 
   // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
-  // config (node_name/siblings/mesh.nodes routes). onEdit is registered here (its ONE
+  // config (node_name/agents/mesh.nodes routes). onEdit is registered here (its ONE
   // consumer) so a responder's in-place stream edits mirror to the origin placeholder.
   const mesh = createMeshService({ bridge, brain, getConfig, bodyEmojiOf, onLog: (m) => log.line?.(`[mesh] ${m}`) });
   bridge.onEdit((e) => mesh.onEdit({ msgId: e.msgId, newText: e.newText }));

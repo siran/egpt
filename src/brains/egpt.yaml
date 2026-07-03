@@ -1,6 +1,6 @@
 # egpt — the shipped persona AGENT TYPE (a brain def): the warm Claude Code CLI (no API
-# key; uses your existing `claude` login). config.yaml's agents.egpt.type: egpt points
-# here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
+# key; uses your existing `claude` login). config.yaml's agents.egpt.configuration: egpt
+# points here; a fresh conversation is INSTANCED from it (frozen into conversations.yaml
 # `readonly`), re-pointable later with `/e`. Override without touching the repo in
 # ~/.egpt2/config/agents/egpt.yaml (profile) or <slug>/brains/egpt.yaml (one conversation).
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)

@@ -35,7 +35,6 @@ import { readFile as fsReadFile, appendFile as fsAppendFile } from 'node:fs/prom
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
-import { readConfigSync } from './config-io.mjs';
 
 // The interpreter framing — lean, no ceremony. Prepended to the verbatim script.
 function framePrompt(base, content) {
@@ -48,11 +47,10 @@ function framePrompt(base, content) {
  *
  * @param {string} scriptPath                 path to a `*.x.md` file
  * @param {object} [opts]
- * @param {string} [opts.model]               model override (else config.default_brain.model when that brain is claude-typed, else login default)
- * @param {string} [opts.effort]              reasoning effort override (same fallback rule as model)
+ * @param {string} [opts.model]               model override (else the login default)
+ * @param {string} [opts.effort]              reasoning effort override (else the login default)
  * @param {string|string[]} [opts.tools]      allowedTools (default 'all')
  * @param {Function} [opts.makeSession]       session factory (default createWarmCliSession) — inject a fake in tests
- * @param {Function} [opts.readConfig]        config reader (default readConfigSync) — inject in tests
  * @param {{readFile?:Function, appendFile?:Function}} [opts.io]
  * @returns {Promise<{ok:boolean, text?:string, error?:string}>}
  */
@@ -60,7 +58,6 @@ export async function textecute(scriptPath, opts = {}) {
   const readFile = opts.io?.readFile ?? fsReadFile;
   const appendFile = opts.io?.appendFile ?? fsAppendFile;
   const makeSession = opts.makeSession ?? createWarmCliSession;
-  const readConfig = opts.readConfig ?? readConfigSync;
 
   // Extension-as-consent: refuse anything that isn't a self-declared `*.x.md`,
   // BEFORE reading or spawning.
@@ -75,19 +72,11 @@ export async function textecute(scriptPath, opts = {}) {
     return { ok: false, error: `textecute: cannot read ${scriptPath}: ${e?.message ?? e}` };
   }
 
-  // model / effort: opts win, else the node's default brain, else the login default.
-  // The default_brain fallback only applies when that brain actually IS the claude
-  // CLI — a codex-typed default_brain would leak its model id (gpt-5.4-mini) into
-  // the `claude` args and break the spawn. Absent `type` counts as ccode;
-  // 'claude-code' is the legacy alias (same acceptance as compact-being.mjs
-  // compactableBeings). Any other type falls through to the login default.
-  let cfg = {};
-  try { cfg = readConfig() ?? {}; } catch { cfg = {}; }
-  const db = cfg.default_brain ?? {};
-  const dbType = db.type ?? 'ccode';
-  const dbIsClaude = dbType === 'ccode' || dbType === 'claude-code';
-  const model = opts.model ?? (dbIsClaude ? db.model : undefined);
-  const effort = opts.effort ?? (dbIsClaude ? db.effort : undefined);
+  // model / effort: opts win, else the login default (operator 2026-07-02: new-config-only —
+  // no config.default_brain override; a textecutable runs on the plain `claude` login unless
+  // the caller pins model/effort).
+  const model = opts.model;
+  const effort = opts.effort;
 
   const dir = dirname(scriptPath);
   const prompt = framePrompt(basename(scriptPath), content);

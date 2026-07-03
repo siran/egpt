@@ -21,11 +21,11 @@
 //     conversation." A resumed thread already holds it, so it isn't re-sent.
 //
 // v1 is the E persona on the ccode engine. LOCAL sibling beings (@wren, @don) also
-// run here: a sibling's brain def comes from config.siblings[<being>] (NOT the
-// brains registry, and never frozen into readonly), it gets NO identity kickoff
-// (engineers, not the persona), and its thread persists in a per-being NESTED block
-// (recordThread(..., being)). codex/URL brains + emitted-command stripping (the
-// comm-handler's job, Phase 4) layer in later.
+// run here: a sibling's brain def comes from the agents registry (agents[<being>]
+// .configuration names a type file resolved through the brains registry, never frozen
+// into readonly), it gets NO identity kickoff (engineers, not the persona), and its
+// thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
+// brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
@@ -157,17 +157,19 @@ export function createBrainPool({
   }
 
   // The `agents:` block (operator 2026-07-02): the unified registry. Read lazily so a
-  // config edit takes effect next turn. A LOCAL agent (type ≠ 'relay') keyed by being
-  // name supplies that being's TYPE, resolved through the brains registry (config/agents
-  // layer). The PERSONA agent (handles include e/egpt) supplies E's default type.
+  // config edit takes effect next turn. A LOCAL agent (configuration ≠ 'relay') keyed by
+  // being name supplies that being's CONFIGURATION, resolved through the brains registry
+  // (config/agents layer). The PERSONA agent (handles include e/egpt) supplies E's default.
   const agents = () => (getConfig() ?? {}).agents ?? {};
   const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
-  // The persona agent's TYPE (agents block), or null when no persona agent is declared.
-  function personaAgentType() {
+  // The persona agent's `configuration` (agents block) — the agent-type file a fresh E
+  // conversation is instanced from — or null when no persona agent is declared. New-config-
+  // only (operator 2026-07-02): reads `configuration`, never the retired `type` back-read.
+  function personaAgentConfiguration() {
     for (const [name, a] of Object.entries(agents())) {
       if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (String(a.type ?? '').toLowerCase() === 'relay') continue;   // relay isn't a brain
-      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return a.type ?? null;
+      if (String(a.configuration ?? '').toLowerCase() === 'relay') continue;   // relay isn't a brain
+      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return a.configuration ?? null;
     }
     return null;
   }
@@ -187,49 +189,40 @@ export function createBrainPool({
     };
   }
 
-  // A local (sibling) being's brain def. MODERN: a LOCAL agent (agents[<being>], type ≠
-  // relay) — its `type` names an agent-type file resolved through the registry. LEGACY
-  // fallback: config.siblings[<being>] inline shape. Either way NOT frozen into readonly
-  // (the def LIVES in config, nothing per-conversation to instance).
+  // A local (sibling) being's brain def from the agents registry (agents[<being>],
+  // configuration ≠ relay): its `configuration` names an agent-type file resolved through
+  // the registry. NOT frozen into readonly (the def LIVES in config, nothing per-conversation
+  // to instance). No agent entry / unresolvable configuration → a bare ccode def keyed by the
+  // being name (keeps it runnable).
   function siblingDef(being, convDir) {
     const agent = agents()[being];
-    if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.type ?? '').toLowerCase() !== 'relay') {
-      const def = brains?.resolve?.(agent.type, { convDir }) ?? null;
+    if (agent && typeof agent === 'object' && !Array.isArray(agent) && String(agent.configuration ?? '').toLowerCase() !== 'relay') {
+      const def = brains?.resolve?.(agent.configuration, { convDir }) ?? null;
       if (def) return shapeDef(being, def, agent);
-      // type named but no file → fall through to the legacy shape (keeps the being runnable)
+      // configuration named but no file → fall through to the bare def (keeps the being runnable)
     }
-    const s = (getConfig() ?? {}).siblings?.[being] ?? {};
-    const type = String(s.type ?? '').toLowerCase() === 'claude-code' ? 'ccode' : (s.type ?? brainType);
     return {
-      name: (agent && typeof agent === 'object' ? agent.name : null) ?? s.name ?? being,
-      type,
-      model: s.model ?? null,
-      effort: s.effort ?? null,
-      allowed_tools: s.allowed_tools ?? 'all',
-      allowed_paths: s.allowed_paths ?? undefined,
-      cwd: s.cwd ?? undefined,
-      system_prompt: s.system_prompt ?? undefined,
+      name: (agent && typeof agent === 'object' ? agent.name : null) ?? being,
+      type: brainType,
+      model: null,
+      effort: null,
+      allowed_tools: 'all',
     };
   }
 
-  // The DEFAULT brain a fresh conversation is instanced from, in order:
-  //   1. the PERSONA agent's `type` (agents block) resolved through the registry,
-  //   2. config.default_brain (a registry brain name, or a legacy inline def),
-  //   3. the shipped 'egpt' type (renamed from 'default' 2026-07-02; the brains registry
-  //      still aliases 'default' → 'egpt' for legacy configs).
-  // Falls back to a bare ccode def if the registry is absent.
+  // The DEFAULT brain a fresh conversation is instanced from: the PERSONA agent's
+  // `configuration` (agents block) resolved through the registry, else the shipped 'egpt'
+  // type (a bare ccode def if even that is absent). New-config-only (operator 2026-07-02):
+  // NO config.default_brain fallback and NO 'default'→'egpt' alias — the type is named
+  // 'egpt' and stored records were ported, never aliased.
   function resolveDefaultBrain(convDir) {
-    const pType = personaAgentType();
-    if (pType) {
-      const def = brains?.resolve?.(pType, { convDir });
-      if (def) return def;                                     // persona type file wins
-      // named but unresolvable → fall through to default_brain / 'egpt'
+    const configuration = personaAgentConfiguration();
+    if (configuration) {
+      const def = brains?.resolve?.(configuration, { convDir });
+      if (def) return def;                                     // persona configuration wins
+      // named but unresolvable → fall through to the shipped 'egpt' type
     }
-    const db = (getConfig() ?? {}).default_brain;
-    const fallback = { name: 'egpt', type: brainType };
-    if (typeof db === 'string') return brains?.resolve?.(db, { convDir }) ?? brains?.resolve?.('egpt', { convDir }) ?? { name: db, type: brainType };
-    const base = brains?.resolve?.('egpt', { convDir }) ?? fallback;
-    return (db && typeof db === 'object') ? { ...base, ...db, name: db.name ?? base.name } : base;
+    return brains?.resolve?.('egpt', { convDir }) ?? { name: 'egpt', type: brainType };
   }
 
   return {
@@ -242,9 +235,9 @@ export function createBrainPool({
       const isSibling = being !== 'e';
       let def, runModel, runEffort;
       if (isSibling) {
-        // Sibling / local agent: def from the agents block (type file) or the legacy
-        // config.siblings[being] inline shape; never frozen into readonly. Its model/effort
-        // stay exactly as configured (may be unset — an engineer, not the persona snapshot).
+        // Local agent: def from the agents block (its `configuration` names a type file);
+        // never frozen into readonly. Its model/effort stay exactly as configured (may be
+        // unset — an engineer, not the persona snapshot).
         def = siblingDef(being, convDir);
         runModel = def.model; runEffort = def.effort;
       } else {
@@ -264,10 +257,9 @@ export function createBrainPool({
         runEffort = def.effort ?? DETERMINISTIC_EFFORT;
         if (fresh) {
           // Freeze the instanced def under readonly.agent with the RESOLVED concrete model/effort
-          // (operator 2026-07-02: vocabulary is "agent" now; getBeing back-reads readonly.brain,
-          // and migrateConversationVocabulary renames + backfills existing entries). NO
-          // `personality` is written — that key is RETIRED; the identity feed is a property of
-          // the agent type (def.personality), read fresh at kickoff below.
+          // (operator 2026-07-02: new-config-only — the vocabulary is `agent`; getBeing reads
+          // readonly.agent). NO `personality` is written — that key is RETIRED; the identity feed
+          // is a property of the agent type (def.personality), read fresh at kickoff below.
           await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
             readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? 'all' },
           }));
