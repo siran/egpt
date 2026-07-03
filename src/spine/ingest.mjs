@@ -1,6 +1,7 @@
 // ingest.mjs — the command ingest box (operator 2026-06-29: "it should be called
-// ingest, since the spine CONSUMES from it"). Drop a file in EGPT_HOME/ingest and
-// the node acts on it; the file is consumed (deleted) once read. The classic
+// ingest, since the spine CONSUMES from it"). Drop a file in EGPT_HOME/state/ingest
+// (operator 2026-07-03: the box lives under state/ now) and the node acts on it; the
+// file is consumed (deleted) once read. The classic
 // lifecycle commands map to the daemon's respawn exit codes:
 //
 //   /restart        -> exit 43  (daemon respawns this checkout — picks up commits)

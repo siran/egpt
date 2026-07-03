@@ -5,7 +5,7 @@
 // to the operator would train them to ignore errors — but where a bare
 // `catch {}` has already hidden real bugs twice (config load 2026-05-22,
 // config overlay 2026-05-27). Instead of dropping the error, write one
-// rate-limited line per tag to ~/.egpt/logs/swallowed.log so the next
+// rate-limited line per tag to ~/.egpt/config/logs/swallowed.log so the next
 // post-mortem has a trail:
 //
 //   try { unlinkSync(p); } catch (e) { swallow('boot.migrate', e); }
@@ -25,7 +25,7 @@ import { join } from 'node:path';
 
 // EGPT_HOME env override exists for tests (the rest of the app anchors
 // to homedir()/.egpt directly); in production it's unset.
-const _logPath = () => join(process.env.EGPT_HOME || join(homedir(), '.egpt'), 'logs', 'swallowed.log');
+const _logPath = () => join(process.env.EGPT_HOME || join(homedir(), '.egpt'), 'config', 'logs', 'swallowed.log');
 
 const WINDOW_MS = 5_000;
 const _seen = new Map();   // tag -> { at, suppressed }

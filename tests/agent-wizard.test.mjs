@@ -1,21 +1,34 @@
 import { describe, it, expect } from 'vitest';
 import { initWizard, wizardStep, wizardPrompt } from '../src/agent-wizard.mjs';
 
+// Bare-name options (no inline composition) — the fallback render.
 const opts = { configurations: ['egpt', 'sonnet-high'], models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'] };
 const mk = (extra = {}) => initWizard({ slug: 'spoiler', jid: '!x:beeper.local', surface: 'whatsapp', options: opts, ...extra });
 
-describe('agent wizard (v2: configuration → model → effort)', () => {
-  it('walks configuration → model → effort → done', () => {
-    let r = wizardStep(mk(), '2');        // configuration → sonnet-high
-    r = wizardStep(r.state, '3');         // model → opus
-    r = wizardStep(r.state, '3');         // effort → high
+// Composition options — each type carries its PINNED model/effort (what a pick applies).
+const compOpts = {
+  configurations: [{ name: 'egpt', model: 'sonnet', effort: 'high' }, { name: 'sonnet-high', model: 'opus', effort: 'high' }],
+  models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'],
+};
+const mkC = (extra = {}) => initWizard({ slug: 'spoiler', jid: '!x:beeper.local', surface: 'whatsapp', options: compOpts, ...extra });
+
+describe('agent wizard (v2: picking an existing type applies immediately)', () => {
+  it('picking an existing type IS the answer — done in ONE step, carrying its pinned model/effort', () => {
+    const r = wizardStep(mkC(), '2');     // sonnet-high → done
     expect(r.done).toBe(true);
     expect(r.result).toMatchObject({ slug: 'spoiler', jid: '!x:beeper.local', surface: 'whatsapp', configuration: 'sonnet-high', model: 'opus', effort: 'high' });
   });
 
+  it('a bare-name type (no composition) applies with null model/effort (the spine fills the floor)', () => {
+    const r = wizardStep(mk(), '1');      // egpt (bare) → done
+    expect(r.done).toBe(true);
+    expect(r.result).toMatchObject({ configuration: 'egpt', model: null, effort: null });
+  });
+
   it('accepts a value by text as well as by number', () => {
-    const r = wizardStep(mk(), 'egpt');   // configuration by name
-    expect(r.state.answers.configuration).toBe('egpt');
+    const r = wizardStep(mk(), 'egpt');   // configuration by name → done immediately
+    expect(r.done).toBe(true);
+    expect(r.result.configuration).toBe('egpt');
   });
 
   it('rejects an out-of-range pick and stays on the step', () => {
@@ -25,8 +38,9 @@ describe('agent wizard (v2: configuration → model → effort)', () => {
     expect(r.prompt).toMatch(/pick 1–3/);
   });
 
-  it('b goes back, x cancels', () => {
-    let r = wizardStep(mk(), '1');        // now on model
+  it('b goes back, x cancels (through the custom branch, which still has multiple steps)', () => {
+    let r = wizardStep(mk(), '3');        // custom (2 types + custom = option 3) → model step
+    expect(r.state.idx).toBe(1);
     r = wizardStep(r.state, 'b');         // back to configuration
     expect(r.state.idx).toBe(0);
     expect(wizardStep(r.state, 'x').cancelled).toBe(true);
@@ -64,6 +78,13 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
     // custom is always the last option
     expect(p).toMatch(/3\) custom:/);
     expect(p).toMatch(/model → effort → personality → name/);
+  });
+
+  it('picking an existing type from the yaml view applies immediately with its pinned values', () => {
+    const r = wizardStep(mkY(), '1');          // egpt → done
+    expect(r.done).toBe(true);
+    expect(r.result).toMatchObject({ configuration: 'egpt', model: 'sonnet', effort: 'high' });
+    expect(r.result.custom).toBeUndefined();
   });
 
   it('custom branch: custom → model → effort → personality(free text) → name → done', () => {
@@ -119,15 +140,12 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
     expect(r.prompt).toMatch(/personality\?/);
   });
 
-  it('re-picking an existing type after custom flips the branch back', () => {
+  it('re-picking an existing type after custom flips the branch back and applies immediately', () => {
     let r = wizardStep(mkY(), '3');            // custom → model step (idx 1, mode custom)
-    r = wizardStep(r.state, 'b');              // back to type (idx 0)
-    r = wizardStep(r.state, '1');              // pick egpt (existing)
-    expect(r.state.mode).toBe('existing');
-    r = wizardStep(r.state, '2');              // model
-    r = wizardStep(r.state, '3');              // effort → done (existing, 3 steps)
+    r = wizardStep(r.state, 'b');              // back to type (idx 0, mode still custom)
+    r = wizardStep(r.state, '1');              // pick egpt (existing) → DONE immediately
     expect(r.done).toBe(true);
-    expect(r.result).toMatchObject({ configuration: 'egpt' });
+    expect(r.result).toMatchObject({ configuration: 'egpt', model: 'sonnet', effort: 'high' });
     expect(r.result.custom).toBeUndefined();
   });
 });

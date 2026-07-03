@@ -8,10 +8,11 @@
 // with the new def), and — for the custom branch — authors the new agent-type + any
 // identity-layer files.
 //
-// v2 vocabulary (operator 2026-07-02): three numbered picks — 1) agent TYPE (a
-// `configuration`: an agent-type file name), 2) model, 3) effort. Step 1's options
-// render each type's COMPOSITION inline (model/effort/personality, structured-yaml
-// style) so the operator sees what they're picking; the conversation's CURRENT value
+// v2 vocabulary: picking an EXISTING agent TYPE (a `configuration`: an agent-type file
+// name) IS the answer (operator 2026-07-03) — it applies IMMEDIATELY with the type's
+// PINNED model/effort (shown inline in step 1), no separate model/effort steps. Step 1's
+// options render each type's COMPOSITION inline (model/effort/personality, structured-yaml
+// style) so the operator sees exactly what a pick applies; the conversation's CURRENT value
 // is marked `(current)`.
 //
 // CUSTOM branch (operator 2026-07-03): a final `custom` option (always last in step
@@ -28,7 +29,7 @@ const EFFORT_STEP  = { key: 'effort',      label: 'effort?',      optKey: 'effor
 const PERSONA_STEP = { key: 'personality', label: 'personality?', optKey: 'personalities', freeText: 'describe it (free text)' };
 const NAME_STEP    = { key: 'name',        label: 'name the new type', free: true };
 
-const STEPS_EXISTING = [CFG_STEP, MODEL_STEP, EFFORT_STEP];
+const STEPS_EXISTING = [CFG_STEP];   // picking an existing type IS the answer — its model/effort are pinned
 const STEPS_CUSTOM   = [CFG_STEP, MODEL_STEP, EFFORT_STEP, PERSONA_STEP, NAME_STEP];
 
 const steps = (state) => (state.mode === 'custom' ? STEPS_CUSTOM : STEPS_EXISTING);
@@ -101,7 +102,9 @@ function buildResult(state) {
     return { ...base, custom: true, model: a.model, effort: a.effort,
              personalityLayer: a.personality ?? null, personalityText: a.personalityText ?? null, name: a.name };
   }
-  return { ...base, configuration: a.configuration, model: a.model, effort: a.effort };
+  // Existing pick: the configuration + its pinned model/effort (captured from the picked
+  // option's composition; null when the option carried none → the spine applies the floor).
+  return { ...base, configuration: a.configuration, model: a.model ?? null, effort: a.effort ?? null };
 }
 
 // One step. Returns { state, prompt } | { cancelled: true } | { done: true, result }.
@@ -142,7 +145,10 @@ export function wizardStep(state, input) {
     }
     if (isCustom) return advance({ ...state, mode: 'custom', answers: { ...state.answers, configuration: 'custom' } });
     if (!picked) return { state, prompt: `pick 1–${customPos} (or b back · x cancel)\n` + wizardPrompt(state) };
-    return advance({ ...state, mode: 'existing', answers: { ...state.answers, configuration: optName(picked) } });
+    // Existing pick applies immediately (mode existing = 1 step): capture the picked type's
+    // pinned model/effort from its composition so the result is self-describing.
+    const fields = typeof picked === 'string' ? {} : (picked ?? {});
+    return advance({ ...state, mode: 'existing', answers: { ...state.answers, configuration: optName(picked), model: fields.model ?? null, effort: fields.effort ?? null } });
   }
 
   // Free step — the new type's name (custom branch). Collision with an existing type

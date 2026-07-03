@@ -16,6 +16,6 @@ describe('beeper log path is profile-aware', () => {
     const { EGPT_HOME } = await import('../src/egpt-home.mjs');
     const { _BEEPER_LOG } = await import('../src/bridges/beeper.mjs');
     expect(EGPT_HOME).toBe(process.env.EGPT_HOME);
-    expect(_BEEPER_LOG).toBe(join(EGPT_HOME, 'logs', 'beeper.log'));
+    expect(_BEEPER_LOG).toBe(join(EGPT_HOME, 'config', 'logs', 'beeper.log'));
   });
 });

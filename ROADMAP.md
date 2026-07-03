@@ -49,21 +49,31 @@ following is LANDED, test-locked, and (where marked) live-verified:
   (CLI / heartbeat `ai_run:` / ask E — NO /x command, ever)
 - Commands: /restart /upgrade /rewind, /e auto <mode> [target], /status (fenced yaml)
 - **/e wizard landed** — bare `/e` (this chat) / `/e <fragment>` (target resolved like
-  /e auto's) ARM a guided re-point: agent type → model → effort (v1 parity, NOT a flag
-  command). Operator-only, 5-min TTL, b/back · x/cancel; while armed the operator's plain
-  picks get first refusal (never fall through to E), a slash command bypasses WITHOUT
-  cancelling (v1). On done: freezes the conversation's `readonly` (keeps threadId — context
-  survives) + evicts its warm session (respawns next turn, no /restart). Reuses
-  src/agent-wizard.mjs (steps re-vocabularied: `configuration` pick from config/agents +
-  src/brains, current marked); ONE chokepoint in src/spine/commands.mjs isCommand/run.
-  - **/e wizard custom + yaml-view (operator 2026-07-03)** — step 1 renders each type's
-    COMPOSITION inline (model/effort/personality via brains.resolve, structured-yaml); a
-    final `custom` option BUILDS a new agent type (model → effort → personality → name,
-    named last, collision re-prompts) and authors config/agents/<name>.yaml (+ a free-text
-    identity layer in identities/<name>/) then applies it like an existing pick. Personality
-    picks = identity layers (profile ∪ repo, listIdentityLayers) + free text; 10 preset
-    layers (secretary/psychologist/detective/poet/writer/spiritual-advisor/financial-advisor/
-    philosopher/logicist/one-two-many) seeded copy-if-missing (src/spine/seed.mjs PRESET_IDENTITIES).
+  /e auto's) ARM a guided re-point. Operator-only, 5-min TTL, b/back · x/cancel; while armed
+  the operator's plain picks get first refusal (never fall through to E), a slash command
+  bypasses WITHOUT cancelling (v1). On done: freezes the conversation's `readonly` (keeps
+  threadId — context survives) + evicts its warm session (respawns next turn, no /restart).
+  Reuses src/agent-wizard.mjs; ONE chokepoint in src/spine/commands.mjs isCommand/run.
+  - **Picking an EXISTING type applies IMMEDIATELY (operator 2026-07-03)** — step 1 shows
+    each type's COMPOSITION inline (model/effort/personality via brains.resolve); picking one
+    IS the answer, applied with the type's PINNED model/effort (?? the DETERMINISTIC_* floor
+    in conversations-state). The model → effort steps remain ONLY in the custom branch
+    (STEPS_EXISTING = [config] now).
+  - **/e wizard custom** — a final `custom` option BUILDS a new agent type (model → effort →
+    personality → name, named last, collision re-prompts) and authors config/agents/<name>.yaml
+    (+ a free-text identity layer as a FLAT config/identities/<name>.md) then applies it.
+    Personality picks = identity layers (listIdentityLayers = profile config/identities/*.md +
+    'egpt') + free text; 10 preset layers seeded copy-if-missing to config/identities/<name>.md
+    (src/spine/seed.mjs PRESET_IDENTITIES).
+- **Profile relayout (operator 2026-07-03, disk = spec)** — the code's canonical paths now
+  match the reorganized profile: `config/conversations.yaml` (CONV_YAML_PATH), `config/logs/`
+  (beeper.log + swallowed.log + NSSM service-std{out,err}.log), `state/ingest/` (the lifecycle
+  box). Identities are FLAT `config/identities/<name>.md` files; the shared eGPT identity +
+  pointers + rules ship as the ROOM TEMPLATE `config/skeletons/room/{00-identity,30-pointers,
+  40-rules}.md` (git mv from the retired repo-root identities/egpt/), seeded copy-if-missing.
+  readIdentityFeed = identity file + shared pointers + rules (identity first); a name with no
+  profile file falls back to the room template's 00-identity.md. No repo-root identities/
+  back-read.
 - Anti-drift: integrity tests scan v2 config reads; skeleton can't-rot tests
 
 ## 2. In flight right now
@@ -156,11 +166,15 @@ following is LANDED, test-locked, and (where marked) live-verified:
 - Node: Windows service `egpt2-daemon` → egpt-daemon.mjs → spawns `node egpt.mjs`
   from THIS working tree (a /restart boots whatever is checked out — never
   restart with uncommitted edits in flight).
-- Profile: EGPT_HOME=~/.egpt2. Config: ~/.egpt2/config/config.yaml (the ONLY
-  location — no legacy fallbacks since 85a824e). Old production (egpt-daemon service,
-  ~/.egpt, C:\Users\an\src\egpt) is STOPPED — both ride the same local Beeper
-  Desktop (127.0.0.1:23373), so running both double-answers every @e.
-- Restart: drop a file containing `/restart` into ~/.egpt2/ingest/ (temp→rename).
+- Profile: EGPT_HOME=~/.egpt2. Layout (operator 2026-07-03, disk = spec): config/
+  {config.yaml, conversations.yaml, agents/, identities/<name>.md (FLAT), logs/,
+  skeletons/ (incl. room/ = the shared identity/pointers/rules template)}; state/
+  {ingest/, alive.txt, spine.pid, …}; conversations/<surface>/<slug>/; rooms/. Config
+  is at ~/.egpt2/config/config.yaml (the ONLY location — no legacy fallbacks since
+  85a824e). Old production (egpt-daemon service, ~/.egpt, C:\Users\an\src\egpt) is
+  STOPPED — both ride the same local Beeper Desktop (127.0.0.1:23373), so running both
+  double-answers every @e.
+- Restart: drop a file containing `/restart` into ~/.egpt2/state/ingest/ (temp→rename).
   Hot-reload heartbeats: delete ~/.egpt2/state/heartbeats.readonly.yaml.
 - Live self-testing: the egpt-an chat is operator-authorized for agent testing
   (pace sends ≥8s, small counts; each @e is a real claude turn; /status is free).

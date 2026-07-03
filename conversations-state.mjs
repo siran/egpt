@@ -29,15 +29,22 @@ import { EGPT_HOME } from './src/egpt-home.mjs';
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
 const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
-// Identity folders (operator 2026-05-26): an identity is a folder of NN-*.md
-// files (NN- orders the injection); operator overrides shipped, per folder.
-const IDENTITIES_SHIPPED_DIR  = join(_here, 'identities');
-const IDENTITIES_OPERATOR_DIR = join(EGPT_HOME, 'identities');
-// Canonical location of the per-contact YAML registry. Exported so
-// daemon + slashes + tools all agree. The registry sits OUTSIDE the
-// per-conversation dirs so conversation-e (cwd-locked to its own
-// slug dir) can't read it.
-export const CONV_YAML_PATH = join(EGPT_HOME, 'conversations.yaml');
+// Identities are FLAT markdown files now (operator 2026-07-03: "identities are .md
+// files not directories with a 00-file inside… an identity file 'egpt.md'"). A
+// conversation's kickoff feed = its identity file + the SHARED pointers + rules (the
+// "room template" — same content/order as the retired 00/30/40 trio, identity first).
+//   - identity: EGPT_HOME/config/identities/<name>.md (profile).
+//   - shared pointers/rules: config/skeletons/room/{30-pointers,40-rules}.md — the
+//     profile's seeded copy wins, the repo's shipped template is the fallback.
+//   - a name with no profile identity file falls back to the room template's
+//     00-identity.md (the shipped eGPT default). No repo-root identities/ back-read.
+const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'identities');
+const ROOM_TEMPLATE_PROFILE_DIR = join(EGPT_HOME, 'config', 'skeletons', 'room');
+const ROOM_TEMPLATE_SHIPPED_DIR = join(_here, 'config', 'skeletons', 'room');
+// Canonical location of the per-contact YAML registry (operator 2026-07-03: MOVED under
+// config/). Exported so daemon + slashes + tools all agree. The registry sits OUTSIDE the
+// per-conversation dirs so conversation-e (cwd-locked to its own slug dir) can't read it.
+export const CONV_YAML_PATH = join(EGPT_HOME, 'config', 'conversations.yaml');
 
 // Known surfaces — used as the first dir level under conversations/
 // and the first key level under contacts: in the YAML. Adding a new
@@ -1251,84 +1258,83 @@ export async function readIdentityDir(surface, slug) {
   return parts.join('\n\n');
 }
 
-// ── Identity folders (operator 2026-05-26) ──────────────────────────────────
-// An identity is a FOLDER `identities/<name>/` of NN-*.md files. The NN- prefix
-// orders the injection; it is STRIPPED when files are copied into the
-// conversation dir (40-rules.md → ./rules.md) so the sandboxed brain reads
-// clean names. The kickoff FEED is the concat in NN- order. Operator overrides
-// (~/.egpt/identities/<name>/) win over shipped (<repo>/identities/<name>/).
+// ── Identities as flat .md files (operator 2026-07-03) ──────────────────────
+// An identity is ONE markdown file `config/identities/<name>.md` (profile). The
+// kickoff feed = that identity file + the SHARED pointers/rules (the room template
+// config/skeletons/room/{30-pointers,40-rules}.md), identity FIRST — the same content
+// + order as the retired 00/30/40 folder trio, just re-sourced. A name with no profile
+// identity file falls back to the room template's 00-identity.md (the shipped eGPT
+// default). No repo-root identities/ back-read (the operator's new-only house rule).
 
-export function resolveIdentityDir(name) {
-  const safe = sanitizeSlug(name || 'egpt') || 'egpt';
-  for (const base of [IDENTITIES_OPERATOR_DIR, IDENTITIES_SHIPPED_DIR]) {
-    const p = join(base, safe);
-    if (existsSync(p)) return p;
-  }
-  return null;
+// The shared room template dir: the profile's seeded copy wins; the repo's shipped
+// template is the fallback so a fresh, un-seeded profile still resolves the eGPT default.
+function roomTemplateDir() {
+  return existsSync(ROOM_TEMPLATE_PROFILE_DIR) ? ROOM_TEMPLATE_PROFILE_DIR : ROOM_TEMPLATE_SHIPPED_DIR;
 }
 
-// Enumerate identity-LAYER names (folder names) across both roots — the profile's
-// EGPT_HOME/identities/ (operator-authored: seeded presets + wizard free-text layers)
-// and the repo's shipped identities/ (default). Deduped case-insensitively (profile
-// wins, matching resolveIdentityDir's precedence) and sorted. Feeds the `/e` wizard's
-// personality pick. Never throws (a missing dir is skipped).
+// Best-effort file read; a missing/unreadable file yields the fallback (never throws).
+async function _readFileOr(fp, fallback = '') {
+  try { return await readFile(fp, 'utf8'); } catch { return fallback; }
+}
+
+// Resolve an identity NAME to its profile markdown file config/identities/<name>.md.
+// Returns the path when it exists, else null (the caller falls back to the room
+// template's 00-identity.md — the shipped eGPT default).
+export function resolveIdentityFile(name) {
+  const safe = sanitizeSlug(name || 'egpt') || 'egpt';
+  const p = join(IDENTITIES_PROFILE_DIR, `${safe}.md`);
+  return existsSync(p) ? p : null;
+}
+
+// Enumerate identity-LAYER names for the `/e` wizard's personality pick: the *.md
+// basenames in the profile's config/identities/ (operator-authored: seeded presets +
+// wizard free-text layers) PLUS 'egpt' (the shipped default, which lives in the room
+// template, not a profile file). Deduped case-insensitively + sorted. Never throws.
 export function listIdentityLayers() {
   const seen = new Set();
   const out = [];
-  for (const base of [IDENTITIES_OPERATOR_DIR, IDENTITIES_SHIPPED_DIR]) {
-    let ents = [];
-    try { ents = readdirSync(base, { withFileTypes: true }); } catch { continue; }
-    for (const ent of ents) {
-      if (!ent.isDirectory()) continue;
-      const k = ent.name.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      out.push(ent.name);
-    }
+  const add = (n) => { const k = n.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(n); } };
+  add('egpt');
+  let ents = [];
+  try { ents = readdirSync(IDENTITIES_PROFILE_DIR, { withFileTypes: true }); } catch { ents = []; }
+  for (const ent of ents) {
+    if (ent.isFile() && ent.name.toLowerCase().endsWith('.md')) add(ent.name.slice(0, -3));
   }
   return out.sort();
 }
 
-// Read a source identity folder's NN-*.md in order → [{ src, name, content }]
-// where `name` is the de-prefixed filename (40-rules.md → rules.md).
-async function _readIdentityFiles(dir) {
-  const { readdir } = await import('node:fs/promises');
-  let names = [];
-  try { names = (await readdir(dir)).filter(n => n.toLowerCase().endsWith('.md')).sort(); }
-  catch { return []; }
-  const out = [];
-  for (const n of names) {
-    try {
-      const content = await readFile(join(dir, n), 'utf8');
-      out.push({ src: n, name: n.replace(/^\d+[-_]/, ''), content });
-    } catch (e) { console.error(`!! _readIdentityFiles ${n}: ${e?.message ?? e}`); }
-  }
-  return out;
+// The identity + shared pointers + rules, in that order — the feed shape shared by the
+// in-context kickoff (readIdentityFeed) and the slug-dir install (installIdentity).
+async function _identityLayers(name) {
+  const room = roomTemplateDir();
+  const idFile = resolveIdentityFile(name);
+  const identity = await _readFileOr(idFile ?? join(room, '00-identity.md'));
+  const pointers = await _readFileOr(join(room, '30-pointers.md'));
+  const rules    = await _readFileOr(join(room, '40-rules.md'));
+  return { identity, pointers, rules };
 }
 
-// Install identity <name> into a conversation slug-dir: copy each file
-// de-prefixed (so ./rules.md, ./pointers.md, ./identity.md exist in the
-// sandbox) and return { feed, files, dir }. feed = concat in NN- order for the
-// kickoff turn. Returns null dir when the identity folder doesn't exist.
+// Install identity <name> into a conversation slug-dir: write the flat layers (so
+// ./identity.md, ./pointers.md, ./rules.md exist in the sandbox) and return
+// { feed, files, dir }. feed = identity + pointers + rules for the kickoff turn.
 export async function installIdentity(surface, slug, name) {
-  const dir = resolveIdentityDir(name);
-  if (!dir) return { feed: '', files: [], dir: null };
-  const files = await _readIdentityFiles(dir);
+  const { identity, pointers, rules } = await _identityLayers(name);
   const slugd = slugDir(surface, slug);
   await mkdir(slugd, { recursive: true });
-  for (const f of files) await writeFile(join(slugd, f.name), f.content, 'utf8');
-  const feed = files.map(f => f.content.trim()).filter(Boolean).join('\n\n');
-  return { feed, files: files.map(f => f.name), dir };
+  const files = [];
+  await writeFile(join(slugd, 'identity.md'), identity, 'utf8'); files.push('identity.md');
+  await writeFile(join(slugd, 'pointers.md'), pointers, 'utf8'); files.push('pointers.md');
+  await writeFile(join(slugd, 'rules.md'),    rules,    'utf8'); files.push('rules.md');
+  const feed = [identity, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
+  return { feed, files, dir: resolveIdentityFile(name) ?? join(roomTemplateDir(), '00-identity.md') };
 }
 
-// Read identity <name>'s concatenated feed (NN- order) WITHOUT writing any
-// slug-dir copies — for the first-dispatch auto-wrap, which just needs the
-// content in-context. '' when the identity folder doesn't exist.
+// Read identity <name>'s concatenated feed (identity + pointers + rules) WITHOUT
+// writing any slug-dir copies — for the first-dispatch auto-wrap, which just needs the
+// content in-context. Never empty for a resolvable persona (eGPT is the default).
 export async function readIdentityFeed(name) {
-  const dir = resolveIdentityDir(name);
-  if (!dir) return '';
-  const files = await _readIdentityFiles(dir);
-  return files.map(f => f.content.trim()).filter(Boolean).join('\n\n');
+  const { identity, pointers, rules } = await _identityLayers(name);
+  return [identity, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
 }
 
 // Full-install announcement: the whole identity.d bundle (manifest +

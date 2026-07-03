@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, listIdentityLayers as defaultListIdentityLayers } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
@@ -21,8 +21,9 @@ import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
 
 // Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
-// agent-type YAML lands in config/agents/, a free-text identity layer in identities/.
-export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'identities');
+// agent-type YAML lands in config/agents/, a free-text identity layer as a FLAT
+// config/identities/<name>.md file (operator 2026-07-03).
+export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'identities');
 
 // The new agent-type file (house comment style, brief). A LIST allowed_tools is omitted
 // so resolution defaults to 'all' (the readonly freeze matches). `personality` names the
@@ -394,13 +395,18 @@ export function createCommands({
       const def = brains?.resolve?.(result.configuration, { convDir });
       if (!def) { await send?.(wm.chatId, `/e: agent type "${result.configuration}" not found`); return; }
       const engine = def.type ?? CCODE;
+      // Picking an existing type IS the answer (operator 2026-07-03): apply with the type's
+      // PINNED model/effort — no separate model/effort steps — falling back to the
+      // deterministic floor when the type omits them (matching the brainpool's freeze).
+      const model = result.model ?? def.model ?? DETERMINISTIC_MODEL;
+      const effort = result.effort ?? def.effort ?? DETERMINISTIC_EFFORT;
       await writeState(patchContact(state, surface, jid, {
-        readonly: { agent: def.name ?? result.configuration, type: engine, model: result.model, effort: result.effort, allowed_tools: def.allowed_tools ?? 'all' },
+        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? 'all' },
       }));
       // The live warm session runs under the OLD engine (or the new one on a
       // never-instanced conversation); the pool keys it `e:<engine>:<surface>:<slug>`.
       evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
-      await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${result.model}/${result.effort} (respawns next turn)`);
+      await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${model}/${effort} (respawns next turn)`);
     } catch (e) { onLog(`/e wizard ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
@@ -418,7 +424,7 @@ export function createCommands({
       let personality = result.personalityLayer || 'egpt';
       if (result.personalityText) {
         personality = name;
-        const layerFile = join(identitiesDir, name, '00-identity.md');
+        const layerFile = join(identitiesDir, `${name}.md`);   // FLAT identity file (operator 2026-07-03)
         await mkdir(dirname(layerFile), { recursive: true });
         await writeFile(layerFile, identityLayerFile(result.personalityText), 'utf8');
       }

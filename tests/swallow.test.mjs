@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { swallow, _resetSwallowForTest } from '../src/swallow.mjs';
 
 let home;
-const logFile = () => join(home, 'logs', 'swallowed.log');
+const logFile = () => join(home, 'config', 'logs', 'swallowed.log');
 const logLines = () => readFileSync(logFile(), 'utf8').trim().split('\n');
 
 beforeEach(() => {

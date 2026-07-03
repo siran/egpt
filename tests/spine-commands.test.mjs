@@ -173,7 +173,7 @@ describe('/e wizard', () => {
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/e' });
     expect(sent[0].text).toMatch(/reconfigure «fam»/);
-    expect(sent[0].text).toMatch(/1\/3  agent type\?/);
+    expect(sent[0].text).toMatch(/1\/1  agent type\?/);   // existing pick = 1 step
     expect(sent[0].text).toMatch(/1\) egpt/);
     // armed → a plain pick from the operator now gets first refusal…
     expect(cmds.isCommand({ ...ev, body: '1' })).toBe(true);
@@ -181,17 +181,15 @@ describe('/e wizard', () => {
     expect(cmds.isCommand({ chatId: '!room', surface: 'whatsapp', body: '1' })).toBe(false);
   });
 
-  it('steps type → model → effort, freezes readonly (threadId preserved), evicts warm', async () => {
+  it('picking an existing type applies IMMEDIATELY with its pinned model/effort, freezes readonly (threadId preserved), evicts warm', async () => {
     let state = contact();
     state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');   // existing context
     state = patchContact(state, 'whatsapp', '!room', { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } });
-    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: ['Read'] }) };
+    const brains = { resolve: (name) => ({ name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] }) };
     const { cmds, sent, evicts, getState } = harness({ state, brains });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/e' });   // arm
-    await cmds.run({ ...ev, body: '2' });    // type    → sonnet-high
-    await cmds.run({ ...ev, body: '3' });    // model   → opus
-    await cmds.run({ ...ev, body: '3' });    // effort  → high → done
+    await cmds.run({ ...ev, body: '2' });    // type → sonnet-high → applies immediately (pinned opus/high)
     const b = getBeing(getState(), 'whatsapp', '!room', 'e');
     expect(b).toMatchObject({ agent: 'sonnet-high', brainType: 'ccode', model: 'opus', effort: 'high' });
     expect(b.allowedTools).toEqual(['Read']);
@@ -200,16 +198,24 @@ describe('/e wizard', () => {
     expect(sent.at(-1).text).toMatch(/«fam» → sonnet-high · opus\/high/);   // pushedName, not the slug
   });
 
+  it('picking a type that omits model/effort applies the deterministic floor (sonnet/high)', async () => {
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) };   // no model/effort pinned
+    const { cmds, sent, getState } = harness({ state: contact(), brains });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });   // arm
+    await cmds.run({ ...ev, body: '1' });    // type → egpt → applies immediately (floor)
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
+    expect(sent.at(-1).text).toMatch(/«fam» → egpt · sonnet\/high/);
+  });
+
   it('/e <fragment> resolves the target chat (like /e auto) and writes THERE, not the Self DM', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
     const ev = { chatId: '!self', surface: 'whatsapp' };   // typed in the Self DM
     await cmds.run({ ...ev, body: '/e hfm' });
     expect(sent[0].text).toMatch(/reconfigure «HFM»/i);
-    await cmds.run({ ...ev, body: '1' });   // type   → egpt
-    await cmds.run({ ...ev, body: '2' });   // model  → sonnet
-    await cmds.run({ ...ev, body: '1' });   // effort → low → done
-    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'low' });
+    await cmds.run({ ...ev, body: '1' });   // type → egpt → applies immediately (deterministic floor)
+    expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
     expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM untouched
   });
 
@@ -223,14 +229,14 @@ describe('/e wizard', () => {
     expect(cmds.isCommand({ ...ev, body: '1' })).toBe(false);
   });
 
-  it('b steps back to the previous question', async () => {
-    const { cmds, sent } = harness({ state: contact() });
+  it('b steps back to the previous question (in the custom branch, the only multi-step path)', async () => {
+    const { cmds, sent } = harness({ state: contact() });   // agentTypes [egpt, sonnet-high] → custom = option 3
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
-    await cmds.run({ ...ev, body: '/e' });   // step 1 (type)
-    await cmds.run({ ...ev, body: '1' });    // → step 2 (model)
-    expect(sent.at(-1).text).toMatch(/2\/3  model\?/);
-    await cmds.run({ ...ev, body: 'b' });    // back → step 1
-    expect(sent.at(-1).text).toMatch(/1\/3  agent type\?/);
+    await cmds.run({ ...ev, body: '/e' });   // step 1 (type) — "1/1"
+    await cmds.run({ ...ev, body: '3' });    // custom → step 2 (model) "2/5"
+    expect(sent.at(-1).text).toMatch(/2\/5  model\?/);
+    await cmds.run({ ...ev, body: 'b' });    // back → step 1 type (mode still custom → "1/5")
+    expect(sent.at(-1).text).toMatch(/1\/5  agent type\?/);
   });
 
   it('an armed wizard expires after its 5-min TTL (inert, not stepped)', async () => {
@@ -311,8 +317,8 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
     expect(typeFile).toMatch(/model: sonnet/);
     expect(typeFile).toMatch(/effort: high/);
     expect(typeFile).toMatch(/personality: ops-bot/);   // free text → layer named after the type
-    // identity layer written (JUST the instructions, no comment header)
-    const layer = files[join('/identities', 'ops-bot', '00-identity.md')];
+    // identity layer written as a FLAT file (JUST the instructions, no comment header)
+    const layer = files[join('/identities', 'ops-bot.md')];
     expect(layer).toBe('You are a terse ops bot.\n');
     // applied to the conversation exactly like an existing-type pick
     const b = getBeing(getState(), 'whatsapp', '!room', 'e');
@@ -334,7 +340,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
     await cmds.run({ ...ev, body: '2' });   // personality → poet (option 2, not free text)
     await cmds.run({ ...ev, body: 'bard' }); // name → done
     expect(files[join('/agents', 'bard.yaml')]).toMatch(/personality: poet/);
-    expect(files[join('/identities', 'bard', '00-identity.md')]).toBeUndefined();   // no free-text layer authored
+    expect(files[join('/identities', 'bard.md')]).toBeUndefined();   // no free-text layer authored
   });
 
   it('custom branch: the personality step lists the seeded layers + a free-text option', async () => {

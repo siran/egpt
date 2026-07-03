@@ -92,7 +92,7 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 }
 
 # --- 6. install + configure ---
-$logDir = Join-Path $EgptHome 'logs'
+$logDir = Join-Path (Join-Path $EgptHome 'config') 'logs'   # logs live under config/ now (operator 2026-07-03)
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $stdoutLog = Join-Path $logDir 'service-stdout.log'
 $stderrLog = Join-Path $logDir 'service-stderr.log'

@@ -62,7 +62,7 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
 // writes into the SAME bridge log. Exported so a test can lock the derivation.
-export const _BEEPER_LOG = join(EGPT_HOME, 'logs', 'beeper.log');
+export const _BEEPER_LOG = join(EGPT_HOME, 'config', 'logs', 'beeper.log');
 const SEEN_PROCESSED_CAP = 3000;
 const SEEN_SENT_CAP = 500;
 const SEEN_COMPACT_EVERY = 1000;   // appends between jsonl compactions

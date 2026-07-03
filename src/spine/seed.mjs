@@ -14,7 +14,8 @@ import { EGPT_HOME } from '../egpt-home.mjs';
 export const REPO_SKELETONS_DIR = fileURLToPath(new URL('../../config/skeletons/', import.meta.url));
 export const PROFILE_SKELETONS_DIR = join(EGPT_HOME, 'config', 'skeletons');
 export const PROFILE_AGENTS_DIR = join(EGPT_HOME, 'config', 'agents');
-export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'identities');
+// Identities are FLAT .md files under config/identities/ now (operator 2026-07-03).
+export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'identities');
 
 // The example agent-type file. A TYPE is a brain def (config/agents/<type>.yaml); an
 // agents.<name>.type key points here. Shipped FULLY COMMENTED so seeding it can never
@@ -67,11 +68,11 @@ allowed_paths:
 `;
 
 // PRESET personality identity LAYERS (operator 2026-07-03). Each is a single plain-
-// markdown instruction file (identities/<name>/00-identity.md, same convention as the
-// default layer) — a short, operator-EDITABLE starting point for a flavor of agent. They
+// markdown instruction file (config/identities/<name>.md, the flat identity-file
+// convention) — a short, operator-EDITABLE starting point for a flavor of agent. They
 // are the SOURCE OF TRUTH here (seeded copy-if-missing into the profile like the agent-type
-// files); the eGPT persona itself stays the shipped `default` layer (untouched). The `/e`
-// wizard's custom branch lists these as personality picks.
+// files); the eGPT persona itself stays the shipped room template (config/skeletons/room/,
+// untouched). The `/e` wizard's custom branch lists these as personality picks.
 export const PRESET_IDENTITIES = {
   secretary: `# I am a secretary
 
@@ -203,6 +204,17 @@ export function seedSkeletons({
     copyIfMissing(join(profileSkeletonsDir, name), () => readFile(join(repoDir, name), 'utf8'));
   }
 
+  // 1b. the room template (config/skeletons/room/*.md) — the SHARED identity/pointers/rules
+  //     feed layers (operator 2026-07-03). Copy-if-missing into the profile so the operator
+  //     can edit the eGPT default + the shared pointers/rules right in their profile; a fresh
+  //     profile falls back to the repo's shipped template until seeded.
+  let roomNames = [];
+  try { roomNames = readDir(join(repoDir, 'room')); } catch { roomNames = []; }
+  for (const name of roomNames) {
+    if (typeof name !== 'string' || !name.endsWith('.md')) continue;
+    copyIfMissing(join(profileSkeletonsDir, 'room', name), () => readFile(join(repoDir, 'room', name), 'utf8'));
+  }
+
   // 2. the commented example agent-type file.
   copyIfMissing(join(agentsDir, 'sonnet-high.yaml'), () => EXAMPLE_TYPE_FILE);
 
@@ -211,10 +223,10 @@ export function seedSkeletons({
   //    (The old default.yaml was renamed to egpt.yaml 2026-07-02 — we do NOT recreate it.)
   copyIfMissing(join(agentsDir, 'egpt.yaml'), () => EGPT_TYPE_FILE);
 
-  // 4. the PRESET personality identity layers → identities/<name>/00-identity.md. Seeded
-  //    copy-if-missing so an operator's own edits are sacred; the /e wizard's custom branch
-  //    lists them (plus the repo's `egpt`) as personality picks.
+  // 4. the PRESET personality identity layers → config/identities/<name>.md (FLAT, operator
+  //    2026-07-03). Seeded copy-if-missing so an operator's own edits are sacred; the /e
+  //    wizard's custom branch lists them (plus the shipped `egpt`) as personality picks.
   for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
-    copyIfMissing(join(identitiesDir, name, '00-identity.md'), () => body);
+    copyIfMissing(join(identitiesDir, `${name}.md`), () => body);
   }
 }

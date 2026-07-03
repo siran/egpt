@@ -54,7 +54,7 @@ export async function boot({
   tickMs = 30_000,
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
-  ingest = true,                      // watch EGPT_HOME/ingest for /restart, /upgrade, /rewind (tests pass false)
+  ingest = true,                      // watch EGPT_HOME/state/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
   clearInterval: clearIntervalFn = globalThis.clearInterval,
@@ -349,11 +349,12 @@ export async function boot({
     catch (e) { log.line?.(`[announce] ${e?.message ?? e}`); }
   })();
 
-  // Command ingest: drop /restart, /upgrade, or /rewind <ref> into EGPT_HOME/ingest.
+  // Command ingest: drop /restart, /upgrade, or /rewind <ref> into EGPT_HOME/state/ingest
+  // (operator 2026-07-03: the ingest box lives under state/ now).
   let ingestWatcher = null;
   if (ingest) {
     ingestWatcher = createIngest({
-      dir: join(EGPT_HOME, 'ingest'),
+      dir: join(EGPT_HOME, 'state', 'ingest'),
       io,
       onLog: (m) => log.line?.(`[ingest] ${m}`),
       handle: async (line) => {

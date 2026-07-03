@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path';
 import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
-const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'identities');
+const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'config', 'identities');
 
 // A tiny in-memory fs: a { path: contents } map, plus a set of "directories that exist".
 function memfs(seed = {}) {
@@ -86,7 +86,7 @@ describe('seedSkeletons', () => {
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
   });
 
-  it('seeds each preset personality identity layer (identities/<name>/00-identity.md), copy-if-missing', () => {
+  it('seeds each preset personality identity layer (FLAT config/identities/<name>.md), copy-if-missing', () => {
     const files = run({});
     const names = Object.keys(PRESET_IDENTITIES);
     expect(names).toHaveLength(10);   // the 10 operator-named flavors — can't-rot
@@ -95,14 +95,33 @@ describe('seedSkeletons', () => {
       'spiritual-advisor', 'financial-advisor', 'philosopher', 'logicist', 'one-two-many',
     ]));
     for (const name of names) {
-      expect(files[join(IDS, name, '00-identity.md')]).toBe(PRESET_IDENTITIES[name]);
+      expect(files[join(IDS, `${name}.md`)]).toBe(PRESET_IDENTITIES[name]);
     }
   });
 
   it('NEVER overwrites an operator-edited preset layer (edits are sacred)', () => {
-    const files = run({ [join(IDS, 'poet', '00-identity.md')]: 'MY OWN POET' });
-    expect(files[join(IDS, 'poet', '00-identity.md')]).toBe('MY OWN POET');       // untouched
-    expect(files[join(IDS, 'detective', '00-identity.md')]).toBe(PRESET_IDENTITIES.detective);  // others still seeded
+    const files = run({ [join(IDS, 'poet.md')]: 'MY OWN POET' });
+    expect(files[join(IDS, 'poet.md')]).toBe('MY OWN POET');       // untouched
+    expect(files[join(IDS, 'detective.md')]).toBe(PRESET_IDENTITIES.detective);  // others still seeded
+  });
+
+  it('seeds the shared room template (config/skeletons/room/*.md) copy-if-missing', () => {
+    const files = run({
+      [join(REPO, 'room', '00-identity.md')]: 'I am eGPT',
+      [join(REPO, 'room', '30-pointers.md')]: 'Pointers',
+      [join(REPO, 'room', '40-rules.md')]: 'RULES',
+    });
+    expect(files[join(SKEL, 'room', '00-identity.md')]).toBe('I am eGPT');
+    expect(files[join(SKEL, 'room', '30-pointers.md')]).toBe('Pointers');
+    expect(files[join(SKEL, 'room', '40-rules.md')]).toBe('RULES');
+  });
+
+  it('NEVER overwrites an operator-edited room template file', () => {
+    const files = run({
+      [join(REPO, 'room', '00-identity.md')]: 'SHIPPED',
+      [join(SKEL, 'room', '00-identity.md')]: 'MY OWN IDENTITY',   // already present
+    });
+    expect(files[join(SKEL, 'room', '00-identity.md')]).toBe('MY OWN IDENTITY');   // untouched
   });
 
   it('each preset layer is plain markdown (a short instruction file), not YAML config', () => {
