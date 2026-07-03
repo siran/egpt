@@ -149,7 +149,7 @@ describe('beeper bridge', () => {
     const before = incoming.length;
     // 2) someone reacts → the target re-upserts carrying reactions[] (+ the bare REACTION event)
     fake.emit({ type: 'message.upserted', entries: [
-      { id: '999001', chatID: CHAT('chat-1'), type: 'REACTION', text: '', senderID: 'bea@beeper.local', senderName: 'Bea', linkedMessageID: tgt, timestamp: Date.now() },
+      { id: '999001', chatID: CHAT('chat-1'), type: 'REACTION', text: '', senderID: 'bea@beeper.local', senderName: 'Bea (contacto)', senderPushName: 'Bea', linkedMessageID: tgt, timestamp: Date.now() },
       { id: tgt, chatID: CHAT('chat-1'), type: 'TEXT', text: '<strong>ron</strong> is bold', senderName: 'An',
         timestamp: Date.now(), reactions: [{ participantID: 'bea@beeper.local', emoji: true, reactionKey: '👍' }] },
     ] });
@@ -157,7 +157,7 @@ describe('beeper bridge', () => {
     const react = incoming[incoming.length - 1];
     expect(react.from.isReaction).toBe(true);
     expect(react.text).toBe('reacted 👍 to #' + tgt + ' "**ron** is bold"');   // emoji + target + snippet (markdown preserved)
-    expect(react.from.senderName).toBe('Bea');   // reactor resolved from prior message
+    expect(react.from.senderName).toBe('Bea');   // reactor resolved by pushed name, not the saved label
   });
 
   it('does not surface a pre-existing reaction on a message first seen this session (I10)', async () => {
@@ -232,19 +232,93 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.authorized).toBe(false);   // not allow-listed → unauthorized
   });
 
-  it("self-sent (isSender) messages show the configured userName, not the matrix id", async () => {
+  it("self-sent (isSender) messages show the configured userName; others show their pushed name", async () => {
     // Beeper gives the self participant no fullName — senderName is the matrix id
     // ('@anrodriguez:beeper.com'). The bridge substitutes the configured userName
-    // for the owner's own lines; other contacts keep their real name. (op 2026-06-16)
+    // for the owner's own lines; other contacts get their OWN pushed name — never the
+    // operator's saved contact-list label (op 2026-06-16 / privacy op 2026-07-03).
     const { incoming } = await startBridge({ userName: 'Andrés' });
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ isSender: true, senderName: '@anrodriguez:beeper.com', text: 'mío' }),
-      liveMsg({ isSender: false, senderName: 'Bea', text: 'suyo' }),
+      liveMsg({ isSender: false, senderName: 'Bea (mi vecina)', senderPushName: 'Bea', text: 'suyo' }),
     ] });
     await waitFor(() => incoming.length === 2);
     expect(incoming[0].from.senderName).toBe('Andrés');   // self → configured name
     expect(incoming[0].from.isSender).toBe(true);
-    expect(incoming[1].from.senderName).toBe('Bea');      // other → real Beeper name
+    expect(incoming[1].from.senderName).toBe('Bea');      // other → pushed name, not the saved label
+  });
+
+  // The SENDER identity is the person's OWN pushed/profile name, NOT the operator's
+  // saved contact-list label — a 1:1 with the saved label "Ricki Mejia amigo diana
+  // real estate" leaked that private annotation as the sender (operator 2026-07-03).
+  // When the payload carries a distinct pushed name, the LINE is attributed to it;
+  // the chat label ([chatname] / folder) stays the operator's label (chatName).
+  it('prefers the sender\'s own pushed name over the contact-list label for the SENDER', async () => {
+    fake.chats.set(CHAT('chat-ricki'), { title: 'Ricki Mejia amigo diana real estate', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      chatID: CHAT('chat-ricki'), isSender: false,
+      senderID: '@whatsapp_584122361030:beeper.local',
+      senderName: 'Ricki Mejia amigo diana real estate',   // Beeper's saved contact-list label
+      senderPushName: 'Ricki Mejia',                        // the person's OWN pushed name
+      text: 'Buenísimos quedo atento',
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('Ricki Mejia');                        // SENDER = pushed name
+    expect(incoming[0].from.chatName).toBe('Ricki Mejia amigo diana real estate');  // chat label unchanged
+  });
+
+  // HARD PRIVACY RULE (operator 2026-07-03): the sender attribution must NEVER be the
+  // operator's saved contact-list label — not even as a fallback (the label carries
+  // the operator's private annotations, a leak into transcripts/replies/mesh). When
+  // no pushed name is present (Beeper's actual shape for a SAVED contact — senderName
+  // IS the saved label, no separate pushName exists), the sender falls back to a
+  // NON-PRIVATE id: the phone number from the WhatsApp jid. The label appears NOWHERE
+  // in the sender identity (senderName / firstName / username all leak-safe).
+  it('NEVER falls back to the operator\'s contact-list label — uses the phone/id instead', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      isSender: false,
+      senderID: '@whatsapp_584122361030:beeper.local',
+      senderName: 'Ricki Mejia amigo diana real estate',   // the private label — must never surface
+      text: 'hola',
+    })] });
+    await waitFor(() => incoming.length === 1);
+    const from = incoming[0].from;
+    expect(from.senderName).toBe('+584122361030');   // non-private phone, NOT the label
+    // the private label leaks through NONE of the sender-identity fields
+    for (const v of [from.senderName, from.firstName, from.username]) {
+      expect(v ?? '').not.toContain('amigo diana real estate');
+    }
+  });
+
+  // Non-WhatsApp / unparseable id → the stable senderID stands in (still non-private);
+  // the label is still never used.
+  it('with no pushed name and a non-phone id, the stable id stands in (never the label)', async () => {
+    fake.chats.set(CHAT('chat-tg'), { title: 'Primo (deudor)', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      chatID: CHAT('chat-tg'), isSender: false,
+      senderID: '@telegram_88164392:beeper.local',
+      senderName: 'Primo (deudor)', text: 'hola',
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('@telegram_88164392:beeper.local');   // stable id, not the label
+    expect(incoming[0].from.senderName).not.toContain('deudor');
+  });
+
+  // The voice-note 👂 echo header carries the note author — same preference: the
+  // person's pushed name, not the operator's saved label.
+  it('the 👂 voice echo uses the sender\'s pushed name, not the contact-list label', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      isSender: false, type: 'VOICE', text: null,
+      senderName: 'Ricki Mejia amigo diana real estate', senderPushName: 'Ricki Mejia',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 Ricki Mejia: fake transcript');   // pushed name, not the label
   });
 
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file

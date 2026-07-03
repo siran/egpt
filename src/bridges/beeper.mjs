@@ -441,7 +441,7 @@ export async function startBeeperBridge(opts = {}) {
           // it a non-WhatsApp attachment fell to media's 'whatsapp' default.
           network: msg.accountID || info.accountID || 'whatsapp',
           msgId: msg.id ?? null,
-          senderName: msg.senderName ?? null,
+          senderName: senderDisplay(msg),   // leak-safe: pushed name / non-private id, never the saved label (media index.md is model-readable)
           isSender: !!msg.isSender,
           ts, kind, mime,
           fileName: att?.fileName ?? null,
@@ -553,6 +553,37 @@ export async function startBeeperBridge(opts = {}) {
   const _seenText = new Map();         // msgId -> last cleaned text (edit detection, baseline-on-first-sight)
   const REACTION_CAP = 4000;
   function _capMap(m, cap) { while (m.size > cap) m.delete(m.keys().next().value); }
+
+  // The SENDER's display name for the dispatch line / transcript / reactor + editor
+  // names. HARD PRIVACY RULE (operator 2026-07-03): the sender attribution must
+  // NEVER be the operator's SAVED contact-list label — it's a leak (the operator's
+  // private annotations, e.g. "Ricki Mejia amigo diana real estate", would ride into
+  // transcripts fed to models and surface in replies / mesh envelopes). Beeper fills
+  // message.senderName with EXACTLY that saved label for a saved contact (verified
+  // live 2026-07-03: senderName == the participant's fullName == the chat title; no
+  // separate pushName is exposed — every /v1/contacts|users|participants-by-id
+  // endpoint 404s). So for a NON-owner we never surface senderName; instead:
+  //   1. the person's OWN pushed/profile name if the payload carries one
+  //      (msg.senderPushName / msg.pushName — schema-tolerant, like _msgTimestampMs);
+  //   2. else a HUMAN-READABLE NON-PRIVATE id — the phone number embedded in a
+  //      WhatsApp senderID ('@whatsapp_<digits>:beeper.local' → '+<digits>');
+  //   3. else the stable senderID itself; 4. else null (caller's own fallback).
+  // The chat label / [chatname] / conversation folder (conversations.yaml pushedName)
+  // KEEP the operator's label — that's the CHAT's name, not the person's. Display-only:
+  // authorization stays id-based (GENOME I6). The OWNER's own (isSender) sends are
+  // exempt — there senderName is the account's OWN matrix id (never a contact label),
+  // so the configured userName substitutes it, else the id stands.
+  function fallbackSenderId(msg) {
+    const id = String(msg?.senderID ?? '');
+    const wa = /^@whatsapp_(\d{6,15}):/i.exec(id);   // WhatsApp jid → phone number (human-readable, non-private)
+    if (wa) return `+${wa[1]}`;
+    return id || null;                                // other networks: the stable id (still non-private)
+  }
+  function senderDisplay(msg) {
+    if (msg?.isSender) return userName || msg?.senderName || null;   // owner: configured name or own matrix id (never a contact label)
+    return msg?.senderPushName || msg?.pushName || fallbackSenderId(msg);   // others: pushed name → non-private id; NEVER the saved label
+  }
+
   function _reactorName(id, network) {
     if (!id) return 'someone';
     if (isAllowedUser(id, network) && userName) return userName;   // the owner → configured name
@@ -635,14 +666,14 @@ export async function startBeeperBridge(opts = {}) {
     }
     const info = await chatInfo(msg.chatID);
     const network = msg.accountID || info.accountID || 'whatsapp';   // origin network (Beeper accountID); default 'whatsapp'
-    const editor = (msg.isSender && userName) ? userName : (msg.senderName || _idToName.get(msg.senderID) || 'someone');
+    const editor = senderDisplay(msg) || _idToName.get(msg.senderID) || 'someone';
     const body = editAction({ targetId: msg.id, oldText: prev, newText: cur });
     onLog(`beeper: edit #${msg.id} by ${editor} [${info.title}]: ${JSON.stringify(prev.slice(0, 40))} → ${JSON.stringify(cur.slice(0, 40))}`);
     const from = {
       chatId: msg.chatID, chatName: info.title,
       chatType: info.type === 'group' ? 'group' : 'private',
       network,   // per-surface authorization namespace
-      userId: msg.senderID || msg.chatID, username: msg.senderName || undefined,
+      userId: msg.senderID || msg.chatID, username: editor,   // never the saved contact label (privacy)
       firstName: editor, senderName: editor,
       isSender: !!msg.isSender, authorized: !!msg.isSender || isAllowedUser(msg.senderID, network),
       atEStart: false, atEAnywhere: false, replyToBot: false,
@@ -657,8 +688,10 @@ export async function startBeeperBridge(opts = {}) {
   async function dispatchMessage(msg) {
     const chatID = msg.chatID;
     // Remember sender display names for reactor resolution (reactions[] only
-    // carries the participant id, not a name).
-    if (msg.senderID && msg.senderName) _idToName.set(msg.senderID, msg.senderName);
+    // carries the participant id, not a name). Store the leak-safe form (pushed name
+    // → non-private id, NEVER the saved contact label) so a later reaction/edit
+    // resolves to who the person IS, not the operator's private annotation.
+    { const sn = senderDisplay(msg); if (msg.senderID && sn) _idToName.set(msg.senderID, sn); }
     // REACTIONS (Phase 2): handle BEFORE echo/dedup — a reaction rides the TARGET
     // message's re-upsert, and that target may be E's OWN message (an echo) or an
     // already-processed message (deduped); both must still surface the reaction.
@@ -712,8 +745,9 @@ export async function startBeeperBridge(opts = {}) {
         const svc = await resolveTranscriptionService(chatID);
         const vmeta = {};
         // The note's sender, for the 👂 echo header ("👂 <author> (<Ns>): <text>").
-        // Owner's own sends carry the matrix id as senderName — substitute userName.
-        const voiceAuthor = (msg.isSender && userName) ? userName : (msg.senderName || null);
+        // Owner's own sends carry the matrix id as senderName — substitute userName;
+        // otherwise the person's pushed name / non-private id, NEVER the saved label.
+        const voiceAuthor = senderDisplay(msg);
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
@@ -796,12 +830,15 @@ export async function startBeeperBridge(opts = {}) {
       chatType: info.type === 'group' ? 'group' : 'private',
       network: acct || 'whatsapp',          // origin network (Beeper accountID); default 'whatsapp'
       userId: msg.senderID || chatID,
-      username: msg.senderName || undefined,
-      firstName: msg.senderName || undefined,
-      // The owner's own sends carry no fullName from Beeper (senderName is the
-      // matrix id), so substitute the configured userName; other contacts keep
-      // their real Beeper-provided name. (operator 2026-06-16)
-      senderName: (msg.isSender && userName) ? userName : (msg.senderName || null),
+      // username / firstName / senderName ALL go through senderDisplay so the
+      // operator's saved contact-list label NEVER leaks into the sender identity —
+      // not even via the identity.build `senderName ?? firstName` fallback. The
+      // owner's own sends substitute the configured userName; other contacts get
+      // their OWN pushed name, else a non-private id, NEVER the saved label
+      // (operator 2026-07-03: privacy — the label carries private annotations).
+      username: senderDisplay(msg) || undefined,
+      firstName: senderDisplay(msg) || undefined,
+      senderName: senderDisplay(msg),
       isSender: !!msg.isSender,
       // OPERATOR authorization (gates slash/lifecycle commands host-side; a
       // non-operator's @e still reaches the persona via the host's persona-wake
