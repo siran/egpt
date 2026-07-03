@@ -196,6 +196,17 @@ following is LANDED, test-locked, and (where marked) live-verified:
     `~/bin/egpt`; the DEV tree's tests gain a read-only live-profile-layout tier
     (assert against the real profile shape without mutating it).
 
+- **`mode: auto` — auto-reply module** (operator 2026-07-03): a new per-conversation
+  mode where egpt AUTO-REPLIES every message in designated channels — "it might try
+  to imitate me, or role-play". Design open: identity presentation (reply AS the
+  operator = no persona marker — collides with echo-suppression + the persona-marker
+  emit machinery, needs its own suppression key) vs role-play (a persona replies
+  openly, just always); which agent type / identity layer drives the voice (an
+  identity built from the operator's own transcript history is the obvious
+  candidate); safety rails (explicit per-channel opt-in only, never a global
+  default; the flood guard already bounds runaway). Fits the existing gate as a
+  sixth mode value once the identity question is decided.
+
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
   and configure relay agents that CHAIN through them: `@don.kg → @moe.kg → @e.kg`
