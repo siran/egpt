@@ -88,7 +88,8 @@ following is LANDED, test-locked, and (where marked) live-verified:
   orphaned scripts (backfill + 2 whisper probes) + config/heartbeats/ (superseded by
   config/skeletons/heartbeats.yaml); shipped plan docs removed per precedent. README /
   MANUAL / TESTING rewritten to v2 truth (lean). Root IDEAS.md seeds merged into
-  docs/IDEAS.md. KEPT by decision: MESSAGES-FIRST-CLASS-PLAN.md (its Phases 3–5 +
+  docs/IDEAS.md (LATER deleted in the 2026-07-03 docs sweep — operator "can be
+  forgone. full of BS"). KEPT by decision: MESSAGES-FIRST-CLASS-PLAN.md (its Phases 3–5 +
   Phase-1 OWED reply-path restructure are NOT shipped — only Phase 1's inbound `#id`
   and Phase 2 reactions landed; see §4 note).
 
@@ -174,6 +175,13 @@ following is LANDED, test-locked, and (where marked) live-verified:
   (codex.mjs, llama.mjs, claude-code.mjs old impl, config-schema.mjs, type/) —
   ~25 old-spine-only src modules + ~34 old-spine-only test files all told (see the
   analysis for the full list; not enumerated here to keep this terse).
+  - **Design docs already GONE (operator-directed, 2026-07-03 docs sweep):**
+    ENGINE-SURFACE-SEPARATION.md (its durable gene — engine-vs-surface, commands
+    engine-first — folded into GENOME I1) and ROOMS-UNIFICATION.md (superseded by
+    GENOME §2.5 + the "Rooms — remaining" entry above) were deleted EARLY rather
+    than at cutover. The old-spine CODE that cited them (egpt-spine.mjs,
+    src/engine/*, src/nucleus.mjs, src/room-routing.mjs comments) still carries the
+    references as historical breadcrumbs — they die with those modules at cutover.
   - **NOT deleted (operator 2026-07-03):** `config/brains/chatgpt-cdp.mjs` +
     `config/brains/claude-cdp.mjs` are EARMARKED as FUTURE v2 engines (web-AI-via-
     browser — "browser control over CDP is eGPT's raison d'être; also to ease
@@ -207,6 +215,34 @@ following is LANDED, test-locked, and (where marked) live-verified:
   set `when:` a few minutes out, delete state/heartbeats.readonly.yaml, watch.
   Note: CDP attaches only to a Chrome started with --remote-debugging-port
   (chrome-launcher.mjs starts a visible one; the daily browser needs the flag).
+
+- **Root launcher script** (operator 2026-07-03): ONE script at the repo root
+  that launches the spine if it isn't already present, then attaches the console
+  client. Ties in the console-surface question: the Ink client
+  (src/shell/ink-limb.mjs) is OLD-SPINE and of unknown health (operator: "i don't
+  know if it works anymore") — this task PORTS it to v2 or RETIRES it. Design
+  open (how the launcher detects a live spine, whether the client attaches over
+  the retired attach/loopback path or something simpler). The old shell/attach
+  cluster is on the cutover deletion list — if the console is retired, the
+  launcher is just a spine starter.
+
+- **Rooms — remaining** (folded from the retired ROOMS-UNIFICATION.md; GENOME
+  §2.5 is the north-star). DONE in v2: the Room ABSTRACTION exists and unifies the
+  path tree + member model — `src/room-core.mjs` (base `Room` + `ConversationRoom`
+  + `NamedRoom`, one tree from `baseDir()`: config.yaml/transcript.md/media/files/
+  identity.d, the 6-state member gate), LIVE via `conversations-state.slugDir`
+  delegating to `Room.forChat(...).baseDir()` (byte-identical), and the v2 boot
+  enumerates `rooms/<name>/` folders for heartbeats/transcription. NOT built: the
+  behavior methods (transcript append, media save, confine wiring) still live in
+  conversations-state — not moved onto the Room base; **NamedRoom federation**
+  (`hosts[]` across surfaces); **member fan-out** (`src/rooms.mjs` +
+  `src/room-routing.mjs` `planFanout`/`roomEnvelope` are OLD-SPINE-ONLY — imported
+  only by egpt-spine.mjs + slash/ + tests, never by the v2 boot); **the dual-write
+  rule** (a member chat's line appended to each Room's transcript). Folding those
+  onto the base is a deliberate migration (+tests), not in passing. NB: the old
+  flat-file room roster (`src/rooms.mjs` loadRooms/saveRooms + slash/room.mjs,
+  slash/inject.mjs) rides the cutover deletion list; the v2 Room model is
+  folder-based (`rooms/<name>/`).
 
 ## 4. Backlog (known warts, smallest last)
 

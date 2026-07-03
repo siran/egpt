@@ -1,152 +1,154 @@
-# EGPT-MESH-PROTOCOL — the cross-spine relay wire format
+# EGPT-MESH-PROTOCOL — a transport protocol over chat
 
-Status: **live** — `src/mesh/relay.mjs` (`encodeMesh` / `parseMesh` /
-`createMeshRelay`; streaming living-mirror, 2026-06-21).
+Status: **live** — `src/mesh/relay.mjs`. This is the wire format: the bytes a
+relayed message is made of. Routing/topology design is `docs/BEING-MESH.md`; the
+mesh law is [`GENOME.md`](GENOME.md) §11; the behavior list is
+[`CONTRACTS.md`](CONTRACTS.md) §15.
 
-This is the concrete **wire format** — the bytes a relayed message is made of.
-Companion docs: [`docs/BEING-MESH.md`](docs/BEING-MESH.md) is the *routing /
-topology design* (decentralised, `@being.node`, direct-vs-relay, invite-only);
-[`GENOME.md`](GENOME.md) §11 is the mesh law; [`CONTRACTS.md`](CONTRACTS.md)
-C8.4/C8.5 is the behavior list. When this format changes, amend THIS file + the
-C8.5 contract + a round-trip test.
 
-## What it is
+## The analogy: TCP over Beeper
 
-A relayed message is an **ordinary, visible chat message**. The only machine bit
-is a **trailing, human-readable provenance tail**; the human body rides as a
-base64 block above it. A human — and any spine watching — can always read where a
-message came from and who sent it. No cryptic tags, no minted ids, no ttl.
+The mesh is a transport protocol running OVER a chat channel, the way TCP runs
+over IP. Line up the pieces:
 
-## Envelope
+- **The wire** = a shared chat both spines watch. Whatever one posts, the other sees.
+- **A segment** = one envelope: a base64 body + a plaintext provenance tail.
+- **The header** = the tail's `key: value` lines (`to` = address, `mid` = sequence/dedup id, `re` = return address).
+- **A router** = a relay agent: it reads `to`, forwards one hop toward that node, never terminates the packet itself.
+- **Dedup / loop-control** = `mid`: a spine forwards a given `mid` at most once, so a packet reaches every reachable node ~once and self-terminates. No ttl, no ack storm.
+
+A human reading the chat sees an ordinary, if oddly-encoded, message — never a
+cryptic protocol frame. That is the point: bot↔bot traffic stays human-visible.
+
+
+## The envelope
+
+`encodeMesh(...)` produces exactly this — an outer fence, a base64 body, a `---`
+divider, then the tail:
 
 ````text
 ```
-<base64(body)>
+<base64(utf8(body.trim()))>
 
 ---
 from: HFM
 from_node: kg
 by: An
-to: do
+to: don.do
+mid: mesh-kg-1719000000000-4f2a
+post_id: $abc123
+enc: b64
+```
+````
+
+- **Fence** (` ``` `) keeps the structure delivered verbatim.
+- **Body** is base64 — markdown-inert (no backticks / `---` / `<>`), so a code-bearing reply can't collide with the fence and the transport can't mangle it. `enc: b64` marks it; untagged ⇒ legacy raw.
+- **Tail** is a run of `key: value` lines; empty keys are omitted.
+
+
+## The keys
+
+| key | meaning |
+|---|---|
+| `from` | origin chat label (e.g. `HFM`) |
+| `from_node` | origin node — lets the responder build the return address `re: <from>.<from_node>` |
+| `by` | sender — a human (`An`) or a being (`don.do`) |
+| `to` | target `being.node` — only that node answers (or says "no `<being>.<node>` here"); every other spine stays quiet. Empty ⇒ open-channel (the owner of `@being` answers) |
+| `re` | return address (e.g. `HFM.kg`) — the reply echoes it so the origin surfaces it home, correlated without a minted id |
+| `post_id` | the origin placeholder's msgId — echoed in every reply frame so the origin edits the right message as the reply streams |
+| `mid` | request id minted at the origin, preserved across forwards — a spine forwards a given `mid` at most ONCE (loop-safe, self-terminating, no ttl) |
+| `done` | `true` on the FINAL frame — a display finish marker (origin appends "✅ Done"), not a teardown; non-`done` frames keep flowing |
+| `enc` | body codec; `b64` ⇒ base64 |
+| `sig` | **reserved** — parsed, never emitted; the slot for per-hop signing where a hop crosses *people* |
+
+
+## Example 1 — a request: An asks @don from the HFM chat
+
+Operator types `hi @don` in the HFM chat on node `kg`. The local spine owns no
+`don`, so it relays into the channel where `do` listens:
+
+````text
+```
+aGkgQGRvbg==
+
+---
+from: HFM
+from_node: kg
+by: An
+to: don.do
+mid: mesh-kg-1719000000000-4f2a
+post_id: $abc123
+enc: b64
+```
+````
+
+`aGkgQGRvbg==` decodes to `hi @don`. The origin first posts a `🤔 thinking…`
+placeholder (its msgId becomes `post_id`), so the streamed reply edits that one
+message in place.
+
+
+## Example 2 — the reply mirrors home
+
+Node `do` owns `don`, runs the turn, and edit-streams ONE relay-room message
+wrapped in the tail (`by: don.do`, `re: HFM.kg`, the same `mid` + `post_id`). The
+final frame carries `done: true`:
+
+````text
+```
+<base64("🐶 on it — patch pushed")>
+
+---
+by: don.do
 re: HFM.kg
-mid: mesh-kg-<stamp>-<nonce>
-post_id: <origin placeholder msgId>
+mid: mesh-kg-1719000000000-4f2a
+post_id: $abc123
 done: true
 enc: b64
 ```
 ````
 
-- Outer **fence** (` ``` `) keeps the structure delivered verbatim.
-- **Body** = `base64(utf8(body.trim()))`, then a blank line, then a `---`
-  divider, then the tail.
-- **Tail** = a run of `key: value` lines; empty keys are omitted.
+The origin sees `re: HFM.kg`, matches it to the awaiting `$abc123` placeholder,
+and mirrors each edit onto it. `parseMesh` scans UP from the end for the trailing
+run of known keys, tolerant of a bridge that re-renders the fence as HTML or
+strips the divider — so the origin always recognises the reply (and never
+re-relays it).
 
-## Keys
 
-Protocol keys: `from`, `from_node`, `by`, `to`, `re`, `post_id`, `mid`, `done`,
-`enc`, `sig` (reserved).
+## Example 3 — one hop through a relay-record (`@don` chains to `don.do`)
 
-| key | meaning |
-|---|---|
-| `from` | origin chat label (e.g. `HFM`) |
-| `from_node` | origin node — lets the responder build the return address `re: ${from}.${from_node}` |
-| `by` | sender (a human, or `being.node`) |
-| `to` | target **node** — only that node answers (or says "no `<being>.<node>` here"); every other spine stays quiet |
-| `re` | return address (e.g. `HFM.kg`) — the reply echoes it so the relaying spine surfaces it home, correlated without a minted id |
-| `post_id` | the origin placeholder's msgId — echoed in every reply frame so the origin edits the right message as the mirrored reply streams |
-| `mid` | minted request id (origin), preserved across forwards — a spine forwards a given `mid` at most ONCE, so multi-hop transit is loop-safe and self-terminating (no ttl) |
-| `done` | `true` on the FINAL frame — a display finish marker (origin appends "✅ Done"), NOT a teardown; non-`done` frames keep flowing |
-| `enc` | body codec; `b64` ⇒ base64 (current). Untagged ⇒ legacy raw |
-| `sig` | **reserved** — parsed but never emitted; the slot for **per-hop** signing where a hop crosses *people* (see Status & reserved). Off for now |
+A node can carry `don` as a *relay-record* — a local name that re-resolves to
+another node's being. On seeing `to: don.<self>`, the spine finds `don` is a
+relay-record (`resolveBeingRelay`), rewrites `to:` to the mapped `don.do`, and
+forwards toward it via its configured route (`resolveRoute`). The rewrite reuses
+the same `mid`, so forward-once still guards the chain:
 
-## Why base64
+````text
+… to: don.do          # was don.<self>; the relay-record rewrote it, mid unchanged
+````
 
-Beeper renders ` ``` ` → `<pre><code>`, and a code-bearing reply (a being that
-writes code) collides with the fence → the mirror edit breaks. base64 is
-markdown-inert (no backticks / `---` / `<>`) so the body is delivered verbatim
-while the tail stays readable. Bonus: the body is opaque in the relay channel — a
-light privacy gain.
+The reply returns hop by hop: a node that *forwarded* a request re-mirrors the
+matching `mid` back into the channel, so the upstream hop sees a **different**
+node's copy — which is what gets a `kg → do → kg` bounce home past a node's own
+edit-suppression. N hops chain across as few as two machines.
 
-## Parsing (tolerant)
 
-A bridge may re-render the message as HTML or strip the fence, so `parseMesh`:
+## Semantics, in one breath
 
-1. strips HTML/markup (`stripRender`),
-2. scans **up from the end**, taking the trailing run of `key: value` lines whose
-   key is recognised (tolerant of leading `> * _ ~ \` -` and whitespace),
-3. takes everything above as the body, trimming fence/divider/blank edges,
-4. if `enc: b64`, base64-decodes the body.
+- **Multi-hop transit, loop-safe** — `to` picks the answering node; a spine that isn't it forwards one hop toward it; forward-once per `mid` terminates the flood.
+- **Streaming living-mirror** — the responder edit-streams one message; origin and transit nodes mirror the edits onto their own copies; `done: true` finalizes.
+- **Consume, never re-relay** — recognising our own provenance tail is what stops infinite re-relay.
+- **Circuit breaker** — a hard mesh-local cap on sends per channel per window, the fail-safe the prompt-path loop-guard can't provide (mesh posts AS the operator, so the guard never sees it).
 
-A message that carries a provenance block **is relay traffic** ⇒ consume it.
-Recognising our own tail (divider or not) is what stops infinite re-relay.
 
-## Semantics (today)
+## Not built yet
 
-- **Multi-hop transit, loop-safe.** `to` picks the answering node; a spine that
-  isn't it forwards the message one hop toward it (`resolveRoute`), and the reply
-  comes back hop by hop. Loop-safety is structural: a spine forwards a given `mid`
-  **at most once**, so the message reaches every reachable node ~once and
-  self-terminates — no ttl. `from_node` builds the return route; the reply echoes
-  `re:`.
-- **Streaming living-mirror, chained.** The responder edit-streams ONE message;
-  each edit is an atomic, rate-free event. The origin mirrors edits onto its
-  `post_id` placeholder; a **transit** node re-mirrors — it edits its own
-  forwarded copy as the upstream streams, chaining the stream one hop on. `done:
-  true` finalizes. Only the FIRST forward of a message is loop-guarded; the edits
-  that follow can't loop.
+- **Origin-side relay-records** — today the origin only relays an explicit foreign `@being.node`; chaining from a bare local relay-record name is transit-only.
+- **Reaction relaying** — a reaction is an edit; relaying one back to the model that produced it rides the same return path (design, not built).
+- **Reserved:** explicit `path:` breadcrumb routing, multipath (`mid` dedups, a future `seq` reorders), per-hop `sig`, `"who has X?"` flood-discovery — all build on the same `mid` forward-once primitive.
 
-## Relay-records & N-hop chaining
-
-A **relay-record** is a *local* being that isn't run — it re-resolves to another
-node's being and forwards there. Configured per node:
-`mesh.relay_records[<being>] = "<being>.<node>"`. The trick is the `to:` field —
-each relay rewrites `to:` to the *next* hop's target, so one message chains across
-as many hops as there are relay-records: **N hops on as few as two machines** (it
-can bounce `kg→do→kg→…`).
-
-- **Transit** *(built)* — a spine that owns `to:`'s node but finds the being is a
-  local relay-record (`resolveBeingRelay`) rewrites `to:` to the mapped
-  `being.node` and forwards via its configured route (`resolveRoute`); loop-safe
-  via the same `mid` (forward-once).
-- **Terminal** *(built)* — the being is a *real* local sibling → run it → reply.
-- **Origin** *(design — not built)* — today the origin only relays an explicit
-  foreign `@being.node`. To chain from a bare `@wren2` (a local relay-record), the
-  origin must resolve relay-records too and post `to: don.do` (the record's target).
-
-**Return path *(built — mid-linked)*.** A node that *forwarded* a request
-re-mirrors the reply (matched by the same `mid`) back into the channel — so the
-upstream hop / origin sees a **different** node's copy. That's exactly what gets a
-2-box `kg→do→kg` bounce home past a node mirroring its **own** edit (edit
-suppression). Loop-safe: each node re-mirrors a given `mid` once. *(An explicit
-`path:` breadcrumb — `don.do`, `wren.kg` — for precise/branching routing is
-reserved; the mid-linked retrace already covers linear chains.)*
-
-## Reactions *(design — not built)*
-
-A **reaction is an edit** to the message. A reaction on a *relayed* reply must be
-relayed **back to the model** that produced it — it rides the return `path:` like
-any other edit and surfaces to the being as a stage-direction
-(`[ … reacted 👍 to … ]`, CONTRACTS C7.8), so the being can answer it.
-
-## Status & reserved
-
-- **Built + unit-tested:** the wire format, transit forward (`forwardToward`,
-  forward-once per `mid`), transit relay-records, the streaming edit-mirror, and
-  the **reply return-via-forwarder** (a forwarder re-mirrors the reply, mid-linked).
-  N-hop is proven by `tests/mesh-relay.test.mjs`.
-- **Design (not built):** origin-side relay-records, reaction relaying.
-- **Reserved / future:**
-  - *Explicit `path:` routing* — a `don.do,wren.kg` breadcrumb for precise/branching
-    return paths (the mid-linked retrace already covers linear chains).
-  - *Multi-relay / multipath* — the same packet MAY route through multiple channels
-    or relay routes at once; `mid` dedups, forward-once stops loops, a future `seq`
-    reorders. The protocol allows it; it isn't wired.
-  - *Per-hop `sig`* — one signature per hop (each relay signs what it adds), for
-    hops that cross *people* (not every hop — a signature is fixed-size regardless
-    of the tiny hop it signs). NOT built; reserved.
-  - *"who has xxx?" flood-discovery* — builds on the same `mid` forward-once.
 
 ## Source of truth
 
-`src/mesh/relay.mjs` — `encodeMesh({ from, from_node, by, to, re, post_id, mid, done })`,
-`parseMesh(text)`, `createMeshRelay(...)` (transit: `forwardToward` + `openRelayStream`).
+`src/mesh/relay.mjs` — `encodeMesh({ by, body, from, from_node, to, re, post_id, mid, done })`,
+`parseMesh(text)`, `createMeshRelay(...)`. When the format changes, amend this file
++ the CONTRACTS §15 lines + `tests/mesh-relay.test.mjs`.

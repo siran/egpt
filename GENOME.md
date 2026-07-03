@@ -18,11 +18,18 @@ test. An agent that has read this document should be able to extend eGPT without
 drifting from what it is — and, given the reference body, to rebuild any organ
 of it.*
 
-Status: **e1** (spine + mesh). Versioned + amended deliberately; see §10. e1
-(2026‑06‑14) added: resident‑warm beings (§7), the bridge **STOP** kill‑switch +
+Status: **e2** (v2 spine). Versioned + amended deliberately; see §10.
+
+**e2 (2026‑07‑03) — the v2 spine.** The `agents.<name>.configuration` registry
+replaces the old sibling registry + `default_brain`; the profile was relaid out
+(`~/.egpt/config/…`, flat identities, `state/ingest` lifecycle box); prod runs
+from an installed `~/bin/egpt`; the engine is the Claude Code CLI only (SDK
+retired); the `/e` wizard repoints a being live.
+
+e1 (2026‑06‑14) added: resident‑warm beings (§7), the bridge **STOP** kill‑switch +
 bot↔bot loop‑guard (C7.7), **Don** wired as a peer on DOLLY (`egpt_dolly_bot`,
 C8.3), the per‑being **mode** (C5.4), the **mesh** (§11), and delegation made
-explicit (C8.0). Next branch: e2.
+explicit (C8.0).
 
 ---
 
@@ -72,23 +79,32 @@ in brackets point at the recorded rationale.
 
 - **I1 — One router.** The bridge/nucleus is the ONLY message router. Never
   duplicate it, never invent a backdoor or a parallel send‑path. Extend the
-  bridge; don't run beside it. `[[egpt-bridge-sole-router]]`
+  bridge; don't run beside it. The engine is always‑on and owns the transports +
+  all state whether or not a human is watching; a surface only feeds input and
+  renders output. A `/command` is engine‑first and surface‑agnostic — the one
+  router interprets it directly (never fanned to rooms, never mirrored to a
+  surface to re‑interpret), gated on the operator's stable id (I6): commands and
+  chat are different channels. `[[egpt-bridge-sole-router]]`
+
 - **I2 — Limbs are thin.** A limb pulls raw input off its transport and hands it
   to the nucleus (`onIncoming` + `onMedia`); it sends through its
   transport (`send` / stream). The *only* media job that is
   legitimately limb‑specific is fetching the bytes (each transport downloads
   differently). Saving, transcribing, acking, routing, gating — all nucleus.
   `[[egpt-limb-agnostic-media]]`
+
 - **I3 — Log always, surface by mode.** Every inbound message and every
   brain/agent reply (surfaced OR withheld) is written to the chat's
   `transcript.md`, tagged sent/not‑sent. Transcripts are first‑class since the
   initial commit — never gate them on enrollment, observe‑only, or mode.
   `[[egpt-transcripts-first-class]]`
+
 - **I4 — One emit gate, fail‑closed.** Every brain/agent reply passes a single
   gate (`mayEmitChat`) before it can reach a chat. Streaming replies fail
   closed through one factory; the few non‑streaming sends each call the same
   gate. Raw transport‑send (ungated) is system/lifecycle‑only.
   `[[egpt-wa-emit-chokepoint]]`
+
 - **I5 — Mode is the gate; `paused` is the kill.** Per‑chat mode
   (`on` / `mention` / `mention-direct` / `mute` /
   `off` / `accum`) is the single source of truth for reply
@@ -99,11 +115,13 @@ in brackets point at the recorded rationale.
   MAY answer where the mode permits — `on` may, `mention(-direct)` only if it
   @‑mentions E (a reaction can't, so it stays silent), `mute`/`off`
   never. `mute`/`off` never emit. `[[egpt-emit-gate-bridge-controlled]]`
+
 - **I6 — Authorization is provable and id‑based.** Emit authorization keys off
   genuine persona replies (`_personaReplyIds`), never the echo set; no persona
   inference/fallback. The operator is identified by a STABLE id
   (`isSender` / allow‑listed id), NEVER a display name (names are
   attacker‑controllable). `[[egpt-mention-replytobot-leak]]`
+
 - **I7 — Privacy is structural.** E's persona never speaks where its mode
   forbids (the emit gate, I4/I5) — don't reveal E in a chat it isn't enrolled
   in. Compartmentalize — never leak one chat's context into another. NB the
@@ -114,18 +132,23 @@ in brackets point at the recorded rationale.
   (§2.5; operator 2026‑06‑15 "transcription is a fundamental tool of a room —
   egpt power"). The transport slot stays fail‑closed; the host resolves the
   per‑entity verdict (`src/transcription-service.mjs`).
+
 - **I8 — E is gated; meta‑engineers are not; no backchannel.** `E` (the public
   persona) is always gated. `Wren`/`L`/`D` are ungated, self‑governed engineering
-  selves. Agent↔agent chatter rides a VISIBLE transport (Telegram) THROUGH THE
+  selves. Agent↔agent chatter rides a VISIBLE transport THROUGH THE
   BRIDGE — never an invisible side channel. The LAN HTTP agent endpoint
-  (`src/tools/agent-endpoint.mjs`, the `don` brain) is **RETIRED**: no bot↔bot
-  backchannel; `@d` rides Telegram like any being (C8.3). `[[egpt-metabot-vs-creation]]`
+  (`src/tools/agent-endpoint.mjs`) is **RETIRED**: no bot↔bot backchannel; a
+  peer being rides the mesh relay (visible chat traffic) like any being (C8.3,
+  §11). `[[egpt-metabot-vs-creation]]`
+
 - **I9 — No silent failure.** Errors go to a sink and a durable log; nothing is
   swallowed without a trace. Backpressure and held‑backlog are explicit, not
   accidental drops.
+
 - **I10 — Catch up, don't replay.** On reconnect/wake, backlog drains *paced*
   (as‑if‑always‑on): old messages are recorded‑as‑seen but not auto‑dispatched;
   the being answers live traffic. `[[egpt-backlog-paced-catchup]]`
+
 - **I11 — The engine is the Claude Code CLI.** Every being runs on the local
   `claude` CLI (the `ccode` engine / native background agents); the in‑process
   SDK is retired (§7). This is a deliberate contract, chosen from experience:
@@ -150,7 +173,7 @@ in brackets point at the recorded rationale.
         send / stream  ◀──┘    └──────────────────────────────┘       └────────────────┘
                                           │   ▲
                             transcript.md │   │ resume (session_id) · background agents
-                            media/        │   │ outbox (self-restart) · agent mesh (LAN)
+                            media/        │   │ state/ingest (lifecycle) · agent mesh
 ```
 
 
@@ -162,16 +185,18 @@ Thin transport adapters. Contract toward the nucleus:
   `chatId`, `chatType`, the sender's stable id, `authorized`
   (operator‑sent, id‑based), mention flags, and `addressedToBot`. Media arrives
   via `onMedia(m)` (below).
+
 - **Send:** `send(text, { chatId, replyTo })` and a streaming message primitive
   (`startStreamMessage`) for live token streaming.
+
 - **The one transport‑specific media job:** download the bytes (Beeper assets
-  API, Telegram `getFile`, …). Everything after the local file exists is
-  nucleus.
+  API, …). Everything after the local file exists is nucleus.
 
 
-Limbs in the body today: Beeper (PRIMARY WhatsApp + multi‑network transport,
-local REST+WS), Telegram (off‑LAN; one bot = one being, e.g. `egpt_reve_bot` =
-Wren), the home shell `kg`, the Chrome/Firefox extension (CDP).
+Limbs in the body today: **Beeper** (the PRIMARY transport — one Beeper login
+bridges WhatsApp, Telegram, Signal, … as *networks*; the direct Telegram‑bot
+transport was retired, so Telegram now arrives as `network=telegram`), the home
+shell `kg`, and the Chrome/Firefox extension (CDP).
 **Landmine:** `telegram.mjs` is bundled into the browser extension, so it —
 and anything it imports — must not pull in Node‑only builtins beyond what
 `extension/build.mjs` externalizes. Node‑only services are *injected* by the
@@ -183,21 +208,28 @@ host, never imported into a bundled limb. `[[egpt-limb-agnostic-media]]`
 The being's mind. Responsibilities, each a single chokepoint:
 
 - **Routing** — a message reaches its brain through the nucleus on every
-  surface; unified `@<sibling>` routing by canonical name + aliases;
-  addressed siblings dispatch BEFORE `@e` so a direct address isn't
+  surface; unified `@<agent>` routing by canonical name + handles;
+  addressed agents dispatch BEFORE `@e` so a direct address isn't
   stuck behind E's slow turn.
+
 - **Emit gate** (`src/auto-mode.mjs` `mayEmit`/`mayEmitChat`,
   `fanOutDecision`) — I4/I5.
+
 - **Dispatch line** (`src/dispatch-line.mjs` `formatDispatchLine`) — the exact
   shape the model sees (§4). One formatter, every call site.
+
 - **Incoming media** (`_saveIncomingMedia` + `src/incoming-media.mjs`) — saves
   every attachment to the chat's `media/`, transcribes voice via an
   injected transcriber, posts the enrolled‑gated `👂` ack, surfaces
   image paths so a vision brain can `Read` them. Limb‑agnostic; the
   limb only supplies the file + a reply mechanism + the host's verdicts.
-- **Rooms** (`src/rooms.mjs`, `src/room*.mjs`) — gated, loop‑safe fan‑out of a
-  message to room members across surfaces.
+
+- **Rooms** (`src/room-core.mjs`, `src/room*.mjs`) — the Room abstraction
+  (§2.5): the conversation folder IS a Room, its members carry the contribution
+  gate.
+
 - **Memory/continuity** — see §5.
+
 - **Lifecycle** — see §6.
 
 
@@ -208,34 +240,42 @@ Brain‑agnostic interface: `stream({ history, message }, onUpdate, options)` �
 thread; the brain captures a freshly‑minted id and returns it in
 `optionsPatch` for the host to persist. Engines:
 
-- **`claude-code` (ccode)** — the local `claude` CLI as a subprocess;
-  `--resume` threads a session id (context carries server‑side,
+- **`claude-code` (ccode)** — the local `claude` CLI as a subprocess, the ONE
+  engine (I11); `--resume` threads a session id (context carries server‑side,
   prompt‑cached — the CLI's "warm"); `--effort` is the reasoning lever the
-  SDK can't set. Robust under tool‑heavy turns. Confinement via the tested
-  `src/claude-args.mjs`.
-- **`claude-sdk`** — LEGACY in‑process engine, being retired in favor of
-  `ccode` background agents (§7); not used for new beings.
-- **`codex`**, **`llama`** (`@l`, local llama.cpp
-  on the GPU box, sessionless), **`don`** (`@d`, a remote
-  eGPT reached over the LAN agent endpoint).
+  in‑process SDK could never set. Robust under tool‑heavy turns. Confinement via
+  the tested `src/claude-args.mjs`.
+
+- **`claude-sdk`** — the legacy in‑process engine, **RETIRED** (§7): not a
+  fallback, not used for any being. Do not reintroduce it.
+
+- **`codex`**, **`llama`** (`@l`, local llama.cpp on a GPU box, sessionless) —
+  concepts kept in the brain‑agnostic interface; a remote peer eGPT is reached
+  over the **mesh relay** (visible chat traffic, §11), not a LAN endpoint.
 
 
-### 2.4 Beings (siblings)
+### 2.4 Beings (the agents registry)
 
-- **`E`** — the gated public persona (the creation). Session +
-  model in `default_brain`.
-- **`Wren`** — meta‑engineer; the being you talk to to build eGPT.
-  Bound to a Telegram bot by IDENTITY (`forceTarget`, no `@e`
-  mangling). Runs on `ccode`, resuming a pinned engineering thread.
-- **`L`** — local sessionless chatter; memory = its persona + a
-  bounded tail of the chat's `transcript.md`.
-- **`D`** — a remote sibling eGPT (e.g. on the GPU box) over an
-  HMAC‑authed LAN endpoint; its reply rides the same gated + logged sibling
-  path. `[[egpt-egpt-agent-channel]]`
+- **`E`** — the gated public persona (the creation). Its engine + model come
+  from the persona agent's type file, NOT a `default_brain` (retired).
+
+- **`Wren`** — meta‑engineer; the being you talk to to build eGPT. Runs on
+  `ccode`, resuming a pinned engineering thread. Ungated (I8).
+
+- **`L`** — local sessionless chatter; memory = its persona + a bounded tail of
+  the chat's `transcript.md`.
+
+- **`D`** — a remote peer eGPT (e.g. on a GPU box), reached over the mesh relay
+  (§11); its reply rides the same gated + logged path. `[[egpt-egpt-agent-channel]]`
 
 
-The sibling registry (`EGPT_CONFIG.siblings.<name>`) is the source of truth:
-`{ type, aliases?, session_id?, cwd?, model?, effort?, allowed_tools?, url?, body_emoji?, system_prompt_file? }`.
+The **agents registry** (`EGPT_CONFIG.agents.<name>`) is the source of truth —
+ONE block for the persona, the local beings, and mesh relay targets. An agent is
+`{ configuration, handles?, relay_channel?, name?, body_emoji?, enabled? }`, where
+`configuration` names an agent‑type file in `config/agents/<type>.yaml` (the
+engine/model/effort/personality/allowed_tools def) or the literal `relay` for a
+forwarding agent. A node with no agents block — or no persona agent (handles
+include `e`/`egpt`) — refuses to boot.
 
 ---
 
@@ -275,7 +315,7 @@ Identical tree either way:
 ```
 
 **Members = humans + brains, each with a contribution state** (`muted | mention |
-active` — `src/rooms.mjs`). That single gate IS the per‑chat auto‑mode AND the
+active` — `src/room-core.mjs`). That single gate IS the per‑chat auto‑mode AND the
 "residents" of a chat, unified: **a chat's residents are simply its `brain`
 members.** So:
 - `whatsapp.residents_per_chat` is a *standalone* config that duplicates Room
@@ -380,12 +420,24 @@ currently NO all‑user command — even `/?`/`/help` is **operator‑only** (th
 menu arms for the authorized owner alone). If some commands should be public
 (e.g. `/?`), that is a carve‑out to ADD, not existing behavior.
 
-**Status / north star.** Today this lives as TWO half‑implementations:
-`conversations-state` (mature per‑chat persistence/transcript/media) and
-`src/rooms.mjs` (membership/state/cross‑surface fan‑out — already loop‑guarded). The
-work is to **merge them into one Room model + one folder shape** (the two roots
-above), with the dual‑write rule wired so a member chat's contributed lines append
-to each Room's transcript. A deliberate migration (+tests), not in passing.
+**Status / north star (synced 2026‑07‑03).** The Room ABSTRACTION now EXISTS and
+is the unifier: `src/room-core.mjs` — the base `Room` + `ConversationRoom` +
+`NamedRoom`, with ONE folder tree derived from `baseDir()` (config.yaml,
+transcript.md, media/, files/, identity.d/) and the member model on the base
+(`members`/`setMember`/`removeMember`, the 6‑state contribution gate). It is LIVE
+for the path unification: `conversations-state.slugDir` DELEGATES to
+`Room.forChat(surface, slug).baseDir()`, so a conversation's root IS a
+`ConversationRoom`'s baseDir (byte‑identical), and the v2 boot enumerates
+`rooms/<name>/` folders for the per‑entity heartbeat + transcription services.
+
+What remains **NOT built**: the behavior methods (transcript append, media save,
+the confine wiring) still live in `conversations-state` — they haven't moved onto
+the Room base; **NamedRoom federation** (`hosts[]` across surfaces), **member
+fan‑out** (the old `src/rooms.mjs` / `src/room-routing.mjs` `planFanout` are
+old‑spine‑only, NOT wired into the v2 boot), and **the dual‑write rule** (a
+member chat's line appended to each Room's transcript) are still design. Folding
+those onto the base is the remaining Rooms work (ROADMAP §3). A deliberate
+migration (+tests), not in passing.
 
 ---
 
@@ -394,6 +446,7 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
 
 1. **Limb receives** raw input off its transport. If it carries media, the limb
    downloads the bytes to a local file.
+
 2. **Media → nucleus:** the limb calls `onMedia(m)`. The nucleus saves the
    file to `conversations/<surface>/<slug>/media/`, and for audio runs the
    shared `transcribeVoiceNote` (injected transcriber) under the room's
@@ -416,18 +469,26 @@ to each Room's transcript. A deliberate migration (+tests), not in passing.
    Read‑able by E's vision) AND transcribes the audio track, surfacing both on the
    dispatch line. E never runs `ffmpeg` (it has no shell in its chroot); media gets
    the same nucleus treatment as a voice note (I2). (C2.5.)
+
 3. **Text → nucleus:** the limb calls `onIncoming(text, from)`.
+
 4. **Classify** (nucleus): per‑chat mode, mention/mention‑direct, surface
    identity, operator (`authorized`, id‑based). Backlog older than connect −
    grace is held, not dispatched (I10).
+
 5. **Record:** the inbound line is appended to `transcript.md` (I3).
+
 6. **Format** the dispatch line (§4) — one formatter, node = entry point.
-7. **Route:** addressed sibling → that being (dispatches before E). Otherwise
-   the mode decides whether E is invoked. A reaction never triggers a reply
+
+7. **Route:** addressed agent → that being (dispatches before E). Otherwise
+   the mode decides whether E is invoked. A reaction follows the same mode gate
    (I5).
+
 8. **Brain turn:** stream tokens via the engine; resume by `session_id`.
+
 9. **Emit gate:** the reply passes `mayEmitChat` (I4/I5). `paused`
    kills it.
+
 10. **Surface** through the originating limb (streamed message / send). The
     reply is appended to `transcript.md` tagged sent/not‑sent (I3).
 
@@ -474,33 +535,38 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 ## 5. Memory & continuity
 
 - **Per‑chat folder:** `~/.egpt/conversations/<surface>/<slug>/` with
-  `transcript.md`, `media/`, optional per‑chat `config.yaml` +
-  `heartbeat.md`. `slug` is a deterministic `sanitizeSlug`
-  (display/storage only — NEVER an authorization key; I6).
-- **A room is a folder too** — target `conversations/_rooms/<name>/` (`ROOMS_DIR`),
-  mirroring a conversation folder in part: `transcript.md`, `media/`, `pointers.md`,
-  plus room-specific `config.yaml`, `replytargets.json`, `instructions.md`, `files/`.
-  ⏳ owed: rooms are flat `<name>.yaml`/`.md` files today (`loadAllRooms` scans
-  `*.yaml`); migrate flat → folder.
+  `transcript.md`, `media/`, and an optional per‑chat `config.yaml` (its
+  `heartbeats:` / `transcription:` / `warm:` blocks). `slug` is a deterministic
+  `sanitizeSlug` (display/storage only — NEVER an authorization key; I6).
+
+- **A room is a folder too** — `~/.egpt/rooms/<name>/` (the `NamedRoom` root,
+  `src/room-core.mjs`), the SAME tree as a conversation: `config.yaml` (members,
+  services), `transcript.md`, `media/`, `files/`, `identity.d/`. The v2 boot
+  enumerates these folders for the per‑entity heartbeat + transcription services.
+
 - **`transcript.md`** — an 8‑day rolling window; older days archive to
   `memories/transcript-<date>.md`; per‑file serialized appends (no lost writes).
   Opens with a YAML **front matter** identifying the conversation — `name`,
   `thread_id`, `surface`, `slug`, `persona`, `notes` (one writer + reader:
   `src/transcript-meta.mjs`). The collector (planned ⏳) enriches it with
   `network` / `phone` / `type` / `participants` from the limb's chat metadata.
-- **Heartbeat is per‑entity** — no global `@e` heartbeat; a
-  `heartbeat.md` in a conversation's/room's folder is dispatched through the
-  gate. `[[egpt-heartbeat-per-entity]]`
+
+- **Heartbeat is per‑entity** — no global `@e` heartbeat; a `heartbeats:` block
+  in a conversation's/room's own `config.yaml` is materialized + dispatched
+  through the gate. `[[egpt-heartbeat-per-entity]]`
+
 - **Transcription is a per‑entity Room service** — surface‑independent, a
   `transcription: { enabled, posts_back }` block in the conversation's/room's own
-  `config.yaml` (same file as heartbeat; both flags default‑on). `enabled` =
+  `config.yaml` (same file as heartbeats; both flags default‑on). `enabled` =
   transcribe at all (heard); `posts_back` = surface the `👂` (spoken). The host
   resolves the verdict per chat (`src/transcription-service.mjs`); the transport
   only runs the shared `transcribeVoiceNote`. NOT E enrollment (operator
   2026‑06‑15).
+
 - **Media** — every attachment saved by default (`whatsapp.media.download`:
   `all` / `images_docs` / `off`), meaningful filename +
   sidecar caption + `index.md` entry; voice saved AND transcribed.
+
 - **Continuity repo** (operator's working diary, separate git repo) — the
   human/AI activity log; the being's longer‑horizon memory across sessions.
 
@@ -510,45 +576,47 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 
 ## 6. Lifecycle (self‑running, self‑restarting)
 
-- **Supervision (every spine, symmetrical):** each spine (REVE, DOLLY, …) runs the
-  SAME three‑layer stack — an NSSM Windows service `egpt-daemon` (`~/.egpt/bin/
-  egpt-service.exe`) → the supervisor `egpt-daemon.mjs` (sets `EGPT_SUPERVISED`,
-  reads the engine's exit code) → the engine `egpt.mjs`. The engine respawns; the
-  supervisor + NSSM persist. Spines are PEERS, not a hub‑and‑spoke — DOLLY is not
-  "a worker", it is a full spine that ALSO hosts the GPU services (@l llama :8080,
-  whisper transcriptor).
-- **Lifecycle = a distinguished exit code the supervisor reads** (`slash/
-  lifecycle.mjs`): **43** `/restart` (respawn from current disk — picks up an
-  already‑pulled tree, does NOT pull), **42** `/upgrade` (`git pull && npm install
-  && npm run build:ext`, then respawn), **44** `/rewind <ref>` (checkout + install +
-  build + respawn). Exit codes only mean something under the supervisor; a bare
-  `node egpt.mjs` just dies.
-- **Triggering a bounce = drop a slash into the target spine's outbox** (atomic
-  write): `{type:'slash',cmd:'/restart'|'/upgrade'}` into `~/.egpt/outbox/`. The
-  legacy `{type:'daemon-restart'}` (exit 0) still works. `/restart` from a live
-  surface (WA/TG 1:1, operator‑gated) is the in‑band equivalent. No UAC.
+- **Supervision (every spine, symmetrical):** each spine runs the SAME
+  three‑layer stack — an NSSM Windows service → the supervisor `egpt-daemon.mjs`
+  (sets `EGPT_SUPERVISED`, reads the engine's exit code, mtime deadman) → the
+  engine `node egpt.mjs`. PROD runs from an INSTALLED copy (`~/bin/egpt`)
+  decoupled from the dev tree, so the checkout can be dirty without touching the
+  node. The engine respawns; the supervisor + NSSM persist. Spines are PEERS, not
+  hub‑and‑spoke — a GPU box is a full spine that ALSO hosts the GPU services.
+
+- **Lifecycle = a distinguished exit code the supervisor reads:** **43**
+  `/restart` (respawn from current disk — picks up an already‑pulled tree, does
+  NOT pull), **42** `/upgrade` (`git pull && npm install && npm run build:ext`,
+  then respawn), **44** `/rewind <ref>` (checkout + install + build + respawn).
+  Exit codes only mean something under the supervisor; a bare `node egpt.mjs`
+  just dies.
+
+- **Triggering a bounce = drop a file into the target spine's `state/ingest/`**
+  (atomic write→rename): a file containing `/restart` (or `/upgrade` / `/rewind`)
+  is consumed ONCE and fires the exit code. `/restart` from a live surface (a
+  Self‑DM, operator‑gated) is the in‑band equivalent. No UAC.
   `[[egpt-self-restart-via-outbox]]`
-- **Cross‑spine deploy (the lever):** a peer spine's `~/.egpt/outbox/` is reachable
-  over the **SMB file share** — from REVE, DOLLY's home is the mapped `N:` drive
-  (`\\DOLLY\Users\an`), so DOLLY's outbox is `N:\.egpt\outbox\` (`/n/.egpt/outbox/`
-  in the Bash tool). So: commit+push on one spine, then drop `/upgrade` into EACH
-  spine's outbox (local for self, the share for the peer) to roll the new commit
-  everywhere. The file share is the DEPLOY channel; Telegram is the CONVERSATION
-  channel (the old LAN agent endpoint is dead — `[[egpt-egpt-agent-channel]]`).
-  GOTCHA: a spine's NSSM SERVICE env ≠ your interactive shell env — brain binaries
-  (e.g. `claude`) must be on the SERVICE PATH or set via `EGPT_CLAUDE_BIN` /
-  `brains.warm.bin`, else `spawn claude ENOENT` (DOLLY's Don, 2026‑06‑14).
-- **Durable logs:** `logOut`/`errOut` append to
-  `~/.egpt/logs/`. The headless frame‑dump is lossy — don't trust it; trust the
-  file (I9).
-- **Workers (the GPU box):** `@l` = local llama‑server; the
-  transcriptor = GPU whisper‑server (HMAC‑token, LAN‑firewalled, local
-  whisper‑cli fallback); a supervisor reaps the stale port‑holder before
-  respawning so a soft restart self‑heals.
-- **Config:** `~/.egpt/config.yaml` (operator‑editable YAML; legacy
-  `config.json` auto‑migrates), secrets in `config.local.json`, merged into
-  `EGPT_CONFIG` at import. Read live where it matters so edits apply without
-  a restart.
+
+- **Cross‑spine deploy (the lever):** a peer spine's `state/ingest/` is reachable
+  over the **SMB file share**. So: commit+push on one spine, then drop `/upgrade`
+  into EACH spine's ingest box (local for self, the share for the peer) to roll
+  the new commit everywhere. The file share is the DEPLOY channel; the mesh relay
+  is the CONVERSATION channel (the old LAN agent endpoint is dead —
+  `[[egpt-egpt-agent-channel]]`). GOTCHA: a spine's NSSM SERVICE env ≠ your
+  interactive shell env — brain binaries (e.g. `claude`) must be on the SERVICE
+  PATH or set via `EGPT_CLAUDE_BIN` / `brains.warm.bin`, else `spawn claude
+  ENOENT`.
+
+- **Durable logs:** `logOut`/`errOut` append to `~/.egpt/config/logs/`. The
+  headless frame‑dump is lossy — don't trust it; trust the file (I9).
+
+- **Workers (the GPU box):** the transcriptor = GPU whisper‑server (HMAC‑token,
+  LAN‑firewalled, local whisper‑cli fallback); a supervisor reaps the stale
+  port‑holder before respawning so a soft restart self‑heals.
+
+- **Config:** `~/.egpt/config/config.yaml` — the ONE location (no legacy
+  `config.json` / `config.local.json`, no boot migrations since the config
+  legacy excision). Read live where it matters so edits apply without a restart.
 
 
 ---
@@ -556,33 +624,37 @@ Sender@[chatname/groupname].{node} (HH:MM): body
 
 ## 7. Warmth — beings are native background agents
 
-- **Revived if not warm, per message, warm ~5 min, then reaped for memory
+- **Revived if not warm, per message, warm for a while, then reaped for memory
   efficiency.** There can be agents always in memory, configuration driven. A
   being is started with a thread (resume), a model, and an effort. It stays
-  RESIDENT between turns and is reaped ~5 min after the last interaction.
-  Consecutive messages in a conversation hit an already‑alive agent — no cold
-  start, the conversation is kept *in the agent*, the transcript is NOT re‑fed
-  each turn. Across an idle gap, context is restored warm‑from‑thread
-  (`--resume`). Resume = the context; residency = the warmth; they are
-  orthogonal.
+  RESIDENT between turns and is reaped after an idle gap. Consecutive messages in
+  a conversation hit an already‑alive agent — no cold start, the conversation is
+  kept *in the agent*, the transcript is NOT re‑fed each turn. Across an idle gap,
+  context is restored warm‑from‑thread (`--resume`). Resume = the context;
+  residency = the warmth; they are orthogonal.
+
+- **The idle TTL is config, per class.** `warm.idle_ttl_by_class.conversation`
+  defaults to 15m (a chat goes cold 15 min after its last turn, then idle‑evicts;
+  `--resume` + the transcript make the next turn correct, just colder);
+  `warm.max` caps how many stay warm at once (LRU past it). A single conversation
+  overrides its own TTL in its folder's `config.yaml` (`warm: { idle_ttl: 1h }`,
+  or `0` = always warm).
+
 - Background agents are resident + scriptable‑listable: `claude agents --json`
-  enumerates live sessions (`id`, `sessionId`,
-  `name`, `state`, `kind`; no TTY).
+  enumerates live sessions (`id`, `sessionId`, `name`, `state`, `kind`; no TTY).
+
 - A turn runs as long as it needs (no fake turn‑timeout).
 
 
 **Build status (name the half‑state — §10).** The engine is the CLI, full stop —
 no SDK. ✅ **RESIDENT‑warm is BUILT** (2026‑06‑14): a being runs on ONE persistent
 `claude --print --input‑format stream‑json --resume <id>` process via the warm pool
-(`src/warm-cli-session.mjs`; verified turn‑2 ~2× faster than the cold turn 1).
-`siblings.<name>.resident:true` → never idle‑evict (Wren, Don resident); else the
-per‑class TTL reaps (~5 min). **E** (the persona / `default_brain`) also routes
-through the same warm pool when backed by `ccode`/`claude-sdk` (2026‑06‑15):
-`dispatch.mjs` owns the transcript/session contract, while `egpt.mjs` injects the
-resident runner and keys each per-chat E as `e:<brainType>:<surface>:<slug>`.
-Codex / URL default brains keep their engine-native paths. The pool was already
-engine‑agnostic (injectable `makeSession`); Unit 4 = the CLI primitive + wiring
-`ccode` through it.
+(`src/warm-cli-session.mjs`; verified turn‑2 ~2× faster than the cold turn 1). A
+class TTL of `0` (system/resident) never idle‑evicts; the conversation class reaps
+at its `idle_ttl` (15m default, per‑conversation overridable). **E** routes
+through the same warm pool, keyed per conversation as
+`e:<brainType>:<surface>:<slug>`, while `dispatch.mjs` owns the transcript/session
+contract. The pool is engine‑agnostic (injectable `makeSession`).
 
 
 ---
@@ -592,20 +664,31 @@ engine‑agnostic (injectable `makeSession`); Unit 4 = the CLI primitive + wirin
 
 `config/config-schema.mjs` is the machine‑validated registry of every
 `EGPT_CONFIG.<key>` (the integrity test fails if `egpt.mjs` reads an
-unregistered key — the config surface can't drift). High‑level shape:
+unregistered key — the config surface can't drift). Config lives at
+`~/.egpt/config/config.yaml`; the paste‑ready shape is `config/skeletons/config.yaml`.
+High‑level shape:
 
-- `whatsapp` — transport (`beeper`), media (`download`,
-  `audio_transcribe`), `auto_e_chats`, `auto_e_default_mode`,
-  `auto_e_paused`, `chat_id` (self‑DM).
-- `telegram` — `bot_token` (in `config.local.json`),
-  `allowed_users`, `agent` (the being the bot IS, default
-  `wren`), `mirror` (route plain authorized messages to the
-  agent), `show_think_chats`.
-- `siblings.<name>` — the being registry (§2.4).
-- `default_brain` / `default_brain_fallback` — E's engine + session + model.
-- `transcription_endpoint` / `transcription_token` — remote‑first transcriber;
-  absent ⇒ local whisper‑cli.
-- `agent_token` — shared HMAC for the eGPT↔eGPT LAN endpoint.
+- `beeper_token` — the ONE credential (Beeper Desktop's local API; one login = one node).
+
+- `user_name` — the operator's handle, shown in cross‑surface mirroring.
+
+- `agents.<name>` — the unified registry (§2.4): the persona + local beings + mesh relay targets, one block.
+
+- `whatsapp` / `telegram` / `signal` — per‑surface auth `{ chat_id, allowed_users }` (empty = deny). `whatsapp` doubles as the transport block (`networks`, `media.download`).
+
+- `dispatch` — E‑routing globals `{ auto_paused, auto_default_mode }`.
+
+- `warm` — the resident pool `{ max, idle_ttl_by_class }` (§7).
+
+- `flood` / `compaction` — the send‑flood guard and warm‑session auto‑compaction.
+
+- `heartbeats` — the declarative timer registry (`<name> → { frequency|when, command|ai_run }`).
+
+- `transcription_service` — the per‑note fallback CHAIN (`use_config` names the active profile).
+
+- `mesh` — relay routing; a relay target's channel is `agents.<name>.relay_channel`.
+
+- `default_time_zone`, `emojis` — heartbeat `when:` zone; author tags for mirroring.
 
 
 ---
@@ -614,15 +697,15 @@ unregistered key — the config surface can't drift). High‑level shape:
 ## 9. Build & verify discipline
 
 - **Documentation doesn't prevent regressions; a behavior test does.** Every
-  invariant here and every contract in `CONTRACTS.md` earns a test as it is
-  built/recovered. When you touch a path that implements an invariant, there
-  must be a test that locks it.
+  invariant here and every contract in `CONTRACTS.md` earns a test. When you
+  touch a path that implements an invariant, there must be a test that locks it.
+
 - **Three complementary documents, one truth each:**
   - **GENOME.md** (this) — the heart + invariants + anatomy (the *why* and the
     *must‑never‑drift*).
-  - **CONTRACTS.md** — the human‑readable behavior list with status flags
-    (✅/⚠️/❓) (the *what*, recovered piece by piece).
+  - **CONTRACTS.md** — the behavior invariants as one‑liners (the *what*).
   - **config-schema.mjs** — the validated config surface (the *knobs*).
+
 - The full suite is the gate: a change that reds a contract test is wrong until
   proven otherwise.
 
@@ -634,14 +717,18 @@ unregistered key — the config surface can't drift). High‑level shape:
 
 1. **Read §0–§1 before touching the nucleus.** If a change fights an invariant,
    the change is wrong.
+
 2. **New behavior?** Amend this genome first (add/adjust an invariant or organ),
    then add a `CONTRACTS.md` entry, then a test. Never the reverse.
+
 3. **New limb?** It only implements §2.1's contract. If you find yourself
    re‑implementing transcription, gating, logging, or routing in a limb, stop —
    that belongs in the nucleus (I2).
-4. **New being?** Add it to the sibling registry; it rides the existing gated +
+
+4. **New being?** Add it to the agents registry; it rides the existing gated +
    logged path. Creation stays gated; meta‑engineers stay ungated and visible
    (I8).
+
 5. **Versioned amendments.** This file is reviewed and amended deliberately;
    bump the status line (e0 → …) when the organism crosses a real threshold. The
    body (code) is the reference implementation; this is its DNA.
@@ -672,8 +759,13 @@ routing design; `EGPT-MESH-PROTOCOL.md` is the bytes on the wire.
   - **`@alias`** — reach any sibling by name from any controlled network. The default: explicit, cheap.
   - **bot** — a Telegram bot IS a being on its spine (`egpt_reve_bot`=Wren, `egpt_dolly_bot`=Don); the bot's PRESENCE in a chat = enrollment. A bot is transport/reachability for a being whose spine isn't on the shared network — NOT a separate identity. `egpt_tbot` deprecated.
   - **impersonation (Beeper)** — eGPT acts AS the operator's own account across networks (WhatsApp, + Telegram once watched). E's natural presence — your voice — not a bot.
+
 - **Per‑being mode (C5.4)** tunes participation per chat. ONE routing decision per being (no dedup, by construction); E silence‑gated on output, an engineer's reply ungated even '…' (I8).
+
 - **Routing dynamics:** PARALLEL across beings (the warm pool serializes only *within* a being), SERIAL across ROUNDS — only a COMPLETE reply recirculates to other beings (never the live stream: streaming is for the human; finished messages for bots). Bounded by chain‑cap + the loop‑guard/STOP.
-- **Delegation (C8.0):** a single spine CAN do everything, but compute‑heavy services delegate to the apt machine by config (REVE→DOLLY for `@l` llama + transcription). Same code, all‑in‑one OR mesh.
+
+- **Delegation (C8.0):** a single spine CAN do everything, but compute‑heavy services delegate to the apt machine by config (a GPU box for transcription + local inference). Same code, all‑in‑one OR mesh.
+
 - **STOP (C7.7):** an operator safe‑word at the one router halts PROMPTING (stronger than `auto_e_paused`, which only blocks emit); the loop‑guard auto‑fires it. The human override that beats the being's own clock.
+
 - **Federated cross‑spine reach (re‑architected 2026‑06‑19 — see `docs/BEING-MESH.md`):** the federation has NO central router — *a shared chat is the shared stream.* Spines in the same chat already see the same messages, so the spine that OWNS `@being.node` answers **in place**; no route Room, no dedup. Each spine decides locally (am I `node`, do I own `being`, am I in this chat?); addressed ⇒ it MUST answer — the being, or "no `<being>.<node>` here" — **never silence.** Off‑stream beings use a `type: relay` record that forwards with a legible fenced‑YAML provenance tail (`from`/`by`), so bot↔bot stays human‑visible (I8). No minted `id`/`ttl`: loops bound by STOP (C7.7), correlation by native threading. Invite‑only — `allowed_users` + confinement is the guard, not crypto. (Supersedes the old bot‑membership/route‑Room "dedup" plan.)
