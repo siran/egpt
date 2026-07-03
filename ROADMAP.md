@@ -236,8 +236,12 @@ following is LANDED, test-locked, and (where marked) live-verified:
 ## 5. Operational facts (for any future session)
 
 - Node: Windows service `egpt2-daemon` → egpt-daemon.mjs → spawns `node egpt.mjs`
-  from THIS working tree (a /restart boots whatever is checked out — never
-  restart with uncommitted edits in flight).
+  from the INSTALLED copy `~/bin/egpt` (operator 2026-07-03: prod decoupled from
+  the dev tree — src/egpt2 can be dirty, the node doesn't care). Deploy: commit+
+  push from dev, then drop `/upgrade` into ~/.egpt/state/ingest/ (the installed
+  copy git-pulls origin/rewrite + npm install + respawns); `/restart` respawns
+  what's installed. Migration script: setup/move-prod-to-bin-and-dot-egpt.ps1
+  (self-elevating, re-run-safe).
 - Profile: EGPT_HOME=~/.egpt (renamed from ~/.egpt2, operator 2026-07-03; old v1 profile archived as ~/.egpt-v1). Layout (operator 2026-07-03, disk = spec): config/
   {config.yaml, conversations.yaml, agents/, identities/<name>.md (FLAT), logs/,
   skeletons/ (incl. room/ = the shared identity/pointers/rules template)}; state/
