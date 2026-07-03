@@ -1,686 +1,152 @@
-# egpt manual
+# eGPT — operator manual
 
-A practical guide. Cheat sheet first, then the sections explain what each piece does.
+The v2 operator reference: how to drive a running node and what every config key
+does. For what eGPT *is*, read [`GENOME.md`](GENOME.md); for setup, the
+[`README.md`](README.md); for the test tiers, [`TESTING.md`](TESTING.md).
 
----
-
-## Cheat sheet
-
-Bash-flavored, copy-paste ready.
-
-```bash
-# ────────────────────────────────────────────────────────────────────────
-# Setup (one time)
-# ────────────────────────────────────────────────────────────────────────
-cd ~/src/egpt
-npm install
-
-# Optional: make `egpt` a global command
-npm link                 # then `egpt` works from anywhere
-
-# Optional: confirm dependencies
-node --version           # need >= 18
-which claude             # Claude Code CLI on PATH (for the ccode brain)
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Daily: chat with ccode (no Chrome needed)
-# ────────────────────────────────────────────────────────────────────────
-node egpt.mjs                                 # uses ./conversation.md
-node egpt.mjs ~/notes/2026-05-02.md           # explicit file path
-node egpt.mjs --help                          # CLI usage (does not create a file)
-node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
-                                              # create ~/.egpt/brains/alex.yaml
-# inside egpt:
-/open ccode ccode1                            # add local Claude Code participant
-@ccode1 hola                                  # say hello to that session
-/file                                         # which file are we writing to?
-/last 5                                       # show last 5 turns from the file
-/exit
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Multi-brain: bring in ChatGPT and/or Claude.ai
-# ────────────────────────────────────────────────────────────────────────
-# Run egpt, then /chrome inside it to launch Chrome with the extension
-# loaded. The shell starts the CDP proxy and joins the bus when Chrome
-# is reachable. Log into chatgpt.com / claude.ai once in that Chrome
-# window — the profile persists at ~/.egpt/chrome/profiles/brain.
-
-# in egpt (brain Chrome running):
-# at startup egpt scans tabs and auto-attaches:
-#    auto-attached 2 tab(s): cgpt1 (chatgpt-cdp), claude1 (claude-cdp)
-/sessions                                     # who's in the room
-/tabs                                         # what's open in the brain Chrome
-@cgpt1 ¿qué piensas de esto?                  # address one tab for a single turn
-@claude1 segunda opinión?                     # address another tab for a single turn
-/use cgpt1,claude1                            # make later plain text route to both
-hello everyone                                # sent to active sessions from /use
-/use clear                                    # stop plain-text routing
-/open chatgpt-cdp                             # open a NEW chatgpt tab → cgpt2
-/attach                                       # rescan Chrome for new tabs
-/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
-                                              # codex finds/prepares it, egpt sends it
-/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
-                                              # codex prepares the excerpt, egpt sends it
-/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
-                                              # deterministic marker paste
-
-
-# ------------------------------------------------------------------------
-# Brain profiles (named presets)
-# ------------------------------------------------------------------------
-# Put YAML in one of:
-#   ~/.egpt/brains/alex.yaml                  # personal
-#   ./.egpt/brains/alex.yaml                  # project-local
-#   <egpt repo>/brains/type/alex.yaml         # repo-defined
-#
-# Example:
-#   name: alex
-#   type: codex                               # codex | code | cdp_chat | cdp_claude
-#   model: gpt-5.4-mini
-#   effort: low
-#   cwd: C:\Users\an\src\egpt
-#   summary: alex                             # inject ~/.egpt/summaries/alex.md on attach
-#   chat_name: Alex
-#
-/profiles                                     # list configured profiles and paths
-/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
-                                              # create ~/.egpt/brains/alex.yaml
-/profile 69f68099-5cf8-8328-ad8f-37d991ff0071 alex --attach
-                                              # bare id -> ChatGPT URL, then attach
-/attach alex                                  # start profile "alex" as @alex
-/sessions                                     # shows profile, cwd, model, effort, thread/log
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Resume a past ccode session (real session continuity, no cloning)
-# ────────────────────────────────────────────────────────────────────────
-/history                                      # list Claude Code JSONLs on disk
-/session 26b30e57                             # resume by 8-char id; cwd auto-detected
-/session none                                 # back to stateless mode (.md file is memory)
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Multi-brain etiquette (rooms with several AIs)
-# ────────────────────────────────────────────────────────────────────────
-/rules                                        # write room rules into the file:
-                                              #   - reply only when addressed or relevant
-                                              #   - reply "..." when nothing to add
-                                              #   - use @mention to address each other
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Telegram bridge (drive egpt from your phone)
-# ────────────────────────────────────────────────────────────────────────
-# 1. Talk to @BotFather on Telegram, /newbot, get a bot_token.
-# 2. Find your numeric Telegram user ID (e.g. via @userinfobot).
-# 3. Write ~/.egpt/config.json:
-#    {
-#      "telegram": {
-#        "bot_token": "1234567890:AA...",
-#        "allowed_users": [<your numeric user id>]
-#      }
-#    }
-# 4. Send any message to your bot once so Telegram routes future replies.
-# 5. Launch egpt — see "telegram bridge enabled" in the transcript.
-#
-# Then from the phone:
-#   "hello"                # logged/replicated; routes to brains only after /use
-#   "@ccode1 git status"   # routes to a specific session
-#   "@codex exec: pwd"     # run an operator command on the computer
-#   "@codex exec: cd ~/src/siran/writing"  # change codex cwd
-#   "/sessions"            # any slash command works (it's the same submit())
-#   "/save my-thought"     # zombie commands work even with no brain present
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Reusable distillations (saved in ~/.egpt/summaries/<name>.md)
-# ────────────────────────────────────────────────────────────────────────
-/save my-answer                                # save the latest non-system msg verbatim
-/summarize today                               # fresh agent compresses the room → today.md
-/summaries                                     # list saved summaries
-/inject today                                  # drop today.md into room as a system note
-
-# typical flow:
-#   long conversation in room A about topic X
-#   /summarize topic-x         → ~/.egpt/summaries/topic-x.md
-#   in a new egpt session against room B:
-#   /inject topic-x            → topic-x context now ambient in room B
-#   /inject topic-x codex      → topic-x context sent directly to codex
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Recovery / when things go weird
-# ────────────────────────────────────────────────────────────────────────
-Ctrl+R                                        # force-reset UI if a brain hangs
-                                              # (the in-flight stream is abandoned)
-/refresh                                      # re-poll the CDP tab; append latest text
-                                              # (use when streaming finalized too early)
-/last 20                                      # the file is the truth — read it
-/exit                                         # then relaunch if Ink itself wedges
-
-
-# ────────────────────────────────────────────────────────────────────────
-# Working with the conversation file alongside egpt
-# ────────────────────────────────────────────────────────────────────────
-# in another terminal:
-tail -f ~/notes/today.md                      # follow turns as they land
-vim   ~/notes/today.md                        # edit history (the file is canonical)
-rg "claude_code" ~/notes/                     # grep across many conversations
-```
+eGPT runs as a background service (the daemon supervises the spine) against a
+profile directory `EGPT_HOME` (default `~/.egpt`; the rewrite node runs with
+`EGPT_HOME=~/.egpt`). It reaches every network through **Beeper Desktop's local
+API**. You operate it from your **Self-DM** on any surface.
 
 ---
 
-## What egpt is, in one paragraph
+## 1. Commands (from the Self-DM)
 
-A small Node daemon that gives you one terminal-based chat surface where multiple AIs participate as named peers in a shared Markdown-backed conversation. Talks to **ChatGPT.com / Claude.ai** by driving real browser tabs over Chrome DevTools Protocol (no API tokens — uses your existing accounts) and to **Claude Code / Codex** as local CLIs (full shell + filesystem access). The conversation file is yours, portable, and the only canonical record.
-
----
-
-## The conversation file
-
-Every chat is a plain Markdown file. The default is `./conversation.md` in the directory where you ran `node egpt.mjs`. Override with the first argument:
-
-```bash
-node egpt.mjs ~/notes/2026-05-02.md
-```
-
-The format:
-
-```markdown
-# Conversation
-
----
-
-## 2026-05-02 14:32 — You
-hola, qué tal?
-
-## 2026-05-02 14:32 — ccode1
-Bien gracias. ¿En qué te ayudo?
-
-## 2026-05-02 14:33 — You
-@cgpt1 y tú qué dices?
-
-## 2026-05-02 14:33 — cgpt1
-Coincido con ccode1 en lo principal, pero...
-```
-
-This file is **the source of truth**. egpt appends to it on every turn. You can:
-
-- `tail -f` it in another terminal to follow live
-- Edit it in vim — delete embarrassing turns, fix typos, condense earlier sections
-- Copy it into a new egpt session as a starting point
-- Grep across many of them with `rg`
-
-When using a CDP brain or `claude --resume`, the brain has its *own* native memory (the chatgpt tab keeps its history; claude has its JSONL). The file remains the cross-brain log everyone in the room sees.
-
----
-
-## Sessions and brains
-
-A **session** is a named participant in the conversation. It has:
-
-- A **brain** — the type of AI (`ccode`, `codex`, `chatgpt-cdp`, `claude-cdp`)
-- A **name** — like `ccode1`, `codex1`, `cgpt1`, `claude1`
-- **Options** — which tab, which Claude Code session ID, etc.
-
-### Auto-naming
-
-Sessions auto-name by convention:
-
-| Brain          | Session prefix | Example names                |
-|----------------|----------------|------------------------------|
-| `ccode`        | `ccode`        | `ccode1`, `ccode2`, `ccode3` |
-| `chatgpt-cdp`  | `cgpt`         | `cgpt1`, `cgpt2`             |
-| `claude-cdp`   | `claude`       | `claude1`, `claude2`         |
-| `codex`        | `codex`        | `codex1`, `codex2`           |
-
-Numbers grow per brain. Names are auto-assigned on `/open` and `/attach`. You can pass an explicit name to override (`/open chatgpt-cdp gpt-research`).
-
-### What egpt does at startup
-
-1. Starts the room using the chosen Markdown conversation file.
-2. Detects brain Chrome on port 9221 (its private debug port). If found and the
-   token-auth proxy isn't already running on 9222, egpt auto-starts the proxy
-   and writes `~/.egpt/cdp-token` so future calls go through it.
-3. Once the proxy is up (port 9222), scans tabs and auto-attaches each
-   matching one as `cgpt1`, `claude1`, etc.
-4. Leaves the room otherwise empty until you `/open` or `/attach` a participant.
-
-If Chrome isn't running, slash commands still work in empty-room mode. Type `/chrome` to launch a brain Chrome with the extension, or add a local brain with `/open ccode ccode1`, `/open codex`, or `/attach codex`.
-
-### Brain profiles
-
-A brain profile is a YAML preset for a named participant. `/attach alex` looks for `alex.yaml` in:
-
-- `./.egpt/brains/` for project-local profiles
-- `~/.egpt/brains/` for personal profiles
-- `<egpt repo>/brains/type/` or `<egpt repo>/brains/types/` for repo-defined profiles
-
-Minimal Codex profile:
-
-```yaml
-name: alex
-type: codex
-model: gpt-5.4-mini
-effort: low
-cwd: C:\Users\an\src\egpt
-summary: alex
-chat_name: Alex
-```
-
-`type` accepts `codex`, `code`/`ccode`, `cdp_chat`, and `cdp_claude`. `summary: alex` injects `~/.egpt/summaries/alex.md` into the new session on attach. Native Codex/Claude thread IDs are not resumed by default; set `resume: true` or `session_id: <id>` if you explicitly want native resume instead of a fresh session plus summary context.
-
-For existing web conversations, let egpt write the minimal profile:
+A slash command typed in an authorized chat is intercepted by the node itself,
+not answered by the persona. Authorization = the surface's own `chat_id`
+(Self-DM), an entry in that surface's `allowed_users`, or the account owner.
 
 ```text
-/profile alex https://chatgpt.com/c/69f68099-5cf8-8328-ad8f-37d991ff0071
-/profile 69f68099-5cf8-8328-ad8f-37d991ff0071 alex
+/status                 compact node health (fenced yaml): git sha + subject,
+                        pid, uptime, last alive-beat age, heartbeat count,
+                        conversation count, this chat's E mode
+/e auto <mode> [chat]   set a chat's E reply mode. omit <chat> = this chat;
+                        from the Self-DM name a target (slug/name fragment, or
+                        a verbatim @jid / room-id)
+/e                      arm the re-point WIZARD for this chat
+/e <fragment>           arm the wizard for another chat (target resolved like
+                        /e auto's)
+/restart                bounce the node (daemon respawns the current checkout)
+/upgrade                git pull + npm install + rebuild, then respawn
+/rewind <ref>           git checkout <ref>, reinstall, respawn
 ```
 
-The first form is `<name> <urlOrId>`; the second is `<urlOrId> <name>`. Bare UUIDs become `https://chatgpt.com/c/<id>`. Full `chatgpt.com`, `chat.openai.com`, and `claude.ai` URLs are detected from the host. Profiles are saved to `~/.egpt/brains/` by default; use `--project` or `--repo` to write elsewhere, `--force` to overwrite the same file, and `--attach` to attach immediately after saving.
+**Reply modes** (`/e auto`): `on` (receive every burst, reply per personality) ·
+`mute` (receive, never reply) · `mention-direct` (reply only when `@e` starts the
+message or it replies to E) · `mention` (reply when `@e` appears anywhere, or a
+reply to E — the default) · `off` (don't receive at all).
 
-The same writer works from the shell:
+### The `/e` wizard
 
-```bash
-node egpt.mjs profile alex 69f68099-5cf8-8328-ad8f-37d991ff0071
-```
+Bare `/e` (this chat) or `/e <fragment>` (another chat) arms a guided re-point.
+Operator-only, 5-minute TTL; answer with the numbered picks, `b`/`back`,
+`x`/`cancel`. While armed, your next plain message is treated as a wizard answer
+(it never falls through to the persona); a slash command still runs and leaves
+the wizard armed.
 
-Runtime state is written to `~/.egpt/brain-state/<profile>.json`. It records the last cwd, thread id, model/effort, log path, and tab target when available. `/profiles` lists profiles; `/sessions` shows which live sessions came from a profile.
+1. **Agent type** — the list is discovered from `src/brains` + your
+   `config/agents/*.yaml`, filtered to types that resolve, each shown with its
+   composition (model/effort/personality); the current one is marked. **Picking
+   an existing type applies immediately** with that type's pinned model/effort.
+2. **`custom`** — the final option builds a NEW type: model → effort →
+   personality → name (named last; a collision re-prompts). It writes
+   `config/agents/<name>.yaml` (and, for free-text personality, a flat
+   `config/identities/<name>.md`), then applies it.
 
-### Routing
+On done the target conversation's `readonly` is frozen (keeping its `threadId`,
+so context survives the re-point) and its warm session is evicted (it respawns on
+the next turn — no `/restart` needed).
 
-A leading `@name` sends a turn to one session:
+### Lifecycle without a chat (the ingest box)
 
-```
-@cgpt1 ¿qué piensas?
-```
-
-The `@mention` syntax is recognized only at the **start** of a message.
-Messages without a leading mention do not automatically run every brain. They
-route only to the active session list chosen with `/use`. If no active sessions
-are set, plain text is kept as room text and egpt asks you to `@mention` or
-`/use <name>` first. If the room is empty, egpt does not append the message to
-the conversation file.
-
-```
-@codex exec: pwd                              # one session
-/use cgpt1,claude1                            # set active recipients
-hello all                                     # broadcast only to active recipients
-```
+Drop a file whose content is the command line into `~/.egpt/state/ingest/` —
+the spine sweeps that folder (~1 s), runs the line, and consumes the file. Write
+to a temp name then rename for atomicity (the sweep skips dotfiles + `*.tmp`).
+This is how `/restart` / `/upgrade` / `/rewind <ref>` work when you can't reach a
+chat.
 
 ---
 
-## The brain types
+## 2. Config (`~/.egpt/config/config.yaml`)
 
-### `ccode` (local Claude Code CLI)
+Start from `config/skeletons/config.yaml` (every key is documented inline and
+registered in `config/config-schema.mjs`). What ships uncommented is a working
+default; commented blocks are optional overrides.
 
-Spawns `claude --print` as a subprocess. Two modes:
+| Key | Purpose |
+|---|---|
+| `beeper_token` | The one credential — Beeper Desktop → Settings → Developer → Desktop API. |
+| `user_name` | Your handle, shown in cross-surface mirroring as `<user_name>@<surface>`. |
+| `emojis` | Author tags for mirroring: `user` / `egpt` / `persona` / `human`. |
+| `agents` | **Required.** The unified registry: persona, local beings, and mesh relays. Each agent = `{ configuration, handles, relay_channel? }`. `configuration` names an agent-type file (`config/agents/<type>.yaml`) or the literal `relay`. A node without an `agents` block or a persona entry (handles include `e`/`egpt`) refuses to boot. |
+| `whatsapp` / `telegram` / `signal` | Per-surface auth: `{ chat_id, allowed_users }` (empty = deny). Ids are per-surface namespaces. `whatsapp` also carries the transport config (`networks: []` = the firehose). |
+| `default_time_zone` | Interprets timezone-less heartbeat `when:` times (IANA name or an alias like `ET`/`PT`). |
+| `warm` | Warm-session policy: `max` (how many chats stay resident) + `idle_ttl_by_class.conversation` (quiet-time before eviction; default 15m, 0 = never). A chat overrides its own TTL in its folder's `config.yaml`. |
+| `flood` | Send-flood guard: more than `limit` bot sends to one chat within `window_ms` pauses THAT chat for `cooldown_ms`. |
+| `compaction` | After a quiet `cooling_ms`, if the warm session grew past `ratio` of the context window, native-`/compact` it in place (transcript.md keeps the full record). |
+| `heartbeats` | Declarative timers — see §3. |
+| `transcription_service` | Voice-note transcription — see §4. |
 
-**Stateless (default)** — each turn pipes the entire `.md` file as input. Claude reads the whole conversation as one big prompt, replies, exits. The `.md` file IS the memory; ccode itself has no continuity between turns.
-
-**Resume mode** — set with `/session <id>`:
-
-```
-/history                                      # list available Claude Code JSONLs
-/session 26b30e57                             # resume by id (cwd auto-detected)
-```
-
-In resume mode, egpt runs `claude --resume <id>` each turn and pipes only the *new* user message. Claude reads its native JSONL session memory directly. This is real session continuity — same memory as if you were typing in the Claude Code TUI.
-
-Trade-off: in resume mode, claude only sees the new turn, not the cross-brain shared room. The `.md` file still gets appended for human readability.
-
-### `chatgpt-cdp`, `claude-cdp` (web UI via CDP)
-
-Drive a tab in a CDP-exposed Chrome instance. Each session is bound to one tab; the tab keeps its own conversation history natively.
-
-Setup:
-
-```bash
-node egpt.mjs                                 # then /chrome inside to launch the brain Chrome
-# log in to chatgpt.com / claude.ai once if needed (profile persists at ~/.egpt/chrome/profiles/brain)
-# start or open a conversation in that tab
-```
-
-The tab gets auto-attached on startup. Or `/open chatgpt-cdp` to launch a fresh one.
-
-How it works internally:
-
-- egpt opens a WebSocket to the tab's CDP URL
-- Sends `Runtime.evaluate` to paste the message into `#prompt-textarea` and click submit
-- Polls the DOM every 250ms for the latest assistant message
-- Resolves when the stop button is gone AND text is stable for ≥1 second
-- Has a 5-second text-stability fallback if stop-button detection fails entirely
-
-Selectors use **only** locale-stable signals: `data-testid`, `id`, `data-is-streaming`. No `aria-label` (those get translated and overmatch).
-
-### `codex` (local CLI + shell operator)
-
-Address `@codex ...` to use the local Codex integration. `@codex exec: <command>` runs a shell command in the Codex session's persistent cwd and returns:
-
-```
-$ <command>
-<stdout/stderr>
-```
-
-`@codex exec: cd <dir>` updates that cwd for later commands. Non-`exec:` messages are passed to `codex exec` non-interactively, and later turns resume the Codex thread. Codex does not receive the whole egpt transcript automatically; summarize and inject context intentionally with `/summarize <name>` followed by `/inject <name> codex`.
-
-Codex storage is separate from the egpt room:
-
-- `conversation.md` is the shared room transcript.
-- `~/.egpt/codex/<session>.jsonl` is egpt's tail-able mirror of Codex events.
-- `~/.codex/sessions/.../rollout-<timestamp>-<thread-id>.jsonl` is Codex's native rollout file.
-
-Run `/sessions` after the first Codex turn to see the Codex thread id, cwd, model, effort, and egpt mirror log path. egpt invokes Codex with `model_reasoning_effort="low"` by default because that is the lowest effort supported by this CLI; set `EGPT_CODEX_REASONING_EFFORT=medium`, `high`, or `xhigh` before launch to override, or set `effort:` in a brain profile. A Codex profile can also pass `model:` through to `codex exec -m`.
+Agent types are resolved across layers, most-specific winning: `src/brains`
+(built-in) < `config/agents` < a conversation's own `brains/`. A type's
+`allowed_tools` LIST confines its file tools to the conversation dir +
+`allowed_paths`; `allowed_tools: all` makes it trusted/unconfined. Point
+`agents.egpt.configuration` at whichever type new conversations should start on.
 
 ---
 
-## Multi-brain rooms
+## 3. Heartbeats + textecutables
 
-Once two or more AI sessions share a conversation, you want some etiquette. Two mechanisms:
+A heartbeat is a declarative timer: `<name>: { <trigger>, <action> }`. It can
+live in the node's `heartbeats:` config block, or in any conversation's /
+room's own `config.yaml`.
 
-### Routing (egpt does it for you)
+- **Trigger** — `frequency: <ms|"30s"|"5m"|"1.5h">` (recurring) OR `when: <one-shot
+  wall-clock time>` (`7/2/2026 8:20a`, `2026-07-02T08:20`, ...; zone from
+  `default_time_zone`). Both set = invalid, skipped.
+- **Action** — `command: <shell line>` OR `ai_run: <script.x.md>` (sugar that
+  runs a textecutable). Both set = invalid, skipped.
 
-Use `@session` when you want a single recipient, especially for operator
-commands like `@codex exec: ...`. Use `/use <name>` when you want ordinary
-plain text to route to one session, and `/use a,b,c` when you intentionally want
-multi-brain broadcast. `/use clear` returns plain text to idle room text.
+The spine materializes the resolved set to `state/heartbeats.readonly.yaml`
+(spine-written — don't edit it; edit `config.yaml` + `/restart`). **Hot reload:**
+delete `state/heartbeats.readonly.yaml` and the spine re-reads within ~30 s (new
+chat folders picked up too). Paste-ready template: `config/skeletons/heartbeats.yaml`.
 
-### Polite silence (the brain decides)
-
-When a brain *does* see a message (e.g., via `@mention`), it doesn't have to reply. By convention, replying with literally `...` (three or more dots, or the Unicode ellipsis `…`) means "acknowledged, nothing useful to add." egpt detects this and:
-
-- **doesn't append** the silence to the file (keeps the canonical log clean)
-- shows a small `cgpt1 acknowledged silently (...)` note in the transcript
-
-For brains to honor this convention, they need to know about it. Use `/rules` once at the start of a multi-brain conversation:
-
-```
-/rules
-```
-
-This writes a system message into the file describing:
-- the silence convention,
-- when to speak (addressed, useful, asked by admin),
-- the `@mention` mechanism for participants to ask each other things.
-
-Any brain that reads the `.md` (stateless ccode, all CDP brains) will absorb this as ambient context.
-
-### Sending local file excerpts
-
-Use `/send-file` when the source of context is already on disk but the range is
-best described in natural language. A local operator prepares the excerpt first,
-then egpt sends the prepared file to the target:
-
-```text
-/send-file via=codex1 @cgpt1 "find the TPOEF book and send everything before chapter 8"
-/send-file via=codex1 "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" @cgpt1 "before chapter 8"
-/send-file "C:\Users\an\.egpt\prepared-files\2026-05-03T01-03-30-619Z-codex1-null" @cgpt1
-```
-
-The source path is optional; if omitted, the operator infers/finds the file from
-the instruction and local context. The target `@session` must already be
-registered. If `via=` is omitted, egpt uses the only registered local operator
-when there is exactly one.
-
-If a prepared excerpt is over the default 120k character guard, egpt saves it
-and does not paste it yet. Use the reported file path with `/send-file
-"<prepared-path>" @target` to send exactly that prepared artifact. Paths under
-`~/.egpt/prepared-files/` are treated as already prepared and are sent directly
-instead of going back through the operator.
-
-Use `/paste-file` when you already know the exact marker and want deterministic
-slicing without asking an operator:
-
-```text
-/paste-file alex "C:\Users\an\src\siran\writing\site\books\The Physics of Energy Flow\The Physics of Energy Flow.md" --before "# 8."
-```
-
-Both commands send the excerpt to the target session but only write a short
-system note to `conversation.md`. By default egpt sends only the file content;
-it does not prepend response instructions. Add `--ask "what do you think of
-Part I?"` to append a question after the pasted content. `/paste-file` marker
-options are plain substring matches:
-
-- `--before <marker>` excludes the marker and everything after it
-- `--after <marker>` excludes everything through the marker
-- `--from <marker>` includes the marker and everything after it
-- `--to <marker>` includes text through the marker
-
-Large accidental pastes are capped at 120k characters; use `--max 0` or `--all`
-to send a larger excerpt intentionally.
+A **textecutable** is a `*.x.md` file whose interpreter is one fresh `claude`
+turn with tools — the file IS the program (numbered steps, run in the file's own
+folder). The `.x.md` double extension is consent (a plain `.md` never runs). Each
+run appends to `<name>.x.md.log`. Template: `config/skeletons/script.x.md`. Point
+a heartbeat at one with `ai_run:`. There is no `/x` command.
 
 ---
 
-## Slash command reference
+## 4. Transcription
 
-The shell and extension `/help` output is generated from `interpreter.mjs`,
-which is the source of truth. The list below mirrors the current registry.
-Surface tags: `[shell]` means shell-only, `[ext]` means extension-only, and
-`[both]` works on both surfaces.
+Voice notes are transcribed by a per-note fallback **chain**: each engine in
+`fallback_order` is tried in order, first transcript wins. Configure under
+`transcription_service`; `use_config` names the active profile (the one line that
+differs machine-to-machine). Engine `type`s:
 
-```
-Room:
-  /rules [shell]                write room etiquette into the file
-  /last [N] [shell]             tail N messages (default 10)
-  /clear [ext]                  clear the extension display
-  /channels [N] [M] [both]      list active WhatsApp chats as @waN
-  /join @waN [ext]              bind extension outbound to chat N
-  /unjoin [ext]                 release the extension WhatsApp binding
-  /status [shell]               room snapshot: sessions, files, config
-  /file [shell]                 show the conversation file path
-  /conversations [shell]        list available conversation files
-  /conversation <name|path>     switch to a conversation file [shell]
-  /exit [shell]                 quit egpt
-  /version [shell]              show commit/branch/tag/dirty state
-  /upgrade [shell]              daemon pull/install/build/restart
-  /restart [shell]              daemon restart from current disk
-  /rewind <ref> [shell]         daemon checkout/install/build/restart
+- `whisper-server-remote` — POST to another node's GPU worker (`endpoint` +
+  shared HMAC `token`; a dead server just costs a fallback).
+- `whisper-server-local` — a resident whisper.cpp server (lazy-spawned).
+- `whisper-cli` — per-note binary; the always-available floor.
 
-Sessions (named participants in the room):
-  /open <brain> [name] [both]   open a tab/subprocess and register it
-  /attach ... [both]            attach CDP tab, profile, or rescan
-  /detach <name> [both]         remove a session
-  /use [<name>|clear] [both]    set active recipients for plain text
-  /sessions ... [both]          list sessions; manage default operator
-  /handle <old> <new> [shell]   rename a session
-  /emoji [name emoji] [shell]   show or set a session avatar
-  /bio [name [text]] [shell]    show or set a session bio
-
-Profiles (~/.egpt/brains/*.yaml):
-  /profiles [shell]             list YAML brain profiles
-  /create-profile [name]        interactive profile wizard [shell]
-  /profile <name> <url-or-id>   quick-create a ChatGPT/Claude URL profile [shell]
-
-Browser brains:
-  /chrome [shell]               launch the brain Chrome with extension loaded
-  /tabs [all] [both]            list open Chrome pages
-  /refresh [@name] [shell]      re-poll a CDP tab; append full reply
-  /browse ... [shell]           open URL or delegate browsing to an operator
-  /continue [shell]             resume after browser.waitForHuman() pause
-  /mirror [@target] [both]      forward last observed message
-
-Files:
-  /send-file ... @name "instr"  prepare and send a file excerpt [shell]
-  /paste-file <name> <path>     paste a local file/excerpt [shell]
-
-Local brains/operators:
-  /history [N] [shell]          list recent ccode sessions on disk
-  /session [name] [id|none]     manage ccode resume id [shell]
-  @codex exec: <command>        run shell command in codex cwd
-  @codex exec: cd <dir>         change codex cwd for later commands
-
-Reusable distillations (~/.egpt/summaries/<name>.md):
-  /summarize [all|last N] <name> save a compressed room summary [shell]
-  /inject <name> [session]      inject a saved summary [shell]
-  /save <name> [shell]          save the latest non-system message verbatim
-  /summaries [shell]            list saved summaries
-  /prompts [on|off] [shell]     show/hide prompts sent to operators
-
-Rooms:
-  /room ... [shell]             show, switch, create, join, leave, or delete room
-  /rooms [shell]                list legacy saved room snapshots
-  /save-room [name] [shell]     snapshot the current room lineup
-
-Appearance & config:
-  /telegram ... [both]          manage Telegram polling/handoff/auth users
-  /whatsapp ... [shell]         start/pair/disconnect/authorize WhatsApp
-  /config [key [value]] [both]  read or write config
-  /themes [shell]               list available color themes
-  /theme <name|next|prev>       switch theme live [shell]
-  /bus-key ... [ext]            manage extension bus signing key
-  /help [both]                  show generated help
-  /log [N=30] [shell]           show recent telemetry/log entries
-  /logs [N=30] [shell]          alias for /log
-  /egpt ... [shell]             manage the node-global @egpt persona
-
-Conversation routing:
-  @<name> <message>             address one session for THIS turn only
-  /use <name>                   route later plain text to one session
-  /use a,b                      route later plain text to multiple sessions
-  /use clear                    stop plain-text routing
-
-tabSpec accepts: full URL · UUID · targetId · 6+ char id prefix
-Brains: ccode, codex, chatgpt-cdp, claude-cdp
-
-Brain Chrome lifecycle is automatic — the shell handles spawn + connect.
-Close the Chrome window manually when you're done.
-```
+A change of *winning* engine posts one `⚠️`/`✅` to the operator Self-DM
+(transition-only, never per note).
 
 ---
 
-## Brain Chrome lifecycle
+## 5. Operational notes
 
-Spawn is explicit; attach is automatic. On startup, `egpt.mjs`:
-
-1. Checks for the proxy on `:9222`. If up, attaches.
-2. Else checks for raw Chrome on `:9221`. If up, starts the proxy and attaches.
-3. Else surfaces a hint: type `/chrome` to launch one, or start Chrome yourself.
-
-`/chrome` (shell command) spawns Chrome with `--remote-debugging-port=9221 --user-data-dir=~/.egpt/chrome/profiles/brain --load-extension=<repo>/extension/dist`. A 5-second poll then picks up the new instance and proceeds with proxy + attach. The same poll handles a manually-launched Chrome (e.g. via desktop shortcut) and recovery if the connection drops.
-
-Chrome is spawned **detached**, so it survives shell restart. Close it
-manually when you're done with the session. The profile at
-`~/.egpt/chrome/profiles/brain` persists your ChatGPT/Claude logins across runs.
-
-To start Chrome manually with the right flags (no shell needed):
-
-```bash
-google-chrome \
-  --remote-debugging-port=9221 \
-  --user-data-dir=~/.egpt/chrome/profiles/brain \
-  --load-extension=~/src/egpt/extension/dist \
-  --no-first-run --new-window
-```
-
-Or on Windows (PowerShell):
-
-```powershell
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=9221 `
-  --user-data-dir="$env:USERPROFILE\.egpt\chrome\profiles\brain" `
-  --load-extension="$env:USERPROFILE\src\egpt\extension\dist" `
-  --no-first-run --new-window
-```
-
----
-
-## Recovery
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `Cannot reach Chrome at localhost:9222` | Brain Chrome isn't running | type `/chrome` inside egpt to launch one, or run Chrome manually with the flags in the lifecycle section above |
-| Streaming reply seems frozen, no progress | Premature finalize OR locale-specific selector miss | `Ctrl+R` to reset, then `/refresh` to pull the actual final text from the tab |
-| `auto-bound cgpt1 to tab abc12345…` | Old tab closed; egpt found a single matching replacement | Normal recovery — nothing to do |
-| Multiple `cgpt` tabs open and a brain-name address is ambiguous | Ambiguity is intentional — pick one | `@cgpt2 ...` (use the explicit name) |
-| Spinner counts up past 30s with no first token | ccode processing a large file | Wait, or `Ctrl+R` and try with a shorter `/file` |
-| egpt UI itself hangs (Ink wedge) | Rare; usually after an Ink render error | `/exit` and relaunch — the file is intact |
-| `claude not found on PATH` | Claude Code CLI not installed | `npm i -g @anthropic-ai/claude-code` |
-| Want to undo a brain reply | Edit the .md file directly | `vim` — remove the offending `## ts — name` block |
-
----
-
-## Layout
-
-```
-~/src/egpt/
-├── egpt.mjs               # main app — Ink UI, slash commands, room state
-├── interpreter.mjs        # shared input parser + command registry (shell + extension)
-├── brains/
-│   ├── claude-code.mjs    # subprocess brain (stateless or --resume)
-│   ├── codex.mjs          # Codex CLI + exec: shell operator
-│   ├── chatgpt-cdp.mjs    # ChatGPT.com selectors + inject + poll
-│   ├── claude-cdp.mjs     # Claude.ai (same shape, different selectors)
-│   └── type/              # repo-defined YAML brain profiles + skeleton
-├── bridges/
-│   └── telegram.mjs       # Telegram Bot API bridge (long-poll + send)
-├── tools/
-│   ├── cdp.mjs            # shared CDP plumbing: listTabs, openTab, peekTab,
-│   │                      #   streamFromTab, browseTab, closeBrowser, isRunning
-│   ├── cdp-proxy.mjs      # token-auth reverse proxy (Chrome:9221 → LAN:9222)
-│   ├── chrome-launcher.mjs# locate + spawn Chrome (one Chrome hosts brain tabs, extension, and bus)
-│   ├── browser-tools.mjs  # CDP control library for operator scripts
-│   ├── template.mjs       # command prompt template loader
-│   └── theme.mjs          # color theme loader + listThemes()
-├── commands/              # operator prompt templates ({{variable}} substitution)
-│   ├── browse.md          # CDP browser-automation task
-│   ├── codex-task.md
-│   ├── inject.md
-│   ├── send-file.md
-│   └── summarize.md
-├── extension/             # Chrome MV3 extension (same brains, no external ports)
-│   ├── manifest.json
-│   ├── build.mjs          # esbuild; shims tools/cdp.mjs → chrome.debugger adapter
-│   └── src/
-│       ├── tab/           # main UI (App.jsx, Input.jsx, style.css, index.html)
-│       ├── settings/      # settings page (Settings.jsx, style.css)
-│       ├── tools/cdp-ext.js  # chrome.debugger adapter (drop-in for tools/cdp.mjs)
-│       ├── storage.js     # IndexedDB conversation history
-│       └── background.js  # service worker (opens the tab)
-├── themes/                # 10 built-in color themes (override in ~/.egpt/themes/)
-│   ├── catppuccin.json    # shipped default
-│   └── ...
-├── package.json           # type:module · ink + react + yaml + codemirror
-├── README.md              # what & why
-└── MANUAL.md              # this file
-
-~/.egpt/
-├── config.json            # global config (bot tokens, theme, etc.) — DO NOT commit
-├── chrome/profiles/
-│   ├── brain/             # persistent Chrome profile for the brain Chrome
-│   └── extension/         # (future) dedicated Chrome for the extension
-├── cdp-token              # token for the localhost-LAN CDP proxy
-├── brain-state/<name>.json # runtime state per attached brain profile
-├── prepared-files/        # excerpts staged by /send-file
-├── codex/<session>.jsonl  # egpt's mirror of codex events
-├── summaries/<name>.md    # saved & summarized conversations
-└── themes/<name>.json     # user theme overrides (same keys as themes/*.json)
-
-.egpt/                     # project-local config (in cwd, can be committed)
-└── config.json            # overrides ~/.egpt/config.json (keys: theme, show_prompts, unix_paths)
-```
-
-A few thousand lines of code. The shell has no build step (plain Node ESM); the
-browser extension is bundled with esbuild via `npm run build:ext`. Runtime
-dependencies: `ink`, `react`, `react-dom`, `yaml`, plus CodeMirror for the
-extension input.
-
----
-
-## Conventions and ergonomics worth knowing
-
-- **Auto-naming, never required**: pass a name explicitly when you want one (`/open chatgpt-cdp planning`), otherwise let egpt pick (`cgpt1`, `cgpt2`, ...).
-- **Auto-attach on startup**: every matching tab in the brain Chrome is registered as a session before the first prompt. You don't run `/attach` unless you opened tabs after egpt started.
-- **The `.md` file is the truth for routing**: if you ever feel egpt and the brains are out of sync about what was said, trust the `.md`. CDP brains have their own tab memory; you can manually paste the `.md` contents into any tab to reset its internal context.
-- **Streaming and elapsed time visible always**: when a brain is working, you see a spinner + elapsed seconds + char count of the in-progress reply. If those numbers stop moving, something is stuck — `Ctrl+R` to escape.
-- **Locale-stable selectors**: the CDP brains do not look at any user-facing UI text (`aria-label`, button labels). Only `data-testid`, `id`, and DOM-state attributes. Switching ChatGPT to a different language doesn't break egpt.
-
----
-
-## See also
-
-- [`README.md`](./README.md) — the project's "why" and architecture overview
-- The conversation file format — read your own `conversation.md` to see how plain it is
-
-The seed of egpt is small enough that all of `egpt.mjs` is worth a read end-to-end. Most of what's here is one or two lines of code per concept; the architecture is just the names we agreed on for those lines.
+- **The node runs the current checkout.** `/restart` boots whatever is checked
+  out — never restart with uncommitted edits mid-flight.
+- **Liveness** = the mtime of `state/alive.txt` (the alive heartbeat rewrites it
+  each tick); the daemon's deadman respawns a wedged spine. The spine pid lives
+  in `state/spine.pid` (singleton guard).
+- **Install sanity check:** `node setup/verify-install.mjs [service] [egptHome]`
+  (read-only) probes the live node — service-log paths, profile shape, liveness,
+  `claude` on PATH.
+- **Two nodes on one Beeper double-answer every `@e`** — only run one spine
+  against a given Beeper Desktop login.

@@ -8,7 +8,7 @@
 ## 1. Where we are
 
 Branch `rewrite`, suite ~1403 tests / 0 fail. The node runs live as the
-`egpt2-daemon` service, profile `~/.egpt2`, from this working tree. All of the
+`egpt2-daemon` service, profile `~/.egpt`, from this working tree. All of the
 following is LANDED, test-locked, and (where marked) live-verified:
 
 - Core pipe (receive → gate → brain → stream-reply → send), gating modes
@@ -43,7 +43,7 @@ following is LANDED, test-locked, and (where marked) live-verified:
   UNIT-LOCKED ONLY — live 2-node smoke needs DOLLY awake.
 - Agents registry: `agents: { <name>: { type, handles, relay_channel? } }` —
   ONE block for persona + local beings + relay targets; type files in the
-  PROFILE's config/agents/; skeletons seed to ~/.egpt2/config/skeletons
+  PROFILE's config/agents/; skeletons seed to the profile's config/skeletons
   (copy-if-missing, operator edits sacred)
 - Textecutables: `*.x.md` = plain-text script, one fresh claude turn executes it
   (CLI / heartbeat `ai_run:` / ask E — NO /x command, ever)
@@ -83,6 +83,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   transcription roots under <conv>/media); (2) `setup/verify-install.mjs` (read-only,
   `node setup/verify-install.mjs`) checks the LIVE box for NSSM service-log drift +
   profile shape + liveness + claude on PATH — the drift no vitest can see
+- **Repo cleanup (operator 2026-07-03)** — deleted 6 stale root docs (root `.md`
+  18→12) + 14 docs/ plans & handoffs (docs/ 18→4) + 2 stale workspace files + 3
+  orphaned scripts (backfill + 2 whisper probes) + config/heartbeats/ (superseded by
+  config/skeletons/heartbeats.yaml); shipped plan docs removed per precedent. README /
+  MANUAL / TESTING rewritten to v2 truth (lean). Root IDEAS.md seeds merged into
+  docs/IDEAS.md. KEPT by decision: MESSAGES-FIRST-CLASS-PLAN.md (its Phases 3–5 +
+  Phase-1 OWED reply-path restructure are NOT shipped — only Phase 1's inbound `#id`
+  and Phase 2 reactions landed; see §4 note).
 
 ## 2. In flight right now
 
@@ -125,6 +133,25 @@ following is LANDED, test-locked, and (where marked) live-verified:
   last-seen, that folder's heartbeats, media count, live participants/admins when the API
   exposes them. Existing pure libs to reuse: conversation-stats.mjs (file-derived render),
   conversation-members.mjs (roster). Name history = renames.log (done).
+  - **Scope amendment (operator 2026-07-03):** the stats service runs PER-MESSAGE
+    and ASYNCHRONOUS — it does the counters AND resolves **LID↔phone identity
+    mapping** as a per-message duty (the old src/identity.mjs + src/lid-map.mjs
+    modules are the reference material; they STAY for that reason, kept off the
+    cutover deletion list). "LID<->phone is done by the stats module per message,
+    among other statistics, asynchronous."
+  - **ALIAS MAP idea (operator 2026-07-03):** eGPT should map ANY sender id — a
+    pushname, a number, a Beeper id — to an operator-chosen ALIAS, so a person is
+    one stable identity across surfaces/ids. Candidate home: the stats module
+    (per-message it already sees every id form) and/or config. Design open.
+
+- **Self-setup onboarding** (operator 2026-07-03, verbatim intent — design open):
+  on first run eGPT detects a DELETE-AFTER-SETUP file, which tells eGPT to
+  SELF-CONFIGURE after receiving the `/egpt` command in Self (or whichever channel
+  the user designates as the control channel). i.e. the node ships in a "not yet
+  configured" state, greets/guides the operator through filling in the config from
+  the control channel, then removes the marker file so subsequent boots are normal.
+  Mechanism (how the guided config is authored, what it asks, how it validates the
+  Beeper token) is not yet designed.
 
 - **CUTOVER — main becomes v2** (held for operator "go" AFTER re-inspection):
   ```
@@ -135,13 +162,31 @@ following is LANDED, test-locked, and (where marked) live-verified:
   ```
   Keep origin/rewrite for a few days. Old-spine deletion is a SEPARATE commit
   after cutover soak. The excision (85a824e) already retired the old-spine
-  integrity scans and left this deletion list: egpt-spine.mjs, author-emoji.mjs
-  (+ src/item-format.mjs), slash/, attic/, the 7 `// OLD-SPINE ONLY` migrations
-  inside conversations-state.mjs (that FILE stays — it is the v2 conv-state
-  library), compact-being.mjs's default_brain read, config-validate.mjs +
-  conversation-members.mjs + their tests, dispatch.mjs's own personality/
-  threadCwd reads (dispatch.mjs itself stays — v2 imports
-  isContextOverflowError), vitest.config.mjs references.
+  integrity scans; the deletion list (enriched by the 2026-07-03 analysis):
+  egpt-spine.mjs, author-emoji.mjs (+ src/item-format.mjs), slash/, attic/, the
+  old shell/attach CONSOLE surface (src/shell/ + src/attach/ + the ink/CDP-console
+  cluster the daemon no longer drives), config/personalities/ (identities replace
+  them), config/themes/ (shell-only), the 7 `// OLD-SPINE ONLY` migrations inside
+  conversations-state.mjs (that FILE stays — it is the v2 conv-state library),
+  compact-being.mjs's default_brain read, config-validate.mjs + their tests,
+  dispatch.mjs's own personality/threadCwd reads (dispatch.mjs itself stays — v2
+  imports isContextOverflowError), vitest.config.mjs references, and config/brains/
+  (codex.mjs, llama.mjs, claude-code.mjs old impl, config-schema.mjs, type/) —
+  ~25 old-spine-only src modules + ~34 old-spine-only test files all told (see the
+  analysis for the full list; not enumerated here to keep this terse).
+  - **NOT deleted (operator 2026-07-03):** `config/brains/chatgpt-cdp.mjs` +
+    `config/brains/claude-cdp.mjs` are EARMARKED as FUTURE v2 engines (web-AI-via-
+    browser — "browser control over CDP is eGPT's raison d'être; also to ease
+    writing books using web AI"). `src/conversation-members.mjs` +
+    `src/conversation-stats.mjs` + their tests STAY (stats module reuse — see the
+    stats entry). `src/identity.mjs` + `src/lid-map.mjs` + their tests STAY (LID↔phone
+    reference material — see the stats entry). The whole browser/CDP/extension/bus
+    cluster (src/tools/{browser-tools,bus,bus-send,outbox-send,cdp,cdp-proxy,
+    chrome-launcher,extract-yt-transcript}.mjs, extension/, commands/) STAYS.
+  - **After cutover the working tree returns to `~/src/egpt`** (operator: "egpt2 was
+    for a desperate rewrite"). Planned dev/prod split: PROD runs from an installed
+    `~/bin/egpt`; the DEV tree's tests gain a read-only live-profile-layout tier
+    (assert against the real profile shape without mutating it).
 
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
@@ -152,13 +197,22 @@ following is LANDED, test-locked, and (where marked) live-verified:
   entries. (The DOLLY 2-node smoke stays as the later cross-machine step.)
 
 - **Chrome/CDP textecutable test** (operator-driven, everything ready): copy
-  ~/.egpt2/config/skeletons/{script.x.md, heartbeats block} into a chat folder,
+  the profile's config/skeletons/{script.x.md, heartbeats block} into a chat folder,
   set `when:` a few minutes out, delete state/heartbeats.readonly.yaml, watch.
   Note: CDP attaches only to a Chrome started with --remote-debugging-port
   (chrome-launcher.mjs starts a visible one; the daily browser needs the flag).
 
 ## 4. Backlog (known warts, smallest last)
 
+- **messages-first-class — open phases** (docs/MESSAGES-FIRST-CLASS-PLAN.md, KEPT
+  in the 2026-07-03 cleanup because it is NOT fully shipped). Landed: Phase 1 (inbound
+  `#id` in the transcript line, C7.6e) + Phase 2 (reactions ingested/surfaced).
+  STILL OPEN: Phase 1's ⏳ OWED reply-path restructure (E's OWN reply lines carry no
+  `#id` — unify send→log so the id is appended once the send confirms); Phase 3 member
+  actions (`/reply #<id>`, `@mention`, E SENDING reactions/removals via Beeper — no
+  `/reply` exists in the v2 spine); Phase 4 contacts/ dataset; Phase 5 per-surface
+  user_name + processing-node provenance. (NB: the cleanup prompt assumed C7.6e meant
+  the whole plan shipped — it only completes Phase 1's inbound id.)
 - Test flakes under full-suite port/timing contention: tests/transcriptor.test.mjs,
   tests/beeper-bridge.test.mjs "newest isSender match" (real retry timers).
   Both pass in isolation. Fix: fake timers / serialize the port-binding tests.
@@ -171,7 +225,6 @@ following is LANDED, test-locked, and (where marked) live-verified:
   creation-time options (loses --resume; sessionId getter goes stale).
 - Double context-overflow (retry also overflows) would surface the error string.
 - Reactions/edits bypass the whatsapp.networks scope gate (moot at default []).
-- Eventual: move the profile ~/.egpt2 → ~/.egpt ("main" profile);
   install/setup docs after testing an install on another computer.
 
 ## 5. Operational facts (for any future session)
@@ -179,16 +232,16 @@ following is LANDED, test-locked, and (where marked) live-verified:
 - Node: Windows service `egpt2-daemon` → egpt-daemon.mjs → spawns `node egpt.mjs`
   from THIS working tree (a /restart boots whatever is checked out — never
   restart with uncommitted edits in flight).
-- Profile: EGPT_HOME=~/.egpt2. Layout (operator 2026-07-03, disk = spec): config/
+- Profile: EGPT_HOME=~/.egpt (renamed from ~/.egpt2, operator 2026-07-03; old v1 profile archived as ~/.egpt-v1). Layout (operator 2026-07-03, disk = spec): config/
   {config.yaml, conversations.yaml, agents/, identities/<name>.md (FLAT), logs/,
   skeletons/ (incl. room/ = the shared identity/pointers/rules template)}; state/
   {ingest/, alive.txt, spine.pid, …}; conversations/<surface>/<slug>/; rooms/. Config
-  is at ~/.egpt2/config/config.yaml (the ONLY location — no legacy fallbacks since
+  is at ~/.egpt/config/config.yaml (the ONLY location — no legacy fallbacks since
   85a824e). Old production (egpt-daemon service, ~/.egpt, C:\Users\an\src\egpt) is
   STOPPED — both ride the same local Beeper Desktop (127.0.0.1:23373), so running both
   double-answers every @e.
-- Restart: drop a file containing `/restart` into ~/.egpt2/state/ingest/ (temp→rename).
-  Hot-reload heartbeats: delete ~/.egpt2/state/heartbeats.readonly.yaml.
+- Restart: drop a file containing `/restart` into ~/.egpt/state/ingest/ (temp→rename).
+  Hot-reload heartbeats: delete ~/.egpt/state/heartbeats.readonly.yaml.
 - Install sanity check: `node setup/verify-install.mjs [service] [egptHome]` (read-only)
   probes the LIVE node — NSSM AppStdout/AppStderr under config/logs (the drift that killed
   the service 80× post-relayout), profile shape + no old-layout residue, spine.pid/alive.txt

@@ -9,10 +9,13 @@ This is the canonical list of what egpt promises. Treat each as an invariant.
 **When you touch a path that implements one, there must be a test that locks it.**
 Status legend: ✅ honored · ⚠️ regressed/partial · ❓ unverified.
 
-Sources mined: git log (feature commits), the in-repo docs (BRAINS-AND-PROFILES,
-ENGINE-SURFACE-SEPARATION, LEDGER_PROTOCOL, ROOMS-UNIFICATION, MANUAL, README,
-AGENTS), and the agent memory invariants. This is v1 — expand it by auditing the
-docs above; mark `❓` items as you verify them.
+Sources mined: git log (feature commits), the in-repo docs
+(ENGINE-SURFACE-SEPARATION, ROOMS-UNIFICATION, MANUAL, README, AGENTS), and the
+agent memory invariants. This is v1 — expand it by auditing the docs above; mark
+`❓` items as you verify them. (Two mined docs are now deleted: BRAINS-AND-PROFILES
+— brain profiles are SUPERSEDED by agent types, see config/config-schema.mjs +
+config/skeletons/config.yaml §6; and LEDGER_PROTOCOL — the baileys-era direct-WA
+ledger, retired with the transport.)
 
 ## Relationship to config/config-schema.mjs
 `config-schema.mjs` is the COMPLEMENT to this file, not a duplicate:
