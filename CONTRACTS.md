@@ -35,6 +35,10 @@ surface in [`config/config-schema.mjs`](config/config-schema.mjs).
        the entry point (wa/tg/signal/kg), resolved from the surface, never
        hardcoded, never the operator's own contact label.
 
+   4.5 A chat id is a short opaque string everywhere inside the spine — the
+       Matrix decoration (`!…:beeper.local`) exists only at the Beeper API
+       boundary, stripped on receipt and re-added on send.
+
 
 5. Everything is heard and logged; only some of it is spoken.
 

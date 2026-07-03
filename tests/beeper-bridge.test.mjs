@@ -329,7 +329,9 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'VOICE', text: null, attachments: [att] })] });
     await waitFor(() => media.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // dispatched as marked audio (no duration available)
-    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'audio', isVoiceNote: true });
+    // onMedia is a host-facing (downstream) hook — it sees the SHORT chatID, not
+    // the wire's full Matrix form (CHAT('chat-1') = '!chat-1:beeper.local').
+    expect(media[0]).toMatchObject({ chatID: 'chat-1', kind: 'audio', isVoiceNote: true });
     expect(media[0].localPath).toContain('ptt.ogg');
     expect(media[0].caption).toBe('fake transcript');          // sidecar caption = bare transcription (no marker)
   });
@@ -356,7 +358,7 @@ describe('beeper bridge', () => {
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ type: 'IMAGE', text: null, attachments: [att] })] });
     await waitFor(() => incoming.length === 1);
-    expect(media[0]).toMatchObject({ chatID: CHAT('chat-1'), kind: 'image', network: 'whatsapp' });   // meta carries the origin network (default chat = whatsapp)
+    expect(media[0]).toMatchObject({ chatID: 'chat-1', kind: 'image', network: 'whatsapp' });   // SHORT (host-facing); meta carries the origin network (default chat = whatsapp)
     expect(incoming[0].text).toMatch(/\(image[^)]*\) \[saved: /);   // path announced to E
   });
 
@@ -370,7 +372,7 @@ describe('beeper bridge', () => {
     const att = fakeAttachment({ name: 'foto.jpg', mimeType: 'image/jpeg' });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-tg'), type: 'IMAGE', text: null, attachments: [att] })] });
     await waitFor(() => media.length === 1);
-    expect(media[0]).toMatchObject({ chatID: CHAT('chat-tg'), kind: 'image', network: 'telegram' });
+    expect(media[0]).toMatchObject({ chatID: 'chat-tg', kind: 'image', network: 'telegram' });   // SHORT (host-facing)
   });
 
   // ROUTE A (operator 2026-06-16): a video is handed to E with keyframes (Read
@@ -494,7 +496,9 @@ describe('beeper bridge', () => {
   });
 
   it('👂 ack only where posts_back; elsewhere still transcribes silently', async () => {
-    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === CHAT('chat-enrolled') }) });
+    // resolveTranscriptionService is a host-facing (downstream) hook — it's called
+    // with the SHORT id, not the wire's full Matrix form.
+    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'chat-enrolled' }) });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
@@ -525,12 +529,12 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(0);                 // posts_back false → no ack
-    expect(seen).toEqual([[CHAT('room9')]]);            // verdict got the id ALONE — no name/slug to match on
+    expect(seen).toEqual([['room9']]);                  // verdict got the id ALONE, SHORT form — no name/slug to match on
   });
 
   it('posts_back by stable id → ack fires regardless of the chat title', async () => {
     fake.chats.set(CHAT('room9'), { title: 'anything at all', type: 'single', isMuted: false, accountID: 'whatsapp' });
-    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === CHAT('room9') }) });
+    const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'room9' }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('room9'), text: null, type: 'VOICE', attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/n.ogg' }] })] });
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(1);
@@ -550,16 +554,23 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(1);
   });
 
-  it('exposes the deterministic-name surface (listChats / getChatName / getChatSlug)', async () => {
+  it('exposes the deterministic-name surface (listChats / getChatName / getChatSlug) — SHORT ids', async () => {
+    // The fake SERVER speaks full-form Matrix ids (CHAT('room9') = the wire
+    // shape); listChats()/getChatName/getChatSlug are host-facing (downstream)
+    // and must expose the SHORT id only (operator 2026-07-03).
     fake.chats.set(CHAT('room9'), { title: 'Dándo Ruiz', type: 'group', isMuted: true, accountID: 'whatsapp' });
     const { bridge } = await startBridge();
     const chats = await bridge.listChats();
-    const r9 = chats.find((c) => c.id === CHAT('room9'));
+    const r9 = chats.find((c) => c.id === 'room9');
     expect(r9).toMatchObject({ name: 'Dándo Ruiz', slug: 'dando-ruiz', isGroup: true, isMuted: true });
     // jid MUST alias the room id — the whole chat-resolution layer keys on `.jid`
     // (assignWaIndex/resolveChatTarget); without it /channels shows @wanull and
     // name-resolution sees a phantom undefined-jid duplicate (operator 2026-06-16).
-    expect(r9.jid).toBe(CHAT('room9'));
+    expect(r9.jid).toBe('room9');
+    expect(bridge.getChatName('room9')).toBe('Dándo Ruiz');
+    expect(bridge.getChatSlug('room9')).toBe('dando-ruiz');
+    // Defensive: a caller that still hands getChatName/getChatSlug the legacy
+    // full-form id gets the same answer (shortChatId at the getter, not just at ingest).
     expect(bridge.getChatName(CHAT('room9'))).toBe('Dándo Ruiz');
     expect(bridge.getChatSlug(CHAT('room9'))).toBe('dando-ruiz');
   });
@@ -619,6 +630,41 @@ describe('beeper bridge', () => {
     ]);
     const id = await bridge.sendAndGetId(TXT, { chatId: chat });
     expect(id).toBe('5');
+  });
+});
+
+// SHORT-ID BOUNDARY (operator 2026-07-03): the fake API always speaks the wire's
+// full Matrix form (CHAT(n) helper); the bridge must normalize it to SHORT the
+// moment it enters, and re-expand to full ONLY at the api() call. Everything
+// host-facing (onIncoming's `from`, onMedia, listChats, getChatName/getChatSlug)
+// sees short ids only; every fake.posts[*].chatID (what actually hit the API) is
+// the full form.
+describe('beeper bridge — short-id boundary', () => {
+  it('onIncoming/from.chatId is the SHORT id, never the wire\'s full Matrix form', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ chatID: CHAT('chat-short'), text: 'hola' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.chatId).toBe('chat-short');   // NOT '!chat-short:beeper.local'
+  });
+
+  it('a bare SHORT raw id (not a name) resolves and the send expands to full form at the POST', async () => {
+    fake.chats.set(CHAT('room-plain'), { title: 'Room Plain', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    // Prime the chat list cache so the short raw id resolves by exact `c.id` match
+    // (mirrors how config/callers pass an already-known short id).
+    await bridge.listChats();
+    const r = await bridge.send('hola short id', { chatId: 'room-plain' });
+    expect(r?.ok).toBe(true);
+    expect(r.chatId).toBe('room-plain');                       // returned to the caller: SHORT
+    expect(fake.posts[0].chatID).toBe(CHAT('room-plain'));      // what hit the API: FULL form
+  });
+
+  it('a legacy full-form chatId passed by a caller still resolves (defensive tolerance)', async () => {
+    const { bridge } = await startBridge();
+    const r = await bridge.send('hola legacy', { chatId: CHAT('chat-1') });
+    expect(r?.ok).toBe(true);
+    expect(r.chatId).toBe('chat-1');                            // normalized down for the caller
+    expect(fake.posts[0].chatID).toBe(CHAT('chat-1'));           // still expands to full for the API
   });
 });
 

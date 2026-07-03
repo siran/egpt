@@ -35,8 +35,12 @@ const HOME = join(os.tmpdir(), `egpt-boot-contract-${Date.now()}-${Math.random()
 process.env.EGPT_HOME = HOME;
 
 // The fixture chat — keyed by chatId, mode 'on', an EXISTING thread + a frozen readonly.
-// Booting must SEE this entry (empty read = red) and RESUME its thread.
-const CHAT_ID = '!room:fixture.beeper.local';
+// Booting must SEE this entry (empty read = red) and RESUME its thread. SHORT form
+// (operator 2026-07-03): this simulates the id AFTER the bridge's inbound normalization
+// (src/bridges/chat-id.mjs) — no leading '!' / trailing ':beeper.local', since this test
+// drives onIncoming directly (bypassing the real bridge) and the registry's canonical
+// layout stores short ids now.
+const CHAT_ID = 'room-fixture';
 const SLUG = 'fixture-2607030000';
 const THREAD_ID = 'existing-thread-123';
 

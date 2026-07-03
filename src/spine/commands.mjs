@@ -19,6 +19,7 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { shortChatId } from '../bridges/chat-id.mjs';
 
 // Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
 // agent-type YAML lands in config/agents/, a free-text identity layer as a FLAT
@@ -150,7 +151,10 @@ export function createCommands({
   // are per-surface namespaces), an authorized sender, or the account owner (isSender).
   function isOperator(ev) {
     const selfDm = cfg()[ev?.surface ?? 'whatsapp']?.chat_id;
-    return (selfDm && ev?.chatId === selfDm) || !!ev?.authorized || !!ev?.isSender;
+    // Compare in short space (shortChatId is a no-op on an id that's already
+    // short) so a config chat_id in either form still matches the bridge's
+    // now-always-short ev.chatId.
+    return (selfDm && shortChatId(ev?.chatId) === shortChatId(selfDm)) || !!ev?.authorized || !!ev?.isSender;
   }
 
   // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an

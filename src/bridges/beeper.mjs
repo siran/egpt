@@ -36,9 +36,13 @@
 //     log line every 3s, ~29k/day) and _sentText sweeps expired entries.
 //
 // Schema facts VERIFIED against a live Beeper Desktop (2026-06-10):
-//   - chatID is a Matrix room id ('!xxx:beeper.local') — NOT a WA jid.
-//     auto_e_chats / chat_id whitelists must enroll these ids for the
-//     beeper transport (the 👂-suppression log prints the id to enroll).
+//   - chatID is a Matrix room id ('!xxx:beeper.local') on the WIRE — NOT a WA
+//     jid. SHORT IDS (operator 2026-07-03): everything past the WS/REST
+//     boundary in this file sees the id with the '!' and ':beeper.local'
+//     stripped (src/bridges/chat-id.mjs shortChatId/fullChatId) — auto_e_chats
+//     / chat_id whitelists, the registry, gating, transcripts, mesh, all
+//     compare/store the SHORT form now. Only the api() calls in THIS file
+//     re-expand to the full Matrix form, right at the fetch.
 //   - message.timestamp is an ISO string → the backlog gate is active.
 //   - message.id is a small PER-CHAT sequence number → all dedup keys
 //     are chatID-qualified (see msgKeyOf).
@@ -58,6 +62,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
+import { shortChatId, fullChatId } from './chat-id.mjs';
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
@@ -207,12 +212,24 @@ export async function startBeeperBridge(opts = {}) {
 
   // chatID -> { title, type, isMuted, accountID } (cached; refreshed lazily)
   const _chatCache = new Map();
+  // Short ids resolveChatId has independently confirmed are REAL rooms (seen via
+  // chatInfo, listChats, chat.upserted, or the legacy full-form '!' fast path).
+  // Before ':beeper.local' was dropped, a raw '!'-prefixed id short-circuited
+  // resolveChatId with NO lookup, so a chatID the bridge already held (e.g.
+  // msg.chatID feeding a voice-note reply's sendMessage call, or a caller that
+  // resolves once then hands the resolved id to another function that resolves
+  // AGAIN — sendAndGetId, startStreamMessage) always re-resolved trivially. A bare
+  // short id can't carry that same free signal, so this set restores the same
+  // robustness: once a short id is known real, resolving it again never depends
+  // on a listChats round-trip (or on that chat ever being independently listed).
+  const _knownChatIds = new Set();
   async function chatInfo(chatID) {
     if (_chatCache.has(chatID)) return _chatCache.get(chatID);
     let info = { title: chatID, type: 'single', isMuted: false, accountID: null };
-    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null }; }
+    try { const c = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}`); info = { title: c.title || chatID, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID || null }; }
     catch (e) { onLog(`beeper: chatInfo(${chatID}) failed — ${e?.message ?? e}`); }
     _chatCache.set(chatID, info);
+    _knownChatIds.add(chatID);
     return info;
   }
 
@@ -235,24 +252,29 @@ export async function startBeeperBridge(opts = {}) {
     if (_chatList && Date.now() - _chatListAt < 60_000) return _chatList;
     const j = await api('GET', '/v1/chats');
     const items = j?.items ?? (Array.isArray(j) ? j : []);
-    _chatList = items.map(c => ({
-      id: c.id,
-      // jid is the STABLE chat-id key the whole resolution layer is built on
-      // (assignWaIndex / waListToStableCache / resolveChatTarget all read `.jid`).
-      // On Beeper that id IS the Matrix room id; alias it so /channels numbers
-      // chats (`@waN`, was `@wanull`) and name-resolution doesn't see a phantom
-      // undefined-jid duplicate ("spoiler matches 2"). operator 2026-06-16.
-      jid: c.id,
-      name: c.title ?? c.id,
-      slug: chatSlug(c.title ?? c.id),
-      isGroup: c.type === 'group',
-      isMuted: !!c.isMuted,
-      network: c.network ?? c.accountID ?? null,
-      unread: c.unreadCount ?? 0,
-    }));
+    _chatList = items.map(c => {
+      const id = shortChatId(c.id);   // SHORT past this boundary — see chat-id.mjs
+      return {
+        id,
+        // jid is the STABLE chat-id key the whole resolution layer is built on
+        // (assignWaIndex / waListToStableCache / resolveChatTarget all read `.jid`).
+        // On Beeper that id IS the Matrix room id (short form); alias it so
+        // /channels numbers chats (`@waN`, was `@wanull`) and name-resolution
+        // doesn't see a phantom undefined-jid duplicate ("spoiler matches 2").
+        // operator 2026-06-16.
+        jid: id,
+        name: c.title ?? c.id,
+        slug: chatSlug(c.title ?? c.id),
+        isGroup: c.type === 'group',
+        isMuted: !!c.isMuted,
+        network: c.network ?? c.accountID ?? null,
+        unread: c.unreadCount ?? 0,
+      };
+    });
     _chatListAt = Date.now();
     for (const c of _chatList) {
       if (!_chatCache.has(c.id)) _chatCache.set(c.id, { title: c.name, type: c.isGroup ? 'group' : 'single', isMuted: c.isMuted, accountID: c.network });
+      _knownChatIds.add(c.id);
     }
     return _chatList;
   }
@@ -264,13 +286,22 @@ export async function startBeeperBridge(opts = {}) {
   async function resolveChatId(nameOrId) {
     const s = String(nameOrId ?? '');
     if (!s) return null;
-    if (s.startsWith('!')) return s;   // already a room id
+    // Legacy/defensive: a full-form Matrix room id is recognized without a
+    // listChats round-trip (same short-circuit the '!' prefix always gave), just
+    // normalized down to the short form egpt uses past this point.
+    if (s.startsWith('!')) { const id = shortChatId(s); _knownChatIds.add(id); return id; }
+    // Already-known real id (see _knownChatIds above) — resolves with NO lookup,
+    // same free short-circuit the '!' prefix used to give every raw id.
+    if (_knownChatIds.has(s)) return s;
     const want = chatSlug(s);
     let matches = [];
-    try { matches = (await listChats()).filter(c => c.name === s || c.slug === want); }
+    // `c.id === s` lets an UNSEEN raw short room id (e.g. one an operator typed
+    // straight from /channels output) resolve directly once listed.
+    try { matches = (await listChats()).filter(c => c.id === s || c.name === s || c.slug === want); }
     catch (e) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — chat list unavailable: ${e?.message ?? e}`); return null; }
     if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — no chat matches`); return null; }
     if (matches.length > 1) onLog(`beeper: resolveChatId(${JSON.stringify(s)}) ambiguous (${matches.length} chats) — using "${matches[0].name}" (${matches[0].id})`);
+    _knownChatIds.add(matches[0].id);
     return matches[0].id;
   }
 
@@ -473,7 +504,7 @@ export async function startBeeperBridge(opts = {}) {
     try {
       const body = { text: String(text) };
       if (replyToMessageID) body.replyToMessageID = String(replyToMessageID);
-      const r = await api('POST', `/v1/chats/${encodeURIComponent(chatID)}/messages`, body);
+      const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
       rememberSent(r?.pendingMessageID || r?.messageID || r?.id, chatID, String(text));
       return { ok: true, chatId: chatID, pendingMessageID: r?.pendingMessageID };
     } catch (e) { onLog(`beeper: send failed [${chatID}] — ${e?.message ?? e}`); return null; }
@@ -486,12 +517,12 @@ export async function startBeeperBridge(opts = {}) {
   // the confirmed id is resolved separately (resolveSentMessageId).
   async function editMessage(chatID, messageID, text) {
     if (!chatID || !messageID || !text) return false;
-    try { await api('PUT', `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}`, { text: String(text) }); return true; }
+    try { await api('PUT', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`, { text: String(text) }); return true; }
     catch (e) { onLog(`beeper: edit failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   async function deleteMessage(chatID, messageID) {
     if (!chatID || !messageID) return false;
-    try { await api('DELETE', `/v1/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}`); return true; }
+    try { await api('DELETE', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`); return true; }
     catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
   }
   // Resolve the CONFIRMED id of a message we just sent: poll the recent list and
@@ -519,7 +550,7 @@ export async function startBeeperBridge(opts = {}) {
     if (!chatID || !want) return null;
     for (let i = 0; i < tries; i++) {
       try {
-        const r = await api('GET', `/v1/chats/${encodeURIComponent(chatID)}/messages?limit=25`);
+        const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=25`);
         const items = Array.isArray(r?.items) ? r.items : [];
         let best = null;
         for (const m of items) {
@@ -881,8 +912,13 @@ export async function startBeeperBridge(opts = {}) {
       }
       if (ev.type === 'message.upserted' && Array.isArray(ev.entries)) {
         for (const entry of ev.entries) {
-          const msg = entry?.id ? { chatID: ev.chatID, ...entry } : null;
-          if (!msg) continue;
+          if (!entry?.id) continue;
+          // INBOUND normalization (operator 2026-07-03): shorten the chatID the
+          // instant it enters — entry.chatID wins over ev.chatID when present
+          // (same precedence the old `{ chatID: ev.chatID, ...entry }` spread
+          // gave), so everything downstream (dispatch, reactions, edits, onMedia,
+          // onIncoming's `from`) sees the SHORT id only.
+          const msg = { ...entry, chatID: shortChatId(entry.chatID ?? ev.chatID) };
           // serialize: chain dispatch so a 20s transcribe doesn't overlap the next
           _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }
@@ -893,8 +929,10 @@ export async function startBeeperBridge(opts = {}) {
       if (ev.type === 'chat.upserted' && Array.isArray(ev.entries)) {
         for (const c of ev.entries) {
           if (!c?.id) continue;
-          const prev = _chatCache.get(c.id);
-          _chatCache.set(c.id, { title: c.title || c.id, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID ?? prev?.accountID ?? null });
+          const id = shortChatId(c.id);
+          const prev = _chatCache.get(id);
+          _chatCache.set(id, { title: c.title || id, type: c.type || 'single', isMuted: !!c.isMuted, accountID: c.accountID ?? prev?.accountID ?? null });
+          _knownChatIds.add(id);
         }
       }
       if (ev.type === 'error') onLog(`beeper: WS error event — ${JSON.stringify(ev).slice(0, 200)}`);
@@ -932,8 +970,8 @@ export async function startBeeperBridge(opts = {}) {
     // Deterministic-name surface (operator 2026-06-10): callers and slash
     // files work with names/slugs; room ids stay an internal detail.
     listChats,
-    getChatName: (id) => _chatCache.get(id)?.title ?? null,
-    getChatSlug: (id) => { const t = _chatCache.get(id)?.title; return t ? chatSlug(t) : null; },
+    getChatName: (id) => _chatCache.get(shortChatId(id))?.title ?? null,
+    getChatSlug: (id) => { const t = _chatCache.get(shortChatId(id))?.title; return t ? chatSlug(t) : null; },
     resolveChatId,
     // Surface parity with slash-file expectations (integrity test):
     // honest stubs where Beeper has no equivalent yet.

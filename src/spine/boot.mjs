@@ -23,6 +23,7 @@ import {
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
+import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
 import { createRouter } from './router.mjs';
@@ -145,8 +146,13 @@ export async function boot({
     // flag is orthogonal, set by the bridge, not here. BACK-COMPAT: a whatsapp
     // message resolves to cfg.whatsapp.allowed_users exactly as before; other
     // surfaces move from borrowing whatsapp's list to fail-closed deny, the
-    // operator-intended tightening.
-    isAllowedUser: (id, network) => ((cfg[surfaceOf(network)]?.allowed_users) ?? []).includes(id),
+    // operator-intended tightening. allowed_users entries are USUALLY sender
+    // ids (a network jid / phone number / '@user:beeper.com') but the schema
+    // also allows a Beeper ROOM id there; normalize BOTH sides through
+    // shortChatId (a no-op on anything that isn't a '!...:beeper.local' room
+    // id — sender ids/phone numbers pass through untouched) so a short OR
+    // legacy full-form entry compares equal to the delivered id either way.
+    isAllowedUser: (id, network) => ((cfg[surfaceOf(network)]?.allowed_users) ?? []).map(shortChatId).includes(shortChatId(id)),
     media: cfg.whatsapp?.media ?? {},
     transcribe: tx.transcribe,                                  // the fallback-chain transcriber
     transcribeCfg: tx.cliCfg,
