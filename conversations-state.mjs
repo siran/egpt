@@ -1267,6 +1267,28 @@ export function resolveIdentityDir(name) {
   return null;
 }
 
+// Enumerate identity-LAYER names (folder names) across both roots — the profile's
+// EGPT_HOME/identities/ (operator-authored: seeded presets + wizard free-text layers)
+// and the repo's shipped identities/ (default). Deduped case-insensitively (profile
+// wins, matching resolveIdentityDir's precedence) and sorted. Feeds the `/e` wizard's
+// personality pick. Never throws (a missing dir is skipped).
+export function listIdentityLayers() {
+  const seen = new Set();
+  const out = [];
+  for (const base of [IDENTITIES_OPERATOR_DIR, IDENTITIES_SHIPPED_DIR]) {
+    let ents = [];
+    try { ents = readdirSync(base, { withFileTypes: true }); } catch { continue; }
+    for (const ent of ents) {
+      if (!ent.isDirectory()) continue;
+      const k = ent.name.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(ent.name);
+    }
+  }
+  return out.sort();
+}
+
 // Read a source identity folder's NN-*.md in order → [{ src, name, content }]
 // where `name` is the de-prefixed filename (40-rules.md → rules.md).
 async function _readIdentityFiles(dir) {

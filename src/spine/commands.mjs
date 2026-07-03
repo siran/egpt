@@ -10,15 +10,37 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, listIdentityLayers as defaultListIdentityLayers } from '../../conversations-state.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
-import { stat as fsStat, readFile as fsReadFile } from 'node:fs/promises';
+import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import { EGPT_HOME } from '../egpt-home.mjs';
+
+// Where the `custom` wizard branch AUTHORS its new files (injectable in tests): the
+// agent-type YAML lands in config/agents/, a free-text identity layer in identities/.
+export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'identities');
+
+// The new agent-type file (house comment style, brief). A LIST allowed_tools is omitted
+// so resolution defaults to 'all' (the readonly freeze matches). `personality` names the
+// identity layer a fresh conversation of this type boots from.
+function customTypeFile(name, model, effort, personality) {
+  return `# ${name} — custom agent type created via the /e wizard. A brain def (engine config);
+# edit freely. Resolution layers (most-specific wins): src/brains < config/agents < <slug>/brains.
+type: ${CCODE}
+model: ${model}
+effort: ${effort}
+personality: ${personality}
+`;
+}
+
+// A free-text identity layer: JUST the operator's instructions (no comment header — the
+// whole file is concatenated into the kickoff feed, so a housekeeping comment would leak
+// into the persona). Matches the default layer's plain-markdown convention.
+const identityLayerFile = (text) => `${String(text).trim()}\n`;
 
 // The `/e` wizard's model/effort menus (operator 2026-07-02: v1's `/e` supplied
 // these same fixed lists — there is no canonical model/effort registry in v2, and
@@ -100,7 +122,10 @@ export function createCommands({
   brains = null,                         // the brain registry (createBrains) — the /e wizard resolves a picked agent type through it
   evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so a re-point respawns fresh
   listAgentTypes = defaultListAgentTypes,// () -> string[] agent-type names for the wizard's first pick (injected in tests)
-  io = {},                               // { stat, readFile } — real fs by default; /status probes alive.txt + heartbeats.readonly.yaml through here
+  listIdentityLayers = defaultListIdentityLayers, // () -> string[] identity-layer names for the custom branch's personality pick
+  agentsDir = PROFILE_AGENTS_DIR,        // where the custom branch writes <name>.yaml (injected in tests)
+  identitiesDir = PROFILE_IDENTITIES_DIR,// where the custom branch writes a free-text identity layer (injected in tests)
+  io = {},                               // { stat, readFile, writeFile, mkdir } — real fs by default; /status probes files + the custom branch authors through here
   // git probe for /status (short sha + subject). Mirrors boot's gitOut so it's
   // fakeable in tests without threading spawnSync through createCommands.
   gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } },
@@ -109,6 +134,8 @@ export function createCommands({
   const cfg = () => getConfig() ?? {};
   const stat = io.stat ?? fsStat;
   const readFile = io.readFile ?? fsReadFile;
+  const writeFile = io.writeFile ?? fsWriteFile;
+  const mkdir = io.mkdir ?? fsMkdir;
 
   // Armed `/e` wizards, keyed by the OPERATOR's chat (where they type the answers) —
   // NOT the target chat (bare `/e` targets here; `/e <slug>` targets elsewhere). Each
@@ -299,22 +326,34 @@ export function createCommands({
       displayName = c.entry?.pushedName ?? slug;   // operator-facing label (slug carries a date suffix)
     } catch (e) { onLog(`/e arm ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e: failed — ${e?.message ?? e}`); return; }
 
-    // Offer only agent types that actually RESOLVE: the seeded example file
-    // (config/agents/sonnet-high.yaml) is all-comments → parses to null, and a
-    // pickable option that then errors on `done` is a poor UX. Keep the raw list only
-    // if resolution surprisingly drops everything (misconfig) so the operator isn't stuck.
+    // Offer only agent types that actually RESOLVE, each carrying its COMPOSITION
+    // (model/effort/personality) so step 1 renders a structured-yaml preview. The
+    // seeded example file (config/agents/sonnet-high.yaml) is all-comments → parses to
+    // null, and a pickable option that then errors on `done` is a poor UX. Keep the raw
+    // names only if resolution surprisingly drops everything (misconfig) so the operator
+    // isn't stuck.
     let convDir = null; try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
-    let configurations = listAgentTypes();
+    const names = listAgentTypes();
+    let configurations = names.map((n) => ({ name: n }));   // fallback: bare names, no preview
     if (brains?.resolve) {
-      const ok = configurations.filter((n) => { try { return !!brains.resolve(n, { convDir }); } catch { return false; } });
-      if (ok.length) configurations = ok;
+      const resolved = [];
+      for (const n of names) {
+        let def = null; try { def = brains.resolve(n, { convDir }); } catch { def = null; }
+        if (def) resolved.push({ name: n, model: def.model ?? null, effort: def.effort ?? null, personality: def.personality ?? null });
+      }
+      if (resolved.length) configurations = resolved;
     }
     if (!configurations.length) { await send?.(ev.chatId, '/e: no agent types found (config/agents or src/brains)'); return; }
+    // The custom branch's personality pick lists every identity layer (profile + repo);
+    // a name colliding with any existing agent type re-prompts (takenNames).
+    let personalities = [];
+    try { personalities = listIdentityLayers(); } catch { personalities = []; }
+    const takenNames = names.map((n) => String(n).toLowerCase());
     // The conversation's CURRENT instanced def marks the matching option `(current)`
     // and its frozen engine keys the warm entry to evict on done (null = never
     // instanced → fall back to the new def's engine at apply time).
     const cur = getBeing(state, surface, jid, 'e');
-    const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS };
+    const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS, personalities, takenNames };
     const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null };
     const wstate = initWizard({ slug, jid, surface, options, current });
     wizards.set(chatKey(ev), { state: wstate, surface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
@@ -340,8 +379,10 @@ export function createCommands({
   // On done: freeze the picked agent type/model/effort into the TARGET conversation's
   // readonly block (same shape the brainpool instances — keeps the existing threadId,
   // so context survives the re-point), then evict its warm session so the next turn
-  // respawns with the new def. Reply terse + factual, /status house style.
+  // respawns with the new def. Reply terse + factual, /status house style. The `custom`
+  // branch first AUTHORS the new type (+ any free-text identity layer), then applies it.
   async function applyWizard(wm, result) {
+    if (result.custom) return applyCustomWizard(wm, result);
     const { surface, jid } = result;
     try {
       const state = await loadState();
@@ -361,6 +402,40 @@ export function createCommands({
       evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${result.model}/${result.effort} (respawns next turn)`);
     } catch (e) { onLog(`/e wizard ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
+  }
+
+  // The `custom` branch: BUILD a new agent type. Write a free-text identity layer (when
+  // the operator described one — named after the type), then the agent-type file, then
+  // apply it to the conversation EXACTLY like an existing-type pick (freeze readonly,
+  // keep threadId, evict warm). result.name is already sanitized by the wizard.
+  async function applyCustomWizard(wm, result) {
+    const { surface, jid } = result;
+    try {
+      const name = result.name;
+      if (!name) { await send?.(wm.chatId, '/e: invalid type name'); return; }
+      // Personality: a chosen existing layer, or a new layer authored from free text
+      // (named after the type so it travels with it).
+      let personality = result.personalityLayer || 'default';
+      if (result.personalityText) {
+        personality = name;
+        const layerFile = join(identitiesDir, name, '00-identity.md');
+        await mkdir(dirname(layerFile), { recursive: true });
+        await writeFile(layerFile, identityLayerFile(result.personalityText), 'utf8');
+      }
+      const typeFile = join(agentsDir, `${name}.yaml`);
+      await mkdir(dirname(typeFile), { recursive: true });
+      await writeFile(typeFile, customTypeFile(name, result.model, result.effort, personality), 'utf8');
+
+      const state = await loadState();
+      const c = getContact(state, surface, jid);
+      const slug = c?.slug ?? result.slug;
+      const displayName = c?.entry?.pushedName ?? slug;
+      await writeState(patchContact(state, surface, jid, {
+        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: 'all' },
+      }));
+      evictWarm(`e:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
+      await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);
+    } catch (e) { onLog(`/e wizard custom ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
   return { isCommand, run };

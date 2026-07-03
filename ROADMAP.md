@@ -56,6 +56,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   survives) + evicts its warm session (respawns next turn, no /restart). Reuses
   src/agent-wizard.mjs (steps re-vocabularied: `configuration` pick from config/agents +
   src/brains, current marked); ONE chokepoint in src/spine/commands.mjs isCommand/run.
+  - **/e wizard custom + yaml-view (operator 2026-07-03)** — step 1 renders each type's
+    COMPOSITION inline (model/effort/personality via brains.resolve, structured-yaml); a
+    final `custom` option BUILDS a new agent type (model → effort → personality → name,
+    named last, collision re-prompts) and authors config/agents/<name>.yaml (+ a free-text
+    identity layer in identities/<name>/) then applies it like an existing pick. Personality
+    picks = identity layers (profile ∪ repo, listIdentityLayers) + free text; 10 preset
+    layers (secretary/psychologist/detective/poet/writer/spiritual-advisor/financial-advisor/
+    philosopher/logicist/one-two-many) seeded copy-if-missing (src/spine/seed.mjs PRESET_IDENTITIES).
 - Anti-drift: integrity tests scan v2 config reads; skeleton can't-rot tests
 
 ## 2. In flight right now

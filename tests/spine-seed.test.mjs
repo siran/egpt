@@ -4,10 +4,10 @@
 // sacred). Fully in-memory io — nothing hits the real profile.
 import { describe, it, expect } from 'vitest';
 import { join, dirname } from 'node:path';
-import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE } from '../src/spine/seed.mjs';
+import { seedSkeletons, EXAMPLE_TYPE_FILE, EGPT_TYPE_FILE, PRESET_IDENTITIES } from '../src/spine/seed.mjs';
 
 // Built with join so keys + the dirs passed to seedSkeletons share the platform separator.
-const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents');
+const REPO = join('/repo', 'skeletons'), SKEL = join('/prof', 'config', 'skeletons'), AGENTS = join('/prof', 'config', 'agents'), IDS = join('/prof', 'identities');
 
 // A tiny in-memory fs: a { path: contents } map, plus a set of "directories that exist".
 function memfs(seed = {}) {
@@ -28,7 +28,7 @@ function memfs(seed = {}) {
 
 function run(seed) {
   const { files, io } = memfs(seed);
-  seedSkeletons({ repoDir: REPO, profileSkeletonsDir: SKEL, agentsDir: AGENTS, io });
+  seedSkeletons({ repoDir: REPO, profileSkeletonsDir: SKEL, agentsDir: AGENTS, identitiesDir: IDS, io });
   return files;
 }
 
@@ -84,5 +84,32 @@ describe('seedSkeletons', () => {
   it('a missing repo dir is tolerated (still seeds the example type file)', () => {
     const files = run({});   // no repo skeletons present
     expect(files[join(AGENTS, 'sonnet-high.yaml')]).toBe(EXAMPLE_TYPE_FILE);
+  });
+
+  it('seeds each preset personality identity layer (identities/<name>/00-identity.md), copy-if-missing', () => {
+    const files = run({});
+    const names = Object.keys(PRESET_IDENTITIES);
+    expect(names).toHaveLength(10);   // the 10 operator-named flavors — can't-rot
+    expect(names).toEqual(expect.arrayContaining([
+      'secretary', 'psychologist', 'detective', 'poet', 'writer',
+      'spiritual-advisor', 'financial-advisor', 'philosopher', 'logicist', 'one-two-many',
+    ]));
+    for (const name of names) {
+      expect(files[join(IDS, name, '00-identity.md')]).toBe(PRESET_IDENTITIES[name]);
+    }
+  });
+
+  it('NEVER overwrites an operator-edited preset layer (edits are sacred)', () => {
+    const files = run({ [join(IDS, 'poet', '00-identity.md')]: 'MY OWN POET' });
+    expect(files[join(IDS, 'poet', '00-identity.md')]).toBe('MY OWN POET');       // untouched
+    expect(files[join(IDS, 'detective', '00-identity.md')]).toBe(PRESET_IDENTITIES.detective);  // others still seeded
+  });
+
+  it('each preset layer is plain markdown (a short instruction file), not YAML config', () => {
+    for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
+      expect(body.trimStart().startsWith('#')).toBe(true);   // a markdown heading, like the default layer
+      expect(body.length).toBeLessThan(1200);                // SHORT — a paragraph or two
+      expect(body).not.toMatch(/^type:/m);                   // not an agent-type file
+    }
   });
 });
