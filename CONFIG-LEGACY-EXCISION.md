@@ -29,6 +29,38 @@
   each conversation's stats.yaml. readonly is deterministic (concrete
   model/effort, never null).
 
+## Operator vocabulary — the 2026-07-02 20:32 live config.yaml edit IS the spec
+
+The operator hand-rewrote `~/.egpt2/config/config.yaml` in the final vocabulary.
+The code must accept exactly this (new-config-only), which AMENDS the groups
+below:
+
+- **`agents.<name>.configuration: <type-file>` REPLACES `agents.<name>.type`.**
+  The registry key now names the agent-type FILE (config/agents/<name>.yaml);
+  this disambiguates from the type-file's own `type: ccode` (engine) key.
+  Accept ONLY `configuration` — no `type` back-read. Update: every registry
+  reader (brainpool resolveDefaultBrain/localAgentDef, router, boot, mesh,
+  relay), config-schema `agents` doc, config/skeletons/config.yaml, seed
+  comments, and all tests/fixtures. `handles` and `relay_channel` unchanged.
+- **No `agents` block (or no persona entry) = FATAL boot error** with a clear
+  message — not a silent fallback to brains.resolve('egpt'). The skeleton ships
+  the block uncommented; a node without it should say so, not guess. (Amends
+  Group A: resolveDefaultBrain's whole fallback chain collapses to "the persona
+  agent's `configuration`".)
+- **`transcription_service` is canonical** (already primary in
+  src/spine/transcription.mjs:35 — the operator's `use_config: reve` +
+  `reve.fallback_order` shape matches the code exactly). DELETE the
+  `cfg.transcription` fallback (:36) and the bare top-level
+  `cfg.posts_back_delay_ms` (:53); `txSvc.posts_back_delay_ms` stays.
+- **`user_name`: top-level default, per-network override KEPT** — the operator
+  comment says "can be overwritten per network (whatsapp, telegram, signal)".
+  So `cfg.whatsapp?.user_name ?? cfg.user_name` in boot.mjs:141 is CANONICAL,
+  not legacy (amends Group K). `beeper_token` stays top-level only — the
+  `cfg.whatsapp?.beeper_token` fallback (boot.mjs:140) still goes.
+- **`whatsapp.auto_e_default` / `auto_e_paused` stay where they are** (the live
+  file uses them) — Group K's default confirmed: keep, and delete the
+  `dispatch.*` legacy read-fallback note from the schema.
+
 ## Inventory (Explore agent, 2026-07-02) — delete ALL of this
 
 ### A. `default_brain` fallback

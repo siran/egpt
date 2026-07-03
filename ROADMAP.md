@@ -5,6 +5,61 @@
 > buffer. Update this file as items land; delete sections that ship.
 > Companion: SPINE-REWRITE-PLAN.md (the architecture + phase plan, mostly done).
 
+## 0. HANDOFF (written 2026-07-02 ~21:30, for the next conversation — read this first)
+
+**In flight: CONFIG LEGACY EXCISION.** Operator directive: the code must ONLY
+accept the new config — no legacy fallbacks, no boot migrations, no dual-reads.
+The complete spec is **CONFIG-LEGACY-EXCISION.md** (inventory groups A–K with
+file:line + which tests lock each behavior, PLUS the "Operator vocabulary"
+section that amends them — notably: `agents.<name>.configuration:` REPLACES
+`.type` as the registry key; `transcription_service` is canonical;
+per-network `user_name` override is KEPT; no `agents` block = fatal boot).
+The operator's own 2026-07-02 20:32 edit of ~/.egpt2/config/config.yaml IS the
+vocabulary spec — read that file, don't infer.
+
+**CRITICAL — working-tree state:** a background Opus agent was dispatched from
+the previous session (~21:00) to implement the spec. Its changes land
+UNCOMMITTED in this working tree; the old session will NOT commit anything
+further (doc commits only). Before doing anything: `git status` + `git log
+--oneline -3`. If the tree has excision-shaped src/test changes: review against
+the spec, run `npx vitest run` (two known flakes under full-suite contention:
+tests/transcriptor.test.mjs, tests/beeper-bridge.test.mjs "newest isSender
+match" — both pass in isolation), then commit+push. If the tree is clean and no
+excision commit exists, the agent died — re-dispatch per the spec doc. The old
+session may append the agent's completion report to the END of
+CONFIG-LEGACY-EXCISION.md (uncommitted) — check there for its test results.
+NEVER /restart the node with uncommitted edits (the daemon boots this checkout).
+
+**After the excision lands (port step, §CONFIG-LEGacy doc step 3-4):** delete
+`~/.egpt2/conversations.yaml.bak` (stale); the 4 stray `threadCwd:` keys in
+~/.egpt2/conversations.yaml purge themselves on the next registry write once
+`_SLIM_DROP` includes threadCwd. Then restart via ingest (below) and verify:
+`state/alive.txt` mtime advances, `/status` in the egpt-an chat.
+
+**Next feature after that: the /e wizard (v1 parity) — see §3 first entry.**
+Operator (2026-07-02): `/e` and `/e <slug>` must invoke a WIZARD like v1 —
+explicitly NOT a flag-style command (`/e model <target>` was proposed and
+rejected as a hallucination). Reuse `src/agent-wizard.mjs` (live module);
+v1's wiring shape is in egpt-spine.mjs (`armAgentWizard`, `_maybeHandleWizard`,
+5-min TTL, wizard gets first refusal on operator input). Do not invent UX —
+when in doubt, check how v1 did it and ask.
+
+**The ingest/ feature (how agents drive the live node — verified 2026-07-02):**
+`src/spine/ingest.mjs`, wired in `src/spine/boot.mjs:366-379`. The node sweeps
+`~/.egpt2/ingest/` every 1s; a dropped file's CONTENT is the command line; the
+file is consumed (deleted) once read; dotfiles and `*.tmp` are skipped, so
+write atomically (write `x.tmp`, rename to `x`). Handled commands map to daemon
+respawn exit codes: `/restart` → 43 (respawn current checkout), `/upgrade` → 42
+(git pull + npm + build, respawn), `/rewind <ref>` → 44. Anything else is
+logged "ignored" — ingest is lifecycle-only today.
+
+**Live node right now:** service `egpt2-daemon` alive (beat = alive.txt mtime),
+spine pid 10044, up since 2026-07-02 19:23. Profile ~/.egpt2 is ALREADY
+new-shape (operator-styled config.yaml, slim conversations.yaml,
+config/agents/{egpt,default,sonnet-high}.yaml). Working agreements: §5 below.
+Operator flagged repeated hallucination this session — verify in code before
+asserting; v1 (egpt-spine.mjs) is the precedent for operator UX.
+
 ## 1. Where we are
 
 Branch `rewrite`, suite ~1403 tests / 0 fail. The node runs live as the
@@ -60,6 +115,19 @@ following is LANDED, test-locked, and (where marked) live-verified:
   removed from live config; `user_name` top-level; readonly.agent everywhere.
 
 ## 3. Decided, not yet dispatched
+
+- **/e wizard — v1 parity** (operator 2026-07-02): `/e` (bare, current chat) and
+  `/e <slug>` (target chat, resolved like /e auto's target) INVOKE THE WIZARD,
+  like v1. NOT a flag-style command (`/e model <target>` was proposed and
+  REJECTED — operator: v1's wizard is the UX). Reuse `src/agent-wizard.mjs`
+  (live, renderer-neutral state machine: numbered picks, b back / x cancel;
+  v1 armed it per chat with a 5-min TTL and gave it first refusal on operator
+  messages — see egpt-spine.mjs `_maybeHandleWizard`/`armAgentWizard` for the
+  wiring shape). Steps adapt to v2 vocabulary: agent-type pick from
+  config/agents/*.yaml, model, effort (per-conversation personality/identity is
+  retired — it's the agent type's). On done: write the conversation's readonly
+  block + evict/respawn its warm proc so the change takes effect without a full
+  /restart. Dispatch AFTER the config-legacy-excision agent lands (same files).
 
 - **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
   now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
