@@ -5,61 +5,6 @@
 > buffer. Update this file as items land; delete sections that ship.
 > Companion: SPINE-REWRITE-PLAN.md (the architecture + phase plan, mostly done).
 
-## 0. HANDOFF (written 2026-07-02 ~21:30, for the next conversation — read this first)
-
-**In flight: CONFIG LEGACY EXCISION.** Operator directive: the code must ONLY
-accept the new config — no legacy fallbacks, no boot migrations, no dual-reads.
-The complete spec is **CONFIG-LEGACY-EXCISION.md** (inventory groups A–K with
-file:line + which tests lock each behavior, PLUS the "Operator vocabulary"
-section that amends them — notably: `agents.<name>.configuration:` REPLACES
-`.type` as the registry key; `transcription_service` is canonical;
-per-network `user_name` override is KEPT; no `agents` block = fatal boot).
-The operator's own 2026-07-02 20:32 edit of ~/.egpt2/config/config.yaml IS the
-vocabulary spec — read that file, don't infer.
-
-**CRITICAL — working-tree state:** a background Opus agent was dispatched from
-the previous session (~21:00) to implement the spec. Its changes land
-UNCOMMITTED in this working tree; the old session will NOT commit anything
-further (doc commits only). Before doing anything: `git status` + `git log
---oneline -3`. If the tree has excision-shaped src/test changes: review against
-the spec, run `npx vitest run` (two known flakes under full-suite contention:
-tests/transcriptor.test.mjs, tests/beeper-bridge.test.mjs "newest isSender
-match" — both pass in isolation), then commit+push. If the tree is clean and no
-excision commit exists, the agent died — re-dispatch per the spec doc. The old
-session may append the agent's completion report to the END of
-CONFIG-LEGACY-EXCISION.md (uncommitted) — check there for its test results.
-NEVER /restart the node with uncommitted edits (the daemon boots this checkout).
-
-**After the excision lands (port step, §CONFIG-LEGacy doc step 3-4):** delete
-`~/.egpt2/conversations.yaml.bak` (stale); the 4 stray `threadCwd:` keys in
-~/.egpt2/conversations.yaml purge themselves on the next registry write once
-`_SLIM_DROP` includes threadCwd. Then restart via ingest (below) and verify:
-`state/alive.txt` mtime advances, `/status` in the egpt-an chat.
-
-**Next feature after that: the /e wizard (v1 parity) — see §3 first entry.**
-Operator (2026-07-02): `/e` and `/e <slug>` must invoke a WIZARD like v1 —
-explicitly NOT a flag-style command (`/e model <target>` was proposed and
-rejected as a hallucination). Reuse `src/agent-wizard.mjs` (live module);
-v1's wiring shape is in egpt-spine.mjs (`armAgentWizard`, `_maybeHandleWizard`,
-5-min TTL, wizard gets first refusal on operator input). Do not invent UX —
-when in doubt, check how v1 did it and ask.
-
-**The ingest/ feature (how agents drive the live node — verified 2026-07-02):**
-`src/spine/ingest.mjs`, wired in `src/spine/boot.mjs:366-379`. The node sweeps
-`~/.egpt2/ingest/` every 1s; a dropped file's CONTENT is the command line; the
-file is consumed (deleted) once read; dotfiles and `*.tmp` are skipped, so
-write atomically (write `x.tmp`, rename to `x`). Handled commands map to daemon
-respawn exit codes: `/restart` → 43 (respawn current checkout), `/upgrade` → 42
-(git pull + npm + build, respawn), `/rewind <ref>` → 44. Anything else is
-logged "ignored" — ingest is lifecycle-only today.
-
-**Live node right now:** service `egpt2-daemon` alive (beat = alive.txt mtime),
-spine pid 10044, up since 2026-07-02 19:23. Profile ~/.egpt2 is ALREADY
-new-shape (operator-styled config.yaml, slim conversations.yaml,
-config/agents/{egpt,default,sonnet-high}.yaml). Working agreements: §5 below.
-Operator flagged repeated hallucination this session — verify in code before
-asserting; v1 (egpt-spine.mjs) is the precedent for operator UX.
-
 ## 1. Where we are
 
 Branch `rewrite`, suite ~1403 tests / 0 fail. The node runs live as the
@@ -71,7 +16,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
 - Voice chain + per-conversation transcription policy; media per origin surface;
   video Route A
 - Contacts: slug-follows-name + folder move + renames.log (one shared resolver)
-- Brains/agent-types: layered registry (src/brains ← config/brains ← config/agents ← conv)
+- Brains/agent-types: layered registry (src/brains ← config/agents ← conv)
+- **CONFIG LEGACY EXCISION landed (85a824e, 2026-07-02/03)** — the code accepts
+  ONLY the new config: `agents.<name>.configuration` (not `.type`), fatal boot
+  without an agents block / persona entry, no default_brain, no readonly.brain
+  or personality back-reads, no boot migrations, config strictly at
+  EGPT_HOME/config/config.yaml + config/agents/, transcription_service
+  canonical, threadCwd retired (_SLIM_DROP purges strays). 28 files,
+  +429/−1149, suite 122 files / 1296 tests green.
 - Auto-compaction (native /compact, 20%, 2-min cooling)
 - Heartbeats: declarative (config + every conversation/room config.yaml),
   `frequency:` + `when:` one-shots (default_time_zone-aware), `command:` +
@@ -100,19 +52,7 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 2. In flight right now
 
-- **CONFIG LEGACY EXCISION — new-config-only** (operator 2026-07-02: "only
-  accept the new config, port it, no legacy nothing"). Inventory DONE, spec +
-  execution plan live in **CONFIG-LEGACY-EXCISION.md** (groups A–K: default_brain,
-  readonly.brain back-read, boot migrations, siblings/persona fallbacks, legacy
-  config locations, personality/threadCwd residue, config/brains layer, schema
-  legacy keys, old-spine integrity-scan retirement). Implementation NOT yet
-  dispatched — session hit the Fable limit right after the inventory. NEXT
-  SESSION: read that doc, dispatch one background Opus agent per its plan.
-  Live profile ~/.egpt2 is ALREADY ported (agents-first config, slim
-  conversations.yaml) — only residue: 4 stray threadCwd keys + a stale
-  conversations.yaml.bak (plan step 3).
-  Landed precursor: agents-first config migration ran live; `default_brain`
-  removed from live config; `user_name` top-level; readonly.agent everywhere.
+- Nothing mid-flight. Next up: the /e wizard (§3 first entry).
 
 ## 3. Decided, not yet dispatched
 
@@ -127,7 +67,7 @@ following is LANDED, test-locked, and (where marked) live-verified:
   config/agents/*.yaml, model, effort (per-conversation personality/identity is
   retired — it's the agent type's). On done: write the conversation's readonly
   block + evict/respawn its warm proc so the change takes effect without a full
-  /restart. Dispatch AFTER the config-legacy-excision agent lands (same files).
+  /restart.
 
 - **conversations.yaml reshape — DONE** (operator 2026-07-02): the registry is SLIM
   now. Each contact entry's `pushedName` rides as the jid-key INLINE COMMENT (not a
@@ -172,9 +112,15 @@ following is LANDED, test-locked, and (where marked) live-verified:
   git branch -D main && git branch -m rewrite main
   git branch -u origin/main main        # /upgrade's git pull keeps working
   ```
-  Keep origin/rewrite for a few days. Old-spine deletion (egpt-spine.mjs,
-  dispatch.mjs, slash/, attic) is a SEPARATE commit after cutover soak — the
-  integrity tests that scan egpt-spine.mjs get retired with it.
+  Keep origin/rewrite for a few days. Old-spine deletion is a SEPARATE commit
+  after cutover soak. The excision (85a824e) already retired the old-spine
+  integrity scans and left this deletion list: egpt-spine.mjs, author-emoji.mjs
+  (+ src/item-format.mjs), slash/, attic/, the 7 `// OLD-SPINE ONLY` migrations
+  inside conversations-state.mjs (that FILE stays — it is the v2 conv-state
+  library), compact-being.mjs's default_brain read, config-validate.mjs +
+  conversation-members.mjs + their tests, dispatch.mjs's own personality/
+  threadCwd reads (dispatch.mjs itself stays — v2 imports
+  isContextOverflowError), vitest.config.mjs references.
 
 - **Live mesh smoke**: needs DOLLY (2nd node). Config: mesh.nodes routes or an
   agents relay entry pointing at a shared chat. Unit tests cover the machinery.
@@ -207,8 +153,8 @@ following is LANDED, test-locked, and (where marked) live-verified:
 - Node: Windows service `egpt2-daemon` → egpt-daemon.mjs → spawns `node egpt.mjs`
   from THIS working tree (a /restart boots whatever is checked out — never
   restart with uncommitted edits in flight).
-- Profile: EGPT_HOME=~/.egpt2. Config: ~/.egpt2/config/config.yaml (canonical;
-  root config.yaml is the legacy location). Old production (egpt-daemon service,
+- Profile: EGPT_HOME=~/.egpt2. Config: ~/.egpt2/config/config.yaml (the ONLY
+  location — no legacy fallbacks since 85a824e). Old production (egpt-daemon service,
   ~/.egpt, C:\Users\an\src\egpt) is STOPPED — both ride the same local Beeper
   Desktop (127.0.0.1:23373), so running both double-answers every @e.
 - Restart: drop a file containing `/restart` into ~/.egpt2/ingest/ (temp→rename).
