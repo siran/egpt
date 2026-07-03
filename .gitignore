@@ -19,3 +19,6 @@ conversation.replytargets.json
 
 # generated NSSM service binary (renamed copy)
 setup/bin/
+
+# AI-CLI scratch instruction files — never track
+AGENTS.md
