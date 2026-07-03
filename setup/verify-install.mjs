@@ -10,7 +10,7 @@
 // old-layout residue), the spine pid/alive-beat look live, and `claude` resolves.
 //
 // Usage:  node setup/verify-install.mjs [serviceName] [egptHome]
-//   serviceName defaults to egpt2-daemon; egptHome is taken from the service's own
+//   serviceName defaults to egpt-daemon; egptHome is taken from the service's own
 //   NSSM AppEnvironmentExtra when readable (the source of truth for which profile the
 //   service uses), else the arg / $EGPT_HOME / ~/.egpt2.
 //
@@ -205,7 +205,7 @@ function resolveEgptHome(service, argHome) {
 }
 
 function main() {
-  const service = process.argv[2] || 'egpt2-daemon';
+  const service = process.argv[2] || 'egpt-daemon';
   const egptHome = resolveEgptHome(service, process.argv[3]);
   process.exit(runChecks({ service, egptHome }));
 }

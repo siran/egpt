@@ -210,6 +210,13 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 4. Backlog (known warts, smallest last)
 
+- **Service levels — "a conversation to be had" (operator 2026-07-03):** the node
+  runs as `.\an` (the claude login, ~/.local/bin PATH, and the profile all live in
+  the user's home — maximum capability, node = the operator). The alternative end
+  of the spectrum is a dedicated low-privilege service account with explicit
+  grants (smaller blast radius; claude-login + PATH story gets involved). Ties to
+  GENOME's "secure AND powerful" bar. Not scheduled — discuss when ready.
+
 - **messages-first-class — open phases** (docs/MESSAGES-FIRST-CLASS-PLAN.md, KEPT
   in the 2026-07-03 cleanup because it is NOT fully shipped). Landed: Phase 1 (inbound
   `#id` in the transcript line, C7.6e) + Phase 2 (reactions ingested/surfaced).

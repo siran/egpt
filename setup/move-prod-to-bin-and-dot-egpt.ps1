@@ -17,7 +17,7 @@ if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
 }
 
 $ErrorActionPreference = 'Stop'
-$svc = 'egpt2-daemon'
+$svc = 'egpt-daemon'
 $h = "$env:USERPROFILE"
 
 try {
