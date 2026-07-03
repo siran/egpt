@@ -75,6 +75,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   profile file falls back to the room template's 00-identity.md. No repo-root identities/
   back-read.
 - Anti-drift: integrity tests scan v2 config reads; skeleton can't-rot tests
+- **Relayout guards (2026-07-03)** — two tripwires for the class of failure that slipped
+  past the green suite when the profile was relaid out: (1) `tests/boot-profile-contract.test.mjs`
+  boots the REAL spine against an on-disk fixture in the canonical layout with NO path
+  overrides, asserting the code's own constants find it (registry-seen + thread resume,
+  flat identity seeding, state/ingest consume, config/logs, transcript.md write, media/
+  transcription roots under <conv>/media); (2) `setup/verify-install.mjs` (read-only,
+  `node setup/verify-install.mjs`) checks the LIVE box for NSSM service-log drift +
+  profile shape + liveness + claude on PATH — the drift no vitest can see
 
 ## 2. In flight right now
 
@@ -135,8 +143,13 @@ following is LANDED, test-locked, and (where marked) live-verified:
   threadCwd reads (dispatch.mjs itself stays — v2 imports
   isContextOverflowError), vitest.config.mjs references.
 
-- **Live mesh smoke**: needs DOLLY (2nd node). Config: mesh.nodes routes or an
-  agents relay entry pointing at a shared chat. Unit tests cover the machinery.
+- **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
+  dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
+  and configure relay agents that CHAIN through them: `@don.kg → @moe.kg → @e.kg`
+  — each hop a relay agent whose relay_channel is the next test chat, terminating
+  at the local persona. Exercises multi-hop forward-once + living mirror + hop cap
+  on ONE node, no DOLLY needed. Operator creates the chats; config gets the relay
+  entries. (The DOLLY 2-node smoke stays as the later cross-machine step.)
 
 - **Chrome/CDP textecutable test** (operator-driven, everything ready): copy
   ~/.egpt2/config/skeletons/{script.x.md, heartbeats block} into a chat folder,
@@ -176,6 +189,11 @@ following is LANDED, test-locked, and (where marked) live-verified:
   double-answers every @e.
 - Restart: drop a file containing `/restart` into ~/.egpt2/state/ingest/ (temp→rename).
   Hot-reload heartbeats: delete ~/.egpt2/state/heartbeats.readonly.yaml.
+- Install sanity check: `node setup/verify-install.mjs [service] [egptHome]` (read-only)
+  probes the LIVE node — NSSM AppStdout/AppStderr under config/logs (the drift that killed
+  the service 80× post-relayout), profile shape + no old-layout residue, spine.pid/alive.txt
+  liveness, `claude` on PATH (with the service-env PATH caveat). EGPT_HOME defaults from the
+  service's own NSSM AppEnvironmentExtra. Exit 0 = all ✅.
 - Live self-testing: the egpt-an chat is operator-authorized for agent testing
   (pace sends ≥8s, small counts; each @e is a real claude turn; /status is free).
 - Working agreements: operator = An; all implementation via background Opus
