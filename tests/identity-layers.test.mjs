@@ -15,9 +15,9 @@ process.env.EGPT_HOME = tmpHome;
 let listIdentityLayers, resolveIdentityDir, readIdentityFeed;
 
 beforeAll(async () => {
-  // A profile layer that SHADOWS the shipped `default`, plus a profile-only layer.
-  await mkdir(join(tmpHome, 'identities', 'default'), { recursive: true });
-  await writeFile(join(tmpHome, 'identities', 'default', '00-identity.md'), '# profile default\n\nOverridden.\n', 'utf8');
+  // A profile layer that SHADOWS the shipped `egpt`, plus a profile-only layer.
+  await mkdir(join(tmpHome, 'identities', 'egpt'), { recursive: true });
+  await writeFile(join(tmpHome, 'identities', 'egpt', '00-identity.md'), '# profile egpt\n\nOverridden.\n', 'utf8');
   await mkdir(join(tmpHome, 'identities', 'secretary'), { recursive: true });
   await writeFile(join(tmpHome, 'identities', 'secretary', '00-identity.md'), '# I am a secretary\n\nProfile-only layer.\n', 'utf8');
   ({ listIdentityLayers, resolveIdentityDir, readIdentityFeed } = await import('../conversations-state.mjs'));
@@ -28,16 +28,16 @@ afterAll(async () => {
 });
 
 describe('listIdentityLayers + profile-wins resolution', () => {
-  it('enumerates profile ∪ repo layers, deduped (default listed once, profile-only present)', () => {
+  it('enumerates profile ∪ repo layers, deduped (egpt listed once, profile-only present)', () => {
     const layers = listIdentityLayers();
-    expect(layers).toContain('default');       // present in both roots → once
-    expect(layers.filter((n) => n === 'default')).toHaveLength(1);
+    expect(layers).toContain('egpt');          // present in both roots → once
+    expect(layers.filter((n) => n === 'egpt')).toHaveLength(1);
     expect(layers).toContain('secretary');     // profile-only
     expect(layers).toEqual([...layers].sort()); // sorted
   });
 
   it('the profile layer WINS over the shipped one of the same name', async () => {
-    expect(resolveIdentityDir('default')).toBe(join(tmpHome, 'identities', 'default'));
-    expect(await readIdentityFeed('default')).toMatch(/profile default/);   // not the repo's "I am eGPT"
+    expect(resolveIdentityDir('egpt')).toBe(join(tmpHome, 'identities', 'egpt'));
+    expect(await readIdentityFeed('egpt')).toMatch(/profile egpt/);   // not the repo's "I am eGPT"
   });
 });

@@ -143,7 +143,7 @@ export function createBrainPool({
   //
   // VOCABULARY RETIREMENT (operator 2026-07-02): we no longer read the conversation's
   // `personality` — the identity feed a fresh thread boots from is a property of the
-  // resolved agent-type def (def.personality ?? 'default'), read at kickoff in turn().
+  // resolved agent-type def (def.personality ?? 'egpt'), read at kickoff in turn().
   async function resolveConv(ev, being) {
     const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
     const b = slug ? getBeing(await loadState(), ev.surface, ev.chatId, being) : null;
@@ -268,9 +268,9 @@ export function createBrainPool({
       const engine = def.type ?? brainType;
       // The identity-feed selector (operator 2026-07-02): a property of the resolved
       // agent-type def, NOT the conversation. A type file may pin `personality: <name>`;
-      // the shipped default implies 'default'. An already-instanced def carries none →
-      // 'default' (the frozen readonly no longer stores it).
-      const personality = def.personality ?? 'default';
+      // the shipped default implies 'egpt'. An already-instanced def carries none →
+      // 'egpt' (the frozen readonly no longer stores it).
+      const personality = def.personality ?? 'egpt';
       // E works inside the conversation's own folder unless the brain pins a
       // workspace. The dir must exist before the CLI spawns (warm-cli throws on a
       // missing cwd), and the brain runs before transcript creates it — so mkdir here.

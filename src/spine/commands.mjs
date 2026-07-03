@@ -415,7 +415,7 @@ export function createCommands({
       if (!name) { await send?.(wm.chatId, '/e: invalid type name'); return; }
       // Personality: a chosen existing layer, or a new layer authored from free text
       // (named after the type so it travels with it).
-      let personality = result.personalityLayer || 'default';
+      let personality = result.personalityLayer || 'egpt';
       if (result.personalityText) {
         personality = name;
         const layerFile = join(identitiesDir, name, '00-identity.md');

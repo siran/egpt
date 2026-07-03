@@ -22,5 +22,5 @@ allowed_paths:
   #  /c/Users/you/project:               # full access (read + write)
   #  /c/Users/you/reference:             # READ-ONLY (a tool list that omits write tools)
   #    allowed_tools: [Read, Glob, Grep]
-# personality: default  # identity feed a fresh conversation boots from (identities/<name>/);
-                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
+# personality: egpt  # identity feed a fresh conversation boots from (identities/<name>/);
+                        # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.

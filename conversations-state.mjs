@@ -1259,7 +1259,7 @@ export async function readIdentityDir(surface, slug) {
 // (~/.egpt/identities/<name>/) win over shipped (<repo>/identities/<name>/).
 
 export function resolveIdentityDir(name) {
-  const safe = sanitizeSlug(name || 'default') || 'default';
+  const safe = sanitizeSlug(name || 'egpt') || 'egpt';
   for (const base of [IDENTITIES_OPERATOR_DIR, IDENTITIES_SHIPPED_DIR]) {
     const p = join(base, safe);
     if (existsSync(p)) return p;

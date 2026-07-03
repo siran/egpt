@@ -62,8 +62,8 @@ allowed_paths:
   #  /c/Users/you/project:               # full access (read + write)
   #  /c/Users/you/reference:             # READ-ONLY (a tool list that omits write tools)
   #    allowed_tools: [Read, Glob, Grep]
-# personality: default  # identity feed a fresh conversation boots from (identities/<name>/);
-                        # a property of the TYPE, not the conversation. Absent ⇒ 'default'.
+# personality: egpt  # identity feed a fresh conversation boots from (identities/<name>/);
+                        # a property of the TYPE, not the conversation. Absent ⇒ 'egpt'.
 `;
 
 // PRESET personality identity LAYERS (operator 2026-07-03). Each is a single plain-
@@ -213,7 +213,7 @@ export function seedSkeletons({
 
   // 4. the PRESET personality identity layers → identities/<name>/00-identity.md. Seeded
   //    copy-if-missing so an operator's own edits are sacred; the /e wizard's custom branch
-  //    lists them (plus the repo's `default`) as personality picks.
+  //    lists them (plus the repo's `egpt`) as personality picks.
   for (const [name, body] of Object.entries(PRESET_IDENTITIES)) {
     copyIfMissing(join(identitiesDir, name, '00-identity.md'), () => body);
   }
