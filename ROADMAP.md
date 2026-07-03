@@ -215,12 +215,6 @@ following is LANDED, test-locked, and (where marked) live-verified:
   on ONE node, no DOLLY needed. Operator creates the chats; config gets the relay
   entries. (The DOLLY 2-node smoke stays as the later cross-machine step.)
 
-- **Script cleanup — the "10 thousand scripts"** (operator 2026-07-03): audit
-  setup/ + src/tools/ + any loose scripts the docs cleanup didn't cover; an agent
-  classifies live vs legacy with import/reference evidence (same method as the
-  docs sweep), operator approves the kill list. Dispatch after the prod migration
-  settles (haiku/sonnet-tier job).
-
 - **Chrome/CDP textecutable test** (operator-driven, everything ready): copy
   the profile's config/skeletons/{script.x.md, heartbeats block} into a chat folder,
   set `when:` a few minutes out, delete state/heartbeats.readonly.yaml, watch.
