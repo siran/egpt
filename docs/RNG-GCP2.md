@@ -24,7 +24,20 @@ Research note (2026-07-03). Operator is receiving a GCP 2.0 NextGen RNG and aske
 - **Honest split**: streaming bits from a hardware TRNG = solid engineering. "Deviations reflect a global mind" = the contested leap.
 
 ## How the Mesh could align (lean, buildable)
-The Mesh already has the exact primitives: **sensors/limbs** (local device reads), **declarative heartbeats** (`frequency:`/`when:` + `command:`/`ai_run:`, per node/conversation/room), a **mesh** of peers relaying envelopes (TTL + request_id + return address) over shared chats, and a **/status** surface.
+The alignment is **two-fold** (operator 2026-07-03):
+
+- **RNG entropy** — every mesh node (a node can be as big as you want — a whole
+  WhatsApp/Signal/Telegram presence) can host a USB RNG and publish its stream.
+  Interpretation contested (see above).
+
+- **Network health itself** — the mesh's own operational health (nodes reachable,
+  relay latency, beat freshness, recovery time after an outage) is *causally*
+  correlated with collective human activity: when services degrade, it is humans
+  themselves working to re-establish them. No statistical controversy — the mesh
+  literally measures people keeping the world running. This signal is free: the
+  mesh already produces it.
+
+The Mesh already has the exact primitives: **sensors/limbs** (local device reads), **declarative heartbeats** (`frequency:`/`when:` + `command:`/`ai_run:`, per node/conversation/room), a **mesh** of peers relaying envelopes over shared chats, and a **/status** surface.
 
 *Measurement infrastructure (sound — just plumbing):*
 1. **Local entropy SENSE.** The GCP2 unit is sealed and phones home, so for a Mesh-readable feed use a **commodity USB TRNG** (or `/dev/hwrng`, or audio/camera noise) as a spine service/limb. The GCP2 box still contributes to *their* network in parallel.
