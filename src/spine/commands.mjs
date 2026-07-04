@@ -10,10 +10,11 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
+import { coerceAllowedTools } from './brainpool.mjs';
 import { stat as fsStat, readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -457,8 +458,11 @@ export function createCommands({
     // and its frozen engine keys the warm entry to evict on done (null = never
     // instanced → fall back to the new def's engine at apply time).
     const cur = getBeing(state, surface, jid, 'e');
+    // The tools-branch "keep current" display: the live frozen list, coerced (a legacy
+    // 'all' shows — and later freezes — as the explicit list, never perpetuated).
+    const curTools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? null;
     const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS, personalities, takenNames };
-    const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null };
+    const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null, tools: curTools };
     const wstate = initWizard({ slug, jid, surface, options, current });
     wizards.set(chatKey(ev), { state: wstate, surface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
     await send?.(ev.chatId, `🧩 reconfigure «${displayName}»\n${wizardPrompt(wstate)}`);
@@ -487,6 +491,7 @@ export function createCommands({
   // branch first AUTHORS the new type (+ any free-text identity layer), then applies it.
   async function applyWizard(wm, result) {
     if (result.custom) return applyCustomWizard(wm, result);
+    if (result.toolsOnly) return applyToolsWizard(wm, result);
     const { surface, jid } = result;
     try {
       const state = await loadState();
@@ -495,7 +500,10 @@ export function createCommands({
       const displayName = c?.entry?.pushedName ?? slug;
       let convDir = null;
       try { convDir = slugDir(surface, slug); } catch { /* non-default surface — resolve without a conv layer */ }
-      const def = brains?.resolve?.(result.configuration, { convDir });
+      // 'all'/'*' is REJECTED (operator 2026-07-03) — a hand-written type file that
+      // still says it is coerced to the explicit default list before freezing, same as
+      // the brainpool's own turn (never a duplicate check — the one chokepoint).
+      const def = coerceAllowedTools(brains?.resolve?.(result.configuration, { convDir }));
       if (!def) { await send?.(wm.chatId, `/e: agent type "${result.configuration}" not found`); return; }
       const engine = def.type ?? CCODE;
       // Picking an existing type IS the answer (operator 2026-07-03): apply with the type's
@@ -545,6 +553,39 @@ export function createCommands({
       evictWarm(`e:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);
     } catch (e) { onLog(`/e wizard custom ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
+  }
+
+  // The `tools` branch: edit ONLY allowed_tools, keeping the conversation's current
+  // agent/type/model/effort exactly as they are (readonly is written WHOLE — patchContact
+  // replaces the key — so every other field is re-read fresh here, not the arm-time
+  // snapshot, and carried forward unchanged). 'current' is resolved fresh + coerced, so a
+  // legacy frozen 'all' is never re-frozen — it self-heals to the explicit list here too.
+  async function applyToolsWizard(wm, result) {
+    const { surface, jid } = result;
+    try {
+      const state = await loadState();
+      const c = getContact(state, surface, jid);
+      const slug = c?.slug ?? result.slug;
+      const displayName = c?.entry?.pushedName ?? slug;
+      const cur = getBeing(state, surface, jid, 'e');
+      let tools;
+      if (result.tools === 'default') tools = DEFAULT_ALLOWED_TOOLS;
+      else if (result.tools === 'readonly') tools = READONLY_ALLOWED_TOOLS;
+      else if (result.tools === 'custom') tools = result.toolsCustom?.length ? result.toolsCustom : DEFAULT_ALLOWED_TOOLS;
+      else tools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;   // 'current'
+      const engine = cur?.brainType ?? wm.oldEngine ?? CCODE;
+      await writeState(patchContact(state, surface, jid, {
+        readonly: {
+          agent: cur?.agent ?? 'egpt',
+          type: engine,
+          model: cur?.model ?? DETERMINISTIC_MODEL,
+          effort: cur?.effort ?? DETERMINISTIC_EFFORT,
+          allowed_tools: tools,
+        },
+      }));
+      evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
+      await send?.(wm.chatId, `✅ «${displayName}» tools → [${tools.join(', ')}] (respawns next turn)`);
+    } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
 
   return { isCommand, run };

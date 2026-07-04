@@ -65,6 +65,11 @@ following is LANDED, test-locked, and (where marked) live-verified:
     Personality picks = identity layers (listIdentityLayers = profile config/identities/*.md +
     'egpt') + free text; 10 preset layers seeded copy-if-missing to config/identities/<name>.md
     (src/spine/seed.mjs PRESET_IDENTITIES).
+  - **/e wizard tools step (operator 2026-07-03)** — a `tools` option (right before `custom`,
+    also last) edits ONLY allowed_tools, keeping the current agent type/model/effort: default
+    list / read-only / keep current / custom free text (validated, bare Bash/Agent rejected,
+    'all' never selectable/writable — a picked type's or legacy frozen 'all' self-heals via
+    the shared brainpool.coerceAllowedTools chokepoint).
 - **Profile relayout (operator 2026-07-03, disk = spec)** — the code's canonical paths now
   match the reorganized profile: `config/conversations.yaml` (CONV_YAML_PATH), `config/logs/`
   (beeper.log + swallowed.log + NSSM service-std{out,err}.log), `state/ingest/` (the lifecycle

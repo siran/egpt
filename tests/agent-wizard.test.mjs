@@ -33,14 +33,15 @@ describe('agent wizard (v2: picking an existing type applies immediately)', () =
 
   it('rejects an out-of-range pick and stays on the step', () => {
     const before = mk().idx;
-    const r = wizardStep(mk(), '9');      // no configuration 9 (2 types + custom = 1–3)
+    const r = wizardStep(mk(), '9');      // no configuration 9 (2 types + tools + custom = 1–4)
     expect(r.state.idx).toBe(before);
-    expect(r.prompt).toMatch(/pick 1–3/);
+    expect(r.prompt).toMatch(/pick 1–4/);
   });
 
   it('b goes back, x cancels (through the custom branch, which still has multiple steps)', () => {
-    let r = wizardStep(mk(), '3');        // custom (2 types + custom = option 3) → model step
+    let r = wizardStep(mk(), '4');        // custom (2 types + tools + custom = option 4) → model step
     expect(r.state.idx).toBe(1);
+    expect(r.state.mode).toBe('custom');
     r = wizardStep(r.state, 'b');         // back to configuration
     expect(r.state.idx).toBe(0);
     expect(wizardStep(r.state, 'x').cancelled).toBe(true);
@@ -75,8 +76,9 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
     expect(p).toMatch(/personality: default/);
     // the 'default' type has no personality field set → it is omitted from ITS block
     expect(p).toMatch(/2\) default:/);
-    // custom is always the last option
-    expect(p).toMatch(/3\) custom:/);
+    // tools sits just before custom, which is always the last option
+    expect(p).toMatch(/3\) tools:/);
+    expect(p).toMatch(/4\) custom:/);
     expect(p).toMatch(/model → effort → personality → name/);
   });
 
@@ -88,7 +90,7 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
   });
 
   it('custom branch: custom → model → effort → personality(free text) → name → done', () => {
-    let r = wizardStep(mkY(), '3');            // custom (option 3 = 2 types + custom)
+    let r = wizardStep(mkY(), '4');            // custom (option 4 = 2 types + tools + custom)
     expect(r.state.mode).toBe('custom');
     r = wizardStep(r.state, '2');              // model → sonnet
     r = wizardStep(r.state, '3');              // effort → high
@@ -107,7 +109,7 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
   });
 
   it('custom branch: picking an existing personality layer (not free text)', () => {
-    let r = wizardStep(mkY(), '3');            // custom
+    let r = wizardStep(mkY(), '4');            // custom
     r = wizardStep(r.state, '1');              // model
     r = wizardStep(r.state, '1');              // effort
     r = wizardStep(r.state, '2');              // personality → secretary (option 2)
@@ -117,7 +119,7 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
   });
 
   it('re-prompts when the new type name collides with an existing type', () => {
-    let r = wizardStep(mkY(), '3');            // custom
+    let r = wizardStep(mkY(), '4');            // custom
     r = wizardStep(r.state, '1');              // model
     r = wizardStep(r.state, '1');              // effort
     r = wizardStep(r.state, '1');              // personality → default
@@ -130,7 +132,7 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
   });
 
   it('b out of the free-text capture returns to the personality pick', () => {
-    let r = wizardStep(mkY(), '3');            // custom
+    let r = wizardStep(mkY(), '4');            // custom
     r = wizardStep(r.state, '1');              // model
     r = wizardStep(r.state, '1');              // effort → personality
     r = wizardStep(r.state, '4');              // describe it → free capture
@@ -141,11 +143,120 @@ describe('agent wizard: structured-yaml type view + custom branch', () => {
   });
 
   it('re-picking an existing type after custom flips the branch back and applies immediately', () => {
-    let r = wizardStep(mkY(), '3');            // custom → model step (idx 1, mode custom)
+    let r = wizardStep(mkY(), '4');            // custom → model step (idx 1, mode custom)
     r = wizardStep(r.state, 'b');              // back to type (idx 0, mode still custom)
     r = wizardStep(r.state, '1');              // pick egpt (existing) → DONE immediately
     expect(r.done).toBe(true);
     expect(r.result).toMatchObject({ configuration: 'egpt', model: 'sonnet', effort: 'high' });
     expect(r.result.custom).toBeUndefined();
+  });
+});
+
+describe('agent wizard: tools branch', () => {
+  const yamlOpts = {
+    configurations: [{ name: 'egpt', model: 'sonnet', effort: 'high' }, { name: 'default', model: 'sonnet', effort: 'high' }],
+    models: ['haiku', 'sonnet', 'opus', 'fable'], efforts: ['low', 'medium', 'high'],
+  };
+  const mkT = (extra = {}) => initWizard({ slug: 's', jid: 'j', surface: 'whatsapp', options: yamlOpts, ...extra });
+
+  it('the "tools" option sits right before custom (3 with 2 configs) and shows the fixed 4-option menu', () => {
+    let r = wizardStep(mkT(), '3');
+    expect(r.state.mode).toBe('tools');
+    expect(r.state.idx).toBe(1);
+    expect(r.prompt).toMatch(/2\/2  tools\?/);
+    expect(r.prompt).toMatch(/1\) default:.*Read.*Write.*Edit/);
+    expect(r.prompt).toMatch(/2\) read-only:.*Read.*Glob.*Grep/);
+    expect(r.prompt).toMatch(/3\) keep current:/);
+    expect(r.prompt).toMatch(/4\) custom:/);
+    expect(r.prompt).not.toMatch(/\ball\b/i);   // 'all' is never one of the choices
+  });
+
+  it('picking "default" (1) is done immediately, tools = \'default\'', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '1');
+    expect(r.done).toBe(true);
+    expect(r.result).toMatchObject({ toolsOnly: true, tools: 'default', toolsCustom: null });
+  });
+
+  it('picking "read-only" (2), tools = \'readonly\'', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '2');
+    expect(r.done).toBe(true);
+    expect(r.result.tools).toBe('readonly');
+  });
+
+  it('picking "keep current" (3), tools = \'current\'', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '3');
+    expect(r.done).toBe(true);
+    expect(r.result.tools).toBe('current');
+  });
+
+  it('"keep current" shows the conversation\'s live list', () => {
+    const r = wizardStep(mkT({ current: { tools: ['Read', 'Grep'] } }), '3');
+    expect(r.prompt).toMatch(/3\) keep current:  Read Grep/);
+  });
+
+  it('custom (4) free-text: a valid space-separated list is frozen verbatim', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    expect(r.state.freeKey).toBe('tools');
+    r = wizardStep(r.state, 'Read Grep WebFetch Bash(git:*)');
+    expect(r.done).toBe(true);
+    expect(r.result).toMatchObject({ toolsOnly: true, tools: 'custom', toolsCustom: ['Read', 'Grep', 'WebFetch', 'Bash(git:*)'] });
+  });
+
+  it('custom free-text rejects a bare "Bash" and re-prompts (stays in free capture)', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    r = wizardStep(r.state, 'Read Bash');
+    expect(r.done).toBeUndefined();
+    expect(r.state.freeKey).toBe('tools');
+    expect(r.prompt).toMatch(/bare "Bash" isn't allowed/);
+  });
+
+  it('custom free-text rejects a bare "Agent" and re-prompts', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    r = wizardStep(r.state, 'Agent');
+    expect(r.done).toBeUndefined();
+    expect(r.prompt).toMatch(/bare "Agent" isn't allowed/);
+  });
+
+  it('custom free-text rejects an unknown tool name and re-prompts', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    r = wizardStep(r.state, 'Frobnicate');
+    expect(r.done).toBeUndefined();
+    expect(r.prompt).toMatch(/unknown tool "Frobnicate"/);
+  });
+
+  it('custom free-text rejects a wildcard Bash(*:*) — not a real scoped bin', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    r = wizardStep(r.state, 'Bash(*:*)');
+    expect(r.done).toBeUndefined();
+    expect(r.prompt).toMatch(/unknown tool/);
+  });
+
+  it('b out of the free-text capture returns to the tools menu', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, '4');
+    expect(r.state.freeKey).toBe('tools');
+    r = wizardStep(r.state, 'b');
+    expect(r.state.freeKey).toBe(null);
+    expect(r.prompt).toMatch(/tools\?/);
+  });
+
+  it('b out of the tools step goes back to the agent-type step', () => {
+    let r = wizardStep(mkT(), '3');
+    r = wizardStep(r.state, 'b');
+    expect(r.state.idx).toBe(0);
+    expect(r.prompt).toMatch(/agent type\?/);
+  });
+
+  it('typed "tools" (not the number) also enters the branch', () => {
+    const r = wizardStep(mkT(), 'tools');
+    expect(r.state.mode).toBe('tools');
   });
 });

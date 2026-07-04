@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../spine.mjs';
-import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
+import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../conversations-state.mjs';
 
 function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'] } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
@@ -208,6 +208,15 @@ describe('/e wizard', () => {
     expect(sent.at(-1).text).toMatch(/«fam» → egpt · sonnet\/high/);
   });
 
+  it('a picked type file that says allowed_tools: all is coerced to the explicit default list before freezing, never written as \'all\'', async () => {
+    const brains = { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) };
+    const { cmds, getState } = harness({ state: contact(), brains });
+    const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '1' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+
   it('/e <fragment> resolves the target chat (like /e auto) and writes THERE, not the Self DM', async () => {
     const state = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
     const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
@@ -230,10 +239,10 @@ describe('/e wizard', () => {
   });
 
   it('b steps back to the previous question (in the custom branch, the only multi-step path)', async () => {
-    const { cmds, sent } = harness({ state: contact() });   // agentTypes [egpt, sonnet-high] → custom = option 3
+    const { cmds, sent } = harness({ state: contact() });   // agentTypes [egpt, sonnet-high] → tools = 3, custom = option 4
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
     await cmds.run({ ...ev, body: '/e' });   // step 1 (type) — "1/1"
-    await cmds.run({ ...ev, body: '3' });    // custom → step 2 (model) "2/5"
+    await cmds.run({ ...ev, body: '4' });    // custom → step 2 (model) "2/5"
     expect(sent.at(-1).text).toMatch(/2\/5  model\?/);
     await cmds.run({ ...ev, body: 'b' });    // back → step 1 type (mode still custom → "1/5")
     expect(sent.at(-1).text).toMatch(/1\/5  agent type\?/);
@@ -294,15 +303,16 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
     expect(p).toMatch(/effort: high/);
     expect(p).toMatch(/personality: default/);
     expect(p).not.toMatch(/sonnet-high/);    // unresolvable → dropped
-    expect(p).toMatch(/2\) custom:/);        // custom last (only egpt resolved)
+    expect(p).toMatch(/2\) tools:/);         // tools before custom
+    expect(p).toMatch(/3\) custom:/);        // custom last (only egpt resolved)
   });
 
   it('custom branch (free-text personality): writes the type file + identity layer, freezes readonly, evicts', async () => {
     let state = contact();
     state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');   // existing context to preserve
     const { cmds, sent, evicts, writes, files, getState } = harness({ state, agentTypes: ['egpt'], identityLayers: ['default', 'secretary'] });
-    await cmds.run({ ...ev, body: '/e' });          // arm — configs [egpt] + custom = option 2
-    await cmds.run({ ...ev, body: '2' });           // custom → model step
+    await cmds.run({ ...ev, body: '/e' });          // arm — configs [egpt] + tools = option 2, custom = option 3
+    await cmds.run({ ...ev, body: '3' });           // custom → model step
     await cmds.run({ ...ev, body: '2' });           // model → sonnet
     await cmds.run({ ...ev, body: '3' });           // effort → high
     // personality step: [default, secretary] + describe it = option 3
@@ -334,7 +344,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
   it('custom branch (existing personality layer): no identity file, type file names the picked layer', async () => {
     const { cmds, files } = harness({ state: contact(), agentTypes: ['egpt'], identityLayers: ['default', 'poet'] });
     await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // custom
+    await cmds.run({ ...ev, body: '3' });   // custom
     await cmds.run({ ...ev, body: '1' });   // model → haiku
     await cmds.run({ ...ev, body: '1' });   // effort → low
     await cmds.run({ ...ev, body: '2' });   // personality → poet (option 2, not free text)
@@ -346,7 +356,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
   it('custom branch: the personality step lists the seeded layers + a free-text option', async () => {
     const { cmds, sent } = harness({ state: contact(), agentTypes: ['egpt'], identityLayers: ['default', 'secretary', 'poet'] });
     await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '2' });   // custom
+    await cmds.run({ ...ev, body: '3' });   // custom
     await cmds.run({ ...ev, body: '1' });   // model
     await cmds.run({ ...ev, body: '1' });   // effort → personality step
     const p = sent.at(-1).text;
@@ -360,7 +370,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
   it('custom branch: a name colliding with an existing type re-prompts, then accepts a fresh one', async () => {
     const { cmds, sent, files } = harness({ state: contact(), agentTypes: ['egpt', 'sonnet-high'], identityLayers: ['default'] });
     await cmds.run({ ...ev, body: '/e' });
-    await cmds.run({ ...ev, body: '3' });   // custom (2 types + custom = option 3)
+    await cmds.run({ ...ev, body: '4' });   // custom (2 types + tools + custom = option 4)
     await cmds.run({ ...ev, body: '2' });   // model
     await cmds.run({ ...ev, body: '3' });   // effort
     await cmds.run({ ...ev, body: '1' });   // personality → default
@@ -372,3 +382,95 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
     expect(sent.at(-1).text).toMatch(/new type created/);
   });
 });
+
+describe('/e wizard: tools branch', () => {
+  const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
+  const instanced = (tools) => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');
+    return patchContact(state, 'whatsapp', '!room', { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: tools } });
+  };
+
+  it('the CFG_STEP menu offers "tools" (never "all") and arming reaches it via bare /e', async () => {
+    const { cmds, sent } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    expect(sent[0].text).toMatch(/2\) tools:/);
+    expect(sent[0].text).not.toMatch(/\ball\b/i);
+  });
+
+  it('/e <fragment> also reaches the tools branch', async () => {
+    const state = ensureContact(instanced(['Read']), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' }).state;
+    const { cmds, sent } = harness({ state, agentTypes: ['egpt'], config: { whatsapp: { chat_id: '!self' } } });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '/e hfm' });
+    await cmds.run({ chatId: '!self', surface: 'whatsapp', body: '2' });   // tools
+    expect(sent.at(-1).text).toMatch(/2\/2  tools\?/);
+  });
+
+  it('"default" (1) freezes DEFAULT_ALLOWED_TOOLS, keeps agent/model/effort + threadId, evicts warm', async () => {
+    const { cmds, sent, evicts, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '1' });   // default
+    const b = getBeing(getState(), 'whatsapp', '!room', 'e');
+    expect(b).toMatchObject({ agent: 'egpt', brainType: 'ccode', model: 'sonnet', effort: 'high', threadId: 'THREAD-1' });
+    expect(b.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+    expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);
+    expect(sent.at(-1).text).toMatch(/«fam» tools → \[Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task\]/);
+  });
+
+  it('"read-only" (2) freezes READONLY_ALLOWED_TOOLS', async () => {
+    const { cmds, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '2' });   // read-only
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(READONLY_ALLOWED_TOOLS);
+  });
+
+  it('"keep current" (3) preserves the exact live list untouched', async () => {
+    const { cmds, getState } = harness({ state: instanced(['Read', 'Bash(git:*)']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '3' });   // keep current
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(['Read', 'Bash(git:*)']);
+  });
+
+  it('"keep current" on a legacy allowed_tools: all self-heals to the explicit default — never re-freezes \'all\'', async () => {
+    const { cmds, getState } = harness({ state: instanced('all'), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '3' });   // keep current
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+
+  it('custom (4) free text freezes exactly the validated list typed', async () => {
+    const { cmds, getState } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '4' });   // custom
+    await cmds.run({ ...ev, body: 'Read Grep WebFetch Bash(yt-dlp:*)' });
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e').allowedTools).toEqual(['Read', 'Grep', 'WebFetch', 'Bash(yt-dlp:*)']);
+  });
+
+  it('custom free text rejects a bare Bash — re-prompts, wizard stays armed, nothing written', async () => {
+    const { cmds, sent, writes } = harness({ state: instanced(['Read']), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '4' });   // custom
+    await cmds.run({ ...ev, body: 'Read Bash' });
+    expect(sent.at(-1).text).toMatch(/bare "Bash" isn't allowed/);
+    expect(writes).toHaveLength(0);
+    expect(cmds.isCommand({ ...ev, body: '1' })).toBe(true);   // still armed
+  });
+
+  it('a never-instanced conversation picking tools + default falls back to the deterministic floor', async () => {
+    const { cmds, getState } = harness({ state: contact(), agentTypes: ['egpt'] });
+    await cmds.run({ ...ev, body: '/e' });
+    await cmds.run({ ...ev, body: '2' });   // tools
+    await cmds.run({ ...ev, body: '1' });   // default
+    expect(getBeing(getState(), 'whatsapp', '!room', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
+  });
+});
+
+function contact() {
+  return ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
+}

@@ -61,7 +61,9 @@ function normalizeCwd(p) {
 // through untouched — an Array list (confined), a space/comma string list (explicit),
 // or absent (downstream default). Bonus: the freeze below now stores the list, so each
 // legacy 'all' entry self-heals to the explicit list on its next turn.
-function coerceAllowedTools(def) {
+// Exported (operator 2026-07-03: the `/e` wizard's existing-pick + tools-step freezes
+// reuse this exact coercion — one chokepoint, not a duplicate 'all'/'*' check).
+export function coerceAllowedTools(def) {
   if (def && (def.allowed_tools === 'all' || def.allowed_tools === '*')) {
     return { ...def, allowed_tools: DEFAULT_ALLOWED_TOOLS };
   }

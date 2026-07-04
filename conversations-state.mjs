@@ -123,7 +123,7 @@ export const DETERMINISTIC_EFFORT = 'high';
 // in the tool-args leaf (src/claude-args.mjs), re-exported here so existing importers
 // (brainpool, commands) keep their path. A literal 'all' is REJECTED at the spawn
 // boundary — coerced to this list, never a bypass/full grant.
-export { DEFAULT_ALLOWED_TOOLS } from './src/claude-args.mjs';
+export { DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from './src/claude-args.mjs';
 
 // The conversation's stats module file (operator 2026-07-02): lifecycle timestamps +
 // branchable thread history live HERE, sibling to transcript.md, so conversations.yaml

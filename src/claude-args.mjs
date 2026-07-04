@@ -12,12 +12,11 @@
 //                                     --add-dir <roots>; file tools are NOT
 //                                     pre-approved (so they stay path-confined),
 //                                     only non-file tools are allow-listed.
-//   allowedTools 'all'|'*'          → --dangerously-skip-permissions +
-//                                     --permission-mode bypassPermissions (trusted)
-//                                     + --disallowedTools "Bash Agent" (the two
-//                                     escape hatches are NEVER implicit, even
-//                                     under 'all' — operator 2026-07-03)
-//   allowedTools list               → --allowedTools "<list>"
+//   allowedTools 'all'|'*'          → REJECTED (operator 2026-07-03): coerced to
+//                                     DEFAULT_ALLOWED_TOOLS and routed through the
+//                                     list path — NO bypass tier, no bare Bash/Agent.
+//   allowedTools list               → --allowedTools "<list>" (confined path when
+//                                     confineToDirs is set)
 //   readOnlyDirs (write-deny)       → NATIVE permission deny rules via --settings:
 //                                     permissions.deny ["Edit(<dir>/**)","Write(...)",
 //                                     "MultiEdit(...)","NotebookEdit(...)"] — Claude's
@@ -36,6 +35,11 @@ export const FILE_TOOLS = new Set(['read', 'write', 'edit', 'multiedit', 'notebo
 // source of truth — conversations-state re-exports this; nothing hard-codes 'all'.
 // Scoped Bash(<bin>:*) is added per type; bare Bash/Agent are never here.
 export const DEFAULT_ALLOWED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Task'];
+
+// The `/e` wizard's tools-step "read-only" menu option (operator 2026-07-03): no
+// write-class tools, read + web only. Same one-source-of-truth convention as
+// DEFAULT_ALLOWED_TOOLS above.
+export const READONLY_ALLOWED_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch'];
 
 // Write-class tools denied under a read-only dir (the CLI mirror of the SDK's
 // PreToolUse write-deny hook). Read/Grep/Glob stay allowed (the dir is readable).
