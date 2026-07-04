@@ -21,6 +21,19 @@ describe('formatDispatchLine — canonical shape', () => {
       .toBe('Ron@[HFM].wa (17:21): x');   // empty id → omitted
   });
 
+  // Reply reference (operator 2026-07-04): a quoted reply renders `↩#<id>` after the
+  // msg id so the model sees which message is being answered (and can target it back
+  // via a /reply emit action). Omitted when absent (back-compat).
+  it('renders ↩#<id> for a reply, after the msg id; omitted when absent', () => {
+    expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267', replyToId: '157204' }))
+      .toBe('Bea@[HFM].wa (17:21) #157267 ↩#157204: gracias');
+    expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', body: 'gracias', ts: TS, msgId: '157267' }))
+      .toBe('Bea@[HFM].wa (17:21) #157267: gracias');
+    // a stage-direction never carries the ↩ tag (it references its own target)
+    expect(formatDispatchLine({ senderName: 'Bea', chatName: 'HFM', node: 'wa', ts: TS, replyToId: '9', stageDirection: true, body: 'x' }))
+      .toBe('[ Bea@[HFM].wa (17:21): x ]');
+  });
+
   it('is exactly Sender@[chatname].{node} (HH:MM): body', () => {
     expect(formatDispatchLine({
       senderName: 'An', chatName: 'HFM High Frequency', node: 'wa', body: 'hola', ts: TS,

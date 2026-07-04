@@ -19,7 +19,7 @@ import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
 import {
-  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES,
+  CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir,
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
@@ -32,6 +32,7 @@ import { createSender } from './sender.mjs';
 import { createBrainPool } from './brainpool.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
+import { createReplyActions } from './reply-actions.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
@@ -258,6 +259,18 @@ export async function boot({
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
 
+  // Conversation-E LIMBS (ROADMAP §3): a reply may carry own-line action commands
+  // (react/reply/media/edit/delete) which the spine strips from the surfaced prose and
+  // executes AFTER recording, confined to the reply's OWN conversation. /media paths
+  // resolve against the conversation's own folder (E's confined cwd) — the SAME slug
+  // resolver the transcript/brain use, so a file E created in its cwd is reachable and
+  // nothing outside it is.
+  const resolveConvDir = async (ev) => {
+    try { const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName }); return slug ? slugDir(ev.surface, slug) : null; }
+    catch { return null; }
+  };
+  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, onLog: (m) => log.line?.(`[actions] ${m}`) });
+
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room folder's
   // config.yaml heartbeats: block, materializes state/heartbeats.readonly.yaml,
@@ -326,7 +339,7 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
 
   // PHASE 2 — bind each command action + register every heartbeat onto the
   // registry the spine ticks + write the readonly.yaml. The alive beat is a

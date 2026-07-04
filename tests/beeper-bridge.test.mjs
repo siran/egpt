@@ -15,6 +15,8 @@ import { surfaceOf } from '../src/spine/identity.mjs';
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
   const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
+  const reactions = [];   // POSTs to /v1/chats/:id/messages/:msgId/reactions (E's react limb)
+  const uploads = [];     // POSTs to /v1/assets/upload (E's media limb)
   const chats = new Map();   // chatID -> chat info served by GET
   const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
   let msgListGets = 0;        // GET /messages polls served — lets a test choreograph the upsert race
@@ -22,6 +24,17 @@ async function startFakeBeeper() {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      const react = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)\/reactions$/);
+      if (req.method === 'POST' && react) {
+        reactions.push({ chatID: decodeURIComponent(react[1]), messageID: decodeURIComponent(react[2]), ...JSON.parse(body) });
+        res.end(JSON.stringify({ success: true }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/v1/assets/upload') {
+        uploads.push({ bytes: body.length });   // multipart body — we don't parse it, just confirm the call
+        res.end(JSON.stringify({ uploadID: `up-${uploads.length}`, mimeType: 'image/png', fileName: 'blob.png', srcURL: 'file:///tmp/x' }));
+        return;
+      }
       const post = req.url.match(/^\/v1\/chats\/([^/]+)\/messages$/);
       if (req.method === 'POST' && post) {
         posts.push({ chatID: decodeURIComponent(post[1]), ...JSON.parse(body) });
@@ -68,7 +81,7 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, edits, chats, messages,
+    port, posts, edits, reactions, uploads, chats, messages,
     msgListGets: () => msgListGets,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
@@ -755,6 +768,72 @@ describe('beeper bridge — per-surface authorization', () => {
     expect(react.from.isReaction).toBe(true);
     expect(react.from.authorized).toBe(true);      // network reached isAllowedUser on the reaction path
     expect(react.from.senderName).toBe('Owner');   // …and reached _reactorName (owner → configured name)
+  });
+});
+
+// Conversation-E LIMBS (ROADMAP §3): the bridge SEND primitives + the inbound
+// replyToBot signal. Reaction/reply-to/media hit the real Beeper endpoints; a reply
+// to a message WE sent is flagged replyToBot so the gate fires without an @e.
+describe('beeper bridge — E limbs + reply-to-E notification', () => {
+  it('sendReaction POSTs { reactionKey } to /messages/:id/reactions', async () => {
+    const { bridge } = await startBridge();
+    const ok = await bridge.sendReaction(CHAT('chat-1'), '157204', '🔥');
+    expect(ok).toBe(true);
+    expect(fake.reactions).toHaveLength(1);
+    expect(fake.reactions[0]).toMatchObject({ chatID: CHAT('chat-1'), messageID: '157204', reactionKey: '🔥' });
+  });
+
+  it('sendMedia uploads the file then posts an attachment referencing the uploadID', async () => {
+    const { bridge } = await startBridge();
+    const p = join(stateDir, 'pic.png');
+    writeFileSync(p, 'fake-image-bytes');
+    const ok = await bridge.sendMedia(CHAT('chat-1'), p, { caption: 'look' });
+    expect(ok).toBe(true);
+    expect(fake.uploads).toHaveLength(1);                  // /v1/assets/upload was hit
+    const post = fake.posts[fake.posts.length - 1];
+    expect(post.attachment).toMatchObject({ uploadID: 'up-1', type: 'image', mimeType: 'image/png' });
+    expect(post.text).toBe('look');
+  });
+
+  it('wasSentByUs is true for a message this bridge sent, false otherwise', async () => {
+    const { bridge } = await startBridge();
+    await bridge.send('hi there', { chatId: CHAT('chat-1') });   // records pm-1 in _sentIds
+    expect(bridge.wasSentByUs(CHAT('chat-1'), 'pm-1')).toBe(true);
+    expect(bridge.wasSentByUs(CHAT('chat-1'), 'someone-elses-id')).toBe(false);
+  });
+
+  it('an inbound reply to a message WE sent → replyToBot true + ↩#id ref (operator: "reply to E isn\'t notified")', async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('egpt here', { chatId: CHAT('chat-1') });   // our sent id = pm-1
+    // someone replies to pm-1 (Beeper carries the quoted id as a bare linkedMessageID)
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: false, senderName: 'Bea', text: 'gracias', linkedMessageID: 'pm-1' }),
+    ] });
+    await waitFor(() => incoming.some((i) => i.text === 'gracias'));
+    const m = incoming.find((i) => i.text === 'gracias');
+    expect(m.from.replyToBot).toBe(true);       // → the gate fires without any @e
+    expect(m.from.replyToId).toBe('pm-1');      // → identity renders ↩#pm-1 in the dispatch line
+  });
+
+  it('an inbound reply to SOMEONE ELSE → replyToBot false, but the ↩#id ref still rides', async () => {
+    const { bridge, incoming } = await startBridge();
+    await bridge.send('egpt here', { chatId: CHAT('chat-1') });   // our id = pm-1
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ isSender: false, senderName: 'Bea', text: 'ya te dije', linkedMessageID: 'other-99' }),
+    ] });
+    await waitFor(() => incoming.some((i) => i.text === 'ya te dije'));
+    const m = incoming.find((i) => i.text === 'ya te dije');
+    expect(m.from.replyToBot).toBe(false);      // not a reply to E → mention rules unchanged
+    expect(m.from.replyToId).toBe('other-99');  // …but the model still sees which message is answered
+  });
+
+  it('a plain (non-reply) inbound carries no reply ref', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'hola' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'hola'));
+    const m = incoming.find((i) => i.text === 'hola');
+    expect(m.from.replyToBot).toBe(false);
+    expect(m.from.replyToId).toBe(null);
   });
 });
 

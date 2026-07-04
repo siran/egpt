@@ -35,7 +35,7 @@ export function splitSurfaceTag(surface) {
   return { name: segs.slice(0, -1).join('.'), node: segs[segs.length - 1] };
 }
 
-export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, stageDirection = false } = {}) {
+export function formatDispatchLine({ senderName, chatName, node, surface, body, ts, msgId, replyToId, stageDirection = false } = {}) {
   const d = new Date(ts ?? Date.now());
   const pad = (n) => String(n).padStart(2, '0');
   const tstr = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
@@ -53,7 +53,11 @@ export function formatDispatchLine({ senderName, chatName, node, surface, body, 
   // /react / /reply it and reactions can reference it (#<id>). Optional →
   // omitted when absent (back-compat). (MESSAGES-FIRST-CLASS-PLAN Phase 1)
   const idTag = (msgId != null && String(msgId).trim()) ? ` #${String(msgId).trim()}` : '';
-  return `${sender}@[${nm}].${nd} (${tstr})${idTag}: ${body ?? ''}`;
+  // Reply reference (operator 2026-07-04): when this message QUOTES/replies to another,
+  // `↩#<id>` names the answered message so the model can respond to it directly —
+  // including via a /reply emit action. Omitted when absent (back-compat).
+  const replyTag = (replyToId != null && String(replyToId).trim()) ? ` ↩#${String(replyToId).trim()}` : '';
+  return `${sender}@[${nm}].${nd} (${tstr})${idTag}${replyTag}: ${body ?? ''}`;
 }
 
 // The body of a reaction stage-direction (MESSAGES-FIRST-CLASS-PLAN Phase 2):

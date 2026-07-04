@@ -90,6 +90,7 @@ export function createSpine({
   identity, router, gating, sender, transcript, heartbeats,
   commands,                            // optional §2c command intercept (operator slash commands)
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
+  actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
@@ -343,15 +344,31 @@ export function createSpine({
       // do NOT deliver it as a reply. Blank it so the placeholder resolves to the no-reply
       // marker, and record the raw failure UNsurfaced (the record is never lost).
       const failShaped = surfaced && isBrainFailureResult(rawText);
-      const deliverable = surfaced && !!rawText.trim() && !failShaped;
+      // Emitted actions (E's LIMBS, ROADMAP §3). Parse own-line action commands out of the
+      // reply — but only a reply that WOULD surface acts (a withheld/context reply doesn't
+      // emit limbs), and never a failure-shaped result. The STRIPPED prose is delivered; the
+      // RAW reply (action lines included) is recorded, so nothing E emitted is ever lost.
+      const parsed = (actions?.parse && surfaced && !failShaped) ? actions.parse(rawText, ev) : null;
+      const proseText = parsed ? parsed.prose : rawText;
+      const hadActions = !!parsed && (parsed.run.length + parsed.stripped.length) > 0;
+      // Action-only: the reply is nothing but action lines. The placeholder DELETES (the
+      // action IS the response — today's legit-silence path), not a no-reply marker.
+      const actionOnly = surfaced && !failShaped && hadActions && !proseText.trim();
+      const deliverable = surfaced && !!proseText.trim() && !failShaped;
+      const responded = deliverable || actionOnly;   // E answered — with prose and/or a limb
       // Observability (operator: "diagnose WHY it was empty"): a turn that was meant to
-      // surface but has nothing to deliver is noted — the silent swallow is now loud.
-      if (surfaced && !deliverable) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
-      await transcript.log(ev, { ...reply, surfaced: deliverable });   // RECORD FIRST (durable)
+      // surface but has nothing to deliver (and did nothing) is noted — the silent swallow is loud.
+      if (surfaced && !responded) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
+      await transcript.log(ev, { ...reply, surfaced: responded });   // RECORD FIRST (durable) — reply.text is RAW (action lines kept)
       recorded = true;
-      if (deliverable) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
+      if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
       await store?.recordThread?.({ ev, reply, being: to });
-      await out.finish(failShaped ? { text: '' } : reply, { surface: surfaced });   // DELIVER
+      // DELIVER the STRIPPED prose. Action-only → surface:false (delete placeholder);
+      // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
+      await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
+      // EXECUTE the limbs AFTER the reply is recorded + delivered: confined to ev.chatId,
+      // errors logged, never crash the turn (the record above already captured everything).
+      if (parsed && hadActions) { try { await actions.execute(parsed.run, parsed.stripped, ev, { being: to }); } catch (e) { note(`actions ${to}/${ev.chatId}: ${e?.message ?? e}`); } }
     } catch (e) {
       // Any failure once the placeholder is open (brain throw, per-turn timeout, or a
       // delivery fault) → resolve the placeholder VISIBLY + record the inbound if the

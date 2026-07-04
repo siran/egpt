@@ -4,6 +4,7 @@
 // and the gating branches, independent of the real subsystems layered in later.
 import { describe, it, expect } from 'vitest';
 import { createSpine } from '../spine.mjs';
+import { createReplyActions } from '../src/spine/reply-actions.mjs';
 
 // --- fakes: each port/service as a tiny recorder ------------------------------
 function fakeBridge() {
@@ -189,5 +190,72 @@ describe('spine pipe', () => {
 
   it('throws when a required dependency is missing', () => {
     expect(() => createSpine({ bridge: fakeBridge() })).toThrow(/missing required dependency/);
+  });
+});
+
+// Conversation-E LIMBS in the loop (ROADMAP §3): a reply's own-line action commands
+// are STRIPPED from the surfaced prose, the RAW reply is recorded, and the actions
+// execute against the bridge AFTER recording — confined to the reply's own chat.
+describe('spine — emitted reply actions', () => {
+  function fakeLimbs() {
+    const calls = { react: [], send: [], media: [], edit: [], del: [] };
+    return { calls,
+      react: (chat, id, emoji) => { calls.react.push({ chat, id, emoji }); return true; },
+      send: (chat, text, opts) => { calls.send.push({ chat, text, opts }); return { ok: true }; },
+      sendMedia: (chat, path, opts) => { calls.media.push({ chat, path, opts }); return true; },
+      editOwn: (chat, id, text) => { calls.edit.push({ chat, id, text }); return true; },
+      deleteOwn: (chat, id) => { calls.del.push({ chat, id }); return true; },
+      wasSentByUs: () => true,
+    };
+  }
+  function buildA(replyText) {
+    const bridge = fakeBridge();
+    const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: replyText, sessionId: 's1' }; } };
+    const transcript = fakeTranscript();
+    const limbs = fakeLimbs();
+    const actions = createReplyActions({ bridge: limbs, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', resolveConvDir: async () => null, onLog: () => {} });
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(), actions,
+      clock: { now: () => 1000 },
+    });
+    return { spine, bridge, transcript, limbs };
+  }
+
+  it('prose + action: prose surfaces (action line stripped), action executes, RAW reply recorded', async () => {
+    const { spine, bridge, transcript, limbs } = buildA('Nice one!\n/react 🔥 #7\nbye');
+    spine.start();
+    await bridge.emit(MSG);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: 'Nice one!\nbye' }]);   // action line NOT surfaced
+    expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '🔥' }]);
+    expect(transcript.entries[0].reply.text).toBe('Nice one!\n/react 🔥 #7\nbye');   // RAW recorded — nothing lost
+    expect(transcript.entries[0].reply.surfaced).toBe(true);
+  });
+
+  it('action-only reply: nothing surfaces (placeholder resolves silent), the action still runs + is recorded', async () => {
+    const { spine, bridge, transcript, limbs } = buildA('/react 👍 #7');
+    spine.start();
+    await bridge.emit(MSG);
+    expect(bridge.sent).toHaveLength(0);                                   // no prose → nothing posted
+    expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '👍' }]);
+    expect(transcript.entries[0].reply.text).toBe('/react 👍 #7');         // recorded
+    expect(transcript.entries[0].reply.surfaced).toBe(true);              // E DID respond (via the limb)
+  });
+
+  it('a malformed action is stripped from the surfaced prose and NOT executed', async () => {
+    const { spine, bridge, limbs } = buildA('Hey\n/react\nthere');   // /react with no emoji → malformed
+    spine.start();
+    await bridge.emit(MSG);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: 'Hey\nthere' }]);   // malformed line stripped
+    expect(limbs.calls.react).toEqual([]);                                     // never executed
+  });
+
+  it('a reply emitted as a limb quote-replies via the bridge send with replyTo', async () => {
+    const { spine, bridge, limbs } = buildA('/reply #42 on it');
+    spine.start();
+    await bridge.emit(MSG);
+    expect(bridge.sent).toHaveLength(0);                                   // action-only
+    expect(limbs.calls.send[0]).toMatchObject({ chat: MSG.chatId, text: 'on it', opts: { replyTo: '42' } });
   });
 });

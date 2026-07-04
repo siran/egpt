@@ -59,8 +59,9 @@ import { mediaKind } from '../media-kind.mjs';
 import { shouldDownload } from '../media-save.mjs';
 import { relMediaPath } from '../media-path.mjs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
 
@@ -402,6 +403,17 @@ export async function startBeeperBridge(opts = {}) {
     }
     return false;
   }
+  // Did THIS bridge send (chatID, messageID)? Reads the persisted _sentIds set (the
+  // '<chat>|<id>' keys reloaded from beeper-seen.jsonl). Used for two fail-closed
+  // decisions: E may only /edit or /delete a message it sent, and an inbound reply's
+  // quoted id is "a reply to E" only when we sent that id. HONEST LIMIT: the set only
+  // knows messages sent SINCE seen-state existed (and is LRU-capped, SEEN_SENT_CAP),
+  // so a reply to an older/pruned E message reads false — correct fail-closed
+  // behavior (the human just includes @e, as before).
+  function wasSentByUs(chatID, messageID) {
+    if (!chatID || messageID == null) return false;
+    return _sentIds.has(msgKeyOf(shortChatId(chatID), messageID));
+  }
 
   // Message timestamp (ms) from the upsert payload, schema-tolerantly:
   // ISO string or epoch ms/seconds in `timestamp` / `ts` / `date`. null =
@@ -524,6 +536,57 @@ export async function startBeeperBridge(opts = {}) {
     if (!chatID || !messageID) return false;
     try { await api('DELETE', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}`); return true; }
     catch (e) { onLog(`beeper: delete failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
+  }
+
+  // --- reactions / media SEND (Beeper Desktop local API) -----------------------
+  // Verified against the live Desktop API + docs (2026-07-04):
+  //   REACT : POST /v1/chats/{c}/messages/{id}/reactions  { reactionKey }
+  //   MEDIA : POST /v1/assets/upload (multipart 'file') -> { uploadID, mimeType,
+  //           fileName } ; then POST /v1/chats/{c}/messages { attachment:{uploadID,
+  //           type, mimeType, fileName}, text? }.
+  // These give conversation-E its LIMBS (reply-to already rides sendMessage's
+  // replyToMessageID). chatID resolves through the same chokepoint as sendMessage,
+  // so a name/slug/room-id all work; a resolve miss logs + returns false.
+  async function sendReaction(chatIDOrName, messageID, reactionKey) {
+    const chatID = await resolveChatId(chatIDOrName);
+    if (!chatID || !messageID || !reactionKey) { onLog(`beeper: reaction DROPPED — chat=${JSON.stringify(chatIDOrName)} resolved=${chatID} msg=${messageID} key=${JSON.stringify(reactionKey)}`); return false; }
+    try { await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages/${encodeURIComponent(messageID)}/reactions`, { reactionKey: String(reactionKey) }); return true; }
+    catch (e) { onLog(`beeper: reaction failed [${chatID}/${messageID}] — ${e?.message ?? e}`); return false; }
+  }
+  // Beeper's attachment `type` enum hint, derived from the upload's mimeType.
+  function attachmentType(mime) {
+    const m = String(mime ?? '').toLowerCase();
+    if (m === 'image/gif') return 'gif';
+    if (m.startsWith('image/')) return 'image';
+    if (m.startsWith('video/')) return 'video';
+    if (m.startsWith('audio/')) return 'audio';
+    return 'file';
+  }
+  // Multipart upload of a LOCAL file → the temp asset descriptor { uploadID, ... }.
+  // Uses the global fetch/FormData/Blob (Node 18+) directly, not api() — api() is
+  // JSON-only. Throws on a non-2xx so sendMedia logs + fails closed.
+  async function uploadAsset(filePath) {
+    const buf = await readFile(filePath);
+    const form = new FormData();
+    form.append('file', new Blob([buf]), basename(filePath));
+    const res = await fetch(baseUrl + '/v1/assets/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: form });
+    if (!res.ok) throw new Error(`POST /v1/assets/upload → ${res.status} ${(await res.text()).slice(0, 200)}`);
+    const t = await res.text();
+    return t ? JSON.parse(t) : null;
+  }
+  async function sendMedia(chatIDOrName, filePath, { caption = null } = {}) {
+    const chatID = await resolveChatId(chatIDOrName);
+    if (!chatID || !filePath) { onLog(`beeper: media DROPPED — chat=${JSON.stringify(chatIDOrName)} resolved=${chatID} file=${JSON.stringify(filePath)}`); return false; }
+    try {
+      const up = await uploadAsset(filePath);
+      if (!up?.uploadID) { onLog(`beeper: media upload returned no uploadID [${filePath}]`); return false; }
+      const body = { attachment: { uploadID: up.uploadID, type: attachmentType(up.mimeType), ...(up.mimeType ? { mimeType: up.mimeType } : {}), ...(up.fileName ? { fileName: up.fileName } : {}) } };
+      if (caption) { body.text = String(caption); rememberSent(null, chatID, String(caption)); }   // pre-record caption (WS echo can beat the HTTP response)
+      const r = await api('POST', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages`, body);
+      if (caption) rememberSent(r?.pendingMessageID || r?.messageID || r?.id, chatID, String(caption));
+      onLog(`beeper: media sent [${chatID}] ${basename(filePath)} (${up.mimeType || 'unknown'})`);
+      return true;
+    } catch (e) { onLog(`beeper: media send failed [${chatID}/${filePath}] — ${e?.message ?? e}`); return false; }
   }
   // Resolve the CONFIRMED id of a message we just sent: poll the recent list and
   // match our own text; pick the newest match (largest numeric id). TRANSFORM-TOLERANT:
@@ -880,6 +943,18 @@ export async function startBeeperBridge(opts = {}) {
     }
 
     const st = mentionStatus(text || '');
+    // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
+    // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
+    // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:
+    //   1. `replyToId` rides into the dispatch line as `↩#<id>` (any reply, to anyone)
+    //      so the model knows exactly which message is being answered — and can target
+    //      it back with a /reply emit action;
+    //   2. `replyToBot` is true when that quoted id is one WE sent (wasSentByUs) — the
+    //      operator's complaint "when I reply to E it isn't notified, I have to include
+    //      @e". Since the quoted content isn't inlined, the persona-marker check isn't
+    //      possible; the sent-id set IS the signal. auto-mode already gates on it.
+    const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
+    const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,
@@ -907,12 +982,13 @@ export async function startBeeperBridge(opts = {}) {
       authorized: !!msg.isSender || isAllowedUser(msg.senderID, acct),
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
-      replyToBot: false,                    // provable reply-to-persona is a follow-up
+      replyToBot,                           // true when this is a reply to a message WE sent (gates a reply without @e)
+      replyToId,                            // the quoted message id (→ `↩#<id>` in the dispatch line), null when not a reply
       isReaction: false,
       isTranscriptFromVoice: isVoice,
       msgKey: msg.id || null,
     };
-    onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${isVoice ? ' voice' : ''})`);
+    onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${replyToBot ? ' replyToBot' : ''}${replyToId ? ` ↩${replyToId}` : ''}${isVoice ? ' voice' : ''})`);
     // Hand off to the host WITHOUT awaiting the reply turn. The host (spine) enqueues
     // this message synchronously — so this dispatch chain's ORDER into the spine is
     // preserved — and then owns per-conversation serialization, cross-conversation
@@ -1000,6 +1076,12 @@ export async function startBeeperBridge(opts = {}) {
     // stream; also available to callers that hold a real id).
     editMessage:   (chatId, messageId, text) => editMessage(chatId, messageId, text),
     deleteMessage: (chatId, messageId)       => deleteMessage(chatId, messageId),
+    // Conversation-E limbs (ROADMAP §3): send a reaction / a media file; and the
+    // fail-closed ownership probe (also drives inbound replyToBot). Reply-to already
+    // rides send()'s replyToMessageID.
+    sendReaction:  (chatId, messageId, key)  => sendReaction(chatId, messageId, key),
+    sendMedia:     (chatId, filePath, opts)  => sendMedia(chatId, filePath, opts),
+    wasSentByUs:   (chatId, messageId)       => wasSentByUs(chatId, messageId),
     // Deterministic-name surface (operator 2026-06-10): callers and slash
     // files work with names/slugs; room ids stay an internal detail.
     listChats,

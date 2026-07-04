@@ -48,6 +48,7 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         chatId: f.chatId, chatName: f.chatName,
         senderId: f.userId, senderName,
         msgId: f.msgKey ?? null,
+        replyToId: f.replyToId ?? null,   // the quoted message id (→ `↩#<id>`), null when not a reply
         ts, body, kind,
         // mention status the bridge already computed — the gating service's input.
         mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot },
@@ -58,6 +59,9 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
       // stage-direction (bracket-wrapped, no #id tag — the body references its own).
       ev.line = formatLine({
         senderName, chatName: f.chatName, node, body, ts, msgId: ev.msgId,
+        // a reply reference rides only a real message line (a reaction/edit stage-
+        // direction references its own target in the body, no `↩#` tag)
+        replyToId: kind === 'text' ? ev.replyToId : null,
         stageDirection: kind !== 'text',
       });
       return ev;

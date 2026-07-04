@@ -146,6 +146,23 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     editStatus(chat, msgId, text) { return real.editMessage?.(chat, msgId, text); },
     deleteStatus(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
 
+    // Conversation-E LIMBS (ROADMAP §3). react/sendMedia are OUTBOUND sends → flood-
+    // guarded (a limb loop = many sends); editOwn/deleteOwn mutate an existing message
+    // (no new send) so they skip the guard. A media caption + an edit are E speaking →
+    // persona-stamped, exactly like send(). react/delete carry no persona text.
+    react(chat, msgId, emoji) {
+      if (!floodGuard.allow(chat)) { onLog(`flood-guard: react to ${chat} BLOCKED (flood pause)`); return false; }
+      return real.sendReaction?.(chat, msgId, emoji);
+    },
+    sendMedia(chat, filePath, opts = {}) {
+      if (!floodGuard.allow(chat)) { onLog(`flood-guard: media to ${chat} BLOCKED (flood pause)`); return false; }
+      const caption = opts.caption != null ? personaStamp(opts.bodyEmoji, opts.label, opts.caption) : null;
+      return real.sendMedia?.(chat, filePath, { caption });
+    },
+    editOwn(chat, msgId, text, opts = {}) { return real.editMessage?.(chat, msgId, personaStamp(opts.bodyEmoji, opts.label, text)); },
+    deleteOwn(chat, msgId) { return real.deleteMessage?.(chat, msgId); },
+    wasSentByUs(chat, msgId) { return real.wasSentByUs?.(chat, msgId); },
+
     isAlive: () => real.isAlive(),
     stop: () => real.stop(),
   };
