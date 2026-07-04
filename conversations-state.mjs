@@ -162,25 +162,78 @@ export function mergeThreadIntoStats(stats, thread) {
   return { stats: out, changed: true };
 }
 
+// Per-path write-serialization for stats.yaml (operator 2026-07-03): appendThreadStat
+// (awaited in a brainpool turn) and recordMemberStat (fired fire-and-forget on EVERY
+// received message) both read-merge-write the SAME file, so two overlapping writes could
+// race and lose one's read-before-write delta. Chain each write behind the previous one
+// for that path, turning last-writer-wins into read-after-write. Keyed by the file path.
+const _statsWriteChains = new Map();
+function serializeStatsWrite(fp, task) {
+  const prev = _statsWriteChains.get(fp) ?? Promise.resolve();
+  const next = prev.then(task, task);               // run regardless of the prior write's outcome
+  _statsWriteChains.set(fp, next.catch(() => {}));  // a rejection must not poison the chain
+  return next;
+}
+
 // Effectful mirror of a freshly-minted thread into <convdir>/stats.yaml (the branchable
 // history). Injectable io + statsDirOf so it's testable in-memory; NEVER fatal (the state
 // write is the durable record — a stats hiccup must not break a reply). Returns whether it
-// wrote. Called by the brainpool right where it records a new session.
+// wrote. Called by the brainpool right where it records a new session. Serialized per file
+// (serializeStatsWrite) so it never races recordMemberStat on the same stats.yaml.
 export async function appendThreadStat(surface, slug, thread, { io = {}, statsDirOf = slugDir } = {}) {
   const dir = statsDirOf(surface, slug);
   const fp = join(dir, 'stats.yaml');
-  const readFileFn = io.readFile ?? readFile;
-  const writeFileFn = io.writeFile ?? writeFile;
-  const mkdirFn = io.mkdir ?? mkdir;
-  let existing = {};
-  try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
-  const { stats, changed } = mergeThreadIntoStats(existing, thread);
-  if (!changed) return false;
-  try {
-    await mkdirFn(dir, { recursive: true });
-    await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
-    return true;
-  } catch (e) { console.error(`!! appendThreadStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
+  return serializeStatsWrite(fp, async () => {
+    const readFileFn = io.readFile ?? readFile;
+    const writeFileFn = io.writeFile ?? writeFile;
+    const mkdirFn = io.mkdir ?? mkdir;
+    let existing = {};
+    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    const { stats, changed } = mergeThreadIntoStats(existing, thread);
+    if (!changed) return false;
+    try {
+      await mkdirFn(dir, { recursive: true });
+      await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+      return true;
+    } catch (e) { console.error(`!! appendThreadStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
+  });
+}
+
+// Merge one received message's sender into stats.members[senderId] = { count, last_seen }
+// (count++, last_seen = isoTs) — the per-member counter contracts §3.1 mandates. Pure; a
+// no-op (returns stats unchanged) when senderId is falsy.
+export function mergeMemberIntoStats(stats, senderId, isoTs) {
+  if (!senderId) return stats;
+  const out = { ...(stats && typeof stats === 'object' ? stats : {}) };
+  const members = { ...(out.members && typeof out.members === 'object' ? out.members : {}) };
+  const prev = members[senderId] && typeof members[senderId] === 'object' ? members[senderId] : {};
+  members[senderId] = { count: (Number(prev.count) || 0) + 1, last_seen: isoTs };
+  out.members = members;
+  return out;
+}
+
+// Effectful per-message member counter into <convdir>/stats.yaml (contracts §3.1: every
+// received message passes to the stats collector). Same read-merge-write shape as
+// appendThreadStat and serialized with it per file; NEVER fatal (a stats hiccup must not
+// touch the message path). Returns whether it wrote — false (no file touched) on a falsy
+// senderId, matching mergeMemberIntoStats' no-op.
+export async function recordMemberStat(surface, slug, senderId, isoTs, { io = {}, statsDirOf = slugDir } = {}) {
+  if (!senderId) return false;
+  const dir = statsDirOf(surface, slug);
+  const fp = join(dir, 'stats.yaml');
+  return serializeStatsWrite(fp, async () => {
+    const readFileFn = io.readFile ?? readFile;
+    const writeFileFn = io.writeFile ?? writeFile;
+    const mkdirFn = io.mkdir ?? mkdir;
+    let existing = {};
+    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    const stats = mergeMemberIntoStats(existing, senderId, isoTs);
+    try {
+      await mkdirFn(dir, { recursive: true });
+      await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+      return true;
+    } catch (e) { console.error(`!! recordMemberStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
+  });
 }
 
 // Move a contact's on-disk slug folder old→new (transcript.md, media/, identity

@@ -33,10 +33,10 @@ function threeContacts() {
   return st;
 }
 
-function harness({ io, gitOut, loadState, brains } = {}) {
+function harness({ io, gitOut, loadState, brains, getConfig } = {}) {
   const sent = [];
   const cmds = createCommands({
-    getConfig: () => ({ whatsapp: { chat_id: '!self' } }),
+    getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' } })),
     send: async (chatId, text) => sent.push({ chatId, text }),
     exit: () => {},
     loadState,
@@ -276,5 +276,38 @@ describe('/status <target>', () => {
     });
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/heartbeats: 1/);
+  });
+
+  it('renders the richer members line from stats.yaml counters, ids resolved through the aliases map', async () => {
+    const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const STATS_YAML = `members:
+  "@whatsapp_111:beeper.local":
+    count: 12
+    last_seen: "2026-07-03T14:22:00.000Z"
+  "@whatsapp_222:beeper.local":
+    count: 3
+    last_seen: "2026-07-02T09:00:00.000Z"
+`;
+    const { cmds, sent } = harness({
+      loadState: async () => first.state,
+      getConfig: () => ({ whatsapp: { chat_id: '!self' }, aliases: { '@whatsapp_111:beeper.local': 'An' } }),
+      io: { readFile: readFileBySuffix({ 'stats.yaml': STATS_YAML, 'transcript.md': 'An@[HFM].wa (10:00): hola\n', 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    // aliased id → 'An', un-aliased id shown raw; each with count + last_seen; ONE line, stats wins over the transcript
+    expect(sent[0].text).toContain('members: An: 12 (last 2026-07-03T14:22:00.000Z), @whatsapp_222:beeper.local: 3 (last 2026-07-02T09:00:00.000Z)');
+  });
+
+  it('falls back to the transcript-derived members line when stats.yaml is absent/unreadable', async () => {
+    const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const transcript = ['An@[HFM].wa (10:00): hola', '', '[@e (10:01)]: hola An', ''].join('\n');
+    const { cmds, sent } = harness({
+      loadState: async () => first.state,
+      io: { readFile: readFileBySuffix({ 'stats.yaml': new Error('ENOENT'), 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/members: An, @e/);   // transcript derivation intact (regression)
   });
 });

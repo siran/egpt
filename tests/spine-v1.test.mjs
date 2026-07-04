@@ -45,11 +45,17 @@ function harness(config = {}, mode) {
 
   const files = new Map();
   const renames = [];
+  // stats collector (recordMemberStat) reads/writes go to their own in-memory map, kept
+  // separate from `files` (transcript appendFile output) so it doesn't touch real fs and
+  // doesn't perturb the onlyFile() assertions below, which count transcript-only entries.
+  const statsFiles = new Map();
   const io = {
     appendFile: async (p, data) => { files.set(p, (files.get(p) ?? '') + data); },
     mkdir: async () => {},
     existsSync: (p) => files.has(p),
     rename: async (from, to) => { renames.push({ from, to }); },
+    readFile: async (p) => { if (!statsFiles.has(p)) throw new Error('ENOENT'); return statsFiles.get(p); },
+    writeFile: async (p, d) => { statsFiles.set(p, d); },
   };
   const contacts = createContacts({ loadState, writeState, io });
   const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });
@@ -209,9 +215,14 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
   const writeState = async (s) => { state = s; };
 
   const files = new Map();
+  // see harness() above: stats collector reads/writes go to their own in-memory map, kept
+  // separate from `files` so it doesn't touch real fs and doesn't perturb onlyFile().
+  const statsFiles = new Map();
   const io = {
     appendFile: async (p, data) => { files.set(p, (files.get(p) ?? '') + data); },
     mkdir: async () => {}, existsSync: (p) => files.has(p), rename: async () => {},
+    readFile: async (p) => { if (!statsFiles.has(p)) throw new Error('ENOENT'); return statsFiles.get(p); },
+    writeFile: async (p, d) => { statsFiles.set(p, d); },
   };
   const contacts = createContacts({ loadState, writeState, io });
   const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });

@@ -8,7 +8,7 @@
 // Effectful deps are injected (conv-state load/write via the shared contacts
 // resolver, fs) so the service is testable in-memory; the pure path helpers are
 // imported directly.
-import { slugDir } from '../../conversations-state.mjs';
+import { slugDir, recordMemberStat, isoFromMs } from '../../conversations-state.mjs';
 import { transcriptAppend, replyLine } from '../transcript-log.mjs';
 import { appendFile as fsAppendFile, mkdir as fsMkdir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
@@ -40,6 +40,11 @@ export function createTranscript({
         if (!ev?.chatId) return false;
         const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
+        // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
+        // fire-and-forget (never awaited, so it can't block or delay the transcript
+        // append), any rejection swallowed into onLog exactly like the catch below.
+        recordMemberStat(ev.surface, slug, ev.senderId, isoFromMs(ev.ts), { io })
+          .catch((e) => onLog(`stats ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`));
         const dir = slugDir(ev.surface, slug);
         await mkdir(dir, { recursive: true });
         const fpath = join(dir, 'transcript.md');

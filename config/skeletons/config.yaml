@@ -162,3 +162,11 @@ signal:
 #       language: es
 #       ffmpeg_command: C:\path\to\ffmpeg.exe
 #       threads: 12
+
+# ── 10. Aliases ──────────────────────────────────────────────────────────────
+# Display-name overrides for the /status member counters. Any sender id you see
+# in a conversation's stats.yaml `members:` block (a phone, WhatsApp jid, or
+# Beeper id) can be given a stable label shown in /status. Read at display time
+# only; edit + /restart to apply.
+# aliases:
+#   "@whatsapp_5215512345678:beeper.local": An

@@ -381,6 +381,21 @@ export function createCommands({
       catch { members = 'unknown'; }
     }
 
+    // Prefer the stats.yaml per-message counters (count + last_seen) when present, each id
+    // resolved to a friendly label through the aliases map; degrade to the transcript-derived
+    // name list above when the file is missing/unreadable or carries no members (never throws).
+    if (convDir) {
+      try {
+        const m = YAML.parse(await readFile(join(convDir, 'stats.yaml'), 'utf8'))?.members;
+        if (m && typeof m === 'object' && Object.keys(m).length) {
+          const aliases = cfg().aliases ?? {};
+          members = Object.entries(m)
+            .map(([id, v]) => `${aliases[id] ?? id}: ${v?.count ?? 0} (last ${v?.last_seen ?? '?'})`)
+            .join(', ');
+        }
+      } catch { /* no stats.yaml / unreadable → keep the transcript derivation */ }
+    }
+
     // Optional: this conversation's own heartbeat count (source/cwd pinned to convDir),
     // omitted when the readonly view is absent (matches bare /status's optional `mode`).
     let hb = null;

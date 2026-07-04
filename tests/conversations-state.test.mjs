@@ -22,6 +22,8 @@ import {
   appendThreadStat,
   mergeStats,
   mergeThreadIntoStats,
+  mergeMemberIntoStats,
+  recordMemberStat,
   recentContacts,
   slugDir,
   isPlaceholderSlug,
@@ -691,6 +693,61 @@ describe('stats module + msys path helpers', () => {
     // same latest id → no write at all
     const io2 = { readFile: async () => YAML.stringify({ threads: [{ id: 'T2' }] }), writeFile: async () => { throw new Error('should not write'); }, mkdir: async () => {} };
     expect(await appendThreadStat('whatsapp', 'x-2606', { id: 'T2' }, { io: io2, statsDirOf: () => '/nope' })).toBe(false);
+  });
+
+  it('mergeMemberIntoStats increments count + bumps last_seen, no-ops on a falsy senderId', () => {
+    const a = mergeMemberIntoStats({}, 'An', 'T1');
+    expect(a.members).toEqual({ An: { count: 1, last_seen: 'T1' } });
+    const b = mergeMemberIntoStats(a, 'An', 'T2');
+    expect(b.members.An).toEqual({ count: 2, last_seen: 'T2' });     // count++, last_seen bumped
+    const c = mergeMemberIntoStats(b, 'Ron', 'T3');
+    expect(c.members.An.count).toBe(2);                              // other members untouched
+    expect(c.members.Ron).toEqual({ count: 1, last_seen: 'T3' });
+    const same = { members: { An: { count: 5, last_seen: 'x' } } };
+    expect(mergeMemberIntoStats(same, '', 'T4')).toBe(same);         // falsy senderId → unchanged (same ref)
+    expect(mergeMemberIntoStats(same, null, 'T4')).toBe(same);
+  });
+
+  it('recordMemberStat writes members through the injected io, false (no file touched) on a falsy senderId', async () => {
+    let written = null;
+    const io = {
+      readFile: async () => YAML.stringify({ members: { An: { count: 1, last_seen: 'old' } } }),
+      writeFile: async (p, data) => { written = { p, data }; },
+      mkdir: async () => {},
+    };
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-memberstat-'));
+    const wrote = await recordMemberStat('whatsapp', 'x-2606', 'An', 'NEW', { io, statsDirOf: () => dir });
+    expect(wrote).toBe(true);
+    expect(written.p).toBe(join(dir, 'stats.yaml'));
+    const parsed = YAML.parse(written.data);
+    expect(parsed.members.An).toEqual({ count: 2, last_seen: 'NEW' });   // read-merge-write bumped the counter
+    await rm(dir, { recursive: true, force: true });
+
+    // falsy senderId → no file touched at all (writeFile that throws proves it isn't called)
+    const io2 = { readFile: async () => { throw new Error('should not read'); }, writeFile: async () => { throw new Error('should not write'); }, mkdir: async () => {} };
+    expect(await recordMemberStat('whatsapp', 'x-2606', '', 'NEW', { io: io2, statsDirOf: () => '/nope' })).toBe(false);
+  });
+
+  it('recordMemberStat + appendThreadStat serialize on the same file — neither update is lost', async () => {
+    // Both do a read-merge-write on the SAME stats.yaml. The slow read/write gap means an
+    // UN-serialized pair would each read {} and clobber the other; serializeStatsWrite chains
+    // them so the second reads the first's write. Fire them concurrently at one path.
+    const store = new Map();
+    const dir = join(tmpdir(), 'egpt-serial-stats');
+    const fp = join(dir, 'stats.yaml');
+    const slow = () => new Promise((r) => setTimeout(r, 8));
+    const io = {
+      readFile: async (p) => { await slow(); if (!store.has(p)) throw new Error('ENOENT'); return store.get(p); },
+      writeFile: async (p, data) => { await slow(); store.set(p, data); },
+      mkdir: async () => {},
+    };
+    await Promise.all([
+      recordMemberStat('whatsapp', 'serial', 'An', 'T', { io, statsDirOf: () => dir }),
+      appendThreadStat('whatsapp', 'serial', { id: 'TH1', created: 'c' }, { io, statsDirOf: () => dir }),
+    ]);
+    const parsed = YAML.parse(store.get(fp));
+    expect(parsed.members.An).toEqual({ count: 1, last_seen: 'T' });    // member write survived
+    expect(parsed.threads.map((t) => t.id)).toEqual(['TH1']);           // thread write survived — no clobber
   });
 });
 
