@@ -14,8 +14,10 @@ import { surfaceOf } from '../src/spine/identity.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
+  const edits = [];   // PUTs to /v1/chats/:id/messages/:msgId (in-place stream edits)
   const chats = new Map();   // chatID -> chat info served by GET
   const messages = new Map();   // chatID -> recent-message list served by GET /messages (resolveSentMessageId)
+  let msgListGets = 0;        // GET /messages polls served — lets a test choreograph the upsert race
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -26,10 +28,20 @@ async function startFakeBeeper() {
         res.end(JSON.stringify({ pendingMessageID: `pm-${posts.length}` }));
         return;
       }
+      const put = req.url.match(/^\/v1\/chats\/([^/]+)\/messages\/([^/?]+)$/);
+      if (req.method === 'PUT' && put) {
+        edits.push({ chatID: decodeURIComponent(put[1]), messageID: decodeURIComponent(put[2]), ...JSON.parse(body) });
+        res.end('{}');
+        return;
+      }
       // Recent-message list (resolveSentMessageId polls it to confirm a sent id).
+      // A FUNCTION value serves dynamically — lets a test model the live upsert
+      // race (the just-POSTed message appearing only on a later poll).
       const msgList = req.url.match(/^\/v1\/chats\/([^/]+)\/messages(?:\?.*)?$/);
       if (req.method === 'GET' && msgList) {
-        res.end(JSON.stringify({ items: messages.get(decodeURIComponent(msgList[1])) ?? [] }));
+        msgListGets += 1;
+        const v = messages.get(decodeURIComponent(msgList[1]));
+        res.end(JSON.stringify({ items: (typeof v === 'function' ? v() : v) ?? [] }));
         return;
       }
       if (req.method === 'GET' && req.url === '/v1/chats') {
@@ -56,7 +68,8 @@ async function startFakeBeeper() {
     ws.send(JSON.stringify({ type: 'ready' }));
   });
   return {
-    port, posts, chats, messages,
+    port, posts, edits, chats, messages,
+    msgListGets: () => msgListGets,
     subscribed: () => subscribed,
     emit: (ev) => { for (const ws of sockets) ws.send(JSON.stringify(ev)); },
     close: () => new Promise((r) => { for (const ws of sockets) ws.terminate(); wss.close(() => server.close(r)); }),
@@ -602,32 +615,44 @@ describe('beeper bridge', () => {
   // resolveSentMessageId (via sendAndGetId) confirms the id of a message WE just
   // posted by text-matching the recent list. With the placeholder nonce removed,
   // several messages can share the placeholder's exact text — so the resolver must
-  // still land on THIS turn's message: pick the NEWEST (numeric) match AND ignore a
-  // same-text message that isn't ours (isSender:false). This is the stuck-placeholder
-  // scenario the nonce used to guard against, now covered by newest-id + isSender.
-  it('resolves a just-sent id to the newest isSender match — not an old placeholder, not a foreign echo', async () => {
+  // still land on THIS turn's message: pick the NEWEST (numeric) match, ignore a
+  // same-text message that isn't ours (isSender:false), AND refuse anything at/below
+  // the pre-send id floor (a message listed BEFORE our send can't be our send — the
+  // 2026-07-04 stale-twin landmine proved newest-id + isSender alone insufficient:
+  // a poll racing the upsert saw ONLY the old twin and "newest match" returned it).
+  // The list is served dynamically: the just-posted message upserts AFTER the POST,
+  // as live — the old static-list version of this test listed "this turn's message"
+  // before the send happened, encoding exactly the assumption the landmine exploited.
+  it('resolves a just-sent id to the newest OUR-OWN match above the pre-send floor — not a stale placeholder, not a foreign echo', async () => {
     const { bridge } = await startBridge();
     const chat = CHAT('chat-1');
     const TXT = '🐶 egpt\n⏳ Thinking…';   // the exact reply-train placeholder (no nonce)
-    // The recent list holds an OLD identical-text placeholder (lower id) + the
-    // just-posted one (higher id) + a non-sender copy (someone quoted our line).
-    fake.messages.set(chat, [
-      { id: '9',  text: TXT, isSender: true },    // old stuck placeholder (lower numeric id)
-      { id: '10', text: TXT, isSender: true },    // THIS turn's placeholder (newest ours)
-      { id: '11', text: TXT, isSender: false },   // same text but NOT our send — must be ignored
-    ]);
+    // Pre-send: an OLD stuck identical-text placeholder (ours). After the POST the
+    // list gains OUR new message (11) and a FOREIGN same-text copy (12 — someone
+    // quoting our line) which is the NEWEST overall, so isSender (not newest-alone)
+    // must exclude it; the floor (9) must exclude the stale twin.
+    fake.messages.set(chat, () => (fake.posts.length >= 1
+      ? [
+          { id: '9',  text: TXT, isSender: true },    // stale twin (pre-send) — below the floor
+          { id: '11', text: TXT, isSender: true },    // THIS turn's message
+          { id: '12', text: TXT, isSender: false },   // foreign echo, newest — must be ignored
+        ]
+      : [{ id: '9', text: TXT, isSender: true }]));
     const id = await bridge.sendAndGetId(TXT, { chatId: chat });
-    expect(id).toBe('10');   // newest isSender match — not '9' (older), not '11' (foreign)
+    expect(id).toBe('11');   // not '9' (stale, at/below floor), not '12' (foreign)
   });
 
   it('resolveSentMessageId tolerates list items lacking isSender (schema drift): matches by newest id', async () => {
     const { bridge } = await startBridge();
     const chat = CHAT('chat-1');
     const TXT = 'plain placeholder text';
-    fake.messages.set(chat, [
-      { id: '4', text: TXT },    // no isSender field → absent is acceptable
-      { id: '5', text: TXT },
-    ]);
+    fake.messages.set(chat, () => (fake.posts.length >= 1
+      ? [
+          { id: '3', text: 'earlier unrelated', isSender: false },
+          { id: '4', text: TXT },    // no isSender field → absent is acceptable
+          { id: '5', text: TXT },
+        ]
+      : [{ id: '3', text: 'earlier unrelated', isSender: false }]));
     const id = await bridge.sendAndGetId(TXT, { chatId: chat });
     expect(id).toBe('5');
   });
@@ -756,5 +781,57 @@ describe('newerMsgId (resolveSentMessageId newest-match reducer)', () => {
   it('falls back to string order when an id is not a clean number', () => {
     expect(newerMsgId('a', 'b')).toBe('b');
     expect(newerMsgId('b', 'a')).toBe('b');
+  });
+});
+
+// The STALE-TWIN LANDMINE (live 2026-07-04, SPOILER — the acceptance rerun on the
+// guarded spine): once ONE '⏳ Thinking…' placeholder is left orphaned in a chat,
+// every LATER same-text placeholder binds its edit stream to the STALE message:
+// resolveSentMessageId's first poll races the new post's upsert, sees only the old
+// identical-text twin (isSender, matching text), and returns it — first hit wins.
+// Every partial + finish edit then PUTs the OLD message (succeeds! delivered=true,
+// no fallback, no error anywhere), the reply lands invisibly in the scrollback, and
+// the NEW placeholder sticks at '⏳ Thinking…' forever — becoming the NEXT turn's
+// twin. Immediate turns died in a self-perpetuating chain while queued ones
+// (distinct 'Queued (N ahead)' texts — no twin) always delivered. The spine was
+// fully correct (all replies recorded in transcript.md); the loss was pure delivery.
+// FIX: a pre-send id floor — ids are per-chat sequence numbers, so any match at or
+// below the newest pre-send id is stale by construction (newestChatMsgId →
+// resolveSentMessageId { afterId }). These tests choreograph the exact live race.
+describe('stale-twin placeholder landmine — pre-send id floor', () => {
+  // Deterministic race model: the list omits the just-posted message on the FIRST
+  // poll served after the POST (the poll that, pre-fix, matched the stale twin and
+  // returned it) and includes it from the second poll on — no wall-clock timing.
+  function armStaleTwinChat(chat, { text, staleId = '100', newId = '200', extra = [] } = {}) {
+    let postSeenPolls = 0;
+    const base = [{ id: staleId, text, isSender: true }, ...extra];
+    fake.messages.set(chat, () => {
+      if (fake.posts.length >= 1) postSeenPolls += 1;
+      return postSeenPolls >= 2 ? [...base, { id: newId, text, isSender: true }] : base;
+    });
+  }
+
+  it('startStreamMessage binds to the JUST-POSTED placeholder, never a stale identical-text one, even when the first poll races the upsert', async () => {
+    const chat = CHAT('chat-1');
+    // The landmine: a previous turn's orphaned placeholder — same text, our own send.
+    armStaleTwinChat(chat, { text: '⏳ Thinking…', extra: [{ id: '101', text: 'unrelated chatter', isSender: false }] });
+    const { bridge } = await startBridge();
+
+    const handle = bridge.startStreamMessage('⏳ Thinking…', { chatId: chat });
+    handle.update('partial reply');
+    await handle.finish('the reply');
+
+    expect(handle.delivered).toBe(true);
+    const targets = fake.edits.map((e) => e.messageID);
+    expect(targets).toContain('200');        // the reply edited the REAL placeholder…
+    expect(targets).not.toContain('100');    // …and NEVER the stale twin (pre-fix: every edit hit '100')
+  });
+
+  it('sendAndGetId refuses a stale identical-text match too (same pre-send floor)', async () => {
+    const chat = CHAT('chat-1');
+    armStaleTwinChat(chat, { text: 'status ping' });   // stale twin of the text we are about to send
+    const { bridge } = await startBridge();
+
+    expect(await bridge.sendAndGetId('status ping', { chatId: chat })).toBe('200');   // pre-fix: '100' (the stale twin)
   });
 });

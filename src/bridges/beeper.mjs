@@ -541,11 +541,14 @@ export async function startBeeperBridge(opts = {}) {
   // our line). Items lacking the field are tolerated (schema drift) — absent is
   // acceptable, so we never reject our own send just because the flag is missing.
   // No time-window: clock skew + the retry loop make it fragile; isSender +
-  // newest-id (numeric, via newerMsgId) is enough to land on THIS turn's message.
+  // newest-id (numeric, via newerMsgId) is enough to land on THIS turn's message
+  // — PROVIDED the caller passes `afterId` (the pre-send floor, below). Without
+  // it, "newest match" only compares matches WITHIN one poll: a poll that races
+  // the new message's upsert sees ONLY a stale identical-text twin and returns it.
   const _matchKey = (s) => _normEcho(
     String(s ?? '').replace(/`+/g, ' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'),
   );
-  async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500 } = {}) {
+  async function resolveSentMessageId(chatID, text, { tries = 6, delayMs = 500, afterId = null } = {}) {
     const want = _matchKey(text);
     if (!chatID || !want) return null;
     for (let i = 0; i < tries; i++) {
@@ -556,6 +559,17 @@ export async function startBeeperBridge(opts = {}) {
         for (const m of items) {
           if (!m?.id) continue;
           if (m.isSender === false) continue;   // present-and-false → not our send (absent tolerated)
+          // Pre-send floor: an id at/below `afterId` existed BEFORE our send, so an
+          // identical-text match there is a STALE TWIN, never the message we just
+          // posted (ids are per-chat sequence numbers). Skip it and keep polling
+          // until the real one upserts. (The live landmine 2026-07-04, SPOILER: a
+          // previous turn's orphaned '⏳ Thinking…' placeholder matched on the first
+          // poll — which races the new post's upsert — so the stream bound to the
+          // OLD message; every edit then landed invisibly in the scrollback, the new
+          // placeholder stuck forever and became the NEXT turn's twin. Immediate
+          // turns died in a self-perpetuating chain; queued ones — distinct
+          // 'Queued (N ahead)' texts, no twin — always delivered.)
+          if (afterId != null && newerMsgId(afterId, m.id) === afterId) continue;
           if (_matchKey(htmlToMarkdown(m.text) || m.text || '') !== want) continue;
           best = newerMsgId(best, m.id);
         }
@@ -564,6 +578,17 @@ export async function startBeeperBridge(opts = {}) {
       await new Promise((res) => setTimeout(res, delayMs));
     }
     return null;
+  }
+  // The newest id currently in the chat — snapshot BEFORE a send to arm
+  // resolveSentMessageId's `afterId` floor. null (empty chat / GET failure) =
+  // no floor, i.e. today's accept-any behavior (degraded, never blocking).
+  async function newestChatMsgId(chatID) {
+    try {
+      const r = await api('GET', `/v1/chats/${encodeURIComponent(fullChatId(chatID))}/messages?limit=25`);
+      let newest = null;
+      for (const m of (Array.isArray(r?.items) ? r.items : [])) if (m?.id != null) newest = newerMsgId(newest, m.id);
+      return newest;
+    } catch { return null; }
   }
 
   // --- reactions (MESSAGES-FIRST-CLASS-PLAN Phase 2) ---------------------------
@@ -966,9 +991,10 @@ export async function startBeeperBridge(opts = {}) {
     async sendAndGetId(text, { chatId, chatName } = {}) {
       const chatID = await resolveChatId(chatId ?? chatName);
       if (!chatID || !text) return null;
+      const floor = await newestChatMsgId(chatID);   // pre-send floor: a stale same-text message can't be mistaken for this send
       const r = await sendMessage(chatID, text, {});
       if (!r) return null;
-      return await resolveSentMessageId(chatID, text) ?? null;
+      return await resolveSentMessageId(chatID, text, { afterId: floor }) ?? null;
     },
     // In-place edit / delete by CONFIRMED message id (used by the show-think
     // stream; also available to callers that hold a real id).
@@ -1021,9 +1047,16 @@ export async function startBeeperBridge(opts = {}) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             return;
           }
+          // Pre-send id floor (live landmine 2026-07-04, see resolveSentMessageId):
+          // snapshot the chat's newest id BEFORE posting so a STALE identical-text
+          // message — a previous turn's orphaned placeholder — can never be resolved
+          // as THIS placeholder. Costs one local GET; without it the first poll races
+          // the post's upsert and binds the stream to the old message, delivering the
+          // whole reply invisibly into the scrollback.
+          const floor = await newestChatMsgId(cid);
           const r = await sendMessage(cid, placeholder, { replyToMessageID });
           if (!r) { handle.lastError = 'placeholder send failed'; return; }
-          realId = await resolveSentMessageId(cid, placeholder);
+          realId = await resolveSentMessageId(cid, placeholder, { afterId: floor });
           if (realId) {
             _ourStreamIds.add(msgKeyOf(cid, realId)); _capSet(_ourStreamIds, 200);
             rememberSent(realId, cid, placeholder);
