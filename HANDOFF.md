@@ -86,6 +86,10 @@ agent-built, deployed live at 63d4073 / pid 23728):
   rollup: count, last_seen, name; sanitizeStatKey escapes ':' for Windows).
   setup/port-stats-location.mjs RAN live: 20 chat files moved, 3 contact
   rollups seeded, 0 stats.yaml left in conv dirs. Deployed; node respawned.
+  Files SELF-IDENTIFY (operator screenshot fix): chat_id:/sender_id: body
+  fields (real unsanitized ids, greppable both directions), honest headers,
+  bijective unsanitizeStatKey, idempotent backfill pass in the port (ran
+  live: 21+5 ids stamped).
 - Suite: 128 files / 1423 tests green. TESTDRIVE.disposable.md (git-invisible
   via .git/info/exclude) = operator's live smoke script for Rooms +
   textecutables + path permissions + allowed_tools.
