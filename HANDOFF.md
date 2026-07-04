@@ -88,10 +88,17 @@ runs for fresh conversations) — stop the service → `node setup/port-explicit
 
 ## Working agreements
 
-Operator = An. Implementation via background agents TIERED by weight (haiku dumb
-/ sonnet mid / opus heavy); **Fable/orchestrator stays at altitude — if a change
-touches source AND tests, DISPATCH it, don't hand-edit**. Plain tone, verify
-claims, no butler ceremony. Descriptive commits, no AI attribution, commit+push
-when done. Live-test via the egpt-an chat; restart via ingest.
-`switchModelsOnFlag: false` (a safeguard flag pauses so the operator rephrases,
-keeping Fable). No continuity-diary logging for egpt work.
+**#1, checked into CLAUDE.md §5 (operator emphasized 2026-07-03): YOU ARE THE
+ORCHESTRATOR. Start background agents to do the CODING — to maintain the goal +
+direction AND preserve your own context.** The orchestrator's own hands are for
+scoping, reviewing diffs, committing/pushing, writing handoffs, and ops actions
+(ingest/restart) — NOT for editing source. If you catch yourself running `sed`
+or hand-fixing a test, stop and dispatch. Operator flagged this repeatedly this
+session; it is the load-bearing rule.
+
+Tier agents by weight (haiku dumb / sonnet mid / opus heavy). Operator = An.
+Plain tone, verify claims (don't assert from memory), no butler ceremony.
+Descriptive commits, no AI attribution, commit+push when done. Live-test via the
+egpt-an chat; restart via ingest. `switchModelsOnFlag: false` (a safeguard flag
+pauses so the operator rephrases, keeping Fable). No continuity-diary logging
+for egpt work.
