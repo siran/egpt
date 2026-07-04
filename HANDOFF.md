@@ -73,12 +73,19 @@ agent-built, deployed live at 63d4073 / pid 23728):
   registered during the bug window; slug-follows-name should heal it on that
   chat's next event.
 - **STATS MODULE LANDED** (ROADMAP §3 item 1): every received message
-  fire-and-forgets members:{<sender>:{count,last_seen}} into the conv's
-  stats.yaml at the transcript.log chokepoint (per-path write serialization vs
-  the thread mirror); operator-editable top-level `aliases:` block in
-  config.yaml (display-time only); /status members renders alias+count+
-  last_seen from stats, transcript fallback. LID↔phone NOT built — Beeper's
-  local API exposes a single senderID, nothing to link (verified).
+  fire-and-forgets member stats at the transcript.log chokepoint (per-path
+  write serialization vs the thread mirror); operator-editable top-level
+  `aliases:` block in config.yaml (display-time only); /status members renders
+  alias+count+last_seen from stats, transcript fallback. LID↔phone NOT built —
+  Beeper's local API exposes a single senderID, nothing to link (verified).
+- **STATS RELOCATED out of the conv dir** (operator 2026-07-04): the conv dir
+  is the being's CONFINED cwd (tamper/race risk), so stats are spine-owned
+  now: `state/stats/<surface>/<chatId>.yaml` (per-chat: name, first_seen,
+  threads, members; keyed by STABLE short chat id, rename-proof) +
+  `state/stats/<surface>/<sanitized-senderId>.yaml` (per-contact cross-chat
+  rollup: count, last_seen, name; sanitizeStatKey escapes ':' for Windows).
+  setup/port-stats-location.mjs RAN live: 20 chat files moved, 3 contact
+  rollups seeded, 0 stats.yaml left in conv dirs. Deployed; node respawned.
 - Suite: 128 files / 1423 tests green. TESTDRIVE.disposable.md (git-invisible
   via .git/info/exclude) = operator's live smoke script for Rooms +
   textecutables + path permissions + allowed_tools.
