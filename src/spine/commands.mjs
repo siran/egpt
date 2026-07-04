@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -27,15 +27,18 @@ import { shortChatId } from '../bridges/chat-id.mjs';
 // config/identities/<name>.md file (operator 2026-07-03).
 export const PROFILE_IDENTITIES_DIR = join(EGPT_HOME, 'config', 'identities');
 
-// The new agent-type file (house comment style, brief). A LIST allowed_tools is omitted
-// so resolution defaults to 'all' (the readonly freeze matches). `personality` names the
-// identity layer a fresh conversation of this type boots from.
+// The new agent-type file (house comment style, brief). Writes the explicit
+// DEFAULT_ALLOWED_TOOLS list (a LIST = CONFINED; the readonly freeze below matches).
+// `personality` names the identity layer a fresh conversation of this type boots from.
 function customTypeFile(name, model, effort, personality) {
+  const toolLines = DEFAULT_ALLOWED_TOOLS.map((t) => `  - ${t}`).join('\n');
   return `# ${name} — custom agent type created via the /e wizard. A brain def (engine config);
 # edit freely. Resolution layers (most-specific wins): src/brains < config/agents < <slug>/brains.
 type: ${CCODE}
 model: ${model}
 effort: ${effort}
+allowed_tools:        # list tools explicitly (CONFINED); 'all' is accepted but discouraged (never grants bare Bash/Agent)
+${toolLines}
 personality: ${personality}
 `;
 }
@@ -501,7 +504,7 @@ export function createCommands({
       const model = result.model ?? def.model ?? DETERMINISTIC_MODEL;
       const effort = result.effort ?? def.effort ?? DETERMINISTIC_EFFORT;
       await writeState(patchContact(state, surface, jid, {
-        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? 'all' },
+        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
       }));
       // The live warm session runs under the OLD engine (or the new one on a
       // never-instanced conversation); the pool keys it `e:<engine>:<surface>:<slug>`.
@@ -537,7 +540,7 @@ export function createCommands({
       const slug = c?.slug ?? result.slug;
       const displayName = c?.entry?.pushedName ?? slug;
       await writeState(patchContact(state, surface, jid, {
-        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: 'all' },
+        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS },
       }));
       evictWarm(`e:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);

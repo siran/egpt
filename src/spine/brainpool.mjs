@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT } from '../../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { isContextOverflowError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -54,8 +54,22 @@ function normalizeCwd(p) {
 //     { allowed_tools: [list-with-NO-write-tools] } → read-only root (→ readOnlyDirs)
 //     { allowed_tools: [list-WITH-write-tools]   } → full access + one log line (per-path
 //         tool granularity beyond read-only isn't native — honest approximation)
+// ONLY the literal 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'")
+// — coerced to the explicit DEFAULT list, so a type file (or a legacy frozen readonly)
+// that says 'all' is treated IDENTICALLY to the default vertical list: an Array →
+// confined to its conversation dir, explicit tools, no bypass. Any OTHER value passes
+// through untouched — an Array list (confined), a space/comma string list (explicit),
+// or absent (downstream default). Bonus: the freeze below now stores the list, so each
+// legacy 'all' entry self-heals to the explicit list on its next turn.
+function coerceAllowedTools(def) {
+  if (def && (def.allowed_tools === 'all' || def.allowed_tools === '*')) {
+    return { ...def, allowed_tools: DEFAULT_ALLOWED_TOOLS };
+  }
+  return def;
+}
+
 function confinementFor(def, cwd, onLog) {
-  if (!Array.isArray(def?.allowed_tools)) return {};   // 'all'/'*'/string/absent → unconfined
+  if (!Array.isArray(def?.allowed_tools)) return {};   // defensive: post-coercion this is always a list
   const addDirs = [], readOnlyDirs = [];
   const paths = (def.allowed_paths && typeof def.allowed_paths === 'object' && !Array.isArray(def.allowed_paths)) ? def.allowed_paths : {};
   for (const [rawPath, grant] of Object.entries(paths)) {
@@ -182,7 +196,7 @@ export function createBrainPool({
       type,
       model: def?.model ?? null,
       effort: def?.effort ?? null,
-      allowed_tools: def?.allowed_tools ?? 'all',
+      allowed_tools: def?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
       allowed_paths: def?.allowed_paths ?? undefined,   // carried so a confined agent's extra roots survive
       cwd: def?.cwd ?? undefined,
       system_prompt: def?.system_prompt ?? undefined,
@@ -206,7 +220,7 @@ export function createBrainPool({
       type: brainType,
       model: null,
       effort: null,
-      allowed_tools: 'all',
+      allowed_tools: DEFAULT_ALLOWED_TOOLS,
     };
   }
 
@@ -238,7 +252,7 @@ export function createBrainPool({
         // Local agent: def from the agents block (its `configuration` names a type file);
         // never frozen into readonly. Its model/effort stay exactly as configured (may be
         // unset — an engineer, not the persona snapshot).
-        def = siblingDef(being, convDir);
+        def = coerceAllowedTools(siblingDef(being, convDir));
         runModel = def.model; runEffort = def.effort;
       } else {
         // The conversation's brain: its instanced (frozen) brain, or — on the first
@@ -248,6 +262,7 @@ export function createBrainPool({
         def = instanced;
         const fresh = !def;
         if (fresh) def = resolveDefaultBrain(convDir);
+        def = coerceAllowedTools(def);   // 'all' → explicit list (rejected); the freeze below stores the list
         // DETERMINISM (operator 2026-07-02: "don't do 'null means inherit the login default' —
         // make it deterministic"): the frozen snapshot AND the actual run must carry CONCRETE
         // model/effort, never null. A type def that omits either falls back to the module
@@ -261,7 +276,7 @@ export function createBrainPool({
           // readonly.agent). NO `personality` is written — that key is RETIRED; the identity feed
           // is a property of the agent type (def.personality), read fresh at kickoff below.
           await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-            readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? 'all' },
+            readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
           }));
         }
       }
@@ -280,7 +295,7 @@ export function createBrainPool({
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       const baseOpts = {
         cwd,
-        allowedTools: def.allowed_tools ?? 'all',
+        allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
         ...(runModel ? { model: runModel } : {}),
         ...(runEffort ? { effort: runEffort } : {}),
         ...(def.system_prompt ? { appendSystemPrompt: def.system_prompt } : {}),

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
-import { buildClaudeArgs } from '../src/claude-args.mjs';
+import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
 import { emptyState, getBeing, ensureContact, recordThread } from '../conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
@@ -78,7 +78,7 @@ describe('brainpool.turn', () => {
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:codex:whatsapp:SPOILER-\d{10}$/);       // engine from the brain, not hardcoded ccode
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: 'all' });
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'gpt-5.4-mini', allowedTools: DEFAULT_ALLOWED_TOOLS });
     const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
     expect(view.brain).toBe('default');
     expect(view.brainType).toBe('codex');                                        // frozen into readonly
@@ -137,7 +137,7 @@ describe('brainpool.turn', () => {
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
-    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: 'all' });
+    expect(pool.calls[0].brainOptions).toMatchObject({ model: 'sonnet', effort: 'high', allowedTools: DEFAULT_ALLOWED_TOOLS });
     const view = getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e');
     expect(view.brain).toBe('sonnet-high');    // instanced from the persona agent configuration
   });
@@ -335,17 +335,18 @@ describe('brainpool.turn — confine-by-default (allowed_tools list) + allowed_p
     expect(logs.join('\n')).toMatch(/per-path tool granularity beyond read-only isn't native/);
   });
 
-  it("'all' def → TRUSTED/unconfined: no confineToDirs/addDirs/readOnlyDirs, bypass permissions (regression lock)", async () => {
+  it("'all' def is REJECTED → coerced to the explicit list, CONFINED, no bypass (operator 2026-07-03)", async () => {
     const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', allowed_tools: 'all' }) };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
     const opts = pool.calls[0].brainOptions;
-    expect(opts.confineToDirs).toBeUndefined();
-    expect(opts.addDirs).toBeUndefined();
-    expect(opts.readOnlyDirs).toBeUndefined();
+    // 'all' now behaves exactly like the default list: confined to the conversation dir,
+    // the explicit tool list, and NO --dangerously-skip-permissions.
+    expect(opts.confineToDirs).toEqual([opts.cwd]);
+    expect(opts.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     const args = buildClaudeArgs(opts);
-    expect(args).toContain('--dangerously-skip-permissions');
-    expect(argVals(args, '--add-dir')).toEqual([]);            // unconfined — no dir roots
+    expect(args).not.toContain('--dangerously-skip-permissions');
+    expect(argVals(args, '--add-dir')).toEqual([opts.cwd]);    // confined — the conversation dir is a root
   });
 });
 

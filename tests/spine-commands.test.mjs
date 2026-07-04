@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../spine.mjs';
-import { emptyState, ensureContact, getBeing, recordThread, patchContact } from '../conversations-state.mjs';
+import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS } from '../conversations-state.mjs';
 
 function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'] } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
@@ -323,7 +323,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
     // applied to the conversation exactly like an existing-type pick
     const b = getBeing(getState(), 'whatsapp', '!room', 'e');
     expect(b).toMatchObject({ agent: 'ops-bot', brainType: 'ccode', model: 'sonnet', effort: 'high' });
-    expect(b.allowedTools).toBe('all');
+    expect(b.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
     expect(b.threadId).toBe('THREAD-1');            // re-point keeps the thread
     expect(evicts).toEqual([`e:ccode:whatsapp:${b.slug}`]);
     expect(writes.length).toBe(1);

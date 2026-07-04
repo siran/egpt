@@ -101,8 +101,8 @@ signal:
 # ships seeded there (config/agents/egpt.yaml — the warm Claude Code CLI, no API key,
 # your `claude` login); config/agents/sonnet-high.yaml is seeded as a commented example.
 # Point agents.egpt.configuration at whichever you want new conversations to start on. A
-# type's allowed_tools LIST confines its file tools to each conversation dir + allowed_paths;
-# `allowed_tools: all` makes it trusted/unconfined.
+# type's allowed_tools lists tools explicitly (a LIST) to confine its file tools to each
+# conversation dir + allowed_paths; `all` is accepted but discouraged (trusted/unconfined).
 
 # ── 7. Warm sessions ─────────────────────────────────────────────────────────
 # eGPT runs each conversation as a resident background agent — the process stays

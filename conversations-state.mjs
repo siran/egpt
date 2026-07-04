@@ -117,6 +117,14 @@ export function conversationPathOf(surface, slug) {
 export const DETERMINISTIC_MODEL = 'sonnet';
 export const DETERMINISTIC_EFFORT = 'high';
 
+// The canonical explicit allowed_tools list (operator 2026-07-03: "list tools
+// explicitly" + "better to reject 'all'"). egpt never ships, defaults to, or writes
+// `allowed_tools: all` — this is the fallback when a type omits allowed_tools. Defined
+// in the tool-args leaf (src/claude-args.mjs), re-exported here so existing importers
+// (brainpool, commands) keep their path. A literal 'all' is REJECTED at the spawn
+// boundary — coerced to this list, never a bypass/full grant.
+export { DEFAULT_ALLOWED_TOOLS } from './src/claude-args.mjs';
+
 // The conversation's stats module file (operator 2026-07-02): lifecycle timestamps +
 // branchable thread history live HERE, sibling to transcript.md, so conversations.yaml
 // stays a slim, human-readable registry.

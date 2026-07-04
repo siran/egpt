@@ -3,7 +3,7 @@
 // claude-code CLI argv. This locks the mapping so the move can't silently regress
 // directory access control / tool limitation / settings isolation.
 import { describe, it, expect } from 'vitest';
-import { buildClaudeArgs, BASE_ARGS, FILE_TOOLS, WRITE_TOOLS, readOnlyDenyRules } from '../src/claude-args.mjs';
+import { buildClaudeArgs, BASE_ARGS, FILE_TOOLS, WRITE_TOOLS, readOnlyDenyRules, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
 
 // argv is flat: ['--flag','val','--flag2', ...]. Helpers to read it.
 const valsOf = (args, flag) => args.flatMap((a, i) => (a === flag ? [args[i + 1]] : []));
@@ -19,23 +19,24 @@ describe('buildClaudeArgs — base + thinking stream', () => {
 });
 
 describe('tool limitation + trusted access', () => {
-  it("allowedTools 'all' → bypass (trusted engineers/system-e), no sandbox isolation", () => {
+  it("allowedTools 'all' is REJECTED — NO bypass, coerced to the explicit default list (operator 2026-07-03)", () => {
     const a = buildClaudeArgs({ allowedTools: 'all' });
-    expect(has(a, '--dangerously-skip-permissions')).toBe(true);
-    expect(valsOf(a, '--permission-mode')).toEqual(['bypassPermissions']);
-    // Full FILE access (skip-permissions, no --add-dir confinement), but settings
-    // are NOT inherited from ~/.claude — '' so the operator's personal MCP servers
-    // don't leak into egpt's beings + slow every turn (2026-06-23).
-    expect(valsOf(a, '--setting-sources')).toEqual(['']);
-    expect(has(a, '--allowedTools')).toBe(false);
+    // No escape hatches at all: no skip-permissions, no bypassPermissions.
+    expect(has(a, '--dangerously-skip-permissions')).toBe(false);
+    expect(valsOf(a, '--permission-mode')).not.toContain('bypassPermissions');
+    // Coerced to DEFAULT_ALLOWED_TOOLS (unconfined → allow-listed as the safe 8).
+    expect(valsOf(a, '--allowedTools')).toEqual([DEFAULT_ALLOWED_TOOLS.join(' ')]);
+    expect(has(a, '--disallowedTools')).toBe(false);   // no bare Bash/Agent to disallow — they're just not in the list
   });
-  it("'*' is treated the same as 'all'", () => {
-    expect(valsOf(buildClaudeArgs({ allowedTools: '*' }), '--permission-mode')).toEqual(['bypassPermissions']);
+  it("'*' is rejected the same as 'all'", () => {
+    expect(valsOf(buildClaudeArgs({ allowedTools: '*' }), '--allowedTools')).toEqual([DEFAULT_ALLOWED_TOOLS.join(' ')]);
+    expect(has(buildClaudeArgs({ allowedTools: '*' }), '--dangerously-skip-permissions')).toBe(false);
   });
-  it("'all'/'*' are NEVER a bare-Bash/Agent escape hatch — --disallowedTools locks both (operator 2026-07-03)", () => {
+  it("'all'/'*' NEVER grant bare Bash or Agent — the coerced list contains neither", () => {
     for (const at of ['all', '*']) {
-      const a = buildClaudeArgs({ allowedTools: at });
-      expect(valsOf(a, '--disallowedTools')).toEqual(['Bash Agent']);
+      const allow = valsOf(buildClaudeArgs({ allowedTools: at }), '--allowedTools')[0].split(' ');
+      expect(allow).not.toContain('Bash');
+      expect(allow).not.toContain('Agent');
     }
   });
   it('plain allowedTools list (no sandbox) → --allowedTools, NO bypass, NO isolation, NO --disallowedTools', () => {

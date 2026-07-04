@@ -32,7 +32,8 @@ export const EXAMPLE_TYPE_FILE = `# sonnet-high — an example AGENT TYPE (a bra
 # type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama
 # model: sonnet         # PIN a concrete model — don't rely on a null 'login default' (non-deterministic)
 # effort: high          # reasoning effort, when the engine supports it
-# allowed_tools: all    # "all" | a space-separated allow-list | ["Read", "Edit", ...] — "all" excepts bare Bash/Agent, never implicit (2026-07-03)
+# allowed_tools:        # list tools explicitly (CONFINED) — e.g. [Read, Edit, Grep]; "all" is
+#                       # accepted but discouraged (TRUSTED/unconfined, never grants bare Bash/Agent — 2026-07-03)
 `;
 
 // The WORKING egpt agent-type file. UNlike the example above this is UNcommented (a
@@ -47,7 +48,7 @@ export const EGPT_TYPE_FILE = `# egpt — the shipped persona AGENT TYPE (a brai
 type: ccode           # engine: ccode | codex | chatgpt-cdp | claude-cdp | llama (only ccode wired in v2)
 model: sonnet         # concrete model the engine runs (PINNED = deterministic per conversation)
 effort: high          # reasoning effort (engine-dependent)
-allowed_tools:        # a LIST = CONFINED (file tools path-limited to allowed_paths); \`allowed_tools: all\` = TRUSTED/unconfined (every tool, no prompts, full filesystem) except bare Bash and Agent — never implicit (operator 2026-07-03)
+allowed_tools:        # list tools explicitly (CONFINED — file tools path-limited to allowed_paths); \`all\` is accepted but discouraged (TRUSTED/unconfined, every tool, no prompts, full filesystem, and never grants bare Bash/Agent either way — operator 2026-07-03)
   - Read           # read files
   - Write          # create / overwrite files
   - Edit           # in-place edits

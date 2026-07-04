@@ -31,6 +31,12 @@
 
 export const FILE_TOOLS = new Set(['read', 'write', 'edit', 'multiedit', 'notebookedit', 'glob', 'grep']);
 
+// The explicit default tool list egpt grants when an agent type omits allowed_tools
+// (operator 2026-07-03: "list tools explicitly" + "better to reject 'all'"). One
+// source of truth — conversations-state re-exports this; nothing hard-codes 'all'.
+// Scoped Bash(<bin>:*) is added per type; bare Bash/Agent are never here.
+export const DEFAULT_ALLOWED_TOOLS = ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Task'];
+
 // Write-class tools denied under a read-only dir (the CLI mirror of the SDK's
 // PreToolUse write-deny hook). Read/Grep/Glob stay allowed (the dir is readable).
 export const WRITE_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
@@ -64,37 +70,29 @@ export function buildClaudeArgs(options = {}) {
 
   // ── tool permission + confinement (mirror buildSdkOptions) ──
   if (options.allowedTools) {
-    const at = options.allowedTools;
-    if (at === 'all' || at === '*') {
-      // Trusted (engineers / system-e): full access, belt + suspenders.
-      // --setting-sources '' so egpt's beings DON'T inherit the operator's
-      // personal ~/.claude.json — esp. its MCP servers (Gmail/Google/etc.),
-      // whose ~30 tool schemas bloat every turn's prompt and slow inference
-      // (operator 2026-06-23: system-E went 4-6s → 14s after MCP servers were
-      // added). A being's tools come from egpt's own args, not the operator's
-      // dev config. (The confined path already does this.)
+    // 'all'/'*' is REJECTED (operator 2026-07-03: "better to reject 'all'"). It
+    // never buys full/bypass access — it is coerced to the explicit default tool
+    // list and routed through the normal path. egpt never WRITES 'all'; a
+    // hand-written type file that does gets the safe list, nothing more. There is
+    // no --dangerously-skip-permissions / bypassPermissions path anymore, and bare
+    // Bash/Agent are never implicit (they are simply not in the list). A scoped
+    // Bash(<bin>:*) is grantable only by listing it explicitly.
+    const at = (options.allowedTools === 'all' || options.allowedTools === '*')
+      ? DEFAULT_ALLOWED_TOOLS
+      : options.allowedTools;
+    const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
+    if (confined) {
+      // Sandbox: do NOT inherit ~/.claude bypass; engine enforces; file tools stay
+      // path-confined to --add-dir (NOT pre-approved — an allow-list entry bypasses
+      // the path check, exactly how Read once leaked); pre-approve only non-file
+      // tools. --setting-sources '' so beings don't inherit the operator's personal
+      // ~/.claude (esp. its MCP servers, whose schemas bloat every turn).
       args.push('--setting-sources', '');
-      args.push('--dangerously-skip-permissions');
-      args.push('--permission-mode', 'bypassPermissions');
-      // 'all' grants every tool EXCEPT the two escape hatches (operator
-      // 2026-07-03: "all includes Bash? it shouldn't"). Bare Bash/Agent are
-      // NEVER implicit — a scoped Bash(<bin>:*) remains grantable only via an
-      // explicit allowedTools LIST.
-      args.push('--disallowedTools', 'Bash Agent');
-    } else {
-      const list = Array.isArray(at) ? at : String(at).trim().split(/\s+/).filter(Boolean);
-      if (confined) {
-        // Sandbox: do NOT inherit ~/.claude bypass; engine enforces; file tools
-        // stay path-confined to --add-dir (NOT pre-approved — an allow-list entry
-        // bypasses the path check, exactly how Read once leaked); pre-approve
-        // only the non-file tools.
-        args.push('--setting-sources', '');
-        args.push('--permission-mode', 'default');
-        const preApprove = list.filter((t) => !FILE_TOOLS.has(t.toLowerCase()));
-        if (preApprove.length) args.push('--allowedTools', preApprove.join(' '));
-      } else if (list.length) {
-        args.push('--allowedTools', list.join(' '));
-      }
+      args.push('--permission-mode', 'default');
+      const preApprove = list.filter((t) => !FILE_TOOLS.has(t.toLowerCase()));
+      if (preApprove.length) args.push('--allowedTools', preApprove.join(' '));
+    } else if (list.length) {
+      args.push('--allowedTools', list.join(' '));
     }
   }
 
