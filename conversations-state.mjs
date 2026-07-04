@@ -25,6 +25,7 @@ import * as YAML from 'yaml';
 import { sanitizeSlug } from './src/sanitize.mjs';
 import { Room } from './src/room-core.mjs';
 import { EGPT_HOME } from './src/egpt-home.mjs';
+import { makeSerialByKey } from './src/serial-by-key.mjs';
 
 const _here = dirname(fileURLToPath(import.meta.url));
 const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
@@ -218,6 +219,22 @@ function serializeStatsWrite(fp, task) {
   const next = prev.then(task, task);               // run regardless of the prior write's outcome
   _statsWriteChains.set(fp, next.catch(() => {}));  // a rejection must not poison the chain
   return next;
+}
+
+// mutateState(writeState, task): serializes conversations.yaml's read-modify-write
+// critical sections so two concurrent first-turn-style mutations (contacts.resolve's
+// ensureContact, brainpool's readonly-freeze + recordThread) can't interleave and lose
+// one write. `task` is the caller's WHOLE load→mutate→write closure — wrapping only the
+// write would still lose updates, since both racers would already have read the same
+// stale state before either writes. Keyed by the `writeState` FUNCTION REFERENCE (not the
+// file path): boot.mjs builds exactly one loadState/writeState pair per process and hands
+// the same references to every consumer, so they land in one chain automatically; an
+// in-memory test's own fake pair gets its own chain, so existing tests need no changes.
+// Reuses the same keyed-serializer spine.mjs's turn queue is built on (src/serial-by-key.mjs)
+// rather than a second hand-rolled chain like serializeStatsWrite's.
+const _serializeConvState = makeSerialByKey();
+export function mutateState(writeState, task) {
+  return _serializeConvState(writeState, task);
 }
 
 // Effectful mirror of a freshly-minted thread into the per-chat stats file

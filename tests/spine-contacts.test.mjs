@@ -99,4 +99,30 @@ describe('contacts.resolve', () => {
     expect(await contacts.resolve(SURFACE, null)).toBe(null);
     expect(writes()).toBe(0);
   });
+
+  it('two DIFFERENT chats resolving concurrently: neither first-turn registration is lost (serialized RMW)', async () => {
+    // Two conversations' FIRST turns now run concurrently (per-conversation turn FIFO).
+    // Both read-modify-write the ONE shared conversations registry; with a slow read/write
+    // gap an UN-serialized pair each load the same empty state and clobber the other's
+    // contact (classic lost update). mutateState serializes the whole load→mutate→write so
+    // the second resolve reads the first's write. Backed by one shared in-memory var with
+    // injected latency (same style as conversations-state's stats-serialize test).
+    let state = emptyState();
+    const slow = () => new Promise((r) => setTimeout(r, 8));
+    const contacts = createContacts({
+      loadState: async () => { await slow(); return state; },
+      writeState: async (s) => { await slow(); state = s; },
+    });
+    const CHAT_A = '!rooma:beeper.com';
+    const CHAT_B = '!roomb:beeper.com';
+    const [slugA, slugB] = await Promise.all([
+      contacts.resolve(SURFACE, CHAT_A, { chatName: 'alpha' }),
+      contacts.resolve(SURFACE, CHAT_B, { chatName: 'bravo' }),
+    ]);
+    expect(slugA).toMatch(/^alpha-\d{10}$/);
+    expect(slugB).toMatch(/^bravo-\d{10}$/);
+    // BOTH contacts must survive in the final registry — the race would drop one.
+    expect(getContact(state, SURFACE, CHAT_A)?.slug).toBe(slugA);
+    expect(getContact(state, SURFACE, CHAT_B)?.slug).toBe(slugB);
+  });
 });

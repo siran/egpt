@@ -9,7 +9,7 @@
 //
 // Effectful deps (conv-state load/write, fs) are injected so it's testable
 // in-memory; the pure slug/rename helpers are imported directly.
-import { slugDir, ensureContact, renameLogLine } from '../../conversations-state.mjs';
+import { slugDir, ensureContact, renameLogLine, mutateState } from '../../conversations-state.mjs';
 import { rename as fsRename, appendFile as fsAppendFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -30,6 +30,10 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
      * @returns {Promise<string|null>} the slug, or null when unresolvable (caller treats null as skip)
      */
     async resolve(surface, chatId, { chatName } = {}) {
+      // Serialize the whole load→mutate→write against the shared registry so two
+      // DIFFERENT conversations' first-seen registrations (now concurrent, per the
+      // per-conversation turn FIFO) can't interleave and lose one contact.
+      return mutateState(writeState, async () => {
       try {
         if (!chatId) return null;
         const state = await loadState();
@@ -63,6 +67,7 @@ export function createContacts({ loadState, writeState, io = {}, onLog = () => {
         if (ens.changed) await writeState(ens.state);
         return ens.slug ?? null;
       } catch (e) { onLog(`resolve ${surface}/${chatId}: ${e?.message ?? e}`); return null; }
+      });
     },
   };
 }

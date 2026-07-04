@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -278,9 +278,11 @@ export function createBrainPool({
           // (operator 2026-07-02: new-config-only — the vocabulary is `agent`; getBeing reads
           // readonly.agent). NO `personality` is written — that key is RETIRED; the identity feed
           // is a property of the agent type (def.personality), read fresh at kickoff below.
-          await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-            readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
-          }));
+          await mutateState(writeState, async () => {
+            await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
+              readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
+            }));
+          });
         }
       }
       const engine = def.type ?? brainType;
@@ -361,7 +363,9 @@ export function createBrainPool({
       // flat threadId for 'e', a nested <being> block for a sibling.
       if (newSession && newSession !== sessionId) {
         const nowIso = nowIsoString();
-        await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
+        await mutateState(writeState, async () => {
+          await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
+        });
         // Mirror the freshly-minted thread into the per-chat stats file's branchable history
         // (state/stats/<surface>/<chatId>.yaml — a changed threadId appends; the old id stays
         // addressable so a conversation can be branched from it). Keyed by ev.chatId (the
