@@ -76,9 +76,21 @@ provenance tail, forward-once per mid).
   10min (evicts hung warm session via new brainpool.evict, queue drains on),
   and QUEUED turns prompt with the ACCUMULATED cycle timeline (in-memory
   cycleBy buffer: chatter + E's own delivered replies + own mention line,
-  CAP 40; immediate turns stay single-line). LIVE ACCEPTANCE OWED (rerun):
-  3 @e mentions incl. a WebSearch-heavy one → whatever turn 1 does, it's
-  VISIBLE; queued replies should reference the accumulated timeline.
+  CAP 40; immediate turns stay single-line).
+- **STALE-TWIN PLACEHOLDER LANDMINE — the REAL silent-death root cause
+  (1ea5f7e, pid 28212)**: the spine was innocent (all four "lost" replies were
+  in transcript.md all along); bridge resolveSentMessageId bound a fresh
+  placeholder's id to the NEWEST IDENTICAL-TEXT message — the first poll races
+  the POST's upsert, so a stale orphaned '⏳ Thinking…' (seeded by the
+  pre-queue collision era) got matched and every edit landed INVISIBLY on the
+  old message (PUT succeeds → no fallback/error/log); self-perpetuating: each
+  failure orphaned the next twin. Immediate turns died, queued ones (distinct
+  text) delivered. FIX: pre-send id floor — snapshot newestChatMsgId before
+  the POST, resolver skips any match ≤ floor (Beeper ids = per-chat sequence
+  numbers); unbindable → §7 fallback posts fresh, visible. Old orphaned
+  Thinking messages remain in chats as inert text (unmatchable now; delete
+  manually if tidy). LIVE ACCEPTANCE OWED: one SOLO @e mention in SPOILER
+  (still full of twins) → reply must land in the NEW placeholder.
 - **mode: auto design DECIDED** (ROADMAP §3 updated): egpt plays the
   OPERATOR'S role (helpful, follow links, do as told), consults a configurable
   EGPT-AUTO advice channel when in doubt (kickoff teaches WHEN); independent
