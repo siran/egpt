@@ -15,7 +15,7 @@
 // explicit read/write helpers at the bottom that take paths. Easy to
 // test, easy to call from any host.
 
-import { readFile, writeFile, mkdir, stat, rename, appendFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, rename, appendFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,13 +137,16 @@ export function statsDir(surface) {
   return join(EGPT_HOME, 'state', 'stats', surface);
 }
 
-// The per-CHAT stats file: state/stats/<surface>/<chatId>.yaml — lifecycle timestamps +
-// branchable thread history + per-member counters. Keyed by chat id (the registry key),
-// which is already the filename-safe short Beeper room token (beeper.mjs normalizes every
-// inbound chatId through shortChatId — no colons/slashes), so NO sanitization here (unlike
-// the per-contact file, whose sender id can carry a ':' — see sanitizeStatKey).
-export function statsPath(surface, chatId) {
-  return join(statsDir(surface), `${chatId}.yaml`);
+// The per-CHAT stats file under state/stats/<surface>/ (operator 2026-07-04: filenames must
+// be HUMAN-READABLE — <chat display name>.yaml, not the opaque chat id). RESOLVES the current
+// on-disk basename via resolveStatFilename, so it's async now (resolution reads the surface
+// dir). Pass `name` (the chat display name) to compute the human basename; omit it for a read
+// that only needs to LOCATE the file. Reader default is rename:false (locate-but-don't-move —
+// only the live WRITERS self-heal a filename). Body chat_id is the identity anchor, so this
+// finds the file even when it sits under a stale/renamed basename.
+export async function statsPath(surface, chatId, { name, io = {}, rename = false } = {}) {
+  const { path } = await resolveStatFilename({ dir: statsDir(surface), idField: 'chat_id', id: chatId, name, io, rename });
+  return path;
 }
 
 // Filename-safe key for a SENDER id (the per-contact stats file's basename). A sender id
@@ -171,10 +174,131 @@ export function unsanitizeStatKey(s) {
   return String(s ?? '').replace(/~([0-9a-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
-// The per-CONTACT stats file: state/stats/<surface>/<sanitized-senderId>.yaml — one file
-// per sender holding that sender's rollup ACROSS ALL chats on the surface.
-export function contactStatsPath(surface, senderId) {
-  return join(statsDir(surface), `${sanitizeStatKey(senderId)}.yaml`);
+// The stats FILENAME base for a KNOWN display name (operator 2026-07-04: filenames must be
+// human-readable). Reuses sanitizeSlug (Windows-illegal→space, collapse whitespace, trim
+// leading/trailing dot+space, reserved-device guard CON/PRN/…) but caps at ~40 — a flat,
+// human-scanned stats dir wants shorter names than a slug's 80. Re-runs sanitizeSlug after the
+// 40-slice so a slice landing mid-dot/space/reserved-name is re-trimmed (the same trick
+// sanitizeSlug uses at its own 80-cap). Empty (name sanitizes to nothing) → '' so the caller
+// falls back to the id-based base.
+export function sanitizeStatName(name) {
+  const s = sanitizeSlug(name);
+  return s.length <= 40 ? s : sanitizeSlug(s.slice(0, 40));
+}
+
+// Shared name + name-change-history helper (operator 2026-07-04: NAME-FOLLOWS-RENAME). Given a
+// stats body, an OBSERVED name, and the observation timestamp, returns the `{ name, former_names }`
+// fields to SPREAD onto the merged body — ONE code path for both chat and contact files:
+//   - observed name absent, or equal to the stored name → no change (returns the current fields
+//     as-is so the spread is a no-op; the common per-message re-observation must NOT grow history).
+//   - observed name differs from a PRIOR stored name → set name to the new value AND append the
+//     OUTGOING (previous) name to former_names with `until` = the observation time (NOT a claim
+//     about when the rename happened, just when it was NOTICED). A→B→A yields two entries.
+//   - first-ever name (no prior stored) → just set name; not a transition, no history entry.
+//   - former_names capped at `cap` (~20; renames are rare — a guard, not a feature), oldest
+//     dropped on overflow.
+export function mergeNameHistory(existing = {}, name, isoTs, { cap = 20 } = {}) {
+  const prevName = existing?.name;
+  const prevHist = Array.isArray(existing?.former_names) ? existing.former_names : [];
+  if (!name || name === prevName) {
+    const out = {};
+    if (prevName != null) out.name = prevName;
+    if (prevHist.length) out.former_names = prevHist;
+    return out;
+  }
+  let hist = prevHist;
+  if (prevName != null && prevName !== '') {
+    hist = [...prevHist, { name: prevName, until: isoTs }];
+    if (hist.length > cap) hist = hist.slice(hist.length - cap);   // drop oldest on overflow
+  }
+  const out = { name };
+  if (hist.length) out.former_names = hist;
+  return out;
+}
+
+// Resolve the on-disk stats file for one logical entity (a chat or a contact) on a surface.
+// FILENAMES are cosmetic/human-readable and may drift or collide; the file's BODY id (chat_id /
+// sender_id) is the ONLY identity anchor, so resolution NEVER trusts a filename alone. Steps:
+//   1. canonical = the sanitized name-based basename when a name is known, else the id-based
+//      fallback (<chatId> for a chat — already filename-safe; sanitizeStatKey(senderId) for a
+//      contact).
+//   2. FAST PATH: canonical exists AND its body id == id → that's the file (no dir scan).
+//   3. else SCAN the (small, flat, ~30-file) surface dir, reading each *.yaml's body id, to find
+//      whichever file currently holds this id. This scan only runs on the miss/foreign path.
+//   4. target = canonical, UNLESS canonical is occupied by a genuinely DIFFERENT entity (foreign
+//      body id) → disambiguate with <name>-<idPart>.yaml (idPart = the raw chatId / the
+//      sanitizeStatKey(senderId)).
+//   5. when allowRename && the entity's file was found under a non-target basename → RENAME it to
+//      the target (swallow-never-throw; a rename failure logs one line and keeps the found path).
+// CRITICAL TRAP: a NAMELESS caller (name undefined/empty) must NEVER demote an already
+// nicely-named file back to the id-only fallback — it LOCATES but never renames. Renaming only
+// ever moves a file TOWARD a newly-*known*, better name. A read-only resolve (allowRename=false)
+// likewise locates without moving. Returns { path, isNew, renamedFrom }.
+export async function resolveStatFilename({ dir, idField, id, name, io = {}, rename: allowRename = true }) {
+  const readFileFn = io.readFile ?? readFile;
+  const readdirFn = io.readdir ?? readdir;
+  const renameFn = io.rename ?? rename;                    // the module fs/promises rename
+  const existsSyncFn = io.existsSync ?? existsSync;
+
+  const idFallbackBase = idField === 'chat_id' ? String(id) : sanitizeStatKey(id);
+  const sanitizedName = name ? sanitizeStatName(name) : '';
+  const nameKnown = !!sanitizedName;
+  const canonicalBase = nameKnown ? sanitizedName : idFallbackBase;
+  const canonicalPath = join(dir, `${canonicalBase}.yaml`);
+
+  const bodyIdOf = async (fp) => {
+    try { return YAML.parse(await readFileFn(fp, 'utf8'))?.[idField] ?? null; } catch { return null; }
+  };
+
+  // FAST PATH: canonical is on disk and self-identifies as this entity.
+  const canonicalExists = existsSyncFn(canonicalPath);
+  if (canonicalExists && (await bodyIdOf(canonicalPath)) === id) {
+    return { path: canonicalPath, isNew: false, renamedFrom: null };
+  }
+  // canonicalExists reaching here ⇒ occupied by a DIFFERENT/unstamped entity (foreign name).
+  const canonicalForeign = canonicalExists;
+
+  // SCAN the surface dir for whichever file currently carries this body id.
+  let names = [];
+  try { names = await readdirFn(dir); } catch { names = []; }
+  let foundPath = null;
+  for (const n of names) {
+    if (!n.endsWith('.yaml')) continue;
+    const fp = join(dir, n);
+    if (fp === canonicalPath) continue;                    // already checked on the fast path
+    if ((await bodyIdOf(fp)) === id) { foundPath = fp; break; }
+  }
+
+  // Brand-new entity: nothing on disk holds this id yet.
+  if (!foundPath) {
+    const targetBase = (nameKnown && canonicalForeign) ? `${sanitizedName}-${idFallbackBase}` : canonicalBase;
+    return { path: join(dir, `${targetBase}.yaml`), isNew: true, renamedFrom: null };
+  }
+
+  // Found the entity under `foundPath`. A nameless caller (or a read-only resolve) returns the
+  // CURRENT location untouched — never demote toward the id-only fallback, never move on read.
+  if (!nameKnown || !allowRename) {
+    return { path: foundPath, isNew: false, renamedFrom: null };
+  }
+  // Name known + rename enabled: move toward the canonical (or collision-disambiguated) name.
+  const targetBase = canonicalForeign ? `${sanitizedName}-${idFallbackBase}` : canonicalBase;
+  const targetPath = join(dir, `${targetBase}.yaml`);
+  if (foundPath === targetPath) return { path: foundPath, isNew: false, renamedFrom: null };
+  try {
+    await renameFn(foundPath, targetPath);
+    return { path: targetPath, isNew: false, renamedFrom: foundPath };
+  } catch (e) {
+    console.error(`!! resolveStatFilename rename(${foundPath} -> ${targetPath}): ${e?.message ?? e}`);
+    return { path: foundPath, isNew: false, renamedFrom: null };   // rename failed → keep the found path
+  }
+}
+
+// The per-CONTACT stats file under state/stats/<surface>/ — one file per sender holding that
+// sender's rollup ACROSS ALL chats on the surface. Named by the sender's push name / number
+// when known (operator 2026-07-04), else the sanitized sender id. Async resolver — see statsPath.
+export async function contactStatsPath(surface, senderId, { name, io = {}, rename = false } = {}) {
+  const { path } = await resolveStatFilename({ dir: statsDir(surface), idField: 'sender_id', id: senderId, name, io, rename });
+  return path;
 }
 
 const STATS_HEADER = '# per-chat stats (spine-written — do not edit)\n';
@@ -208,16 +332,20 @@ export function mergeThreadIntoStats(stats, thread) {
   return { stats: out, changed: true };
 }
 
-// Per-path write-serialization for stats.yaml (operator 2026-07-03): appendThreadStat
-// (awaited in a brainpool turn) and recordMemberStat (fired fire-and-forget on EVERY
-// received message) both read-merge-write the SAME file, so two overlapping writes could
-// race and lose one's read-before-write delta. Chain each write behind the previous one
-// for that path, turning last-writer-wins into read-after-write. Keyed by the file path.
+// Write-serialization for a stats entity (operator 2026-07-03): appendThreadStat (awaited in a
+// brainpool turn) and recordMemberStat (fired fire-and-forget on EVERY received message) both
+// read-merge-write the SAME chat file, so two overlapping writes could race and lose one's
+// read-before-write delta. Chain each write behind the previous one, turning last-writer-wins
+// into read-after-write. Keyed by a STABLE LOGICAL key `${surface}:${kind}:${id}` (operator
+// 2026-07-04), NOT the file path: once a filename can change mid-write (a rename this very write
+// triggers), two racers keyed by path — one resolving pre-rename, one post — would land on
+// DIFFERENT chains and reintroduce the lost-update race. The whole resolve+read+merge+rename+write
+// critical section runs inside ONE serializeStatsWrite(logicalKey) per entity.
 const _statsWriteChains = new Map();
-function serializeStatsWrite(fp, task) {
-  const prev = _statsWriteChains.get(fp) ?? Promise.resolve();
-  const next = prev.then(task, task);               // run regardless of the prior write's outcome
-  _statsWriteChains.set(fp, next.catch(() => {}));  // a rejection must not poison the chain
+function serializeStatsWrite(key, task) {
+  const prev = _statsWriteChains.get(key) ?? Promise.resolve();
+  const next = prev.then(task, task);                // run regardless of the prior write's outcome
+  _statsWriteChains.set(key, next.catch(() => {}));  // a rejection must not poison the chain
   return next;
 }
 
@@ -244,12 +372,16 @@ export function mutateState(writeState, task) {
 // where it records a new session. Serialized per file (serializeStatsWrite) so it never
 // races recordMemberStat on the same file.
 export async function appendThreadStat(surface, chatId, thread, { io = {}, statsDirOf = statsDir } = {}) {
-  const dir = statsDirOf(surface, chatId);
-  const fp = join(dir, `${chatId}.yaml`);
-  return serializeStatsWrite(fp, async () => {
+  const key = `${surface}:chat:${chatId}`;
+  return serializeStatsWrite(key, async () => {
     const readFileFn = io.readFile ?? readFile;
     const writeFileFn = io.writeFile ?? writeFile;
     const mkdirFn = io.mkdir ?? mkdir;
+    const dir = statsDirOf(surface, chatId);
+    // Nameless caller (this path carries no chat display name): resolve WITHOUT demoting an
+    // already-nicely-named file back to the id-only base (the correctness trap) — locate the
+    // chat's file by body chat_id, or the id-only base for a brand-new chat, never renaming.
+    const { path: fp } = await resolveStatFilename({ dir, idField: 'chat_id', id: chatId, name: undefined, io, rename: true });
     let existing = {};
     try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const { stats, changed } = mergeThreadIntoStats(existing, thread);
@@ -277,14 +409,16 @@ export function mergeMemberIntoStats(stats, senderId, isoTs) {
 }
 
 // Merge one received message into a per-CONTACT stats object — a FLAT { count, last_seen,
-// name? } (NOT nested under a members: map like the per-chat file, since the file is
-// already scoped to ONE sender): count++, last_seen bumped every time; `name` set/refreshed
-// ONLY when the event actually carries one (never invented/backfilled from nothing). Pure.
+// name?, former_names? } (NOT nested under a members: map like the per-chat file, since the
+// file is already scoped to ONE sender): count++, last_seen bumped every time; `name` set/
+// refreshed ONLY when the event actually carries one (never invented/backfilled from nothing),
+// with a name CHANGE appending the outgoing name to former_names via the shared name-history
+// helper. Pure.
 export function mergeContactIntoStats(existing = {}, isoTs, name) {
   const out = { ...(existing && typeof existing === 'object' ? existing : {}) };
   out.count = (Number(out.count) || 0) + 1;
   out.last_seen = isoTs;
-  if (name) out.name = name;
+  Object.assign(out, mergeNameHistory(existing, name, isoTs));
   return out;
 }
 
@@ -299,33 +433,50 @@ export function mergeContactIntoStats(existing = {}, isoTs, name) {
 // (the two never block each other, each is race-safe internally); its own try/catch, added
 // as an internal step that does NOT change the return contract (existing tests assert the
 // chat-file write's `true`). `senderName`, when present on the event, sets/refreshes name.
-export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = {}, statsDirOf = statsDir, senderName } = {}) {
+export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = {}, statsDirOf = statsDir, senderName, chatName } = {}) {
   if (!senderId) return false;
   const dir = statsDirOf(surface, chatId);
   const readFileFn = io.readFile ?? readFile;
   const writeFileFn = io.writeFile ?? writeFile;
   const mkdirFn = io.mkdir ?? mkdir;
-  const chatFp = join(dir, `${chatId}.yaml`);
-  const wrote = await serializeStatsWrite(chatFp, async () => {
+
+  // ── per-CHAT file: member counter + NAME-FOLLOWS-RENAME on the chat display name. ──
+  // Serialized by the stable LOGICAL key (surface:chat:chatId), NOT the file path — the
+  // filename can change mid-write (a rename this write triggers), and two racers keyed by path
+  // would land on different chains and lose an update. Resolve + read + merge + rename + write
+  // all run inside this ONE critical section per chat.
+  const chatKey = `${surface}:chat:${chatId}`;
+  const wrote = await serializeStatsWrite(chatKey, async () => {
+    // Resolve WITH the chat name so the file lands at / renames toward its human basename. A
+    // name change renames the file HERE, before the read below reads the moved file's still-old
+    // bytes — so mergeNameHistory can diff the outgoing (old) name against the observed one.
+    const { path: fp } = await resolveStatFilename({ dir, idField: 'chat_id', id: chatId, name: chatName, io, rename: true });
     let existing = {};
-    try { existing = YAML.parse(await readFileFn(chatFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const stats = mergeMemberIntoStats(existing, senderId, isoTs);
+    Object.assign(stats, mergeNameHistory(existing, chatName, isoTs));   // chat name + former_names
     const withId = { chat_id: chatId, ...stats };
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(chatFp, STATS_HEADER + YAML.stringify(withId), 'utf8');
+      await writeFileFn(fp, STATS_HEADER + YAML.stringify(withId), 'utf8');
       return true;
     } catch (e) { console.error(`!! recordMemberStat(${surface}/${chatId}): ${e?.message ?? e}`); return false; }
   });
-  const contactFp = join(dir, `${sanitizeStatKey(senderId)}.yaml`);
-  await serializeStatsWrite(contactFp, async () => {
+
+  // ── per-CONTACT file: flat cross-chat rollup + NAME-FOLLOWS-RENAME on the sender push name. ──
+  // Own logical key (surface:contact:senderId) → its own chain (never blocks the chat file);
+  // non-fatal (a rollup hiccup must not touch the message path). `senderName`, when present,
+  // sets/refreshes name and drives the human filename.
+  const contactKey = `${surface}:contact:${senderId}`;
+  await serializeStatsWrite(contactKey, async () => {
+    const { path: fp } = await resolveStatFilename({ dir, idField: 'sender_id', id: senderId, name: senderName, io, rename: true });
     let existing = {};
-    try { existing = YAML.parse(await readFileFn(contactFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const stats = mergeContactIntoStats(existing, isoTs, senderName);
     const withId = { sender_id: senderId, ...stats };
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(contactFp, CONTACT_STATS_HEADER + YAML.stringify(withId), 'utf8');
+      await writeFileFn(fp, CONTACT_STATS_HEADER + YAML.stringify(withId), 'utf8');
     } catch (e) { console.error(`!! recordMemberStat contact(${surface}/${senderId}): ${e?.message ?? e}`); }
   }).catch(() => {});   // per-contact roll-up is non-fatal — never break the message path
   return wrote;

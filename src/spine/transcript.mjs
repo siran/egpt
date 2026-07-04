@@ -43,7 +43,7 @@ export function createTranscript({
         // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
         // fire-and-forget (never awaited, so it can't block or delay the transcript
         // append), any rejection swallowed into onLog exactly like the catch below.
-        recordMemberStat(ev.surface, ev.chatId, ev.senderId, isoFromMs(ev.ts), { io, senderName: ev.senderName })
+        recordMemberStat(ev.surface, ev.chatId, ev.senderId, isoFromMs(ev.ts), { io, senderName: ev.senderName, chatName: ev.chatName })
           .catch((e) => onLog(`stats ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`));
         const dir = slugDir(ev.surface, slug);
         await mkdir(dir, { recursive: true });

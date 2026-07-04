@@ -56,6 +56,19 @@ function harness(config = {}, mode) {
     rename: async (from, to) => { renames.push({ from, to }); },
     readFile: async (p) => { if (!statsFiles.has(p)) throw new Error('ENOENT'); return statsFiles.get(p); },
     writeFile: async (p, d) => { statsFiles.set(p, d); },
+    // resolveStatFilename (inside recordMemberStat) scans the surface dir by body id; virtualize
+    // readdir over statsFiles so it never falls back to the REAL fs. Lists the basenames of the
+    // stats-map keys directly under `dir` (paths normalized so Windows backslashes match).
+    readdir: async (dir) => {
+      const norm = (p) => String(p).replace(/\\/g, '/');
+      const prefix = norm(dir).replace(/\/$/, '') + '/';
+      const out = new Set();
+      for (const k of statsFiles.keys()) {
+        const nk = norm(k);
+        if (nk.startsWith(prefix)) { const rest = nk.slice(prefix.length); if (!rest.includes('/')) out.add(rest); }
+      }
+      return [...out];
+    },
   };
   const contacts = createContacts({ loadState, writeState, io });
   const transcript = createTranscript({ contacts, io, now: () => new Date(Date.UTC(2026, 5, 29, 14, 5)) });

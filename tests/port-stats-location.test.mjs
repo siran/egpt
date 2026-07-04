@@ -5,7 +5,7 @@
 // skip, the cross-chat SUM rollup, the ':'-sender sanitized filename, and idempotence.
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
-import { portStatsLocation, backfillStatsIds } from '../setup/port-stats-location.mjs';
+import { portStatsLocation, backfillStatsIds, renameStatsToNames } from '../setup/port-stats-location.mjs';
 import { sanitizeStatKey } from '../conversations-state.mjs';
 
 // A Map-backed fs. readFile throws ENOENT on a miss; rm deletes; existsSync is has().
@@ -20,6 +20,9 @@ function memIo(seed = {}) {
     writeFile: async (p, d) => { files.set(norm(p), d); },
     mkdir: async () => {},
     rm: async (p) => { files.delete(norm(p)); },
+    // resolveStatFilename's rename pass moves a stats file to its human basename (operate on the
+    // files Map, normalize both paths — mirrors rm/writeFile).
+    rename: async (from, to) => { const f = norm(from), t = norm(to); if (files.has(f)) { files.set(t, files.get(f)); files.delete(f); } },
     // a file exists on an exact key; a directory "exists" iff some file lives under it
     existsSync: (p) => { const k = norm(p); return files.has(k) || [...files.keys()].some((f) => f.startsWith(k + '/')); },
     readdir: async (dir) => {
@@ -162,5 +165,66 @@ describe('backfillStatsIds', () => {
     expect(r2).toEqual({ chatsStamped: 0, contactsStamped: 0, skipped: 2 });
     for (const [p, v] of files) expect(v).toBe(afterFirst.get(p));
     expect([...files.keys()].sort()).toEqual([...afterFirst.keys()].sort());
+  });
+});
+
+describe('renameStatsToNames (the garbled-filename → human-name pass)', () => {
+  it('renames id-based files to their body name; a second run is a byte-identical no-op, no former_names added', async () => {
+    // Stamped (backfilled) id-based files: chat carries chat_id + a human `name`; contact carries
+    // sender_id + a human `name` (a push name / number). The pass moves each to <name>.yaml.
+    const chat = y({ chat_id: '!fam', name: 'Jorge Medina', members: { '@a:beeper.com': { count: 3, last_seen: 'T' } } });
+    const contact = y({ sender_id: '@a:beeper.com', name: '+13478703471', count: 3, last_seen: 'T' });
+    const { files, io } = memIo({
+      'NEW/whatsapp/!fam.yaml': chat,
+      'NEW/whatsapp/@a~3abeeper.com.yaml': contact,
+    });
+
+    const r = await renameStatsToNames(null, { paths, io });
+    expect(r.renamed).toBe(2);
+
+    // moved to human basenames; the id-based basenames are gone
+    expect(files.has('NEW/whatsapp/!fam.yaml')).toBe(false);
+    expect(files.has('NEW/whatsapp/@a~3abeeper.com.yaml')).toBe(false);
+    // PURE fs rename: the body value is byte-identical (same ref) — no re-serialize, NO former_names
+    expect(files.get('NEW/whatsapp/Jorge Medina.yaml')).toBe(chat);
+    expect(files.get('NEW/whatsapp/+13478703471.yaml')).toBe(contact);
+    expect(files.get('NEW/whatsapp/Jorge Medina.yaml')).not.toContain('former_names');
+
+    // second run: every file already at its canonical name → no-op, byte-identical
+    const afterFirst = new Map(files);
+    const r2 = await renameStatsToNames(null, { paths, io });
+    expect(r2.renamed).toBe(0);
+    for (const [p, v] of files) expect(v).toBe(afterFirst.get(p));
+    expect([...files.keys()].sort()).toEqual([...afterFirst.keys()].sort());
+  });
+
+  it('leaves an id-based file with no body name alone (nothing to rename toward)', async () => {
+    const noName = y({ chat_id: '!fam', members: { '@a': { count: 1, last_seen: 'T' } } });
+    const { files, io } = memIo({ 'NEW/whatsapp/!fam.yaml': noName });
+    const r = await renameStatsToNames(null, { paths, io });
+    expect(r.renamed).toBe(0);
+    expect(files.get('NEW/whatsapp/!fam.yaml')).toBe(noName);   // untouched
+  });
+});
+
+describe('port move pass tolerates already-renamed (human-name) new files', () => {
+  it('merges a reappearing OLD file into the already-renamed human file, never creating a duplicate id-only file', async () => {
+    const state = { contacts: { whatsapp: { '!fam': { slug: 'fam' } } } };
+    const { files, io } = memIo({
+      // an OLD-location file reappears (e.g. a partial earlier run)
+      'OLD/whatsapp/fam/stats.yaml': y({ members: { '@a': { count: 2, last_seen: 'T2' } } }),
+      // the chat's data ALREADY lives under its human name at the new location (stamped chat_id)
+      'NEW/whatsapp/Jorge Medina.yaml': y({ chat_id: '!fam', name: 'Jorge Medina', members: { '@a': { count: 5, last_seen: 'T1' } } }),
+    });
+
+    const r = await portStatsLocation(state, { paths, io });
+    expect(r).toMatchObject({ merged: 1, moved: 0 });
+    // NO duplicate id-only file — the move resolved by body chat_id to the human file
+    expect(files.has('NEW/whatsapp/!fam.yaml')).toBe(false);
+    // merged into the human-named file (MAX count, LATEST last_seen), old file removed
+    const chat = load(files, 'NEW/whatsapp/Jorge Medina.yaml');
+    expect(chat.chat_id).toBe('!fam');
+    expect(chat.members['@a']).toEqual({ count: 5, last_seen: 'T2' });
+    expect(files.has('OLD/whatsapp/fam/stats.yaml')).toBe(false);
   });
 });

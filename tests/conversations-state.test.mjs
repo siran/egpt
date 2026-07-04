@@ -24,6 +24,9 @@ import {
   contactStatsPath,
   sanitizeStatKey,
   unsanitizeStatKey,
+  sanitizeStatName,
+  mergeNameHistory,
+  resolveStatFilename,
   appendThreadStat,
   mergeStats,
   mergeThreadIntoStats,
@@ -657,12 +660,15 @@ describe('stats module + msys path helpers', () => {
     expect(homeDirMsys().startsWith('/')).toBe(true);
     expect(toMsysPath(homeDirMsys())).toBe(homeDirMsys());   // already msys → idempotent
   });
-  it('statsPath is the per-chat file under state/stats/<surface>, keyed by chat id (OUTSIDE the conv dir)', () => {
-    // The chat file is named directly <chatId>.yaml (no per-chat subdir, no fixed stats.yaml).
-    expect(statsPath('whatsapp', '!abc123')).toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '!abc123.yaml'));
+  it('statsPath resolves to the <chatId>.yaml fallback when no name is known (still OUTSIDE the conv dir)', async () => {
+    // statsPath is an async RESOLVER now (filenames are human-readable). With no display name and
+    // an empty in-memory fs, it falls back to the id-based base <chatId>.yaml — deterministic and
+    // off the real fs.
+    const noFs = { readdir: async () => [], existsSync: () => false, readFile: async () => { throw new Error('ENOENT'); } };
+    expect(await statsPath('whatsapp', '!abc123', { io: noFs })).toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '!abc123.yaml'));
     expect(statsDir('whatsapp')).toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp'));
     // stats are spine-owned records → they must NOT sit inside the being's writable conv dir.
-    expect(statsPath('whatsapp', 'x-2606')).not.toContain(slugDir('whatsapp', 'x-2606'));
+    expect(await statsPath('whatsapp', 'x-2606', { io: noFs })).not.toContain(slugDir('whatsapp', 'x-2606'));
   });
 
   it('sanitizeStatKey escapes Windows-illegal chars collision-free, leaves clean ids intact', () => {
@@ -681,8 +687,9 @@ describe('stats module + msys path helpers', () => {
     }
   });
 
-  it('contactStatsPath is the per-contact file under state/stats/<surface>, keyed by sanitized sender id', () => {
-    expect(contactStatsPath('whatsapp', '@anrodriguez:beeper.com'))
+  it('contactStatsPath resolves to the sanitized-sender-id fallback when no name is known', async () => {
+    const noFs = { readdir: async () => [], existsSync: () => false, readFile: async () => { throw new Error('ENOENT'); } };
+    expect(await contactStatsPath('whatsapp', '@anrodriguez:beeper.com', { io: noFs }))
       .toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '@anrodriguez~3abeeper.com.yaml'));
   });
 
@@ -768,7 +775,7 @@ describe('stats module + msys path helpers', () => {
     const chat = YAML.parse(writes.get(join(dir, '!chat-2606.yaml')));
     expect(chat.members.An).toEqual({ count: 2, last_seen: 'NEW' });     // read-merge-write bumped the member counter
     expect(chat.chat_id).toBe('!chat-2606');                            // self-identifying chat id stamped in the body
-    const contact = YAML.parse(writes.get(join(dir, 'An.yaml')));        // per-contact file, keyed by sanitized senderId
+    const contact = YAML.parse(writes.get(join(dir, 'Andy.yaml')));      // per-contact file NAMED by the sender push name now
     expect(contact).toEqual({ sender_id: 'An', count: 1, last_seen: 'NEW', name: 'Andy' }); // flat rollup (fresh → 1), name from senderName, real sender id in body
     await rm(dir, { recursive: true, force: true });
 
@@ -809,6 +816,147 @@ describe('stats module + msys path helpers', () => {
     const parsed = YAML.parse(store.get(fp));
     expect(parsed.members.An).toEqual({ count: 1, last_seen: 'T' });    // member write survived
     expect(parsed.threads.map((t) => t.id)).toEqual(['TH1']);           // thread write survived — no clobber
+  });
+});
+
+describe('human-readable stats filenames (resolveStatFilename + name history)', () => {
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  const DIR = '/stats/whatsapp';
+  // A Map-backed fs with the FULL io surface resolveStatFilename needs (readFile/writeFile/
+  // mkdir/readdir/existsSync/rename). Keys normalized to forward slashes so node's join
+  // (backslashes on Windows) still hits them — same trick as port-stats-location.test.mjs.
+  function memIo(seed = {}) {
+    const files = new Map(Object.entries(seed).map(([k, v]) => [norm(k), v]));
+    const io = {
+      readFile: async (p) => { const k = norm(p); if (!files.has(k)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files.get(k); },
+      writeFile: async (p, d) => { files.set(norm(p), d); },
+      mkdir: async () => {},
+      rename: async (from, to) => { const f = norm(from), t = norm(to); if (files.has(f)) { files.set(t, files.get(f)); files.delete(f); } },
+      existsSync: (p) => files.has(norm(p)),
+      readdir: async (dir) => {
+        const prefix = norm(dir).replace(/\/$/, '') + '/';
+        const out = new Set();
+        for (const k of files.keys()) { if (k.startsWith(prefix)) { const rest = k.slice(prefix.length); if (!rest.includes('/')) out.add(rest); } }
+        return [...out];
+      },
+    };
+    return { files, io };
+  }
+  const chatBody = (id, extra = {}) => YAML.stringify({ chat_id: id, ...extra });
+  const has = (files, base) => files.has(`${DIR}/${base}`);
+  const get = (files, base) => YAML.parse(files.get(`${DIR}/${base}`));
+
+  // 1. sanitizer
+  it('sanitizeStatName strips Windows-illegal chars, caps ~40, empty/unknown → \'\' (id fallback)', () => {
+    expect(sanitizeStatName('a/b:c*d?')).toBe('a b c d');          // illegal → space, collapsed, trimmed
+    expect(sanitizeStatName('  Jorge Medina  ')).toBe('Jorge Medina');
+    expect(sanitizeStatName('x'.repeat(60)).length).toBe(40);     // long name capped
+    expect(sanitizeStatName('')).toBe('');                        // empty → caller falls back to the id base
+    expect(sanitizeStatName(null)).toBe('');
+    expect(sanitizeStatName(':::')).toBe('');                     // all-illegal → empty
+  });
+
+  // 2. known name creates <name>.yaml (no id suffix in the common case)
+  it('a known-name resolve for a brand-new entity targets <name>.yaml (no id suffix)', async () => {
+    const { io } = memIo();
+    const r = await resolveStatFilename({ dir: DIR, idField: 'chat_id', id: '!x', name: 'Jorge Medina', io, rename: true });
+    expect(norm(r.path)).toBe(`${DIR}/Jorge Medina.yaml`);
+    expect(r.isNew).toBe(true);
+    expect(r.renamedFrom).toBe(null);
+  });
+
+  // 3. name change → RENAME, data preserved, ONE former_names entry with the OLD name
+  it('a chat name change RENAMES the file, preserves data, appends ONE former_names entry', async () => {
+    const { files, io } = memIo();
+    await recordMemberStat('whatsapp', '!c', '@s', 'T1', { io, statsDirOf: () => DIR, chatName: 'Old' });
+    expect(has(files, 'Old.yaml')).toBe(true);
+    await recordMemberStat('whatsapp', '!c', '@s', 'T2', { io, statsDirOf: () => DIR, chatName: 'New' });
+    expect(has(files, 'Old.yaml')).toBe(false);                  // old basename gone from disk
+    expect(has(files, 'New.yaml')).toBe(true);
+    const doc = get(files, 'New.yaml');
+    expect(doc.chat_id).toBe('!c');
+    expect(doc.name).toBe('New');
+    expect(doc.former_names).toEqual([{ name: 'Old', until: 'T2' }]);  // exactly one, the outgoing name
+    expect(doc.members['@s']).toEqual({ count: 2, last_seen: 'T2' });  // prior data preserved + bumped
+  });
+
+  // 4. same-name rewrite → NO new former_names entry, no spurious rename
+  it('re-observing the SAME chat name adds no former_names entry and does not rename', async () => {
+    const { files, io } = memIo();
+    await recordMemberStat('whatsapp', '!c', '@s', 'T1', { io, statsDirOf: () => DIR, chatName: 'Same' });
+    await recordMemberStat('whatsapp', '!c', '@s', 'T2', { io, statsDirOf: () => DIR, chatName: 'Same' });
+    const doc = get(files, 'Same.yaml');
+    expect('former_names' in doc).toBe(false);                   // steady-state observation must not grow history
+    expect(doc.members['@s'].count).toBe(2);
+    expect([...files.keys()].filter((k) => k.endsWith('.yaml') && k.includes('/whatsapp/') && !k.includes('@s'))).toEqual([`${DIR}/Same.yaml`]);
+  });
+
+  // 5. A→B→A → two entries (A then B)
+  it('mergeNameHistory A→B→A yields exactly two former_names entries (A then B)', () => {
+    let s = { name: 'A' };
+    s = { ...s, ...mergeNameHistory(s, 'B', 't1') };
+    s = { ...s, ...mergeNameHistory(s, 'A', 't2') };
+    expect(s.name).toBe('A');
+    expect(s.former_names).toEqual([{ name: 'A', until: 't1' }, { name: 'B', until: 't2' }]);
+  });
+
+  // 6. cap ~20, oldest dropped on overflow
+  it('mergeNameHistory caps former_names at 20, dropping the oldest', () => {
+    let s = { name: 'n0' };
+    for (let i = 1; i <= 25; i++) s = { ...s, ...mergeNameHistory(s, `n${i}`, `t${i}`) };
+    expect(s.name).toBe('n25');
+    expect(s.former_names.length).toBe(20);
+    expect(s.former_names[0].name).toBe('n5');                   // n0..n4 dropped
+    expect(s.former_names[19].name).toBe('n24');
+  });
+
+  // 7. reader resolution finds the file by body id regardless of basename
+  it('resolve (read-only) finds the entity by body id even under a stale/manual basename', async () => {
+    const { io } = memIo({ [`${DIR}/STALE.yaml`]: chatBody('!c', { name: 'Whatever', members: {} }) });
+    const r = await resolveStatFilename({ dir: DIR, idField: 'chat_id', id: '!c', name: 'Whatever', io, rename: false });
+    expect(norm(r.path)).toBe(`${DIR}/STALE.yaml`);             // located by body id, NOT renamed (read-only)
+    expect(r.isNew).toBe(false);
+    expect(r.renamedFrom).toBe(null);
+  });
+
+  // 8. same-name COLLISION → second entity disambiguated, no cross-contamination
+  it('a same-name collision disambiguates the second entity with <name>-<id>.yaml, no data merged', async () => {
+    const { files, io } = memIo({ [`${DIR}/Dupe.yaml`]: chatBody('!first', { members: { a: { count: 1 } } }) });
+    const r = await resolveStatFilename({ dir: DIR, idField: 'chat_id', id: '!second', name: 'Dupe', io, rename: true });
+    expect(norm(r.path)).toBe(`${DIR}/Dupe-!second.yaml`);
+    expect(r.isNew).toBe(true);
+    await io.writeFile(r.path, chatBody('!second', { members: { b: { count: 9 } } }));
+    expect(get(files, 'Dupe.yaml')).toEqual({ chat_id: '!first', members: { a: { count: 1 } } });          // untouched
+    expect(get(files, 'Dupe-!second.yaml')).toEqual({ chat_id: '!second', members: { b: { count: 9 } } });  // own body
+  });
+
+  // 9. stale-name rescan → rename to canonical, preserving data
+  it('resolve renames a file living under a stale basename to its canonical name, preserving data', async () => {
+    const { files, io } = memIo({ [`${DIR}/!old.yaml`]: chatBody('!old', { name: 'Nice', members: { a: { count: 3 } } }) });
+    const r = await resolveStatFilename({ dir: DIR, idField: 'chat_id', id: '!old', name: 'Nice', io, rename: true });
+    expect(norm(r.path)).toBe(`${DIR}/Nice.yaml`);
+    expect(norm(r.renamedFrom)).toBe(`${DIR}/!old.yaml`);
+    expect(has(files, '!old.yaml')).toBe(false);                // moved
+    expect(get(files, 'Nice.yaml').members).toEqual({ a: { count: 3 } });   // data rode along
+  });
+
+  // 10. nameless-caller trap: never demote an already nicely-named file toward the id fallback
+  it('a NAMELESS resolve locates a nicely-named file WITHOUT demoting it to the id base', async () => {
+    const { files, io } = memIo({ [`${DIR}/Nice.yaml`]: chatBody('!x', { name: 'Nice', members: {} }) });
+    const r = await resolveStatFilename({ dir: DIR, idField: 'chat_id', id: '!x', name: undefined, io, rename: true });
+    expect(norm(r.path)).toBe(`${DIR}/Nice.yaml`);              // NOT demoted to !x.yaml
+    expect(r.renamedFrom).toBe(null);
+    expect(has(files, '!x.yaml')).toBe(false);
+  });
+
+  it('appendThreadStat (nameless) appends to an already-nicely-named chat file, never demoting it', async () => {
+    const { files, io } = memIo({ [`${DIR}/Nice.yaml`]: chatBody('!x', { name: 'Nice', threads: [{ id: 'T1' }] }) });
+    const wrote = await appendThreadStat('whatsapp', '!x', { id: 'T2', created: 'c2' }, { io, statsDirOf: () => DIR });
+    expect(wrote).toBe(true);
+    expect(has(files, '!x.yaml')).toBe(false);                  // NOT demoted to the id-only base
+    const nice = get(files, 'Nice.yaml');
+    expect(nice.threads.map((t) => t.id)).toEqual(['T1', 'T2']);  // appended in place under the human name
+    expect(nice.name).toBe('Nice');                            // body name untouched by the nameless caller
   });
 });
 

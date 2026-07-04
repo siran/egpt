@@ -29,13 +29,13 @@
 //
 // Usage:  node setup/port-stats-location.mjs [conversations.yaml path]   # defaults to CONV_YAML_PATH
 import { pathToFileURL } from 'node:url';
-import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, rm as fsRm, readdir as fsReaddir } from 'node:fs/promises';
+import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, rm as fsRm, readdir as fsReaddir, rename as fsRename } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import {
-  CONV_YAML_PATH, readState, slugDir, statsPath, contactStatsPath, sanitizeStatKey, mergeStats,
-  statsDir, unsanitizeStatKey, KNOWN_SURFACES,
+  CONV_YAML_PATH, readState, slugDir, sanitizeStatKey, mergeStats,
+  statsDir, unsanitizeStatKey, KNOWN_SURFACES, resolveStatFilename,
 } from '../conversations-state.mjs';
 import { sanitizeSlug } from '../src/sanitize.mjs';
 
@@ -45,19 +45,22 @@ import { sanitizeSlug } from '../src/sanitize.mjs';
 const CHAT_HEADER = '# per-chat stats (spine-written — do not edit)\n';
 const CONTACT_HEADER = '# per-contact cross-chat stats (spine-written — do not edit)\n';
 
-// Default resolvers: the REAL frozen (EGPT_HOME-keyed) module helpers — exactly what the live
-// code writes/reads. OLD stats file = slugDir(...)+/stats.yaml (the only location live code
-// ever used); NEW chat file = statsPath; NEW contact file = contactStatsPath.
+// Default resolvers: the REAL frozen (EGPT_HOME-keyed) module locations. OLD stats file =
+// slugDir(...)+/stats.yaml (the only location live code ever used). NEW chat/contact files are
+// the ID-BASED basenames — the move+backfill passes work in id-space (the live code no longer
+// does, but the rename pass runs LAST to give each file its human name; keeping move/backfill
+// id-based means those passes never have to resolve). The rename pass uses resolveStatFilename
+// directly, keyed off statsSurfaceDir.
 const defaultPaths = {
   oldStatsFile: (surface, slug) => join(slugDir(surface, slug), 'stats.yaml'),
-  chatFile: (surface, chatId) => statsPath(surface, chatId),
-  contactFile: (surface, senderId) => contactStatsPath(surface, senderId),
+  chatFile: (surface, chatId) => join(statsDir(surface), `${chatId}.yaml`),
+  contactFile: (surface, senderId) => join(statsDir(surface), `${sanitizeStatKey(senderId)}.yaml`),
   statsSurfaceDir: (surface) => statsDir(surface),
 };
 
 const defaultIo = {
   readFile: fsReadFile, writeFile: fsWriteFile, mkdir: fsMkdir, rm: fsRm, existsSync: fsExistsSync,
-  readdir: fsReaddir,
+  readdir: fsReaddir, rename: fsRename,
 };
 
 // Root-override resolvers (testability, item 6): point every path under an explicit profile
@@ -132,13 +135,18 @@ export async function portStatsLocation(state, { paths = defaultPaths, io = defa
   // ── Pass 1: MOVE each per-chat stats file old → new (merge conservatively on collision). ──
   for (const { surface, chatId, slug } of entries) {
     const oldFp = paths.oldStatsFile(surface, slug);
-    const newFp = paths.chatFile(surface, chatId);
-    const oldThere = existsSync(oldFp);
-    const newThere = existsSync(newFp);
-    if (!oldThere) { skipped++; continue; }   // already moved (new present) or never existed (both absent)
+    if (!existsSync(oldFp)) { skipped++; continue; }   // already moved (new present) or never existed (both absent)
     const oldContent = await parseYaml(oldFp);
+    // Where does this chat's data currently live at the new location? A PRIOR run may have
+    // renamed the new file to its human name (rename pass), so resolve by body chat_id (read-
+    // only) instead of assuming the id-only basename — otherwise a reappearing old file would
+    // be moved into a NEW duplicate id-only file alongside the already-correctly-named one.
+    // Falls back to the id-only basename when nothing on disk holds this chat_id yet (first run,
+    // or an unstamped id-only file — caught by existsSync below and merged, not duplicated).
+    const dir = paths.statsSurfaceDir(surface);
+    const { path: newFp } = await resolveStatFilename({ dir, idField: 'chat_id', id: chatId, name: undefined, io, rename: false });
     let finalContent;
-    if (newThere) { finalContent = mergeOldIntoNew(await parseYaml(newFp), oldContent); merged++; }
+    if (existsSync(newFp)) { finalContent = mergeOldIntoNew(await parseYaml(newFp), oldContent); merged++; }
     else { finalContent = oldContent; moved++; }
     await mkdir(dirname(newFp), { recursive: true });
     await writeFile(newFp, CHAT_HEADER + YAML.stringify(finalContent), 'utf8');
@@ -156,9 +164,14 @@ export async function portStatsLocation(state, { paths = defaultPaths, io = defa
     bySurface.get(surface).add(chatId);
   }
   for (const [surface, chatIds] of bySurface) {
+    const dir = paths.statsSurfaceDir(surface);
     const rollup = {};   // senderId -> { count, last_seen }
     for (const chatId of chatIds) {
-      const members = (await parseYaml(paths.chatFile(surface, chatId)))?.members;
+      // Read via resolve (by body chat_id) so a chat file already renamed to its human name (a
+      // prior run's rename pass) is still found — reading the id-only path would miss it and
+      // drop that chat's members from the rollup. Falls back to the id-only path when unstamped.
+      const { path: chatFp } = await resolveStatFilename({ dir, idField: 'chat_id', id: chatId, name: undefined, io, rename: false });
+      const members = (await parseYaml(chatFp))?.members;
       if (!members || typeof members !== 'object') continue;
       for (const [senderId, v] of Object.entries(members)) {
         const acc = rollup[senderId] ?? { count: 0, last_seen: null };
@@ -206,20 +219,57 @@ export async function backfillStatsIds(state, { paths = defaultPaths, io = defau
       const fp = join(dir, name);
       let content;
       try { content = YAML.parse(await readFile(fp, 'utf8')) ?? {}; } catch { continue; }
+      // Already self-identifying (chat OR contact) → leave byte-for-byte. Checked BEFORE the
+      // filename-based classification because a later run sees files under their HUMAN names
+      // (rename pass) whose base no longer matches a registry key — the id in the BODY is the
+      // anchor, so a stamped chat file must not be re-misclassified as a contact and re-stamped.
+      if (content.chat_id || content.sender_id) { skipped++; continue; }
+      // Unstamped → still id-based (rename runs AFTER backfill), so the filename classifies it:
+      // a registry chat key ⇒ chat file (chat_id = the key); else ⇒ contact file (sender_id =
+      // the real unsanitized id recovered from the sanitized base).
       if (chatIds.has(base)) {
-        if (content.chat_id) { skipped++; continue; }
-        const withId = { chat_id: base, ...content };
-        await writeFile(fp, CHAT_HEADER + YAML.stringify(withId), 'utf8');
+        await writeFile(fp, CHAT_HEADER + YAML.stringify({ chat_id: base, ...content }), 'utf8');
         chatsStamped++;
       } else {
-        if (content.sender_id) { skipped++; continue; }
-        const withId = { sender_id: unsanitizeStatKey(base), ...content };
-        await writeFile(fp, CONTACT_HEADER + YAML.stringify(withId), 'utf8');
+        await writeFile(fp, CONTACT_HEADER + YAML.stringify({ sender_id: unsanitizeStatKey(base), ...content }), 'utf8');
         contactsStamped++;
       }
     }
   }
   return { chatsStamped, contactsStamped, skipped };
+}
+
+// ── RENAME: give each id-based/garbled stats filename its natural, HUMAN-READABLE name from the
+// body's `name:` field (operator 2026-07-04: "filenames must become human-readable"). A PURE
+// filesystem rename — the body bytes are otherwise UNTOUCHED and NO former_names entry is ever
+// added (the name was correct all along; only the FILENAME was garbled). Reuses resolveStatFilename
+// so the offline port and the live writers share ONE resolve/rename algorithm (no drift). Runs
+// LAST in main() — after backfill has stamped chat_id/sender_id, which is what resolve keys off.
+// Idempotent: a file already at its canonical name fast-paths to a no-op (renamedFrom = null).
+// `state` is unused (the surface dirs are the units) but kept for main()'s uniform (state, opts)
+// call shape.
+export async function renameStatsToNames(_state, { paths = defaultPaths, io = defaultIo } = {}) {
+  const readFile = io.readFile ?? defaultIo.readFile;
+  const readdirFn = io.readdir ?? defaultIo.readdir;
+  const existsSync = io.existsSync ?? defaultIo.existsSync;
+  let renamed = 0, skipped = 0;
+  for (const surface of KNOWN_SURFACES) {
+    const dir = paths.statsSurfaceDir(surface);
+    if (!existsSync(dir)) continue;
+    let names;
+    try { names = await readdirFn(dir); } catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.yaml')) continue;
+      let body;
+      try { body = YAML.parse(await readFile(join(dir, name), 'utf8')) ?? {}; } catch { continue; }
+      const idField = body.chat_id ? 'chat_id' : (body.sender_id ? 'sender_id' : null);
+      const displayName = body.name;
+      if (!idField || !displayName) { skipped++; continue; }   // unstamped, or no natural name → leave id-based
+      const { renamedFrom } = await resolveStatFilename({ dir, idField, id: body[idField], name: displayName, io, rename: true });
+      if (renamedFrom) renamed++; else skipped++;              // already at its canonical name → no-op
+    }
+  }
+  return { renamed, skipped };
 }
 
 async function main({ path, root } = {}) {
@@ -236,7 +286,10 @@ async function main({ path, root } = {}) {
   console.log(`  chat ids backfilled:    ${backfill.chatsStamped}`);
   console.log(`  sender ids backfilled:  ${backfill.contactsStamped}`);
   console.log(`  already had id:         ${backfill.skipped}`);
-  return { ...result, backfill };
+  const renamePass = await renameStatsToNames(state, paths ? { paths } : {});
+  console.log(`  files renamed to human names: ${renamePass.renamed}`);
+  console.log(`  files left id-based:          ${renamePass.skipped}`);
+  return { ...result, backfill, rename: renamePass };
 }
 
 // Run only when invoked directly (so the exports import cleanly in tests). A positional arg is

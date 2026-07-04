@@ -280,7 +280,12 @@ describe('/status <target>', () => {
 
   it('renders the richer members line from stats.yaml counters, ids resolved through the aliases map', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
-    const STATS_YAML = `members:
+    // stats files are HUMAN-NAMED now (<display name>.yaml, not the chat id), with the chat_id
+    // as the in-body identity anchor. /status resolves the file by the display name ('HFM') —
+    // existsSync makes the resolver's fast path find HFM.yaml without scanning the dir.
+    const STATS_YAML = `chat_id: "!hfm:beeper.local"
+name: HFM
+members:
   "@whatsapp_111:beeper.local":
     count: 12
     last_seen: "2026-07-03T14:22:00.000Z"
@@ -291,9 +296,10 @@ describe('/status <target>', () => {
     const { cmds, sent } = harness({
       loadState: async () => first.state,
       getConfig: () => ({ whatsapp: { chat_id: '!self' }, aliases: { '@whatsapp_111:beeper.local': 'An' } }),
-      // stats now live OUTSIDE the conv dir at state/stats/<surface>/<chatId>.yaml — the
-      // per-chat file is named by the chat id (r.jid), so key the fixture by that filename.
-      io: { readFile: readFileBySuffix({ '!hfm:beeper.local.yaml': STATS_YAML, 'transcript.md': 'An@[HFM].wa (10:00): hola\n', 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+      io: {
+        readFile: readFileBySuffix({ 'HFM.yaml': STATS_YAML, 'transcript.md': 'An@[HFM].wa (10:00): hola\n', 'heartbeats.readonly.yaml': NO_HEARTBEATS }),
+        existsSync: (p) => String(p).endsWith('HFM.yaml'),
+      },
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
@@ -306,7 +312,13 @@ describe('/status <target>', () => {
     const transcript = ['An@[HFM].wa (10:00): hola', '', '[@e (10:01)]: hola An', ''].join('\n');
     const { cmds, sent } = harness({
       loadState: async () => first.state,
-      io: { readFile: readFileBySuffix({ '!hfm:beeper.local.yaml': new Error('ENOENT'), 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+      // no stats file on disk (existsSync false, empty dir) → resolver returns the fallback path,
+      // whose read throws → /status degrades to the transcript-derived members line.
+      io: {
+        readFile: readFileBySuffix({ 'HFM.yaml': new Error('ENOENT'), 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }),
+        existsSync: () => false,
+        readdir: async () => [],
+      },
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });

@@ -389,7 +389,8 @@ export function createCommands({
     // by the chat id r.jid) so this call site can't drift from where the spine writes it.
     if (convDir) {
       try {
-        const m = YAML.parse(await readFile(statsPath(surface, r.jid), 'utf8'))?.members;
+        const statsFp = await statsPath(surface, r.jid, { name: displayName, io, rename: false });
+        const m = YAML.parse(await readFile(statsFp, 'utf8'))?.members;
         if (m && typeof m === 'object' && Object.keys(m).length) {
           const aliases = cfg().aliases ?? {};
           members = Object.entries(m)

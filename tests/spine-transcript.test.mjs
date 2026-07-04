@@ -9,6 +9,21 @@ import { createTranscript } from '../src/spine/transcript.mjs';
 // a beat to land before asserting on the written stats.yaml.
 const settle = () => new Promise((r) => setTimeout(r, 25));
 
+// resolveStatFilename (inside recordMemberStat) scans the surface dir by body id to find a
+// possibly-renamed stats file — so the collector io must virtualize readdir over the same
+// Map its readFile/writeFile use (else it would fall back to the REAL fs). Lists the basenames
+// of the map keys living directly under `dir` (paths normalized so Windows backslashes match).
+const readdirOver = (files) => async (dir) => {
+  const norm = (p) => String(p).replace(/\\/g, '/');
+  const prefix = norm(dir).replace(/\/$/, '') + '/';
+  const out = new Set();
+  for (const k of files.keys()) {
+    const nk = norm(k);
+    if (nk.startsWith(prefix)) { const rest = nk.slice(prefix.length); if (!rest.includes('/')) out.add(rest); }
+  }
+  return [...out];
+};
+
 // A fake contacts resolver: chatId → a fixed slug (no rename self-heal needed here).
 const fakeContacts = { resolve: async () => 'fam-1234567890' };
 
@@ -27,16 +42,19 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
       existsSync: (p) => files.has(p),
       readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
       writeFile: async (p, d) => { files.set(p, d); },
+      readdir: readdirOver(files),
     };
     const t = createTranscript({ contacts: fakeContacts, io });
     expect(await t.log(ev)).toBe(true);
     await settle();
-    // per-CHAT file: state/stats/<surface>/<chatId>.yaml — the members: map counter
-    const chat = [...files.entries()].find(([p]) => p.endsWith(`${ev.chatId}.yaml`));
+    // per-CHAT file: named by the chat DISPLAY name now (ev.chatName='fam' → fam.yaml), not the
+    // opaque chatId — the members: map counter + the chat name land in it.
+    const chat = [...files.entries()].find(([p]) => p.endsWith('fam.yaml'));
     expect(chat).toBeTruthy();
     expect(chat[1]).toContain('@whatsapp_555:beeper.local');   // the senderId keyed the counter
     expect(chat[1]).toContain('count: 1');
     expect(chat[1]).toContain('2026-07-03T14:22');             // last_seen = isoFromMs(ev.ts)
+    expect(chat[1]).toContain('name: fam');                    // chat display name written onto the per-chat file
     // per-CONTACT file: keyed by the SANITIZED senderId (':' -> ~3a), flat rollup, NO name (ev has none)
     const contact = [...files.entries()].find(([p]) => p.endsWith('@whatsapp_555~3abeeper.local.yaml'));
     expect(contact).toBeTruthy();
@@ -53,12 +71,16 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
       existsSync: (p) => files.has(p),
       readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
       writeFile: async (p, d) => { files.set(p, d); },
+      readdir: readdirOver(files),
     };
     const t = createTranscript({ contacts: fakeContacts, io });
     expect(await t.log({ ...ev, senderName: 'Andrés' })).toBe(true);
     await settle();
-    const contact = [...files.entries()].find(([p]) => p.endsWith('@whatsapp_555~3abeeper.local.yaml'));
+    // present senderName → the contact file is NAMED by it (Andrés.yaml), and name is on the body.
+    const contact = [...files.entries()].find(([p]) => p.endsWith('Andrés.yaml'));
+    expect(contact).toBeTruthy();
     expect(contact[1]).toContain('name: Andrés');              // present senderName → refreshed onto the contact rollup
+    expect(contact[1]).toContain('@whatsapp_555:beeper.local');  // body sender_id anchor preserved
   });
 
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
@@ -70,6 +92,7 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
       existsSync: (p) => files.has(p),
       readFile: async () => { throw new Error('read blew up'); },
       writeFile: async () => { throw new Error('write blew up'); },
+      readdir: readdirOver(files),
     };
     const t = createTranscript({ contacts: fakeContacts, io, onLog: (m) => logs.push(m) });
     await expect(t.log(ev)).resolves.toBe(true);   // collector failure is swallowed, log() still succeeds
