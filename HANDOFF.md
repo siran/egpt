@@ -51,7 +51,27 @@ provenance tail, forward-once per mid).
   de-fluffed; TESTING lean; setup/ culled 20→6 scripts.
 
 
-## In flight RIGHT NOW
+## In flight RIGHT NOW (2026-07-04 afternoon adds)
+
+- **TURN ORDERING FIXED + deployed (d036143, pid 9640)**: two same-conv
+  mentions used to fuse into one reply (warm injectWhileBusy weave) + strand a
+  '⏳ Thinking…' (no-nonce newest-text placeholder collision). Now: per-conv
+  FIFO turn queue in spine.mjs (makeSerialByKey, keyed 1:1 with the warm key),
+  placeholder ON ARRIVAL ('⏳ Queued (N ahead)…' → activates), each turn edits
+  only its own out-handle, replies in arrival order — and different convs run
+  FULLY CONCURRENTLY (the old pump globally serialized everything). Mention
+  payload verified already single-line (ev.line). Registry lost-update race
+  that concurrency exposed: FIXED same deploy (mutateState wraps whole
+  load→mutate→write per writeState ref; /e wizard's operator-driven writes
+  left as-is, out of window). Residual, operator's call: 3+ identical
+  coexisting placeholders could still collide — a nonce would be airtight
+  (old nonce removed by design d7614b8). LIVE ACCEPTANCE OWED: operator fires
+  two @e mentions seconds apart in HFM → two trains, two ordered replies.
+- **mode: auto design DECIDED** (ROADMAP §3 updated): egpt plays the
+  OPERATOR'S role (helpful, follow links, do as told), consults a configurable
+  EGPT-AUTO advice channel when in doubt (kickoff teaches WHEN); independent
+  threads; advice-channel emit needs a sanctioned fail-closed-gate path (same
+  trust shape as relay_channel). BUILD NOT YET DISPATCHED — next up.
 
 Nothing running, nothing owed. Late-night additions (2026-07-04, all
 agent-built, deployed live at 63d4073 / pid 23728):
