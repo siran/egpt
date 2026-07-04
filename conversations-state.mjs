@@ -176,14 +176,19 @@ export function unsanitizeStatKey(s) {
 
 // The stats FILENAME base for a KNOWN display name (operator 2026-07-04: filenames must be
 // human-readable). Reuses sanitizeSlug (Windows-illegal→space, collapse whitespace, trim
-// leading/trailing dot+space, reserved-device guard CON/PRN/…) but caps at ~40 — a flat,
-// human-scanned stats dir wants shorter names than a slug's 80. Re-runs sanitizeSlug after the
-// 40-slice so a slice landing mid-dot/space/reserved-name is re-trimmed (the same trick
-// sanitizeSlug uses at its own 80-cap). Empty (name sanitizes to nothing) → '' so the caller
-// falls back to the id-based base.
+// leading/trailing dot+space, reserved-device guard CON/PRN/…) with a ~120 cap — the first
+// 40-cap cut real group names mid-word ('…esclavos del p.yaml', operator: "is this really the
+// best we can do?"), and the Windows path budget is fine at 120. When a name still exceeds the
+// cap, cut at a WORD BOUNDARY (the last space at/before the cap; a single spaceless token
+// longer than the cap falls back to a hard cut), then re-run sanitizeSlug so a cut landing on
+// a dot/space/reserved-name is re-trimmed (the same trick sanitizeSlug uses internally). Empty
+// (name sanitizes to nothing) → '' so the caller falls back to the id-based base.
+const STAT_NAME_CAP = 120;
 export function sanitizeStatName(name) {
-  const s = sanitizeSlug(name);
-  return s.length <= 40 ? s : sanitizeSlug(s.slice(0, 40));
+  const s = sanitizeSlug(name, Infinity);   // char rules only — the cap is applied below
+  if (s.length <= STAT_NAME_CAP) return s;
+  const cut = s.lastIndexOf(' ', STAT_NAME_CAP);
+  return sanitizeSlug(cut > 0 ? s.slice(0, cut) : s.slice(0, STAT_NAME_CAP), Infinity);
 }
 
 // Shared name + name-change-history helper (operator 2026-07-04: NAME-FOLLOWS-RENAME). Given a
@@ -395,15 +400,24 @@ export async function appendThreadStat(surface, chatId, thread, { io = {}, stats
   });
 }
 
-// Merge one received message's sender into stats.members[senderId] = { count, last_seen }
-// (count++, last_seen = isoTs) — the per-member counter contracts §3.1 mandates. Pure; a
-// no-op (returns stats unchanged) when senderId is falsy.
-export function mergeMemberIntoStats(stats, senderId, isoTs) {
+// Merge one received message's sender into stats.members[senderId] = { name?, count,
+// last_seen } (count++, last_seen = isoTs) — the per-member counter contracts §3.1 mandates.
+// `name` (operator 2026-07-04: member entries were raw ids, unreadable) is a DISPLAY field
+// only — the id stays the key: set/refreshed when the event carries senderName, the existing
+// name kept when it doesn't, and never invented (a member who never spoke with a name has no
+// name key at all). No per-member former_names — kept simple per the operator. Pure; a no-op
+// (returns stats unchanged) when senderId is falsy.
+export function mergeMemberIntoStats(stats, senderId, isoTs, senderName) {
   if (!senderId) return stats;
   const out = { ...(stats && typeof stats === 'object' ? stats : {}) };
   const members = { ...(out.members && typeof out.members === 'object' ? out.members : {}) };
   const prev = members[senderId] && typeof members[senderId] === 'object' ? members[senderId] : {};
-  members[senderId] = { count: (Number(prev.count) || 0) + 1, last_seen: isoTs };
+  const name = senderName || prev.name;
+  members[senderId] = {
+    ...(name ? { name } : {}),   // name first — the human label leads the entry
+    count: (Number(prev.count) || 0) + 1,
+    last_seen: isoTs,
+  };
   out.members = members;
   return out;
 }
@@ -453,7 +467,7 @@ export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = 
     const { path: fp } = await resolveStatFilename({ dir, idField: 'chat_id', id: chatId, name: chatName, io, rename: true });
     let existing = {};
     try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
-    const stats = mergeMemberIntoStats(existing, senderId, isoTs);
+    const stats = mergeMemberIntoStats(existing, senderId, isoTs, senderName);   // member entry carries the sender's display name
     Object.assign(stats, mergeNameHistory(existing, chatName, isoTs));   // chat name + former_names
     const withId = { chat_id: chatId, ...stats };
     try {

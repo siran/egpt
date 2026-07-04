@@ -736,7 +736,7 @@ describe('stats module + msys path helpers', () => {
 
   it('mergeMemberIntoStats increments count + bumps last_seen, no-ops on a falsy senderId', () => {
     const a = mergeMemberIntoStats({}, 'An', 'T1');
-    expect(a.members).toEqual({ An: { count: 1, last_seen: 'T1' } });
+    expect(a.members).toEqual({ An: { count: 1, last_seen: 'T1' } });   // nameless write → NO name key
     const b = mergeMemberIntoStats(a, 'An', 'T2');
     expect(b.members.An).toEqual({ count: 2, last_seen: 'T2' });     // count++, last_seen bumped
     const c = mergeMemberIntoStats(b, 'Ron', 'T3');
@@ -745,6 +745,17 @@ describe('stats module + msys path helpers', () => {
     const same = { members: { An: { count: 5, last_seen: 'x' } } };
     expect(mergeMemberIntoStats(same, '', 'T4')).toBe(same);         // falsy senderId → unchanged (same ref)
     expect(mergeMemberIntoStats(same, null, 'T4')).toBe(same);
+  });
+
+  it('mergeMemberIntoStats: senderName sets/refreshes the member name (first in the entry), absent name keeps the prior one', () => {
+    const a = mergeMemberIntoStats({}, '@x:beeper.com', 'T1', 'An');
+    expect(a.members['@x:beeper.com']).toEqual({ name: 'An', count: 1, last_seen: 'T1' });
+    expect(Object.keys(a.members['@x:beeper.com'])[0]).toBe('name');   // display field leads the entry
+    const b = mergeMemberIntoStats(a, '@x:beeper.com', 'T2');          // nameless re-observation
+    expect(b.members['@x:beeper.com']).toEqual({ name: 'An', count: 2, last_seen: 'T2' });   // prior name kept
+    const c = mergeMemberIntoStats(b, '@x:beeper.com', 'T3', 'Andrés');
+    expect(c.members['@x:beeper.com'].name).toBe('Andrés');            // present name → refreshed (no former_names per member)
+    expect('former_names' in c.members['@x:beeper.com']).toBe(false);
   });
 
   it('mergeContactIntoStats bumps a flat count/last_seen, sets name only when present', () => {
@@ -773,7 +784,7 @@ describe('stats module + msys path helpers', () => {
     const wrote = await recordMemberStat('whatsapp', '!chat-2606', 'An', 'NEW', { io, statsDirOf: () => dir, senderName: 'Andy' });
     expect(wrote).toBe(true);                                            // return contract = the CHAT file write
     const chat = YAML.parse(writes.get(join(dir, '!chat-2606.yaml')));
-    expect(chat.members.An).toEqual({ count: 2, last_seen: 'NEW' });     // read-merge-write bumped the member counter
+    expect(chat.members.An).toEqual({ name: 'Andy', count: 2, last_seen: 'NEW' });   // counter bumped + senderName onto the member entry
     expect(chat.chat_id).toBe('!chat-2606');                            // self-identifying chat id stamped in the body
     const contact = YAML.parse(writes.get(join(dir, 'Andy.yaml')));      // per-contact file NAMED by the sender push name now
     expect(contact).toEqual({ sender_id: 'An', count: 1, last_seen: 'NEW', name: 'Andy' }); // flat rollup (fresh → 1), name from senderName, real sender id in body
@@ -847,10 +858,20 @@ describe('human-readable stats filenames (resolveStatFilename + name history)', 
   const get = (files, base) => YAML.parse(files.get(`${DIR}/${base}`));
 
   // 1. sanitizer
-  it('sanitizeStatName strips Windows-illegal chars, caps ~40, empty/unknown → \'\' (id fallback)', () => {
+  it('sanitizeStatName strips Windows-illegal chars, caps ~120 at a WORD BOUNDARY, empty/unknown → \'\' (id fallback)', () => {
     expect(sanitizeStatName('a/b:c*d?')).toBe('a b c d');          // illegal → space, collapsed, trimmed
     expect(sanitizeStatName('  Jorge Medina  ')).toBe('Jorge Medina');
-    expect(sanitizeStatName('x'.repeat(60)).length).toBe(40);     // long name capped
+    // real group names stay WHOLE now (the old 40 cap cut this one mid-word: '…esclavos del p')
+    expect(sanitizeStatName('SPOILER ALERT Todos somos esclavos del placer'))
+      .toBe('SPOILER ALERT Todos somos esclavos del placer');
+    expect(sanitizeStatName('x'.repeat(60))).toBe('x'.repeat(60));  // fits the 120 cap → untouched
+    // >120 with spaces → cut at the last word boundary at/before the cap, never mid-word
+    const words = Array(30).fill('lorem ipsum').join(' ');          // 329 chars of 5-char words
+    const capped = sanitizeStatName(words);
+    expect(capped.length).toBeLessThanOrEqual(120);
+    expect(words.startsWith(capped + ' ')).toBe(true);              // ends exactly at a word boundary
+    // a single spaceless token longer than the cap falls back to a hard cut at 120
+    expect(sanitizeStatName('y'.repeat(150))).toBe('y'.repeat(120));
     expect(sanitizeStatName('')).toBe('');                        // empty → caller falls back to the id base
     expect(sanitizeStatName(null)).toBe('');
     expect(sanitizeStatName(':::')).toBe('');                     // all-illegal → empty

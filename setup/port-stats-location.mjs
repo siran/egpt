@@ -81,6 +81,10 @@ export function pathsForRoot(root) {
 // OLD/NEW SAME-chat-file merge (the same chat existed in both old and new locations — max
 // avoids double-counting a sender that appears in both), NOT the cross-chat rollup (which SUMS
 // disjoint per-chat tallies — see deriveContactRollups). ISO timestamps compare lexically.
+// Member entries may carry a `name` display field (operator 2026-07-04): the merged entry keeps
+// the name from the LATEST-last_seen source that has one (or the only one that has it) — the
+// most recent observation is the freshest push name. Nameless merged entries keep the exact
+// { count, last_seen } shape (no name key); named ones lead with name.
 function mergeMembersMaxLatest(a, b) {
   const out = {};
   for (const src of [a, b]) {
@@ -89,10 +93,15 @@ function mergeMembersMaxLatest(a, b) {
       const count = Number(v?.count) || 0;
       const ls = v?.last_seen ?? null;
       const cur = out[id] ?? { count: 0, last_seen: null };
+      const newer = ls && (!cur.last_seen || String(ls) > String(cur.last_seen));
+      if (v?.name && (newer || !cur.name)) cur.name = v.name;   // decided BEFORE last_seen updates
       cur.count = Math.max(cur.count, count);
-      if (ls && (!cur.last_seen || String(ls) > String(cur.last_seen))) cur.last_seen = ls;
+      if (newer) cur.last_seen = ls;
       out[id] = cur;
     }
+  }
+  for (const [id, cur] of Object.entries(out)) {   // name first — the human label leads the entry
+    out[id] = cur.name ? { name: cur.name, count: cur.count, last_seen: cur.last_seen } : { count: cur.count, last_seen: cur.last_seen };
   }
   return out;
 }
@@ -158,6 +167,16 @@ export async function portStatsLocation(state, { paths = defaultPaths, io = defa
   // sum IS the sender's true cross-chat total), last_seen = the LATEST across those chats. No
   // `name` — the old per-chat member blocks carry none to backfill; name only starts populating
   // going forward via live ev.senderName. Recomputing from current per-chat data = idempotent.
+  //
+  // LIVE DEFECT FIX (operator ran 3x with the node up, 2026-07-04): this pass used to blind-write
+  // {count,last_seen} at the ID-BASED contact path — when the LIVE node had already renamed that
+  // contact's file to its human name, the blind write RE-CREATED an id-based twin (two files, one
+  // entity, +1 per run), and even twin-free it CLOBBERED the backfilled sender_id + live-written
+  // name/former_names (name gone → the rename pass skipped the file forever). Now: resolve the
+  // contact's CURRENT file read-only by body sender_id (exactly like the chat move above) and
+  // MERGE into whatever is there — count MAX, last_seen LATEST, every other existing field
+  // (sender_id, name, former_names) preserved. Fresh senders (nothing on disk) keep the old
+  // behavior: a bare id-based {count,last_seen} file that backfill then stamps.
   const bySurface = new Map();   // surface -> Map<chatId, slug present?>  (we only need the chatIds)
   for (const { surface, chatId } of entries) {
     if (!bySurface.has(surface)) bySurface.set(surface, new Set());
@@ -182,9 +201,18 @@ export async function portStatsLocation(state, { paths = defaultPaths, io = defa
       }
     }
     for (const [senderId, acc] of Object.entries(rollup)) {
-      const fp = paths.contactFile(surface, senderId);
+      // Read-only resolve by body sender_id: a live-renamed human-named file is found and merged
+      // into IN PLACE; only a never-seen sender falls back to a fresh id-based file. (When a twin
+      // AND a named file both exist, the nameless fast path returns the id-based twin — fine: the
+      // dedup step in renameStatsToNames converges them to one file in the same main() run.)
+      const { path: fp } = await resolveStatFilename({ dir, idField: 'sender_id', id: senderId, name: undefined, io, rename: false });
+      const existing = existsSync(fp) ? await parseYaml(fp) : {};
+      const mergedContact = { ...existing };   // preserves sender_id / name / former_names + key order
+      mergedContact.count = Math.max(Number(existing.count) || 0, acc.count);
+      const latest = [existing.last_seen, acc.last_seen].filter(Boolean).map(String).sort().pop();
+      if (latest) mergedContact.last_seen = latest;
       await mkdir(dirname(fp), { recursive: true });
-      await writeFile(fp, CONTACT_HEADER + YAML.stringify(acc), 'utf8');
+      await writeFile(fp, CONTACT_HEADER + YAML.stringify(mergedContact), 'utf8');
       contactsWritten++;
     }
   }
@@ -239,37 +267,152 @@ export async function backfillStatsIds(state, { paths = defaultPaths, io = defau
   return { chatsStamped, contactsStamped, skipped };
 }
 
-// ── RENAME: give each id-based/garbled stats filename its natural, HUMAN-READABLE name from the
-// body's `name:` field (operator 2026-07-04: "filenames must become human-readable"). A PURE
-// filesystem rename — the body bytes are otherwise UNTOUCHED and NO former_names entry is ever
-// added (the name was correct all along; only the FILENAME was garbled). Reuses resolveStatFilename
-// so the offline port and the live writers share ONE resolve/rename algorithm (no drift). Runs
-// LAST in main() — after backfill has stamped chat_id/sender_id, which is what resolve keys off.
-// Idempotent: a file already at its canonical name fast-paths to a no-op (renamedFrom = null).
-// `state` is unused (the surface dirs are the units) but kept for main()'s uniform (state, opts)
-// call shape.
-export async function renameStatsToNames(_state, { paths = defaultPaths, io = defaultIo } = {}) {
+// ── SEED MEMBER NAMES: give nameless per-chat members: entries their human label from the
+// contact rollup files (operator 2026-07-04: the members block was raw ids). Match on the
+// contact body's sender_id (the identity anchor) == the member key; FILL-only — an entry that
+// already carries a name is NEVER overwritten (live writes own refresh; the port must not fight
+// them), and a member with no named contact file stays nameless until they next speak. Only the
+// members block is touched — no former_names, no other body change — and a chat is rewritten
+// only when at least one member actually gained a name, so a second run is byte-identical.
+// Runs AFTER backfill (the sender_id stamps are what the harvest keys off).
+export async function seedMemberNames(_state, { paths = defaultPaths, io = defaultIo } = {}) {
   const readFile = io.readFile ?? defaultIo.readFile;
+  const writeFile = io.writeFile ?? defaultIo.writeFile;
   const readdirFn = io.readdir ?? defaultIo.readdir;
   const existsSync = io.existsSync ?? defaultIo.existsSync;
-  let renamed = 0, skipped = 0;
+  let membersNamed = 0, chatsTouched = 0;
   for (const surface of KNOWN_SURFACES) {
     const dir = paths.statsSurfaceDir(surface);
     if (!existsSync(dir)) continue;
     let names;
     try { names = await readdirFn(dir); } catch { continue; }
-    for (const name of names) {
-      if (!name.endsWith('.yaml')) continue;
+    // Sweep 1: harvest senderId → name from every named contact body; collect the chat files.
+    const nameBySender = new Map();
+    const chats = [];
+    for (const n of [...names].sort()) {
+      if (!n.endsWith('.yaml')) continue;
+      const fp = join(dir, n);
       let body;
-      try { body = YAML.parse(await readFile(join(dir, name), 'utf8')) ?? {}; } catch { continue; }
-      const idField = body.chat_id ? 'chat_id' : (body.sender_id ? 'sender_id' : null);
-      const displayName = body.name;
-      if (!idField || !displayName) { skipped++; continue; }   // unstamped, or no natural name → leave id-based
-      const { renamedFrom } = await resolveStatFilename({ dir, idField, id: body[idField], name: displayName, io, rename: true });
-      if (renamedFrom) renamed++; else skipped++;              // already at its canonical name → no-op
+      try { body = YAML.parse(await readFile(fp, 'utf8')) ?? {}; } catch { continue; }
+      if (body.sender_id && body.name) nameBySender.set(body.sender_id, body.name);
+      else if (body.chat_id && body.members && typeof body.members === 'object') chats.push({ fp, body });
+    }
+    // Sweep 2: fill nameless members whose id has a known contact name (name leads the entry).
+    for (const { fp, body } of chats) {
+      let changed = false;
+      const members = { ...body.members };
+      for (const [id, v] of Object.entries(members)) {
+        if (!v || typeof v !== 'object' || v.name) continue;
+        const nm = nameBySender.get(id);
+        if (!nm) continue;
+        members[id] = { name: nm, ...v };
+        changed = true; membersNamed++;
+      }
+      if (changed) {
+        await writeFile(fp, CHAT_HEADER + YAML.stringify({ ...body, members }), 'utf8');
+        chatsTouched++;
+      }
     }
   }
-  return { renamed, skipped };
+  return { membersNamed, chatsTouched };
+}
+
+// Merge two SAME-body-id twin bodies into one (the dedup path in renameStatsToNames). `primary`
+// is the maintained/named body — its fields win; `secondary` only fills gaps and lifts counters:
+//   - chat twins: mergeOldIntoNew semantics (threads unioned by id, absent scalars filled,
+//     members MAX count / LATEST last_seen);
+//   - contact twins: count = MAX (both track the SAME totals — a twin is a stale copy, so sum
+//     would double-count), last_seen = LATEST, name filled from secondary only when primary has
+//     none;
+//   - both kinds: former_names UNIONED, dedup'd by name+until, capped at 20 (newest kept).
+function mergeTwinBodies(primary, secondary, idField) {
+  let merged;
+  if (idField === 'chat_id') {
+    merged = mergeOldIntoNew(primary, secondary);
+  } else {
+    merged = { ...primary };
+    merged.count = Math.max(Number(primary.count) || 0, Number(secondary.count) || 0);
+    const latest = [primary.last_seen, secondary.last_seen].filter(Boolean).map(String).sort().pop();
+    if (latest) merged.last_seen = latest;
+    if (merged.name == null && secondary.name != null) merged.name = secondary.name;
+  }
+  const seen = new Set();
+  const hist = [];
+  for (const e of [...(Array.isArray(primary.former_names) ? primary.former_names : []),
+                   ...(Array.isArray(secondary.former_names) ? secondary.former_names : [])]) {
+    const k = `${e?.name} ${e?.until}`;
+    if (!seen.has(k)) { seen.add(k); hist.push(e); }
+  }
+  if (hist.length) merged.former_names = hist.slice(-20);
+  return merged;
+}
+
+// ── RENAME + DEDUP: give each id-based/garbled stats filename its natural, HUMAN-READABLE name
+// from the body's `name:` field (operator 2026-07-04: "filenames must become human-readable"),
+// and converge SAME-body-id twins to ONE file. The rename itself is a PURE filesystem rename —
+// NO former_names entry is ever added by this pass (the name was correct all along; only the
+// FILENAME was garbled). Reuses resolveStatFilename so the offline port and the live writers
+// share ONE resolve/rename algorithm (no drift). Runs LAST in main() — after backfill has
+// stamped chat_id/sender_id, which is what both dedup grouping and resolve key off.
+//
+// DEDUP (live defect 2026-07-04: canonical `+58414....yaml` AND its stale id-based twin both on
+// disk, nothing ever merged them — the nameless twin was skipped, the named file fast-pathed):
+// group the dir's files by (idField, body id); >1 in a group → merge via mergeTwinBodies into
+// ONE survivor (primary = the named body, ties broken by latest last_seen then basename) written
+// at the primary's path, DELETE the rest, then the survivor rides the normal rename-toward-name
+// step. Files with DIFFERENT body ids never merge (a true same-name collision keeps both, with
+// the `<name>-<id>.yaml` disambiguation — unchanged).
+//
+// Counters are TRUTHFUL (the old lump "skipped" reported a live twin as merely "left id-based"):
+// renamed / deduped (twins merged away) / alreadyCanonical / leftIdBased (no name to adopt).
+// Idempotent: run 2 finds one file per id, already canonically named → all no-ops. `state` is
+// unused (the surface dirs are the units) but kept for main()'s uniform (state, opts) call shape.
+export async function renameStatsToNames(_state, { paths = defaultPaths, io = defaultIo } = {}) {
+  const readFile = io.readFile ?? defaultIo.readFile;
+  const writeFile = io.writeFile ?? defaultIo.writeFile;
+  const rm = io.rm ?? defaultIo.rm;
+  const readdirFn = io.readdir ?? defaultIo.readdir;
+  const existsSync = io.existsSync ?? defaultIo.existsSync;
+  let renamed = 0, deduped = 0, alreadyCanonical = 0, leftIdBased = 0;
+  for (const surface of KNOWN_SURFACES) {
+    const dir = paths.statsSurfaceDir(surface);
+    if (!existsSync(dir)) continue;
+    let names;
+    try { names = await readdirFn(dir); } catch { continue; }
+    // Group every stamped file by (idField, body id) — the identity anchor, never the filename.
+    const groups = new Map();   // `${idField}\0${id}` -> [{ fp, body }]
+    for (const name of [...names].sort()) {   // sorted: deterministic primary pick + rename order
+      if (!name.endsWith('.yaml')) continue;
+      const fp = join(dir, name);
+      let body;
+      try { body = YAML.parse(await readFile(fp, 'utf8')) ?? {}; } catch { continue; }
+      const idField = body.chat_id ? 'chat_id' : (body.sender_id ? 'sender_id' : null);
+      if (!idField) { leftIdBased++; continue; }   // unstamped → nothing to key dedup/rename off
+      const key = `${idField} ${body[idField]}`;
+      if (!groups.has(key)) groups.set(key, { idField, entries: [] });
+      groups.get(key).entries.push({ fp, body });
+    }
+    for (const { idField, entries } of groups.values()) {
+      let { fp, body } = entries[0];
+      if (entries.length > 1) {
+        // Twins. Primary = the maintained body: named first, then latest last_seen, then the
+        // (already sorted) basename order. Merge the rest in, write the survivor, delete twins.
+        const ranked = [...entries].sort((a, b) =>
+          (!!b.body.name - !!a.body.name)
+          || String(b.body.last_seen ?? '').localeCompare(String(a.body.last_seen ?? '')));
+        body = ranked[0].body;
+        for (const twin of ranked.slice(1)) body = mergeTwinBodies(body, twin.body, idField);
+        fp = ranked[0].fp;
+        const header = idField === 'chat_id' ? CHAT_HEADER : CONTACT_HEADER;
+        await writeFile(fp, header + YAML.stringify(body), 'utf8');
+        for (const twin of ranked.slice(1)) { await rm(twin.fp, { force: true }); deduped++; }
+      }
+      if (!body.name) { leftIdBased++; continue; }   // no natural name → stays id-based
+      const { renamedFrom } = await resolveStatFilename({ dir, idField, id: body[idField], name: body.name, io, rename: true });
+      if (renamedFrom) renamed++; else alreadyCanonical++;
+    }
+  }
+  return { renamed, deduped, alreadyCanonical, leftIdBased };
 }
 
 async function main({ path, root } = {}) {
@@ -286,10 +429,14 @@ async function main({ path, root } = {}) {
   console.log(`  chat ids backfilled:    ${backfill.chatsStamped}`);
   console.log(`  sender ids backfilled:  ${backfill.contactsStamped}`);
   console.log(`  already had id:         ${backfill.skipped}`);
+  const seeded = await seedMemberNames(state, paths ? { paths } : {});
+  console.log(`  member names seeded:    ${seeded.membersNamed} (in ${seeded.chatsTouched} chats)`);
   const renamePass = await renameStatsToNames(state, paths ? { paths } : {});
   console.log(`  files renamed to human names: ${renamePass.renamed}`);
-  console.log(`  files left id-based:          ${renamePass.skipped}`);
-  return { ...result, backfill, rename: renamePass };
+  console.log(`  same-id twins merged away:    ${renamePass.deduped}`);
+  console.log(`  already at canonical name:    ${renamePass.alreadyCanonical}`);
+  console.log(`  left id-based (no name):      ${renamePass.leftIdBased}`);
+  return { ...result, backfill, seeded, rename: renamePass };
 }
 
 // Run only when invoked directly (so the exports import cleanly in tests). A positional arg is

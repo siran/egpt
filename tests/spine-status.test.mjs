@@ -278,20 +278,27 @@ describe('/status <target>', () => {
     expect(sent[0].text).toMatch(/heartbeats: 1/);
   });
 
-  it('renders the richer members line from stats.yaml counters, ids resolved through the aliases map', async () => {
+  it('renders the richer members line from stats.yaml counters — label preference: alias > member name > raw id', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     // stats files are HUMAN-NAMED now (<display name>.yaml, not the chat id), with the chat_id
     // as the in-body identity anchor. /status resolves the file by the display name ('HFM') —
     // existsSync makes the resolver's fast path find HFM.yaml without scanning the dir.
+    // 111 has BOTH an alias and a member name (alias wins); 222 has only a member name (name
+    // wins over the raw id); 333 has neither (raw id).
     const STATS_YAML = `chat_id: "!hfm:beeper.local"
 name: HFM
 members:
   "@whatsapp_111:beeper.local":
+    name: Andres
     count: 12
     last_seen: "2026-07-03T14:22:00.000Z"
   "@whatsapp_222:beeper.local":
+    name: Zoe
     count: 3
     last_seen: "2026-07-02T09:00:00.000Z"
+  "@whatsapp_333:beeper.local":
+    count: 1
+    last_seen: "2026-07-01T08:00:00.000Z"
 `;
     const { cmds, sent } = harness({
       loadState: async () => first.state,
@@ -303,8 +310,8 @@ members:
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
-    // aliased id → 'An', un-aliased id shown raw; each with count + last_seen; ONE line, stats wins over the transcript
-    expect(sent[0].text).toContain('members: An: 12 (last 2026-07-03T14:22:00.000Z), @whatsapp_222:beeper.local: 3 (last 2026-07-02T09:00:00.000Z)');
+    // alias beats the member name (An not Andres), member name beats the raw id (Zoe), raw id last resort
+    expect(sent[0].text).toContain('members: An: 12 (last 2026-07-03T14:22:00.000Z), Zoe: 3 (last 2026-07-02T09:00:00.000Z), @whatsapp_333:beeper.local: 1 (last 2026-07-01T08:00:00.000Z)');
   });
 
   it('falls back to the transcript-derived members line when stats.yaml is absent/unreadable', async () => {

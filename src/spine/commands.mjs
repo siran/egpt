@@ -393,8 +393,10 @@ export function createCommands({
         const m = YAML.parse(await readFile(statsFp, 'utf8'))?.members;
         if (m && typeof m === 'object' && Object.keys(m).length) {
           const aliases = cfg().aliases ?? {};
+          // Label preference: operator-chosen alias > the entry's own name (the sender's push
+          // name, written by the collector) > the raw id.
           members = Object.entries(m)
-            .map(([id, v]) => `${aliases[id] ?? id}: ${v?.count ?? 0} (last ${v?.last_seen ?? '?'})`)
+            .map(([id, v]) => `${aliases[id] ?? v?.name ?? id}: ${v?.count ?? 0} (last ${v?.last_seen ?? '?'})`)
             .join(', ');
         }
       } catch { /* no stats file / unreadable → keep the transcript derivation */ }

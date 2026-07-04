@@ -19,13 +19,16 @@
 //   trailing-space rule and the reserved device names (CON, PRN, …).
 // Illegal chars collapse to a single space so tokens don't fuse oddly. Idempotent
 // (re-sanitizing a clean slug is a no-op) so slugDir() can re-apply it freely.
+// `cap` (default 80, the historic slug cap) is overridable so other name consumers
+// (stats filenames want ~120 with their own word-boundary trim, operator 2026-07-04)
+// share this ONE implementation instead of reimplementing the char rules.
 const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
-export function sanitizeSlug(s) {
+export function sanitizeSlug(s, cap = 80) {
   let out = String(s ?? '')
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, ' ')   // Windows-illegal + control → space
     .replace(/\s+/g, ' ')                       // collapse whitespace runs
     .replace(/^[.\s]+|[.\s]+$/g, '')            // no leading/trailing dot or space
-    .slice(0, 80)
+    .slice(0, cap)
     .replace(/[.\s]+$/g, '');                   // re-trim if slice landed on a dot/space
   if (!out || out === '.' || out === '..') return '';
   if (WIN_RESERVED.test(out)) out += '_';       // CON → CON_ (reserved device name)
