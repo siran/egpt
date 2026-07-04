@@ -247,7 +247,9 @@ following is LANDED, test-locked, and (where marked) live-verified:
     be a fully DISTINCT SIGNED identity — the node just generates a second
     keypair ("it can generate two keys, no problem"): one machine, multiple
     cryptographic node-identities on the mesh; provenance then carries
-    whichever identity the alias signs as.
+    whichever identity the alias signs as. Identities can also live on
+    DIFFERENT SURFACES: one node on whatsapp, another on signal — two
+    full-name signed nodes on one machine (operator 2026-07-04).
 
 - **Chrome/CDP textecutable test** (operator-driven, everything ready): copy
   the profile's config/skeletons/{script.x.md, heartbeats block} into a chat folder,
