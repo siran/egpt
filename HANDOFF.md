@@ -51,16 +51,14 @@ provenance tail, forward-once per mid).
   de-fluffed; TESTING lean; setup/ culled 20→6 scripts.
 
 
-## In flight RIGHT NOW (one background agent)
+## In flight RIGHT NOW
 
-`a7ca42f2283eaf1e3` (sonnet): adds a **tools-editing step to the
-`/e` wizard** (pick default / read-only / keep / custom,
-`all` never selectable) + delivers `setup/port-explicit-tools.mjs`
-(one-shot: rewrites the **5 live frozen `readonly.allowed_tools: all` entries**
-→ the explicit list on disk; they do NOT self-heal — the freeze only runs for
-fresh conversations). NEXT SESSION: review its diff, `npx vitest run`, commit,
-then stop service → run the port → restart; `/status hfm` should then show
-the explicit list, not `all`.
+Nothing running. The `/e` wizard **tools step** + `setup/port-explicit-tools.mjs`
+LANDED (committed, suite 127/1409 green). **ONE OPS ACTION OWED**: the 5 live
+frozen `readonly.allowed_tools: all` entries do NOT self-heal (the freeze only
+runs for fresh conversations) — stop the service → `node setup/port-explicit-tools.mjs`
+→ restart; then `/status hfm` shows the explicit list, not `all`. (Or just re-run
+`/e <chat>` → tools → default for any chat you touch; the port does all 5 at once.)
 
 
 ## Where we want to go (ROADMAP §3, operator-decided, undispatched)
