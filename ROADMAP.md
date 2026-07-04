@@ -241,6 +241,13 @@ following is LANDED, test-locked, and (where marked) live-verified:
   at the local persona. Exercises multi-hop forward-once + living mirror + hop cap
   on ONE node, no DOLLY needed. Operator creates the chats; config gets the relay
   entries. (The DOLLY 2-node smoke stays as the later cross-machine step.)
+  - **Node aliases (operator 2026-07-04)**: a node can claim two or more names —
+    `node_name: <str>` + `aliases: [<list>]`. Routing (`@being.<node>` /
+    config.mesh.nodes) resolves any alias to the same node. An alias can even
+    be a fully DISTINCT SIGNED identity — the node just generates a second
+    keypair ("it can generate two keys, no problem"): one machine, multiple
+    cryptographic node-identities on the mesh; provenance then carries
+    whichever identity the alias signs as.
 
 - **Chrome/CDP textecutable test** (operator-driven, everything ready): copy
   the profile's config/skeletons/{script.x.md, heartbeats block} into a chat folder,
