@@ -214,6 +214,26 @@ following is LANDED, test-locked, and (where marked) live-verified:
   guard bounds runaway. NOT YET DISPATCHED — build after the turn-ordering
   fix lands (same spine files).
 
+- **Stats enrichment — collect ALL Beeper-managed info (operator 2026-07-04)**:
+  the stats module should capture everything the local Beeper API exposes —
+  per CHAT (chatInfo: participants, network, group/1:1 type, ...) and per
+  CONTACT (push name, numbers, alt ids, whatever the contacts surface returns)
+  — stored in the stats files under a `beeper:`-style block with fetched_at.
+  Doubles as DISCOVERY: "a good way to see what beeper can see." Refresh
+  lazily (file creation / name change / staleness), async off the hot path —
+  the collector gains bridge API access for this (today it is fs-only).
+  Queued behind the natural-filenames chunk (same files).
+
+- **Conversation-E API (limbs) — operator 2026-07-04, "long overdue"**: a more
+  complete action surface E can invoke from inside its own conversation,
+  "similar to react": send a reaction; REPLY to a specific msgid by its own
+  volition (quote-reply); upload/send media files; (candidates: edit/delete
+  its own prior message). Emit-syntax parsed+stripped by the comm-handler
+  before surfacing (the Phase-4 emitted-command machinery), fail-closed:
+  own-conversation ONLY, never cross-chat. Ground in what Beeper Desktop's
+  local API actually supports (the bridge already sends reactions — the 👂
+  ack path).
+
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
   and configure relay agents that CHAIN through them: `@don.kg → @moe.kg → @e.kg`
