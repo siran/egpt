@@ -65,8 +65,20 @@ provenance tail, forward-once per mid).
   load→mutate→write per writeState ref; /e wizard's operator-driven writes
   left as-is, out of window). Residual, operator's call: 3+ identical
   coexisting placeholders could still collide — a nonce would be airtight
-  (old nonce removed by design d7614b8). LIVE ACCEPTANCE OWED: operator fires
-  two @e mentions seconds apart in HFM → two trains, two ordered replies.
+  (old nonce removed by design d7614b8).
+- **TURN VISIBILITY + TIMEOUT + CYCLE ACCUMULATION (da330cb, pid 32640)** —
+  first acceptance run: queue/order/placeholders PASSED but turn 1 vanished
+  silently (two swallow paths: post-brain throw rejected into the FIFO
+  unlogged; empty text silently DELETED the placeholder). Now every turn exit
+  resolves its placeholder visibly ('❌ Sending failed.' throw/timeout, '⚠️ no
+  reply (turn failed/empty) ∎' empty/failure-shaped, isBrainFailureResult now
+  consulted), reply RECORDED BEFORE delivery, bridge-level per-turn timeout
+  10min (evicts hung warm session via new brainpool.evict, queue drains on),
+  and QUEUED turns prompt with the ACCUMULATED cycle timeline (in-memory
+  cycleBy buffer: chatter + E's own delivered replies + own mention line,
+  CAP 40; immediate turns stay single-line). LIVE ACCEPTANCE OWED (rerun):
+  3 @e mentions incl. a WebSearch-heavy one → whatever turn 1 does, it's
+  VISIBLE; queued replies should reference the accumulated timeline.
 - **mode: auto design DECIDED** (ROADMAP §3 updated): egpt plays the
   OPERATOR'S role (helpful, follow links, do as told), consults a configurable
   EGPT-AUTO advice channel when in doubt (kickoff teaches WHEN); independent
