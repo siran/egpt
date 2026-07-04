@@ -53,12 +53,35 @@ provenance tail, forward-once per mid).
 
 ## In flight RIGHT NOW
 
-Nothing running, nothing owed. The `/e` wizard **tools step** +
-`setup/port-explicit-tools.mjs` LANDED (suite 127/1409 green), and the port RAN
-(2026-07-03 evening): all 5 frozen `readonly.allowed_tools: all` entries
-rewritten to the explicit list in the live registry, verified 0 remaining before
-AND after the spine respawn (installed copy at 532cbca, tools-step live).
-`/status <chat>` now shows the explicit vertical list everywhere.
+Nothing running, nothing owed. Late-night additions (2026-07-04, all
+agent-built, deployed live at 63d4073 / pid 23728):
+
+- **Port RAN**: all 5 frozen `readonly.allowed_tools: all` entries → explicit
+  list in the live registry (0 remaining, verified pre+post respawn).
+- **Session rescue (ops)**: the 5 conversations instanced under the old
+  `~/.egpt2` profile had cwd-keyed claude sessions the renamed profile couldn't
+  --resume ("No conversation found with session ID", HFM wedged live). Session
+  jsonls COPIED to the new `~/.claude/projects` keys — context preserved.
+- **Dead-session backstop** (63d4073): that error now heals like context
+  overflow — isDeadSessionError (dispatch.mjs), evict + retry once fresh,
+  recordThread persists the new session. No conversation can wedge on a dead
+  threadId again.
+- **chat-id double-wrap fix**: fullChatId no longer re-wraps a chat homed on a
+  non-beeper.local server (`!x:beeper.com` was becoming `!!x:beeper.com:
+  beeper.local` → 404 on every API call for that chat). NOTE: one cosmetic scar
+  remains — a conv folder named `!TUZaHGpkFXgCCFXfRw beeper.com-2607040134`
+  registered during the bug window; slug-follows-name should heal it on that
+  chat's next event.
+- **STATS MODULE LANDED** (ROADMAP §3 item 1): every received message
+  fire-and-forgets members:{<sender>:{count,last_seen}} into the conv's
+  stats.yaml at the transcript.log chokepoint (per-path write serialization vs
+  the thread mirror); operator-editable top-level `aliases:` block in
+  config.yaml (display-time only); /status members renders alias+count+
+  last_seen from stats, transcript fallback. LID↔phone NOT built — Beeper's
+  local API exposes a single senderID, nothing to link (verified).
+- Suite: 128 files / 1423 tests green. TESTDRIVE.disposable.md (git-invisible
+  via .git/info/exclude) = operator's live smoke script for Rooms +
+  textecutables + path permissions + allowed_tools.
 
 
 ## Where we want to go (ROADMAP §3, operator-decided, undispatched)
