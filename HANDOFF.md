@@ -53,12 +53,12 @@ provenance tail, forward-once per mid).
 
 ## In flight RIGHT NOW
 
-Nothing running. The `/e` wizard **tools step** + `setup/port-explicit-tools.mjs`
-LANDED (committed, suite 127/1409 green). **ONE OPS ACTION OWED**: the 5 live
-frozen `readonly.allowed_tools: all` entries do NOT self-heal (the freeze only
-runs for fresh conversations) — stop the service → `node setup/port-explicit-tools.mjs`
-→ restart; then `/status hfm` shows the explicit list, not `all`. (Or just re-run
-`/e <chat>` → tools → default for any chat you touch; the port does all 5 at once.)
+Nothing running, nothing owed. The `/e` wizard **tools step** +
+`setup/port-explicit-tools.mjs` LANDED (suite 127/1409 green), and the port RAN
+(2026-07-03 evening): all 5 frozen `readonly.allowed_tools: all` entries
+rewritten to the explicit list in the live registry, verified 0 remaining before
+AND after the spine respawn (installed copy at 532cbca, tools-step live).
+`/status <chat>` now shows the explicit vertical list everywhere.
 
 
 ## Where we want to go (ROADMAP §3, operator-decided, undispatched)
