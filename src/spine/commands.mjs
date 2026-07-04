@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -381,19 +381,22 @@ export function createCommands({
       catch { members = 'unknown'; }
     }
 
-    // Prefer the stats.yaml per-message counters (count + last_seen) when present, each id
-    // resolved to a friendly label through the aliases map; degrade to the transcript-derived
-    // name list above when the file is missing/unreadable or carries no members (never throws).
+    // Prefer the per-chat stats file's per-message counters (count + last_seen) when present,
+    // each id resolved to a friendly label through the aliases map; degrade to the
+    // transcript-derived name list above when the file is missing/unreadable or carries no
+    // members (never throws). The stats file now lives OUTSIDE the conversation dir, under
+    // state/stats/<surface>/<chatId>.yaml — read it via the module's own path helper (keyed
+    // by the chat id r.jid) so this call site can't drift from where the spine writes it.
     if (convDir) {
       try {
-        const m = YAML.parse(await readFile(join(convDir, 'stats.yaml'), 'utf8'))?.members;
+        const m = YAML.parse(await readFile(statsPath(surface, r.jid), 'utf8'))?.members;
         if (m && typeof m === 'object' && Object.keys(m).length) {
           const aliases = cfg().aliases ?? {};
           members = Object.entries(m)
             .map(([id, v]) => `${aliases[id] ?? id}: ${v?.count ?? 0} (last ${v?.last_seen ?? '?'})`)
             .join(', ');
         }
-      } catch { /* no stats.yaml / unreadable → keep the transcript derivation */ }
+      } catch { /* no stats file / unreadable → keep the transcript derivation */ }
     }
 
     // Optional: this conversation's own heartbeat count (source/cwd pinned to convDir),

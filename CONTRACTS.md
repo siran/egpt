@@ -176,7 +176,7 @@ surface in [`config/config-schema.mjs`](config/config-schema.mjs).
 
    13.2 Layout: `config/{config.yaml, conversations.yaml, agents/,
         identities/<name>.md, logs/, skeletons/}`; `state/{ingest/, alive.txt,
-        spine.pid}`; `conversations/<surface>/<slug>/`; `rooms/<name>/`.
+        spine.pid, stats/}`; `conversations/<surface>/<slug>/`; `rooms/<name>/`.
 
    13.3 Identities are flat `config/identities/<name>.md`; the shared
         identity/pointers/rules ship as the room template

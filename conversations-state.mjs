@@ -125,14 +125,50 @@ export const DETERMINISTIC_EFFORT = 'high';
 // boundary — coerced to this list, never a bypass/full grant.
 export { DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from './src/claude-args.mjs';
 
-// The conversation's stats module file (operator 2026-07-02): lifecycle timestamps +
-// branchable thread history live HERE, sibling to transcript.md, so conversations.yaml
-// stays a slim, human-readable registry.
-export function statsPath(surface, slug) {
-  return join(slugDir(surface, slug), 'stats.yaml');
+// The per-surface stats ROOT (operator 2026-07-04). stats used to live INSIDE
+// conversations/<surface>/<slug>/ — the warm claude process's CONFINED cwd, which is the
+// being's OWN writable sandbox: its file tools can read, tamper with, or race the spine's
+// bookkeeping there. Stats are SPINE-owned records, so they must sit OUTSIDE the being's
+// writable space — under state/ (the same root as spine.pid / alive.txt / ingest/, built
+// the same way: join(EGPT_HOME, 'state', <name>)), a location no conversation's
+// --cwd/--add-dir grant ever reaches.
+export function statsDir(surface) {
+  return join(EGPT_HOME, 'state', 'stats', surface);
 }
 
-const STATS_HEADER = '# stats.yaml — the conversation\'s stats module (spine-written)\n';
+// The per-CHAT stats file: state/stats/<surface>/<chatId>.yaml — lifecycle timestamps +
+// branchable thread history + per-member counters. Keyed by chat id (the registry key),
+// which is already the filename-safe short Beeper room token (beeper.mjs normalizes every
+// inbound chatId through shortChatId — no colons/slashes), so NO sanitization here (unlike
+// the per-contact file, whose sender id can carry a ':' — see sanitizeStatKey).
+export function statsPath(surface, chatId) {
+  return join(statsDir(surface), `${chatId}.yaml`);
+}
+
+// Filename-safe key for a SENDER id (the per-contact stats file's basename). A sender id
+// is a Matrix user id like "@anrodriguez:beeper.com" or "26087681749235@lid" and is NEVER
+// shortened (a user can live on another homeserver) — so it can carry ':' etc., invalid in
+// a Windows filename component (< > : " / \ | ? * + control chars). NOT sanitizeSlug: that
+// collapses illegal chars + whitespace runs to a single space, so "a:b" and "a b" would
+// fuse into ONE file — lossy/colliding for a MACHINE key. Instead, a percent-style escape
+// with '~' as the sentinel: escape a literal '~' FIRST (so real input can't forge an
+// escape), then each illegal char -> '~' + its 2-hex code. Collision-free, deterministic,
+// reversible, and human-readable enough ("@anrodriguez:beeper.com" -> "@anrodriguez~3abeeper.com").
+const _WIN_ILLEGAL = /[<>:"/\\|?*\x00-\x1f]/g;
+export function sanitizeStatKey(id) {
+  return String(id ?? '')
+    .replace(/~/g, '~7e')
+    .replace(_WIN_ILLEGAL, (c) => '~' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+}
+
+// The per-CONTACT stats file: state/stats/<surface>/<sanitized-senderId>.yaml — one file
+// per sender holding that sender's rollup ACROSS ALL chats on the surface.
+export function contactStatsPath(surface, senderId) {
+  return join(statsDir(surface), `${sanitizeStatKey(senderId)}.yaml`);
+}
+
+const STATS_HEADER = '# <chat>.yaml — the conversation\'s stats module (spine-written)\n';
+const CONTACT_STATS_HEADER = '# <sender>.yaml — the contact\'s cross-chat stats module (spine-written)\n';
 
 // Merge migrated lifecycle facts into an existing stats object WITHOUT clobbering content
 // already there (create-or-merge): scalars fill only when absent; `threads:` is unioned by
@@ -175,14 +211,15 @@ function serializeStatsWrite(fp, task) {
   return next;
 }
 
-// Effectful mirror of a freshly-minted thread into <convdir>/stats.yaml (the branchable
-// history). Injectable io + statsDirOf so it's testable in-memory; NEVER fatal (the state
-// write is the durable record — a stats hiccup must not break a reply). Returns whether it
-// wrote. Called by the brainpool right where it records a new session. Serialized per file
-// (serializeStatsWrite) so it never races recordMemberStat on the same stats.yaml.
-export async function appendThreadStat(surface, slug, thread, { io = {}, statsDirOf = slugDir } = {}) {
-  const dir = statsDirOf(surface, slug);
-  const fp = join(dir, 'stats.yaml');
+// Effectful mirror of a freshly-minted thread into the per-chat stats file
+// (state/stats/<surface>/<chatId>.yaml — the branchable history). Injectable io + statsDirOf
+// so it's testable in-memory; NEVER fatal (the state write is the durable record — a stats
+// hiccup must not break a reply). Returns whether it wrote. Called by the brainpool right
+// where it records a new session. Serialized per file (serializeStatsWrite) so it never
+// races recordMemberStat on the same file.
+export async function appendThreadStat(surface, chatId, thread, { io = {}, statsDirOf = statsDir } = {}) {
+  const dir = statsDirOf(surface, chatId);
+  const fp = join(dir, `${chatId}.yaml`);
   return serializeStatsWrite(fp, async () => {
     const readFileFn = io.readFile ?? readFile;
     const writeFileFn = io.writeFile ?? writeFile;
@@ -195,7 +232,7 @@ export async function appendThreadStat(surface, slug, thread, { io = {}, statsDi
       await mkdirFn(dir, { recursive: true });
       await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
       return true;
-    } catch (e) { console.error(`!! appendThreadStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
+    } catch (e) { console.error(`!! appendThreadStat(${surface}/${chatId}): ${e?.message ?? e}`); return false; }
   });
 }
 
@@ -212,28 +249,57 @@ export function mergeMemberIntoStats(stats, senderId, isoTs) {
   return out;
 }
 
-// Effectful per-message member counter into <convdir>/stats.yaml (contracts §3.1: every
-// received message passes to the stats collector). Same read-merge-write shape as
-// appendThreadStat and serialized with it per file; NEVER fatal (a stats hiccup must not
-// touch the message path). Returns whether it wrote — false (no file touched) on a falsy
-// senderId, matching mergeMemberIntoStats' no-op.
-export async function recordMemberStat(surface, slug, senderId, isoTs, { io = {}, statsDirOf = slugDir } = {}) {
+// Merge one received message into a per-CONTACT stats object — a FLAT { count, last_seen,
+// name? } (NOT nested under a members: map like the per-chat file, since the file is
+// already scoped to ONE sender): count++, last_seen bumped every time; `name` set/refreshed
+// ONLY when the event actually carries one (never invented/backfilled from nothing). Pure.
+export function mergeContactIntoStats(existing = {}, isoTs, name) {
+  const out = { ...(existing && typeof existing === 'object' ? existing : {}) };
+  out.count = (Number(out.count) || 0) + 1;
+  out.last_seen = isoTs;
+  if (name) out.name = name;
+  return out;
+}
+
+// Effectful per-message member counter into state/stats/<surface>/<chatId>.yaml (contracts
+// §3.1: every received message passes to the stats collector). Same read-merge-write shape
+// as appendThreadStat and serialized with it per file; NEVER fatal (a stats hiccup must not
+// touch the message path). Returns whether the CHAT file wrote — false (chat file untouched)
+// on a falsy senderId, matching mergeMemberIntoStats' no-op.
+//
+// ALSO rolls this sender up into its own per-CONTACT file (state/stats/<surface>/<sanitized
+// senderId>.yaml — cross-chat totals). Different path → its OWN serializeStatsWrite chain
+// (the two never block each other, each is race-safe internally); its own try/catch, added
+// as an internal step that does NOT change the return contract (existing tests assert the
+// chat-file write's `true`). `senderName`, when present on the event, sets/refreshes name.
+export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = {}, statsDirOf = statsDir, senderName } = {}) {
   if (!senderId) return false;
-  const dir = statsDirOf(surface, slug);
-  const fp = join(dir, 'stats.yaml');
-  return serializeStatsWrite(fp, async () => {
-    const readFileFn = io.readFile ?? readFile;
-    const writeFileFn = io.writeFile ?? writeFile;
-    const mkdirFn = io.mkdir ?? mkdir;
+  const dir = statsDirOf(surface, chatId);
+  const readFileFn = io.readFile ?? readFile;
+  const writeFileFn = io.writeFile ?? writeFile;
+  const mkdirFn = io.mkdir ?? mkdir;
+  const chatFp = join(dir, `${chatId}.yaml`);
+  const wrote = await serializeStatsWrite(chatFp, async () => {
     let existing = {};
-    try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    try { existing = YAML.parse(await readFileFn(chatFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const stats = mergeMemberIntoStats(existing, senderId, isoTs);
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+      await writeFileFn(chatFp, STATS_HEADER + YAML.stringify(stats), 'utf8');
       return true;
-    } catch (e) { console.error(`!! recordMemberStat(${surface}/${slug}): ${e?.message ?? e}`); return false; }
+    } catch (e) { console.error(`!! recordMemberStat(${surface}/${chatId}): ${e?.message ?? e}`); return false; }
   });
+  const contactFp = join(dir, `${sanitizeStatKey(senderId)}.yaml`);
+  await serializeStatsWrite(contactFp, async () => {
+    let existing = {};
+    try { existing = YAML.parse(await readFileFn(contactFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
+    const stats = mergeContactIntoStats(existing, isoTs, senderName);
+    try {
+      await mkdirFn(dir, { recursive: true });
+      await writeFileFn(contactFp, CONTACT_STATS_HEADER + YAML.stringify(stats), 'utf8');
+    } catch (e) { console.error(`!! recordMemberStat contact(${surface}/${senderId}): ${e?.message ?? e}`); }
+  }).catch(() => {});   // per-contact roll-up is non-fatal — never break the message path
+  return wrote;
 }
 
 // Move a contact's on-disk slug folder old→new (transcript.md, media/, identity

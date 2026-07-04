@@ -362,10 +362,11 @@ export function createBrainPool({
       if (newSession && newSession !== sessionId) {
         const nowIso = nowIsoString();
         await writeState(recordThread(await loadState(), ev.surface, ev.chatId, newSession, nowIso, being));
-        // Mirror the freshly-minted thread into the conversation's stats.yaml branchable
-        // history (a changed threadId appends; the old id stays addressable so a conversation
-        // can be branched from it). Injectable io, never fatal — the state write is durable.
-        try { await appendThreadStat(ev.surface, slug, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
+        // Mirror the freshly-minted thread into the per-chat stats file's branchable history
+        // (state/stats/<surface>/<chatId>.yaml — a changed threadId appends; the old id stays
+        // addressable so a conversation can be branched from it). Keyed by ev.chatId (the
+        // registry key), not the slug. Injectable io, never fatal — the state write is durable.
+        try { await appendThreadStat(ev.surface, ev.chatId, { id: newSession, created: nowIso, identity_injected: nowIso }, { io }); } catch { /* non-fatal */ }
       }
       // Auto-compaction hook: after a cooling period the service /compacts this
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.

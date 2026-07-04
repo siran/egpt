@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as YAML from 'yaml';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 import {
   emptyState,
   sanitizeSlug,
@@ -19,10 +20,14 @@ import {
   homeDirMsys,
   toMsysPath,
   statsPath,
+  statsDir,
+  contactStatsPath,
+  sanitizeStatKey,
   appendThreadStat,
   mergeStats,
   mergeThreadIntoStats,
   mergeMemberIntoStats,
+  mergeContactIntoStats,
   recordMemberStat,
   recentContacts,
   slugDir,
@@ -651,9 +656,27 @@ describe('stats module + msys path helpers', () => {
     expect(homeDirMsys().startsWith('/')).toBe(true);
     expect(toMsysPath(homeDirMsys())).toBe(homeDirMsys());   // already msys → idempotent
   });
-  it('statsPath sits inside the conversation folder', () => {
-    expect(statsPath('whatsapp', 'x-2606').endsWith('stats.yaml')).toBe(true);
-    expect(statsPath('whatsapp', 'x-2606')).toContain(slugDir('whatsapp', 'x-2606'));
+  it('statsPath is the per-chat file under state/stats/<surface>, keyed by chat id (OUTSIDE the conv dir)', () => {
+    // The chat file is named directly <chatId>.yaml (no per-chat subdir, no fixed stats.yaml).
+    expect(statsPath('whatsapp', '!abc123')).toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '!abc123.yaml'));
+    expect(statsDir('whatsapp')).toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp'));
+    // stats are spine-owned records → they must NOT sit inside the being's writable conv dir.
+    expect(statsPath('whatsapp', 'x-2606')).not.toContain(slugDir('whatsapp', 'x-2606'));
+  });
+
+  it('sanitizeStatKey escapes Windows-illegal chars collision-free, leaves clean ids intact', () => {
+    expect(sanitizeStatKey('26087681749235@lid')).toBe('26087681749235@lid');   // @ and digits are legal
+    expect(sanitizeStatKey('@anrodriguez:beeper.com')).toBe('@anrodriguez~3abeeper.com');   // ':' -> ~3a
+    // collision-safe: "a:b" and "a b" (which sanitizeSlug would fuse) stay distinct
+    expect(sanitizeStatKey('a:b')).not.toBe(sanitizeStatKey('a b'));
+    // a literal '~' is escaped FIRST so real input can't forge an escape sequence
+    expect(sanitizeStatKey('a~b')).toBe('a~7eb');
+    expect(sanitizeStatKey('a~3ab')).not.toBe(sanitizeStatKey('a:b'));   // "a~3ab" ≠ decode of "a:b"
+  });
+
+  it('contactStatsPath is the per-contact file under state/stats/<surface>, keyed by sanitized sender id', () => {
+    expect(contactStatsPath('whatsapp', '@anrodriguez:beeper.com'))
+      .toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '@anrodriguez~3abeeper.com.yaml'));
   });
 
   it('mergeStats fills absent scalars, unions threads by id, never clobbers', () => {
@@ -682,9 +705,9 @@ describe('stats module + msys path helpers', () => {
       mkdir: async () => {},
     };
     const dir = await mkdtemp(join(tmpdir(), 'egpt-appendstat-'));
-    const wrote = await appendThreadStat('whatsapp', 'x-2606', { id: 'T2', created: 'c2', identity_injected: 'c2' }, { io, statsDirOf: () => dir });
+    const wrote = await appendThreadStat('whatsapp', '!chat-2606', { id: 'T2', created: 'c2', identity_injected: 'c2' }, { io, statsDirOf: () => dir });
     expect(wrote).toBe(true);
-    expect(written.p).toBe(join(dir, 'stats.yaml'));
+    expect(written.p).toBe(join(dir, '!chat-2606.yaml'));   // file named <chatId>.yaml, in the injected dir
     const parsed = YAML.parse(written.data);
     expect(parsed.name).toBe('N');                             // existing content preserved
     expect(parsed.threads.map(t => t.id)).toEqual(['T1', 'T2']);   // old id stays, new appends
@@ -708,33 +731,61 @@ describe('stats module + msys path helpers', () => {
     expect(mergeMemberIntoStats(same, null, 'T4')).toBe(same);
   });
 
-  it('recordMemberStat writes members through the injected io, false (no file touched) on a falsy senderId', async () => {
-    let written = null;
+  it('mergeContactIntoStats bumps a flat count/last_seen, sets name only when present', () => {
+    const a = mergeContactIntoStats({}, 'T1');
+    expect(a).toEqual({ count: 1, last_seen: 'T1' });                    // fresh, no name given
+    const b = mergeContactIntoStats(a, 'T2', 'Andy');
+    expect(b).toEqual({ count: 2, last_seen: 'T2', name: 'Andy' });      // count++, last_seen bumped, name set
+    const c = mergeContactIntoStats(b, 'T3');
+    expect(c).toEqual({ count: 3, last_seen: 'T3', name: 'Andy' });      // absent name → prior name kept, never wiped
+    const d = mergeContactIntoStats(c, 'T4', 'Andrés');
+    expect(d.name).toBe('Andrés');                                       // present name → refreshed
+  });
+
+  it('recordMemberStat writes BOTH the per-chat and per-contact files; false (nothing touched) on a falsy senderId', async () => {
+    const writes = new Map();
     const io = {
-      readFile: async () => YAML.stringify({ members: { An: { count: 1, last_seen: 'old' } } }),
-      writeFile: async (p, data) => { written = { p, data }; },
+      readFile: async (p) => {
+        // per-chat file has prior member content; the per-contact file starts fresh (ENOENT)
+        if (String(p).endsWith('!chat-2606.yaml')) return YAML.stringify({ members: { An: { count: 1, last_seen: 'old' } } });
+        throw new Error('ENOENT');
+      },
+      writeFile: async (p, data) => { writes.set(p, data); },
       mkdir: async () => {},
     };
     const dir = await mkdtemp(join(tmpdir(), 'egpt-memberstat-'));
-    const wrote = await recordMemberStat('whatsapp', 'x-2606', 'An', 'NEW', { io, statsDirOf: () => dir });
-    expect(wrote).toBe(true);
-    expect(written.p).toBe(join(dir, 'stats.yaml'));
-    const parsed = YAML.parse(written.data);
-    expect(parsed.members.An).toEqual({ count: 2, last_seen: 'NEW' });   // read-merge-write bumped the counter
+    const wrote = await recordMemberStat('whatsapp', '!chat-2606', 'An', 'NEW', { io, statsDirOf: () => dir, senderName: 'Andy' });
+    expect(wrote).toBe(true);                                            // return contract = the CHAT file write
+    const chat = YAML.parse(writes.get(join(dir, '!chat-2606.yaml')));
+    expect(chat.members.An).toEqual({ count: 2, last_seen: 'NEW' });     // read-merge-write bumped the member counter
+    const contact = YAML.parse(writes.get(join(dir, 'An.yaml')));        // per-contact file, keyed by sanitized senderId
+    expect(contact).toEqual({ count: 1, last_seen: 'NEW', name: 'Andy' }); // flat rollup (fresh → 1), name from senderName
     await rm(dir, { recursive: true, force: true });
 
-    // falsy senderId → no file touched at all (writeFile that throws proves it isn't called)
+    // falsy senderId → NEITHER file touched (throwing io proves it isn't called)
     const io2 = { readFile: async () => { throw new Error('should not read'); }, writeFile: async () => { throw new Error('should not write'); }, mkdir: async () => {} };
-    expect(await recordMemberStat('whatsapp', 'x-2606', '', 'NEW', { io: io2, statsDirOf: () => '/nope' })).toBe(false);
+    expect(await recordMemberStat('whatsapp', '!chat-2606', '', 'NEW', { io: io2, statsDirOf: () => '/nope' })).toBe(false);
+  });
+
+  it('recordMemberStat omits name when the event carries none (never invents one)', async () => {
+    const writes = new Map();
+    const io = { readFile: async () => { throw new Error('ENOENT'); }, writeFile: async (p, data) => { writes.set(p, data); }, mkdir: async () => {} };
+    const dir = await mkdtemp(join(tmpdir(), 'egpt-noname-'));
+    await recordMemberStat('whatsapp', '!c', 'sid', 'T', { io, statsDirOf: () => dir });   // no senderName
+    const contact = YAML.parse(writes.get(join(dir, 'sid.yaml')));
+    expect(contact).toEqual({ count: 1, last_seen: 'T' });               // no name key at all
+    expect('name' in contact).toBe(false);
+    await rm(dir, { recursive: true, force: true });
   });
 
   it('recordMemberStat + appendThreadStat serialize on the same file — neither update is lost', async () => {
-    // Both do a read-merge-write on the SAME stats.yaml. The slow read/write gap means an
-    // UN-serialized pair would each read {} and clobber the other; serializeStatsWrite chains
-    // them so the second reads the first's write. Fire them concurrently at one path.
+    // Both do a read-merge-write on the SAME per-chat file (<chatId>.yaml). The slow
+    // read/write gap means an UN-serialized pair would each read {} and clobber the other;
+    // serializeStatsWrite chains them so the second reads the first's write. Fire them
+    // concurrently at one path.
     const store = new Map();
     const dir = join(tmpdir(), 'egpt-serial-stats');
-    const fp = join(dir, 'stats.yaml');
+    const fp = join(dir, 'serial.yaml');   // chatId 'serial' → serial.yaml
     const slow = () => new Promise((r) => setTimeout(r, 8));
     const io = {
       readFile: async (p) => { await slow(); if (!store.has(p)) throw new Error('ENOENT'); return store.get(p); },

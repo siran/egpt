@@ -109,12 +109,13 @@ describe('brainpool.turn', () => {
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'low' });
   });
 
-  it('mirrors a freshly-minted thread into stats.yaml (branch history) via the injected io', async () => {
+  it('mirrors a freshly-minted thread into the per-chat stats file (branch history) via the injected io', async () => {
     const writes = [];
     const io = { mkdir: async () => {}, readFile: async () => null, writeFile: async (p, data) => writes.push({ p, data }) };
     const { brain } = harness([{ text: 'ok', sessionId: 'sid-new' }], { io });
     await brain.turn('e', ev);
-    const statsWrite = writes.find((w) => String(w.p).endsWith('stats.yaml'));
+    // stats now live at state/stats/<surface>/<chatId>.yaml — the file IS <chatId>.yaml, not 'stats.yaml'.
+    const statsWrite = writes.find((w) => String(w.p).endsWith(`${ev.chatId}.yaml`));
     expect(statsWrite).toBeTruthy();
     expect(statsWrite.data).toContain('sid-new');   // the new thread id appended to threads:
     expect(statsWrite.data).toContain('threads:');

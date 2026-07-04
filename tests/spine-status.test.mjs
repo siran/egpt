@@ -291,7 +291,9 @@ describe('/status <target>', () => {
     const { cmds, sent } = harness({
       loadState: async () => first.state,
       getConfig: () => ({ whatsapp: { chat_id: '!self' }, aliases: { '@whatsapp_111:beeper.local': 'An' } }),
-      io: { readFile: readFileBySuffix({ 'stats.yaml': STATS_YAML, 'transcript.md': 'An@[HFM].wa (10:00): hola\n', 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+      // stats now live OUTSIDE the conv dir at state/stats/<surface>/<chatId>.yaml — the
+      // per-chat file is named by the chat id (r.jid), so key the fixture by that filename.
+      io: { readFile: readFileBySuffix({ '!hfm:beeper.local.yaml': STATS_YAML, 'transcript.md': 'An@[HFM].wa (10:00): hola\n', 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
@@ -304,7 +306,7 @@ describe('/status <target>', () => {
     const transcript = ['An@[HFM].wa (10:00): hola', '', '[@e (10:01)]: hola An', ''].join('\n');
     const { cmds, sent } = harness({
       loadState: async () => first.state,
-      io: { readFile: readFileBySuffix({ 'stats.yaml': new Error('ENOENT'), 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+      io: { readFile: readFileBySuffix({ '!hfm:beeper.local.yaml': new Error('ENOENT'), 'transcript.md': transcript, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
     });
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });

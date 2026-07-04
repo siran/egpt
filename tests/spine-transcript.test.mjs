@@ -19,7 +19,7 @@ const ev = {
 };
 
 describe('transcript.log — §3.1 stats collector chokepoint', () => {
-  it('fires the member collector into stats.yaml (fire-and-forget) on a received message', async () => {
+  it('fires the member collector into BOTH the per-chat and per-contact stats files (fire-and-forget)', async () => {
     const files = new Map();
     const io = {
       appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
@@ -31,11 +31,34 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     const t = createTranscript({ contacts: fakeContacts, io });
     expect(await t.log(ev)).toBe(true);
     await settle();
-    const stats = [...files.entries()].find(([p]) => p.endsWith('stats.yaml'));
-    expect(stats).toBeTruthy();
-    expect(stats[1]).toContain('@whatsapp_555:beeper.local');   // the senderId keyed the counter
-    expect(stats[1]).toContain('count: 1');
-    expect(stats[1]).toContain('2026-07-03T14:22');             // last_seen = isoFromMs(ev.ts)
+    // per-CHAT file: state/stats/<surface>/<chatId>.yaml — the members: map counter
+    const chat = [...files.entries()].find(([p]) => p.endsWith(`${ev.chatId}.yaml`));
+    expect(chat).toBeTruthy();
+    expect(chat[1]).toContain('@whatsapp_555:beeper.local');   // the senderId keyed the counter
+    expect(chat[1]).toContain('count: 1');
+    expect(chat[1]).toContain('2026-07-03T14:22');             // last_seen = isoFromMs(ev.ts)
+    // per-CONTACT file: keyed by the SANITIZED senderId (':' -> ~3a), flat rollup, NO name (ev has none)
+    const contact = [...files.entries()].find(([p]) => p.endsWith('@whatsapp_555~3abeeper.local.yaml'));
+    expect(contact).toBeTruthy();
+    expect(contact[1]).toContain('count: 1');
+    expect(contact[1]).toContain('2026-07-03T14:22');
+    expect(contact[1]).not.toContain('name:');                 // ev carries no senderName → name never invented
+  });
+
+  it('threads ev.senderName into the per-contact file when the event carries one', async () => {
+    const files = new Map();
+    const io = {
+      appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+      mkdir: async () => {},
+      existsSync: (p) => files.has(p),
+      readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+      writeFile: async (p, d) => { files.set(p, d); },
+    };
+    const t = createTranscript({ contacts: fakeContacts, io });
+    expect(await t.log({ ...ev, senderName: 'Andrés' })).toBe(true);
+    await settle();
+    const contact = [...files.entries()].find(([p]) => p.endsWith('@whatsapp_555~3abeeper.local.yaml'));
+    expect(contact[1]).toContain('name: Andrés');              // present senderName → refreshed onto the contact rollup
   });
 
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
