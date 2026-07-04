@@ -65,6 +65,17 @@ describe('brainpool.turn', () => {
     expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe('sid-1');
   });
 
+  it('evict(being, ev) drops EXACTLY the warm key the conversation last ran (DEFECT 2 timeout hook)', async () => {
+    const { brain, pool } = harness([{ text: 'hi', sessionId: 'sid-1' }]);
+    await brain.turn('e', ev);
+    const key = pool.calls[0].key;                 // e:ccode:whatsapp:SPOILER-<digits>
+    brain.evict('e', ev);
+    expect(pool.evicted).toEqual([key]);
+    // a conversation that never ran → no-op (nothing to evict)
+    brain.evict('e', { ...ev, chatId: '!never:beeper.com' });
+    expect(pool.evicted).toEqual([key]);
+  });
+
   it('resumes the stored session: 2nd turn passes sessionId from the 1st', async () => {
     const { brain, pool } = harness([{ text: 'a', sessionId: 'sid-1' }, { text: 'b', sessionId: 'sid-1' }]);
     await brain.turn('e', ev);

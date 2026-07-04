@@ -11,6 +11,12 @@
 // bridge; the train markers (⏳ / ∎ / failure) are owned here.
 const END_MARK = '∎';
 const FAIL_SUFFIX = '… ❌ Sending failed.';
+// A turn that was MEANT to surface but produced no deliverable text (brainpool
+// returned '' / whitespace, OR the spine blanked a failure-shaped result) must
+// resolve its placeholder VISIBLY — never a silent delete or a forever "⏳ Thinking…"
+// (operator 2026-07-04, DEFECT 1: turn 1 vanished with its placeholder stuck). Same
+// "⚠️ … ∎" marker style as the failure train; distinct from FAIL_SUFFIX (a SEND fault).
+const NO_REPLY_MARK = `⚠️ no reply (turn failed/empty) ${END_MARK}`;
 const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -40,12 +46,17 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
         update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ⏳`); },
         async finish(reply, { surface = true } = {}) {
           const t = textOf(reply);
-          if (!surface || !t) { if (stream) await stream.delete?.(); return; }   // withheld ('...') / empty → no message
+          // Gate-withheld ('on'-mode '...' silence / not surfaced): delete, post nothing.
+          if (!surface) { if (stream) await stream.delete?.(); return; }
+          // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
+          // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
+          // not silently deleted / left stuck).
+          const body = t.trim() ? `${t} ${END_MARK}` : NO_REPLY_MARK;
           if (stream) {
-            await stream.finish?.(`${t} ${END_MARK}`);
-            if (!stream.delivered) await bridge.send(chatId, `${t} ${END_MARK}`, tag);   // §7 fallback
+            await stream.finish?.(body);
+            if (!stream.delivered) await bridge.send(chatId, body, tag);   // §7 fallback
           } else {
-            await bridge.send(chatId, `${t} ${END_MARK}`, tag);
+            await bridge.send(chatId, body, tag);
           }
         },
         async fail() {                                 // visible failure: the message ends with ❌

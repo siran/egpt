@@ -47,6 +47,15 @@ describe('sender — single-message reply train', () => {
     expect(bridge.sent).toHaveLength(0);
   });
 
+  it('surfaced but EMPTY (turn failed/empty): resolves VISIBLY with the no-reply marker, does NOT delete (DEFECT 1)', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge }).open('!c', { being: 'e', replyTo: 'm1' });
+    await out.finish({ text: '' }, { surface: true });   // meant to surface, nothing came back
+    expect(bridge.streams[0].deleted).toBe(false);       // NOT silently deleted / left stuck
+    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty) ∎']);
+    expect(bridge.sent).toHaveLength(0);                 // delivered in place, no fallback
+  });
+
   it('falls back to a fresh send when the in-place edit did not deliver (§7)', async () => {
     const bridge = fakeBridge();
     bridge.startStream = (chat, init, opts) => { const h = { update() {}, async finish() {}, async delete() {}, delivered: false }; bridge.streams.push(h); return h; };

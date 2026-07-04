@@ -141,6 +141,11 @@ export function createBrainPool({
   const mkdir = io.mkdir ?? fsMkdir;
   const readFile = io.readFile ?? fsReadFile;
   const _loadManifest = loadManifest ?? (() => defaultLoadManifest(getConfig));
+  // Last warm-pool key run per conversation (`<being>:<surface>:<chatId>` → warm key).
+  // Lets a caller (the spine's per-turn TIMEOUT, DEFECT 2) evict EXACTLY the entry a
+  // hung turn is wedged on without re-deriving the engine/slug — a hung CLI must not
+  // poison the next turn.
+  const lastKeyByConv = new Map();
 
   // Best-effort read of a conversation folder's config.yaml warm override (never
   // throws): absent / unreadable / malformed → null → the class TTL applies.
@@ -298,6 +303,7 @@ export function createBrainPool({
       await mkdir(cwd, { recursive: true });
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
+      lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
       const baseOpts = {
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
@@ -376,6 +382,15 @@ export function createBrainPool({
       // session in place if it grew past ratio. Fire-and-forget — never block the reply.
       try { afterTurn?.({ key, sessionId: newSession ?? sessionId ?? null, model: def.model, cwd, allowedTools: baseOpts.allowedTools }); } catch { /* non-fatal */ }
       return { text, sessionId: newSession ?? sessionId ?? null, being };
+    },
+
+    // Evict the warm entry for a conversation (DEFECT 2): the spine's per-turn timeout
+    // calls this so a wedged CLI process is closed and the queue drains onto a fresh
+    // session next turn. Keyed off the last warm key this being+conversation ran (no
+    // re-derivation); a no-op if the conversation never opened one.
+    evict(being, ev) {
+      const k = lastKeyByConv.get(`${being}:${ev?.surface}:${ev?.chatId}`);
+      if (k) pool.evict?.(k);
     },
   };
 }

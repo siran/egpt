@@ -18,6 +18,8 @@
 // reply → send pipe, proven against fakes. Mesh forwarding, voice/media, and the
 // shell/slash console are layered in after v1, each behind its service seam.
 import { makeSerialByKey } from './src/serial-by-key.mjs';
+import { isBrainFailureResult } from './dispatch.mjs';
+import { replyLine } from './src/transcript-log.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.
@@ -92,8 +94,19 @@ export function createSpine({
   clock = { now: () => Date.now() },
   log = {},
   tickMs = 0,
+  // DEFECT 2 (operator 2026-07-04, "there should be a bridge timeout?"): a per-turn
+  // backstop. 10 min — a genuinely wedged/hung CLI, never a legitimately long
+  // tool-heavy turn (WebSearch+WebFetch+deep reasoning finish well under it). On
+  // expiry the turn fails VISIBLY, the warm entry is evicted (a hung process must
+  // not poison the next turn), and the queue drains on. 0 disables (tests that don't
+  // exercise it). The warm pool itself stays timeout-free BY DESIGN (operator
+  // 2026-06-12 removed its "fake timeout" that guillotined legit turns) — this is
+  // the higher, generous bridge-level guard, not that one.
+  turnTimeoutMs = 600_000,
   setInterval: setIntervalFn = globalThis.setInterval,
   clearInterval: clearIntervalFn = globalThis.clearInterval,
+  setTimeout: setTimeoutFn = globalThis.setTimeout,
+  clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
 } = {}) {
   for (const [name, dep] of Object.entries({ bridge, brain, identity, router, gating, sender, transcript, heartbeats })) {
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
@@ -118,6 +131,34 @@ export function createSpine({
   const trains = new Map();                    // convKey -> in-flight+queued turn count (drives the queued placeholder)
   function bumpTrain(key) { const ahead = trains.get(key) ?? 0; trains.set(key, ahead + 1); return ahead; }
   function dropTrain(key) { const n = (trains.get(key) ?? 1) - 1; if (n <= 0) trains.delete(key); else trains.set(key, n); }
+
+  // --- Per-conversation CYCLE accumulation (operator 2026-07-04: "when addressing the
+  //     queued messages … it should accumulate messages, even E's own past replies in
+  //     the cycle"). While a turn is in flight, ambient lines pile up per conversation:
+  //     non-mention chatter (the logged-only branch) AND E's OWN delivered replies. When
+  //     a QUEUED turn finally starts it drains that buffer and prompts with the whole
+  //     accumulated cycle ENDING with its own mention line — the model sees one coherent
+  //     timeline block, not just its lone mention. An IMMEDIATE turn (nothing was ahead)
+  //     drains-and-discards it and keeps today's single-line prompt, so the drained
+  //     buffer also marks the baseline the NEXT turn's cycle starts from.
+  //
+  //     Source = THIS in-memory buffer, not a transcript.md re-read: E's own reply is
+  //     pushed at the exact turn-completion chokepoint (below), so the buffer CAN'T miss
+  //     it (the operator's "can't miss E's own replies" bar), and there is no file
+  //     offset/parse/ordering race — the mention's inbound line is itself only written to
+  //     transcript.md at turn completion, so a re-read would race it. Bounded (CYCLE_CAP)
+  //     so a chat that chatters without ever mentioning E can't grow it without limit.
+  const CYCLE_CAP = 40;
+  const cycleBy = new Map();                    // convKey -> string[] (ambient lines, arrival/delivery order)
+  function pushCycle(key, line) {
+    const s = String(line ?? '').trim();
+    if (!s) return;
+    const arr = cycleBy.get(key) ?? [];
+    arr.push(s);
+    while (arr.length > CYCLE_CAP) arr.shift();
+    cycleBy.set(key, arr);
+  }
+  function drainCycle(key) { const arr = cycleBy.get(key) ?? []; cycleBy.delete(key); return arr; }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
   // the pipe tests — can await a message end-to-end even though the pump itself
@@ -202,12 +243,22 @@ export function createSpine({
     // logged below — a received message is never silently dropped (C1.2).
     if (!d.receives) return;
 
+    // Per-conversation turn key = the routed being + this conversation. It maps 1:1
+    // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity
+    // that matters — same being, same chat — so serializing on it is exactly "one
+    // turn at a time per warm key". Different chats (or different beings) key apart
+    // and run concurrently. Also the CYCLE key: ambient lines accumulate under it so a
+    // later queued mention on the same conversation drains exactly this chat's cycle.
+    const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
+
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
     // even when it won't reply). Otherwise the message is logged only — E reads
-    // transcript.md for back-context if it later engages ('not contacted yet').
+    // transcript.md for back-context if it later engages ('not contacted yet') — AND
+    // the line joins the conversation's cycle, so a queued mention arriving next sees
+    // this ambient chatter in its accumulated prompt.
     const runE = d.mayReply || d.sendToEgpt === 'always';
-    if (!runE) { await transcript.log(ev); return; }
+    if (!runE) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return; }
 
     // mesh-target forwarding (Phase 4b): an @being.node that lives on ANOTHER node is
     // not a local brain. Once gating has decided this chat is received+replyable, relay
@@ -215,13 +266,6 @@ export function createSpine({
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
     if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return; }
-
-    // Per-conversation turn key = the routed being + this conversation. It maps 1:1
-    // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity
-    // that matters — same being, same chat — so serializing on it is exactly "one
-    // turn at a time per warm key". Different chats (or different beings) key apart
-    // and run concurrently.
-    const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
 
     if (d.mayReply) {
       // Reply branch (the reply train). Open THIS mention's OWN placeholder NOW, on
@@ -237,18 +281,7 @@ export function createSpine({
       const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
       const ahead = bumpTrain(turnKey);
       const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead });
-      const turn = turnBy(turnKey, async () => {
-        try {
-          out.activate?.();                               // queued → live the moment its turn starts
-          let reply;
-          try { reply = await brain.turn(to, ev, (partial) => out.update(partial)); }
-          catch (e) { await out.fail?.(e); await transcript.log(ev); note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`); return; }
-          const surfaced = gating.surfaces(d, reply.text);
-          await out.finish(reply, { surface: surfaced });
-          await transcript.log(ev, { ...reply, surfaced });
-          await store?.recordThread?.({ ev, reply, being: to });
-        } finally { dropTrain(turnKey); }
-      });
+      const turn = turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0 }));
       return { turn };
     }
 
@@ -257,16 +290,87 @@ export function createSpine({
     // per-conversation queue as reply turns (it holds the same warm key), so a later
     // mention correctly queues behind it.
     bumpTrain(turnKey);
-    const turn = turnBy(turnKey, async () => {
-      try {
-        let reply;
-        try { reply = await brain.turn(to, ev); }
-        catch (e) { await transcript.log(ev); note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`); return; }
-        await transcript.log(ev, { ...reply, surfaced: false });
-        await store?.recordThread?.({ ev, reply, being: to });
-      } finally { dropTrain(turnKey); }
-    });
+    const turn = turnBy(turnKey, () => runContextTurn({ to, ev, turnKey }));
     return { turn };
+  }
+
+  // A brain turn under the per-turn TIMEOUT (DEFECT 2). Races the turn against the
+  // bound; on expiry it evicts the wedged warm entry (so the queue drains onto a fresh
+  // session) and rejects with a timeout Error the callers resolve VISIBLY. 0 disables.
+  async function runTurnWithTimeout(to, ev, promptEv, onPartial) {
+    const p = brain.turn(to, promptEv, onPartial);
+    if (!(turnTimeoutMs > 0)) return p;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeoutFn(() => reject(new Error(`turn timeout after ${turnTimeoutMs}ms`)), turnTimeoutMs);
+      timer?.unref?.();
+    });
+    try {
+      return await Promise.race([p, timeout]);
+    } catch (e) {
+      if (String(e?.message ?? '').startsWith('turn timeout')) {
+        try { await brain.evict?.(to, ev); } catch { /* best effort */ }
+        note(`turn ${to}/${ev.chatId}: TIMEOUT after ${turnTimeoutMs}ms — evicted warm entry`);
+      }
+      throw e;
+    } finally { clearTimeoutFn(timer); }
+  }
+
+  // The reply train's turn body (DEFECT 1 + accumulation FEATURE). Fully guarded: from
+  // the moment the placeholder opened, EVERY exit resolves it VISIBLY — the reply, the
+  // no-reply marker (surfaced-but-empty or a failure-shaped result), or a failure marker
+  // (brain throw / timeout / a fault in delivery). It can never resolve empty-and-silent
+  // or stay stuck on "⏳ Thinking…". The reply is RECORDED before delivery (the transcript
+  // is the durable record — it swallows its own errors and never throws — so the message
+  // and reply survive even a bridge delivery fault), and E's own delivered reply becomes a
+  // cycle line so the next queued turn accumulates it.
+  async function runReplyTurn({ to, ev, d, out, turnKey, queued }) {
+    let recorded = false;
+    try {
+      out.activate?.();                                 // queued → live the moment its turn starts
+      // Drain the accumulated cycle. A QUEUED turn prompts with it (ending with its own
+      // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
+      // draining either way advances the baseline the next turn's cycle starts from.
+      const pending = drainCycle(turnKey);
+      const promptEv = (queued && pending.length)
+        ? { ...ev, line: [...pending, ev.line ?? ev.body].join('\n\n') }
+        : ev;
+      const reply = await runTurnWithTimeout(to, ev, promptEv, (partial) => out.update(partial));
+      const rawText = reply?.text ?? '';
+      const surfaced = gating.surfaces(d, rawText);
+      // A failure-SHAPED result string (isBrainFailureResult — the CLI returned an error
+      // AS its result text; the brainpool self-heals only overflow/dead-session, not this):
+      // do NOT deliver it as a reply. Blank it so the placeholder resolves to the no-reply
+      // marker, and record the raw failure UNsurfaced (the record is never lost).
+      const failShaped = surfaced && isBrainFailureResult(rawText);
+      const deliverable = surfaced && !!rawText.trim() && !failShaped;
+      // Observability (operator: "diagnose WHY it was empty"): a turn that was meant to
+      // surface but has nothing to deliver is noted — the silent swallow is now loud.
+      if (surfaced && !deliverable) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
+      await transcript.log(ev, { ...reply, surfaced: deliverable });   // RECORD FIRST (durable)
+      recorded = true;
+      if (deliverable) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
+      await store?.recordThread?.({ ev, reply, being: to });
+      await out.finish(failShaped ? { text: '' } : reply, { surface: surfaced });   // DELIVER
+    } catch (e) {
+      // Any failure once the placeholder is open (brain throw, per-turn timeout, or a
+      // delivery fault) → resolve the placeholder VISIBLY + record the inbound if the
+      // reply-log didn't already run (C1.2: the message is never lost).
+      try { await out.fail?.(e); } catch { /* best effort */ }
+      if (!recorded) { try { await transcript.log(ev); } catch { /* transcript swallows */ } }
+      note(`turn ${to}/${ev.chatId}: ${e?.message ?? e}`);
+    } finally { dropTrain(turnKey); }
+  }
+
+  async function runContextTurn({ to, ev, turnKey }) {
+    try {
+      const reply = await runTurnWithTimeout(to, ev, ev, undefined);
+      await transcript.log(ev, { ...reply, surfaced: false });
+      await store?.recordThread?.({ ev, reply, being: to });
+    } catch (e) {
+      await transcript.log(ev);
+      note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`);
+    } finally { dropTrain(turnKey); }
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---
