@@ -27,7 +27,7 @@
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
 import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
-import { isContextOverflowError } from '../../dispatch.mjs';
+import { isContextOverflowError, isDeadSessionError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
 import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
@@ -129,6 +129,7 @@ export function createBrainPool({
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
   isOverflow = isContextOverflowError,
+  isDeadSession = isDeadSessionError,
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
@@ -334,13 +335,22 @@ export function createBrainPool({
       const idleTtlMs = await readWarmTtl(convDir);
       const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation', idleTtlMs });
 
-      let r, overflow = false;
+      let r, overflow = false, deadSession = false;
       try { r = await run(sessionId ? line : await wrapFresh(), baseOpts); }
-      catch (e) { if (isOverflow(e?.message)) overflow = true; else throw e; }
+      catch (e) { if (isOverflow(e?.message)) overflow = true; else if (isDeadSession(e?.message)) deadSession = true; else throw e; }
       // overflow can also arrive as the RESULT text (returned, not thrown).
       if (!overflow && isOverflow(typeof r === 'string' ? r : r?.text)) overflow = true;
+      // dead-session backstop (parallel to overflow above): the stored sessionId's
+      // resume target is gone from the CLI's own session store (e.g. the profile
+      // dir it's keyed under moved/renamed). Same recovery — reset + retry once
+      // fresh — mutually exclusive with overflow (only one branch fires per turn).
+      if (!overflow && !deadSession && isDeadSession(typeof r === 'string' ? r : r?.text)) deadSession = true;
       if (overflow) {
         onLog(`brainpool: context overflow on ${key} — reset + retry once fresh`);
+        pool.evict?.(key);
+        r = await run(await wrapFresh(), { ...baseOpts, sessionId: null });
+      } else if (deadSession) {
+        onLog(`brainpool: dead session ${sessionId} for ${key} — retrying fresh`);
         pool.evict?.(key);
         r = await run(await wrapFresh(), { ...baseOpts, sessionId: null });
       }

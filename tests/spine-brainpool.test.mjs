@@ -25,7 +25,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManifest, seedSession, brains, afterTurn, io } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, seedSession, brains, afterTurn, io } = {}) {
   let state = emptyState();
   if (seedSession) {           // pre-register the contact WITH a stored thread (a resumed, non-fresh conv)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -48,6 +48,7 @@ function harness(scriptedResults, { config = {}, isOverflow, loadFeed, loadManif
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(afterTurn ? { afterTurn } : {}),
     ...(isOverflow ? { isOverflow } : {}),
+    ...(isDeadSession ? { isDeadSession } : {}),
   });
   return { brain, pool, getState: () => state };
 }
@@ -226,6 +227,29 @@ describe('brainpool.turn', () => {
   it('a non-overflow error is NOT swallowed — it propagates', async () => {
     const { brain } = harness([() => Promise.reject(new Error('claude exited 1 mid-turn'))]);
     await expect(brain.turn('e', ev)).rejects.toThrow(/exited 1/);
+  });
+
+  // --- dead-session backstop (stored threadId's CLI session store is gone) ---
+  it('dead session THROWN → evict + retry once on a fresh session, new session gets recorded', async () => {
+    const { brain, pool, getState } = harness([
+      () => Promise.reject(new Error('error_during_execution\nNo conversation found with session ID: e78d812a-1234')),
+      { text: 'fresh ok', sessionId: 'sid-new' },
+    ], { seedSession: 'dead-sid' });
+    const out = await brain.turn('e', ev);
+    expect(out.text).toBe('fresh ok');
+    expect(pool.evicted).toHaveLength(1);                          // the wedged key was evicted
+    expect(pool.calls).toHaveLength(2);
+    expect(pool.calls[0].brainOptions.sessionId).toBe('dead-sid'); // first tried the stored (dead) session
+    expect(pool.calls[1].brainOptions.sessionId).toBe(null);       // retry is fresh — no resume
+    expect(getBeing(getState(), 'whatsapp', '!room:beeper.com', 'e').threadId).toBe('sid-new'); // self-healed
+  });
+
+  it('retry happens at most once: two consecutive dead-session errors propagate', async () => {
+    const { brain } = harness([
+      () => Promise.reject(new Error('No conversation found with session ID: e78d812a-1234')),
+      () => Promise.reject(new Error('No conversation found with session ID: e78d812a-1234')),
+    ], { seedSession: 'dead-sid' });
+    await expect(brain.turn('e', ev)).rejects.toThrow(/No conversation found/);
   });
 
   // --- per-conversation warm idle_ttl override (operator 2026-07-02) ---

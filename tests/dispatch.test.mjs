@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult } from '../dispatch.mjs';
+import { createDispatchRuntime, dispatchPersonaTurn, isBrainFailureResult, isDeadSessionError } from '../dispatch.mjs';
 import { parse, serialize } from '../conversations-state.mjs';
 import { resolveRoute } from '../src/room.mjs';
 import { parseInput } from '../src/interpreter.mjs';
@@ -89,6 +89,21 @@ describe('isBrainFailureResult — tool/infra errors are NOT a sibling reply', (
     expect(isBrainFailureResult('…')).toBe(false);
     expect(isBrainFailureResult('⚠️ couldn\'t answer (bridge): spawn claude ENOENT')).toBe(false);
     expect(isBrainFailureResult('')).toBe(false);
+  });
+});
+
+describe('isDeadSessionError', () => {
+  it('matches the CLI\'s exact error text', () => {
+    expect(isDeadSessionError('error_during_execution\nNo conversation found with session ID: e78d812a-1234')).toBe(true);
+  });
+  it('is case-insensitive', () => {
+    expect(isDeadSessionError('NO CONVERSATION FOUND WITH SESSION ID: abc')).toBe(true);
+  });
+  it('does NOT match unrelated strings', () => {
+    expect(isDeadSessionError('¡Hola hermano! Wren aquí.')).toBe(false);
+    expect(isDeadSessionError('')).toBe(false);
+    expect(isDeadSessionError('claude: error_during_execution\n  Prompt is too long')).toBe(false);
+    expect(isDeadSessionError('no rollout found for thread id')).toBe(false);
   });
 });
 

@@ -86,6 +86,17 @@ export function isContextOverflowError(text) {
     || /exceed[^.]{0,40}context (?:window|length)/i.test(msg);
 }
 
+// The CLI's own session store no longer has the resumed session (e.g. its
+// cwd-keyed store moved/renamed out from under a stored threadId). Distinct
+// from context-overflow (the session loads fine; it's just too big) and from
+// the local isMissingResumeError above (the legacy per-contact dispatch path's
+// "no rollout found" / "resume failed" shape) — this is the CLI's own exact
+// error string. Recovery = reset the thread and retry fresh, same as overflow.
+export function isDeadSessionError(text) {
+  const msg = String(text ?? '');
+  return /no conversation found with session id/i.test(msg);
+}
+
 export function isBrainFailureResult(text) {
   const msg = String(text ?? '').trim();
   return /^!!\s+/.test(msg)
