@@ -61,6 +61,22 @@ describe('fullChatId', () => {
     const short = 'aYFq5skcCliVAmwIhRqH';
     expect(shortChatId(fullChatId(short))).toBe(short);
   });
+
+  // Regression, operator 2026-07-04: a chat homed on a DIFFERENT homeserver
+  // (e.g. Beeper's own cloud chats on ':beeper.com') isn't shortened by
+  // shortChatId — its id circulates in full form — so fullChatId must
+  // recognize it as already-full and leave it alone, instead of wrapping it
+  // a second time into '!!xxxx:beeper.com:beeper.local' (live 404).
+  it('leaves an already-full id on a DIFFERENT homeserver unchanged (no double-wrap)', () => {
+    const full = '!TUZaHGpkFXgCCFXfRw:beeper.com';
+    expect(fullChatId(full)).toBe(full);
+  });
+
+  it('round-trips a different-homeserver id through shortChatId (no-op both ways)', () => {
+    const full = '!TUZaHGpkFXgCCFXfRw:beeper.com';
+    expect(fullChatId(shortChatId(full))).toBe(full);
+    expect(shortChatId(fullChatId(full))).toBe(full);
+  });
 });
 
 // isAllowedUser short/full equivalence — mirrors the EXACT comparison src/spine/boot.mjs

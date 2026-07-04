@@ -26,11 +26,18 @@ export function shortChatId(id) {
   return s;
 }
 
-// 'xxxx' -> '!xxxx:beeper.local'. Idempotent (an already-full id, or an empty
-// string, passes through unchanged). Callers must only pass an ACTUAL room id
+// 'xxxx' -> '!xxxx:beeper.local'. Idempotent (an already-full id — on
+// ':beeper.local' OR any other homeserver, e.g. a Beeper-cloud-hosted chat
+// living on ':beeper.com' — or an empty string, passes through unchanged).
+// A chat NOT homed on beeper.local isn't shortened by shortChatId (see its
+// comment), so its id already circulates in full '!xxxx:<server>' form; only
+// a bare short id (no leading '!') gets wrapped here. Without this check, an
+// already-full non-beeper.local id gets wrapped AGAIN — '!!xxxx:beeper.com:
+// beeper.local' — 404ing every API call for that chat (verified live,
+// operator 2026-07-04). Callers must only pass an ACTUAL room id
 // (post-resolution) — never a name/slug, which this does not know how to expand.
 export function fullChatId(id) {
   const s = String(id ?? '');
-  if (!s || (s.startsWith('!') && s.endsWith(SUFFIX))) return s;
+  if (!s || (s.startsWith('!') && s.slice(1).includes(':'))) return s;
   return `!${s}${SUFFIX}`;
 }
