@@ -17,6 +17,7 @@
 // Phase 1 scope (SPINE-REWRITE-PLAN.md §4, §6): the receive → gate → brain →
 // reply → send pipe, proven against fakes. Mesh forwarding, voice/media, and the
 // shell/slash console are layered in after v1, each behind its service seam.
+import { makeSerialByKey } from './src/serial-by-key.mjs';
 
 // ---------------------------------------------------------------------------
 // Ports — the interfaces the loop depends on (injected, never global). §2b.
@@ -99,32 +100,73 @@ export function createSpine({
   }
   const note = (s) => { try { log.line?.(s); } catch {} };
 
-  // --- the inbound queue (event-driven half). Bridge callbacks push; one async
-  //     pump drains serially so handleInbound never interleaves two messages.
-  //     Each entry carries its enqueue time so stats() can report the oldest
-  //     pending message's age — the alive beat surfaces a stuck pump. ---
+  // --- the inbound queue (event-driven half). Bridge callbacks push; ONE async
+  //     pump drains the FAST phase serially — identity → command/mesh → route →
+  //     gate → open THIS mention's placeholder → dispatch its turn — so arrival
+  //     order and conversation-state reads never interleave. The pump does NOT run
+  //     the brain turn inline: the turn goes onto a PER-CONVERSATION FIFO queue
+  //     (turnBy), so a second mention that arrives while a conversation's train is
+  //     still in flight is QUEUED behind it (never dropped, never interrupting,
+  //     never concurrent on the same warm key; replies land in order under their
+  //     own placeholders), while a DIFFERENT conversation's turn runs FULLY
+  //     concurrently. The FAST phase is quick, so the shared pump no longer blocks
+  //     one chat behind another chat's slow turn. Each entry carries its enqueue
+  //     time so stats() can report the oldest pending message's age. ---
   const queue = [];
   let pumping = null;
-  function enqueue(msg) { queue.push({ msg, at: clock.now() }); return pump(); }
+  const turnBy = makeSerialByKey();           // per-conversation turn FIFO (the §7 "one turn at a time per key")
+  const trains = new Map();                    // convKey -> in-flight+queued turn count (drives the queued placeholder)
+  function bumpTrain(key) { const ahead = trains.get(key) ?? 0; trains.set(key, ahead + 1); return ahead; }
+  function dropTrain(key) { const n = (trains.get(key) ?? 1) - 1; if (n <= 0) trains.delete(key); else trains.set(key, n); }
+
+  // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
+  // the pipe tests — can await a message end-to-end even though the pump itself
+  // returns as soon as the fast phase has dispatched the turn.
+  function enqueue(msg) {
+    let settle; const done = new Promise((r) => { settle = r; });
+    queue.push({ msg, at: clock.now(), settle });
+    pump();
+    return done;
+  }
   function pump() {
     if (pumping) return pumping;
     pumping = (async () => {
-      try { while (queue.length) await handleInbound(queue.shift().msg); }
-      finally { pumping = null; }
+      try {
+        while (queue.length) {
+          const entry = queue.shift();
+          let r;
+          try { r = await handleFast(entry.msg); }
+          catch (e) { note(`inbound: ${e?.message ?? e}`); }
+          // settle the caller's promise when this message's turn (if any) finishes;
+          // a message that runs no turn (logged-only / command / off) settles now.
+          Promise.resolve(r?.turn).then(entry.settle, entry.settle);
+        }
+      } finally { pumping = null; }
     })();
     return pumping;
   }
-  // Pump observability: depth of the (not-yet-started) queue and how long its
+  // Pump observability: depth of the (not-yet-started) FAST queue and how long its
   // oldest entry has waited. 0/0 when empty. Bookkeeping, not machinery.
   function stats() {
     const oldest = queue[0];
     return { queueDepth: queue.length, oldestMs: oldest ? clock.now() - oldest.at : 0 };
   }
 
-  // --- the receive → gate → brain → reply → send pipe (§2a). Every RECEIVED
-  //     message (everything except 'off') is logged to the transcript: a received
-  //     message is never silently dropped (C1.2); 'off' is not received at all. ---
+  // Process a message end-to-end (fast phase + its turn). Bridge inbound flows
+  // through enqueue/pump; direct callers (tests, the mesh seam) use this.
   async function handleInbound(msg) {
+    const r = await handleFast(msg);
+    if (r?.turn) await r.turn;
+  }
+
+  // --- the FAST phase of the receive → gate → route → reply pipe (§2a). Every
+  //     RECEIVED message (everything except 'off') is logged to the transcript: a
+  //     received message is never silently dropped (C1.2); 'off' is not received at
+  //     all. Returns `{ turn }` — the dispatched turn's completion promise wrapped so
+  //     the pump does NOT await it (a bare `return turnBy(...)` from this async fn
+  //     would ADOPT the promise and re-serialize every turn globally) — or undefined
+  //     when the message runs no turn. ---
+  async function handleFast(msg) {
     const ev = identity.build(msg);
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
@@ -139,7 +181,7 @@ export function createSpine({
     // traffic, so it bypasses this chat's ambient reply modes (the responder's own
     // being-turn still respects that being's availability, inside mesh.handle). Logged
     // like any received message first (C1.2).
-    if (mesh?.isEnvelope?.(ev)) { await transcript.log(ev); return mesh.handle(ev); }
+    if (mesh?.isEnvelope?.(ev)) { await transcript.log(ev); await mesh.handle(ev); return; }
 
     // Router picks the being + the mention that being's gate should see. The real
     // router returns { being, mention } (with an optional { mesh } target for an
@@ -172,43 +214,59 @@ export function createSpine({
     // the message to the target's node (a visible envelope) and stop — the reply streams
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
-    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); return mesh.forward(ev, meshTarget); }
+    if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return; }
+
+    // Per-conversation turn key = the routed being + this conversation. It maps 1:1
+    // to the warm-pool key (`<being>:<engine>:<surface>:<slug>`) at the granularity
+    // that matters — same being, same chat — so serializing on it is exactly "one
+    // turn at a time per warm key". Different chats (or different beings) key apart
+    // and run concurrently.
+    const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
 
     if (d.mayReply) {
-      // Surfacing branch: stream the reply live (the reply train), then surface it
-      // unless it's 'on'-mode silence ('...'). A reply quotes its triggering
-      // message (operator: "mentions should always be replied to the message").
-      // Uses the ROUTED mention so a sibling's @name reply quotes correctly too.
+      // Reply branch (the reply train). Open THIS mention's OWN placeholder NOW, on
+      // arrival — the per-message ack + streaming target, quoting the triggering
+      // message (operator: "mentions should always be replied to the message"). If a
+      // train is already in flight for this conversation, the placeholder opens in the
+      // QUEUED state (showing how many trains are ahead) and the turn WAITS its turn on
+      // turnBy; when it reaches the front it activates and streams. The `out` handle is
+      // captured into THIS turn's onPartial closure — a turn's stream only ever edits
+      // its own placeholder, never conversation-global state. Uses the ROUTED mention so
+      // a sibling's @name reply quotes correctly too.
       const m = mention ?? {};
       const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
-      const out = sender.open(ev.chatId, { being: to, replyTo });
-      let reply;
-      try {
-        reply = await brain.turn(to, ev, (partial) => out.update(partial));
-      } catch (e) {
-        await out.fail?.(e);
-        await transcript.log(ev);
-        note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`);
-        return;
-      }
-      const surfaced = gating.surfaces(d, reply.text);
-      await out.finish(reply, { surface: surfaced });
-      await transcript.log(ev, { ...reply, surfaced });
-      await store?.recordThread?.({ ev, reply, being: to });
-    } else {
-      // Context turn (send_to_egpt:'always', reply won't surface): E runs to stay
-      // current, no UI; the reply is recorded but never sent.
-      let reply;
-      try {
-        reply = await brain.turn(to, ev);
-      } catch (e) {
-        await transcript.log(ev);
-        note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`);
-        return;
-      }
-      await transcript.log(ev, { ...reply, surfaced: false });
-      await store?.recordThread?.({ ev, reply, being: to });
+      const ahead = bumpTrain(turnKey);
+      const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead });
+      const turn = turnBy(turnKey, async () => {
+        try {
+          out.activate?.();                               // queued → live the moment its turn starts
+          let reply;
+          try { reply = await brain.turn(to, ev, (partial) => out.update(partial)); }
+          catch (e) { await out.fail?.(e); await transcript.log(ev); note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`); return; }
+          const surfaced = gating.surfaces(d, reply.text);
+          await out.finish(reply, { surface: surfaced });
+          await transcript.log(ev, { ...reply, surfaced });
+          await store?.recordThread?.({ ev, reply, being: to });
+        } finally { dropTrain(turnKey); }
+      });
+      return { turn };
     }
+
+    // Context turn (send_to_egpt:'always', reply won't surface): E runs to stay
+    // current, no UI; the reply is recorded but never sent. Serialized on the SAME
+    // per-conversation queue as reply turns (it holds the same warm key), so a later
+    // mention correctly queues behind it.
+    bumpTrain(turnKey);
+    const turn = turnBy(turnKey, async () => {
+      try {
+        let reply;
+        try { reply = await brain.turn(to, ev); }
+        catch (e) { await transcript.log(ev); note(`brain ${to}/${ev.chatId}: ${e?.message ?? e}`); return; }
+        await transcript.log(ev, { ...reply, surfaced: false });
+        await store?.recordThread?.({ ev, reply, being: to });
+      } finally { dropTrain(turnKey); }
+    });
+    return { turn };
   }
 
   // --- the time-driven half: due heartbeats + accum flush. ---

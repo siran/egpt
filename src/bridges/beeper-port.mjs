@@ -16,17 +16,22 @@
 import { startBeeperBridge } from './beeper.mjs';
 import { createFloodGuard } from '../flood-guard.mjs';
 
-// NOTE (no placeholder nonce): the stream placeholder is just the stamped init
-// ("🐶 egpt\n⏳ Thinking…") — every turn's is textually identical, and that is
-// SAFE now. resolveSentMessageId (beeper.mjs) text-matches the recent list and
-// reduces with newerMsgId, which since d7614b8 picks the NUMERICALLY-largest id
-// (a string compare ranked "9" > "10" and resolved the OLDER match — THAT bug is
-// what the old per-turn nonce papered over). Beeper ids are monotonic per-chat
-// sequence numbers, so among identical-text matches the just-posted placeholder
-// is by construction the newest. And the v2 spine serializes turns through ONE
-// pump (spine.mjs: `while (queue.length) await handleInbound(...)`), so a single
-// node can never have two in-flight placeholders in one chat. ⇒ an identical-text
-// match always resolves to THIS turn's message; no disambiguating suffix needed.
+// NOTE (placeholder id resolution): resolveSentMessageId (beeper.mjs) text-matches
+// the recent list and reduces with newerMsgId, which since d7614b8 picks the
+// NUMERICALLY-largest id (a string compare ranked "9" > "10" and resolved the OLDER
+// match — THAT bug is what the old per-turn nonce papered over). Beeper ids are
+// monotonic per-chat sequence numbers, so among identical-text matches the just-posted
+// placeholder is by construction the newest. The remaining hazard is TWO coexisting
+// placeholders with the SAME text in one chat: the newest-wins reduce would then bind
+// both streams to the same id (the live "second train stuck on ⏳ Thinking…" bug when a
+// mention arrived mid-train). The v2 spine (spine.mjs) serializes a conversation's
+// turns on a per-conversation FIFO queue, so only ONE turn STREAMS at a time per chat —
+// its ACTIVE "⏳ Thinking…" placeholder is always the unique one of that text. A mention
+// that arrives mid-train still posts its OWN placeholder immediately, but in the QUEUED
+// state ("⏳ Queued (N ahead)…", src/spine/sender.mjs) — text that differs from the
+// active THINKING and, via N, from every other queued placeholder — so each queued one
+// resolves to its own id too. ⇒ no two coexisting placeholders share text; no
+// disambiguating nonce needed.
 
 // The bridge-ENFORCED persona identifier: body_emoji + persona name as the FIRST
 // LINE, then the reply. A leading model-written self-label ("egpt:") is stripped so
@@ -70,6 +75,12 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
 
   const real = await start({
     ...rest,
+    // Forward inbound to the spine. This resolves when the message's TURN completes
+    // (spine enqueue awaits its own per-conversation queue), so a DIRECT caller —
+    // boot's live-echo verify, tests — can await a message end-to-end. The real bridge
+    // (beeper.mjs) deliberately does NOT await this in its dispatch chain: that would
+    // re-serialize every conversation's turn and defeat placeholder-on-arrival. The
+    // spine's enqueue pushes synchronously, so arrival order is preserved regardless.
     onIncoming: async (body, from) => { if (onMsg) await onMsg({ body, from }); },
     // Raw edit hook → port onEdit. Returns the host's truthy-if-consumed verdict
     // straight back to the bridge (used later by mesh to mirror streamed edits).

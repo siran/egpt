@@ -12,18 +12,31 @@
 const END_MARK = '∎';
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
+// A mention that arrives while THIS conversation's train is still running gets its
+// OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
+// state — `ahead` = how many trains run before it. When its turn starts it flips to
+// THINKING (activate) and then streams. The DISTINCT text is not cosmetic only: the
+// bridge resolves a placeholder's id by matching the newest message with identical
+// text, so two coexisting "⏳ Thinking…" placeholders would collapse onto one id (the
+// live "stuck placeholder" bug). A queued placeholder's text differs from THINKING
+// and — via `ahead` — from every other queued one, so each resolves to its own id.
+const QUEUED = (ahead) => `⏳ Queued (${ahead} ahead)…`;
 
 export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
-    open(chatId, { being = 'e', replyTo = null } = {}) {
+    open(chatId, { being = 'e', replyTo = null, queued = false, queuedAhead = 0 } = {}) {
       const bodyEmoji = bodyEmojiOf(being);
       const label = labelOf(being);
       const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona line (emoji + label) from these
-      const stream = bridge.startStream?.(chatId, THINKING, { ...tag, persona: being });
+      const stream = bridge.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
       let acc = '';
       return {
+        // A queued placeholder flips from the queue into the live train the instant
+        // its turn starts (before the first token), so the user sees it move. No-op
+        // for a placeholder that was never queued.
+        activate() { if (queued) stream?.update?.(THINKING); },
         update(partial) { const t = textOf(partial); if (!t) return; acc = t; stream?.update?.(`${t} ⏳`); },
         async finish(reply, { surface = true } = {}) {
           const t = textOf(reply);

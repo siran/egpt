@@ -888,7 +888,14 @@ export async function startBeeperBridge(opts = {}) {
       msgKey: msg.id || null,
     };
     onLog(`beeper: incoming [${info.title}] ${msg.senderName}: ${JSON.stringify((text || '').slice(0, 60))} (atE=${st.atEAnywhere}${isVoice ? ' voice' : ''})`);
-    try { await onIncoming?.(text, from); }
+    // Hand off to the host WITHOUT awaiting the reply turn. The host (spine) enqueues
+    // this message synchronously — so this dispatch chain's ORDER into the spine is
+    // preserved — and then owns per-conversation serialization, cross-conversation
+    // concurrency, and placeholder-on-arrival. Awaiting the turn here would chain
+    // every conversation's turn behind this transcription-ordering `_processing`
+    // chain (a mid-train mention's placeholder would not appear until the prior turn
+    // finished). The returned promise settles, never rejects; log any rejection.
+    try { Promise.resolve(onIncoming?.(text, from)).catch((e) => onLog(`beeper: onIncoming threw — ${e?.message ?? e}`)); }
     catch (e) { onLog(`beeper: onIncoming threw — ${e?.message ?? e}`); }
   }
 
