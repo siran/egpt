@@ -23,6 +23,7 @@ import {
   statsDir,
   contactStatsPath,
   sanitizeStatKey,
+  unsanitizeStatKey,
   appendThreadStat,
   mergeStats,
   mergeThreadIntoStats,
@@ -674,6 +675,12 @@ describe('stats module + msys path helpers', () => {
     expect(sanitizeStatKey('a~3ab')).not.toBe(sanitizeStatKey('a:b'));   // "a~3ab" ≠ decode of "a:b"
   });
 
+  it('unsanitizeStatKey round-trips sanitizeStatKey for ids with :, ~, /, and clean ids', () => {
+    for (const id of ['@anrodriguez:beeper.com', 'a~b', 'a/b:c', '26087681749235@lid', 'plainclean']) {
+      expect(unsanitizeStatKey(sanitizeStatKey(id))).toBe(id);
+    }
+  });
+
   it('contactStatsPath is the per-contact file under state/stats/<surface>, keyed by sanitized sender id', () => {
     expect(contactStatsPath('whatsapp', '@anrodriguez:beeper.com'))
       .toBe(join(EGPT_HOME, 'state', 'stats', 'whatsapp', '@anrodriguez~3abeeper.com.yaml'));
@@ -711,6 +718,8 @@ describe('stats module + msys path helpers', () => {
     const parsed = YAML.parse(written.data);
     expect(parsed.name).toBe('N');                             // existing content preserved
     expect(parsed.threads.map(t => t.id)).toEqual(['T1', 'T2']);   // old id stays, new appends
+    expect(parsed.chat_id).toBe('!chat-2606');                 // self-identifying id stamped in the body
+    expect(written.data.split('\n')[0]).not.toContain('<');    // honest header, no angle-bracket placeholder
     await rm(dir, { recursive: true, force: true });
 
     // same latest id → no write at all
@@ -758,8 +767,9 @@ describe('stats module + msys path helpers', () => {
     expect(wrote).toBe(true);                                            // return contract = the CHAT file write
     const chat = YAML.parse(writes.get(join(dir, '!chat-2606.yaml')));
     expect(chat.members.An).toEqual({ count: 2, last_seen: 'NEW' });     // read-merge-write bumped the member counter
+    expect(chat.chat_id).toBe('!chat-2606');                            // self-identifying chat id stamped in the body
     const contact = YAML.parse(writes.get(join(dir, 'An.yaml')));        // per-contact file, keyed by sanitized senderId
-    expect(contact).toEqual({ count: 1, last_seen: 'NEW', name: 'Andy' }); // flat rollup (fresh → 1), name from senderName
+    expect(contact).toEqual({ sender_id: 'An', count: 1, last_seen: 'NEW', name: 'Andy' }); // flat rollup (fresh → 1), name from senderName, real sender id in body
     await rm(dir, { recursive: true, force: true });
 
     // falsy senderId → NEITHER file touched (throwing io proves it isn't called)
@@ -773,7 +783,7 @@ describe('stats module + msys path helpers', () => {
     const dir = await mkdtemp(join(tmpdir(), 'egpt-noname-'));
     await recordMemberStat('whatsapp', '!c', 'sid', 'T', { io, statsDirOf: () => dir });   // no senderName
     const contact = YAML.parse(writes.get(join(dir, 'sid.yaml')));
-    expect(contact).toEqual({ count: 1, last_seen: 'T' });               // no name key at all
+    expect(contact).toEqual({ sender_id: 'sid', count: 1, last_seen: 'T' });   // no name key at all
     expect('name' in contact).toBe(false);
     await rm(dir, { recursive: true, force: true });
   });

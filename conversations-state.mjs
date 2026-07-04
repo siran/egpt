@@ -161,14 +161,23 @@ export function sanitizeStatKey(id) {
     .replace(_WIN_ILLEGAL, (c) => '~' + c.charCodeAt(0).toString(16).padStart(2, '0'));
 }
 
+// Inverse of sanitizeStatKey — recovers the real (unsanitized) id from a stats filename's
+// base. Safe because the escape is unambiguous: every escape is the literal '~' + exactly 2
+// lowercase hex digits, and a real '~' in the input was itself escaped to '~7e' by
+// sanitizeStatKey, so a single global pass fully reverses it. Used by the stats backfill to
+// recover a contact file's real sender id from its sanitized filename.
+export function unsanitizeStatKey(s) {
+  return String(s ?? '').replace(/~([0-9a-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 // The per-CONTACT stats file: state/stats/<surface>/<sanitized-senderId>.yaml — one file
 // per sender holding that sender's rollup ACROSS ALL chats on the surface.
 export function contactStatsPath(surface, senderId) {
   return join(statsDir(surface), `${sanitizeStatKey(senderId)}.yaml`);
 }
 
-const STATS_HEADER = '# <chat>.yaml — the conversation\'s stats module (spine-written)\n';
-const CONTACT_STATS_HEADER = '# <sender>.yaml — the contact\'s cross-chat stats module (spine-written)\n';
+const STATS_HEADER = '# per-chat stats (spine-written — do not edit)\n';
+const CONTACT_STATS_HEADER = '# per-contact cross-chat stats (spine-written — do not edit)\n';
 
 // Merge migrated lifecycle facts into an existing stats object WITHOUT clobbering content
 // already there (create-or-merge): scalars fill only when absent; `threads:` is unioned by
@@ -228,9 +237,10 @@ export async function appendThreadStat(surface, chatId, thread, { io = {}, stats
     try { existing = YAML.parse(await readFileFn(fp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const { stats, changed } = mergeThreadIntoStats(existing, thread);
     if (!changed) return false;
+    const withId = { chat_id: chatId, ...stats };
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(fp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+      await writeFileFn(fp, STATS_HEADER + YAML.stringify(withId), 'utf8');
       return true;
     } catch (e) { console.error(`!! appendThreadStat(${surface}/${chatId}): ${e?.message ?? e}`); return false; }
   });
@@ -283,9 +293,10 @@ export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = 
     let existing = {};
     try { existing = YAML.parse(await readFileFn(chatFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const stats = mergeMemberIntoStats(existing, senderId, isoTs);
+    const withId = { chat_id: chatId, ...stats };
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(chatFp, STATS_HEADER + YAML.stringify(stats), 'utf8');
+      await writeFileFn(chatFp, STATS_HEADER + YAML.stringify(withId), 'utf8');
       return true;
     } catch (e) { console.error(`!! recordMemberStat(${surface}/${chatId}): ${e?.message ?? e}`); return false; }
   });
@@ -294,9 +305,10 @@ export async function recordMemberStat(surface, chatId, senderId, isoTs, { io = 
     let existing = {};
     try { existing = YAML.parse(await readFileFn(contactFp, 'utf8')) ?? {}; } catch { /* none / unreadable → fresh */ }
     const stats = mergeContactIntoStats(existing, isoTs, senderName);
+    const withId = { sender_id: senderId, ...stats };
     try {
       await mkdirFn(dir, { recursive: true });
-      await writeFileFn(contactFp, CONTACT_STATS_HEADER + YAML.stringify(stats), 'utf8');
+      await writeFileFn(contactFp, CONTACT_STATS_HEADER + YAML.stringify(withId), 'utf8');
     } catch (e) { console.error(`!! recordMemberStat contact(${surface}/${senderId}): ${e?.message ?? e}`); }
   }).catch(() => {});   // per-contact roll-up is non-fatal — never break the message path
   return wrote;

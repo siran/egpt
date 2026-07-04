@@ -29,20 +29,21 @@
 //
 // Usage:  node setup/port-stats-location.mjs [conversations.yaml path]   # defaults to CONV_YAML_PATH
 import { pathToFileURL } from 'node:url';
-import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, rm as fsRm } from 'node:fs/promises';
+import { readFile as fsReadFile, writeFile as fsWriteFile, mkdir as fsMkdir, rm as fsRm, readdir as fsReaddir } from 'node:fs/promises';
 import { existsSync as fsExistsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import * as YAML from 'yaml';
 import {
   CONV_YAML_PATH, readState, slugDir, statsPath, contactStatsPath, sanitizeStatKey, mergeStats,
+  statsDir, unsanitizeStatKey, KNOWN_SURFACES,
 } from '../conversations-state.mjs';
 import { sanitizeSlug } from '../src/sanitize.mjs';
 
 // Headers mirror conversations-state's STATS_HEADER / CONTACT_STATS_HEADER (not exported —
 // they self-heal onto the file on the first live read-merge-write anyway; kept here so a
 // freshly-ported file already reads like a live one).
-const CHAT_HEADER = '# <chat>.yaml — the conversation\'s stats module (spine-written)\n';
-const CONTACT_HEADER = '# <sender>.yaml — the contact\'s cross-chat stats module (spine-written)\n';
+const CHAT_HEADER = '# per-chat stats (spine-written — do not edit)\n';
+const CONTACT_HEADER = '# per-contact cross-chat stats (spine-written — do not edit)\n';
 
 // Default resolvers: the REAL frozen (EGPT_HOME-keyed) module helpers — exactly what the live
 // code writes/reads. OLD stats file = slugDir(...)+/stats.yaml (the only location live code
@@ -51,10 +52,12 @@ const defaultPaths = {
   oldStatsFile: (surface, slug) => join(slugDir(surface, slug), 'stats.yaml'),
   chatFile: (surface, chatId) => statsPath(surface, chatId),
   contactFile: (surface, senderId) => contactStatsPath(surface, senderId),
+  statsSurfaceDir: (surface) => statsDir(surface),
 };
 
 const defaultIo = {
   readFile: fsReadFile, writeFile: fsWriteFile, mkdir: fsMkdir, rm: fsRm, existsSync: fsExistsSync,
+  readdir: fsReaddir,
 };
 
 // Root-override resolvers (testability, item 6): point every path under an explicit profile
@@ -67,6 +70,7 @@ export function pathsForRoot(root) {
     oldStatsFile: (surface, slug) => join(root, 'conversations', surface, sanitizeSlug(slug), 'stats.yaml'),
     chatFile: (surface, chatId) => join(root, 'state', 'stats', surface, `${chatId}.yaml`),
     contactFile: (surface, senderId) => join(root, 'state', 'stats', surface, `${sanitizeStatKey(senderId)}.yaml`),
+    statsSurfaceDir: (surface) => join(root, 'state', 'stats', surface),
   };
 }
 
@@ -175,6 +179,49 @@ export async function portStatsLocation(state, { paths = defaultPaths, io = defa
   return { moved, merged, skipped, contactsWritten };
 }
 
+// ── BACKFILL: stamp chat_id / sender_id onto stats files that already exist without them
+// (operator 2026-07-04 defect: files self-identify only via their opaque filename, not their
+// body). Deliberately separate from portStatsLocation above — this runs over WHATEVER is
+// currently at the new location (whether portStatsLocation just wrote it or it's been there
+// since an earlier run), so main() runs the two passes back-to-back and nothing is missed.
+// Idempotent: a file that already carries its id field is left byte-for-byte untouched (no
+// read+rewrite), so a second run touches nothing.
+export async function backfillStatsIds(state, { paths = defaultPaths, io = defaultIo } = {}) {
+  const readFile = io.readFile ?? defaultIo.readFile;
+  const writeFile = io.writeFile ?? defaultIo.writeFile;
+  const readdirFn = io.readdir ?? defaultIo.readdir;
+  const existsSync = io.existsSync ?? defaultIo.existsSync;
+
+  let chatsStamped = 0, contactsStamped = 0, skipped = 0;
+
+  for (const surface of KNOWN_SURFACES) {
+    const dir = paths.statsSurfaceDir(surface);
+    if (!existsSync(dir)) continue;
+    const chatIds = new Set(Object.keys(state?.contacts?.[surface] ?? {}));
+    let names;
+    try { names = await readdirFn(dir); } catch { continue; }
+    for (const name of names) {
+      if (!name.endsWith('.yaml')) continue;
+      const base = name.slice(0, -'.yaml'.length);
+      const fp = join(dir, name);
+      let content;
+      try { content = YAML.parse(await readFile(fp, 'utf8')) ?? {}; } catch { continue; }
+      if (chatIds.has(base)) {
+        if (content.chat_id) { skipped++; continue; }
+        const withId = { chat_id: base, ...content };
+        await writeFile(fp, CHAT_HEADER + YAML.stringify(withId), 'utf8');
+        chatsStamped++;
+      } else {
+        if (content.sender_id) { skipped++; continue; }
+        const withId = { sender_id: unsanitizeStatKey(base), ...content };
+        await writeFile(fp, CONTACT_HEADER + YAML.stringify(withId), 'utf8');
+        contactsStamped++;
+      }
+    }
+  }
+  return { chatsStamped, contactsStamped, skipped };
+}
+
 async function main({ path, root } = {}) {
   const paths = root ? pathsForRoot(root) : undefined;
   const yamlPath = path ?? (root ? join(root, 'config', 'conversations.yaml') : CONV_YAML_PATH);
@@ -185,7 +232,11 @@ async function main({ path, root } = {}) {
   console.log(`  chat files merged:   ${result.merged}`);
   console.log(`  chat files skipped:  ${result.skipped}`);
   console.log(`  contact files written: ${result.contactsWritten}`);
-  return result;
+  const backfill = await backfillStatsIds(state, paths ? { paths } : {});
+  console.log(`  chat ids backfilled:    ${backfill.chatsStamped}`);
+  console.log(`  sender ids backfilled:  ${backfill.contactsStamped}`);
+  console.log(`  already had id:         ${backfill.skipped}`);
+  return { ...result, backfill };
 }
 
 // Run only when invoked directly (so the exports import cleanly in tests). A positional arg is

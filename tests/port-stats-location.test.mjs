@@ -5,18 +5,34 @@
 // skip, the cross-chat SUM rollup, the ':'-sender sanitized filename, and idempotence.
 import { describe, it, expect } from 'vitest';
 import * as YAML from 'yaml';
-import { portStatsLocation } from '../setup/port-stats-location.mjs';
+import { portStatsLocation, backfillStatsIds } from '../setup/port-stats-location.mjs';
 import { sanitizeStatKey } from '../conversations-state.mjs';
 
 // A Map-backed fs. readFile throws ENOENT on a miss; rm deletes; existsSync is has().
+// Paths are normalized to forward slashes on every access so a caller that builds a path
+// with node's path.join (backslashes on Windows) still hits the forward-slash keys — the
+// same "both separators work" behavior the real Windows fs has.
 function memIo(seed = {}) {
+  const norm = (p) => String(p).replace(/\\/g, '/');
   const files = new Map(Object.entries(seed));
   const io = {
-    readFile: async (p) => { if (!files.has(p)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files.get(p); },
-    writeFile: async (p, d) => { files.set(p, d); },
+    readFile: async (p) => { const k = norm(p); if (!files.has(k)) { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; } return files.get(k); },
+    writeFile: async (p, d) => { files.set(norm(p), d); },
     mkdir: async () => {},
-    rm: async (p) => { files.delete(p); },
-    existsSync: (p) => files.has(p),
+    rm: async (p) => { files.delete(norm(p)); },
+    // a file exists on an exact key; a directory "exists" iff some file lives under it
+    existsSync: (p) => { const k = norm(p); return files.has(k) || [...files.keys()].some((f) => f.startsWith(k + '/')); },
+    readdir: async (dir) => {
+      const prefix = norm(dir).replace(/\/$/, '') + '/';
+      const names = new Set();
+      for (const p of files.keys()) {
+        if (p.startsWith(prefix)) {
+          const rest = p.slice(prefix.length);
+          if (!rest.includes('/')) names.add(rest);
+        }
+      }
+      return [...names];
+    },
   };
   return { files, io };
 }
@@ -26,6 +42,7 @@ const paths = {
   oldStatsFile: (s, slug) => `OLD/${s}/${slug}/stats.yaml`,
   chatFile: (s, chatId) => `NEW/${s}/${chatId}.yaml`,
   contactFile: (s, senderId) => `NEW/${s}/${sanitizeStatKey(senderId)}.yaml`,
+  statsSurfaceDir: (s) => `NEW/${s}`,
 };
 
 const y = (o) => YAML.stringify(o);
@@ -101,6 +118,48 @@ describe('portStatsLocation', () => {
     expect(r2.merged).toBe(0);
     expect(r2.skipped).toBe(1);
     // every file byte-identical after the second run (recompute → same output)
+    for (const [p, v] of files) expect(v).toBe(afterFirst.get(p));
+    expect([...files.keys()].sort()).toEqual([...afterFirst.keys()].sort());
+  });
+});
+
+describe('backfillStatsIds', () => {
+  it('stamps chat_id (registry key) + real unsanitized sender_id, leaves an already-stamped file alone', async () => {
+    const state = { contacts: { whatsapp: { '!fam': { slug: 'fam' } } } };
+    const { files, io } = memIo({
+      'NEW/whatsapp/!fam.yaml': y({ name: 'Fam', members: { '@alice:beeper.com': { count: 3, last_seen: 'T' } } }),
+      'NEW/whatsapp/@alice~3abeeper.com.yaml': y({ count: 3, last_seen: 'T' }),                       // contact, no sender_id
+      'NEW/whatsapp/@bob~3abeeper.com.yaml': y({ sender_id: '@bob:beeper.com', count: 1, last_seen: 'T' }), // already stamped
+    });
+
+    const r = await backfillStatsIds(state, { paths, io });
+    expect(r).toEqual({ chatsStamped: 1, contactsStamped: 1, skipped: 1 });
+
+    // chat file: chat_id = the registry key (the opaque short room token), body content preserved
+    const fam = load(files, 'NEW/whatsapp/!fam.yaml');
+    expect(fam.chat_id).toBe('!fam');
+    expect(fam.members['@alice:beeper.com']).toEqual({ count: 3, last_seen: 'T' });
+
+    // contact file: sender_id = the REAL unsanitized id, not the sanitized filename form
+    const alice = load(files, 'NEW/whatsapp/@alice~3abeeper.com.yaml');
+    expect(alice.sender_id).toBe('@alice:beeper.com');
+    expect(alice.count).toBe(3);
+
+    // already-stamped file untouched
+    const bob = load(files, 'NEW/whatsapp/@bob~3abeeper.com.yaml');
+    expect(bob.sender_id).toBe('@bob:beeper.com');
+  });
+
+  it('is idempotent: a second run stamps nothing and every file is byte-identical', async () => {
+    const state = { contacts: { whatsapp: { '!fam': { slug: 'fam' } } } };
+    const { files, io } = memIo({
+      'NEW/whatsapp/!fam.yaml': y({ name: 'Fam', members: { '@alice:beeper.com': { count: 3, last_seen: 'T' } } }),
+      'NEW/whatsapp/@alice~3abeeper.com.yaml': y({ count: 3, last_seen: 'T' }),
+    });
+    await backfillStatsIds(state, { paths, io });
+    const afterFirst = new Map(files);
+    const r2 = await backfillStatsIds(state, { paths, io });
+    expect(r2).toEqual({ chatsStamped: 0, contactsStamped: 0, skipped: 2 });
     for (const [p, v] of files) expect(v).toBe(afterFirst.get(p));
     expect([...files.keys()].sort()).toEqual([...afterFirst.keys()].sort());
   });
