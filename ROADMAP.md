@@ -214,6 +214,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   guard bounds runaway. NOT YET DISPATCHED — build after the turn-ordering
   fix lands (same spine files).
 
+- **Capabilities refresher (live gap 2026-07-05)**: resumed threads never learn
+  NEW abilities — the identity feed is kickoff-only (E denied having /media
+  live because its thread predates the limbs doc). Mechanism: version-stamp
+  the limbs/instructions block; when a conversation's last-injected version ≠
+  current, prepend the block once to its next turn (same shape as mode-flip
+  instructions). Also: seeded skeletons are copy-if-missing, so live templates
+  go stale on upgrade — the refresher must read the CURRENT template.
+
 - **Stats enrichment — collect ALL Beeper-managed info (operator 2026-07-04)**:
   the stats module should capture everything the local Beeper API exposes —
   per CHAT (chatInfo: participants, network, group/1:1 type, ...) and per
