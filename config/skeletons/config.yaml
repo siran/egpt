@@ -72,8 +72,17 @@ agents:
     configuration: egpt      # the persona's brain — config/agents/egpt.yaml
     handles: [e, egpt]
   # don:                     # a REMOTE agent: mentions of @don forward over the relay
-  #   configuration: relay
   #   relay_channel: Rodz    # a chat name or a room id — @don forwards there
+  #                          # (relay_channel alone marks a relay agent; the far-end
+  #                          #  owner of `don` answers — open-channel)
+  #
+  # A declarative relay CHAIN (operator 2026-07-05): each hop re-addresses onward via
+  # `to: <being>.<node>`, posting into its own relay_channel; the chain terminates when
+  # a hop's `to` resolves to a LOCAL being (which answers). `@carol hola` → Rodz1 →
+  # (don.do) Rodz2 → (wren.kg) → egpt answers; the reply routes back the way it came.
+  # carol: { relay_channel: Rodz1, to: don.do }
+  # don:   { relay_channel: Rodz2, to: wren.kg }
+  # wren:  { relay_channel: Rodz3, to: egpt.kg }   # egpt is local on node kg → answers
 
 # ── 3c. Mesh (cross-node being relay) ────────────────────────────────────────
 # OPTIONAL. `@being.node` in a chat reaches a being hosted on ANOTHER node; the reply

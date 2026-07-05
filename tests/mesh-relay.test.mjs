@@ -352,6 +352,66 @@ describe('mesh relay — multi-hop transit', () => {
   });
 });
 
+// ── DECLARATIVE RELAY CHAIN (operator 2026-07-05): agents.<name>.{relay_channel, to} —
+//    @carol → Rodz1(to:don.do) → don → Rodz2(to:wren.kg) → wren → (collapses to a local
+//    egpt) answers; the reply routes back the way it came. `to` re-addresses each hop; a
+//    relay-record's OWN relay_channel is the next room (no mesh.nodes reverse map). ──
+describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
+  it('relayOut with an explicit `to` encodes it as the envelope target (originating re-address)', async () => {
+    const sent = [];
+    const origin = createMeshRelay({
+      node: 'origin', send: async (r, t) => sent.push({ room: r.room_id, t }),
+      surface: async () => {}, ackWithPostId: async () => 'p1',
+    });
+    await origin.relayOut({ being: 'carol', route: { room_id: 'Rodz1' }, to: 'don.do', body: 'hola', origin: { chat_id: 'X', name: 'Me' }, sender: 'An' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].room).toBe('Rodz1');
+    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'don.do', body: 'hola' });
+  });
+
+  it('a relay-record forwards into its OWN route (relay_channel), re-addressed to `to`, once', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }), surface: async () => {},
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,   // pure declarative, no mesh.nodes
+      resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
+    });
+    const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'don.do', mid: 'C1' });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz1' }, text: req, msgId: 'a1' });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].room).toBe('Rodz2');
+    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'wren.kg', body: 'hola', mid: 'C1' });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz1' }, text: req, msgId: 'a2' });   // re-seen → forward-once
+    expect(sent).toHaveLength(1);
+  });
+
+  it('the chain COLLAPSES when the next hop is a local being on this node — answers directly', async () => {
+    let answered = null;
+    const kg = createMeshRelay({
+      node: 'kg', send: async () => {}, surface: async () => {},
+      isSelfNode: (n) => n === 'kg', isLocalBeing: (b) => b === 'e' || b === 'egpt',
+      resolveBeingRelay: (b) => (b === 'wren' ? { being: 'egpt', node: 'kg', route: { room_id: 'Rodz3' } } : null),
+      relayDispatch: async ({ being }) => { answered = being; },
+    });
+    const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'wren.kg', mid: 'C2' });
+    await kg.onRoomMessage({ route: { room_id: 'Rodz2' }, text: req, msgId: 'a1' });
+    expect(answered).toBe('e');   // wren→egpt.kg collapses; egpt normalized to the persona being 'e'
+  });
+
+  it('a forwarded reply re-mirrors back into the room the request ARRIVED in (reverse path, no mesh.nodes)', async () => {
+    const opened = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async () => {}, surface: async () => {}, resolveRoute: () => null,
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false,
+      resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
+      openRelayStream: (route) => { opened.push(route.room_id); return { update: () => {}, finish: async () => {} }; },
+    });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz1' }, text: encodeMesh({ by: 'An', body: 'hi', from: 'Me', from_node: 'origin', to: 'don.do', mid: 'C3' }), msgId: 'q1' });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz2' }, text: encodeMesh({ by: 'egpt.kg', body: 'answer', re: 'X.origin', mid: 'C3' }), msgId: 'r1' });
+    expect(opened).toEqual(['Rodz1']);   // back the way it came (arrival), not resolveRoute
+  });
+});
+
 // ── MULTI-HOP REPLY RETURN (the fix, 2026-07-05): a reply must travel back to the ORIGIN
 //    node past a transit hop. The transit node that forwarded the request's outbound leg
 //    carries the reply back via resolveRoute(originNode) — the room where IT reaches the

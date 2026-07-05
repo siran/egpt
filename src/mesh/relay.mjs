@@ -207,10 +207,22 @@ export function createMeshRelay({
   //    reachable node ~once and self-terminates; a loop can't run away. No mid ⇒ never
   //    forwarded.
   const fwdSeen = createMeshSeenCache();
+  // Reverse path for replies: at each node that FORWARDS a request, remember the room the
+  // request arrived in, keyed by mid. A reply then re-mirrors back into that same room (the
+  // way it came) — the general reverse route that works for a pure relay_channel chain (no
+  // mesh.nodes reverse map). Bounded; falls back to resolveRoute(originNode)/arrival below.
+  const fwdArrival = new Map();   // mid -> arrival route
+  const FWD_ARRIVAL_CAP = 500;
+  const rememberArrival = (mid, route) => {
+    if (!mid || !route) return;
+    fwdArrival.set(String(mid), route);
+    if (fwdArrival.size > FWD_ARRIVAL_CAP) fwdArrival.delete(fwdArrival.keys().next().value);
+  };
   const _routeKey = (r) => String(r?.room_id ?? r?.chat ?? JSON.stringify(r ?? null));
   async function forwardToward(destNode, prov, fromRoute, dir) {
     if (!destNode || !prov.mid) return false;
     if (fwdSeen.checkAndMark(`${dir}:${prov.mid}`)) { log(`mesh: drop ${dir} ${prov.mid} — already forwarded`); return false; }
+    if (dir === 'req') rememberArrival(prov.mid, fromRoute);
     const dest = resolveRoute(destNode);
     if (!dest || _routeKey(dest) === _routeKey(fromRoute)) return false;   // no onward route / would echo back
     log(`mesh: forward ${dir} ${prov.mid} → ${destNode}`);
@@ -225,9 +237,9 @@ export function createMeshRelay({
   // supplies the relay_channel directly, with no node. When there's no toNode the
   // envelope carries an EMPTY `to:` — the open-channel path (the owner of `being` on the
   // other end answers, everyone else stays silent) — and the labels drop the `.node`.
-  async function relayOut({ being, toNode, route: directRoute = null, body = '', origin = null, sender = '' } = {}) {
+  async function relayOut({ being, toNode, route: directRoute = null, to: explicitTo = '', body = '', origin = null, sender = '' } = {}) {
     const route = directRoute ?? resolveRoute(toNode);
-    const tgt = toNode ? `${being}.${toNode}` : being;         // human-readable label
+    const tgt = explicitTo || (toNode ? `${being}.${toNode}` : being);   // human-readable label
     if (!route) { await surface(origin, `!! mesh: no route to ${tgt}`); return false; }
     const fromName = (origin && origin.name) || '';
     // Post the placeholder FIRST so we can capture its msgId as post_id. The responder
@@ -250,7 +262,9 @@ export function createMeshRelay({
       // `to: being.node` (e.g. "don.do") encodes both target being and node so the responder
       // can identify without relying on @mention parsing.
       const mid = makeMeshRequestId({ node });
-      const to = toNode ? `${being}.${toNode}` : '';            // route-direct: open-channel (no target node)
+      // A relay agent's declarative `to: <being>.<node>` names the next hop (chain); else a
+      // node-qualified target (mesh.nodes scheme); else empty = open-channel (no target node).
+      const to = explicitTo || (toNode ? `${being}.${toNode}` : '');
       const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', mid }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
@@ -298,7 +312,7 @@ export function createMeshRelay({
             // arrival room (that dead-ended the reply one hop short). Fall back to the arrival
             // route only when the origin node can't be resolved (single-room degenerate case —
             // same-channel re-mirror is loop-safe).
-            const upstream = resolveRoute(originNode) || route;
+            const upstream = fwdArrival.get(String(prov.mid)) || resolveRoute(originNode) || route;
             log(`mesh: return-mirror rep ${prov.mid} → ${originNode || '(arrival)'} (I forwarded its request)`);
             const handle = openRelayStream(upstream, { by: prov.by, re: prov.re, mid: prov.mid });
             if (handle) s = { handle };
@@ -348,9 +362,10 @@ export function createMeshRelay({
       // re-address and forward toward it (re-resolution; BEING-MESH §3). Loop-safe via the
       // same mid (forward-once); re-addressing is legit even in the same room (no echo guard).
       const _rec = resolveBeingRelay(being);
-      if (_rec) {
+      if (_rec && !(isSelfNode(_rec.node) && isLocalBeing(_rec.being))) {
         if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}`)) {
-          const dest = resolveRoute(_rec.node);
+          rememberArrival(prov.mid, route);                     // reply comes back the way it came
+          const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes
           if (dest) {
             log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
             await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, mid: prov.mid, body: prov.body }));
@@ -358,6 +373,10 @@ export function createMeshRelay({
         }
         return true;
       }
+      // Chain COLLAPSES here: the relay's next hop is a LOCAL being on THIS node (e.g.
+      // `wren: to: egpt.kg` where egpt is our persona) — relaying across a room to
+      // ourselves is blocked by echo suppression, so answer AS that being directly.
+      if (_rec) being = _rec.being === 'egpt' ? 'e' : _rec.being;
       if (!isLocalBeing(being)) {
         await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress, mid: prov.mid }));
         return true;

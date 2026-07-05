@@ -58,12 +58,16 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
           const found = findAgent(agents, at[1].toLowerCase());
           if (found) {
             const { name, agent } = found;
-            if (String(agent.configuration ?? '').toLowerCase() === 'relay') {
-              // RELAY agent → a mesh target whose ROUTE is the relay_channel (a chat
-              // NAME or a raw room id — the bridge send/stream resolves names via
-              // resolveChatId, so BOTH work; we pass it through as room_id). No node:
-              // mesh.forward uses this route directly (route-direct variant).
-              return { being: null, mesh: { being: name, route: { room_id: agent.relay_channel } }, mention: { ...MENTION } };
+            // A RELAY agent is one carrying a `relay_channel:` (or the legacy explicit
+            // `configuration: relay`). It forwards rather than answers: the message goes
+            // into the relay_channel as a mesh envelope. An optional `to: <being>.<node>`
+            // names the NEXT hop (a declarative relay chain — the next node re-addresses
+            // onward via its own agent entry); no `to` = open-channel (the owner of this
+            // being on the far end answers). mesh.forward uses the route directly.
+            if (agent.relay_channel || String(agent.configuration ?? '').toLowerCase() === 'relay') {
+              const to = String(agent.to ?? '').trim();
+              const mesh = { being: name, route: { room_id: agent.relay_channel }, ...(to ? { to } : {}) };
+              return { being: null, mesh, mention: { ...MENTION } };
             }
             // The PERSONA agent routes to the canonical default being (stable keys).
             if (agentIds(name, agent).some((h) => h === defaultBeing || h === 'e' || h === 'egpt')) {

@@ -122,8 +122,28 @@ export function createMeshService({
       const n = String(name).toLowerCase();
       if (n === 'e' || n === 'egpt') return true;
       const a = agents()[n];
-      return !!a && typeof a === 'object' && !Array.isArray(a)
-        && String(a.configuration ?? '').toLowerCase() !== 'relay' && a.enabled !== false;
+      if (!a || typeof a !== 'object' || Array.isArray(a) || a.enabled === false) return false;
+      // A relay agent (has relay_channel / to, or explicit configuration: relay) forwards
+      // rather than answers — it is NOT a local being.
+      const isRelay = !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
+      return !isRelay;
+    },
+    // RELAY-RECORD (declarative chain): a relay agent with `to: <being>.<node>` re-addresses
+    // an arriving request onward. Returns { being, node, route } — the next hop's being/node
+    // and the room to post into (this agent's own relay_channel; falls back to the mesh.nodes
+    // route for `node` when relay_channel is absent). No `to` → not a relay-record (open-channel
+    // or a terminal being). This wires the engine's existing relay-record branch to config.
+    resolveBeingRelay: (being) => {
+      const a = agents()[String(being).toLowerCase()];
+      if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
+      const to = String(a.to ?? '').trim();
+      if (!to) return null;
+      const parts = to.split('.');
+      const b = parts[0].toLowerCase();
+      const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
+      const route = a.relay_channel ? { room_id: String(a.relay_channel) } : (n ? resolveRoute(n) : null);
+      if (!route) return null;
+      return { being: b, node: n, route };
     },
     // Post an envelope into a relay channel. No body_emoji → the port passes the text
     // (the full mesh envelope) through verbatim; the tail must survive untouched.
@@ -236,12 +256,13 @@ export function createMeshService({
       const being = target?.being;
       const toNode = target?.node;
       const route = target?.route;                              // route-direct (relay agent)
+      const to = String(target?.to ?? '').trim();               // declarative next-hop (chain)
       if (!being || (!toNode && !route)) { onLog(`forward: bad target ${JSON.stringify(target)}`); return false; }
       const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
       const sender = ev.senderName ?? 'someone';
-      const label = toNode ? `${being}.${toNode}` : `${being} (${chatOf(route)})`;
+      const label = to || (toNode ? `${being}.${toNode}` : `${being} (${chatOf(route)})`);
       armTimeout(ev.chatId, label);
-      const ok = await relay.relayOut({ being, toNode, route, body: ev.body, origin, sender });
+      const ok = await relay.relayOut({ being, toNode, route, to, body: ev.body, origin, sender });
       if (!ok) clearTimeoutFor(ev.chatId);                      // relayOut already surfaced the failure
       return ok;
     },
