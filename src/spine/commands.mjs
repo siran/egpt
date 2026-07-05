@@ -393,13 +393,32 @@ export function createCommands({
     const b = getBeing(state, r.surface, r.jid, 'e');
     const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
 
+    // Instanced = this being took a first turn and froze a readonly brain (getBeing's
+    // brainType is null until then, matching brainpool's own instanced check). Uninstanced:
+    // preview what a first turn would actually pin, composed the same way brainpool's
+    // fresh-turn path does — brains.resolve('egpt', …) + coerceAllowedTools + the
+    // DETERMINISTIC_MODEL/EFFORT fallbacks — reusing exactly the exports commands.mjs
+    // already reaches (brains, coerceAllowedTools, DETERMINISTIC_MODEL/EFFORT,
+    // DEFAULT_ALLOWED_TOOLS). This does NOT replicate brainpool's private
+    // persona-agent-configuration override lookup (agents.<e/egpt>.configuration is not
+    // exported) — it previews the shipped 'egpt' type, which matches the skeleton default
+    // and any profile that hasn't repointed the persona; an operator who HAS repointed it
+    // sees the shipped default here until the first turn actually pins their override.
+    const instanced = !!b?.brainType;
+    let previewDef = null;
+    if (!instanced) {
+      try { previewDef = coerceAllowedTools(brains?.resolve?.('egpt', { convDir })); } catch { previewDef = null; }
+    }
+
     // Personality: resolved the way the brainpool does — the agent TYPE file's
     // `personality:` field, else 'egpt' (brains registry, same layered resolution the
-    // /e wizard's preview uses). A never-instanced being has no type to resolve yet.
+    // /e wizard's preview uses). Uninstanced: resolved from the same default preview above.
     let personality = '?';
     if (b?.agent) {
       try { const def = brains?.resolve?.(b.agent, { convDir }); personality = def ? (def.personality ?? 'egpt') : '?'; }
       catch { personality = '?'; }
+    } else if (!instanced) {
+      personality = previewDef?.personality ?? 'egpt';
     }
 
     let members = 'unknown';
@@ -437,17 +456,30 @@ export function createCommands({
       if (Array.isArray(doc?.heartbeats) && convDir) hb = doc.heartbeats.filter((h) => h?.source === convDir || h?.cwd === convDir).length;
     } catch { hb = null; }
 
+    // Uninstanced fields fall back to the default preview computed above; instanced
+    // fields are the exact expressions this rendered before (regression-lock: an
+    // instanced conversation's output is unchanged byte-for-byte).
+    const agentVal = instanced ? (b?.agent ?? '?') : (previewDef?.name ?? 'egpt');
+    const engineVal = instanced ? (b?.brainType ?? '?') : (previewDef?.type ?? CCODE);
+    const modelVal = instanced ? (b?.model ?? '?') : (previewDef?.model ?? DETERMINISTIC_MODEL);
+    const effortVal = instanced ? (b?.effort ?? '?') : (previewDef?.effort ?? DETERMINISTIC_EFFORT);
+    const toolsRaw = instanced ? b?.allowedTools : (previewDef?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS);
+    const toolsVal = Array.isArray(toolsRaw) ? `[${toolsRaw.join(', ')}]` : (toolsRaw ?? '?');
+
     const lines = [
       `name: ${displayName}`,
       `surface: ${r.surface}`,
       `slug: ${slug}`,
       `conversation_path: ${convPath}`,
       `mode: ${mode}`,
-      `agent: ${b?.agent ?? '?'}`,
-      `engine: ${b?.brainType ?? '?'}`,
-      `model: ${b?.model ?? '?'}`,
-      `effort: ${b?.effort ?? '?'}`,
-      `allowed_tools: ${Array.isArray(b?.allowedTools) ? `[${b.allowedTools.join(', ')}]` : (b?.allowedTools ?? '?')}`,
+      // Marker: a single line rather than suffixing all six fields below — reads cleaner
+      // in the fenced yaml and stays machine-checkable. Omitted when instanced (regression-lock).
+      ...(instanced ? [] : ['instanced: false']),
+      `agent: ${agentVal}`,
+      `engine: ${engineVal}`,
+      `model: ${modelVal}`,
+      `effort: ${effortVal}`,
+      `allowed_tools: ${toolsVal}`,
       `personality: ${personality}`,
       `thread_id: ${b?.threadId ?? 'not started'}`,
       `members: ${members}`,

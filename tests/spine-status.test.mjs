@@ -181,7 +181,7 @@ describe('/status <target>', () => {
     expect(sent[0].text).toMatch(/^\/status: no chat matches "zzz"/);
   });
 
-  it('a NEVER-STARTED conversation: every unresolved field degrades independently (agent/personality "?", thread "not started", members "unknown")', async () => {
+  it('a NEVER-STARTED conversation with NO brains registry: default preview falls back to the deterministic constants, marked `instanced: false`', async () => {
     const { state: created } = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const { cmds, sent } = harness({
       loadState: async () => created,
@@ -196,15 +196,37 @@ describe('/status <target>', () => {
     expect(text).toMatch(/slug: HFM-\d{10}/);
     expect(text).toMatch(/conversation_path: .*conversations\/whatsapp\/HFM-\d{10}/);
     expect(text).toMatch(/mode: mention \(default\)/);   // no per-conv mode set → global default, marked
-    expect(text).toMatch(/agent: \?/);
-    expect(text).toMatch(/engine: \?/);
-    expect(text).toMatch(/model: \?/);
-    expect(text).toMatch(/effort: \?/);
-    expect(text).toMatch(/allowed_tools: \?/);
-    expect(text).toMatch(/personality: \?/);            // never instanced → no type to resolve
+    expect(text).toMatch(/instanced: false/);
+    expect(text).toMatch(/agent: egpt/);
+    expect(text).toMatch(/engine: ccode/);
+    expect(text).toMatch(/model: sonnet/);               // DETERMINISTIC_MODEL fallback (no brains registry)
+    expect(text).toMatch(/effort: high/);                // DETERMINISTIC_EFFORT fallback
+    expect(text).toMatch(/allowed_tools: \[Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, Task\]/);   // DEFAULT_ALLOWED_TOOLS
+    expect(text).toMatch(/personality: egpt/);
     expect(text).toMatch(/thread_id: not started/);
     expect(text).toMatch(/members: unknown/);            // no transcript yet
     expect(text).not.toMatch(/heartbeats:/);              // omitted, not '?' — matches bare /status's optional `mode` pattern
+  });
+
+  it('a NEVER-STARTED conversation WITH a brains registry: previews the resolved default type\'s model/effort/tools/personality', async () => {
+    const { state: created } = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
+    const brains = { resolve: (name) => (name === 'egpt' ? { name: 'egpt', type: 'ccode', model: 'opus', effort: 'low', allowed_tools: ['Read'], personality: 'poet' } : null) };
+    const { cmds, sent } = harness({
+      loadState: async () => created,
+      brains,
+      io: { readFile: readFileBySuffix({ 'transcript.md': NO_TRANSCRIPT, 'heartbeats.readonly.yaml': NO_HEARTBEATS }) },
+    });
+
+    await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/instanced: false/);
+    expect(text).toMatch(/agent: egpt/);
+    expect(text).toMatch(/engine: ccode/);
+    expect(text).toMatch(/model: opus/);
+    expect(text).toMatch(/effort: low/);
+    expect(text).toMatch(/allowed_tools: \[Read\]/);
+    expect(text).toMatch(/personality: poet/);
+    expect(text).toMatch(/thread_id: not started/);
   });
 
   it('an INSTANCED conversation: frozen agent/model/effort/allowed_tools, personality resolved via the brains registry, thread id, and members from the transcript tail', async () => {
