@@ -6,7 +6,7 @@ import { createCommands } from '../src/spine/commands.mjs';
 import { createSpine } from '../spine.mjs';
 import { emptyState, ensureContact, getBeing, recordThread, patchContact, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../conversations-state.mjs';
 
-function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'] } = {}) {
+function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high'], brains, identityLayers = ['default'], io = {} } = {}) {
   const sent = [], exits = [], rewinds = [], writes = [], evicts = [];
   const files = {};   // custom-branch authored files (agent-type yaml + identity layer)
   let st = state;
@@ -22,7 +22,7 @@ function harness({ config = {}, state = null, agentTypes = ['egpt', 'sonnet-high
     brains: brains ?? { resolve: (name) => ({ name, type: 'ccode', allowed_tools: 'all' }) },
     evictWarm: (key) => evicts.push(key),
     agentsDir: '/agents', identitiesDir: '/identities',
-    io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {} },
+    io: { writeFile: async (p, c) => { files[p] = c; }, mkdir: async () => {}, ...io },
   });
   return { cmds, sent, exits, rewinds, writes, evicts, files, getState: () => st };
 }
@@ -141,6 +141,59 @@ describe('commands.run', () => {
   });
 });
 
+// resolveTarget cross-surface fallback (operator 2026-07-05 live bug): from the whatsapp
+// Self DM, "/e auto auto miss" reported "no chat matches" even though a telegram chat
+// "Miss Xinyi" was registered — resolveTarget only ever searched the command's own
+// surface. Own-surface hits still win with no ambiguity check against other surfaces;
+// only a ZERO own-surface hit falls through to every other KNOWN_SURFACES entry.
+describe('/e auto <target>: cross-surface resolution', () => {
+  it('a TELEGRAM chat targeted by name from the whatsapp Self DM resolves + patches the TELEGRAM entry', async () => {
+    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'telegram', '!miss:something', 'e').mode).toBe('on');   // the TELEGRAM entry
+    expect(getBeing(getState(), 'whatsapp', '!miss:something', 'e')).toBe(null);         // whatsapp has no such being
+    expect(sent[0].text).toMatch(/Miss Xinyi.*→ on/);
+  });
+
+  it('a same-surface hit wins silently even when another surface ALSO matches the term', async () => {
+    let state = ensureContact(emptyState(), 'whatsapp', '!miss-wa:beeper.local', { pushedName: 'Miss Wa', slugHint: 'miss-wa' }).state;
+    state = ensureContact(state, 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
+    const { cmds, sent, getState } = harness({ state });
+    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    expect(getBeing(getState(), 'whatsapp', '!miss-wa:beeper.local', 'e').mode).toBe('on');   // the OWN-surface hit
+    expect(getBeing(getState(), 'telegram', '!miss-tg:something', 'e').mode).toBe(null);       // telegram untouched, no ambiguity check
+    expect(sent[0].text).not.toMatch(/be more specific/);
+  });
+
+  it('cross-surface ambiguity (own surface 0 hits, two OTHER surfaces match) lists each hit with its surface', async () => {
+    let state = ensureContact(emptyState(), 'telegram', '!miss-tg:something', { pushedName: 'Miss Tg', slugHint: 'miss-tg' }).state;
+    state = ensureContact(state, 'signal', '!miss-sig:something', { pushedName: 'Miss Sig', slugHint: 'miss-sig' }).state;
+    const { cmds, sent, writes } = harness({ state });
+    await cmds.run({ body: '/e auto on miss', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/matches 2/);
+    expect(sent[0].text).toMatch(/Miss Tg \(telegram\)/);
+    expect(sent[0].text).toMatch(/Miss Sig \(signal\)/);
+    expect(sent[0].text).toMatch(/be more specific/);
+    expect(writes).toHaveLength(0);
+  });
+});
+
+describe('/status <target>: cross-surface resolution', () => {
+  it('/status <cross-surface target> reports the TELEGRAM conversation, not the whatsapp origin', async () => {
+    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
+    // io.readFile always misses (no transcript/heartbeats fixtures) — every such probe
+    // degrades independently (matches the /status <target> degrade tests); this test
+    // only cares that the reported conversation is the resolved TARGET surface.
+    const { cmds, sent } = harness({ state, io: { readFile: async () => { throw new Error('ENOENT'); } } });
+    await cmds.run({ body: '/status miss', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/name: Miss Xinyi/);
+    expect(text).toMatch(/surface: telegram/);       // the resolved TARGET surface, not whatsapp
+    expect(text).toMatch(/slug: Miss Xinyi/);
+  });
+});
+
 describe('loop intercept', () => {
   it('a command is handled, NOT routed to the brain (and is logged)', async () => {
     let cb = null;
@@ -226,6 +279,17 @@ describe('/e wizard', () => {
     await cmds.run({ ...ev, body: '1' });   // type → egpt → applies immediately (deterministic floor)
     expect(getBeing(getState(), 'whatsapp', '!hfm:beeper.local', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
     expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM untouched
+  });
+
+  it('/e <cross-surface target> arms + applies to the TELEGRAM conversation (initWizard/buildResult surface threading)', async () => {
+    const state = ensureContact(emptyState(), 'telegram', '!miss:something', { pushedName: 'Miss Xinyi', slugHint: 'miss-xinyi' }).state;
+    const { cmds, sent, getState } = harness({ state, config: { whatsapp: { chat_id: '!self' } } });
+    const ev = { chatId: '!self', surface: 'whatsapp' };   // typed in the whatsapp Self DM
+    await cmds.run({ ...ev, body: '/e miss' });            // arm — target resolved cross-surface onto telegram
+    expect(sent[0].text).toMatch(/reconfigure «Miss Xinyi»/i);
+    await cmds.run({ ...ev, body: '1' });                  // type → egpt → applies immediately (deterministic floor)
+    expect(getBeing(getState(), 'telegram', '!miss:something', 'e')).toMatchObject({ agent: 'egpt', model: 'sonnet', effort: 'high' });
+    expect(getBeing(getState(), 'whatsapp', '!self', 'e')).toBe(null);   // Self DM (operator chat) untouched
   });
 
   it('x cancels an armed wizard (nothing written, no longer armed)', async () => {

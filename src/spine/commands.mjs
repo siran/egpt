@@ -10,7 +10,7 @@
 // with a short note.
 import { lifecycleExit } from './ingest.mjs';
 import { isAutoMode, AUTO_MODES, DEFAULT_AUTO_MODE } from '../auto-mode.mjs';
-import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { patchContact, getContact, getBeing, slugDir, statsPath, conversationPathOf, listIdentityLayers as defaultListIdentityLayers, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS, READONLY_ALLOWED_TOOLS, KNOWN_SURFACES } from '../../conversations-state.mjs';
 import { stripFrontMatter } from '../transcript-meta.mjs';
 import { initWizard, wizardStep, wizardPrompt } from '../agent-wizard.mjs';
 import { BUILTIN_BRAINS_DIR, PROFILE_AGENTS_DIR } from './brains.mjs';
@@ -95,18 +95,17 @@ function humanizeUptime(sec) {
 
 // Resolve a target chat for `/e auto <mode> <target>` (so the operator can set a
 // remote chat's mode from the Self DM). A verbatim @jid / room-id is used as-is;
-// otherwise a fuzzy slug/name fragment is matched against the surface's contacts —
-// exactly one must match (else: not-found / ambiguous). Conv-state only: the chat
-// you'd set a mode for is one E has already seen, so it is a contact.
-function resolveTarget(state, term, surface) {
-  if (/[@!]|:beeper/.test(term)) {
-    // A verbatim jid must still be a chat E has seen — else patchContact silently
-    // no-ops (returns state unchanged) and we'd report a false "✅" for a typo'd or
-    // never-seen id. Resolve it through getContact so a bad id fails loudly here.
-    const c = getContact(state, surface, term);
-    if (!c) return { error: `no chat matches "${term}" — E hasn't seen that chat id` };
-    return { jid: c.jid, name: c.slug };
-  }
+// otherwise a fuzzy slug/name fragment is matched against contacts. The command's
+// OWN surface is searched first (unchanged behavior on a hit there — same-surface
+// always wins, even when other surfaces also match); only when the own surface has
+// ZERO hits does this fall through to every OTHER known surface (operator 2026-07-05:
+// naming a telegram chat from the whatsapp Self DM used to report "no chat matches" —
+// resolveTarget never looked past its own surface). The returned object always
+// carries the MATCHED `surface`, which may differ from the `surface` param, so
+// callers act on the right conversation instead of assuming their own ev.surface.
+// Conv-state only: the chat you'd set a mode for is one E has already seen, so it
+// is a contact.
+function fuzzyHits(state, surface, term) {
   const bucket = state?.contacts?.[surface] ?? {};
   const needle = term.toLowerCase();
   const hits = [];
@@ -115,9 +114,37 @@ function resolveTarget(state, term, surface) {
     const name = String(entry.pushedName ?? entry.slug);
     if (name.toLowerCase().includes(needle) || String(entry.slug).toLowerCase().includes(needle)) hits.push({ jid, name });
   }
-  if (!hits.length) return { error: `no chat matches "${term}" — try the exact name or its @jid` };
-  if (hits.length > 1) return { error: `"${term}" matches ${hits.length}: ${hits.slice(0, 6).map((h) => h.name).join(', ')} — be more specific` };
-  return hits[0];
+  return hits;
+}
+
+function resolveTarget(state, term, surface) {
+  if (/[@!]|:beeper/.test(term)) {
+    // A verbatim jid must still be a chat E has seen — else patchContact silently
+    // no-ops (returns state unchanged) and we'd report a false "✅" for a typo'd or
+    // never-seen id. Resolve it through getContact so a bad id fails loudly here.
+    // Own surface first, then every other known surface in turn — first found wins
+    // (jids are surface-namespaced, so a cross-surface collision isn't a practical
+    // concern; no ambiguity handling needed here).
+    const c = getContact(state, surface, term);
+    if (c) return { jid: c.jid, name: c.slug, surface };
+    for (const s of KNOWN_SURFACES) {
+      if (s === surface) continue;
+      const oc = getContact(state, s, term);
+      if (oc) return { jid: oc.jid, name: oc.slug, surface: s };
+    }
+    return { error: `no chat matches "${term}" — E hasn't seen that chat id` };
+  }
+  const ownHits = fuzzyHits(state, surface, term);
+  if (ownHits.length === 1) return { ...ownHits[0], surface };
+  if (ownHits.length > 1) return { error: `"${term}" matches ${ownHits.length}: ${ownHits.slice(0, 6).map((h) => h.name).join(', ')} — be more specific` };
+  const crossHits = [];
+  for (const s of KNOWN_SURFACES) {
+    if (s === surface) continue;
+    for (const h of fuzzyHits(state, s, term)) crossHits.push({ ...h, surface: s });
+  }
+  if (!crossHits.length) return { error: `no chat matches "${term}" — try the exact name or its @jid` };
+  if (crossHits.length > 1) return { error: `"${term}" matches ${crossHits.length}: ${crossHits.slice(0, 6).map((h) => `${h.name} (${h.surface})`).join(', ')} — be more specific` };
+  return crossHits[0];
 }
 
 export function createCommands({
@@ -218,13 +245,13 @@ export function createCommands({
       if (!loadState || !writeState) { await send?.(ev.chatId, '/e auto: conversation state not wired'); return; }
       try {
         const state = await loadState();
-        let jid = ev.chatId, where = 'here';
+        let jid = ev.chatId, where = 'here', targetSurface = ev.surface;
         if (targetTerm) {
           const r = resolveTarget(state, targetTerm, ev.surface);
           if (r.error) { await send?.(ev.chatId, `/e auto: ${r.error}`); return; }
-          jid = r.jid; where = `for ${r.name}`;
+          jid = r.jid; where = `for ${r.name}`; targetSurface = r.surface;
         }
-        await writeState(patchContact(state, ev.surface, jid, { mode }));
+        await writeState(patchContact(state, targetSurface, jid, { mode }));
         await send?.(ev.chatId, `✅ E mode ${where} → ${mode}`);
       } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
       return;
@@ -345,7 +372,7 @@ export function createCommands({
   // where that reads clearer) — this never throws, matching bare /status.
   async function statusTarget(ev, term) {
     if (!loadState) return '/status: conversation state not wired';
-    const surface = ev.surface ?? 'whatsapp';
+    const surface = ev.surface ?? 'whatsapp';   // search origin only; downstream uses r.surface, the resolved TARGET (may differ, 2026-07-05)
     let state, r;
     try {
       state = await loadState();
@@ -353,17 +380,17 @@ export function createCommands({
     } catch (e) { return `/status: failed — ${e?.message ?? e}`; }
     if (r.error) return `/status: ${r.error}`;
 
-    const c = getContact(state, surface, r.jid);
+    const c = getContact(state, r.surface, r.jid);
     const slug = c?.slug ?? r.name;
     const displayName = c?.entry?.pushedName ?? r.name;
 
     let convDir = null;
-    try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+    try { convDir = slugDir(r.surface, slug); } catch { /* non-default surface */ }
 
     let convPath = c?.entry?.conversation_path;
-    if (!convPath) { try { convPath = conversationPathOf(surface, slug); } catch { convPath = '?'; } }
+    if (!convPath) { try { convPath = conversationPathOf(r.surface, slug); } catch { convPath = '?'; } }
 
-    const b = getBeing(state, surface, r.jid, 'e');
+    const b = getBeing(state, r.surface, r.jid, 'e');
     const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
 
     // Personality: resolved the way the brainpool does — the agent TYPE file's
@@ -389,7 +416,7 @@ export function createCommands({
     // by the chat id r.jid) so this call site can't drift from where the spine writes it.
     if (convDir) {
       try {
-        const statsFp = await statsPath(surface, r.jid, { name: displayName, io, rename: false });
+        const statsFp = await statsPath(r.surface, r.jid, { name: displayName, io, rename: false });
         const m = YAML.parse(await readFile(statsFp, 'utf8'))?.members;
         if (m && typeof m === 'object' && Object.keys(m).length) {
           const aliases = cfg().aliases ?? {};
@@ -412,7 +439,7 @@ export function createCommands({
 
     const lines = [
       `name: ${displayName}`,
-      `surface: ${surface}`,
+      `surface: ${r.surface}`,
       `slug: ${slug}`,
       `conversation_path: ${convPath}`,
       `mode: ${mode}`,
@@ -435,18 +462,18 @@ export function createCommands({
   // under (so `done` can evict exactly that entry). Posts the first numbered prompt.
   async function armWizard(ev, targetTerm) {
     if (!loadState || !writeState) { await send?.(ev.chatId, '/e: conversation state not wired'); return; }
-    const surface = ev.surface ?? 'whatsapp';
-    let state, jid, slug, displayName;
+    const surface = ev.surface ?? 'whatsapp';   // search origin only; targetSurface (below) is the resolved TARGET (may differ, 2026-07-05)
+    let state, jid, slug, displayName, targetSurface = surface;
     try {
       state = await loadState();
       if (targetTerm) {
         const r = resolveTarget(state, targetTerm, surface);
         if (r.error) { await send?.(ev.chatId, `/e: ${r.error}`); return; }
-        jid = r.jid;
+        jid = r.jid; targetSurface = r.surface;
       } else {
         jid = ev.chatId;
       }
-      const c = getContact(state, surface, jid);
+      const c = getContact(state, targetSurface, jid);
       if (!c) { await send?.(ev.chatId, `/e: no chat matches "${targetTerm ?? 'this chat'}" — send a message there first`); return; }
       slug = c.slug; jid = c.jid;
       displayName = c.entry?.pushedName ?? slug;   // operator-facing label (slug carries a date suffix)
@@ -458,7 +485,7 @@ export function createCommands({
     // null, and a pickable option that then errors on `done` is a poor UX. Keep the raw
     // names only if resolution surprisingly drops everything (misconfig) so the operator
     // isn't stuck.
-    let convDir = null; try { convDir = slugDir(surface, slug); } catch { /* non-default surface */ }
+    let convDir = null; try { convDir = slugDir(targetSurface, slug); } catch { /* non-default surface */ }
     const names = listAgentTypes();
     let configurations = names.map((n) => ({ name: n }));   // fallback: bare names, no preview
     if (brains?.resolve) {
@@ -478,14 +505,14 @@ export function createCommands({
     // The conversation's CURRENT instanced def marks the matching option `(current)`
     // and its frozen engine keys the warm entry to evict on done (null = never
     // instanced → fall back to the new def's engine at apply time).
-    const cur = getBeing(state, surface, jid, 'e');
+    const cur = getBeing(state, targetSurface, jid, 'e');
     // The tools-branch "keep current" display: the live frozen list, coerced (a legacy
     // 'all' shows — and later freezes — as the explicit list, never perpetuated).
     const curTools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? null;
     const options = { configurations, models: WIZARD_MODELS, efforts: WIZARD_EFFORTS, personalities, takenNames };
     const current = { configurations: cur?.agent ?? null, models: cur?.model ?? null, efforts: cur?.effort ?? null, tools: curTools };
-    const wstate = initWizard({ slug, jid, surface, options, current });
-    wizards.set(chatKey(ev), { state: wstate, surface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
+    const wstate = initWizard({ slug, jid, surface: targetSurface, options, current });
+    wizards.set(chatKey(ev), { state: wstate, surface: targetSurface, chatId: ev.chatId, oldEngine: cur?.brainType ?? null, ts: Date.now() });
     await send?.(ev.chatId, `🧩 reconfigure «${displayName}»\n${wizardPrompt(wstate)}`);
   }
 
