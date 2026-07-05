@@ -72,3 +72,28 @@ describe('sender — single-message reply train', () => {
     expect(bridge.streams[0].finals[0]).toMatch(/partial … ❌ Sending failed\./);
   });
 });
+
+// mode:auto — E impersonates the operator (operator 2026-07-05): the reply is PLAIN
+// operator text. NO thinking scaffold (no "⏳ Thinking…" placeholder, no streamed edits),
+// NO ∎ terminator, and NO persona tag (no bodyEmoji/label → the port stamps nothing). It
+// posts ONCE, complete, on finish; a withheld/empty reply posts nothing.
+describe('sender — mode:auto post-once (no persona head, no ∎, no thinking train)', () => {
+  it('posts ONCE as plain text: no placeholder/stream ever opens, streamed tokens ignored, no ∎, no bodyEmoji/label', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt' }).open('!c', { being: 'e', replyTo: 'm1', auto: true });
+    expect(bridge.streams).toHaveLength(0);                    // NO thinking train opened
+    out.update('partial');                                     // streamed tokens are dropped in auto
+    await out.finish({ text: 'Hey, all good' });
+    expect(bridge.streams).toHaveLength(0);                    // still none — post-once only
+    expect(bridge.sent).toEqual([{ chat: '!c', text: 'Hey, all good', opts: { replyTo: 'm1' } }]);   // plain: no ∎, no bodyEmoji/label
+  });
+
+  it('a withheld (silence) or empty auto reply posts NOTHING — staying silent is a valid operator move', async () => {
+    const bridge = fakeBridge();
+    const out = createSender({ bridge, bodyEmojiOf: () => '🐶' }).open('!c', { being: 'e', auto: true });
+    await out.finish({ text: '' }, { surface: true });          // empty
+    await out.finish({ text: 'x' }, { surface: false });         // withheld ('…' silence)
+    expect(bridge.sent).toHaveLength(0);
+    expect(bridge.streams).toHaveLength(0);
+  });
+});

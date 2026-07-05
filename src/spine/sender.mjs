@@ -32,7 +32,25 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
-    open(chatId, { being = 'e', replyTo = null, queued = false, queuedAhead = 0 } = {}) {
+    open(chatId, { being = 'e', replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
+      // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
+      // NO persona line (no body_emoji/label tag passed → the port stamps nothing), NO ∎
+      // terminator, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
+      // edits, no queued placeholder. It posts ONCE, complete, when the turn finishes, the
+      // way a human types a single message. A withheld ('…' silence, surface:false) or
+      // empty reply posts NOTHING — silence is a valid operator move.
+      if (auto) {
+        return {
+          activate() {},
+          update() {},
+          async finish(reply, { surface = true } = {}) {
+            const t = textOf(reply);
+            if (!surface || !t.trim()) return;          // withheld / empty → post nothing
+            await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no ∎
+          },
+          async fail() { /* a human doesn't post a typing/failure scaffold — stay silent */ },
+        };
+      }
       const bodyEmoji = bodyEmojiOf(being);
       const label = labelOf(being);
       const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona line (emoji + label) from these

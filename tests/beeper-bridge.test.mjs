@@ -470,6 +470,21 @@ describe('beeper bridge', () => {
     expect(incoming[0].text).toBe('a real message');
   });
 
+  it("mode:auto echo: E's OWN plain reply (no persona marker) is suppressed by sent-ids/text, but the operator's genuinely-typed line passes through", async () => {
+    // In an auto chat E sends PLAIN operator text — no 🐶 body_emoji — so the
+    // persona-marker guard cannot catch its echo; the sent-ids/text window IS the
+    // suppression key (refinement #4). The operator's OWN typed line is isSender too but
+    // was never sent by us, so it is NOT suppressed and reaches the host to accumulate.
+    const { bridge, incoming } = await startBridge();   // NO personaEmoji — auto sends carry none
+    await bridge.send('all good, talk soon', { chatId: CHAT('chat-1') });
+    await waitFor(() => fake.posts.length === 1);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'echo-id', isSender: true, text: 'all good, talk soon' })] });   // E's reply, echoed back
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'op-id', isSender: true, text: 'note for later' })] });          // operator's OWN typed message
+    await waitFor(() => incoming.some((i) => i.text === 'note for later'));
+    expect(incoming.map((i) => i.text)).not.toContain('all good, talk soon');   // echo suppressed via sent-ids/text window
+    expect(incoming.find((i) => i.text === 'note for later').from.isSender).toBe(true);   // operator's own line passes through → spine accumulates it
+  });
+
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
     const { incoming } = await startBridge();
     const m = liveMsg();

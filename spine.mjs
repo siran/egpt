@@ -260,6 +260,14 @@ export function createSpine({
     // later queued mention on the same conversation drains exactly this chat's cycle.
     const turnKey = `${to}:${ev.surface}:${ev.chatId}`;
 
+    // mode:auto is an IMPERSONATION of the operator: E replies to OTHER people AS the
+    // operator, and the operator's OWN messages (isSender) here NEVER prompt E. Log +
+    // accumulate the line into this conversation's cycle so the NEXT other-person turn is
+    // prompted WITH it (full context), and run no turn. Only the operator's genuinely-
+    // typed lines reach here — E's own auto replies come back isSender too but are dropped
+    // upstream by the bridge's sent-ids echo guard (isEcho), never re-entering the spine.
+    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return; }
+
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
     // even when it won't reply). Otherwise the message is logged only — E reads
@@ -289,7 +297,10 @@ export function createSpine({
       const m = mention ?? {};
       const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
       const ahead = bumpTrain(turnKey);
-      const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead });
+      // mode:auto posts the reply as PLAIN operator text — no persona line, no ∎, and NO
+      // thinking scaffold (no placeholder, no streamed edits): the sender's auto handle
+      // post-once's on finish. `auto` selects it.
+      const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
       const turn = turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0 }));
       return { turn };
     }
@@ -341,7 +352,12 @@ export function createSpine({
       // mention line); an IMMEDIATE turn discards it and keeps the single dispatch line —
       // draining either way advances the baseline the next turn's cycle starts from.
       const pending = drainCycle(turnKey);
-      const promptEv = (queued && pending.length)
+      // A QUEUED turn prompts with the accumulated cycle (ending with its own line); an
+      // IMMEDIATE turn discards it — EXCEPT mode:auto, where the operator's OWN messages
+      // accumulated WITHOUT ever running a turn, so an auto turn (immediate OR queued)
+      // ALWAYS prepends them: E replies with the full context the operator would have had.
+      const prepend = (queued || d.mode === 'auto') && pending.length;
+      const promptEv = prepend
         ? { ...ev, line: [...pending, ev.line ?? ev.body].join('\n\n') }
         : ev;
       const reply = await runTurnWithTimeout(to, ev, promptEv, (partial) => out.update(partial));

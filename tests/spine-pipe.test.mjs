@@ -260,6 +260,69 @@ describe('spine — emitted reply actions', () => {
   });
 });
 
+// mode:auto is an IMPERSONATION of the operator (operator 2026-07-05): E replies ONLY
+// to OTHER people, as the operator; the operator's OWN messages (isSender) NEVER prompt
+// E — they log + accumulate into the conversation cycle, and the NEXT other-person turn
+// is prompted WITH them (in order) + the trigger line. (Echoes of E's own auto replies
+// come back isSender too but are dropped by the bridge's sent-ids echo guard upstream.)
+describe('spine — mode:auto (operator impersonation)', () => {
+  const autoGating = { async decide() { return { mode: 'auto', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+  function buildAuto() {
+    const bridge = fakeBridge();
+    const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
+    const transcript = fakeTranscript();
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: autoGating,
+      sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 },
+    });
+    spine.start();
+    return { spine, bridge, brain, transcript };
+  }
+
+  it("the operator's OWN message (isSender) runs NO turn — logged + accumulated, never answered", async () => {
+    const { bridge, brain, transcript } = buildAuto();
+    await bridge.emit({ ...MSG, isSender: true, body: 'note to self' });
+    expect(brain.calls).toHaveLength(0);          // E is never prompted by the operator's own line
+    expect(bridge.sent).toHaveLength(0);          // nothing sent (no reply to self)
+    expect(transcript.entries).toHaveLength(1);   // but it IS logged (C1.2)
+  });
+
+  it('the OTHER person triggers ONE turn whose prompt carries the accumulated operator lines in order + the trigger', async () => {
+    const { bridge, brain } = buildAuto();
+    await bridge.emit({ ...MSG, isSender: true,  body: 'first' });                     // operator — accumulates
+    await bridge.emit({ ...MSG, isSender: true,  body: 'second' });                    // operator — accumulates
+    await bridge.emit({ ...MSG, isSender: false, senderName: 'Bea', body: 'hey' });    // other person — triggers
+    expect(brain.calls).toHaveLength(1);                                               // exactly one turn
+    expect(brain.calls[0].ev.line).toBe('An@[fam]: first\n\nAn@[fam]: second\n\nBea@[fam]: hey');
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hey' }]);                // E replied to the other person
+  });
+
+  it('an other-person message with nothing accumulated prompts with just its own line', async () => {
+    const { bridge, brain } = buildAuto();
+    await bridge.emit({ ...MSG, isSender: false, senderName: 'Bea', body: 'hi' });
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].ev.line).toBe('Bea@[fam]: hi');   // no prepend when the cycle is empty
+  });
+
+  it('regression: a NON-auto (mention) chat is unchanged — an isSender @e message runs a normal turn (the auto-only interception does not bleed in)', async () => {
+    const bridge = fakeBridge();
+    const brain = fakeBrain();
+    const mentionGating = { async decide() { return { mode: 'mention', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: mentionGating,
+      sender: fakeSender(bridge), transcript: fakeTranscript(), heartbeats: fakeHeartbeats(),
+      clock: { now: () => 1000 },
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, isSender: true, body: '@e ping' });
+    expect(brain.calls).toHaveLength(1);                                     // ran a normal turn (NOT intercepted as auto-own)
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ @e ping' }]);
+  });
+});
+
 // mode: auto answer routing (ROADMAP §3): an operator quote-reply in the advice channel
 // is intercepted EARLY (before gating), logged, and routed to the origin — never treated
 // as a normal message where the ask was posted (E must not reply in the advice channel).
