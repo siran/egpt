@@ -220,7 +220,7 @@ export async function boot({
     gating: createGating({ getConfig, loadState: _loadState }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02),
     // then cross-node @being.node mesh targets (Phase 4b, inert unless cfg.mesh is configured).
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, meshEnabled: () => !!cfg.mesh }),
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
     transcript: createTranscript({ contacts, persona: labelOf('e'), io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER

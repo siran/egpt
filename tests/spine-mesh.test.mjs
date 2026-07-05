@@ -54,9 +54,9 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, agents = {}, meshCfg = {}, brain, timers, logs } = {}) {
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs } = {}) {
   const bridge = fakeBridge();
-  const cfg = { node_name: node, agents, mesh: meshCfg };
+  const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg };
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
     getConfig: () => cfg, bodyEmojiOf,
@@ -168,6 +168,50 @@ describe('mesh service — origin (the reply streams home as a living mirror)', 
     expect(mirror.updates).toContain('🤝 Jaja');
     expect(mirror.finals).toContain('🤝 Jaja, aquí');
     expect(timers.timers[0].cleared).toBe(true);                    // the reply streamed → the wait was cancelled
+  });
+});
+
+describe('mesh service — node_alias (one process, several node identities)', () => {
+  it('answers an envelope addressed to a self-ALIAS locally, stamping the identity it was ADDRESSED AS', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    // node_name kg, aliases [do, mo]: an envelope to wren.mo is LOCAL (wren answers here).
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo'], agents: { wren: { configuration: 'egpt', name: 'wren' } }, brain });
+    const req = encodeMesh({ by: 'An', body: '@wren hola', from: 'HFM', from_node: 'do', to: 'wren.mo', post_id: 'p1', mid: 'M1' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(1);
+    expect(brain.calls[0].being).toBe('wren');
+    const fin = parseMesh(bridge.streams[0].finals.at(-1));
+    expect(fin).toMatchObject({ by: 'wren.mo', re: 'HFM.do', post_id: 'p1', mid: 'M1', done: true });   // addressed-as mo, not the node_name kg
+  });
+
+  it('does NOT forward an envelope addressed to a self-alias (its own relay route is never consulted)', async () => {
+    const brain = fakeBrain({ reply: 'aquí' });
+    // if `do` were treated as a foreign node this would forward to ELSEWHERE; it must stay local.
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents: { don: { configuration: 'egpt', name: 'don' } }, brain, meshCfg: { nodes: { do: { routes: [{ room_id: 'ELSEWHERE' }] } } } });
+    const req = encodeMesh({ by: 'An', body: '@don hola', from: 'HFM', from_node: 'kg', to: 'don.do', mid: 'M2' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    expect(brain.calls).toHaveLength(1);                                       // answered locally as don …
+    expect(bridge.sent.filter((s) => s.chat === 'ELSEWHERE')).toHaveLength(0); // … never forwarded to the `do` route
+  });
+
+  it('still FORWARDS an envelope addressed to a non-self node (the alias set does not swallow foreign targets)', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo'], meshCfg: { nodes: { zz: { routes: [{ room_id: 'B' }] } } } });
+    const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.zz', mid: 'M3' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'A', msgId: 'a1', body: req });
+    const forwards = bridge.sent.filter((s) => s.chat === 'B');
+    expect(forwards).toHaveLength(1);
+    expect(parseMesh(forwards[0].text)).toMatchObject({ to: 'don.zz', mid: 'M3' });
+  });
+
+  it('answers "no <being>.<self-alias> here" when addressed to a self-alias it does not host the being on', async () => {
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['mo'], agents: { wren: { configuration: 'egpt', name: 'wren' } } });
+    const req = encodeMesh({ by: 'An', body: '@ghost hola', from: 'HFM', from_node: 'do', to: 'ghost.mo', mid: 'M4' });
+    await mesh.handle({ surface: 'whatsapp', chatId: 'RELAY', msgId: 'm1', body: req });
+    await flush();
+    const said = bridge.sent.map((s) => parseMesh(s.text)?.body).filter(Boolean);
+    expect(said).toContain('no ghost.mo here');   // stamped with the addressed-as identity, not kg
   });
 });
 

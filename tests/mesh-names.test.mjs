@@ -68,6 +68,18 @@ describe('mesh names', () => {
       .toEqual({ kind: 'foreign', qualified: true, name: 'don', node: 'reve', fqid: 'don.reve' });
   });
 
+  it('treats a qualified address on an ALIAS node as one of ours, not foreign (node_alias)', () => {
+    // node_name kg + aliases [do, mo]: @wren.do is LOCAL (do is a self-identity) …
+    expect(resolveMeshAddress('@wren.do', { localNode: 'kg', localAliases: ['do', 'mo'], siblings: { wren: { type: 'ccode' } } }))
+      .toEqual({ kind: 'local', qualified: true, name: 'wren', node: 'do', fqid: 'wren.do' });
+    // … a self-alias node we don't run that being on → missing (ours, but no such local being) …
+    expect(resolveMeshAddress('@ghost.mo', { localNode: 'kg', localAliases: ['do', 'mo'], siblings: { wren: {} } }))
+      .toMatchObject({ kind: 'missing', name: 'ghost', node: 'mo' });
+    // … but a genuinely other node stays foreign (the alias set must not swallow it).
+    expect(resolveMeshAddress('@wren.reve', { localNode: 'kg', localAliases: ['do', 'mo'], siblings: { wren: { type: 'ccode' } } }))
+      .toMatchObject({ kind: 'foreign', node: 'reve' });
+  });
+
   it('resolves a bare LOCAL sibling', () => {
     expect(resolveMeshAddress('@wren', { localNode: 'kg', siblings: { wren: { type: 'ccode' }, e: {} } }))
       .toEqual({ kind: 'local', qualified: false, name: 'wren', node: 'kg' });

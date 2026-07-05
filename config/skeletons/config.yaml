@@ -20,6 +20,19 @@ beeper_token: "PASTE_YOUR_BEEPER_TOKEN_HERE"
 # override can live in a surface block below.
 user_name: "you"
 
+# node_name — the identity this node uses on the mesh bus (e.g. kg, home, chr1).
+# Optional; defaults to "node". Only matters once more than one node is in play.
+# node_name: kg
+#
+# node_alias — extra identities this ONE process ALSO answers to (a list). node_name
+# together with node_alias is the node's SELF-set: a relay envelope or a fully-qualified
+# @being.<name> whose <name> is any self-name is handled locally (never forwarded to
+# ourselves), and the reply is stamped with the identity it was addressed as. Lets one
+# process host several node identities. NOTE: a node still can't relay to ITSELF across a
+# chat — the bridge suppresses a node re-seeing its own sends — so true room-to-room
+# transit between separate rooms needs distinct nodes.
+# node_alias: [do, mo]
+
 # ── 3. Who eGPT is ───────────────────────────────────────────────────────────
 # The persona's visible label + emoji come from the persona agent (§3b): its `name`
 # is the label the bridge stamps on the first line ("🐶 egpt"), its `body_emoji` the

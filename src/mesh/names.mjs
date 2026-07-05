@@ -92,16 +92,26 @@ function findSibling(siblings, name) {
 // Resolve an @mention against the ONE per-node registry (EGPT_CONFIG.siblings) —
 // each entry local | remote(node) | relay(to). `mesh.nodes.<node>.routes` is the
 // SEPARATE transport layer (how to reach a node), not part of this registry.
-export function resolveMeshAddress(token, { localNode, siblings = {} } = {}) {
+export function resolveMeshAddress(token, { localNode, localAliases = [], siblings = {} } = {}) {
   const addr = parseMeshAddress(token);
   if (!addr) return { kind: 'invalid', token: String(token ?? '') };
   const node = normalizeMeshPart(localNode);
+  // SELF-set = node_name ∪ node_alias (operator 2026-07-05): a qualified @being.<name>
+  // whose <name> is ANY of this node's identities is one of OURS — never foreign, never
+  // relayed to ourselves. localAliases defaults to [] so a single-identity node is
+  // byte-identical to the old localNode-only check.
+  const isSelfNode = (n) => {
+    const nn = normalizeMeshPart(n);
+    if (!nn) return false;
+    if (node && nn === node) return true;
+    return localAliases.some((a) => normalizeMeshPart(a) === nn);
+  };
   const found = findSibling(siblings, addr.name);
 
   // Fully-qualified @being.node — explicit destination.
   if (addr.qualified) {
     const base = { name: addr.name, qualified: true, node: addr.node, fqid: addr.fqid };
-    if (node && sameMeshNode(addr.node, node)) {
+    if (isSelfNode(addr.node)) {
       return (found && meshSiblingKind(found.entry) === 'local')
         ? { kind: 'local', ...base }
         : { kind: 'missing', ...base };

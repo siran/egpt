@@ -45,6 +45,13 @@ export function createMeshService({
   if (!bridge) throw new Error('createMeshService: bridge is required');
   const cfg = () => getConfig() ?? {};
   const node = String(cfg().node_name ?? 'node').toLowerCase();   // this spine's node (boot-stable)
+  // SELF-set: node_name ∪ node_alias (operator 2026-07-05) — the identities THIS one
+  // process answers to. A relay envelope targeting @being.<any-self-name> is handled
+  // locally (never forwarded to ourselves); the reply is stamped with the addressed-as
+  // name. Boot-stable like `node`. Absent/empty node_alias → just { node_name }.
+  const selfNodes = new Set([node, ...(Array.isArray(cfg().node_alias) ? cfg().node_alias : [])
+    .map((a) => String(a ?? '').trim().toLowerCase()).filter(Boolean)]);
+  const isSelfNode = (n) => selfNodes.has(String(n ?? '').toLowerCase());
   const agents = () => cfg().agents ?? {};                         // the unified registry (new-config-only)
   const ttlCap = () => normalizeMeshTtl(cfg().mesh?.ttl);          // default 3 (max routed hops)
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
@@ -104,6 +111,7 @@ export function createMeshService({
 
   const relay = createMeshRelay({
     node,
+    isSelfNode,                          // node_name ∪ node_alias → several identities on one process
     log: onLog,
     resolveRoute,
     // A local being: the persona (e/egpt), or a LOCAL agent (agents[<name>], configuration

@@ -41,7 +41,7 @@ function findAgent(agents, token) {
   return null;
 }
 
-export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNode = () => null, meshEnabled = () => false } = {}) {
+export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNode = () => null, getAliases = () => [], meshEnabled = () => false } = {}) {
   return {
     /** @param {import('../../spine.mjs').InboundEvent} ev
      *  @returns {{ being: string|null, mesh?: object, mention: object|undefined }} */
@@ -83,7 +83,7 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
       if (meshEnabled()) {
         const mt = /^@([a-z0-9_-]+(?:\.[a-z0-9_-]+)?)/i.exec(body);
         if (mt) {
-          const a = resolveMeshAddress(mt[1], { localNode: getNode() });
+          const a = resolveMeshAddress(mt[1], { localNode: getNode(), localAliases: getAliases() });
           if (a.kind === 'foreign') return { being: null, mesh: { being: a.name, node: a.node, target: a.fqid ?? `${a.name}.${a.node}` }, mention: MENTION };
         }
       }

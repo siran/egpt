@@ -144,6 +144,12 @@ export function createMeshRelay({
   runBeing = async () => '',         // (being, prompt, ctx) => Promise<string>
   beingEmoji = () => '',             // (being) => body_emoji — stamps the relayed reply (contract)
   resolveRoute = () => null,         // (toNode) => route | null
+  // isSelfNode(name) — is this node-name ONE OF OURS? node_name ∪ node_alias (operator
+  // 2026-07-05): one process may answer to several node identities, so a REQUEST whose
+  // target node is any self-name is handled locally (never forwarded to ourselves), and
+  // the reply is stamped with the identity it was ADDRESSED AS. Defaults to plain
+  // equality with `node` so a single-identity node is unchanged.
+  isSelfNode = (n) => String(n).toLowerCase() === String(node).toLowerCase(),
   isLocalBeing = () => false,        // (being) => bool
   resolveBeingRelay = () => null,    // (being) => {being,node}|null — relay-record: re-resolve to another node
   // STREAMING — a relayed reply is a LIVING MIRROR (An 2026-06-21). Edit-streaming
@@ -331,8 +337,13 @@ export function createMeshRelay({
       target = (prov.to || '').toLowerCase();
     }
     if (!being) return true;
+    // The self-name we were ADDRESSED AS: the `to`-node when it's ours (guaranteed self by
+    // the check below), else node_name for open-channel (no `to`). This is what the reply is
+    // stamped `by: <being>.<asNode>` with, so the wire story stays coherent per-identity when
+    // one process wears several node names (operator 2026-07-05).
+    const asNode = target || String(node).toLowerCase();
     if (target) {
-      if (target !== String(node).toLowerCase()) { await forwardToward(target, prov, route, 'req'); return true; }
+      if (!isSelfNode(target)) { await forwardToward(target, prov, route, 'req'); return true; }
       // RELAY-RECORD: `being` is configured here as a relay to ANOTHER node's being —
       // re-address and forward toward it (re-resolution; BEING-MESH §3). Loop-safe via the
       // same mid (forward-once); re-addressing is legit even in the same room (no echo guard).
@@ -348,7 +359,7 @@ export function createMeshRelay({
         return true;
       }
       if (!isLocalBeing(being)) {
-        await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: `no ${being}.${node} here`, re: reAddress, mid: prov.mid }));
+        await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress, mid: prov.mid }));
         return true;
       }
     } else if (!isLocalBeing(being)) {
@@ -366,7 +377,7 @@ export function createMeshRelay({
     // them onto its placeholder. Non-blocking: relayDispatch fires the dispatch; we
     // don't await the whole turn here.
     if (relayDispatch) {
-      relayDispatch({ being, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${node}`, mid: prov.mid })
+      relayDispatch({ being, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, mid: prov.mid })
         .catch((e) => log(`mesh: relayDispatch ${being} failed: ${e?.message ?? e}`));
       return true;
     }
@@ -377,7 +388,7 @@ export function createMeshRelay({
     if (reply == null || String(reply).trim() === '') reply = '…';
     const _stamp = beingEmoji(being);
     const _fbBody = String(reply).trim() || '…';
-    await guardedSend(route, encodeMesh({ by: `${being}.${node}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, mid: prov.mid, done: true }));
+    await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, mid: prov.mid, done: true }));
     return true;
   }
 
