@@ -51,6 +51,24 @@ provenance tail, forward-once per mid).
   de-fluffed; TESTING lean; setup/ culled 20→6 scripts.
 
 
+## 2026-07-05 adds (all deployed, node at a8321d9)
+
+- **mode: auto LANDED**: E plays the operator's role in opted-in chats
+  (`/e auto auto [target]`, gates like `on`); role instructions = identity
+  layer `config/skeletons/auto-mode.md` (fresh kickoff + once-on-flip);
+  `/ask` limb posts doubts to config `advice_channel` (origin-tagged, the ONE
+  sanctioned cross-chat emit, fail-closed unconfigured); operator's
+  quote-reply in the advice channel ROUTES BACK into the origin conversation
+  (one-shot). OPERATOR SETUP OWED: create the advice chat, set
+  `advice_channel:` in config.yaml, restart, flip a test chat.
+- **E-actions live** (bbd1734+fix): /react /reply /media /edit /delete +
+  ↩#msgid inbound + quote-reply-to-E triggers without @e. Live room template
+  hand-synced (was stale — seed is copy-if-missing). GAP on ROADMAP:
+  capabilities refresher — resumed threads never learn new limbs (kickoff-only
+  feed); reset a chat's thread to teach it today.
+- **Stats humanized**: natural filenames (cap 120 word-boundary), twins
+  deduped, member name: fields, former_names rename history.
+
 ## In flight RIGHT NOW (2026-07-04 afternoon adds)
 
 - **TURN ORDERING FIXED + deployed (d036143, pid 9640)**: two same-conv
