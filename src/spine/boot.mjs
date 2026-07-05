@@ -33,6 +33,7 @@ import { createBrainPool } from './brainpool.mjs';
 import { createIngest, lifecycleExit } from './ingest.mjs';
 import { createCommands } from './commands.mjs';
 import { createReplyActions } from './reply-actions.mjs';
+import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
 import { createBrains } from './brains.mjs';
@@ -269,7 +270,13 @@ export async function boot({
     try { const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName }); return slug ? slugDir(ev.surface, slug) : null; }
     catch { return null; }
   };
-  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, onLog: (m) => log.line?.(`[actions] ${m}`) });
+
+  // Advice channel (mode: auto): the ONE sanctioned cross-chat path. E's /ask limb posts
+  // to config.advice_channel through this service, which also routes the operator's
+  // quote-reply answer back into the origin conversation (dispatch bound after the spine
+  // exists). Fail-closed when advice_channel is unset.
+  const advice = createAdvice({ bridge, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
+  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room folder's
@@ -339,7 +346,10 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  // Bind the advice service's answer-routing dispatch now that the spine exists: an
+  // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
+  advice.useDispatch(spine.handleInbound);
 
   // PHASE 2 — bind each command action + register every heartbeat onto the
   // registry the spine ticks + write the readonly.yaml. The alive beat is a

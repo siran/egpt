@@ -56,7 +56,8 @@ export function createGating({ getConfig = () => ({}), loadState = null } = {}) 
   // not surfaced). Every other mode is already fully decided by mayReply.
   function surfaces(decision, replyText) {
     if (!decision?.mayReply) return false;
-    return !(decision.mode === 'on' && isSilenceReply(replyText));
+    // 'auto' gates like 'on' — its free-post silence ('…') is likewise recorded, not surfaced.
+    return !((decision.mode === 'on' || decision.mode === 'auto') && isSilenceReply(replyText));
   }
 
   return { decide, surfaces };

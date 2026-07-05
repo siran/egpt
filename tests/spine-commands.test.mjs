@@ -102,7 +102,7 @@ describe('commands.run', () => {
     await cmds.run({ body: '/e auto accum', chatId: '!room', surface: 'whatsapp' });
     expect(getBeing(getState(), 'whatsapp', '!room', 'e').mode).toBe(null);   // not persisted
     expect(sent[0].text).toMatch(/unknown mode "accum"/);
-    expect(sent[0].text).toMatch(/on, mute, mention-direct, mention, off/);   // the surviving enum, accum gone from the list
+    expect(sent[0].text).toMatch(/on, auto, mute, mention-direct, mention, off/);   // the surviving enum (auto added 2026-07-04), accum gone
   });
 
   it('/e auto <mode> <target> from Self sets the NAMED chat (not the Self DM)', async () => {

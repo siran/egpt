@@ -3,6 +3,13 @@
 // *reply*. One enum captures both. Default (unconfigured chat) is 'mention'.
 //
 //   on             receive every burst; reply per personality (free-post)
+//   auto           gates EXACTLY like 'on' (reply to every message), but E plays
+//                  the OPERATOR's role in that chat — be of service, follow links,
+//                  do as told, and consult the operator (via /ask, the advice
+//                  channel) when in doubt. The mode value ONLY controls the reply
+//                  gate; the operator-role instruction layer is an identity-feed
+//                  layer wired in the brainpool (config/skeletons/auto-mode.md),
+//                  NOT here. Per-conversation opt-in only (never a default).
 //   mute           receive every burst; never reply
 //   mention-direct receive; reply only when @e is at the START, or it's a reply to E
 //   mention        receive; reply only when @e appears anywhere, or a reply to E
@@ -20,7 +27,7 @@
 // with isAutoMode(...) — createGating.decide() and resolveBeingMode below —
 // falls through to its default ('mention' for E). That fallthrough IS the
 // migration: a legacy accum chat simply behaves as a mention chat.
-export const AUTO_MODES = ['on', 'mute', 'mention-direct', 'mention', 'off'];
+export const AUTO_MODES = ['on', 'auto', 'mute', 'mention-direct', 'mention', 'off'];
 export const DEFAULT_AUTO_MODE = 'mention';
 
 export function isAutoMode(m) { return AUTO_MODES.includes(String(m)); }
@@ -74,7 +81,8 @@ export function mentionStatus(text) {
 export function replyAllowed(mode, status = {}) {
   const { atEStart = false, atEAnywhere = false, replyToBot = false } = status;
   switch (mode) {
-    case 'on':             return true;            // personality decides ('…' still dropped downstream)
+    case 'on':
+    case 'auto':           return true;            // 'auto' gates like 'on' — personality decides ('…' still dropped downstream)
     case 'mute':
     case 'off':            return false;
     case 'mention-direct': return atEStart   || replyToBot;
@@ -103,7 +111,7 @@ export function mayEmit(mode, { replyAllowed = undefined, isReaction = false } =
   // → only if it @-mentions E (a reaction can't, so it stays silent there);
   // 'mute'/'off' → never. `isReaction` is kept for telemetry (the emit log).
   if (mode === 'mute' || mode === 'off') return false;
-  if (mode === 'on') return true;
+  if (mode === 'on' || mode === 'auto') return true;   // 'auto' gates like 'on'
   return replyAllowed === true;
 }
 
@@ -148,6 +156,6 @@ export function isSilenceReply(reply) {
 //   sent=false → DO NOT push; transcript records `<reply> (annotation)`.
 export function fanOutDecision(mode, { replyAllowed = undefined, reply = '' } = {}) {
   let sent = mayEmit(mode, { replyAllowed });
-  if (sent && mode === 'on' && isSilenceReply(reply)) sent = false;   // E opts out, still recorded
+  if (sent && (mode === 'on' || mode === 'auto') && isSilenceReply(reply)) sent = false;   // E opts out, still recorded
   return { sent, annotation: sent ? null : `(not sent to group. auto: ${mode})` };
 }

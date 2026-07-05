@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, ensureContact, recordThread } from '../conversations-state.mjs';
+import { emptyState, getBeing, ensureContact, recordThread, patchContact } from '../conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults) {
@@ -25,11 +25,13 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, seedSession, brains, afterTurn, io } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, brains, afterTurn, io } = {}) {
   let state = emptyState();
-  if (seedSession) {           // pre-register the contact WITH a stored thread (a resumed, non-fresh conv)
+  if (seedSession || seedMode) {   // pre-register the contact (WITH a stored thread and/or an E mode)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
-    state = recordThread(ens.state, ev.surface, ev.chatId, seedSession);
+    state = ens.state;
+    if (seedSession) state = recordThread(state, ev.surface, ev.chatId, seedSession);
+    if (seedMode) state = patchContact(state, ev.surface, ev.chatId, { mode: seedMode });   // e.g. 'auto'
   }
   const pool = fakePool(scriptedResults);
   const loadState = async () => state;
@@ -45,6 +47,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     io: io ?? { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
+    ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(afterTurn ? { afterTurn } : {}),
     ...(isOverflow ? { isOverflow } : {}),
@@ -208,6 +211,41 @@ describe('brainpool.turn', () => {
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }]);  // defaults: feed='' manifest=''
     await brain.turn('e', ev);
     expect(pool.calls[0].message).toBe(ev.line);
+  });
+
+  // --- mode: auto operator-role instruction layer (ROADMAP §3) ---
+  it('FRESH auto thread: the kickoff feed carries the operator-role auto layer', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      seedMode: 'auto', loadFeed: async () => 'I am eGPT.', loadAutoLayer: async () => 'AUTO-ROLE-LAYER',
+    });
+    await brain.turn('e', ev);
+    const msg = pool.calls[0].message;
+    expect(msg).toContain('I am eGPT.');          // identity still there
+    expect(msg).toContain('AUTO-ROLE-LAYER');     // auto layer appended to the kickoff
+    expect(msg.endsWith(ev.line)).toBe(true);     // the live line at the tail
+  });
+
+  it('FRESH NON-auto thread: no auto layer (loadAutoLayer never consulted)', async () => {
+    let consulted = false;
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], {
+      loadFeed: async () => 'I am eGPT.', loadAutoLayer: async () => { consulted = true; return 'AUTO-ROLE-LAYER'; },
+    });
+    await brain.turn('e', ev);
+    expect(consulted).toBe(false);
+    expect(pool.calls[0].message).not.toContain('AUTO-ROLE-LAYER');
+  });
+
+  it('mode-flip: a RESUMED thread that switched to auto gets the layer ONCE (first turn after the flip only)', async () => {
+    const { brain, pool } = harness([{ text: 'a', sessionId: 'sid' }, { text: 'b', sessionId: 'sid' }], {
+      seedSession: 'sid', seedMode: 'auto', loadFeed: async () => 'FEED', loadAutoLayer: async () => 'AUTO-ROLE-LAYER',
+    });
+    await brain.turn('e', ev);                    // first turn after the flip
+    await brain.turn('e', ev);                    // second turn
+    expect(pool.calls[0].brainOptions.sessionId).toBe('sid');   // genuinely resumed (not fresh)
+    expect(pool.calls[0].message).toContain('AUTO-ROLE-LAYER');  // layer injected once…
+    expect(pool.calls[0].message).toContain(ev.line);           // …ahead of the live line
+    expect(pool.calls[0].message).not.toContain('FEED');        // resume: identity NOT re-sent, only the auto stance
+    expect(pool.calls[1].message).toBe(ev.line);                // second turn: raw line, no re-inject
   });
 
   // --- context-overflow backstop ---

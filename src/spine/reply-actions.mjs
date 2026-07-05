@@ -13,6 +13,9 @@
 // FAIL-CLOSED (the operator's hard constraint):
 //   - every action executes ONLY in E's OWN conversation (ev.chatId) — the emit
 //     syntax carries NO chat target, so cross-chat is impossible by construction;
+//     the SOLE exception is /ask, which reaches ONLY the config-named advice channel
+//     (mode: auto) via the injected `askAdvice` callback — never an arbitrary chat,
+//     and fail-closed (dropped + logged) when no advice channel is configured;
 //   - a malformed action line is STRIPPED and LOGGED, never surfaced, never executed;
 //   - a /media path must resolve INSIDE the conversation dir (E's confined cwd) —
 //     traversal / absolute paths are rejected at parse AND re-checked at execute;
@@ -25,13 +28,14 @@
 //   /media <path> [caption]    send a file from this conversation's folder (relative path)
 //   /edit #<id> <text>         edit one of your OWN earlier messages
 //   /delete #<id>              delete one of your OWN earlier messages
+//   /ask <question>            (mode: auto) consult the operator in the advice channel
 import { resolve as resolvePath, relative as relPath, isAbsolute } from 'node:path';
 import { existsSync } from 'node:fs';
 
 // The reserved action verbs. A line is an ACTION-family line iff (trimmed) it starts
 // with '/' + one of these + whitespace-or-EOL — nothing else is ever touched, so
 // ordinary prose (even prose that mentions "/react") passes through untouched.
-const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'delete']);
+const ACTION_VERBS = new Set(['react', 'reply', 'media', 'edit', 'delete', 'ask']);
 const ACTION_LINE = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i;
 
 // A tiny word→emoji alias table so `/react like` works as well as `/react 👍`.
@@ -111,6 +115,15 @@ function parseOne(verb, args, ev) {
       if (!m) return { ok: false, reason: 'delete: expected "#<id>"' };
       return { ok: true, action: { type: 'delete', chatId, targetId: m[1] } };
     }
+    case 'ask': {
+      // <question> — the WHOLE line is the question. The ONE sanctioned cross-chat emit:
+      // it carries NO chat target (the destination is the config advice channel, resolved
+      // at execute), so E can never aim it at another conversation. A placeholder echo
+      // ("/ask <question>") or an empty ask is malformed → stripped + logged, never sent.
+      if (!raw) return { ok: false, reason: 'ask: empty question' };
+      if (/[<>]/.test(raw)) return { ok: false, reason: 'ask: placeholder, not a real question' };
+      return { ok: true, action: { type: 'ask', chatId, question: raw } };
+    }
     case 'media': {
       // <path> [caption]. A leading "quoted path" tolerates a filename with spaces.
       let path, caption = null;
@@ -156,8 +169,13 @@ export function parseReplyActions(text, ev = {}) {
  * conversation-dir resolver (for /media confinement). Exposes .parse (the pure
  * split) and .execute (run the actions against the bridge, confined + logged).
  */
-export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, onLog = () => {} } = {}) {
+export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
+  // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
+  // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
+  // never a bridge send. Keeps reply-actions' "every direct bridge action targets
+  // ev.chatId" invariant honest — the cross-chat send lives ONLY in the advice service.
+  const _askAdvice = askAdvice ?? (async ({ question } = {}) => { onLog(`ask: no advice channel wired — dropped (fail-closed): ${JSON.stringify(String(question ?? '').slice(0, 120))}`); return false; });
 
   async function runMedia(a, ev, being) {
     const convDir = await resolveConvDir(ev);
@@ -182,6 +200,15 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
         // A persona-stamped quote-reply (reuses the bridge's send + replyTo threading).
         const r = await bridge.send?.(ev.chatId, a.text, { replyTo: a.targetId, bodyEmoji: bodyEmojiOf(being), label: labelOf(being) });
         if (r?.blocked || r == null) onLog(`reply: → #${a.targetId} not delivered`);
+        return;
+      }
+      case 'ask': {
+        // The ONE sanctioned cross-chat emit. Delegated to the advice service, which
+        // resolves the config advice channel, posts the question (tagged with this
+        // conversation's name), and stores the origin mapping for answer routing.
+        // Fail-closed inside _askAdvice when no advice channel is configured.
+        const ok = await _askAdvice({ ev, question: a.question, being });
+        if (!ok) onLog(`ask: not delivered (no advice channel or post failed): ${JSON.stringify(String(a.question).slice(0, 120))}`);
         return;
       }
       case 'media': return runMedia(a, ev, being);

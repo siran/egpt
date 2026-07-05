@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { slugDir, getBeing, recordThread, readIdentityFeed, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -131,6 +131,7 @@ export function createBrainPool({
   isOverflow = isContextOverflowError,
   isDeadSession = isDeadSessionError,
   loadFeed = readIdentityFeed,      // (personality) -> identities/<name>/ feed string
+  loadAutoLayer = readAutoModeLayer,// () -> the `mode: auto` operator-role instruction layer (appended to an auto conversation's kickoff)
   loadManifest = null,              // () -> e_identity.md fallback (default below)
   afterTurn = null,                 // ({key, sessionId, model, cwd, allowedTools}) — post-turn hook (auto-compaction)
   onLog = () => {},
@@ -146,6 +147,18 @@ export function createBrainPool({
   // hung turn is wedged on without re-deriving the engine/slug — a hung CLI must not
   // poison the next turn.
   const lastKeyByConv = new Map();
+
+  // `mode: auto` operator-role layer delivery, tracked per (conversation, thread). A
+  // FRESH thread gets the layer inside its identity kickoff (wrapFresh); a RESUMED
+  // thread that flipped to auto after it was already running gets it ONCE as a one-time
+  // preamble (first turn after the flip). In-memory by design — losing it on restart
+  // only re-states a true fact once, never a leak. Bounded so a long-lived node can't
+  // grow it without limit.
+  const autoDelivered = new Set();
+  function markAuto(key) {
+    autoDelivered.add(key);
+    if (autoDelivered.size > 1000) autoDelivered.delete(autoDelivered.values().next().value);
+  }
 
   // Best-effort read of a conversation folder's config.yaml warm override (never
   // throws): absent / unreadable / malformed → null → the class TTL applies.
@@ -172,6 +185,9 @@ export function createBrainPool({
     return {
       slug,
       sessionId: b?.threadId ?? null,
+      // The conversation's stored E mode — 'auto' arms the operator-role kickoff layer
+      // (read raw, not gating-resolved: auto is an explicit per-conversation opt-in).
+      mode: b?.mode ?? null,
       // The conversation's INSTANCED brain (frozen in readonly), or null on a fresh
       // conversation that hasn't been instanced from the default yet.
       brain: b?.brainType ? { name: b.brain, type: b.brainType, model: b.model, effort: b.effort, allowed_tools: b.allowedTools } : null,
@@ -250,11 +266,14 @@ export function createBrainPool({
   return {
     /** @returns {Promise<{ text: string, sessionId: string|null, being: string }>} */
     async turn(being, ev, onPartial = () => {}) {
-      const { slug, sessionId, brain: instanced } = await resolveConv(ev, being);
+      const { slug, sessionId, brain: instanced, mode } = await resolveConv(ev, being);
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
       const isSibling = being !== 'e';
+      // 'mode: auto' — E plays the operator's role here (siblings are engineers, never auto).
+      const wantAuto = !isSibling && mode === 'auto';
+      const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
       let def, runModel, runEffort;
       if (isSibling) {
         // Local agent: def from the agents block (its `configuration` names a type file);
@@ -328,9 +347,36 @@ export function createBrainPool({
         if (isSibling) return line;   // siblings are engineers, not the persona — no identity feed
         let feed = (await loadFeed(personality)) || '';
         if (!feed.trim()) feed = (await _loadManifest()) || '';
+        // 'mode: auto': append the operator-role instruction layer to the kickoff feed so
+        // a fresh auto thread learns the stance up front. Best-effort (a missing layer just
+        // means it gates like 'on'). The overflow/dead-session retry re-wraps, so it re-lands.
+        if (wantAuto) {
+          const auto = (await loadAutoLayer()) || '';
+          if (auto.trim()) feed = `${feed.trim() ? `${feed.trim()}\n\n` : ''}${auto.trim()}`;
+        }
         if (!feed.trim()) return line;   // no identity configured → raw line
         return `${feed.trim()}\n\n---\n\nLive message from the chat (envelope \`Sender@[Chat or group name] (HH:MM): body\`):\n${line}`;
       };
+      // A RESUMED thread that flipped to auto after it was already running: prepend the
+      // operator-role layer ONCE (first turn after the flip) as a plain preamble — the
+      // thread already holds its identity, this only adds the auto stance.
+      const wrapAutoResume = async () => {
+        const auto = (await loadAutoLayer()) || '';
+        if (!auto.trim()) return line;
+        return `${auto.trim()}\n\n---\n\n${line}`;
+      };
+      // The FIRST message this turn sends: identity kickoff on a fresh thread, the plain
+      // line on a resume — unless a resumed thread just flipped to auto and hasn't been
+      // told yet, in which case the one-time auto preamble leads.
+      let firstMsg;
+      if (!sessionId) {
+        firstMsg = await wrapFresh();
+      } else if (wantAuto && !autoDelivered.has(autoKey(sessionId))) {
+        firstMsg = await wrapAutoResume();
+        markAuto(autoKey(sessionId));
+      } else {
+        firstMsg = line;
+      }
 
       // Per-conversation warm-idle override (operator 2026-07-02): this
       // conversation's own config.yaml `warm: { idle_ttl }` overrides the class TTL
@@ -344,7 +390,7 @@ export function createBrainPool({
       const run = (msg, opts) => pool.run(key, msg, onPartial, { brainOptions: opts, klass: 'conversation', idleTtlMs });
 
       let r, overflow = false, deadSession = false;
-      try { r = await run(sessionId ? line : await wrapFresh(), baseOpts); }
+      try { r = await run(firstMsg, baseOpts); }
       catch (e) { if (isOverflow(e?.message)) overflow = true; else if (isDeadSession(e?.message)) deadSession = true; else throw e; }
       // overflow can also arrive as the RESULT text (returned, not thrown).
       if (!overflow && isOverflow(typeof r === 'string' ? r : r?.text)) overflow = true;
@@ -367,6 +413,9 @@ export function createBrainPool({
       const newSession = (r && typeof r === 'object' && r.sessionId) || null;
       // Persist a freshly-minted session so the next turn resumes it — being-aware:
       // flat threadId for 'e', a nested <being> block for a sibling.
+      // A fresh thread's kickoff already carried the auto layer (wrapFresh) — mark the
+      // newly-minted thread delivered so a later RESUMED turn on it doesn't re-inject.
+      if (wantAuto && newSession) markAuto(autoKey(newSession));
       if (newSession && newSession !== sessionId) {
         const nowIso = nowIsoString();
         await mutateState(writeState, async () => {

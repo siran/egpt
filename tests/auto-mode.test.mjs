@@ -25,6 +25,10 @@ describe('replyAllowed', () => {
   it('on always allows (personality decides downstream)', () => {
     expect(replyAllowed('on', M())).toBe(true);
   });
+  it('auto gates like on — always allows, mention-independent', () => {
+    expect(replyAllowed('auto', M())).toBe(true);
+    expect(replyAllowed('auto', M({ atEAnywhere: true }))).toBe(true);
+  });
   it('legacy accum degrades to mention semantics (retired 2026-07-01, unknown→mention)', () => {
     // 'accum' is no longer a known mode; a value still stored in conversations.yaml
     // falls through replyAllowed's `default:`, which is identical to 'mention'.
@@ -58,14 +62,15 @@ describe('replyAllowed', () => {
 
 describe('receives / isAutoMode', () => {
   it('receives is true for everything except off', () => {
-    for (const m of ['on', 'mute', 'mention-direct', 'mention']) expect(receives(m)).toBe(true);
+    for (const m of ['on', 'auto', 'mute', 'mention-direct', 'mention']) expect(receives(m)).toBe(true);
     expect(receives('off')).toBe(false);
   });
-  it('isAutoMode + default; retired accum is no longer a known mode', () => {
+  it('isAutoMode + default; auto is a known mode, retired accum is not', () => {
     expect(isAutoMode('mention')).toBe(true);
+    expect(isAutoMode('auto')).toBe(true);     // new mode (operator 2026-07-04)
     expect(isAutoMode('nope')).toBe(false);
     expect(isAutoMode('accum')).toBe(false);   // retired 2026-07-01 → guards fall through to default
-    expect(DEFAULT_AUTO_MODE).toBe('mention');
+    expect(DEFAULT_AUTO_MODE).toBe('mention'); // auto is opt-in only, never the default
   });
 });
 
@@ -137,6 +142,11 @@ describe('fanOutDecision — single record-always / gate-on-mode chokepoint', ()
       .toEqual({ sent: false, annotation: '(not sent to group. auto: on)' });
     expect(fanOutDecision('on', { reply: '...' }).sent).toBe(false);
   });
+  it('auto: same as on — real replies fan out, a pure-silence reply is recorded not pushed', () => {
+    expect(fanOutDecision('auto', { reply: 'on it' })).toEqual({ sent: true, annotation: null });
+    expect(fanOutDecision('auto', { reply: '…' }))
+      .toEqual({ sent: false, annotation: '(not sent to group. auto: auto)' });
+  });
   it('isSilenceReply only matches pure ellipsis/empty', () => {
     expect(isSilenceReply('…')).toBe(true);
     expect(isSilenceReply('...')).toBe(true);
@@ -154,6 +164,10 @@ describe('mayEmit — outbound backstop', () => {
   it('allows on unconditionally', () => {
     expect(mayEmit('on', {})).toBe(true);
     expect(mayEmit('on', { replyAllowed: false })).toBe(true);
+  });
+  it('allows auto unconditionally (gates like on)', () => {
+    expect(mayEmit('auto', {})).toBe(true);
+    expect(mayEmit('auto', { replyAllowed: false })).toBe(true);
   });
   it('mention modes defer to the per-turn replyAllowed flag', () => {
     expect(mayEmit('mention', { replyAllowed: true })).toBe(true);

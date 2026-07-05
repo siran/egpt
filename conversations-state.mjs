@@ -42,6 +42,12 @@ const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'identities');
 const ROOM_TEMPLATE_PROFILE_DIR = join(EGPT_HOME, 'config', 'skeletons', 'room');
 const ROOM_TEMPLATE_SHIPPED_DIR = join(_here, 'config', 'skeletons', 'room');
+// The `mode: auto` operator-role instruction layer (a top-level skeleton, seeded
+// copy-if-missing like the room template). Appended to an auto conversation's kickoff
+// feed — NOT part of readIdentityFeed (which every conversation gets), so it reaches
+// ONLY auto chats. Profile-seeded copy wins; the repo's shipped file is the fallback.
+const SKELETONS_PROFILE_DIR     = join(EGPT_HOME, 'config', 'skeletons');
+const SKELETONS_SHIPPED_DIR     = join(_here, 'config', 'skeletons');
 // Canonical location of the per-contact YAML registry (operator 2026-07-03: MOVED under
 // config/). Exported so daemon + slashes + tools all agree. The registry sits OUTSIDE the
 // per-conversation dirs so conversation-e (cwd-locked to its own slug dir) can't read it.
@@ -1656,6 +1662,16 @@ export async function installIdentity(surface, slug, name) {
 export async function readIdentityFeed(name) {
   const { identity, pointers, rules } = await _identityLayers(name);
   return [identity, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
+}
+
+// The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md).
+// Read profile-first, repo-fallback (mirror of roomTemplateDir). '' when absent (an
+// auto conversation then simply gates like 'on' with no extra layer — never throws).
+// Appended to an auto conversation's kickoff feed by the brainpool.
+export async function readAutoModeLayer() {
+  const profile = join(SKELETONS_PROFILE_DIR, 'auto-mode.md');
+  const shipped = join(SKELETONS_SHIPPED_DIR, 'auto-mode.md');
+  return (await _readFileOr(existsSync(profile) ? profile : shipped)).trim();
 }
 
 // Full-install announcement: the whole identity.d bundle (manifest +

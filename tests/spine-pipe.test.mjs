@@ -259,3 +259,33 @@ describe('spine — emitted reply actions', () => {
     expect(limbs.calls.send[0]).toMatchObject({ chat: MSG.chatId, text: 'on it', opts: { replyTo: '42' } });
   });
 });
+
+// mode: auto answer routing (ROADMAP §3): an operator quote-reply in the advice channel
+// is intercepted EARLY (before gating), logged, and routed to the origin — never treated
+// as a normal message where the ask was posted (E must not reply in the advice channel).
+describe('spine — advice answer hook', () => {
+  it('advice.isAnswer → route to origin, short-circuiting gating/brain (still logged)', async () => {
+    const bridge = fakeBridge();
+    const brain = fakeBrain();
+    const transcript = fakeTranscript();
+    const routed = [];
+    const advice = { isAnswer: (ev) => ev.body === 'ANSWER', routeAnswer: (ev) => { routed.push(ev); } };
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: fakeGating({}),
+      sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(), advice,
+      clock: { now: () => 1000 },
+    });
+    spine.start();
+    await bridge.emit({ ...MSG, body: 'ANSWER' });
+    expect(routed).toHaveLength(1);                 // routed to the origin conversation
+    expect(brain.calls).toHaveLength(0);            // NOT a normal turn in the advice channel
+    expect(bridge.sent).toHaveLength(0);            // and nothing surfaced here
+    expect(transcript.entries).toHaveLength(1);     // but the received message is logged (C1.2)
+
+    // a non-answer message in the same channel routes normally (through the brain)
+    await bridge.emit({ ...MSG, body: 'hola' });
+    expect(routed).toHaveLength(1);
+    expect(brain.calls).toHaveLength(1);
+  });
+});

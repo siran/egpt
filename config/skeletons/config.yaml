@@ -170,3 +170,19 @@ signal:
 # only; edit + /restart to apply.
 # aliases:
 #   "@whatsapp_5215512345678:beeper.local": An
+
+# ── 11. Auto mode & the advice channel ───────────────────────────────────────
+# A conversation set to `mode: auto` (via `/e auto auto <chat>`) makes eGPT play
+# YOUR role there: helpful and of service, follows links, does as told — and CONSULTS
+# YOU when in doubt (irreversible/costly actions, commitments, personal matters). It
+# gates exactly like `mode: on` (replies to every message); the difference is the
+# operator-role stance and the consult path.
+#
+# `advice_channel` names the ONE chat eGPT posts those consult questions to (its `/ask`
+# limb). A chat NAME or a Beeper room id — both resolve. This is the SOLE cross-chat
+# message a conversation can emit, and only ever to THIS channel; unset = the `/ask` is
+# dropped (fail-closed) and eGPT's normal reply still goes out. Reply (quote-reply) to
+# eGPT's question in this channel and your answer is routed back into the origin chat.
+# Per-conversation opt-in only — no chat is auto unless you set it. An "EGPT AUTO" chat
+# is a good shape for this.
+# advice_channel: "EGPT AUTO"

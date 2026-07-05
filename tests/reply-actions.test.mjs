@@ -100,6 +100,13 @@ describe('parseReplyActions — the pure split', () => {
   it('react with extra words (not a single emoji) is malformed', () => {
     expect(parseReplyActions('/react thumbs up please', EV).stripped).toHaveLength(1);
   });
+
+  it('ask: the whole line is the question; empty / placeholder is stripped', () => {
+    expect(parseReplyActions('/ask should I confirm the Friday move?', EV).run[0])
+      .toEqual({ type: 'ask', chatId: EV.chatId, question: 'should I confirm the Friday move?' });
+    expect(parseReplyActions('/ask', EV).stripped).toHaveLength(1);             // empty
+    expect(parseReplyActions('/ask <question>', EV).stripped[0].reason).toMatch(/placeholder/);   // doc echo
+  });
 });
 
 // A fake bridge port capturing the limb calls (follows tests/beeper-port.test.mjs style).
@@ -175,6 +182,31 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     b.calls.media.length = 0;
     await a.execute(a.parse('/media nope.png', EV).run, [], EV, { being: 'e' });
     expect(b.calls.media).toEqual([]);
+  });
+
+  it('ask: delegates to the injected askAdvice callback (never a bridge send to another chat)', async () => {
+    const b = fakeBridge();
+    const asked = [];
+    const a = createReplyActions({
+      bridge: b, bodyEmojiOf: () => '🐶', labelOf: () => 'egpt', resolveConvDir: async () => null,
+      askAdvice: async (x) => { asked.push(x); return true; },
+    });
+    await a.execute(a.parse('/ask confirm the booking?', EV).run, [], EV, { being: 'e' });
+    expect(asked).toEqual([{ ev: EV, question: 'confirm the booking?', being: 'e' }]);
+    // the /ask NEVER touches the ordinary bridge send/react/media surface — the ONLY
+    // cross-chat path is the sanctioned askAdvice callback.
+    expect(b.calls.send).toEqual([]);
+    expect(b.calls.react).toEqual([]);
+    expect(b.calls.media).toEqual([]);
+  });
+
+  it('ask: no askAdvice wired → fail-closed (logged, dropped, no bridge send)', async () => {
+    const logs = [];
+    const b = fakeBridge();
+    const a = mk(b, { onLog: (m) => logs.push(m) });   // default askAdvice = fail-closed no-op
+    await a.execute(a.parse('/ask anybody home?', EV).run, [], EV, { being: 'e' });
+    expect(b.calls.send).toEqual([]);                  // nothing sent anywhere
+    expect(logs.some((l) => /no advice channel/i.test(l))).toBe(true);
   });
 
   it('malformed lines are logged, never executed; a throwing limb never crashes execute', async () => {

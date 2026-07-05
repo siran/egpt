@@ -91,6 +91,7 @@ export function createSpine({
   commands,                            // optional §2c command intercept (operator slash commands)
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
+  advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
   defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
@@ -224,6 +225,13 @@ export function createSpine({
     // being-turn still respects that being's availability, inside mesh.handle). Logged
     // like any received message first (C1.2).
     if (mesh?.isEnvelope?.(ev)) { await transcript.log(ev); await mesh.handle(ev); return; }
+
+    // Advice answer (mode: auto): the operator quote-replied in the advice channel to one
+    // of E's /ask questions — route that answer into the ORIGIN conversation instead of
+    // treating it as a message in the advice channel. Detected EARLY, before gating, so
+    // the operator's reply never triggers a normal E reply where the ask was posted.
+    // Logged like any received message first (C1.2). routeAnswer is fire-and-forget.
+    if (advice?.isAnswer?.(ev)) { await transcript.log(ev); await advice.routeAnswer(ev); return; }
 
     // Router picks the being + the mention that being's gate should see. The real
     // router returns { being, mention } (with an optional { mesh } target for an
