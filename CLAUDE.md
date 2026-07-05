@@ -75,6 +75,37 @@ You are the orchestrator, maintaining the goal and direction of the project. In
 the spirit of preserving your context length, please start background agents to
 do the coding.
 
+## 6. The working loop (every model drives this repo the same way)
+
+The orchestrator's hands are for: scoping, briefing, reviewing diffs, running
+the suite, committing/pushing, deploying, ops, and docs (HANDOFF/ROADMAP). If
+you catch yourself editing source or hand-fixing a test, stop and dispatch a
+background coding task instead. That is what preserves context and direction.
+
+Per chunk of work:
+
+1. **Scope** from evidence: live logs, transcripts, screenshots, registry state.
+   Cite file:line in the brief. State the design decided, not a wish.
+2. **Dispatch** one background coding task per chunk, with: exact evidence,
+   constraints (`do NOT commit`, `NEVER write to ~/.egpt`, no-touch list of
+   files other tasks are editing), the reproduce-first mandate, and the known
+   test flakes so it doesn't chase them.
+3. **Reproduce-first tests, always**: a bugfix starts with a test that FAILS on
+   current code modeling the live failure, then the fix makes it pass. Features
+   get regression locks on the neighboring behavior they must not change.
+4. **Verify yourself** — never relay a task's claims unverified: re-run the full
+   suite, read the key diff hunks, isolate-rerun any failure before calling it
+   a flake.
+5. **Commit per chunk**, descriptive message telling the story (what broke,
+   why, the fix shape, test counts). `git add` explicit paths — `commit -am`
+   silently drops NEW files (this caused a live crash-loop once).
+6. **Deploy = verified**: push → pull installed copy → ingest /restart → wait
+   for the NEW pid to be a live process → wait for a fresh inbound line
+   (process up ≠ bridge hears; both have failed silently).
+7. **Close the loop**: update HANDOFF.md/ROADMAP.md when state meaningfully
+   changed; report to the operator in a few short plain sentences — detail
+   goes in commits, not at the operator.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer
