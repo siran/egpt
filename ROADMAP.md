@@ -214,6 +214,15 @@ following is LANDED, test-locked, and (where marked) live-verified:
   guard bounds runaway. NOT YET DISPATCHED — build after the turn-ordering
   fix lands (same spine files).
 
+- **Deaf-bridge detection + post-deploy live smoke (live outage 2026-07-05)**:
+  a respawn came up with a dead WS — process alive, tick beating, ZERO inbound
+  for ~4 min of real traffic; operator commands silently unheard. The alive
+  deadman only proves the LOOP runs, not that the bridge HEARS. Fix two ways:
+  (a) liveness includes last-inbound age (deaf > N min with WS "open" →
+  self-restart the bridge), (b) every deploy ends with a live smoke — a
+  /status ping sent through the real chat and verified ANSWERED (the boot
+  echo-verify machinery + egpt-an channel exist for exactly this).
+
 - **Capabilities refresher (live gap 2026-07-05)**: resumed threads never learn
   NEW abilities — the identity feed is kickoff-only (E denied having /media
   live because its thread predates the limbs doc). Mechanism: version-stamp
