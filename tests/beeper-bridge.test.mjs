@@ -485,6 +485,23 @@ describe('beeper bridge', () => {
     expect(incoming.find((i) => i.text === 'note for later').from.isSender).toBe(true);   // operator's own line passes through → spine accumulates it
   });
 
+  it('a MESH ENVELOPE echo is NOT suppressed — self-relay through one aliased node needs to see its own post (operator 2026-07-05)', async () => {
+    // A node_alias process posts a mesh envelope as one identity (e.g. carol→Rodz1),
+    // then must recognize that SAME post arriving back over the WS to relay it onward
+    // as another identity it also hosts (e.g. don). Ordinary echo suppression (sent-ids/
+    // text window) would swallow it as a self-echo — but a mesh envelope carries its own
+    // loop safety downstream (forward-once per mid, replay guard, circuit breaker), so
+    // the bridge must let it through unconditionally, exactly like a foreign envelope.
+    const { bridge, incoming } = await startBridge();
+    const envelope = '```\nQGRvbiBob2xh\n\n---\nfrom: Me\nto: don.do\nmid: chain-1\nenc: b64\n```';
+    await bridge.send(envelope, { chatId: CHAT('chat-1') });
+    await waitFor(() => fake.posts.length === 1);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'self-echo-id', text: envelope })] });   // our own post, echoed back
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
+    await waitFor(() => incoming.length === 2);
+    expect(incoming.map((i) => i.text)).toContain(envelope);   // NOT suppressed — reaches the spine for mesh.handle
+  });
+
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
     const { incoming } = await startBridge();
     const m = liveMsg();

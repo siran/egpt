@@ -64,6 +64,7 @@ import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
+import { parseMesh } from '../mesh/relay.mjs';
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
@@ -821,7 +822,18 @@ export async function startBeeperBridge(opts = {}) {
     // C5.3) — so check it BEFORE converting. Beeper delivers text as HTML; convert
     // it to markdown so the model + transcript see prose, not markup (the inbound
     // complement of the outbound md→HTML path; src/html-to-markdown.mjs).
-    if (isEcho(msg.id, chatID, msg.text)) return;
+    //
+    // MESH ENVELOPES ARE EXEMPT (operator 2026-07-05: "kg also recognizes itself as
+    // another alias, and writes in another channel" — a node_alias process relaying
+    // through ITS OWN posted envelope to act as a different identity). parseMesh is
+    // robust to bridge HTML-mangling (stripRender + scan-up-from-end parsing — the
+    // fix for the 2026-06-19 loop, where a MANGLED envelope went UNRECOGNIZED and
+    // was re-relayed forever as if it were fresh human text). Recognizing it here
+    // costs nothing: the mesh engine's own loop safety — forward-once per mid+dir,
+    // the replay guard, the per-channel circuit breaker — is what actually prevents
+    // a runaway, exactly as it does for envelopes from ANOTHER process. Ordinary
+    // chat echoes (no provenance tail) are UNCHANGED — still suppressed below.
+    if (!parseMesh(msg.text) && isEcho(msg.id, chatID, msg.text)) return;
     let text = htmlToMarkdown(msg.text) || null, isVoice = false;
     // Dedup: message.upserted re-fires for the same id (delivery/seen/reaction
     // updates). Process each message once — across restarts (persisted).
