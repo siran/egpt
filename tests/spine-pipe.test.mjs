@@ -267,41 +267,64 @@ describe('spine — emitted reply actions', () => {
 // come back isSender too but are dropped by the bridge's sent-ids echo guard upstream.)
 describe('spine — mode:auto (operator impersonation)', () => {
   const autoGating = { async decide() { return { mode: 'auto', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+  // Auto replies are now humanized: a person's message DWELLS before the turn, and the
+  // reply is delayed by a typing time before the send (operator 2026-07-05). Drive both
+  // injected timers deterministically so these behavioral assertions stay stable.
+  function fakeTimers() {
+    let seq = 0; const pending = new Map();
+    return {
+      setTimeout: (fn) => { const id = ++seq; pending.set(id, fn); return { __id: id, unref() {} }; },
+      clearTimeout: (t) => { if (t && t.__id != null) pending.delete(t.__id); },
+      size: () => pending.size,
+      flush() { const fns = [...pending.values()]; pending.clear(); for (const fn of fns) fn(); },
+    };
+  }
+  const yieldMacro = () => new Promise((r) => setTimeout(r, 0));
+  async function settle(timers, rounds = 16) {
+    for (let i = 0; i < rounds; i++) { await yieldMacro(); if (timers.size() === 0) break; timers.flush(); }
+    await yieldMacro();
+  }
   function buildAuto() {
     const bridge = fakeBridge();
     const brain = { calls: [], async turn(being, ev) { this.calls.push({ being, ev }); return { text: `↩ ${ev.body}`, sessionId: 's1' }; } };
     const transcript = fakeTranscript();
+    const timers = fakeTimers();
     const spine = createSpine({
       bridge, brain, store: fakeStore(),
       identity: fakeIdentity, router: fakeRouter, gating: autoGating,
       sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(),
-      clock: { now: () => 1000 },
+      clock: { now: () => 1000 }, turnTimeoutMs: 0, rng: () => 0.5,
+      setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
     });
     spine.start();
-    return { spine, bridge, brain, transcript };
+    return { spine, bridge, brain, transcript, timers };
   }
 
   it("the operator's OWN message (isSender) runs NO turn — logged + accumulated, never answered", async () => {
-    const { bridge, brain, transcript } = buildAuto();
+    const { bridge, brain, transcript, timers } = buildAuto();
     await bridge.emit({ ...MSG, isSender: true, body: 'note to self' });
+    await settle(timers);
     expect(brain.calls).toHaveLength(0);          // E is never prompted by the operator's own line
     expect(bridge.sent).toHaveLength(0);          // nothing sent (no reply to self)
     expect(transcript.entries).toHaveLength(1);   // but it IS logged (C1.2)
   });
 
   it('the OTHER person triggers ONE turn whose prompt carries the accumulated operator lines in order + the trigger', async () => {
-    const { bridge, brain } = buildAuto();
+    const { bridge, brain, timers } = buildAuto();
     await bridge.emit({ ...MSG, isSender: true,  body: 'first' });                     // operator — accumulates
     await bridge.emit({ ...MSG, isSender: true,  body: 'second' });                    // operator — accumulates
-    await bridge.emit({ ...MSG, isSender: false, senderName: 'Bea', body: 'hey' });    // other person — triggers
+    await bridge.emit({ ...MSG, isSender: false, senderName: 'Bea', body: 'hey' });    // other person — arms the dwell
+    expect(brain.calls).toHaveLength(0);                                               // dwell pending — no turn yet
+    await settle(timers);                                                              // dwell fires → turn → typing → send
     expect(brain.calls).toHaveLength(1);                                               // exactly one turn
     expect(brain.calls[0].ev.line).toBe('An@[fam]: first\n\nAn@[fam]: second\n\nBea@[fam]: hey');
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hey' }]);                // E replied to the other person
   });
 
   it('an other-person message with nothing accumulated prompts with just its own line', async () => {
-    const { bridge, brain } = buildAuto();
+    const { bridge, brain, timers } = buildAuto();
     await bridge.emit({ ...MSG, isSender: false, senderName: 'Bea', body: 'hi' });
+    await settle(timers);
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].ev.line).toBe('Bea@[fam]: hi');   // no prepend when the cycle is empty
   });

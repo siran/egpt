@@ -34,26 +34,31 @@ export function createTranscript({
      * Called with no reply on the gated-out branches (inbound still recorded).
      * @param {object} ev  the InboundEvent
      * @param {string|{text:string,being?:string,surfaced?:boolean}} [reply]
+     * @param {{replyOnly?:boolean}} [opts]  replyOnly: skip the inbound append + stats
+     *        (the inbound was already recorded at arrival — the auto-dwell path logs each
+     *        burst message as it lands, then the fired turn records ONLY its reply here).
      */
-    async log(ev, reply) {
+    async log(ev, reply, { replyOnly = false } = {}) {
       try {
         if (!ev?.chatId) return false;
         const slug = await contacts.resolve(ev.surface, ev.chatId, { chatName: ev.chatName });
         if (!slug) return false;
-        // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
-        // fire-and-forget (never awaited, so it can't block or delay the transcript
-        // append), any rejection swallowed into onLog exactly like the catch below.
-        recordMemberStat(ev.surface, ev.chatId, ev.senderId, isoFromMs(ev.ts), { io, senderName: ev.senderName, chatName: ev.chatName })
-          .catch((e) => onLog(`stats ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`));
         const dir = slugDir(ev.surface, slug);
         await mkdir(dir, { recursive: true });
         const fpath = join(dir, 'transcript.md');
-        // The inbound line is the dispatch line (the conversation-readable form,
-        // C7.6); transcriptAppend prepends front matter on a fresh file.
-        await appendFile(fpath, transcriptAppend({
-          existing: existsSync(fpath), body: ev.line ?? ev.body,
-          name: ev.chatName, surface: ev.surface, slug, threadId: ev.chatId, persona,
-        }), 'utf8');
+        if (!replyOnly) {
+          // §3.1: every received message passes ASYNCHRONOUSLY to the stats collector —
+          // fire-and-forget (never awaited, so it can't block or delay the transcript
+          // append), any rejection swallowed into onLog exactly like the catch below.
+          recordMemberStat(ev.surface, ev.chatId, ev.senderId, isoFromMs(ev.ts), { io, senderName: ev.senderName, chatName: ev.chatName })
+            .catch((e) => onLog(`stats ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`));
+          // The inbound line is the dispatch line (the conversation-readable form,
+          // C7.6); transcriptAppend prepends front matter on a fresh file.
+          await appendFile(fpath, transcriptAppend({
+            existing: existsSync(fpath), body: ev.line ?? ev.body,
+            name: ev.chatName, surface: ev.surface, slug, threadId: ev.chatId, persona,
+          }), 'utf8');
+        }
         if (reply != null) {
           const text = typeof reply === 'string' ? reply : reply.text;
           const being = (typeof reply === 'object' && reply.being) || 'e';

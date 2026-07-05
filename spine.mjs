@@ -109,6 +109,9 @@ export function createSpine({
   clearInterval: clearIntervalFn = globalThis.clearInterval,
   setTimeout: setTimeoutFn = globalThis.setTimeout,
   clearTimeout: clearTimeoutFn = globalThis.clearTimeout,
+  // Randomness for the auto-mode humanization (dwell + typing time), injected so
+  // tests are deterministic. Defaults to Math.random.
+  rng = Math.random,
 } = {}) {
   for (const [name, dep] of Object.entries({ bridge, brain, identity, router, gating, sender, transcript, heartbeats })) {
     if (!dep) throw new Error(`createSpine: missing required dependency '${name}'`);
@@ -161,6 +164,97 @@ export function createSpine({
     cycleBy.set(key, arr);
   }
   function drainCycle(key) { const arr = cycleBy.get(key) ?? []; cycleBy.delete(key); return arr; }
+
+  // --- AUTO-MODE HUMANIZATION (operator 2026-07-05, "it should take time to answer …
+  //     they wander off like a normal person"). AUTO CHATS ONLY — every other mode is
+  //     byte-for-byte unchanged. Two timers, both PRE/POST the turn (never inside the
+  //     turn-timeout budget), both randomized via the injected rng:
+  //
+  //     1) DWELL (pre-turn): a person messaging an auto chat does NOT get an instant
+  //        reply. The message is logged + accumulated into the cycle, and a randomized
+  //        dwell is armed; more messages RESET/extend it (a human reads the whole burst,
+  //        then answers once). When the dwell expires ONE turn fires, draining the whole
+  //        accumulated burst. Bounded by a hard CAP from the first message so a chatty
+  //        burst can't starve the reply forever.
+  //     2) TYPING TIME (pre-send, in runReplyTurn): the plain post-once send is delayed
+  //        by a typing-speed function of the reply length, so the reply doesn't land the
+  //        instant the model finishes.
+  //
+  //     Constants (why these): DWELL 45s floor (a person doesn't pounce) to a 4-min ceiling
+  //     for the common uniform window, with a ~15% chance of a longer tail out to 8 min
+  //     (the "wandered off" case) — the operator's suggested ~45s–4min "with occasional
+  //     longer tails". CAP 10 min from the FIRST message: matches the turn-timeout budget
+  //     (the node's "this long = act now" bound) and no human ignores an active chat much
+  //     longer before answering the burst; a re-arming burst therefore can't push the reply
+  //     past 10 min. Pending dwells are IN-MEMORY: a restart loses them (the next message
+  //     re-arms — acceptable).
+  const DWELL_MIN_MS = 45_000;
+  const DWELL_MAX_MS = 240_000;      // 4 min — top of the common uniform window
+  const DWELL_TAIL_MS = 480_000;     // 8 min — ceiling of the occasional long tail
+  const DWELL_TAIL_P = 0.15;         // ~15% of arms draw the long tail
+  const DWELL_CAP_MS = 600_000;      // 10 min hard cap on TOTAL dwell from the first message
+  function dwellDuration() {
+    const base = DWELL_MIN_MS + rng() * (DWELL_MAX_MS - DWELL_MIN_MS);            // 45s–4min uniform
+    const tail = rng() < DWELL_TAIL_P ? rng() * (DWELL_TAIL_MS - DWELL_MAX_MS) : 0; // occasional +0–4min
+    return base + tail;
+  }
+  // Typing time ≈ 50 wpm (~5.7 chars/word → ~210 ms/char), jittered ±30% (≈40–65 wpm),
+  // a 2s floor for a one-liner and a 90s cap so a long reply can never wedge the send.
+  const TYPING_MS_PER_CHAR = 210;
+  const TYPING_JITTER = 0.3;
+  const TYPING_MIN_MS = 2_000;
+  const TYPING_CAP_MS = 90_000;
+  function typingDelay(text) {
+    const base = String(text ?? '').length * TYPING_MS_PER_CHAR;
+    const jitter = 1 + (rng() * 2 - 1) * TYPING_JITTER;        // 0.7–1.3
+    return Math.min(TYPING_CAP_MS, Math.max(TYPING_MIN_MS, base * jitter));
+  }
+  async function sleepTyping(text) {
+    const ms = typingDelay(text);
+    if (!(ms > 0)) return;
+    await new Promise((resolve) => { const t = setTimeoutFn(resolve, ms); t?.unref?.(); });
+  }
+
+  // Pending dwells, keyed by turnKey. Each holds the LATEST triggering ev (what the fired
+  // turn quotes/records) + firstAt (the CAP anchor). The burst content itself lives in the
+  // cycle (cycleBy), so a fired dwell just drains it — no separate message buffer.
+  const dwellBy = new Map();
+  function armDwell(turnKey, ctx) {
+    const existing = dwellBy.get(turnKey);
+    const firstAt = existing?.firstAt ?? clock.now();
+    if (existing?.timer) clearTimeoutFn(existing.timer);
+    const remaining = Math.max(0, DWELL_CAP_MS - (clock.now() - firstAt));       // shrinks as the burst runs
+    const wait = Math.min(dwellDuration(), remaining);
+    const timer = setTimeoutFn(() => { fireDwell(turnKey).catch((e) => note(`dwell ${turnKey}: ${e?.message ?? e}`)); }, wait);
+    timer?.unref?.();
+    dwellBy.set(turnKey, { ...ctx, timer, firstAt });
+  }
+  // A message arriving mid-dwell (incl. the operator's own accumulated line) re-arms the
+  // timer, keeping the SAME trigger — no-op when no dwell is pending.
+  function extendDwell(turnKey) {
+    const cur = dwellBy.get(turnKey);
+    if (cur) armDwell(turnKey, { to: cur.to, ev: cur.ev, mention: cur.mention });
+  }
+  // The dwell expired: re-read the gate (a mid-dwell /e flip AWAY from auto cancels the
+  // pending dwell cleanly — the timer fires but dispatches NO turn; the accumulated cycle
+  // stays for whenever a turn next runs). Robust to any mode change without cross-service
+  // wiring. Still auto → dispatch ONE reply turn onto the per-conversation FIFO, draining
+  // the whole accumulated burst (preLogged: every burst line was already logged at arrival).
+  async function fireDwell(turnKey) {
+    const entry = dwellBy.get(turnKey);
+    if (!entry) return;
+    dwellBy.delete(turnKey);
+    const { to, ev, mention } = entry;
+    let d;
+    try { d = await gating.decide(to, ev, mention); }
+    catch (e) { note(`dwell ${turnKey}: re-decide failed — ${e?.message ?? e}`); return; }
+    if (d.mode !== 'auto' || !d.mayReply) { note(`dwell ${turnKey}: mode ${d.mode} — dwell dropped (no auto reply)`); return; }
+    const m = mention ?? {};
+    const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
+    const ahead = bumpTrain(turnKey);
+    const out = sender.open(ev.chatId, { being: to, replyTo, auto: true });
+    turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0, preLogged: true }));
+  }
 
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
   // the pipe tests — can await a message end-to-end even though the pump itself
@@ -266,7 +360,7 @@ export function createSpine({
     // prompted WITH it (full context), and run no turn. Only the operator's genuinely-
     // typed lines reach here — E's own auto replies come back isSender too but are dropped
     // upstream by the bridge's sent-ids echo guard (isEcho), never re-entering the spine.
-    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); return; }
+    if (d.mode === 'auto' && ev.isSender) { await transcript.log(ev); pushCycle(turnKey, ev.line ?? ev.body); extendDwell(turnKey); return; }
 
     // Does E actually RUN on this message? It runs when its reply could surface
     // (mayReply), OR when the chat is send_to_egpt:'always' (E stays in context
@@ -283,6 +377,20 @@ export function createSpine({
     // back into this chat as a living mirror. A local-being target has meshTarget=null
     // and falls through to the brain below.
     if (meshTarget && mesh && d.mayReply) { await transcript.log(ev); await mesh.forward(ev, meshTarget); return; }
+
+    // AUTO DWELL (auto chats only): a person messaging an auto chat doesn't get an instant
+    // reply — a human reads the burst and wanders back. Log the message NOW (received =
+    // logged, in arrival order), accumulate it into this conversation's cycle, and ARM/EXTEND
+    // a randomized pre-turn dwell; the turn fires ONCE when the dwell expires (fireDwell),
+    // draining the whole accumulated burst. Pre-turn, so it's outside the turn-timeout budget.
+    // Only auto+mayReply reaches here (isSender auto handled above; a paused auto chat has
+    // mayReply=false and falls to the logged-only/context branches — no reply to delay).
+    if (d.mayReply && d.mode === 'auto') {
+      await transcript.log(ev);
+      pushCycle(turnKey, ev.line ?? ev.body);
+      armDwell(turnKey, { to, ev, mention });
+      return;
+    }
 
     if (d.mayReply) {
       // Reply branch (the reply train). Open THIS mention's OWN placeholder NOW, on
@@ -344,7 +452,7 @@ export function createSpine({
   // is the durable record — it swallows its own errors and never throws — so the message
   // and reply survive even a bridge delivery fault), and E's own delivered reply becomes a
   // cycle line so the next queued turn accumulates it.
-  async function runReplyTurn({ to, ev, d, out, turnKey, queued }) {
+  async function runReplyTurn({ to, ev, d, out, turnKey, queued, preLogged = false }) {
     let recorded = false;
     try {
       out.activate?.();                                 // queued → live the moment its turn starts
@@ -356,9 +464,12 @@ export function createSpine({
       // IMMEDIATE turn discards it — EXCEPT mode:auto, where the operator's OWN messages
       // accumulated WITHOUT ever running a turn, so an auto turn (immediate OR queued)
       // ALWAYS prepends them: E replies with the full context the operator would have had.
-      const prepend = (queued || d.mode === 'auto') && pending.length;
+      // preLogged (the auto DWELL fire): the whole burst — INCLUDING ev's own line — is
+      // already in `pending` (each burst message logged + accumulated at arrival), so prompt
+      // with it verbatim and don't re-append ev.line.
+      const prepend = preLogged || ((queued || d.mode === 'auto') && pending.length);
       const promptEv = prepend
-        ? { ...ev, line: [...pending, ev.line ?? ev.body].join('\n\n') }
+        ? { ...ev, line: (preLogged && pending.length ? pending : [...pending, ev.line ?? ev.body]).join('\n\n') }
         : ev;
       const reply = await runTurnWithTimeout(to, ev, promptEv, (partial) => out.update(partial));
       const rawText = reply?.text ?? '';
@@ -383,10 +494,17 @@ export function createSpine({
       // Observability (operator: "diagnose WHY it was empty"): a turn that was meant to
       // surface but has nothing to deliver (and did nothing) is noted — the silent swallow is loud.
       if (surfaced && !responded) note(`brain ${to}/${ev.chatId}: no deliverable text (${failShaped ? `failure-shaped: ${rawText.slice(0, 80)}` : 'empty'}) — placeholder resolved with no-reply marker`);
-      await transcript.log(ev, { ...reply, surfaced: responded });   // RECORD FIRST (durable) — reply.text is RAW (action lines kept)
+      // RECORD FIRST (durable) — reply.text is RAW (action lines kept). preLogged (auto
+      // dwell): the burst inbound lines were already recorded at arrival, so log ONLY the reply.
+      await transcript.log(ev, { ...reply, surfaced: responded }, { replyOnly: preLogged });
       recorded = true;
       if (responded) pushCycle(turnKey, replyLine({ being: to, body: rawText, surfaced: true, now: new Date() }));
       await store?.recordThread?.({ ev, reply, being: to });
+      // TYPING TIME (auto only): a human takes time to type. Delay the plain post-once send
+      // by a typing-speed function of the reply length (capped 90s, outside the turn-timeout
+      // budget). ONLY a deliverable prose reply is delayed — an action-only reply (e.g. /ask
+      // consulting the operator) has no prose, so it stays undelayed (consulting fast is fine).
+      if (d.mode === 'auto' && deliverable) await sleepTyping(proseText);
       // DELIVER the STRIPPED prose. Action-only → surface:false (delete placeholder);
       // failShaped → blanked → no-reply marker; else the prose (or no-reply marker if empty).
       await out.finish(failShaped ? { text: '' } : { ...reply, text: proseText }, { surface: actionOnly ? false : surfaced });
