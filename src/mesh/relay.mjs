@@ -269,6 +269,9 @@ export function createMeshRelay({
     if (prov.re) {
       const dotIdx = prov.re.lastIndexOf('.');
       const reChatId = dotIdx >= 0 ? prov.re.slice(0, dotIdx) : prov.re;
+      // The return address is `<origin-chat>.<origin-node>` (e.g. "HFM.kg") — the node
+      // suffix is the ORIGIN node a transit hop must carry the reply back toward.
+      const originNode = dotIdx >= 0 ? prov.re.slice(dotIdx + 1).toLowerCase() : '';
       const back = awaiting.get(reChatId) || awaiting.get(prov.re);
       log(`mesh: reply re:${prov.re} mid:${prov.mid || '-'} msgId:${msgId ?? '-'} back:${back ? 'yes' : 'NO'} tracked:${streamingIn.has(String(msgId)) ? 'yes' : 'no'}`);
 
@@ -281,12 +284,17 @@ export function createMeshRelay({
             if (handle) { s = { handle }; awaiting.delete(reChatId); }
           } else if (!back && openRelayStream && prov.mid && fwdSeen.has(`req:${prov.mid}`)
                      && !fwdSeen.checkAndMark(`rep:${prov.mid}`)) {
-            // RETURN HOP: I forwarded this request, so I re-mirror the reply back into the
-            // channel it's travelling — the upstream hop / origin then sees a DIFFERENT
-            // node's copy, which is what gets a kg→do→kg bounce home past a node mirroring
-            // its OWN reply (edit-suppression). Same-channel re-mirror is fine; loop-safe.
-            log(`mesh: return-mirror rep ${prov.mid} (I forwarded its request)`);
-            const handle = openRelayStream(route, { by: prov.by, re: prov.re, mid: prov.mid });
+            // RETURN HOP: I forwarded this request's outbound leg, so I carry its reply back
+            // toward the ORIGIN — resolveRoute(originNode) is the room where I reach the origin
+            // node, exactly as forwardToward resolves a request's next hop (reply-once per mid,
+            // same forward-once loop safety). The responder answers in ITS room, not the origin's,
+            // so the reply must be re-mirrored toward the origin — NOT reposted into its own
+            // arrival room (that dead-ended the reply one hop short). Fall back to the arrival
+            // route only when the origin node can't be resolved (single-room degenerate case —
+            // same-channel re-mirror is loop-safe).
+            const upstream = resolveRoute(originNode) || route;
+            log(`mesh: return-mirror rep ${prov.mid} → ${originNode || '(arrival)'} (I forwarded its request)`);
+            const handle = openRelayStream(upstream, { by: prov.by, re: prov.re, mid: prov.mid });
             if (handle) s = { handle };
           }
           if (s) {

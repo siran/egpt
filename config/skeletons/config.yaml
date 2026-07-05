@@ -62,6 +62,27 @@ agents:
   #   configuration: relay
   #   relay_channel: Rodz    # a chat name or a room id — @don forwards there
 
+# ── 3c. Mesh (cross-node being relay) ────────────────────────────────────────
+# OPTIONAL. `@being.node` in a chat reaches a being hosted on ANOTHER node; the reply
+# streams home into the origin chat as a living-mirror placeholder. Inert until `nodes:`
+# is configured (no matching node → "no route", nothing is forwarded).
+#
+#   ttl        — max routed hops before a request expires (default 3).
+#   timeout_ms — how long the origin waits before "<target> did not answer" (default 60000).
+#   nodes      — the routing table: <node-name> -> routes: [ { room_id } ]. Only routes[0]
+#                is used — the chat that carries the envelope to/from that node (a chat NAME
+#                or a short Beeper room id, both resolved for you). You need a nodes.<target>
+#                entry to ORIGINATE a relay toward <target>; a pure responder needs none. In a
+#                multi-hop chain each entry is the NEXT-HOP room toward that node, not the room
+#                the node itself sits in.
+# mesh:
+#   ttl: 3
+#   timeout_ms: 60000
+#   nodes:
+#     do:                    # to reach node `do`, this node posts the envelope into the chat below
+#       routes:
+#         - room_id: "Rodz"  # a chat name or a short Beeper room id
+
 # ── 4. Surfaces (who may command this node, per surface) ─────────────────────
 # eGPT talks through Beeper, which bridges several networks. Each surface has its
 # OWN authorization block, because ids are per-surface NAMESPACES — a WhatsApp jid
