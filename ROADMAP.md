@@ -272,16 +272,24 @@ following is LANDED, test-locked, and (where marked) live-verified:
      matrix-hop alternative). Once Telegram shows in DOLLY's /v1/accounts:
      create the cross-account Telegram chat, re-point don's relay_channel
      (+ network: telegram) in DOLLY config, re-run `@carol hello`.
-  2. **Multipath reply collision — FIXED (2026-07-06, agent-built,
-     reproduce-first)**: confirmed real — `awaiting` was keyed by origin chat
-     alone, so the first reply home deleted the shared entry and STRANDED the
-     second in-flight request's reply (post_id targeted the right placeholder
-     but never got the chance). Now keyed per-request by post_id (fallback:
-     origin name), reply-home resolves+deletes only its own key. Remaining
-     caveat (unfixed, timeout-only): spine mesh.mjs armTimeout/pending still
-     keys ONE origin-wait timer per chat — two forwards share it; only matters
-     when a reply never comes. LIVE MULTIPATH TEST still to run: add a 1-hop
-     direct relay agent beside the 3-hop chain, fire both, compare.
+  2. **Multipath — LANDED (2026-07-06, agent-built, reproduce-first)**: two
+     layers. (a) Reply collision FIXED: `awaiting` keyed per-request by post_id
+     (was origin-chat-wide — first reply home stranded the second request).
+     (b) MULTIPATH-AS-CONFIGURATION (operator: "an agent is a list of paths,
+     every message through every path"): `agents.<name>` may be a LIST of
+     single-key maps `- <label>: {relay_channel, network?, to?}` — the router
+     fans the mesh target into ALL paths; relayOut posts ONE placeholder then
+     one envelope per path (same re:/post_id, per-path network pin, a failing
+     path skipped, all-fail surfaces); relay-RECORD hops fan out too
+     (resolveBeingRelay returns an array for list agents). First reply home
+     wins the placeholder (existing awaiting-delete); a later duplicate is
+     consumed. TERMINAL DEDUP falls out of the existing `seen` guard (keys on
+     being+from+body — both envelopes collide): the being answers ONCE,
+     redundant transport, no new machinery. Caveats: dedup requires identical
+     to/from/body and one node process; the spine's armTimeout still keys one
+     origin-wait timer per chat (timeout-only); config-schema doc string not
+     yet updated for the list shape. LIVE on REVE config: carol = path1 rodz1
+     (whatsapp) + path2 egpt-mesh-do-kg (telegram); live fan-out test pending.
   3. **Traceroute `via:` — LANDED (2026-07-06)**: each forwarding hop appends
      `<being>.<node>` to a comma-separated `via:` provenance key; the terminal
      responder echoes it home; the origin appends a one-line trailer on the
@@ -302,6 +310,16 @@ following is LANDED, test-locked, and (where marked) live-verified:
   skeletons are copy-if-missing, so the LIVE room template still teaches the
   old grammar until refreshed (the capabilities-refresher gap) — malformed
   emits self-correct via the error line meanwhile.
+
+- **Mesh channel NAMING CONVENTION (operator 2026-07-06, adopted)**: a mesh
+  link channel between two nodes is named `egpt-mesh-<a>-<b>` with the node
+  names in DETERMINISTIC (sorted) order — e.g. kg↔do → `egpt-mesh-do-kg`,
+  kg↔mo → `egpt-mesh-kg-mo`. Both ends derive the same name independently, no
+  coordination. LIVE: the kg↔do telegram link channel carries this name (was
+  egpt-mesh-id → egpt-mesh → egpt-mesh-do-kg; renamed via PATCH /v1/chats/{id}
+  {title} — works even though the response echoes the stale title). Seeds a
+  future auto-provision step: a node can derive + create/find the link channel
+  for any peer by name alone.
 
 - **Mesh request OPTIONS (operator 2026-07-06 proposal, design open — build
   AFTER the multi-network test)**: the INITIAL message can carry per-request
