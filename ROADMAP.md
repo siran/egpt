@@ -259,14 +259,19 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 - **Mixed-network mesh + multipath + traceroute (operator 2026-07-06)**:
   three stacked steps proving the mesh is network- and path-transparent.
-  1. **Mixed-network hop — WAITING ON OPERATOR**: re-point ONE chain hop to a
-     Telegram chat — the mesh layer is already network-agnostic (relay_channel
-     is just a chat name; bridge.resolveChatId does the rest). CHECKED
-     2026-07-06: the Rodz account (DOLLY) has only matrix+whatsapp linked — NO
-     Telegram — and the operator chose to LINK TELEGRAM ON RODZ first (over the
-     zero-setup matrix-hop alternative). Once Telegram shows in DOLLY's
-     /v1/accounts: create the cross-account Telegram chat, re-point don's
-     relay_channel (DOLLY config) to it, re-run `@carol hello`.
+  1. **Mixed-network hop — CODE READY, WAITING ON OPERATOR (Telegram link)**:
+     `network:` pin LANDED (2026-07-06, agent-built): `agents.<name>.network:
+     whatsapp|telegram|signal|matrix` beside relay_channel pins which network a
+     shared chat NAME resolves to — router carries it on the mesh route,
+     canonRoute/resolveBeingRelay pass it through, bridge.resolveChatId gates
+     name/slug matches by the chat's network (raw ids bypass; no cache-key
+     change needed — _knownChatIds keys on resolved ids, never names). Absent
+     = resolve across all (prior behavior). CHECKED 2026-07-06 (twice): the
+     Rodz account (DOLLY) has only matrix+whatsapp — NO Telegram — and the
+     operator chose to LINK TELEGRAM ON RODZ first (over the zero-setup
+     matrix-hop alternative). Once Telegram shows in DOLLY's /v1/accounts:
+     create the cross-account Telegram chat, re-point don's relay_channel
+     (+ network: telegram) in DOLLY config, re-run `@carol hello`.
   2. **Multipath reply collision — FIXED (2026-07-06, agent-built,
      reproduce-first)**: confirmed real — `awaiting` was keyed by origin chat
      alone, so the first reply home deleted the shared entry and STRANDED the
@@ -297,6 +302,24 @@ following is LANDED, test-locked, and (where marked) live-verified:
   skeletons are copy-if-missing, so the LIVE room template still teaches the
   old grammar until refreshed (the capabilities-refresher gap) — malformed
   emits self-correct via the error line meanwhile.
+
+- **Mesh request OPTIONS (operator 2026-07-06 proposal, design open — build
+  AFTER the multi-network test)**: the INITIAL message can carry per-request
+  flags to the mesh, as a YAML tail on the human's own message:
+  ```
+  @carol hi
+  ---
+  opts:
+    - show-hops
+    - encrypt
+    - sign-nodes
+  ```
+  Candidate opts: `show-hops` (surface the `via:` trail at the origin — the
+  trail always rides the wire tail, this only controls origin display),
+  `encrypt` (body encrypted for the terminal being, hops can't read),
+  `sign-nodes` (each hop SIGNS its via entry — signed hops, verifiable path;
+  ties into the node-keypair/alias identity ideas). Opts ride the envelope
+  provenance so every hop sees them. Nothing implemented yet.
 
 - **HRW single-responder for shared channels (operator 2026-07-06)**: when 2+
   nodes/accounts BOTH host E in the SAME chat (e.g. REVE + DOLLY in a real
