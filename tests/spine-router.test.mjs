@@ -17,6 +17,7 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   const agents = {
     egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },   // persona
     don:  { configuration: 'relay', relay_channel: 'Rodz' },          // relay → chat "Rodz"
+    'don-tg': { configuration: 'relay', relay_channel: 'Rodz', network: 'Telegram' },   // relay → chat "Rodz" pinned to telegram
     'don-local': { configuration: 'sonnet-high', name: 'Don' },       // local being, hyphenated name
     off:  { configuration: 'sonnet-high', enabled: false },           // disabled → not routable
     _note: 'a comment key, never routable',
@@ -47,6 +48,13 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
     expect(r.being).toBeNull();
     expect(r.mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
     expect(r.mention).toMatchObject({ atEStart: true });
+  });
+
+  it('a RELAY agent with a network pin carries lowercased network on the mesh route (operator 2026-07-06: same name on two networks)', () => {
+    const r = arouter.resolve(ev('@don-tg ping'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toEqual({ being: 'don-tg', route: { room_id: 'Rodz', network: 'telegram' } });
+    // regression: an UNPINNED relay agent's route carries NO network key (asserted above via toEqual on @don)
   });
 
   it('case-insensitive on handles and names: @Don-Local → don-local, @DON → relay target', () => {

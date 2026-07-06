@@ -16,9 +16,11 @@ function fakeBridge({ chatIds = {} } = {}) {
     sent: [],          // { chat, text }
     statusPosts: [],   // { chat, text, id }
     streams: [],       // { chat, init, opts, updates[], finals[], delivered }
+    resolveCalls: [],  // { nameOrId, opts } — records the network pin canonRoute passes through
     // name→id resolution, as the real bridge does (relay_channel is configured by NAME;
     // an observed envelope's ev.chatId is always the RESOLVED id). Unknown → identity.
-    async resolveChatId(nameOrId) { return chatIds[nameOrId] ?? nameOrId; },
+    // The optional 2nd arg is the network pin (operator 2026-07-06) — recorded, not applied.
+    async resolveChatId(nameOrId, opts) { b.resolveCalls.push({ nameOrId, opts }); return chatIds[nameOrId] ?? nameOrId; },
     send(chat, text) { b.sent.push({ chat, text }); return { ok: true }; },
     async postStatus(chat, text) { const id = `post-${b.statusPosts.length + 1}`; b.statusPosts.push({ chat, text, id }); return id; },
     startStream(chat, init, opts = {}) {
@@ -300,6 +302,28 @@ describe('mesh service — relay_channel name resolution + reply home', () => {
     expect(bridge.sent.some((s) => s.chat === 'ID2')).toBe(true);                    // forwarded into the RESOLVED rodz2
     expect(bridge.sent.some((s) => s.chat === 'rodz2')).toBe(false);                 // not the raw name
     expect(parseMesh(bridge.sent.find((s) => s.chat === 'ID2').text)).toMatchObject({ to: 'wren.kg' });
+  });
+
+  it('NETWORK PIN: canonRoute passes the route network through to bridge.resolveChatId (operator 2026-07-06: multi-network mesh)', async () => {
+    const chatIds = { rodz2: 'ID2' };
+    const agents = { don: { relay_channel: 'rodz2', to: 'wren.kg', network: 'Telegram' } };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    // resolveBeingRelay built a raw route { room_id:'rodz2', network:'telegram' }; canonRoute
+    // resolved the NAME with the pin, lowercased.
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'rodz2', opts: { network: 'telegram' } });
+    // and the forward still lands in the resolved id (the pin rode canonRoute, didn't break it)
+    expect(bridge.sent.some((s) => s.chat === 'ID2')).toBe(true);
+  });
+
+  it('NO PIN: canonRoute calls resolveChatId with NO options (regression — unpinned stays cross-network)', async () => {
+    const chatIds = { rodz2: 'ID2' };
+    const agents = { don: { relay_channel: 'rodz2', to: 'wren.kg' } };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'rodz2', opts: undefined });
   });
 
   it('REGRESSION: a relay_channel configured as a RAW id (not a name) forwards unchanged', async () => {

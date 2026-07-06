@@ -284,7 +284,18 @@ export async function startBeeperBridge(opts = {}) {
   // slug. Ambiguity (two chats, same slug) resolves to the first and logs.
   // Never throws — an unresolvable name returns null and the caller's
   // send-drop logging explains it.
-  async function resolveChatId(nameOrId) {
+  // OPTIONAL NETWORK PIN (operator 2026-07-06: multi-network mesh) — the same chat
+  // NAME can exist on several networks under one Beeper account (whatsapp/telegram/
+  // signal/matrix are all bridged into this one API). When opts.network is given, only
+  // chats whose network (listChats item `.network` = the API's accountID) matches count
+  // as NAME-match candidates, so a shared name resolves to the pinned network's chat.
+  // Absent → resolve across all (prior behavior). Raw/known ids bypass the filter (they
+  // already are canonical, so there's nothing to disambiguate) — the `!`-prefix and
+  // _knownChatIds short-circuits below both return before the filter, and an UNSEEN raw
+  // id (c.id === s) is not a name match so it's never network-gated either.
+  // No cache-key change is needed: _knownChatIds keys on RESOLVED ids, never names, so an
+  // unfiltered lookup never caches the name and can't shadow a later filtered lookup.
+  async function resolveChatId(nameOrId, { network = null } = {}) {
     const s = String(nameOrId ?? '');
     if (!s) return null;
     // Legacy/defensive: a full-form Matrix room id is recognized without a
@@ -294,13 +305,19 @@ export async function startBeeperBridge(opts = {}) {
     // Already-known real id (see _knownChatIds above) — resolves with NO lookup,
     // same free short-circuit the '!' prefix used to give every raw id.
     if (_knownChatIds.has(s)) return s;
+    const net = network ? String(network).toLowerCase() : null;
     const want = chatSlug(s);
     let matches = [];
     // `c.id === s` lets an UNSEEN raw short room id (e.g. one an operator typed
-    // straight from /channels output) resolve directly once listed.
-    try { matches = (await listChats()).filter(c => c.id === s || c.name === s || c.slug === want); }
+    // straight from /channels output) resolve directly once listed — a raw id, not a
+    // name match, so it is never network-gated. A name/slug match IS gated by the pin.
+    try {
+      matches = (await listChats()).filter(c =>
+        c.id === s ||
+        ((c.name === s || c.slug === want) && (!net || String(c.network ?? '').toLowerCase() === net)));
+    }
     catch (e) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — chat list unavailable: ${e?.message ?? e}`); return null; }
-    if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}) — no chat matches`); return null; }
+    if (!matches.length) { onLog(`beeper: resolveChatId(${JSON.stringify(s)}${net ? ` net=${net}` : ''}) — no chat matches`); return null; }
     if (matches.length > 1) onLog(`beeper: resolveChatId(${JSON.stringify(s)}) ambiguous (${matches.length} chats) — using "${matches[0].name}" (${matches[0].id})`);
     _knownChatIds.add(matches[0].id);
     return matches[0].id;

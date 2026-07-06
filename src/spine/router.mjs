@@ -66,7 +66,10 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
             // being on the far end answers). mesh.forward uses the route directly.
             if (agent.relay_channel || String(agent.configuration ?? '').toLowerCase() === 'relay') {
               const to = String(agent.to ?? '').trim();
-              const mesh = { being: name, route: { room_id: agent.relay_channel }, ...(to ? { to } : {}) };
+              // NETWORK PIN (operator 2026-07-06: multi-network mesh) — the same chat name
+              // can exist on several networks under one Beeper account; carry an optional
+              // `network:` beside room_id so the bridge resolves the name to the pinned one.
+              const mesh = { being: name, route: { room_id: agent.relay_channel, ...(agent.network ? { network: String(agent.network).toLowerCase() } : {}) }, ...(to ? { to } : {}) };
               return { being: null, mesh, mention: { ...MENTION } };
             }
             // The PERSONA agent routes to the canonical default being (stable keys).

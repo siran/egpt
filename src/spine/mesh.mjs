@@ -92,11 +92,17 @@ export function createMeshService({
   // into the SAME id the chat is observed as, so the terminal node listening there receives it
   // (and an origin present in that room catches the reply). bridge.resolveChatId caches (no
   // repeat lookup); a bridge without it (test fakes) → route unchanged (raw-id configs unaffected).
+  // NETWORK PIN (operator 2026-07-06: multi-network mesh) — a route may carry a
+  // `network:` (whatsapp|telegram|signal|matrix) beside room_id; the same chat name
+  // can exist on several networks under one Beeper account, so pass the pin through
+  // to resolveChatId so the NAME resolves to the pinned network's chat. The field
+  // survives on the returned route (via the spread) — harmless once canonical.
   const canonRoute = async (route) => {
     if (!route) return route;
     const c = chatOf(route);
     if (c == null) return route;
-    try { const id = await bridge.resolveChatId?.(c); return id ? { ...route, room_id: id } : route; }
+    const network = route.network ? String(route.network).toLowerCase() : null;
+    try { const id = await bridge.resolveChatId?.(c, network ? { network } : undefined); return id ? { ...route, room_id: id } : route; }
     catch { return route; }
   };
 
@@ -174,7 +180,9 @@ export function createMeshService({
       const parts = to.split('.');
       const b = parts[0].toLowerCase();
       const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
-      const raw = a.relay_channel ? { room_id: String(a.relay_channel) } : (n ? resolveRoute(n) : null);
+      // Carry the optional NETWORK PIN (operator 2026-07-06: multi-network mesh) so a
+      // relay_channel NAME shared across networks resolves to the pinned one (see canonRoute).
+      const raw = a.relay_channel ? { room_id: String(a.relay_channel), ...(a.network ? { network: String(a.network).toLowerCase() } : {}) } : (n ? resolveRoute(n) : null);
       if (!raw) return null;
       const route = await canonRoute(raw);   // relay_channel NAME → canonical id (see canonRoute)
       return { being: b, node: n, route };

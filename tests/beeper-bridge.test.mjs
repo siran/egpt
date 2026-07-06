@@ -702,6 +702,43 @@ describe('beeper bridge', () => {
   });
 });
 
+// NETWORK PIN (operator 2026-07-06: multi-network mesh) — the same chat NAME can
+// exist on multiple networks under one Beeper account; resolveChatId(name, { network })
+// pins which network's chat the name resolves to. The listChats item's `.network`
+// (= the API's accountID) is the filter key.
+describe('beeper bridge — resolveChatId network pin', () => {
+  it('picks the matching-network chat when two chats share a title', async () => {
+    fake.chats.set(CHAT('room-wa'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-tg'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { bridge } = await startBridge();
+    expect(await bridge.resolveChatId('Rodz', { network: 'telegram' })).toBe('room-tg');
+    expect(await bridge.resolveChatId('Rodz', { network: 'whatsapp' })).toBe('room-wa');
+  });
+
+  it('MISSES (no-match) when only the WRONG network has that title', async () => {
+    fake.chats.set(CHAT('room-wa'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    const { bridge } = await startBridge();
+    expect(await bridge.resolveChatId('Rodz', { network: 'telegram' })).toBeNull();   // falls through to normal not-found
+    expect(await bridge.resolveChatId('Rodz', { network: 'whatsapp' })).toBe('room-wa');   // the right network still resolves
+  });
+
+  it('cache-key separation: an unfiltered resolve of a name never shadows a later filtered lookup of the same name', async () => {
+    fake.chats.set(CHAT('room-wa'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'whatsapp' });
+    fake.chats.set(CHAT('room-tg'), { title: 'Rodz', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { bridge } = await startBridge();
+    const un = await bridge.resolveChatId('Rodz');                                    // unfiltered → first match (ambiguous)
+    expect(['room-wa', 'room-tg']).toContain(un);
+    expect(await bridge.resolveChatId('Rodz', { network: 'telegram' })).toBe('room-tg');   // REAL filtered lookup, not the cached unfiltered id
+    expect(await bridge.resolveChatId('Rodz', { network: 'whatsapp' })).toBe('room-wa');
+  });
+
+  it('no pin → resolves across all networks (prior behavior, unchanged)', async () => {
+    fake.chats.set(CHAT('room-tg'), { title: 'Solo', type: 'single', isMuted: false, accountID: 'telegram' });
+    const { bridge } = await startBridge();
+    expect(await bridge.resolveChatId('Solo')).toBe('room-tg');   // no pin, telegram-only name still resolves
+  });
+});
+
 // SHORT-ID BOUNDARY (operator 2026-07-03): the fake API always speaks the wire's
 // full Matrix form (CHAT(n) helper); the bridge must normalize it to SHORT the
 // moment it enters, and re-expand to full ONLY at the api() call. Everything
