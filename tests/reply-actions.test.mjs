@@ -6,23 +6,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseReplyActions, createReplyActions } from '../src/spine/reply-actions.mjs';
 
-const EV = { chatId: '!room:beeper.local', surface: 'whatsapp', chatName: 'Bea', msgId: '900' };
+const EV = { chatId: '!room:beeper.local', surface: 'whatsapp', chatName: 'Bea' };
 
 describe('parseReplyActions — the pure split', () => {
-  it('react: emoji + explicit #id', () => {
-    const { prose, run, stripped } = parseReplyActions('/react 🔥 #157204', EV);
+  it('react: #id + emoji', () => {
+    const { prose, run, stripped } = parseReplyActions('/react #157204 🔥', EV);
     expect(prose).toBe('');
     expect(stripped).toEqual([]);
     expect(run).toEqual([{ type: 'react', chatId: EV.chatId, targetId: '157204', emoji: '🔥' }]);
   });
 
-  it('react: no #id defaults to the message being answered (ev.msgId)', () => {
-    const { run } = parseReplyActions('/react 👍', EV);
-    expect(run[0]).toMatchObject({ type: 'react', targetId: '900', emoji: '👍' });
+  it('react: no #id is malformed — STRICT, never defaults to an arbitrary message (live bug 2026-07-06: "/react 👋" silently reacted to ev.msgId)', () => {
+    const { run, stripped } = parseReplyActions('/react 👋', EV);
+    expect(run).toEqual([]);
+    expect(stripped).toHaveLength(1);
+    expect(stripped[0].reason).toMatch(/#<id>/);
   });
 
   it('react: a word alias resolves to an emoji', () => {
-    expect(parseReplyActions('/react heart', EV).run[0].emoji).toBe('❤️');
+    expect(parseReplyActions('/react #12 heart', EV).run[0].emoji).toBe('❤️');
   });
 
   it('react: no emoji → stripped (malformed), never executed', () => {
@@ -62,7 +64,7 @@ describe('parseReplyActions — the pure split', () => {
   });
 
   it('prose + action mixed: prose surfaces, action runs', () => {
-    const { prose, run } = parseReplyActions('Nice one!\n/react 🔥 #7\nsee you soon', EV);
+    const { prose, run } = parseReplyActions('Nice one!\n/react #7 🔥\nsee you soon', EV);
     expect(prose).toBe('Nice one!\nsee you soon');
     expect(run).toHaveLength(1);
   });
@@ -80,13 +82,13 @@ describe('parseReplyActions — the pure split', () => {
   });
 
   it('action-only reply → empty prose', () => {
-    expect(parseReplyActions('/react 👍 #7', EV).prose).toBe('');
+    expect(parseReplyActions('/react #7 👍', EV).prose).toBe('');
   });
 
   it('DOC/HELP placeholder lines are malformed (stripped, never executed) — the anti-accident guard', () => {
     // exactly the lines E sees in its own identity feed — a verbatim echo must NOT fire
     const help = [
-      '/react <emoji> [#<id>]     react to message #<id>',
+      '/react #<id> <emoji>       react to message #<id>',
       '/reply #<id> <text>        quote-reply to a specific message',
       '/media <path> [caption]    send a file from this folder',
       '/edit #<id> <text>         edit one of my own messages',
@@ -134,7 +136,7 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
   it('react hits the bridge with (ev.chatId, targetId, emoji)', async () => {
     const b = fakeBridge();
     const a = mk(b);
-    const { run, stripped } = a.parse('/react 🔥 #7', EV);
+    const { run, stripped } = a.parse('/react #7 🔥', EV);
     await a.execute(run, stripped, EV, { being: 'e' });
     expect(b.calls.react).toEqual([{ chat: EV.chatId, id: '7', emoji: '🔥' }]);
   });
@@ -150,7 +152,7 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
   it('EVERY action targets ev.chatId — a limb can never reach another chat', async () => {
     const b = fakeBridge();
     const a = mk(b);
-    const { run } = a.parse('/react 👍 #7\n/reply #7 hi', EV);
+    const { run } = a.parse('/react #7 👍\n/reply #7 hi', EV);
     await a.execute(run, [], EV, { being: 'e' });
     expect(b.calls.react[0].chat).toBe(EV.chatId);
     expect(b.calls.send[0].chat).toBe(EV.chatId);
@@ -213,7 +215,7 @@ describe('createReplyActions.execute — confined + fail-closed', () => {
     const logs = [];
     const b = fakeBridge({ react: () => { throw new Error('boom'); } });
     const a = mk(b, { onLog: (m) => logs.push(m) });
-    const { run, stripped } = a.parse('/react\n/react 👍 #7', EV);   // one malformed, one that throws
+    const { run, stripped } = a.parse('/react\n/react #7 👍', EV);   // one malformed, one that throws
     await expect(a.execute(run, stripped, EV, { being: 'e' })).resolves.toBeUndefined();
     expect(logs.some((l) => /stripped malformed action/.test(l))).toBe(true);
     expect(logs.some((l) => /action react failed: boom/.test(l))).toBe(true);

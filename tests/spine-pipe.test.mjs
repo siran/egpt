@@ -224,22 +224,22 @@ describe('spine — emitted reply actions', () => {
   }
 
   it('prose + action: prose surfaces (action line stripped), action executes, RAW reply recorded', async () => {
-    const { spine, bridge, transcript, limbs } = buildA('Nice one!\n/react 🔥 #7\nbye');
+    const { spine, bridge, transcript, limbs } = buildA('Nice one!\n/react #7 🔥\nbye');
     spine.start();
     await bridge.emit(MSG);
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: 'Nice one!\nbye' }]);   // action line NOT surfaced
     expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '🔥' }]);
-    expect(transcript.entries[0].reply.text).toBe('Nice one!\n/react 🔥 #7\nbye');   // RAW recorded — nothing lost
+    expect(transcript.entries[0].reply.text).toBe('Nice one!\n/react #7 🔥\nbye');   // RAW recorded — nothing lost
     expect(transcript.entries[0].reply.surfaced).toBe(true);
   });
 
   it('action-only reply: nothing surfaces (placeholder resolves silent), the action still runs + is recorded', async () => {
-    const { spine, bridge, transcript, limbs } = buildA('/react 👍 #7');
+    const { spine, bridge, transcript, limbs } = buildA('/react #7 👍');
     spine.start();
     await bridge.emit(MSG);
     expect(bridge.sent).toHaveLength(0);                                   // no prose → nothing posted
     expect(limbs.calls.react).toEqual([{ chat: MSG.chatId, id: '7', emoji: '👍' }]);
-    expect(transcript.entries[0].reply.text).toBe('/react 👍 #7');         // recorded
+    expect(transcript.entries[0].reply.text).toBe('/react #7 👍');         // recorded
     expect(transcript.entries[0].reply.surfaced).toBe(true);              // E DID respond (via the limb)
   });
 

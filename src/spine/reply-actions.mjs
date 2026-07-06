@@ -23,7 +23,7 @@
 //   - an execution error is logged, never crashes the turn.
 //
 // EMIT SYNTAX (documented for E in config/skeletons/room/00-identity.md):
-//   /react <emoji> [#<id>]     react to #<id> (default: the message being answered)
+//   /react #<id> <emoji>       react to message #<id>
 //   /reply #<id> <text>        quote-reply to message #<id>
 //   /media <path> [caption]    send a file from this conversation's folder (relative path)
 //   /edit #<id> <text>         edit one of your OWN earlier messages
@@ -76,25 +76,24 @@ function unsafePath(p) {
 }
 
 // Parse ONE action line's arguments into an executable action, or a malformed
-// verdict. `ev` supplies the default react target (the message being answered) and
-// the chatId every action is pinned to.
+// verdict. `ev` supplies the chatId every action is pinned to.
 function parseOne(verb, args, ev) {
   const chatId = ev?.chatId ?? null;
   const raw = String(args ?? '').trim();
   switch (verb) {
     case 'react': {
-      // <emoji> [#<id>] — a trailing '#<id>' token names the target; otherwise the
-      // message being answered (ev.msgId). The emoji must be a SINGLE token (a real
-      // emoji has no spaces, even multi-codepoint ones) with no placeholder brackets —
-      // so a doc line like "<emoji> [#<id>]  react to…" is malformed, not a live react.
+      // #<id> <emoji> — STRICT: the target id is required (no default to "the
+      // message being answered") so a degenerate "/react <emoji>" can never
+      // silently fire against an arbitrary message; it is malformed and stripped
+      // instead. The emoji must be a SINGLE token (a real emoji has no spaces,
+      // even multi-codepoint ones) with no placeholder brackets — so a doc line
+      // like "#<id> <emoji>  react to…" is malformed, not a live react.
       const toks = raw ? raw.split(/\s+/) : [];
-      let targetId = ev?.msgId ?? null;
-      if (toks.length && ID_RE.test(toks[toks.length - 1])) targetId = ID_RE.exec(toks.pop())[1];
-      if (toks.length !== 1) return { ok: false, reason: 'react: expected exactly one emoji' };
-      if (/[<>\[\]]/.test(toks[0])) return { ok: false, reason: 'react: placeholder, not an emoji' };
-      const emoji = resolveEmoji(toks[0]);
+      if (toks.length !== 2 || !ID_RE.test(toks[0])) return { ok: false, reason: 'react: expected "#<id> <emoji>"' };
+      if (/[<>\[\]]/.test(toks[1])) return { ok: false, reason: 'react: placeholder, not an emoji' };
+      const emoji = resolveEmoji(toks[1]);
       if (!emoji) return { ok: false, reason: 'react: no emoji' };
-      if (!targetId) return { ok: false, reason: 'react: no target message id' };
+      const targetId = ID_RE.exec(toks[0])[1];
       return { ok: true, action: { type: 'react', chatId, targetId, emoji } };
     }
     case 'reply': {

@@ -25,7 +25,7 @@ Beyond speaking, I can act on messages. I do this by writing an ACTION on its
 OWN line in my reply. One action per line. A slash inside a sentence is just
 text — only a line that STARTS with one of these verbs is an action:
 
-    /react <emoji> [#<id>]     react to message #<id> (default: the one I'm answering)
+    /react #<id> <emoji>       react to message #<id>
     /reply #<id> <text>        quote-reply to a specific message #<id>
     /media <path> [caption]    send a file from THIS conversation's folder (relative path)
     /edit #<id> <text>         edit one of my OWN earlier messages
@@ -43,5 +43,5 @@ target. Rules:
 
 Example — react and add a word:
 
-    /react 🔥 #157204
+    /react #157204 🔥
     love this one
