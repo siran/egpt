@@ -236,6 +236,32 @@ describe('mesh service — loop safety', () => {
     expect(dropped).toBe(true);                                     // consumed (never re-relay)
     expect(logs.some((l) => /ttl expired for MT/.test(l))).toBe(true);
   });
+
+  it('(e2) TTL bounds an N-hop relay-record CHAIN through ONE process (per-mid arrival count, any hop type)', async () => {
+    // NEW terrain (2026-07-05): one process relaying a declarative chain THROUGH ITSELF. The
+    // ttl hop-cap is checked once per arriving envelope in handle() BEFORE any relay/forward
+    // logic, so it bounds a relay-record chain exactly as it bounds a mesh.nodes transit — it
+    // never needs to know the hop TYPE. ttl:2 → the 3rd arrival (rodz3) is capped before egpt.
+    const logs = [];
+    const agents = {
+      carol: { relay_channel: 'rodz1', to: 'don.do' },
+      don: { relay_channel: 'rodz2', to: 'wren.kg' },
+      wren: { relay_channel: 'rodz3', to: 'egpt.kg' },
+      egpt: { configuration: 'egpt', name: 'egpt' },
+    };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, meshCfg: { ttl: 2 }, logs });
+    const origin = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do', mid: 'MC' });
+    await mesh.handle({ surface: 'wa', chatId: 'rodz1', msgId: 'a1', body: origin });              // hop 1 — forwards to rodz2
+    const r2 = bridge.sent.find((s) => s.chat === 'rodz2');
+    expect(parseMesh(r2.text)).toMatchObject({ to: 'wren.kg', mid: 'MC' });
+    await mesh.handle({ surface: 'wa', chatId: 'rodz2', msgId: 'a2', body: r2.text });             // hop 2 — forwards to rodz3
+    const r3 = bridge.sent.find((s) => s.chat === 'rodz3');
+    expect(parseMesh(r3.text)).toMatchObject({ to: 'egpt.kg', mid: 'MC' });
+    const dropped = await mesh.handle({ surface: 'wa', chatId: 'rodz3', msgId: 'a3', body: r3.text });   // hop 3 > 2 — capped
+    expect(dropped).toBe(true);
+    expect(logs.some((l) => /ttl expired for MC/.test(l))).toBe(true);
+    expect(bridge.streams).toHaveLength(0);                        // egpt NEVER dispatched (chain bounded before the terminal)
+  });
 });
 
 describe('mesh service — origin-wait timeout', () => {

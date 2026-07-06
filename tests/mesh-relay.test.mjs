@@ -385,17 +385,20 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
     expect(sent).toHaveLength(1);
   });
 
-  it('the chain COLLAPSES when the next hop is a local being on this node — answers directly', async () => {
-    let answered = null;
+  it('a relay-record ALWAYS forwards into its own route — NO collapse even when the next hop is local (collapse removed 2026-07-05)', async () => {
+    const sent = [];
     const kg = createMeshRelay({
-      node: 'kg', send: async () => {}, surface: async () => {},
+      node: 'kg', send: async (r, t) => sent.push({ room: r.room_id, t }), surface: async () => {},
       isSelfNode: (n) => n === 'kg', isLocalBeing: (b) => b === 'e' || b === 'egpt',
       resolveBeingRelay: (b) => (b === 'wren' ? { being: 'egpt', node: 'kg', route: { room_id: 'Rodz3' } } : null),
-      relayDispatch: async ({ being }) => { answered = being; },
+      // if the old collapse were still here it would DISPATCH instead of forwarding — make that loud
+      relayDispatch: async () => { throw new Error('must not dispatch: a relay-record forwards, never collapses'); },
     });
     const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'wren.kg', mid: 'C2' });
     await kg.onRoomMessage({ route: { room_id: 'Rodz2' }, text: req, msgId: 'a1' });
-    expect(answered).toBe('e');   // wren→egpt.kg collapses; egpt normalized to the persona being 'e'
+    expect(sent).toHaveLength(1);
+    expect(sent[0].room).toBe('Rodz3');                                    // a REAL visible hop into wren's own route
+    expect(parseMesh(sent[0].t)).toMatchObject({ to: 'egpt.kg', body: 'hola', mid: 'C2' });   // re-addressed to the local terminal
   });
 
   it('a forwarded reply re-mirrors back into the room the request ARRIVED in (reverse path, no mesh.nodes)', async () => {
@@ -507,5 +510,135 @@ describe('mesh relay — multi-hop reply return', () => {
     // reply for M8 is not its to carry, so the return-hop gate (fwdSeen.has(req:mid)) stays shut.
     await mo.onRoomMessage({ route: B, text: encodeMesh({ by: 'don.mo', body: 'x', re: 'HFM.kg', mid: 'M8' }), msgId: 'r1' });
     expect(opened).toHaveLength(0);
+  });
+});
+
+// ── SINGLE-PROCESS N-HOP SELF-RELAY CHAIN (operator 2026-07-05) ────────────────────────
+// ONE process (node kg + aliases) drives a WHOLE declarative chain THROUGH ITSELF, NON-
+// collapsed: @carol → rodz1(to:don.do) → don → rodz2(to:wren.kg) → wren → rodz3(to:egpt.kg)
+// → egpt answers locally. Since mesh envelopes bypass echo suppression, the process re-
+// observes its OWN posts in every room. The FORWARD leg forwards hop-by-hop (a real visible
+// post per hop, forward-once PER HOP); the REPLY leg mirrors back hop-by-hop (rodz3→rodz2→
+// rodz1→true origin). Beeper re-delivers each self-authored post under SEVERAL transport ids
+// (pending→confirmed; streaming edits self-suppressed), so the SAME reply mid reaches
+// onRoomMessage many times per STAGE — each stage must open ONE mirror and finish ONCE, and
+// the origin placeholder must resolve exactly once. The mechanism is general for ANY length.
+describe('mesh relay — single-process N-hop declarative chain (2026-07-05)', () => {
+  const SELF = 'kg';
+  // names[0] = the entry relay agent the operator @mentions (carol); names[1..] = the relay-
+  // record hops; terminal local being = egpt. Each relay agent B_i owns channel rodz{i+1}; the
+  // origin posts to:names[1].do into rodz1; hop names[i] forwards into its OWN channel.
+  function chainEngine(names) {
+    const channel = Object.fromEntries(names.map((n, i) => [n, `rodz${i + 1}`]));
+    const rec = {};   // resolveBeingRelay for the relay-record hops (names[1..])
+    for (let i = 1; i < names.length; i++) {
+      rec[names[i]] = { being: names[i + 1] ?? 'egpt', node: SELF, route: { room_id: channel[names[i]] } };
+    }
+    const posted = [];            // every request/reply envelope THIS process posts (its own echo)
+    const dispatched = [];        // relayDispatch calls (the local terminal)
+    const relayOpens = []; const relayFinishes = [];
+    const opens = []; const originUpdates = []; const originFinishes = [];
+    const kg = createMeshRelay({
+      node: SELF,
+      isSelfNode: (n) => n === SELF || n === 'do',            // node_name kg + alias do (first hop is @…​.do)
+      isLocalBeing: (b) => b === 'e' || b === 'egpt',
+      resolveBeingRelay: (b) => rec[String(b).toLowerCase()] ?? null,
+      resolveRoute: () => null,                               // pure declarative (no mesh.nodes)
+      send: async (route, text) => { posted.push({ room: route?.room_id, text }); },
+      surface: async () => {},
+      ackWithPostId: async () => 'P',
+      relayDispatch: async (d) => { dispatched.push(d); },
+      openOriginStream: (_back, info) => { opens.push(info); return { update: (b) => originUpdates.push(b), finish: async (b) => originFinishes.push(b) }; },
+      openRelayStream: (route, info) => { const room = route?.room_id; relayOpens.push({ room, info }); return { update: () => {}, finish: async (b) => relayFinishes.push({ room, b }) }; },
+      log: () => {},
+    });
+    return { names, channel, kg, posted, dispatched, relayOpens, relayFinishes, opens, originUpdates, originFinishes };
+  }
+
+  const ORIGIN = { chat_id: 'SELF', name: '+1 (646) 821-7865' };
+  const RE = `${ORIGIN.name}.${SELF}`;
+
+  // Origin relays @carol, then re-observe every self-posted REQUEST in its room (forward leg)
+  // until the terminal dispatches. Returns the minted mid.
+  async function driveForward(c, body = '@carol hi') {
+    await c.kg.relayOut({ being: c.names[0], route: { room_id: 'rodz1' }, to: `${c.names[1]}.do`, body, origin: ORIGIN, sender: 'An' });
+    const MID = parseMesh(c.posted[0].text).mid;
+    let i = 0, id = 1;
+    while (i < c.posted.length) {
+      const p = c.posted[i++]; const prov = parseMesh(p.text);
+      if (prov.re) continue;                                 // requests only drive the forward leg
+      await c.kg.onRoomMessage({ route: { room_id: p.room }, text: p.text, msgId: `q${id++}` });
+    }
+    return MID;
+  }
+
+  const replyFrame = (mid, body, done) => encodeMesh({ by: 'egpt.kg', body, re: RE, post_id: 'P', mid, done });
+
+  it('FORWARD leg reaches the local terminal cleanly — a REAL visible hop per room, no collapse', async () => {
+    const c = chainEngine(['carol', 'don', 'wren']);
+    const MID = await driveForward(c);
+    // one visible request posted per room (rodz1 origin, rodz2 don→wren, rodz3 wren→egpt)
+    expect(c.posted.map((p) => p.room)).toEqual(['rodz1', 'rodz2', 'rodz3']);
+    expect(parseMesh(c.posted[1].text)).toMatchObject({ to: 'wren.kg', mid: MID, body: '@carol hi' });
+    expect(parseMesh(c.posted[2].text)).toMatchObject({ to: 'egpt.kg', mid: MID, body: '@carol hi' });
+    // egpt dispatched with a CLEAN prompt (mention stripped), addressed as the terminal being
+    expect(c.dispatched).toHaveLength(1);
+    expect(c.dispatched[0]).toMatchObject({ being: 'egpt', prompt: 'hi', re: RE, mid: MID });
+  });
+
+  it('REPRODUCE-FIRST (3 hops): the reply mirrors rodz3→rodz2→rodz1 and finishes the origin ONCE, robust to per-stage re-delivery', async () => {
+    const c = chainEngine(['carol', 'don', 'wren']);
+    const MID = await driveForward(c);
+    const FINAL = '🐶 hola, qué tal';
+    // egpt answered in rodz3; the reply is re-observed in each room, re-delivered under SEVERAL
+    // ids per stage (pending placeholder, confirmed final, a redundant echo) — the exact live shape.
+    for (let k = 3; k >= 1; k--) {
+      const room = `rodz${k}`;
+      await c.kg.onRoomMessage({ route: { room_id: room }, text: replyFrame(MID, '🤔 thinking…', false), msgId: `${room}-a` });
+      await c.kg.onRoomMessage({ route: { room_id: room }, text: replyFrame(MID, FINAL, true), msgId: `${room}-b` });
+      await c.kg.onRoomMessage({ route: { room_id: room }, text: replyFrame(MID, FINAL, true), msgId: `${room}-c` });  // redundant → inert
+    }
+    // ONE transit mirror per intermediate hop, each toward the PREVIOUS room (reverse chain)
+    expect(c.relayOpens.map((o) => o.room)).toEqual(['rodz2', 'rodz1']);
+    expect(c.relayFinishes).toEqual([{ room: 'rodz2', b: FINAL }, { room: 'rodz1', b: FINAL }]);
+    // the true origin resolved exactly once with the final answer (pre-fix: stuck at 🤔)
+    expect(c.opens).toHaveLength(1);
+    expect(c.originFinishes).toEqual([FINAL]);
+  });
+
+  it('GENERALIZES to a LONGER chain (5 hops) with no depth limit or degradation', async () => {
+    const c = chainEngine(['carol', 'a', 'b', 'c', 'd']);   // carol→a→b→c→d→egpt across rodz1..rodz5
+    const MID = await driveForward(c);
+    expect(c.posted.map((p) => p.room)).toEqual(['rodz1', 'rodz2', 'rodz3', 'rodz4', 'rodz5']);
+    expect(c.dispatched[0]).toMatchObject({ being: 'egpt', prompt: 'hi', mid: MID });
+    const FINAL = '🐶 listo';
+    for (let k = 5; k >= 1; k--) {
+      const room = `rodz${k}`;
+      await c.kg.onRoomMessage({ route: { room_id: room }, text: replyFrame(MID, '🤔', false), msgId: `${room}-a` });
+      await c.kg.onRoomMessage({ route: { room_id: room }, text: replyFrame(MID, FINAL, true), msgId: `${room}-b` });
+    }
+    expect(c.relayOpens.map((o) => o.room)).toEqual(['rodz4', 'rodz3', 'rodz2', 'rodz1']);   // 4 reverse hops
+    expect(c.opens).toHaveLength(1);
+    expect(c.originFinishes).toEqual([FINAL]);
+  });
+
+  it('forward-once is PER HOP: a hop cannot re-forward a mid, but a LATER hop forwards that SAME mid (change #2)', async () => {
+    const c = chainEngine(['carol', 'don', 'wren']);
+    await c.kg.relayOut({ being: 'carol', route: { room_id: 'rodz1' }, to: 'don.do', body: '@carol hi', origin: ORIGIN, sender: 'An' });
+    const MID = parseMesh(c.posted[0].text).mid;
+    const req1 = c.posted[0].text;   // to:don.do in rodz1
+    // feed don's hop TWICE → it forwards into rodz2 only ONCE (own gate req:MID:don)
+    await c.kg.onRoomMessage({ route: { room_id: 'rodz1' }, text: req1, msgId: 'a1' });
+    await c.kg.onRoomMessage({ route: { room_id: 'rodz1' }, text: req1, msgId: 'a2' });
+    expect(c.posted.filter((p) => p.room === 'rodz2')).toHaveLength(1);
+    // wren's hop forwards the SAME mid — NOT falsely blocked by don's mark (the shared-fwdSeen bug)
+    const req2 = c.posted.find((p) => p.room === 'rodz2').text;
+    await c.kg.onRoomMessage({ route: { room_id: 'rodz2' }, text: req2, msgId: 'b1' });
+    const r3 = c.posted.filter((p) => p.room === 'rodz3');
+    expect(r3).toHaveLength(1);
+    expect(parseMesh(r3[0].text)).toMatchObject({ to: 'egpt.kg', mid: MID });
+    // wren's hop is ALSO forward-once for its OWN gate
+    await c.kg.onRoomMessage({ route: { room_id: 'rodz2' }, text: req2, msgId: 'b2' });
+    expect(c.posted.filter((p) => p.room === 'rodz3')).toHaveLength(1);
   });
 });
