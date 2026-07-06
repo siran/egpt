@@ -29,7 +29,10 @@
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
 // 'done' marks the final frame. The being's body_emoji is stamped INTO the body by
 // the responder (it owns the emoji), not carried as a key.
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node']);
+// `via` is the per-hop forwarding trail (operator 2026-07-06): a comma-separated list of the
+// relay hops a request passed through (`<being>.<node>`), accumulated on the way OUT and echoed
+// home in the reply so the origin can show the path (traceroute).
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node', 'via']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
 // Body codec (An 2026-06-20): base64 so the transport can't mangle the body. Beeper
@@ -44,7 +47,7 @@ const b64decode = (s) => Buffer.from(String(s ?? ''), 'base64').toString('utf8')
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
-export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', done = false } = {}) {
+export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', via = '', done = false } = {}) {
   const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
   if (from) lines.push(`from: ${from}`);
   // `from_node` rides the REQUEST so the responder can build a node-qualified return
@@ -59,6 +62,9 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   // knows WHICH message to edit as the mirrored reply streams.
   const _pid = typeof post_id === 'string' ? post_id : '';
   if (_pid) lines.push(`post_id: ${_pid}`);
+  // `via` accumulates the forwarding hops (`<being>.<node>,…`); omitted when empty (the origin
+  // stamps none — hop 0 is `from`/`from_node`). Comma-separated, readable in the tail.
+  if (via) lines.push(`via: ${via}`);
   // `done` marks the FINAL frame so the origin finalizes the mirror (appends "✅ Done").
   // It is a DISPLAY finish marker, not a teardown that drops edits: every non-done frame
   // still flows onto the mirror (the living pipe); done only says "the turn is complete".
@@ -118,12 +124,25 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '' };
+  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '', via: prov.via || '' };
 }
 
 export function mentionedBeing(text) {
   const m = MENTION_RE.exec(String(text ?? ''));
   return m ? m[1].toLowerCase() : null;
+}
+
+// via helpers (operator 2026-07-06). appendVia adds THIS forwarding hop's identity to the trail;
+// viaTrailer renders it as a readable one-line traceroute the origin appends to the delivered body.
+const appendVia = (existing, hop) => { const e = String(existing ?? '').trim(); return e ? `${e},${hop}` : String(hop); };
+const viaTrailer = (via) => {
+  const path = String(via ?? '').split(',').map((s) => s.trim()).filter(Boolean).join(' › ');
+  return path ? `via ${path}` : '';
+};
+// Append the traceroute trailer to a delivered body — ORIGIN-ONLY, done-frame only.
+function withVia(body, via) {
+  const t = viaTrailer(via);
+  return t ? `${String(body ?? '')}\n\n${t}` : body;
 }
 
 export function createMeshRelay({
@@ -263,7 +282,12 @@ export function createMeshRelay({
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
     catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
-    if (fromName && origin) awaiting.set(fromName, origin);
+    // MULTIPATH (operator 2026-07-06): key `awaiting` by the per-request placeholder id (post_id)
+    // so TWO concurrent relays from the SAME origin chat (identical `re:`) hold DISTINCT return
+    // routes — the first reply home no longer deletes the second's entry and strands it. Fall back
+    // to the origin name when no placeholder id was captured (no ackWithPostId → non-streaming path).
+    const awaitKey = postId || fromName;
+    if (awaitKey && origin) awaiting.set(awaitKey, origin);
     return true;
   }
 
@@ -284,7 +308,14 @@ export function createMeshRelay({
     if (prov.re) {
       const dotIdx = prov.re.lastIndexOf('.');
       const reChatId = dotIdx >= 0 ? prov.re.slice(0, dotIdx) : prov.re;
-      const back = awaiting.get(reChatId) || awaiting.get(prov.re);
+      // MULTIPATH (operator 2026-07-06): resolve the return route by the reply's OWN placeholder
+      // id (post_id) first — unique per request, so concurrent relays from one origin chat don't
+      // collide; fall back to the return-address (reChatId / full re:) for the no-post_id path.
+      // Remember WHICH key matched so we delete only THAT request's entry (not a sibling's).
+      const backKey = (prov.post_id && awaiting.has(prov.post_id)) ? prov.post_id
+        : awaiting.has(reChatId) ? reChatId
+        : awaiting.has(prov.re) ? prov.re : null;
+      const back = backKey != null ? awaiting.get(backKey) : undefined;
       // One reply-mirror stage is keyed by the reply message's OWN id: the opening post and
       // every later streamed EDIT arrive under the SAME raw msgId, so an edit finds the mirror.
       const key = msgId != null ? `x:${String(msgId)}` : null;
@@ -297,20 +328,22 @@ export function createMeshRelay({
           // ORIGIN: edit the origin placeholder (post_id) in place as the reply streams home.
           const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null });
           if (handle) {
-            s = { handle }; awaiting.delete(reChatId);
+            s = { handle }; awaiting.delete(backKey);
             streamingIn.set(key, s);
             if (streamingIn.size > STREAM_CAP) { const k = streamingIn.keys().next().value; streamingIn.delete(k); }
           }
         }
         if (s) {
-          if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(prov.body); }
+          // TRACEROUTE (operator 2026-07-06): append the `via` path trailer ONLY on the final
+          // (done) frame — origin-only display, unobtrusive; streamed frames stay clean.
+          if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(withVia(prov.body, prov.via)); }
           else await s.handle.update?.(prov.body);
           return true;
         }
       }
 
-      // No stream primitive / no mirror could open: the ORIGIN surfaces once.
-      if (back) { awaiting.delete(reChatId); await surface(back, prov.body, { by: prov.by }); return true; }
+      // No stream primitive / no mirror could open: the ORIGIN surfaces once (done frame → trailer).
+      if (back) { awaiting.delete(backKey); await surface(back, withVia(prov.body, prov.via), { by: prov.by }); return true; }
       log(`mesh: reply re:${prov.re} not awaited here`);
       return true;                                   // consume either way (never re-relay)
     }
@@ -349,12 +382,13 @@ export function createMeshRelay({
         const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes
         if (dest) {
           log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
-          await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body }));
+          // via: append THIS hop's identity (`<being>.<node>`) so the reply carries the path taken.
+          await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body, via: appendVia(prov.via, `${being}.${asNode}`) }));
         }
         return true;
       }
       if (!isLocalBeing(being)) {
-        await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress }));
+        await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress, via: prov.via }));
         return true;
       }
     } else if (!isLocalBeing(being)) {
@@ -376,7 +410,8 @@ export function createMeshRelay({
     // them onto its placeholder. Non-blocking: relayDispatch fires the dispatch; we
     // don't await the whole turn here.
     if (relayDispatch) {
-      relayDispatch({ being: runB, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}` })
+      // `via` (the accumulated forward trail) rides to the dispatcher so it echoes the path home.
+      relayDispatch({ being: runB, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, via: prov.via })
         .catch((e) => log(`mesh: relayDispatch ${runB} failed: ${e?.message ?? e}`));
       return true;
     }
@@ -387,7 +422,7 @@ export function createMeshRelay({
     if (reply == null || String(reply).trim() === '') reply = '…';
     const _stamp = beingEmoji(runB);
     const _fbBody = String(reply).trim() || '…';
-    await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, done: true }));
+    await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, via: prov.via, done: true }));
     return true;
   }
 
@@ -410,7 +445,7 @@ export function createMeshRelay({
     if (!s) return false;                          // not a tracked relay reply — bridge handles it
     const prov = parseMesh(text);
     if (!prov) return true;                        // tracked but unparseable — consume, don't mirror garbage
-    if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(prov.body); }
+    if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(withVia(prov.body, prov.via)); }
     else await s.handle.update?.(prov.body);
     return true;
   }

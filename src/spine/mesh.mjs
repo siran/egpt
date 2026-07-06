@@ -209,14 +209,15 @@ export function createMeshService({
     // relay channel as ONE message wrapped in the mesh tail (by/emoji/re/post_id). The
     // being's body_emoji is stamped INTO the body (the responder owns it; the origin
     // can't look up a remote being's). The FINAL frame carries done:true.
-    relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
+    relayDispatch: async ({ being, prompt, route, re, post_id, by, via }) => {
       const chat = chatOf(route);
       if (chat == null) return;
       const emoji = bodyEmojiOf(being) || '';
       const wrap = (body, done = false) => {
         const b = String(body ?? '').trim();
         const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER : (emoji ? `${emoji} ${b}` : b);
-        return encodeMesh({ by, body: out, re, post_id, done });
+        // echo `via` (the forward trail) home so the origin can show the traceroute path.
+        return encodeMesh({ by, body: out, re, post_id, via, done });
       };
       const stream = bridge.startStream(chat, wrap(''), {});
       let final = '';
