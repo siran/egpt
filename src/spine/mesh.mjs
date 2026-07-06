@@ -27,7 +27,6 @@
 // not a new scheme). Inert until mesh.nodes is configured (resolveRoute → null →
 // relayOut surfaces "no route").
 import { createMeshRelay, encodeMesh, parseMesh } from '../mesh/relay.mjs';
-import { normalizeMeshTtl } from '../mesh/envelope.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -53,7 +52,6 @@ export function createMeshService({
     .map((a) => String(a ?? '').trim().toLowerCase()).filter(Boolean)]);
   const isSelfNode = (n) => selfNodes.has(String(n ?? '').toLowerCase());
   const agents = () => cfg().agents ?? {};                         // the unified registry (new-config-only)
-  const ttlCap = () => normalizeMeshTtl(cfg().mesh?.ttl);          // default 3 (max routed hops)
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
   // Relay-chat resolution (unchanged from the old wiring): a node's listen route is
@@ -98,22 +96,6 @@ export function createMeshService({
   function clearTimeoutFor(chatId) {
     const t = pending.get(String(chatId));
     if (t !== undefined) { clearTimer(t); pending.delete(String(chatId)); }
-  }
-
-  // TTL hop-cap: a global belt-and-suspenders bound ATOP the engine's forward-once
-  // (relay.mjs forwards each mid once per direction — the primary loop safety, per
-  // EGPT-MESH-PROTOCOL "no ttl" in the wire). The wire carries no ttl slot, so we cap
-  // at the SERVICE boundary: each REQUEST arrival for a mid is counted; past ttlCap
-  // hops it is dropped + logged. Reply frames (re set) are exempt. Bounded Map.
-  const hops = new Map();     // mid -> arrival count
-  const HOPS_CAP = 500;
-  function ttlExceeded(prov) {
-    if (prov.re || !prov.mid) return false;           // replies exempt; no mid → engine won't forward
-    const n = (hops.get(prov.mid) ?? 0) + 1;
-    hops.set(prov.mid, n);
-    if (hops.size > HOPS_CAP) hops.delete(hops.keys().next().value);
-    if (n > ttlCap()) { onLog(`ttl expired for ${prov.mid} (hop ${n} > ${ttlCap()}) — dropped`); return true; }
-    return false;
   }
 
   // A synthetic InboundEvent for the RESPONDER's brain.turn: the being answers in the
@@ -231,7 +213,7 @@ export function createMeshService({
     openRelayStream: (route, info = {}) => {
       const chat = chatOf(route);
       if (chat == null) return null;
-      const wrap = (body, done = false) => encodeMesh({ by: info.by, body: String(body ?? '').trim() || PLACEHOLDER, re: info.re, mid: info.mid, done });
+      const wrap = (body, done = false) => encodeMesh({ by: info.by, body: String(body ?? '').trim() || PLACEHOLDER, re: info.re, mid: info.mid, post_id: info.post_id, done });
       const stream = bridge.startStream(chat, wrap(''), {});
       if (!stream) return null;
       return {
@@ -245,13 +227,12 @@ export function createMeshService({
     // A message carrying a provenance tail is relay traffic (request or reply), not chat.
     isEnvelope(ev) { return parseMesh(ev?.body ?? '') != null; },
 
-    // Process an inbound envelope. BOTH directions live in the engine's onRoomMessage;
-    // we only gate the ttl hop-cap first. The route is the chat it arrived on (so the
-    // reply/forward posts back there); msgId correlates a streamed reply's frames.
+    // Process an inbound envelope. BOTH directions live in the engine's onRoomMessage.
+    // The route is the chat it arrived on (so the reply/forward posts back there); msgId
+    // correlates a streamed reply's frames.
     async handle(ev) {
       const prov = parseMesh(ev?.body ?? '');
       if (!prov) return false;
-      if (ttlExceeded(prov)) return true;                       // dropped (never re-relay)
       const route = { limb: ev.surface, room_id: ev.chatId };
       return relay.onRoomMessage({ route, text: ev.body, msgId: ev.msgId });
     },

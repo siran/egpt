@@ -234,7 +234,8 @@ export function createMeshRelay({
   // back in the room we forwarded INTO (`outRoute`) must re-mirror into the room the request
   // ARRIVED in (`inRoute`). Key = `${mid}@${outRoom}` → inRoute. Each hop records only ITS OWN
   // pair — it never needs to know how many hops came before/after, so the mechanism is fully
-  // general (no depth limit; the mesh.ttl hop-cap in mesh.mjs bounds total hops). A mid-only
+  // general (no depth limit at all — the per-hop fwdSeen forward-once gate plus the guardedSend
+  // circuit breaker bound a chain's length, not any hop-cap). A mid-only
   // map would COLLIDE across hops in one process (every hop overwriting the same slot); the
   // room scope keeps each hop's reverse leg distinct. Bounded LRU.
   const fwdArrival = new Map();   // `${mid}@${outRoom}` -> inRoute (the room to mirror the reply back into)
@@ -349,8 +350,12 @@ export function createMeshRelay({
             : null;
           if (revTo && openRelayStream) {
             // TRANSIT: re-mirror the reply one hop back toward the origin, into `revTo`.
+            // Carry post_id: the ORIGIN placeholder id must survive EVERY reverse hop so the
+            // final hop can edit it in place (openOriginStream existingMsgId). Without it a
+            // multi-hop reply reached the origin with no post_id → the origin opened a FRESH
+            // (empty, dropped) placeholder and the real one stuck on 🤔 (operator 2026-07-05).
             log(`mesh: return-mirror rep ${prov.mid} @${roomKey} → ${_routeKey(revTo)} (I forwarded its request)`);
-            const handle = openRelayStream(revTo, { by: prov.by, re: prov.re, mid: prov.mid });
+            const handle = openRelayStream(revTo, { by: prov.by, re: prov.re, mid: prov.mid, post_id: prov.post_id });
             if (handle) s = { handle };
           } else if (back && openOriginStream) {
             // ORIGIN: edit the origin placeholder (post_id) in place.
@@ -404,12 +409,13 @@ export function createMeshRelay({
       // envelopes are echo-suppression-exempt now, so a chain relayed through one process posts a
       // REAL, visible envelope at every hop — the collapse was a premature optimization that is
       // no longer even true). This generalizes to an ARBITRARY-length chain: each hop only knows
-      // its OWN relay-record and forwards one step; the mesh.ttl hop-cap (mesh.mjs) bounds total
-      // hops. Forward-once is scoped to THIS hop's identity (`being`) — NOT just the mid — because
-      // a single process relaying a chain through itself checks/marks forward-once for the SAME
-      // mid at EVERY hop (mid is preserved verbatim), so an unscoped `req:${mid}` would let hop 1
-      // silently swallow hop 2's legitimate forward of the same mid. `req:${mid}:${being}` gives
-      // each hop its own gate while still blocking a given hop from re-forwarding the same mid.
+      // its OWN relay-record and forwards one step; forward-once scoped to THIS hop's identity
+      // (`being`) — plus the guardedSend circuit breaker as a backstop — is now the ONLY thing
+      // bounding a chain's length. Scoped by `being`, NOT just the mid, because a single process
+      // relaying a chain through itself checks/marks forward-once for the SAME mid at EVERY hop
+      // (mid is preserved verbatim), so an unscoped `req:${mid}` would let hop 1 silently swallow
+      // hop 2's legitimate forward of the same mid. `req:${mid}:${being}` gives each hop its own
+      // gate while still blocking a given hop from re-forwarding the same mid.
       const _rec = await resolveBeingRelay(being);
       if (_rec) {
         if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}:${being}`)) {

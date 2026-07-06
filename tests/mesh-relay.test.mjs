@@ -315,7 +315,7 @@ describe('mesh relay — multi-hop transit', () => {
     await doSpine.onRoomMessage({ route: A, text: frame('🤝 Ja'), msgId: 'r1' });
     await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja') });
     await doSpine.onRoomMessageEdit({ msgId: 'r1', text: frame('🤝 Jaja, aquí', true) });
-    expect(opened).toEqual([{ room: 'A', info: { by: 'don.mo', re: 'HFM.kg', mid: 'M3' } }]);   // re-mirrored into the channel it arrived on
+    expect(opened).toEqual([{ room: 'A', info: { by: 'don.mo', re: 'HFM.kg', mid: 'M3', post_id: '' } }]);   // re-mirrored into the channel it arrived on (post_id rides the reverse mirror; '' here — no origin placeholder)
     expect(updates).toContain('🤝 Jaja');
     expect(finished).toBe('🤝 Jaja, aquí');
     await doSpine.onRoomMessage({ route: A, text: frame('🤝 Ja'), msgId: 'r2' });   // re-seen → no 2nd stream

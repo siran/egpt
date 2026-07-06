@@ -89,7 +89,6 @@ agents:
 # streams home into the origin chat as a living-mirror placeholder. Inert until `nodes:`
 # is configured (no matching node → "no route", nothing is forwarded).
 #
-#   ttl        — max routed hops before a request expires (default 3).
 #   timeout_ms — how long the origin waits before "<target> did not answer" (default 60000).
 #   nodes      — the routing table: <node-name> -> routes: [ { room_id } ]. Only routes[0]
 #                is used — the chat that carries the envelope to/from that node (a chat NAME
@@ -98,7 +97,6 @@ agents:
 #                multi-hop chain each entry is the NEXT-HOP room toward that node, not the room
 #                the node itself sits in.
 # mesh:
-#   ttl: 3
 #   timeout_ms: 60000
 #   nodes:
 #     do:                    # to reach node `do`, this node posts the envelope into the chat below

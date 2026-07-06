@@ -230,29 +230,18 @@ describe('mesh service — loop safety', () => {
     expect(parseMesh(forwards[0].text)).toMatchObject({ to: 'don.mo', mid: 'M1' });
   });
 
-  it('(e) TTL-expired: a request past the hop cap is dropped + logged', async () => {
-    const logs = [];
-    const { mesh } = svc({ node: 'do', meshCfg: { ttl: 1, nodes: { mo: { routes: [{ room_id: 'B' }] } } }, logs });
-    const req = encodeMesh({ by: 'An', body: 'hi @don', from: 'HFM', from_node: 'kg', to: 'don.mo', mid: 'MT' });
-    await mesh.handle({ surface: 'whatsapp', chatId: 'A', msgId: 'a1', body: req });   // hop 1 ≤ 1 — ok
-    const dropped = await mesh.handle({ surface: 'whatsapp', chatId: 'A', msgId: 'a2', body: req });   // hop 2 > 1 — dropped
-    expect(dropped).toBe(true);                                     // consumed (never re-relay)
-    expect(logs.some((l) => /ttl expired for MT/.test(l))).toBe(true);
-  });
-
-  it('(e2) TTL bounds an N-hop relay-record CHAIN through ONE process (per-mid arrival count, any hop type)', async () => {
-    // NEW terrain (2026-07-05): one process relaying a declarative chain THROUGH ITSELF. The
-    // ttl hop-cap is checked once per arriving envelope in handle() BEFORE any relay/forward
-    // logic, so it bounds a relay-record chain exactly as it bounds a mesh.nodes transit — it
-    // never needs to know the hop TYPE. ttl:2 → the 3rd arrival (rodz3) is capped before egpt.
-    const logs = [];
+  it('a 3-hop relay-record CHAIN through ONE process now completes past what the old ttl cap would have dropped (hop-cap removed; forward-once + destination-termination are the only bounds)', async () => {
     const agents = {
       carol: { relay_channel: 'rodz1', to: 'don.do' },
       don: { relay_channel: 'rodz2', to: 'wren.kg' },
       wren: { relay_channel: 'rodz3', to: 'egpt.kg' },
       egpt: { configuration: 'egpt', name: 'egpt' },
     };
-    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, meshCfg: { ttl: 2 }, logs });
+    const brain = fakeBrain({ reply: 'hey' });
+    // meshCfg.ttl:2 is what the OLD code would have used to cap this chain at hop 3 (rodz3);
+    // it's now just an ignored/no-op config key — the removal must not need it deleted from a
+    // node's existing config.yaml for the chain to work.
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, meshCfg: { ttl: 2 }, brain });
     const origin = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do', mid: 'MC' });
     await mesh.handle({ surface: 'wa', chatId: 'rodz1', msgId: 'a1', body: origin });              // hop 1 — forwards to rodz2
     const r2 = bridge.sent.find((s) => s.chat === 'rodz2');
@@ -260,10 +249,9 @@ describe('mesh service — loop safety', () => {
     await mesh.handle({ surface: 'wa', chatId: 'rodz2', msgId: 'a2', body: r2.text });             // hop 2 — forwards to rodz3
     const r3 = bridge.sent.find((s) => s.chat === 'rodz3');
     expect(parseMesh(r3.text)).toMatchObject({ to: 'egpt.kg', mid: 'MC' });
-    const dropped = await mesh.handle({ surface: 'wa', chatId: 'rodz3', msgId: 'a3', body: r3.text });   // hop 3 > 2 — capped
-    expect(dropped).toBe(true);
-    expect(logs.some((l) => /ttl expired for MC/.test(l))).toBe(true);
-    expect(bridge.streams).toHaveLength(0);                        // egpt NEVER dispatched (chain bounded before the terminal)
+    await mesh.handle({ surface: 'wa', chatId: 'rodz3', msgId: 'a3', body: r3.text });             // hop 3 — previously capped at ttl:2, now reaches egpt
+    await flush();
+    expect(bridge.streams.some((s) => s.chat === 'rodz3')).toBe(true);   // egpt DISPATCHED — no hop gate stopped it
   });
 });
 
@@ -330,6 +318,58 @@ describe('mesh service — reply return over a name-configured relay_channel', (
     expect(reverse).toEqual(['ID2', 'ID1', 'ORIGIN']);                                      // the reverse chain, once each
     const originMirror = bridge.streams.find((s) => s.opts?.existingMsgId === 'post-1');
     expect(originMirror?.chat).toBe('ORIGIN');                                              // the true origin placeholder resolved
+  });
+
+  it('REPRODUCE-FIRST (single-process, faithful reverse-mirror): post_id survives EVERY reverse hop so the TRUE origin placeholder (existingMsgId) resolves — not a fresh one', async () => {
+    // The FULL 3-HOP test above HAND-FEEDS post_id into every room; the LIVE failure was that
+    // the reverse mirror (openRelayStream) STRIPPED post_id, so by the time the reply reached
+    // the origin room it had none → openOriginStream opened a FRESH placeholder (existingMsgId
+    // null → empty text → dropped by the bridge) and the real 🤔 one never updated (operator
+    // 2026-07-05). Here we feed each reverse hop the ACTUAL output of the previous
+    // openRelayStream — exactly as a single process re-observes its OWN posts — so the strip is
+    // exercised end-to-end.
+    const chatIds = { rodz1: 'ID1', rodz2: 'ID2', rodz3: 'ID3' };
+    const agents = {
+      carol: { relay_channel: 'rodz1', to: 'don.do' },
+      don: { relay_channel: 'rodz2', to: 'wren.kg' },
+      wren: { relay_channel: 'rodz3', to: 'egpt.kg' },
+      egpt: { configuration: 'egpt', name: 'egpt' },
+    };
+    const brain = fakeBrain({ reply: 'hola qué tal' });
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo', 'ca'], agents, meshCfg: { ttl: 10 }, brain, chatIds });
+
+    // ORIGIN @carol — arms awaiting('HFM'), posts placeholder 'post-1' + the request into rodz1
+    await mesh.forward({ surface: 'wa', chatId: 'ORIGIN', chatName: 'HFM', senderName: 'An', body: '@carol hi' },
+      { being: 'carol', route: { room_id: 'rodz1' }, to: 'don.do' });
+    const req0 = bridge.sent.find((s) => s.chat === 'rodz1');
+
+    // FORWARD leg (each hop observed under its RESOLVED id)
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'q1', body: req0.text });
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'q2', body: bridge.sent.find((s) => s.chat === 'ID2').text });
+    await mesh.handle({ surface: 'wa', chatId: 'ID3', msgId: 'q3', body: bridge.sent.find((s) => s.chat === 'ID3').text });
+    await flush();
+
+    // egpt answered in rodz3 (ID3) via relayDispatch — its OWN reply DOES carry post_id.
+    const egptFrame = bridge.streams.find((s) => s.chat === 'ID3').finals.at(-1);
+    expect(parseMesh(egptFrame)).toMatchObject({ by: 'egpt.kg', post_id: 'post-1', done: true });
+
+    // REPLY leg — feed each hop the ACTUAL output of the previous openRelayStream (its final frame).
+    let n = bridge.streams.length;
+    await mesh.handle({ surface: 'wa', chatId: 'ID3', msgId: 'p3', body: egptFrame });          // rodz3 → return-hop into rodz2
+    const frame2 = bridge.streams.slice(n).find((s) => s.chat === 'ID2').finals.at(-1);
+    expect(parseMesh(frame2).post_id).toBe('post-1');                                           // post_id rode the hop (pre-fix: '')
+
+    n = bridge.streams.length;
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'p2', body: frame2 });             // rodz2 → return-hop into rodz1
+    const frame1 = bridge.streams.slice(n).find((s) => s.chat === 'ID1').finals.at(-1);
+    expect(parseMesh(frame1).post_id).toBe('post-1');
+
+    n = bridge.streams.length;
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'p1', body: frame1 });             // rodz1 → the TRUE origin mirror
+    const originMirror = bridge.streams.slice(n).find((s) => s.chat === 'ORIGIN');
+    expect(originMirror).toBeTruthy();
+    expect(originMirror.opts.existingMsgId).toBe('post-1');                                     // edits the REAL placeholder (pre-fix: null → fresh/dropped)
+    expect(originMirror.finals.at(-1)).toContain('hola qué tal');
   });
 
   it('REGRESSION: a relay_channel configured as a RAW id (not a name) still round-trips the reply, unchanged', async () => {
