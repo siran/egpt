@@ -251,6 +251,17 @@ following is LANDED, test-locked, and (where marked) live-verified:
   local API actually supports (the bridge already sends reactions — the 👂
   ack path).
 
+- **HRW single-responder for shared channels (operator 2026-07-06)**: when 2+
+  nodes/accounts BOTH host E in the SAME chat (e.g. REVE + DOLLY in a real
+  group), an unqualified `@e` currently gets TWO replies. Default a rendezvous-
+  hashing (HRW / Highest Random Weight — weighted-hrw, already cited in the
+  config skeleton) tiebreak: each node independently computes
+  weight(message-id, node-name) over the E-hosting node set present in the
+  channel; only the max-weight node replies, the rest stay silent. Deterministic,
+  zero cross-account coordination, load-balances across messages. NOT a problem
+  for the relay chain (every hop is explicitly `@being.node` — one answerer);
+  this is only for the unqualified-@e-in-a-shared-channel case.
+
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
   and configure relay agents that CHAIN through them: `@don.kg → @moe.kg → @e.kg`
