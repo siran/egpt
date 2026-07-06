@@ -22,7 +22,8 @@
 //   - /edit and /delete only touch a message the bridge itself SENT (wasSentByUs);
 //   - an execution error is logged, never crashes the turn.
 //
-// EMIT SYNTAX (documented for E in config/skeletons/room/00-identity.md):
+// EMIT SYNTAX (documented for E in config/skeletons/room/10-actions.md — a SPINE
+// CONTRACT that feeds EVERY being independent of identity, operator 2026-07-06):
 //   /react #<id> <emoji>       react to message #<id>
 //   /reply #<id> <text>        quote-reply to message #<id>
 //   /media <path> [caption]    send a file from this conversation's folder (relative path)

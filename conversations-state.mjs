@@ -32,11 +32,13 @@ const PERSONALITIES_SHIPPED_DIR  = join(_here, 'config', 'personalities');
 const PERSONALITIES_OPERATOR_DIR = join(EGPT_HOME, 'personalities');
 // Identities are FLAT markdown files now (operator 2026-07-03: "identities are .md
 // files not directories with a 00-file inside… an identity file 'egpt.md'"). A
-// conversation's kickoff feed = its identity file + the SHARED pointers + rules (the
-// "room template" — same content/order as the retired 00/30/40 trio, identity first).
+// conversation's kickoff feed = its identity file + the SHARED actions + pointers + rules
+// (the "room template", identity first, then the shared layers).
 //   - identity: EGPT_HOME/config/identities/<name>.md (profile).
-//   - shared pointers/rules: config/skeletons/room/{30-pointers,40-rules}.md — the
-//     profile's seeded copy wins, the repo's shipped template is the fallback.
+//   - shared actions/pointers/rules: config/skeletons/room/{10-actions,30-pointers,40-rules}.md
+//     — the profile's seeded copy wins, the repo's shipped template is the fallback. The
+//     ACTIONS layer (the emit-limbs grammar) is a spine contract, so it feeds for EVERY
+//     being regardless of identity (operator 2026-07-06).
 //   - a name with no profile identity file falls back to the room template's
 //     00-identity.md (the shipped eGPT default). No repo-root identities/ back-read.
 const IDENTITIES_PROFILE_DIR    = join(EGPT_HOME, 'config', 'identities');
@@ -1630,29 +1632,36 @@ export function listIdentityLayers() {
   return out.sort();
 }
 
-// The identity + shared pointers + rules, in that order — the feed shape shared by the
-// in-context kickoff (readIdentityFeed) and the slug-dir install (installIdentity).
+// The identity + shared actions + pointers + rules, in that order — the feed shape shared
+// by the in-context kickoff (readIdentityFeed) and the slug-dir install (installIdentity).
+// The ACTIONS layer (10-actions.md) is a SPINE CONTRACT, not an identity trait (operator
+// 2026-07-06: limbs are parsed by reply-actions.mjs for EVERY being) — so it feeds ALWAYS,
+// independent of which identity a being wears, exactly like the shared pointers/rules. A
+// custom identity file REPLACES 00-identity.md but must STILL learn the /react grammar.
 async function _identityLayers(name) {
   const room = roomTemplateDir();
   const idFile = resolveIdentityFile(name);
   const identity = await _readFileOr(idFile ?? join(room, '00-identity.md'));
+  const actions  = await _readFileOr(join(room, '10-actions.md'));
   const pointers = await _readFileOr(join(room, '30-pointers.md'));
   const rules    = await _readFileOr(join(room, '40-rules.md'));
-  return { identity, pointers, rules };
+  return { identity, actions, pointers, rules };
 }
 
 // Install identity <name> into a conversation slug-dir: write the flat layers (so
 // ./identity.md, ./pointers.md, ./rules.md exist in the sandbox) and return
 // { feed, files, dir }. feed = identity + pointers + rules for the kickoff turn.
 export async function installIdentity(surface, slug, name) {
-  const { identity, pointers, rules } = await _identityLayers(name);
+  const { identity, actions, pointers, rules } = await _identityLayers(name);
   const slugd = slugDir(surface, slug);
   await mkdir(slugd, { recursive: true });
   const files = [];
   await writeFile(join(slugd, 'identity.md'), identity, 'utf8'); files.push('identity.md');
   await writeFile(join(slugd, 'pointers.md'), pointers, 'utf8'); files.push('pointers.md');
   await writeFile(join(slugd, 'rules.md'),    rules,    'utf8'); files.push('rules.md');
-  const feed = [identity, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
+  // The actions limbs ride the kickoff feed (spine contract, operator 2026-07-06) — no flat
+  // slug-dir copy: E reads ./pointers.md on demand, but the limbs live only in-context.
+  const feed = [identity, actions, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
   return { feed, files, dir: resolveIdentityFile(name) ?? join(roomTemplateDir(), '00-identity.md') };
 }
 
@@ -1660,8 +1669,8 @@ export async function installIdentity(surface, slug, name) {
 // writing any slug-dir copies — for the first-dispatch auto-wrap, which just needs the
 // content in-context. Never empty for a resolvable persona (eGPT is the default).
 export async function readIdentityFeed(name) {
-  const { identity, pointers, rules } = await _identityLayers(name);
-  return [identity, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
+  const { identity, actions, pointers, rules } = await _identityLayers(name);
+  return [identity, actions, pointers, rules].map(s => s.trim()).filter(Boolean).join('\n\n');
 }
 
 // The `mode: auto` operator-role instruction layer (config/skeletons/auto-mode.md).

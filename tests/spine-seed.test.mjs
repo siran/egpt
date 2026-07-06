@@ -108,10 +108,12 @@ describe('seedSkeletons', () => {
   it('seeds the shared room template (config/skeletons/room/*.md) copy-if-missing', () => {
     const files = run({
       [join(REPO, 'room', '00-identity.md')]: 'I am eGPT',
+      [join(REPO, 'room', '10-actions.md')]: 'My limbs',   // the emit-limbs grammar (operator 2026-07-06)
       [join(REPO, 'room', '30-pointers.md')]: 'Pointers',
       [join(REPO, 'room', '40-rules.md')]: 'RULES',
     });
     expect(files[join(SKEL, 'room', '00-identity.md')]).toBe('I am eGPT');
+    expect(files[join(SKEL, 'room', '10-actions.md')]).toBe('My limbs');   // auto-rides the room seed → a /restart seeds it
     expect(files[join(SKEL, 'room', '30-pointers.md')]).toBe('Pointers');
     expect(files[join(SKEL, 'room', '40-rules.md')]).toBe('RULES');
   });

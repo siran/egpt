@@ -39,4 +39,15 @@ describe('listIdentityLayers + flat-file resolution', () => {
     expect(resolveIdentityFile('egpt')).toBe(join(tmpHome, 'config', 'identities', 'egpt.md'));
     expect(await readIdentityFeed('egpt')).toMatch(/profile egpt/);   // not the shipped "I am eGPT"
   });
+
+  // operator 2026-07-06: limbs are a SPINE CONTRACT, not an identity trait — a being
+  // wearing a CUSTOM identity (secretary.md REPLACES the shipped 00-identity.md) must
+  // STILL learn the /react grammar. The action limbs feed independently (10-actions.md),
+  // so a custom-identity feed carries them just like the shared pointers/rules do.
+  it('a CUSTOM identity being still learns the action limbs (10-actions.md feeds independent of identity)', async () => {
+    const feed = await readIdentityFeed('secretary');
+    expect(feed).toMatch(/I am a secretary/);     // the custom identity replaces the eGPT default
+    expect(feed).not.toMatch(/I am eGPT/);        // ...so the shipped identity block is absent
+    expect(feed).toMatch(/\/react #<id> <emoji>/);  // ...yet the limbs grammar is STILL present
+  });
 });
