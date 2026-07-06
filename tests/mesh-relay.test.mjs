@@ -297,6 +297,23 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
     expect(parseMesh(sent[0].t)).toMatchObject({ to: 'wren.kg', body: 'hola' });
   });
 
+  it('MULTIPATH record hop: resolveBeingRelay returning an ARRAY forwards into EVERY path (operator 2026-07-06)', async () => {
+    const sent = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (r, t) => sent.push({ room: r.room_id, t }), surface: async () => {},
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,
+      // a LIST-shaped relay record re-addresses onward through TWO routes at once
+      resolveBeingRelay: (b) => (b === 'don' ? [
+        { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } },
+        { being: 'wren', node: 'kg', route: { room_id: 'Rodz9' } },
+      ] : null),
+    });
+    const req = encodeMesh({ by: 'An', body: 'hola', from: 'Me', from_node: 'origin', to: 'don.do' });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz1' }, text: req, msgId: 'a1' });
+    expect(sent.map((s) => s.room).sort()).toEqual(['Rodz2', 'Rodz9']);          // both paths forwarded
+    for (const s of sent) expect(parseMesh(s.t)).toMatchObject({ to: 'wren.kg', via: 'don.do' });
+  });
+
   it('a relay-record ALWAYS forwards into its own route — even when the next hop is local (no collapse)', async () => {
     const sent = [];
     const kg = createMeshRelay({

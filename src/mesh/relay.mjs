@@ -146,6 +146,28 @@ export function mentionedBeing(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
+// agentPaths(agent) — the relay PATHS an agent posts through (operator 2026-07-06: multipath is
+// configuration — an agent is a list of paths, every message through every path). A SCALAR relay
+// agent → ONE unlabeled path carrying its own {relay_channel, network, to}. A LIST agent → one
+// path per element; each element is a SINGLE-KEY map { <label>: { relay_channel, network, to } }
+// (the key is the human path label). Malformed list elements (not a single-key object) are skipped.
+// Shared by the router (fan-out at the origin) and the mesh service (isLocalBeing/resolveBeingRelay).
+export function agentPaths(agent) {
+  if (Array.isArray(agent)) {
+    return agent.map((el) => {
+      if (!el || typeof el !== 'object' || Array.isArray(el)) return null;
+      const label = Object.keys(el)[0];
+      if (!label) return null;
+      const cfg = el[label] ?? {};
+      return { label, relay_channel: cfg.relay_channel, network: cfg.network, to: cfg.to };
+    }).filter(Boolean);
+  }
+  if (agent && typeof agent === 'object') {
+    return [{ label: '', relay_channel: agent.relay_channel, network: agent.network, to: agent.to }];
+  }
+  return [];
+}
+
 // appendVia adds THIS forwarding hop's identity to the trail (operator 2026-07-06). No body
 // trailer is rendered here anymore (operator 2026-07-06 — removed): hop names like `don.do`
 // linkify in a message BODY (`.do` is a TLD; the `to:` comment above notes the same reason
@@ -259,7 +281,36 @@ export function createMeshRelay({
   // supplies the relay_channel directly, with no node. When there's no toNode the
   // envelope carries an EMPTY `to:` — the open-channel path (the owner of `being` on the
   // other end answers, everyone else stays silent) — and the labels drop the `.node`.
-  async function relayOut({ being, toNode, route: directRoute = null, to: explicitTo = '', body = '', origin = null, sender = '' } = {}) {
+  async function relayOut({ being, toNode, route: directRoute = null, to: explicitTo = '', body = '', origin = null, sender = '', paths = null } = {}) {
+    // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
+    // every message through every path). `paths` = [{ route, to, label }] (routes already resolved
+    // by the caller's canonRoute). Post the placeholder ONCE (one 🤔 / post_id for the human), then
+    // ONE envelope per path — same body, same return-address, same post_id. A path failing (bad
+    // route / breaker / throw) is logged and SKIPPED; only ALL paths failing surfaces the failure.
+    // `awaiting` is registered ONCE (keyed by post_id) → first reply home wins; a later duplicate is
+    // consumed. via seeds this local relay agent's identity (`being.node`) as the first hop.
+    if (Array.isArray(paths)) {
+      const fromName = (origin && origin.name) || '';
+      let postId = null;
+      const statusText = '🤔 thinking…';
+      if (ackWithPostId) { try { const _raw = await ackWithPostId(origin, statusText); postId = typeof _raw === 'string' ? _raw : null; } catch { /* best-effort */ } }
+      else await notify(origin, statusText);
+      const viaSeed = `${being}.${node}`;
+      let anyOk = false;
+      for (const p of paths) {
+        if (!p?.route) continue;
+        const to = String(p?.to ?? '').trim();
+        try {
+          const ok = await guardedSend(p.route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', via: viaSeed }));
+          if (ok) anyOk = true;
+          else log(`mesh: multipath ${being} path ${p.label ?? '?'} — send paused (loop guard)`);
+        } catch (e) { log(`mesh: multipath ${being} path ${p.label ?? '?'} failed: ${e?.message ?? e}`); }
+      }
+      if (!anyOk) { await surface(origin, `!! mesh: all paths to ${being} failed`); return false; }
+      const awaitKey = postId || fromName;
+      if (awaitKey && origin) awaiting.set(awaitKey, origin);
+      return true;
+    }
     const route = directRoute ?? resolveRoute(toNode);
     const tgt = explicitTo || (toNode ? `${being}.${toNode}` : being);   // human-readable label
     if (!route) { await surface(origin, `!! mesh: no route to ${tgt}`); return false; }
@@ -391,11 +442,16 @@ export function createMeshRelay({
       // circuit breaker is the hard backstop.
       const _rec = await resolveBeingRelay(being);
       if (_rec) {
-        const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes
-        if (dest) {
-          log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
-          // via: append THIS hop's identity (`<being>.<node>`) so the reply carries the path taken.
-          await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body, via: appendVia(prov.via, `${being}.${asNode}`) }));
+        // MULTIPATH (operator 2026-07-06: an agent is a list of paths) — a list-shaped relay record
+        // resolves to an ARRAY of next-hop records; forward into EVERY one. A scalar record stays a
+        // single object (unchanged). via appends THIS hop's identity once; each envelope carries it.
+        const recs = (Array.isArray(_rec) ? _rec : [_rec]).filter(Boolean);
+        for (const rec of recs) {
+          const dest = rec.route ?? resolveRoute(rec.node);   // relay agent's own channel, else mesh.nodes
+          if (dest) {
+            log(`mesh: relay-record ${being}.${node} → ${rec.being}.${rec.node}`);
+            await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${rec.being}.${rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body, via: appendVia(prov.via, `${being}.${asNode}`) }));
+          }
         }
         return true;
       }

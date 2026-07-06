@@ -18,6 +18,7 @@
 // resolve() then returns { being: null, mesh: <target>, mention } and the spine forwards it
 // (mesh.forward). Gated on meshEnabled() so an unconfigured node never mints a phantom target.
 import { resolveMeshAddress } from '../mesh/names.mjs';
+import { agentPaths } from '../mesh/relay.mjs';
 
 // The mention a mesh (or agent) @name synthesizes for its gate: it IS addressed.
 const MENTION = { atEStart: true, atEAnywhere: true, replyToBot: false };
@@ -32,9 +33,12 @@ function agentIds(name, agent) {
 // Find the agent whose name/handle matches `token` (case-insensitive). Skips `_note`
 // comment keys and disabled agents (enabled:false) so they fall through to legacy.
 // Returns { name, agent } with `name` = the canonical (lowercased) key, or null.
+// An ARRAY-shaped agent is a MULTI-PATH relay agent (operator 2026-07-06: an agent is a list of
+// paths) — it has no handles, so it routes by its map KEY alone; agentIds tolerates the array shape
+// (agent.handles is undefined → just the name). It is matched here so resolve() can fan it out.
 function findAgent(agents, token) {
   for (const [name, agent] of Object.entries(agents)) {
-    if (!agent || typeof agent !== 'object' || Array.isArray(agent) || name.startsWith('_')) continue;
+    if (!agent || typeof agent !== 'object' || name.startsWith('_')) continue;
     if (agent.enabled === false) continue;
     if (agentIds(name, agent).includes(token)) return { name: name.toLowerCase(), agent };
   }
@@ -58,6 +62,20 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
           const found = findAgent(agents, at[1].toLowerCase());
           if (found) {
             const { name, agent } = found;
+            // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of
+            // paths, every message through every path). A LIST-shaped agent is a relay whose every
+            // element posts the SAME message into its own relay_channel with its own network pin.
+            // Return the mesh target carrying ALL paths; mesh.forward posts one envelope per path
+            // (one 🤔 placeholder for the human, same re:/post_id). Handled BEFORE the scalar check
+            // (a list has no top-level relay_channel). Each path: { route:{room_id,network?}, to?, label }.
+            if (Array.isArray(agent)) {
+              const paths = agentPaths(agent).map((p) => ({
+                route: { room_id: p.relay_channel, ...(p.network ? { network: String(p.network).toLowerCase() } : {}) },
+                ...(String(p.to ?? '').trim() ? { to: String(p.to).trim() } : {}),
+                label: p.label,
+              }));
+              return { being: null, mesh: { being: name, paths }, mention: { ...MENTION } };
+            }
             // A RELAY agent is one carrying a `relay_channel:` (or the legacy explicit
             // `configuration: relay`). It forwards rather than answers: the message goes
             // into the relay_channel as a mesh envelope. An optional `to: <being>.<node>`

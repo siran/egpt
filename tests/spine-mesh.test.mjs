@@ -119,6 +119,72 @@ describe('mesh service — outbound (origin relays @being.node)', () => {
   });
 });
 
+// ── MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
+//    every message through every path). @carol fans out ONE envelope per path — same body, same
+//    return address, same placeholder (ONE 🤔 / post_id) — each posting into its OWN relay_channel
+//    with its OWN network pin. First reply home wins the placeholder; a later duplicate is consumed. ──
+describe('mesh service — multipath outbound (a list agent fans out one envelope per path)', () => {
+  const target = {
+    being: 'carol',
+    paths: [
+      { route: { room_id: 'rodz1', network: 'whatsapp' }, to: 'don.do', label: 'path1' },
+      { route: { room_id: 'egpt-mesh', network: 'telegram' }, to: 'don.do', label: 'path2' },
+    ],
+  };
+
+  it('REPRODUCE-FIRST: posts ONE 🤔 placeholder + TWO envelopes (different resolved chats, SAME post_id/re/body)', async () => {
+    const chatIds = { rodz1: 'ID1', 'egpt-mesh': 'IDM' };
+    const { bridge, mesh } = svc({ node: 'kg', chatIds });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@carol hola' };
+
+    const ok = await mesh.forward(ev, target);
+    expect(ok).toBe(true);
+
+    // ONE placeholder for the human (not N)
+    expect(bridge.statusPosts).toEqual([{ chat: 'CHAT', text: '🤔 thinking…', id: 'post-1' }]);
+
+    // TWO envelopes, one per path, into the RESOLVED relay-channel ids (name → id via canonRoute)
+    expect(bridge.sent.map((s) => s.chat).sort()).toEqual(['ID1', 'IDM']);
+    // each path resolved its NAME with its own network pin
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'rodz1', opts: { network: 'whatsapp' } });
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'egpt-mesh', opts: { network: 'telegram' } });
+
+    // both envelopes share body / return-address / placeholder id; via is seeded with carol.kg (origin hop)
+    const parsed = bridge.sent.map((s) => parseMesh(s.text));
+    for (const p of parsed) {
+      expect(p).toMatchObject({ to: 'don.do', from: 'HFM', from_node: 'kg', by: 'An', body: '@carol hola', post_id: 'post-1', via: 'carol.kg' });
+    }
+  });
+
+  it('a path failing (send throws) does NOT kill the other path — the surviving envelope still posts', async () => {
+    const chatIds = { rodz1: 'ID1', 'egpt-mesh': 'IDM' };
+    const { bridge, mesh } = svc({ node: 'kg', chatIds });
+    const realSend = bridge.send.bind(bridge);
+    bridge.send = (chat, text) => { if (chat === 'ID1') throw new Error('boom'); return realSend(chat, text); };
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@carol hola' };
+
+    const ok = await mesh.forward(ev, target);
+    expect(ok).toBe(true);                                   // at least one path survived
+    expect(bridge.sent.map((s) => s.chat)).toEqual(['IDM']); // the good path posted; the failed one did not
+  });
+
+  it('FIRST reply home wins the placeholder; the duplicate (same post_id) is consumed without a second mirror', async () => {
+    const chatIds = { rodz1: 'ID1', 'egpt-mesh': 'IDM' };
+    const { bridge, mesh } = svc({ node: 'kg', chatIds });
+    const ev = { surface: 'whatsapp', chatId: 'CHAT', chatName: 'HFM', senderName: 'An', body: '@carol hola' };
+    await mesh.forward(ev, target);                          // posts placeholder 'post-1' + two envelopes
+
+    // reply #1 arrives (via path1's room) and finalizes the origin mirror
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'r1', body: encodeMesh({ by: 'don.do', body: '🤝 hey', re: 'HFM.kg', post_id: 'post-1', done: true }) });
+    // reply #2 (a duplicate, SAME post_id, via path2's room) must be consumed silently — no second mirror
+    await mesh.handle({ surface: 'wa', chatId: 'IDM', msgId: 'r2', body: encodeMesh({ by: 'don.do', body: '🤝 hey', re: 'HFM.kg', post_id: 'post-1', done: true }) });
+
+    const mirrors = bridge.streams.filter((s) => s.opts?.existingMsgId === 'post-1');
+    expect(mirrors).toHaveLength(1);                         // exactly one placeholder mirror opened
+    expect(mirrors[0].finals).toContain('🤝 hey');
+  });
+});
+
 describe('mesh service — responder (a request arrives at the owning node)', () => {
   it('(b) runs the target local being (brain.turn) and edit-streams the reply as an envelope (re/post_id/done), mirrored', async () => {
     const brain = fakeBrain({ reply: 'aquí', partials: ['aq', 'aquí'] });
@@ -140,6 +206,21 @@ describe('mesh service — responder (a request arrives at the owning node)', ()
     expect(parseMesh(s.updates.at(-1)).body).toBe('🤝 aquí');           // body_emoji stamped INTO the body
     const fin = parseMesh(s.finals.at(-1));
     expect(fin).toMatchObject({ by: 'don.do', re: 'HFM.kg', post_id: 'p1', done: true, body: '🤝 aquí' });
+  });
+
+  it('TASK-3 (terminal dedup): two identical envelopes (same post_id, DIFFERENT arrival rooms) → the being answers ONCE', async () => {
+    // The multipath fan-out delivers the SAME request to the terminal via two channels. The engine's
+    // `seen` replay guard keys on `${being}${from}${body}` — identical across the paths (same being
+    // from `to`, same origin, same human body) — so the second delivery is dropped: ONE brain.turn,
+    // redundant transport. (No new dedup machinery — this falls out of the existing guard.)
+    const brain = fakeBrain({ reply: 'aquí' });
+    const { bridge, mesh } = svc({ node: 'do', agents: { don: { configuration: 'sonnet-high', name: 'don' } }, brain });
+    const req = encodeMesh({ by: 'An', body: '@carol hola', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'post-1' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'm1', body: req });     // path1 arrival
+    await mesh.handle({ surface: 'wa', chatId: 'IDM', msgId: 'm2', body: req });     // path2 duplicate
+    await flush();
+    expect(brain.calls).toHaveLength(1);                                            // answered exactly once
+    expect(bridge.streams).toHaveLength(1);                                         // one reply stream, not two
   });
 
   it('answers "no <being>.<node> here" (never silence) when the being is disabled', async () => {
@@ -302,6 +383,21 @@ describe('mesh service — relay_channel name resolution + reply home', () => {
     expect(bridge.sent.some((s) => s.chat === 'ID2')).toBe(true);                    // forwarded into the RESOLVED rodz2
     expect(bridge.sent.some((s) => s.chat === 'rodz2')).toBe(false);                 // not the raw name
     expect(parseMesh(bridge.sent.find((s) => s.chat === 'ID2').text)).toMatchObject({ to: 'wren.kg' });
+  });
+
+  it('MULTIPATH record hop (config-driven): a LIST-shaped relay agent forwards an arriving envelope into EVERY resolved path', async () => {
+    const chatIds = { rodz1: 'ID1', rodz2: 'ID2', rodz4: 'ID4' };
+    const agents = { don: [
+      { p1: { relay_channel: 'rodz2', network: 'whatsapp', to: 'wren.kg' } },
+      { p2: { relay_channel: 'rodz4', network: 'telegram', to: 'wren.kg' } },
+    ] };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    expect(bridge.sent.map((s) => s.chat).sort()).toEqual(['ID2', 'ID4']);          // both paths forwarded, resolved
+    for (const s of bridge.sent) expect(parseMesh(s.text)).toMatchObject({ to: 'wren.kg', via: 'don.do' });
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'rodz2', opts: { network: 'whatsapp' } });
+    expect(bridge.resolveCalls).toContainEqual({ nameOrId: 'rodz4', opts: { network: 'telegram' } });
   });
 
   it('NETWORK PIN: canonRoute passes the route network through to bridge.resolveChatId (operator 2026-07-06: multi-network mesh)', async () => {

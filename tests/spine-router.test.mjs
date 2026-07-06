@@ -77,6 +77,43 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   });
 });
 
+// ── MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a LIST of paths,
+//    every message through every path). A list agent's elements are SINGLE-KEY maps { <label>:
+//    { relay_channel, network?, to? } }. The router resolves it to a mesh target carrying ALL
+//    paths; the scalar (non-list) relay shape stays byte-for-byte unchanged (regression above). ──
+describe('router.resolve — multi-path relay agent (operator 2026-07-06)', () => {
+  const agents = {
+    carol: [
+      { path1: { relay_channel: 'rodz1', network: 'whatsapp', to: 'don.do' } },
+      { path2: { relay_channel: 'egpt-mesh', network: 'telegram', to: 'don.do' } },
+    ],
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },
+    don:  { configuration: 'relay', relay_channel: 'Rodz' },   // scalar relay — regression neighbor
+  };
+  const arouter = createRouter({ getAgents: () => agents });
+
+  it('@carol → a mesh target carrying EVERY path (route+network pin+to+label), no local being', () => {
+    const r = arouter.resolve(ev('@carol hola'));
+    expect(r.being).toBeNull();
+    expect(r.mesh).toEqual({
+      being: 'carol',
+      paths: [
+        { route: { room_id: 'rodz1', network: 'whatsapp' }, to: 'don.do', label: 'path1' },
+        { route: { room_id: 'egpt-mesh', network: 'telegram' }, to: 'don.do', label: 'path2' },
+      ],
+    });
+    expect(r.mention).toMatchObject({ atEStart: true });
+  });
+
+  it('REGRESSION: the scalar relay @don is UNCHANGED (no paths key, single route)', () => {
+    expect(arouter.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
+  });
+
+  it('case-insensitive on a list agent name: @CAROL still fans out', () => {
+    expect(arouter.resolve(ev('@CAROL hi')).mesh.being).toBe('carol');
+  });
+});
+
 describe('router.resolve — cross-node mesh targets (Phase 4b)', () => {
   const mrouter = createRouter({ getAgents: () => ({}), getNode: () => 'kg', meshEnabled: () => true });
 

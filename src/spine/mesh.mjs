@@ -27,7 +27,7 @@
 // wiring exactly: config.mesh.nodes.<node>.routes[0].room_id (names→chat via config,
 // not a new scheme). Inert until mesh.nodes is configured (resolveRoute → null →
 // relayOut surfaces "no route").
-import { createMeshRelay, encodeMesh, parseMesh } from '../mesh/relay.mjs';
+import { createMeshRelay, encodeMesh, parseMesh, agentPaths } from '../mesh/relay.mjs';
 
 const PLACEHOLDER = '🤔 thinking…';
 const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
@@ -174,18 +174,29 @@ export function createMeshService({
     // or a terminal being). This wires the engine's existing relay-record branch to config.
     resolveBeingRelay: async (being) => {
       const a = agents()[String(being).toLowerCase()];
-      if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
-      const to = String(a.to ?? '').trim();
-      if (!to) return null;
-      const parts = to.split('.');
-      const b = parts[0].toLowerCase();
-      const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
-      // Carry the optional NETWORK PIN (operator 2026-07-06: multi-network mesh) so a
-      // relay_channel NAME shared across networks resolves to the pinned one (see canonRoute).
-      const raw = a.relay_channel ? { room_id: String(a.relay_channel), ...(a.network ? { network: String(a.network).toLowerCase() } : {}) } : (n ? resolveRoute(n) : null);
-      if (!raw) return null;
-      const route = await canonRoute(raw);   // relay_channel NAME → canonical id (see canonRoute)
-      return { being: b, node: n, route };
+      if (!a || typeof a !== 'object') return null;
+      // Resolve ONE path config → a next-hop record (or null when it carries no `to`). Carries the
+      // optional NETWORK PIN (operator 2026-07-06: multi-network mesh) so a relay_channel NAME shared
+      // across networks resolves to the pinned one (see canonRoute).
+      const recordOf = async (p) => {
+        const to = String(p.to ?? '').trim();
+        if (!to) return null;
+        const parts = to.split('.');
+        const b = parts[0].toLowerCase();
+        const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
+        const raw = p.relay_channel ? { room_id: String(p.relay_channel), ...(p.network ? { network: String(p.network).toLowerCase() } : {}) } : (n ? resolveRoute(n) : null);
+        if (!raw) return null;
+        return { being: b, node: n, route: await canonRoute(raw) };   // relay_channel NAME → canonical id
+      };
+      // MULTIPATH (operator 2026-07-06: an agent is a list of paths, every message through every
+      // path). A LIST-shaped relay record forwards an arriving envelope onward through EVERY path →
+      // an ARRAY of next-hop records (the engine fans out into all of them). A scalar agent → a
+      // single record (unchanged). agentPaths normalizes both shapes to a [{relay_channel,network,to}].
+      if (Array.isArray(a)) {
+        const recs = (await Promise.all(agentPaths(a).map(recordOf))).filter(Boolean);
+        return recs.length ? recs : null;
+      }
+      return recordOf(a);
     },
     // Post an envelope into a relay channel. No body_emoji → the port passes the text
     // (the full mesh envelope) through verbatim; the tail must survive untouched.
@@ -282,6 +293,21 @@ export function createMeshService({
     //                                home through the same awaiting/re: machinery.
     async forward(ev, target) {
       const being = target?.being;
+      // MULTIPATH (operator 2026-07-06: multipath is configuration — an agent is a list of paths,
+      // every message through every path). The router hands a `paths` array; resolve EACH path's
+      // relay_channel NAME → canonical id with its OWN network pin (canonRoute) and fan out via
+      // relay.relayOut({paths}) — ONE 🤔 placeholder + one envelope per path, first reply home wins.
+      if (Array.isArray(target?.paths)) {
+        if (!being || !target.paths.length) { onLog(`forward: bad multipath target ${JSON.stringify(target)}`); return false; }
+        const paths = [];
+        for (const p of target.paths) paths.push({ route: await canonRoute(p.route), to: p.to, label: p.label });
+        const origin = { surface: ev.surface, chat_id: ev.chatId, name: ev.chatName ?? ev.chatId };
+        const sender = ev.senderName ?? 'someone';
+        armTimeout(ev.chatId, `${being} (${paths.length} paths)`);
+        const ok = await relay.relayOut({ being, paths, body: ev.body, origin, sender });
+        if (!ok) clearTimeoutFor(ev.chatId);
+        return ok;
+      }
       const toNode = target?.node;
       const route = target?.route;                              // route-direct (relay agent)
       const to = String(target?.to ?? '').trim();               // declarative next-hop (chain)
