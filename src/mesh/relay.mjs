@@ -410,7 +410,7 @@ export function createMeshRelay({
       // mid at EVERY hop (mid is preserved verbatim), so an unscoped `req:${mid}` would let hop 1
       // silently swallow hop 2's legitimate forward of the same mid. `req:${mid}:${being}` gives
       // each hop its own gate while still blocking a given hop from re-forwarding the same mid.
-      const _rec = resolveBeingRelay(being);
+      const _rec = await resolveBeingRelay(being);
       if (_rec) {
         if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}:${being}`)) {
           const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes

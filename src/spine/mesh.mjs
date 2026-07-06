@@ -66,6 +66,21 @@ export function createMeshService({
     const c = route?.room_id ?? route?.chat ?? route;
     return c == null ? null : String(c);
   };
+  // Resolve a route's room to the CANONICAL short chat id the bridge delivers under.
+  // A relay_channel is configured by NAME (e.g. "rodz2"), but an observed envelope's
+  // ev.chatId is always the RESOLVED id. The engine keys its reverse-reply map
+  // (fwdArrival) on the room, so a name≠id mismatch made every reply's return-hop miss
+  // and dead-end — the reply never mirrored home (operator 2026-07-05). Resolving the
+  // relay-record's room HERE makes the room this hop forwards INTO carry the same id
+  // ev.chatId will, so store-key == observe-key. bridge.resolveChatId caches (no repeat
+  // lookup); a bridge without it (test fakes) → route unchanged (raw-id configs unaffected).
+  const canonRoute = async (route) => {
+    if (!route) return route;
+    const c = chatOf(route);
+    if (c == null) return route;
+    try { const id = await bridge.resolveChatId?.(c); return id ? { ...route, room_id: id } : route; }
+    catch { return route; }
+  };
 
   // ORIGIN-wait timeout: after forward(), if no reply streams back in timeout_ms,
   // surface "<target> did not answer" home. Cleared the moment the reply opens its
@@ -133,7 +148,7 @@ export function createMeshService({
     // and the room to post into (this agent's own relay_channel; falls back to the mesh.nodes
     // route for `node` when relay_channel is absent). No `to` → not a relay-record (open-channel
     // or a terminal being). This wires the engine's existing relay-record branch to config.
-    resolveBeingRelay: (being) => {
+    resolveBeingRelay: async (being) => {
       const a = agents()[String(being).toLowerCase()];
       if (!a || typeof a !== 'object' || Array.isArray(a)) return null;
       const to = String(a.to ?? '').trim();
@@ -141,8 +156,9 @@ export function createMeshService({
       const parts = to.split('.');
       const b = parts[0].toLowerCase();
       const n = (parts.length >= 2 ? parts[parts.length - 1] : '').toLowerCase();
-      const route = a.relay_channel ? { room_id: String(a.relay_channel) } : (n ? resolveRoute(n) : null);
-      if (!route) return null;
+      const raw = a.relay_channel ? { room_id: String(a.relay_channel) } : (n ? resolveRoute(n) : null);
+      if (!raw) return null;
+      const route = await canonRoute(raw);   // relay_channel NAME → canonical id (see canonRoute)
       return { being: b, node: n, route };
     },
     // Post an envelope into a relay channel. No body_emoji → the port passes the text

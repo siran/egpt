@@ -11,11 +11,14 @@ import { encodeMesh, parseMesh } from '../src/mesh/relay.mjs';
 const flush = async () => { await new Promise((r) => setTimeout(r, 0)); await new Promise((r) => setTimeout(r, 0)); };
 
 // A fake Bridge port exposing just the surface the mesh service uses.
-function fakeBridge() {
+function fakeBridge({ chatIds = {} } = {}) {
   const b = {
     sent: [],          // { chat, text }
     statusPosts: [],   // { chat, text, id }
     streams: [],       // { chat, init, opts, updates[], finals[], delivered }
+    // name→id resolution, as the real bridge does (relay_channel is configured by NAME;
+    // an observed envelope's ev.chatId is always the RESOLVED id). Unknown → identity.
+    async resolveChatId(nameOrId) { return chatIds[nameOrId] ?? nameOrId; },
     send(chat, text) { b.sent.push({ chat, text }); return { ok: true }; },
     async postStatus(chat, text) { const id = `post-${b.statusPosts.length + 1}`; b.statusPosts.push({ chat, text, id }); return id; },
     startStream(chat, init, opts = {}) {
@@ -54,8 +57,8 @@ function fakeTimers() {
 const EMOJI = { don: '🤝', wren: '🐦' };
 const bodyEmojiOf = (b) => EMOJI[String(b).toLowerCase()] ?? '';
 
-function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs } = {}) {
-  const bridge = fakeBridge();
+function svc({ node, aliases = [], agents = {}, meshCfg = {}, brain, timers, logs, chatIds = {} } = {}) {
+  const bridge = fakeBridge({ chatIds });
   const cfg = { node_name: node, node_alias: aliases, agents, mesh: meshCfg };
   const mesh = createMeshService({
     bridge, brain: brain ?? fakeBrain(),
@@ -261,6 +264,85 @@ describe('mesh service — loop safety', () => {
     expect(dropped).toBe(true);
     expect(logs.some((l) => /ttl expired for MC/.test(l))).toBe(true);
     expect(bridge.streams).toHaveLength(0);                        // egpt NEVER dispatched (chain bounded before the terminal)
+  });
+});
+
+// ── REPLY RETURN over a relay_channel configured by NAME (the fix, 2026-07-05). A
+//    relay_channel is a NAME ("rodz2"); the reply always arrives under the RESOLVED id
+//    ("ID2"). The engine keys its reverse-reply map (fwdArrival) on the room, so pre-fix
+//    the store keyed on the NAME while the lookup keyed on the ID → every return-hop
+//    MISSED and the reply dead-ended (never mirrored home). resolveBeingRelay now resolves
+//    the relay_channel through bridge.resolveChatId, so store-key == observe-key. The
+//    existing (e2) chain test never caught this: it fed chatId === the name (no resolution). ──
+describe('mesh service — reply return over a name-configured relay_channel', () => {
+  it('REPRODUCE-FIRST: a relay-record reply returns into the ARRIVAL room even though relay_channel is a NAME and the reply arrives under the RESOLVED id', async () => {
+    const chatIds = { rodz1: 'ID1', rodz2: 'ID2' };
+    const agents = { don: { relay_channel: 'rodz2', to: 'wren.kg' } };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    // request arrives in rodz1 (resolved ID1), to don.do → relay-record forwards into rodz2 (ID2)
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do', mid: 'M1' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    expect(bridge.sent.some((s) => s.chat === 'ID2')).toBe(true);          // forwarded to the RESOLVED rodz2
+    // the reply comes back in the RESOLVED rodz2 room (ID2); the transit must re-mirror it into ID1
+    const reply = encodeMesh({ by: 'egpt.kg', body: 'answer', re: 'SELF.origin', mid: 'M1', done: true });
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'r1', body: reply });
+    // openRelayStream posts the return-hop into the ARRIVAL room ID1 (pre-fix: no such stream — MISS)
+    expect(bridge.streams.filter((s) => s.chat === 'ID1')).toHaveLength(1);
+  });
+
+  it('FULL 3-HOP: the reply mirrors rodz3→rodz2→rodz1→origin exactly once (return-hop wins over process-global awaiting)', async () => {
+    const chatIds = { rodz1: 'ID1', rodz2: 'ID2', rodz3: 'ID3' };
+    const agents = {
+      carol: { relay_channel: 'rodz1', to: 'don.do' },
+      don: { relay_channel: 'rodz2', to: 'wren.kg' },
+      wren: { relay_channel: 'rodz3', to: 'egpt.kg' },
+      egpt: { configuration: 'egpt', name: 'egpt' },
+    };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do', 'mo', 'ca'], agents, meshCfg: { ttl: 10 }, chatIds });
+
+    // ORIGIN: operator "@carol" in the Self DM — arms awaiting('HFM'), posts the placeholder + the request into rodz1
+    await mesh.forward({ surface: 'wa', chatId: 'ORIGIN', chatName: 'HFM', senderName: 'An', body: '@carol hi' },
+      { being: 'carol', route: { room_id: 'rodz1' }, to: 'don.do' });
+    const req0 = bridge.sent.find((s) => s.chat === 'rodz1');
+    const mid = parseMesh(req0.text).mid;
+    expect(parseMesh(req0.text)).toMatchObject({ to: 'don.do' });
+
+    // REQUEST forward through the chain, each hop observed under its RESOLVED id (the
+    // relay-record forwards into the RESOLVED relay_channel — that's the whole fix):
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'q1', body: req0.text });      // don relays → rodz2 (ID2)
+    const req1 = bridge.sent.find((s) => s.chat === 'ID2');
+    expect(parseMesh(req1.text)).toMatchObject({ to: 'wren.kg', mid });
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'q2', body: req1.text });      // wren relays → rodz3 (ID3)
+    const req2 = bridge.sent.find((s) => s.chat === 'ID3');
+    expect(parseMesh(req2.text)).toMatchObject({ to: 'egpt.kg', mid });
+    await mesh.handle({ surface: 'wa', chatId: 'ID3', msgId: 'q3', body: req2.text });      // egpt is LOCAL → dispatched
+    await flush();
+    expect(bridge.streams.some((s) => s.chat === 'ID3')).toBe(true);                        // the request reached egpt cleanly
+
+    // REPLY streams back. Feed the (done) reply frame in each RESOLVED room; assert each return target.
+    const rep = () => encodeMesh({ by: 'egpt.kg', body: 'hey', re: 'HFM.kg', post_id: 'post-1', mid, done: true });
+    const before = bridge.streams.length;
+    await mesh.handle({ surface: 'wa', chatId: 'ID3', msgId: 'p3', body: rep() });          // rodz3 → return-hop into rodz2 (ID2)
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'p2', body: rep() });          // rodz2 → return-hop into rodz1 (ID1)
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'p1', body: rep() });          // rodz1 → ORIGIN mirror (awaiting HFM)
+
+    const reverse = bridge.streams.slice(before).map((s) => s.chat);
+    expect(reverse).toEqual(['ID2', 'ID1', 'ORIGIN']);                                      // the reverse chain, once each
+    const originMirror = bridge.streams.find((s) => s.opts?.existingMsgId === 'post-1');
+    expect(originMirror?.chat).toBe('ORIGIN');                                              // the true origin placeholder resolved
+  });
+
+  it('REGRESSION: a relay_channel configured as a RAW id (not a name) still round-trips the reply, unchanged', async () => {
+    // relay_channel is already the real id "ID2"; resolveChatId returns it unchanged, so the
+    // store/lookup keys agree exactly as before the fix — a pure regression lock.
+    const chatIds = { rodz1: 'ID1' };                                     // "ID2" is NOT a name → resolveChatId('ID2') === 'ID2'
+    const agents = { don: { relay_channel: 'ID2', to: 'wren.kg' } };
+    const { bridge, mesh } = svc({ node: 'kg', aliases: ['do'], agents, chatIds });
+    const req = encodeMesh({ by: 'An', body: 'hi', from: 'SELF', from_node: 'kg', to: 'don.do', mid: 'M1' });
+    await mesh.handle({ surface: 'wa', chatId: 'ID1', msgId: 'a1', body: req });
+    const reply = encodeMesh({ by: 'egpt.kg', body: 'answer', re: 'SELF.origin', mid: 'M1', done: true });
+    await mesh.handle({ surface: 'wa', chatId: 'ID2', msgId: 'r1', body: reply });
+    expect(bridge.streams.filter((s) => s.chat === 'ID1')).toHaveLength(1);
   });
 });
 
