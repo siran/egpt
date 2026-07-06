@@ -251,6 +251,19 @@ following is LANDED, test-locked, and (where marked) live-verified:
   local API actually supports (the bridge already sends reactions — the 👂
   ack path).
 
+- **Single "mesh" channel (operator 2026-07-06, works NOW)**: the live 2-node
+  chain uses rodz1/2/3, but with self-echo removed + mid gone it can run through
+  ONE shared chat "mesh" — set every `agents.<name>.relay_channel: mesh`. The
+  whole chain (request bouncing + reply) scrolls through one visible channel —
+  "cool to see." Only caveat: the per-channel circuit breaker (5 sends/20s,
+  guardedSend) concentrates on that one channel — raise it for a long chain.
+
+- **`/react` emit syntax fix (live 2026-07-06)**: E fired `/react 👋` (emoji-
+  first) through the mesh; operator believes the real bridge form is
+  `/react <msgid> <emoji>`. Verify against src/spine/reply-actions.mjs + the
+  bridge reaction call, correct the emit grammar AND the
+  config/skeletons/room/00-identity.md doc E learns from, re-test.
+
 - **HRW single-responder for shared channels (operator 2026-07-06)**: when 2+
   nodes/accounts BOTH host E in the SAME chat (e.g. REVE + DOLLY in a real
   group), an unqualified `@e` currently gets TWO replies. Default a rendezvous-

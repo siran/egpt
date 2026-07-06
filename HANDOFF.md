@@ -19,8 +19,74 @@ every iteration checks heartbeats and runs what's due; everything is heard and
 logged, only some is spoken (per-chat mode gates surfacing). One router, thin
 limbs, fail-closed emit gate, id-based auth, structural confinement. Each
 conversation runs as a **warm resident `claude` CLI process** (no SDK —
-CLI only, I11). Peer nodes form a **mesh** (TCP-over-Beeper: base64 body + YAML
-provenance tail, forward-once per mid).
+CLI only, I11). Peer nodes form a **mesh** (relay over shared Beeper chats:
+base64 body + readable YAML provenance tail).
+
+## ⭐ 2026-07-06 — LIVE two-node mesh (the milestone)
+
+**Two real machines, two Beeper accounts, a relay chain answered live.** An on
+REVE typed `@carol` → the message walked rodz1→rodz2→rodz3 bouncing between the
+accounts → E on DOLLY answered → reply came home into REVE's Self placeholder.
+E even fired a `/react` limb through the relay. This is the real friend-of-a-
+friend across machines.
+
+**The two nodes:**
+- **REVE** — this box, Beeper account **An**, `node_name: kg`. Sources
+  `C:\Users\an\src\egpt` (branch rewrite), installed `~/bin/egpt`, profile
+  `~/.egpt`, NSSM `egpt-daemon`. Deploy = commit+push → `git -C ~/bin/egpt pull`
+  → `/restart` via `~/.egpt/state/ingest/`.
+- **DOLLY** — `192.168.1.102`, Beeper account **Rodz** (`@dolly-egpt`, WhatsApp
+  +13472576794), `node_name: do`. Reach via **`ssh an@192.168.1.102`**
+  (passwordless key from REVE; default remote shell cmd.exe). Runs `~/bin/egpt`
+  on rewrite, profile `~/.egpt`, NSSM `egpt-daemon`, node deploy = SSH `git -C
+  ~/bin/egpt pull` + drop `/restart` into `~/.egpt/state/ingest/`. **Also a GPU
+  transcription worker** (:23390, REVE dials it) — PRESERVE that. Runbook +
+  full recon: `DOLLY-SETUP.disposable.md` (git-ignored).
+  - **Elevation caveat**: the SSH session is NOT admin, and the shared admin
+    password does NOT validate `an` on DOLLY. Service/NSSM changes need a
+    self-elevating script the operator clicks (`Desktop\DOLLY-cutover-CLICKME.cmd`
+    pattern — UAC prompt). Reads/git/npm/writing `~/.egpt` all work over SSH.
+
+**Mesh architecture (now clean — a lot changed 2026-07-05/06):**
+- **Relay agents are declarative**: `agents.<name>.{relay_channel, to}` — `@name`
+  posts into `relay_channel` re-addressed `to: <being>.<node>`; the next node
+  re-relays via ITS agent entry; the chain ends when `to` resolves to a LOCAL
+  being (which answers). Live chain: `carol.kg → don.do → wren.kg → ed.do`
+  (REVE hosts carol+wren, DOLLY hosts don + `ed` [a HANDLE of egpt]).
+- **`mid` REMOVED** (operator: "not necessary, just unwire it"). No forward-once,
+  no ttl/hop-cap (both deleted). Loop safety is now **structural**: self-echo
+  suppression (a node never re-sees its own posts — src/bridges/beeper.mjs
+  isEcho applies to mesh envelopes too) + `_processedIds` foreign-redelivery
+  dedup + the content `seen` replay guard + the per-channel circuit breaker
+  (5 sends/20s, `guardedSend`).
+- **Reply-home = `re:` return-address + the origin's `awaiting` map** (no mid).
+  Works because the origin node sits in the terminal's room (the chain bounces
+  the last hop back through it). LIMITATION (documented in relay.mjs): a chain
+  terminating in a room the origin is NOT in would need reverse-path reply-
+  forwarding — out of scope for now.
+- **Mesh resolves a being by HANDLE**, not just its agent-map key (mirrors
+  router.findAgent). So `ed.do` runs E because `ed` is in DOLLY's
+  `egpt.handles`. The handle is arbitrary text; the config's `handles:` list is
+  the source of truth per node.
+- **Self-echo exemption was tried then removed**: the single-process-with-alias
+  self-relay (node_alias wearing many identities on ONE process) is RETIRED —
+  DOLLY (a real 2nd account) replaces it. `node_alias` still exists for
+  local-answering multi-identity, but real transit needs distinct accounts.
+
+**OPEN / next (operator-decided):**
+- **Single "mesh" channel** (operator idea, works NOW): set every
+  `relay_channel: mesh` (one chat with both accounts) instead of rodz1/2/3 —
+  the whole chain scrolls through one visible channel. Tiny config change.
+  Caveat: the 5/20s circuit breaker concentrates on that one channel; raise it
+  if a long chain trips it.
+- **`/react` emit syntax** (live 2026-07-06): E used emoji-first `/react 👋`;
+  operator thinks the real bridge form is `/react <msgid> <emoji>`. VERIFY
+  against src/spine/reply-actions.mjs + the bridge react call, fix the emit
+  grammar + the `config/skeletons/room/00-identity.md` doc E learns from, and
+  re-test.
+- **HRW single-responder** for the unqualified-@e-in-a-shared-channel double-
+  reply case (ROADMAP; not a chain problem — chain hops are explicitly addressed).
+- Live at commit `ab1a3ef` (REVE pid 34656; DOLLY on ab1a3ef, hearing).
 
 
 ## Where we stand (all LANDED + test-locked, suite ~126 files / ~1378 green)
