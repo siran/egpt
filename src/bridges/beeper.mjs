@@ -64,6 +64,7 @@ import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { EGPT_HOME } from '../egpt-home.mjs';
 import { shortChatId, fullChatId } from './chat-id.mjs';
+import { parseMesh } from '../mesh/relay.mjs';   // envelope detection: a mesh envelope skips isEcho's FUZZY stage only (operator 2026-07-06)
 
 // Profile-aware (NOT hardcoded ~/.egpt): EGPT_HOME selects the node, so two
 // nodes on one box (prod ~/.egpt + a v2 test node ~/.egpt2) never interleave
@@ -408,6 +409,14 @@ export async function startBeeperBridge(opts = {}) {
     if (id && _sentIds.has(msgKeyOf(chatID, id))) return true;
     const exp = _sentText.get(`${chatID}|${_normEcho(text)}`);   // don't delete — receipts re-fire the same upsert; let it expire
     if (exp && exp > Date.now()) return true;
+    // A MESH ENVELOPE skips ONLY the fuzzy word-bag stage (operator 2026-07-06): the heuristic is
+    // for REFORMATTED MENU echoes — but two relay envelopes in ONE channel share ~every token across
+    // hops (identical base64 body + from/from_node/by/post_id/enc, differing only in to:/via:), so a
+    // FOREIGN forward would fuzzy-match our own origin envelope and be dropped BEFORE the "incoming"
+    // log — the multipath relay chain died silently (REVE live test, to: don.do → next hop to: wren.kg).
+    // The exact id/text stages ABOVE still suppress a node's OWN envelope echo (identical id/text —
+    // the 73fc57a invariant that removed the too-broad blanket exemption; only the fuzzy stage is skipped).
+    if (parseMesh(text)) return false;
     // Reformat-proof fallback: a reformatted echo of our own menu — same words, same chat.
     // Normalize first (strip HTML) so tag tokens don't dilute the containment ratio.
     const inBag = wordBag(_normEcho(text));

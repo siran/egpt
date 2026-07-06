@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
+import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
 
 async function startFakeBeeper() {
@@ -499,6 +500,65 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'a real message' })] });
     await waitFor(() => incoming.some((i) => i.text === 'a real message'));
     expect(incoming.map((i) => i.text)).not.toContain(envelope);   // echo suppressed via sent-ids/text window
+  });
+
+  // MULTIPATH MESH FUZZY-DROP (operator live test 2026-07-06): isEcho's stage-3 word-bag
+  // fallback (built for reformatted MENU echoes) was eating RELAY traffic. Two mesh envelopes
+  // in the SAME channel within the 60s TTL share almost every token — identical base64 body,
+  // same from/from_node/by/post_id/enc — differing only in `to:` and one `via:` entry. Live:
+  // REVE posted the origin envelope (to: don.do, via: [carol.kg]); ~1s later the NEXT HOP's
+  // forward arrived in the same chat (to: wren.kg, via: [carol.kg, don.do], same body/post_id) —
+  // a FOREIGN message the node had to act on — and stage 3 matched it as our own echo, dropping
+  // it BEFORE the "incoming" log line. The relay chain died silently. FIX: a message that parses
+  // as a mesh envelope skips ONLY the fuzzy stage (exact id/text stages still apply). Both
+  // envelopes are built with encodeMesh so the shape is honest.
+  it('a FOREIGN mesh-envelope forward (same body/provenance, only to:/via: differ) is NOT fuzzy-dropped as our own echo — the relay chain survives', async () => {
+    const { bridge, incoming } = await startBridge();
+    const chat = CHAT('egpt-mesh-do-kg');
+    // Long enough body that the ORIGIN envelope's word bag clears rememberSent's size>=8 gate.
+    const body = 'hola @don please answer this longer relayed question so the word bag is big';
+    // ORIGIN envelope this node posted (to: don.do, via: [carol.kg]) → rememberSent records its text + bag.
+    const origin = encodeMesh({ by: 'An', body, from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p-1', via: 'carol.kg' });
+    await bridge.send(origin, { chatId: chat });
+    await waitFor(() => fake.posts.length === 1);
+    // ~1s later the NEXT HOP's forward arrives in the SAME chat — a FOREIGN message: identical
+    // base64 body + from/from_node/by/post_id/enc, differing ONLY in `to:` (wren.kg) and one `via:` entry.
+    const forward = encodeMesh({ by: 'An', body, from: 'HFM', from_node: 'kg', to: 'wren.kg', post_id: 'p-1', via: 'carol.kg,don.do' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'foreign-fwd', chatID: chat, isSender: false, text: forward })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-fwd', chatID: chat, text: 'a real message' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-fwd'));
+    expect(incoming.some((i) => i.from.msgKey === 'foreign-fwd')).toBe(true);   // surfaced, NOT fuzzy-dropped (pre-fix: dropped)
+  });
+
+  // REGRESSION LOCK (a): skipping the fuzzy stage for envelopes must NOT reopen the 73fc57a
+  // invariant — a node's OWN envelope echo (identical text, different id) is STILL suppressed by
+  // the exact-text stage. Same chat/scenario as the repro above.
+  it("a node's OWN mesh-envelope echo (identical text) is STILL suppressed — only the fuzzy stage is skipped, the exact id/text stages stay (73fc57a invariant)", async () => {
+    const { bridge, incoming } = await startBridge();
+    const chat = CHAT('egpt-mesh-do-kg');
+    const env = encodeMesh({ by: 'An', body: 'hola @don answer please a longer body here', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: 'p-2', via: 'carol.kg' });
+    await bridge.send(env, { chatId: chat });
+    await waitFor(() => fake.posts.length === 1);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'own-echo', chatID: chat, text: env })] });   // our own post, echoed back (different id, identical text)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-own', chatID: chat, text: 'a real message' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-own'));
+    expect(incoming.some((i) => i.from.msgKey === 'own-echo')).toBe(false);   // suppressed by the exact-text stage
+  });
+
+  // REGRESSION LOCK (b): a reformatted NON-envelope MENU echo (same words, different markers) is
+  // STILL caught by the fuzzy word-bag stage — the 2026-06-25 wizard echo-loop guard is unbroken
+  // (parseMesh returns null for a menu, so the fuzzy stage still runs for it).
+  it('a reformatted NON-envelope menu echo (same words, different markers) is STILL caught by the fuzzy word-bag stage', async () => {
+    const { bridge, incoming } = await startBridge();
+    const chat = CHAT('chat-1');
+    const menu = 'egpt · conversations (newest first)\n  0) ✦ @egpt — global default brain\n  1) Joyce Vicente · e:haiku/mention\n  2) SPOILER ALERT · e:sonnet/mention\n(reply a number · q quit)';
+    const echo = 'egpt · conversations (newest first) 0) ✦ @egpt — global default brain - 1) Joyce Vicente · e:haiku/mention - 2) SPOILER ALERT · e:sonnet/mention - reply a number · q quit';   // reformatted one-line echo, NOT a mesh envelope
+    await bridge.send(menu, { chatId: chat });
+    await waitFor(() => fake.posts.length === 1);
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'menu-echo', chatID: chat, text: echo })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'sentinel-menu', chatID: chat, text: 'a real human line' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'sentinel-menu'));
+    expect(incoming.some((i) => i.from.msgKey === 'menu-echo')).toBe(false);   // fuzzy stage still active for non-envelopes
   });
 
   it('dedups re-upserts of the same id (receipts/edits)', async () => {
