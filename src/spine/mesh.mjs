@@ -4,13 +4,14 @@
 // that fills in as the remote being answers).
 //
 // The engine is the battle-tested `src/mesh/relay.mjs` (createMeshRelay) — the wire
-// format (base64 body + readable provenance tail), forward-once loop safety, and the
-// streaming living-mirror all live there and are test-locked (tests/mesh-relay.test.mjs).
+// format (base64 body + readable provenance tail) and the streaming living-mirror all
+// live there and are test-locked (tests/mesh-relay.test.mjs). Loop safety is the bridge's:
+// a node never re-sees its OWN posts (echo suppression) and a foreign re-delivery dedups by
+// message id, so each node processes each envelope once (no minted request-id needed).
 // This service's whole job is to supply the engine's host callbacks FROM v2 services:
 //
 //   send / surface / ackWithPostId   ->  the Bridge port (send / postStatus)
 //   relayDispatch / openOriginStream ->  the Bridge port's startStream (edit-stream)
-//   openRelayStream (transit)        ->  the Bridge port's startStream
 //   runBeing (via relayDispatch)     ->  the Brain port (brain.turn), streaming
 //   resolveRoute / isLocalBeing / …  ->  config (node_name, agents, mesh.nodes)
 //
@@ -54,6 +55,27 @@ export function createMeshService({
   const agents = () => cfg().agents ?? {};                         // the unified registry (new-config-only)
   const timeoutMs = () => Number(cfg().mesh?.timeout_ms ?? 60_000) || 60_000;
 
+  // An agent's routable tokens: its map KEY plus any `handles:` aliases (lowercased) —
+  // MIRRORS the router (src/spine/router.mjs findAgent) so the mesh resolves a being addressed
+  // by a HANDLE (e.g. `ed` for the egpt persona) exactly as the router does for a direct @mention.
+  const agentIds = (name, agent) => {
+    const hs = Array.isArray(agent?.handles) ? agent.handles : [];
+    return [name, ...hs].map((h) => String(h ?? '').toLowerCase());
+  };
+  // Find the enabled, non-comment agent whose key/handle matches `token` → { name, agent }
+  // (name = canonical lowercased key) or null.
+  const findAgentByToken = (token) => {
+    const t = String(token ?? '').toLowerCase();
+    for (const [name, agent] of Object.entries(agents())) {
+      if (!agent || typeof agent !== 'object' || Array.isArray(agent) || name.startsWith('_')) continue;
+      if (agent.enabled === false) continue;
+      if (agentIds(name, agent).includes(t)) return { name: name.toLowerCase(), agent };
+    }
+    return null;
+  };
+  // The PERSONA agent is the one whose key/handle includes e/egpt (same test the router uses).
+  const isPersonaAgent = (name, agent) => agentIds(name, agent).some((h) => h === 'e' || h === 'egpt');
+
   // Relay-chat resolution (unchanged from the old wiring): a node's listen route is
   // config.mesh.nodes.<node>.routes[0]; its room_id is the chat the envelope rides.
   const resolveRoute = (toNode) => {
@@ -65,13 +87,11 @@ export function createMeshService({
     return c == null ? null : String(c);
   };
   // Resolve a route's room to the CANONICAL short chat id the bridge delivers under.
-  // A relay_channel is configured by NAME (e.g. "rodz2"), but an observed envelope's
-  // ev.chatId is always the RESOLVED id. The engine keys its reverse-reply map
-  // (fwdArrival) on the room, so a name≠id mismatch made every reply's return-hop miss
-  // and dead-end — the reply never mirrored home (operator 2026-07-05). Resolving the
-  // relay-record's room HERE makes the room this hop forwards INTO carry the same id
-  // ev.chatId will, so store-key == observe-key. bridge.resolveChatId caches (no repeat
-  // lookup); a bridge without it (test fakes) → route unchanged (raw-id configs unaffected).
+  // A relay_channel is configured by NAME (e.g. "rodz2"), but the bridge sends and delivers
+  // under the RESOLVED id. Resolving the relay-record's room HERE makes the relay hop forward
+  // into the SAME id the chat is observed as, so the terminal node listening there receives it
+  // (and an origin present in that room catches the reply). bridge.resolveChatId caches (no
+  // repeat lookup); a bridge without it (test fakes) → route unchanged (raw-id configs unaffected).
   const canonRoute = async (route) => {
     if (!route) return route;
     const c = chatOf(route);
@@ -111,19 +131,35 @@ export function createMeshService({
     isSelfNode,                          // node_name ∪ node_alias → several identities on one process
     log: onLog,
     resolveRoute,
-    // A local being: the persona (e/egpt), or a LOCAL agent (agents[<name>], configuration
-    // ≠ 'relay') that is enabled. A hosted-but-disabled agent is treated as not-here (the
-    // engine answers "no <being>.<node> here" — never silence), respecting availability.
-    // (A relay agent forwards elsewhere via the route-direct path, so it is NOT local.)
+    // A local being: the persona (e/egpt), or a LOCAL agent (enabled, configuration ≠ 'relay')
+    // matched by its KEY *or any of its handles* (so `ed`, a handle of the egpt persona, is
+    // recognized here just as the router recognizes a bare @ed). A hosted-but-disabled agent is
+    // treated as not-here (the engine answers "no <being>.<node> here" — never silence),
+    // respecting availability. (A relay agent forwards elsewhere via the route-direct path, so
+    // it is NOT local.)
     isLocalBeing: (name) => {
       const n = String(name).toLowerCase();
       if (n === 'e' || n === 'egpt') return true;
-      const a = agents()[n];
-      if (!a || typeof a !== 'object' || Array.isArray(a) || a.enabled === false) return false;
+      const found = findAgentByToken(n);
+      if (!found) return false;
+      const a = found.agent;
       // A relay agent (has relay_channel / to, or explicit configuration: relay) forwards
       // rather than answers — it is NOT a local being.
       const isRelay = !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
       return !isRelay;
+    },
+    // Resolve a local being addressed by a HANDLE to the canonical being that actually RUNS:
+    // a persona handle (`ed`, `egptd`) runs the persona being `e` (stable warm keys/threads,
+    // the same mapping the router applies to persona handles → defaultBeing); any other local
+    // agent's handle runs that agent's own key. The reply is still STAMPED with the addressed-as
+    // handle (the engine keeps `by: <handle>.<node>`) — only the run-being is resolved.
+    resolveLocalBeing: (name) => {
+      const n = String(name).toLowerCase();
+      if (n === 'e' || n === 'egpt') return 'e';
+      const found = findAgentByToken(n);
+      if (!found) return n;
+      if (isPersonaAgent(found.name, found.agent)) return 'e';
+      return found.name;
     },
     // RELAY-RECORD (declarative chain): a relay agent with `to: <being>.<node>` re-addresses
     // an arriving request onward. Returns { being, node, route } — the next hop's being/node
@@ -173,14 +209,14 @@ export function createMeshService({
     // relay channel as ONE message wrapped in the mesh tail (by/emoji/re/post_id). The
     // being's body_emoji is stamped INTO the body (the responder owns it; the origin
     // can't look up a remote being's). The FINAL frame carries done:true.
-    relayDispatch: async ({ being, prompt, route, re, post_id, by, mid }) => {
+    relayDispatch: async ({ being, prompt, route, re, post_id, by }) => {
       const chat = chatOf(route);
       if (chat == null) return;
       const emoji = bodyEmojiOf(being) || '';
       const wrap = (body, done = false) => {
         const b = String(body ?? '').trim();
         const out = (!b || b === PLACEHOLDER || b === '🤔') ? PLACEHOLDER : (emoji ? `${emoji} ${b}` : b);
-        return encodeMesh({ by, body: out, re, post_id, mid, done });
+        return encodeMesh({ by, body: out, re, post_id, done });
       };
       const stream = bridge.startStream(chat, wrap(''), {});
       let final = '';
@@ -205,20 +241,6 @@ export function createMeshService({
       return {
         update: (body) => stream.update(render(body)),
         finish: async (body) => { await stream.finish(render(body)); },
-      };
-    },
-    // TRANSIT (multi-hop): re-mirror a forwarded reply toward the next hop — post a
-    // copy into `route` and edit it as the upstream streams, wrapping each frame in the
-    // mesh tail (re/mid) so the next hop recognises + mirrors it onward.
-    openRelayStream: (route, info = {}) => {
-      const chat = chatOf(route);
-      if (chat == null) return null;
-      const wrap = (body, done = false) => encodeMesh({ by: info.by, body: String(body ?? '').trim() || PLACEHOLDER, re: info.re, mid: info.mid, post_id: info.post_id, done });
-      const stream = bridge.startStream(chat, wrap(''), {});
-      if (!stream) return null;
-      return {
-        update: (body) => stream.update(wrap(body)),
-        finish: async (body) => { await stream.finish(wrap(body, true)); },
       };
     },
   });

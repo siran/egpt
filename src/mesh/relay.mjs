@@ -25,13 +25,11 @@
 //   - On relay, the origin gets an HONEST "↪ relayed — waiting…" — not a faked
 //     "thinking…" the relayer can't actually know.
 
-import { makeMeshRequestId, createMeshSeenCache } from './envelope.mjs';
-
 // ── provenance encode / parse ─────────────────────────────────────────────
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
 // 'done' marks the final frame. The being's body_emoji is stamped INTO the body by
 // the responder (it owns the emoji), not carried as a key.
-const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node', 'mid']);
+const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
 // Body codec (An 2026-06-20): base64 so the transport can't mangle the body. Beeper
@@ -46,7 +44,7 @@ const b64decode = (s) => Buffer.from(String(s ?? ''), 'base64').toString('utf8')
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
 // (a limb can't linkify "don.do").
-export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', mid = '', done = false } = {}) {
+export function encodeMesh({ by = '', body = '', from = '', from_node = '', to = '', re = '', post_id = '', done = false } = {}) {
   const lines = [];   // omit EMPTY keys — an empty "from:" on a reply leaked into the surfaced body
   if (from) lines.push(`from: ${from}`);
   // `from_node` rides the REQUEST so the responder can build a node-qualified return
@@ -56,9 +54,6 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   if (by) lines.push(`by: ${by}`);
   if (to) lines.push(`to: ${to}`);
   if (re) lines.push(`re: ${re}`);
-  // `mid` = minted request id (origin), preserved across forwards. A spine forwards a
-  // given `mid` at most once → multi-hop transit is loop-safe and self-terminating.
-  if (mid) lines.push(`mid: ${mid}`);
   // `post_id` is the Beeper msgId of the origin placeholder ("🤔") that was posted in
   // the origin chat. The responder echoes it back in EVERY reply frame so the origin
   // knows WHICH message to edit as the mirrored reply streams.
@@ -123,7 +118,7 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '', mid: prov.mid || '' };
+  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '' };
 }
 
 export function mentionedBeing(text) {
@@ -151,6 +146,12 @@ export function createMeshRelay({
   // equality with `node` so a single-identity node is unchanged.
   isSelfNode = (n) => String(n).toLowerCase() === String(node).toLowerCase(),
   isLocalBeing = () => false,        // (being) => bool
+  // resolveLocalBeing(being) => canonical being to RUN. A being addressed by a HANDLE (e.g.
+  // `ed` for the egpt persona) runs the resolved persona being `e` (stable warm keys/threads,
+  // same as the router maps persona handles → defaultBeing); a LOCAL sibling agent's handle
+  // runs that sibling being. The reply is still STAMPED with the addressed-as handle (the
+  // engine keeps `by: <handle>.<node>`), only the RUN-being is resolved. Default: identity.
+  resolveLocalBeing = (name) => name,
   resolveBeingRelay = () => null,    // (being) => {being,node}|null — relay-record: re-resolve to another node
   // STREAMING — a relayed reply is a LIVING MIRROR (An 2026-06-21). Edit-streaming
   // is a bridge property, so a relayed reply streams for free; the relay just mirrors.
@@ -164,9 +165,6 @@ export function createMeshRelay({
   //     relay message's OWN id; the `done` frame finalizes (✅ Done). Null → one-shot.
   relayDispatch = null,
   openOriginStream = null,
-  // (route, info{by,re,mid}) => {update,finish} — TRANSIT: post a forwarded reply copy into
-  // `route` and EDIT it as the upstream streams (chained-edit mirror, one hop onward).
-  openRelayStream = null,
   log = () => {},
 } = {}) {
   const awaiting = new Map();   // origin name -> returnTo (so a reply's `re:` surfaces home)
@@ -175,26 +173,16 @@ export function createMeshRelay({
   // chat). Capped; entries cleared on the `done` frame.
   const streamingIn = new Map();
   const STREAM_CAP = 50;
-  // A streamed reply mirror is keyed by `${mid}@${room}` (mid stable across a transport that
-  // re-delivers a self-relayed post under changing ids; room keeps each hop's reverse-mirror
-  // stage distinct in a single-process chain). A two-process responder streams its reply via
-  // EDITS that reach us as onRoomMessageEdit under a STABLE raw msgId — which carries no room —
-  // so index msgId → the stream key its opening post registered, so an edit finds its mirror.
-  const msgIdToKey = new Map();
-  const MSGID_KEY_CAP = 200;
-  const rememberMsgKey = (msgId, key) => {
-    if (msgId == null || key == null) return;
-    msgIdToKey.set(String(msgId), key);
-    if (msgIdToKey.size > MSGID_KEY_CAP) msgIdToKey.delete(msgIdToKey.keys().next().value);
-  };
+  // A streamed reply mirror is keyed by the reply message's OWN id (`x:${msgId}`): its opening
+  // post AND every later streamed EDIT arrive under the SAME raw msgId, so an edit finds the
+  // mirror its opening post registered. (mid removed 2026-07-06 — the origin correlates the
+  // reply solely by the `re:` return-address + its `awaiting` map.)
   const seen = new Set();       // tiny replay guard (content keys already acted on)
   const SEEN_CAP = 500;
   const mark = (k) => { seen.add(k); if (seen.size > SEEN_CAP) seen.delete(seen.values().next().value); };
-  // Reply-mirror STAGES already FINALIZED (a done frame was delivered), keyed the SAME way
-  // streamingIn is (`${mid}@${room}`, else `x:${msgId}`). A single-process self-relay re-observes
-  // its OWN reply posts under several transport ids even AFTER a stage's mirror finished; this
-  // makes those late re-deliveries inert — no duplicate finish, no spurious return-mirror.
-  // Per-STAGE (per room), so a genuine next hop of the same mid in another room still fires.
+  // Reply-mirror stages already FINALIZED (a done frame was delivered), keyed the SAME way
+  // streamingIn is (`x:${msgId}`). Makes any late re-delivery of an old frame inert — no
+  // duplicate finish.
   const repliesDone = new Set();
   const REPLIES_DONE_CAP = 500;
   const markReplyDone = (k) => { repliesDone.add(k); if (repliesDone.size > REPLIES_DONE_CAP) repliesDone.delete(repliesDone.values().next().value); };
@@ -221,40 +209,21 @@ export function createMeshRelay({
     return true;
   }
 
-  // ── MULTI-HOP TRANSIT (loop-safe): a spine that isn't the destination forwards the
-  //    message one hop toward it, via resolveRoute(destNode). `mid` (minted at the origin)
-  //    is forwarded at most ONCE per direction (fwdSeen) — so the message reaches every
-  //    reachable node ~once and self-terminates; a loop can't run away. No mid ⇒ never
-  //    forwarded.
-  const fwdSeen = createMeshSeenCache();
+  // ── MULTI-HOP TRANSIT: a spine that isn't the destination forwards the message one hop
+  //    toward it, via resolveRoute(destNode). No engine-level forward-once is needed — each
+  //    node observes a given envelope ONCE (a node never re-sees its own posts: bridge echo
+  //    suppression; and a foreign re-delivery dedups by message id at the bridge). The
+  //    guardedSend circuit breaker is the hard backstop. It never forwards back the way the
+  //    message came (that would echo).
   const _routeKey = (r) => String(r?.room_id ?? r?.chat ?? JSON.stringify(r ?? null));
-  // Reverse path for replies, ROOM-SCOPED so it chains through ARBITRARILY MANY hops even
-  // inside ONE process (operator 2026-07-05: an N-hop relay-record chain relayed through a
-  // single node's several aliases). At each forward, remember: a reply for `mid` that comes
-  // back in the room we forwarded INTO (`outRoute`) must re-mirror into the room the request
-  // ARRIVED in (`inRoute`). Key = `${mid}@${outRoom}` → inRoute. Each hop records only ITS OWN
-  // pair — it never needs to know how many hops came before/after, so the mechanism is fully
-  // general (no depth limit at all — the per-hop fwdSeen forward-once gate plus the guardedSend
-  // circuit breaker bound a chain's length, not any hop-cap). A mid-only
-  // map would COLLIDE across hops in one process (every hop overwriting the same slot); the
-  // room scope keeps each hop's reverse leg distinct. Bounded LRU.
-  const fwdArrival = new Map();   // `${mid}@${outRoom}` -> inRoute (the room to mirror the reply back into)
-  const FWD_ARRIVAL_CAP = 500;
-  const rememberArrival = (mid, outRoute, inRoute) => {
-    if (!mid || !outRoute || !inRoute) return;
-    fwdArrival.set(`${String(mid)}@${_routeKey(outRoute)}`, inRoute);
-    if (fwdArrival.size > FWD_ARRIVAL_CAP) fwdArrival.delete(fwdArrival.keys().next().value);
-  };
-  async function forwardToward(destNode, prov, fromRoute, dir) {
-    if (!destNode || !prov.mid) return false;
-    if (fwdSeen.checkAndMark(`${dir}:${prov.mid}`)) { log(`mesh: drop ${dir} ${prov.mid} — already forwarded`); return false; }
+  async function forwardToward(destNode, prov, fromRoute) {
+    if (!destNode) return false;
     const dest = resolveRoute(destNode);
     if (!dest || _routeKey(dest) === _routeKey(fromRoute)) return false;   // no onward route / would echo back
-    if (dir === 'req') rememberArrival(prov.mid, dest, fromRoute);         // reply comes back in dest's room → mirror to fromRoute
-    log(`mesh: forward ${dir} ${prov.mid} → ${destNode}`);
+    log(`mesh: forward req → ${destNode}`);
     return guardedSend(dest, encodeMesh({
       from: prov.from, from_node: prov.from_node, by: prov.by, to: prov.to, re: prov.re,
-      post_id: prov.post_id, mid: prov.mid, body: prov.body, done: prov.done,
+      post_id: prov.post_id, body: prov.body, done: prov.done,
     }));
   }
 
@@ -287,11 +256,10 @@ export function createMeshRelay({
       // so the origin can parse the return-node and look up the right route + awaiting entry.
       // `to: being.node` (e.g. "don.do") encodes both target being and node so the responder
       // can identify without relying on @mention parsing.
-      const mid = makeMeshRequestId({ node });
       // A relay agent's declarative `to: <being>.<node>` names the next hop (chain); else a
       // node-qualified target (mesh.nodes scheme); else empty = open-channel (no target node).
       const to = explicitTo || (toNode ? `${being}.${toNode}` : '');
-      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', mid }));
+      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '' }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
     catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
@@ -305,69 +273,35 @@ export function createMeshRelay({
     const prov = parseMesh(text);
     if (!prov) return false;                       // ordinary message — not ours
 
-    // A REPLY (carries `re:`) — a LIVING MIRROR:
-    //   ORIGIN  (we're awaiting it): mirror the reply onto the origin placeholder, then finish.
-    //   TRANSIT (we forwarded this mid's request): re-mirror one hop back toward the origin,
-    //           chaining hop-by-hop for an arbitrarily long chain (rodz3→rodz2→rodz1).
-    // Correlate a mirror stage by `${mid}@${room}` (see below): the mid is stable across a
-    // transport re-delivering the same post under changing ids, and the room keeps each reverse
-    // stage of a single-process chain distinct. A two-process responder's streamed EDITS reach
-    // us via onRoomMessageEdit under one stable msgId, resolved through msgIdToKey.
+    // A REPLY (carries `re:`) — a LIVING MIRROR at the ORIGIN: mirror the reply onto the
+    // origin placeholder (post_id) as it streams, then finish. Correlation is the `re:`
+    // return-address + this node's `awaiting` map alone (mid removed 2026-07-06). The reply
+    // reaches the origin because the ORIGIN node is present in the terminal's room (the
+    // operator's chains bounce back to the origin — e.g. carol.kg→don.do→wren.kg→ed.do: the
+    // origin kg forwarded the wren→ed.do hop into rodz3, so it is there to catch ed's reply).
+    // LIMITATION (out of scope): a chain that TERMINATES in a room the origin is NOT in would
+    // need reply-forwarding along the reverse path — deliberately not implemented.
     if (prov.re) {
       const dotIdx = prov.re.lastIndexOf('.');
       const reChatId = dotIdx >= 0 ? prov.re.slice(0, dotIdx) : prov.re;
-      // The return address is `<origin-chat>.<origin-node>` (e.g. "HFM.kg") — the node
-      // suffix is the ORIGIN node a transit hop must carry the reply back toward.
-      const originNode = dotIdx >= 0 ? prov.re.slice(dotIdx + 1).toLowerCase() : '';
       const back = awaiting.get(reChatId) || awaiting.get(prov.re);
-      const roomKey = _routeKey(route);
-      // Correlate every frame of ONE reply-mirror STAGE by `${mid}@${room}`. The mid is stable
-      // across all frames AND across a transport that re-delivers the SAME post under several ids
-      // (single-process self-relay, 2026-07-05: our OWN mesh posts are re-observed — envelopes
-      // bypass echo suppression — and Beeper hands each one back under a pending THEN a confirmed
-      // id, two upserts with DIFFERENT ids, while our streaming EDITS are self-suppressed). The
-      // ROOM disambiguates the SAME mid arriving at DIFFERENT reverse-mirror stages of one N-hop
-      // chain inside one process (rodz3→rodz2→rodz1): each stage is its own mirror. Fallback to
-      // the raw msgId for a legacy/mid-less reply (a single stable id anyway).
-      const key = prov.mid ? `${prov.mid}@${roomKey}` : (msgId != null ? `x:${String(msgId)}` : null);
-      log(`mesh: reply re:${prov.re} mid:${prov.mid || '-'} msgId:${msgId ?? '-'} room:${roomKey} back:${back ? 'yes' : 'NO'} tracked:${key != null && streamingIn.has(key) ? 'yes' : 'no'}`);
+      // One reply-mirror stage is keyed by the reply message's OWN id: the opening post and
+      // every later streamed EDIT arrive under the SAME raw msgId, so an edit finds the mirror.
+      const key = msgId != null ? `x:${String(msgId)}` : null;
+      log(`mesh: reply re:${prov.re} msgId:${msgId ?? '-'} back:${back ? 'yes' : 'NO'} tracked:${key != null && streamingIn.has(key) ? 'yes' : 'no'}`);
 
       if (key != null) {
-        // This stage already finalized → a redundant re-delivery of an old frame; inert.
-        // Never re-open a mirror, never re-fire a return-mirror, never double-finish.
-        if (repliesDone.has(key)) { rememberMsgKey(msgId, key); return true; }
+        if (repliesDone.has(key)) return true;       // this stage finalized → late re-delivery is inert
         let s = streamingIn.get(key);
-        if (!s) {
-          // RETURN HOP takes precedence over origin resolution: in a single-process chain the
-          // origin's `awaiting` entry matches at EVERY reverse stage (it's process-global), so a
-          // room-scoped reverse leg must win until the reply reaches the ORIGIN's own room (where
-          // no forward was recorded → falls through to origin). `${mid}@${room}` = the reverse
-          // room this hop recorded when it forwarded INTO `room`. The mesh.nodes multi-process
-          // fallback (resolveRoute of the origin node) is gated on !back so it never hijacks a
-          // real origin's resolution; it only serves a transit node that isn't the origin.
-          const revTo = prov.mid
-            ? (fwdArrival.get(key) || (!back && fwdSeen.has(`req:${prov.mid}`) ? resolveRoute(originNode) : null))
-            : null;
-          if (revTo && openRelayStream) {
-            // TRANSIT: re-mirror the reply one hop back toward the origin, into `revTo`.
-            // Carry post_id: the ORIGIN placeholder id must survive EVERY reverse hop so the
-            // final hop can edit it in place (openOriginStream existingMsgId). Without it a
-            // multi-hop reply reached the origin with no post_id → the origin opened a FRESH
-            // (empty, dropped) placeholder and the real one stuck on 🤔 (operator 2026-07-05).
-            log(`mesh: return-mirror rep ${prov.mid} @${roomKey} → ${_routeKey(revTo)} (I forwarded its request)`);
-            const handle = openRelayStream(revTo, { by: prov.by, re: prov.re, mid: prov.mid, post_id: prov.post_id });
-            if (handle) s = { handle };
-          } else if (back && openOriginStream) {
-            // ORIGIN: edit the origin placeholder (post_id) in place.
-            const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null });
-            if (handle) { s = { handle }; awaiting.delete(reChatId); }
-          }
-          if (s) {
+        if (!s && back && openOriginStream) {
+          // ORIGIN: edit the origin placeholder (post_id) in place as the reply streams home.
+          const handle = openOriginStream(back, { by: prov.by, msgId: prov.post_id || null });
+          if (handle) {
+            s = { handle }; awaiting.delete(reChatId);
             streamingIn.set(key, s);
             if (streamingIn.size > STREAM_CAP) { const k = streamingIn.keys().next().value; streamingIn.delete(k); }
           }
         }
-        rememberMsgKey(msgId, key);                  // let a later onRoomMessageEdit under this id find the mirror
         if (s) {
           if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(prov.body); }
           else await s.handle.update?.(prov.body);
@@ -375,7 +309,7 @@ export function createMeshRelay({
         }
       }
 
-      // No stream primitive / no mirror could open: the ORIGIN surfaces once (a transit can't mirror).
+      // No stream primitive / no mirror could open: the ORIGIN surfaces once.
       if (back) { awaiting.delete(reChatId); await surface(back, prov.body, { by: prov.by }); return true; }
       log(`mesh: reply re:${prov.re} not awaited here`);
       return true;                                   // consume either way (never re-relay)
@@ -403,33 +337,24 @@ export function createMeshRelay({
     // one process wears several node names (operator 2026-07-05).
     const asNode = target || String(node).toLowerCase();
     if (target) {
-      if (!isSelfNode(target)) { await forwardToward(target, prov, route, 'req'); return true; }
-      // RELAY-RECORD: `being` is configured here as a relay to ANOTHER node's being — ALWAYS
-      // re-address and forward into its OWN configured route (no self/local "collapse": mesh
-      // envelopes are echo-suppression-exempt now, so a chain relayed through one process posts a
-      // REAL, visible envelope at every hop — the collapse was a premature optimization that is
-      // no longer even true). This generalizes to an ARBITRARY-length chain: each hop only knows
-      // its OWN relay-record and forwards one step; forward-once scoped to THIS hop's identity
-      // (`being`) — plus the guardedSend circuit breaker as a backstop — is now the ONLY thing
-      // bounding a chain's length. Scoped by `being`, NOT just the mid, because a single process
-      // relaying a chain through itself checks/marks forward-once for the SAME mid at EVERY hop
-      // (mid is preserved verbatim), so an unscoped `req:${mid}` would let hop 1 silently swallow
-      // hop 2's legitimate forward of the same mid. `req:${mid}:${being}` gives each hop its own
-      // gate while still blocking a given hop from re-forwarding the same mid.
+      if (!isSelfNode(target)) { await forwardToward(target, prov, route); return true; }
+      // RELAY-RECORD: `being` is configured here as a relay to ANOTHER node's being — re-address
+      // and forward into its OWN configured route (relay agent's channel, else mesh.nodes). This
+      // generalizes to an ARBITRARY-length chain: each hop only knows its OWN relay-record and
+      // forwards one step. No engine-level forward-once is needed — each node observes a given
+      // envelope once (self-echo suppression + the bridge's per-id dedup); the guardedSend
+      // circuit breaker is the hard backstop.
       const _rec = await resolveBeingRelay(being);
       if (_rec) {
-        if (prov.mid && !fwdSeen.checkAndMark(`req:${prov.mid}:${being}`)) {
-          const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes
-          if (dest) {
-            rememberArrival(prov.mid, dest, route);             // reply for mid coming back in dest's room → mirror to this arrival room
-            log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
-            await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, mid: prov.mid, body: prov.body }));
-          }
+        const dest = _rec.route ?? resolveRoute(_rec.node);   // relay agent's own channel, else mesh.nodes
+        if (dest) {
+          log(`mesh: relay-record ${being}.${node} → ${_rec.being}.${_rec.node}`);
+          await guardedSend(dest, encodeMesh({ from: prov.from, from_node: prov.from_node, by: prov.by, to: `${_rec.being}.${_rec.node}`, re: prov.re, post_id: prov.post_id, body: prov.body }));
         }
         return true;
       }
       if (!isLocalBeing(being)) {
-        await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress, mid: prov.mid }));
+        await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: `no ${being}.${asNode} here`, re: reAddress }));
         return true;
       }
     } else if (!isLocalBeing(being)) {
@@ -440,6 +365,10 @@ export function createMeshRelay({
     if (seen.has(key)) { log(`mesh: replay dropped for ${being}`); return true; }
     mark(key);
 
+    // Run the RESOLVED being: a being addressed by a HANDLE (e.g. `ed` for the egpt persona)
+    // runs the canonical persona being `e`; a local sibling's handle runs that sibling. The
+    // reply is still STAMPED with the addressed-as identity (`by: <being>.<asNode>`).
+    const runB = resolveLocalBeing(being);
     const prompt = prov.body.replace(MENTION_RE, '').trim() || prov.body.trim();
     // RESPONDER: edit-stream the being's reply into the relay room as ONE message
     // wrapped in the mesh tail (re/by/post_id, NO done). The responder's own edits
@@ -447,18 +376,18 @@ export function createMeshRelay({
     // them onto its placeholder. Non-blocking: relayDispatch fires the dispatch; we
     // don't await the whole turn here.
     if (relayDispatch) {
-      relayDispatch({ being, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}`, mid: prov.mid })
-        .catch((e) => log(`mesh: relayDispatch ${being} failed: ${e?.message ?? e}`));
+      relayDispatch({ being: runB, prompt, route, re: reAddress, post_id: prov.post_id, by: `${being}.${asNode}` })
+        .catch((e) => log(`mesh: relayDispatch ${runB} failed: ${e?.message ?? e}`));
       return true;
     }
     // Fallback (no relayDispatch wired): run the being one-shot and post the reply.
     let reply;
-    try { reply = await runBeing(being, prompt, { from: prov.from, by: prov.by }); }
-    catch (e) { reply = `(${being}.${node} error: ${e?.message ?? e})`; }
+    try { reply = await runBeing(runB, prompt, { from: prov.from, by: prov.by }); }
+    catch (e) { reply = `(${runB}.${node} error: ${e?.message ?? e})`; }
     if (reply == null || String(reply).trim() === '') reply = '…';
-    const _stamp = beingEmoji(being);
+    const _stamp = beingEmoji(runB);
     const _fbBody = String(reply).trim() || '…';
-    await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, mid: prov.mid, done: true }));
+    await guardedSend(route, encodeMesh({ by: `${being}.${asNode}`, body: _stamp ? `${_stamp} ${_fbBody}` : _fbBody, re: reAddress, post_id: prov.post_id, done: true }));
     return true;
   }
 
@@ -475,9 +404,8 @@ export function createMeshRelay({
   //    responder's edits directly.
   async function onRoomMessageEdit({ msgId, text } = {}) {
     // A responder's streamed reply reaches us as EDITS under the SAME raw msgId its opening post
-    // was seen under (onRoomMessage). That post registered the stream's `${mid}@${room}` key in
-    // msgIdToKey, so resolve through it — the edit itself carries no room to rebuild the key.
-    const key = msgId != null ? msgIdToKey.get(String(msgId)) : null;
+    // was seen under (onRoomMessage) — so the stream key (`x:${msgId}`) rebuilds directly.
+    const key = msgId != null ? `x:${String(msgId)}` : null;
     const s = key != null ? streamingIn.get(key) : null;
     if (!s) return false;                          // not a tracked relay reply — bridge handles it
     const prov = parseMesh(text);
