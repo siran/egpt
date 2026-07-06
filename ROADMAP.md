@@ -251,18 +251,52 @@ following is LANDED, test-locked, and (where marked) live-verified:
   local API actually supports (the bridge already sends reactions — the 👂
   ack path).
 
-- **Single "mesh" channel (operator 2026-07-06, works NOW)**: the live 2-node
-  chain uses rodz1/2/3, but with self-echo removed + mid gone it can run through
-  ONE shared chat "mesh" — set every `agents.<name>.relay_channel: mesh`. The
-  whole chain (request bouncing + reply) scrolls through one visible channel —
-  "cool to see." Only caveat: the per-channel circuit breaker (5 sends/20s,
-  guardedSend) concentrates on that one channel — raise it for a long chain.
+- **Single "mesh" channel — CLOSED (operator 2026-07-06)**: dropped on
+  reflection — one shared chat means every node on the path is in one room, so
+  in a chain A>B>C the endpoints A and C would know each other directly. That
+  defeats the point of relaying (reaching C *through* B precisely because A and
+  C share nothing). Per-hop channels stay.
 
-- **`/react` emit syntax fix (live 2026-07-06)**: E fired `/react 👋` (emoji-
-  first) through the mesh; operator believes the real bridge form is
-  `/react <msgid> <emoji>`. Verify against src/spine/reply-actions.mjs + the
-  bridge reaction call, correct the emit grammar AND the
-  config/skeletons/room/00-identity.md doc E learns from, re-test.
+- **Mixed-network mesh + multipath + traceroute (operator 2026-07-06)**:
+  three stacked steps proving the mesh is network- and path-transparent.
+  1. **Mixed-network hop — WAITING ON OPERATOR**: re-point ONE chain hop to a
+     Telegram chat — the mesh layer is already network-agnostic (relay_channel
+     is just a chat name; bridge.resolveChatId does the rest). CHECKED
+     2026-07-06: the Rodz account (DOLLY) has only matrix+whatsapp linked — NO
+     Telegram — and the operator chose to LINK TELEGRAM ON RODZ first (over the
+     zero-setup matrix-hop alternative). Once Telegram shows in DOLLY's
+     /v1/accounts: create the cross-account Telegram chat, re-point don's
+     relay_channel (DOLLY config) to it, re-run `@carol hello`.
+  2. **Multipath reply collision — FIXED (2026-07-06, agent-built,
+     reproduce-first)**: confirmed real — `awaiting` was keyed by origin chat
+     alone, so the first reply home deleted the shared entry and STRANDED the
+     second in-flight request's reply (post_id targeted the right placeholder
+     but never got the chance). Now keyed per-request by post_id (fallback:
+     origin name), reply-home resolves+deletes only its own key. Remaining
+     caveat (unfixed, timeout-only): spine mesh.mjs armTimeout/pending still
+     keys ONE origin-wait timer per chat — two forwards share it; only matters
+     when a reply never comes. LIVE MULTIPATH TEST still to run: add a 1-hop
+     direct relay agent beside the 3-hop chain, fire both, compare.
+  3. **Traceroute `via:` — LANDED (2026-07-06)**: each forwarding hop appends
+     `<being>.<node>` to a comma-separated `via:` provenance key; the terminal
+     responder echoes it home; the origin appends a one-line trailer on the
+     final frame only: `via don.do › wren.kg`. NOTE the origin's own relay
+     agent (carol.kg) is NOT in the trail — hop 0 is from/from_node; seed it in
+     relayOut if the operator wants it shown. Per-hop TIMING still open.
+
+- **`/react` emit syntax fix — DONE (2026-07-06, agent-built, reproduce-first)**:
+  the old grammar was `/react <emoji> [#<id>]` with the id DEFAULTING to the
+  message being answered — so E's live `/react 👋` was accepted and silently
+  fired at the triggering message. (The "✅ Done" that followed was NOT a react
+  ack — it's the generic showThink stream-finalize marker; the reply was
+  action-only so it was the only visible text.) Now STRICT `/react #<id> <emoji>`
+  (id first, `#`-form matching /reply//edit//delete and how ids appear in
+  transcripts); an omitted id is malformed → stripped + logged, never defaulted.
+  Skeleton doc updated. Audited the other limbs (reply/edit/delete/media/ask)
+  for the same silent-default class — none have it. LIVE CAVEAT: profile
+  skeletons are copy-if-missing, so the LIVE room template still teaches the
+  old grammar until refreshed (the capabilities-refresher gap) — malformed
+  emits self-correct via the error line meanwhile.
 
 - **HRW single-responder for shared channels (operator 2026-07-06)**: when 2+
   nodes/accounts BOTH host E in the SAME chat (e.g. REVE + DOLLY in a real
