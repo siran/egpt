@@ -29,9 +29,13 @@
 const DIVIDER = /\n[ \t]*---[ \t]*\n/;
 // 'done' marks the final frame. The being's body_emoji is stamped INTO the body by
 // the responder (it owns the emoji), not carried as a key.
-// `via` is the per-hop forwarding trail (operator 2026-07-06): a comma-separated list of the
-// relay hops a request passed through (`<being>.<node>`), accumulated on the way OUT and echoed
-// home in the reply so the origin can show the path (traceroute).
+// `via` is the per-hop forwarding trail (operator 2026-07-06): a YAML flow list of the relay
+// hops a request passed through (`<being>.<node>`, e.g. `via: [carol.kg, don.do]`), accumulated
+// on the way OUT and echoed home in the reply so the origin can show the path (traceroute).
+// WIRE-ONLY: it stays in the tail, never appended to the delivered body — hop names like
+// `don.do` linkify in a message BODY (`.do` is a TLD; same reason `to`/`re` ride provenance
+// instead of the body — see below). A planned `opts: show-hops` request flag (ROADMAP) will
+// surface it at the origin later.
 const PROV_KEYS = new Set(['from', 'by', 'to', 're', 'sig', 'done', 'enc', 'post_id', 'from_node', 'via']);
 const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 
@@ -62,9 +66,10 @@ export function encodeMesh({ by = '', body = '', from = '', from_node = '', to =
   // knows WHICH message to edit as the mirrored reply streams.
   const _pid = typeof post_id === 'string' ? post_id : '';
   if (_pid) lines.push(`post_id: ${_pid}`);
-  // `via` accumulates the forwarding hops (`<being>.<node>,…`); omitted when empty (the origin
-  // stamps none — hop 0 is `from`/`from_node`). Comma-separated, readable in the tail.
-  if (via) lines.push(`via: ${via}`);
+  // `via` accumulates the forwarding hops; omitted when empty. Internal representation stays a
+  // comma string (appendVia); the WIRE form is a YAML flow list — `via: [carol.kg, don.do]` —
+  // per the operator's 2026-07-06 request (readable, no new syntax invented).
+  if (via) lines.push(`via: [${String(via).split(',').map((s) => s.trim()).filter(Boolean).join(', ')}]`);
   // `done` marks the FINAL frame so the origin finalizes the mirror (appends "✅ Done").
   // It is a DISPLAY finish marker, not a teardown that drops edits: every non-done frame
   // still flows onto the mirror (the living pipe); done only says "the turn is complete".
@@ -91,6 +96,15 @@ function stripRender(s) {
     // Beeper auto-linkifies `don.do`/`wren.kg` → `[don.do](http://don.do)`, which would
     // mangle a `to:`/`re:` value in the (plaintext) tail. Collapse markdown links to text.
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+}
+
+// via tolerates BOTH wire forms (operator 2026-07-06): the YAML flow list `[a.b, c.d]` (current)
+// and the bare comma form `a.b,c.d` (older / hand-typed) — strip optional brackets, split, trim,
+// rejoin bare-comma so the internal representation (appendVia) is unchanged either way.
+function normalizeVia(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  return s.replace(/^\[/, '').replace(/\]$/, '').split(',').map((x) => x.trim()).filter(Boolean).join(',');
 }
 
 // Tolerant of bridge transmutation (HTML, mangled/stripped fences, no divider):
@@ -124,7 +138,7 @@ export function parseMesh(text) {
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();
   }
-  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '', via: prov.via || '' };
+  return { body, from: prov.from || '', from_node: prov.from_node || '', by: prov.by || '', to: prov.to || '', re: prov.re || '', sig: prov.sig || '', done: prov.done === 'true', enc: prov.enc || '', post_id: prov.post_id || '', via: normalizeVia(prov.via) };
 }
 
 export function mentionedBeing(text) {
@@ -132,18 +146,12 @@ export function mentionedBeing(text) {
   return m ? m[1].toLowerCase() : null;
 }
 
-// via helpers (operator 2026-07-06). appendVia adds THIS forwarding hop's identity to the trail;
-// viaTrailer renders it as a readable one-line traceroute the origin appends to the delivered body.
+// appendVia adds THIS forwarding hop's identity to the trail (operator 2026-07-06). No body
+// trailer is rendered here anymore (operator 2026-07-06 — removed): hop names like `don.do`
+// linkify in a message BODY (`.do` is a TLD; the `to:` comment above notes the same reason
+// `to`/`re` ride provenance, not the body). `via` stays wire-only, visible in the relay-channel
+// envelopes' tails; a planned `opts: show-hops` request flag (ROADMAP) will surface it later.
 const appendVia = (existing, hop) => { const e = String(existing ?? '').trim(); return e ? `${e},${hop}` : String(hop); };
-const viaTrailer = (via) => {
-  const path = String(via ?? '').split(',').map((s) => s.trim()).filter(Boolean).join(' › ');
-  return path ? `via ${path}` : '';
-};
-// Append the traceroute trailer to a delivered body — ORIGIN-ONLY, done-frame only.
-function withVia(body, via) {
-  const t = viaTrailer(via);
-  return t ? `${String(body ?? '')}\n\n${t}` : body;
-}
 
 export function createMeshRelay({
   node,                              // this spine's node_name (e.g. "kg", "do")
@@ -278,7 +286,13 @@ export function createMeshRelay({
       // A relay agent's declarative `to: <being>.<node>` names the next hop (chain); else a
       // node-qualified target (mesh.nodes scheme); else empty = open-channel (no target node).
       const to = explicitTo || (toNode ? `${being}.${toNode}` : '');
-      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '' }));
+      // SEED via (operator 2026-07-06): a ROUTE-DIRECT relayOut posts a LOCAL relay agent's own
+      // first hop (e.g. carol posting into Rodz1) — seed `via` with its own identity so the
+      // traceroute lists every relay agent the request passed through, including the origin's.
+      // The mesh.nodes path (no directRoute) must NOT seed: there `being` names the REMOTE being
+      // being addressed, not a local relay agent.
+      const viaSeed = directRoute != null ? `${being}.${node}` : '';
+      const ok = await guardedSend(route, encodeMesh({ by: sender || 'someone', body, from: fromName, from_node: String(node), to, post_id: postId || '', via: viaSeed }));
       if (!ok) { await surface(origin, `!! mesh: too many sends to ${tgt}'s channel — paused (loop guard)`); return false; }
     }
     catch (e) { await surface(origin, `!! mesh relay to ${tgt} failed: ${e?.message ?? e}`); return false; }
@@ -334,16 +348,14 @@ export function createMeshRelay({
           }
         }
         if (s) {
-          // TRACEROUTE (operator 2026-07-06): append the `via` path trailer ONLY on the final
-          // (done) frame — origin-only display, unobtrusive; streamed frames stay clean.
-          if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(withVia(prov.body, prov.via)); }
+          if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(prov.body); }
           else await s.handle.update?.(prov.body);
           return true;
         }
       }
 
-      // No stream primitive / no mirror could open: the ORIGIN surfaces once (done frame → trailer).
-      if (back) { awaiting.delete(backKey); await surface(back, withVia(prov.body, prov.via), { by: prov.by }); return true; }
+      // No stream primitive / no mirror could open: the ORIGIN surfaces once (done frame).
+      if (back) { awaiting.delete(backKey); await surface(back, prov.body, { by: prov.by }); return true; }
       log(`mesh: reply re:${prov.re} not awaited here`);
       return true;                                   // consume either way (never re-relay)
     }
@@ -445,7 +457,7 @@ export function createMeshRelay({
     if (!s) return false;                          // not a tracked relay reply — bridge handles it
     const prov = parseMesh(text);
     if (!prov) return true;                        // tracked but unparseable — consume, don't mirror garbage
-    if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(withVia(prov.body, prov.via)); }
+    if (prov.done) { streamingIn.delete(key); markReplyDone(key); await s.handle.finish?.(prov.body); }
     else await s.handle.update?.(prov.body);
     return true;
   }

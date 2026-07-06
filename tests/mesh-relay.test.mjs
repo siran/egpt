@@ -315,15 +315,23 @@ describe('mesh relay — declarative relay chain (relay_channel + to)', () => {
 });
 
 // ── TRACEROUTE via (operator 2026-07-06): each FORWARDING relay-record hop appends its own
-//    `<being>.<node>` to a comma-separated `via:` trail; the terminal responder echoes the
-//    accumulated trail home; the origin surfaces it as a one-line "via a › b › c" trailer on
-//    the FINAL frame only. The origin stamps none (hop 0 is from/from_node). ──
+//    `<being>.<node>` to a `via:` trail (a YAML flow list on the wire — `via: [a.b, c.d]`); a
+//    ROUTE-DIRECT relayOut also seeds its own local relay agent's identity as the FIRST hop; the
+//    terminal responder echoes the accumulated trail home UNCHANGED. WIRE-ONLY: the origin does
+//    NOT append a trailer to the delivered body (hop names like `don.do` would linkify — `.do` is
+//    a TLD); via stays visible only in the relay-channel envelopes' tails (a planned
+//    `opts: show-hops` request flag will surface it at the origin later). ──
 describe('mesh relay — via traceroute', () => {
-  it('encodeMesh/parseMesh round-trip a via trail', () => {
+  it('encodeMesh/parseMesh round-trip a via trail (YAML flow list on the wire)', () => {
     const w = encodeMesh({ by: 'ed.do', body: 'hi', re: 'HFM.kg', via: 'don.do,wren.kg', done: true });
-    expect(w).toMatch(/\nvia: don\.do,wren\.kg\n/);                 // readable in the tail
-    expect(parseMesh(w)).toMatchObject({ via: 'don.do,wren.kg', by: 'ed.do', done: true });
+    expect(w).toMatch(/\nvia: \[don\.do, wren\.kg\]\n/);            // readable YAML flow list in the tail
+    expect(parseMesh(w)).toMatchObject({ via: 'don.do,wren.kg', by: 'ed.do', done: true });   // normalized bare-comma internally
     expect(parseMesh(encodeMesh({ by: 'x', body: 'y' }))).toMatchObject({ via: '' });   // omitted when empty
+  });
+
+  it('parseMesh tolerates the bare comma form too (older / hand-typed, no brackets)', () => {
+    const raw = 'hi\n\n---\nby: ed.do\nvia: don.do,wren.kg';
+    expect(parseMesh(raw)).toMatchObject({ via: 'don.do,wren.kg', by: 'ed.do' });
   });
 
   it('a forwarding relay-record hop appends its own being.node (empty trail → first hop)', async () => {
@@ -362,7 +370,7 @@ describe('mesh relay — via traceroute', () => {
     expect(parseMesh(sent.at(-1))).toMatchObject({ by: 'ed.do', re: 'HFM.kg', via: 'don.do,wren.kg', done: true });
   });
 
-  it('the origin surfaces the via trailer on the final frame (one-shot surface)', async () => {
+  it('the origin body carries NO via trailer on the done frame (one-shot surface) — via stays wire-only', async () => {
     const surfaced = [];
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async (_o, t) => surfaced.push(t), ackWithPostId: async () => 'p1',
@@ -370,12 +378,10 @@ describe('mesh relay — via traceroute', () => {
     });
     await kg.relayOut({ being: 'don', toNode: 'do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
     await kg.onRoomMessage({ route: { room_id: 'R' }, text: encodeMesh({ by: 'ed.do', body: 'answer: hi', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg', done: true }), msgId: 'r1' });
-    expect(surfaced).toHaveLength(1);
-    expect(surfaced[0]).toContain('answer: hi');
-    expect(surfaced[0]).toContain('via don.do › wren.kg');          // readable traceroute trailer
+    expect(surfaced).toEqual(['answer: hi']);          // clean body — no "via …" appended (would linkify)
   });
 
-  it('a streamed reply gets the trailer ONLY on the done frame (mid-stream frames stay clean)', async () => {
+  it('a streamed reply\'s done frame carries NO via trailer either (streamed path, same rule)', async () => {
     const updates = []; let finished = null;
     const kg = createMeshRelay({
       node: 'kg', send: async () => {}, surface: async () => {}, ackWithPostId: async () => 'p1',
@@ -385,8 +391,50 @@ describe('mesh relay — via traceroute', () => {
     await kg.relayOut({ being: 'don', toNode: 'do', body: '@ed hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
     await kg.onRoomMessage({ route: { room_id: 'R' }, text: encodeMesh({ by: 'ed.do', body: 'part', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg' }), msgId: 'r1' });
     await kg.onRoomMessageEdit({ msgId: 'r1', text: encodeMesh({ by: 'ed.do', body: 'answer', re: 'HFM.kg', post_id: 'p1', via: 'don.do,wren.kg', done: true }) });
-    expect(updates).toEqual(['part']);                              // mid-stream: no trailer
-    expect(finished).toBe('answer\n\nvia don.do › wren.kg');        // done: trailer appended
+    expect(updates).toEqual(['part']);
+    expect(finished).toBe('answer');                                // done: body unchanged, no trailer
+  });
+
+  it('relayOut ROUTE-DIRECT seeds via with the local relay agent\'s own identity (origin hop)', async () => {
+    const sent = [];
+    const origin = createMeshRelay({
+      node: 'kg', send: async (_r, t) => sent.push(t), surface: async () => {}, ackWithPostId: async () => 'p1',
+    });
+    await origin.relayOut({ being: 'carol', route: { room_id: 'Rodz1' }, to: 'don.do', body: 'hola', origin: { chat_id: 'X', name: 'Me' }, sender: 'An' });
+    expect(parseMesh(sent[0])).toMatchObject({ via: 'carol.kg' });
+  });
+
+  it('relayOut mesh.nodes path (no directRoute) does NOT seed via — `being` there is the REMOTE being', async () => {
+    const sent = [];
+    const kg = createMeshRelay({
+      node: 'kg', send: async (_r, t) => sent.push(t), surface: async () => {}, ackWithPostId: async () => 'p1',
+      resolveRoute: () => ({ room_id: 'R' }),
+    });
+    await kg.relayOut({ being: 'don', toNode: 'do', body: '@don hi', origin: { chat_id: 'X', name: 'HFM' }, sender: 'An' });
+    expect(parseMesh(sent[0])).toMatchObject({ via: '' });
+  });
+
+  it('two-hop accumulation order: [origin-agent, hop1, hop2] (carol.kg → don.do → wren.kg)', async () => {
+    const sentRodz1 = [];
+    const origin = createMeshRelay({
+      node: 'kg', send: async (_r, t) => sentRodz1.push(t), surface: async () => {}, ackWithPostId: async () => 'p1',
+    });
+    const sentRodz2 = [];
+    const doSpine = createMeshRelay({
+      node: 'do', send: async (_r, t) => sentRodz2.push(t), surface: async () => {},
+      isSelfNode: (n) => n === 'do', isLocalBeing: () => false, resolveRoute: () => null,
+      resolveBeingRelay: (b) => (b === 'don' ? { being: 'wren', node: 'kg', route: { room_id: 'Rodz2' } } : null),
+    });
+    const sentRodz3 = [];
+    const kgSpine = createMeshRelay({
+      node: 'kg', send: async (_r, t) => sentRodz3.push(t), surface: async () => {},
+      isSelfNode: (n) => n === 'kg', isLocalBeing: () => false,
+      resolveBeingRelay: (b) => (b === 'wren' ? { being: 'ed', node: 'do', route: { room_id: 'Rodz3' } } : null),
+    });
+    await origin.relayOut({ being: 'carol', route: { room_id: 'Rodz1' }, to: 'don.do', body: 'hola', origin: { chat_id: 'X', name: 'Me' }, sender: 'An' });
+    await doSpine.onRoomMessage({ route: { room_id: 'Rodz1' }, text: sentRodz1[0], msgId: 'a1' });
+    await kgSpine.onRoomMessage({ route: { room_id: 'Rodz2' }, text: sentRodz2[0], msgId: 'a2' });
+    expect(parseMesh(sentRodz3[0])).toMatchObject({ to: 'ed.do', via: 'carol.kg,don.do,wren.kg' });
   });
 });
 
