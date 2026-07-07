@@ -419,9 +419,15 @@ following is LANDED, test-locked, and (where marked) live-verified:
   `/reply` exists in the v2 spine); Phase 4 contacts/ dataset; Phase 5 per-surface
   user_name + processing-node provenance. (NB: the cleanup prompt assumed C7.6e meant
   the whole plan shipped — it only completes Phase 1's inbound id.)
+- html-to-markdown.mjs:45 renders <pre>/<code> tags as SINGLE backticks glued to
+  the text — the true chokepoint behind the telegram fence-glue mangling
+  (parseMesh now tolerates it, c62360b; a proper fenced-block rendering
+  ```\n…\n``` would fix it at the source for ALL consumers, not just the mesh).
 - Test flakes under full-suite port/timing contention: tests/transcriptor.test.mjs,
   tests/beeper-bridge.test.mjs "newest isSender match" (real retry timers).
   Both pass in isolation. Fix: fake timers / serialize the port-binding tests.
+  2026-07-06 full-suite run also flaked beeper-bridge "👂 voice echo pushed
+  name" once (5s timeout, same contention class; passed isolated + next run).
 - Node-level `heartbeats:` config block is boot-cached — hot reload re-reads
   entity folders but NOT config.yaml (needs /restart). Offered to make the
   loader re-read config on reload; operator hasn't ruled.
