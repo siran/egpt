@@ -223,20 +223,29 @@ following is LANDED, test-locked, and (where marked) live-verified:
   self-restart the bridge), (b) every deploy ends with a live smoke — a
   /status ping sent through the real chat and verified ANSWERED (the boot
   echo-verify machinery exists for exactly this).
-  - **2026-07-07 overnight: PARTIAL deafness — per-chat**: REVE deaf
-    ~03:41→12:09Z (machine asleep; two bridge starts waited HOURS for WS:
-    05:29→07:35 and 10:51→12:09 — Beeper Desktop unreachable). After the
-    12:09 reconnect the session was PARTIALLY stale: other chats' events
-    flowed (voice backlog, group chatter) but the Self DM delivered NOTHING —
-    two /status posts never produced an event; a /restart (fresh WS
-    subscribe) fixed it instantly. Consequence: fix (a)'s global
-    last-inbound-age would NOT have caught this (inbound was flowing);
-    only fix (b)'s end-to-end self-probe (post /status → expect own event
-    within N s → else self-restart the bridge) catches per-chat staleness.
-    Prioritize (b), as a periodic heartbeat not just post-deploy. Also by
-    design: messages from a deaf window are HELD on reconnect (`held backlog
-    message < bridge start`) — E stays silent on them rather than answering
-    hours late; the humans must re-ping.
+  - **2026-07-07 overnight incident (what was OBSERVED, no inferred
+    mechanism)**: REVE deaf ~03:41→12:09Z (machine asleep; two bridge starts
+    waited HOURS for WS: 05:29→07:35 and 10:51→12:09 — Beeper Desktop
+    unreachable). After the 12:09 reconnect the log was scrolling — but that
+    traffic was backlog SURFACING (voice transcriptions completing + late
+    overnight sync, some held), NOT proof of live delivery. Two fresh
+    /status posts to Self never produced a bridge event within ~4 min; after
+    a /restart the fresh session delivered a new /status event in 17s.
+    Cannot distinguish from the log whether the old session was broken for
+    live pushes or Beeper Desktop was minutes behind and caught up — and it
+    doesn't matter for the fix.
+  - **Detector decision (operator 2026-07-07): DROP the passive
+    last-inbound-age idea** — it false-alarms on quiet nights AND a draining
+    backlog masks real deafness (lines scroll while the ear is broken; both
+    just happened). The right check is ACTIVE, per the operator's own
+    principle ("when you write a message, beeper has to notify you"):
+    periodically post into a designated chat and require the bridge to
+    receive its OWN event back within seconds; no echo → self-restart the
+    bridge. Exercises the exact API→Beeper→WS→bridge path, traffic- and
+    hypothesis-independent. Same probe doubles as the post-deploy smoke.
+    Also by design: messages from a deaf window are HELD on reconnect
+    (`held backlog message < bridge start`) — E stays silent on them rather
+    than answering hours late; the humans must re-ping.
 
 - **Capabilities refresher (live gap 2026-07-05)**: resumed threads never learn
   NEW abilities — the identity feed is kickoff-only (E denied having /media
