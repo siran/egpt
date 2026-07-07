@@ -214,14 +214,29 @@ following is LANDED, test-locked, and (where marked) live-verified:
   guard bounds runaway. NOT YET DISPATCHED — build after the turn-ordering
   fix lands (same spine files).
 
-- **Deaf-bridge detection + post-deploy live smoke (live outage 2026-07-05)**:
+- **Deaf-bridge detection + post-deploy live smoke (live outage 2026-07-05;
+  ESCALATED by the 2026-07-07 overnight incident)**:
   a respawn came up with a dead WS — process alive, tick beating, ZERO inbound
   for ~4 min of real traffic; operator commands silently unheard. The alive
   deadman only proves the LOOP runs, not that the bridge HEARS. Fix two ways:
   (a) liveness includes last-inbound age (deaf > N min with WS "open" →
   self-restart the bridge), (b) every deploy ends with a live smoke — a
   /status ping sent through the real chat and verified ANSWERED (the boot
-  echo-verify machinery + egpt-an channel exist for exactly this).
+  echo-verify machinery exists for exactly this).
+  - **2026-07-07 overnight: PARTIAL deafness — per-chat**: REVE deaf
+    ~03:41→12:09Z (machine asleep; two bridge starts waited HOURS for WS:
+    05:29→07:35 and 10:51→12:09 — Beeper Desktop unreachable). After the
+    12:09 reconnect the session was PARTIALLY stale: other chats' events
+    flowed (voice backlog, group chatter) but the Self DM delivered NOTHING —
+    two /status posts never produced an event; a /restart (fresh WS
+    subscribe) fixed it instantly. Consequence: fix (a)'s global
+    last-inbound-age would NOT have caught this (inbound was flowing);
+    only fix (b)'s end-to-end self-probe (post /status → expect own event
+    within N s → else self-restart the bridge) catches per-chat staleness.
+    Prioritize (b), as a periodic heartbeat not just post-deploy. Also by
+    design: messages from a deaf window are HELD on reconnect (`held backlog
+    message < bridge start`) — E stays silent on them rather than answering
+    hours late; the humans must re-ping.
 
 - **Capabilities refresher (live gap 2026-07-05)**: resumed threads never learn
   NEW abilities — the identity feed is kickoff-only (E denied having /media
