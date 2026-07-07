@@ -224,9 +224,12 @@ following is LANDED, test-locked, and (where marked) live-verified:
   /status ping sent through the real chat and verified ANSWERED (the boot
   echo-verify machinery exists for exactly this).
   - **2026-07-07 overnight incident (what was OBSERVED, no inferred
-    mechanism)**: REVE deaf ~03:41→12:09Z (machine asleep; two bridge starts
-    waited HOURS for WS: 05:29→07:35 and 10:51→12:09 — Beeper Desktop
-    unreachable). After the 12:09 reconnect the log was scrolling — but that
+    mechanism)**: REVE deaf ~03:41→12:09Z (two bridge starts waited HOURS
+    for WS: 05:29→07:35 and 10:51→12:09 — Beeper Desktop unreachable.
+    CAUSE UNKNOWN: the machine was SET not to sleep (operator 2026-07-07),
+    so "machine asleep" is out; why the local API was unreachable for hours
+    on an awake machine is an open question — Beeper Desktop itself stuck /
+    not running is the remaining suspect). After the 12:09 reconnect the log was scrolling — but that
     traffic was backlog SURFACING (voice transcriptions completing + late
     overnight sync, some held), NOT proof of live delivery. Two fresh
     /status posts to Self never produced a bridge event within ~4 min; after
@@ -433,6 +436,36 @@ following is LANDED, test-locked, and (where marked) live-verified:
   of the spectrum is a dedicated low-privilege service account with explicit
   grants (smaller blast radius; claude-login + PATH story gets involved). Ties to
   GENOME's "secure AND powerful" bar. Not scheduled — discuss when ready.
+
+- **INIT LEVELS (operator 2026-07-07, design conversation open):** the node's
+  capability ladder, runlevel-style; the spine should KNOW its level, expose it
+  in /status, log transitions, and PROMOTE itself with active probes (never
+  assume). Sketch:
+  - **L-1 DORMANT** — machine asleep; scheduled WakeToRun duty cycles: wake,
+    do egpt things, exit (exiting releases the scheduler's wake lock → machine
+    drifts back to sleep). TEST HARNESS LIVE 2026-07-07 on DOLLY: task
+    `egpt-wake-duty` (every 15 min, WakeToRun, batteries ok) → runs
+    C:\Users\an\egpt-wake-duty.ps1 → logs svc/spinePid/beeperApi/lastwake to
+    C:\Users\an\egpt-wake-duty.log; wake timers enabled AC+DC; DOLLY supports
+    S3; manual fire verified (svc=Running alive=True beeperApi=True). Sleep
+    test = operator puts DOLLY to sleep, expect a wake + log line ≤15 min.
+  - **L0 BOOT** — service starts at boot, NO login: VERIFIED 2026-07-07 both
+    nodes (`egpt-daemon`, startMode=Auto, .\an). Headless duties (heartbeats,
+    cron, textecutables, claude turns) should run; Beeper is a GUI app so no
+    messaging — deaf/mute BY DESIGN at this level.
+  - **L1 SESSION** — user logged in, Beeper Desktop up → bridge connects →
+    EARS VERIFIED. Promotion gate = the ACTIVE self-echo probe (post →
+    expect own event in seconds), NOT "WS open". Operator-observed failure
+    mode: "after log in, the spine remains in 0 instead of progressing" —
+    the 2026-07-07 overnight WS waits (hours) are this; promotion today is
+    passive retry and can wedge. The probe both PROMOTES to L1 and DEMOTES
+    out of it (deaf → restart bridge → retry).
+  - **L2 MESH** — relay channels resolve + peer link verified (mesh ping to
+    a peer node). Optional higher rungs: transcription worker, browser/CDP.
+  Implementation next steps: level field in /status + transition log lines
+  first (observability), then the L1 probe (already the top reliability
+  item), then wire L-1 duties into the real spine (ingest a beat / process
+  due heartbeats during wake windows).
 
 - **messages-first-class — open phases** (docs/MESSAGES-FIRST-CLASS-PLAN.md, KEPT
   in the 2026-07-03 cleanup because it is NOT fully shipped). Landed: Phase 1 (inbound
