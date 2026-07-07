@@ -47,6 +47,22 @@ const MENTION_RE = /(?:^|\s)@([a-z0-9_-]+)\b/i;
 const b64encode = (s) => Buffer.from(String(s ?? ''), 'utf8').toString('base64');
 const b64decode = (s) => Buffer.from(String(s ?? ''), 'base64').toString('utf8');
 
+// b64 decode hardening (operator 2026-07-06/07: telegram renders the fence glued to the body).
+// Node's base64 decoder SILENTLY skips any non-alphabet char, so a fence-mangled body can decode
+// to garbage without ever throwing. Trust a decode only when the payload is CLEAN base64; else
+// strip the non-base64 chars off the EDGES once (glued fences / whitespace / HTML remnants) and
+// retry; else fall back to the raw string (never worse than before).
+const B64_ONLY = /^[A-Za-z0-9+/]+={0,2}$/;
+function decodeB64Body(raw) {
+  let s = String(raw ?? '');
+  if (!B64_ONLY.test(s)) {
+    const edges = s.replace(/^[^A-Za-z0-9+/]+/, '').replace(/[^A-Za-z0-9+/=]+$/, '');
+    if (!B64_ONLY.test(edges)) return s;   // not base64 even after edge cleanup — leave raw
+    s = edges;
+  }
+  return b64decode(s);
+}
+
 // `to` (target node) is what makes "never silence" work without a chorus: only
 // the named node answers (or says "no <being>.<node> here"); every other spine
 // stays quiet. It rides the provenance, not the body, so "@don" stays "@don"
@@ -118,7 +134,12 @@ export function parseMesh(text) {
   let provStart = lines.length;
   while (i >= 0) {
     const line = lines[i];
-    const kv = line.match(/^[ \t>*_~`-]*([a-zA-Z][a-zA-Z_]*)[ \t]*:[ \t]*(.+?)[ \t]*$/);
+    // The leading class peels bridge junk off the KEY; the trailing `[ \t`]*` now peels a glued
+    // fence off the VALUE too (operator 2026-07-06/07: telegram renders the whole envelope as one
+    // <pre><code> block, so htmlToMarkdown glues the CLOSING ``` — rendered `` — onto the last tail
+    // line: "enc: b64``"). Un-glued, prov.enc === 'b64' matches and the body actually decodes; the
+    // mangled enc had skipped the decode, so each telegram-parsed hop nested another base64 layer.
+    const kv = line.match(/^[ \t>*_~`-]*([a-zA-Z][a-zA-Z_]*)[ \t]*:[ \t]*(.+?)[ \t`]*$/);
     if (kv && PROV_KEYS.has(kv[1].toLowerCase())) { prov[kv[1].toLowerCase()] = kv[2]; provStart = i; i--; continue; }
     if (line.trim() === '' || /^-{3,}$/.test(line.trim()) || /^`+$/.test(line.trim())) { i--; continue; }
     break;
@@ -131,9 +152,17 @@ export function parseMesh(text) {
   const edge = (l) => /^(?:`+|-{3,}|\s*|(?:from|by|to|re|sig|done|enc)\s*:\s*)$/i.test(String(l).trim());
   while (bodyLines.length && edge(bodyLines[0])) bodyLines.shift();
   while (bodyLines.length && edge(bodyLines[bodyLines.length - 1])) bodyLines.pop();
+  // GLUED FENCE (operator 2026-07-06/07: telegram renders the whole envelope as one <pre><code>
+  // block → htmlToMarkdown glues the OPENING ``` — rendered `` — onto the body's FIRST line with
+  // no newline, so the whole-line edge() strip above misses it). Peel a backtick run stuck to the
+  // first/last body line so the base64 payload is clean (not reliant on the decoder's lenient skip).
+  if (bodyLines.length) {
+    bodyLines[0] = bodyLines[0].replace(/^`+/, '');
+    bodyLines[bodyLines.length - 1] = bodyLines[bodyLines.length - 1].replace(/`+$/, '');
+  }
   let body = bodyLines.join('\n').trim();
   if (prov.enc === 'b64') {
-    try { body = b64decode(body); } catch { /* malformed — leave as-is */ }
+    body = decodeB64Body(body);
   } else if (prov.by) {   // legacy un-encoded: peel an old-format "by:" (or "An: An:") prefix
     const esc = prov.by.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     body = body.replace(new RegExp('^(?:' + esc + '[ \\t]*:[ \\t]*)+', 'i'), '').trim();

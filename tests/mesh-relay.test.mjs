@@ -595,3 +595,70 @@ describe('mesh relay — reply home (origin present in the terminal room)', () =
     expect(c.dispatchCount.do).toBe(1);
   });
 });
+
+// ── TELEGRAM FENCE-GLUE (operator 2026-07-06/07, multipath live test whatsapp+telegram): telegram
+//    renders the whole envelope as ONE <pre><code>…</code></pre> block; htmlToMarkdown (the inbound
+//    bridge chokepoint) maps every <pre>/<code> open/close tag to a single backtick, so ``` → ``
+//    GLUED — the OPENING fence onto the body's first line ("``QGNh…") AND, when the HTML has no
+//    newline before the close tag, the CLOSING fence onto the last tail line ("enc: b64``"). That
+//    mangled `enc` failed the `=== 'b64'` check → the decode was SKIPPED → the raw glued base64 was
+//    re-encoded by the next hop → EACH telegram-parsed hop nested another fence+base64 layer until
+//    the terminal being got an opaque blob (Anthropic then refused it). WhatsApp keeps the fence on
+//    its own line and parses fine. The strings below are htmlToMarkdown's ACTUAL output for the live
+//    telegram/whatsapp deliveries; QGNhcm9sIGhlbGxv === base64("@carol hello"). ──
+describe('mesh relay — telegram fence-glue transmutation', () => {
+  // htmlToMarkdown output for the telegram HTML with NO newline before </code></pre> (content-
+  // dependent) — the exact form that reproduced the live nesting (glued opening AND closing fence).
+  const TELEGRAM_GLUED = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64``';
+  // The operator's literal capture (close tag on its own line → trailing `` is a lone line, harmless).
+  const TELEGRAM_OWNLINE = '``QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n``';
+  // WhatsApp delivery — the fence stays on its OWN line (parses fine today; must stay identical).
+  const WHATSAPP = '``\nQGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64';
+  // Raw HTML (if parseMesh ever receives it un-normalized on some path — stripRender must strip the tags).
+  const TELEGRAM_HTML = '<pre><code>QGNhcm9sIGhlbGxv\n\n---\nfrom: +1 (646) 821-7865\nfrom_node: kg\nby: An\nto: don.do\npost_id: 158899\nvia: [carol.kg]\nenc: b64\n</code></pre>';
+
+  it('REPRODUCE-FIRST: the glued opening+closing fence form decodes to the clean body (not the nested blob)', () => {
+    const p = parseMesh(TELEGRAM_GLUED);
+    expect(p.enc).toBe('b64');                       // "enc: b64``" un-glued → decode runs (was 'b64``' → skipped)
+    expect(p.body).toBe('@carol hello');             // was '``QGNhcm9sIGhlbGxv' (raw, undecoded) → nested each hop
+    expect(p).toMatchObject({ to: 'don.do', by: 'An', from_node: 'kg', via: 'carol.kg' });
+  });
+
+  it('NESTING LOCK: telegram-form round-trips byte-stable — a re-encoded hop does NOT nest another layer', () => {
+    // model the telegram transmutation: glue the opening ``` to the body and the closing ``` to the tail.
+    const telegramGlue = (env) => '``' + env.replace(/^```\n/, '').replace(/\n```$/, '``');
+    const original = encodeMesh({ by: 'An', body: '@carol hello', from: 'HFM', from_node: 'kg', to: 'don.do', post_id: '158899', via: 'carol.kg' });
+    const p1 = parseMesh(telegramGlue(original));
+    expect(p1.body).toBe('@carol hello');            // decoded, not the raw '``QG…' that got re-wrapped live
+    // a forward hop re-encodes p1.body; mangle THAT envelope the same way — the body must be stable,
+    // never a fresh base64(fence+base64) layer (the amplifier that produced the opaque live blob).
+    const reenc = encodeMesh({ by: p1.by, body: p1.body, from: p1.from, from_node: p1.from_node, to: p1.to, post_id: p1.post_id, via: p1.via });
+    const p2 = parseMesh(telegramGlue(reenc));
+    expect(p2.body).toBe('@carol hello');
+    expect(p2.body).not.toMatch(/^`/);               // no glued fence survived into the decoded body
+  });
+
+  it('REPRODUCE-FIRST: a glued leading fence is peeled even on the legacy (un-encoded) path', () => {
+    // no enc tag → no base64 to mask it: the body-extraction strip itself must remove the glued fence.
+    expect(parseMesh('``hi @don\n\n---\nfrom: HFM\nby: An').body).toBe('hi @don');   // was '``hi @don'
+  });
+
+  it('REGRESSION: the operator literal capture (close fence on its own line) still decodes cleanly', () => {
+    expect(parseMesh(TELEGRAM_OWNLINE).body).toBe('@carol hello');
+  });
+
+  it('REGRESSION: the WhatsApp fence-on-own-line form parses identically', () => {
+    expect(parseMesh(WHATSAPP)).toMatchObject({ body: '@carol hello', to: 'don.do', by: 'An', from_node: 'kg', via: 'carol.kg' });
+  });
+
+  it('REGRESSION: the raw <pre><code> HTML form parses (stripRender already strips the tags)', () => {
+    expect(parseMesh(TELEGRAM_HTML)).toMatchObject({ body: '@carol hello', to: 'don.do', enc: 'b64' });
+  });
+
+  it('REGRESSION: a normal non-envelope message is untouched, and via list round-trips green', () => {
+    expect(parseMesh('just a normal telegram message with `code` in it')).toBeNull();
+    // encode/parse of a via flow-list is unaffected by the trailing-junk tolerance
+    const w = encodeMesh({ by: 'ed.do', body: 'hi', re: 'HFM.kg', via: 'don.do,wren.kg', done: true });
+    expect(parseMesh(w)).toMatchObject({ via: 'don.do,wren.kg', by: 'ed.do', body: 'hi', done: true });
+  });
+});
