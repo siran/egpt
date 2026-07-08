@@ -404,10 +404,22 @@ following is LANDED, test-locked, and (where marked) live-verified:
      the network's named accounts shared as config. Physical note: a token
      only answers on its OWN machine's local API (and sleeps with it) —
      cross-account API ops work while the sibling is awake.
-  BUILD ORDER: (a) standby responder + sibling-output guard (+ the atE
-  handles bug fix — the gate must honor ed/egptd for pinned addressing),
-  (b) backlog backfill (log + transcribe, no dispatch, role-gated 👂),
-  (c) accounts registry block, (d) transcription role wiring.
+  BUILD ORDER (operator 2026-07-08 — the a→d checklist):
+  ```
+  a. [standby responder + sibling-output guard + atE-handles fix]
+     → verify: shared-chat @e answered ONCE (🐶); with kg silent, 🤝 answers
+       at +5s; @ed pinned answers immediately; sibling-stamped messages never
+       trigger dispatch — IN FLIGHT (agent dispatched 2026-07-08)
+  b. [backlog backfill on wake: transcript-log + transcribe voice, NO agent
+     dispatch, 👂 per role]
+     → verify: sleep DOLLY, send voice note, wake: transcript has it, no
+       agent fired, exactly one 👂
+  c. [beeper accounts registry config block]
+     → verify: block parsed; /status shows the network's named accounts
+  d. [transcription role wiring: do = primary transcriber]
+     → verify: shared-chat voice note transcribed by do, 👂 posted once,
+       15-min debounce intact
+  ```
 
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
@@ -542,6 +554,13 @@ following is LANDED, test-locked, and (where marked) live-verified:
   the text — the true chokepoint behind the telegram fence-glue mangling
   (parseMesh now tolerates it, c62360b; a proper fenced-block rendering
   ```\n…\n``` would fix it at the source for ALL consumers, not just the mesh).
+- **BUG: 👂 voice ack shows the raw LID instead of the push name (live
+  2026-07-08)**: `👂 @whatsapp_lid-85555832479795:beeper.local (92s): …` in
+  the morgan chat — should be the sender's pushed name (operator: "it should
+  use push name"). An existing test locks pushed-name behavior for the 👂
+  echo, so the LID-shaped sender path misses the resolver (ties into the
+  LID↔phone stats duty). QUEUED behind trusted-network chunk (a) — same
+  file (beeper.mjs).
 - Test flakes under full-suite port/timing contention: tests/transcriptor.test.mjs,
   tests/beeper-bridge.test.mjs "newest isSender match" (real retry timers).
   Both pass in isolation. Fix: fake timers / serialize the port-binding tests.
