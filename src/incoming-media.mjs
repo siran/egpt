@@ -48,12 +48,12 @@ function _ackItem({ author, durationSec, transcript } = {}) {
   return `${head}${transcript}`;
 }
 
-function _queueAck(key, line, reply, onLog, delayMs, scheduler) {
+function _queueAck(key, line, reply, onLog, delayMs, scheduler, peerAcked = null) {
   let e = _pendingAcks.get(key);
   if (e) scheduler.clear(e.handle);                       // reset the trailing window
-  else { e = { handle: null, items: [], reply, onLog, scheduler }; _pendingAcks.set(key, e); }
+  else { e = { handle: null, items: [], reply, onLog, scheduler, peerAcked }; _pendingAcks.set(key, e); }
   e.items.push(line);
-  e.reply = reply; e.onLog = onLog; e.scheduler = scheduler;   // keep the freshest closures
+  e.reply = reply; e.onLog = onLog; e.scheduler = scheduler; e.peerAcked = peerAcked;   // keep the freshest closures
   e.handle = scheduler.set(() => _firePendingAck(key), delayMs);
   if (e.handle && typeof e.handle.unref === 'function') e.handle.unref();   // don't pin the event loop (no-op in browser)
 }
@@ -62,6 +62,17 @@ function _firePendingAck(key) {
   const e = _pendingAcks.get(key);
   if (!e) return Promise.resolve();
   _pendingAcks.delete(key);
+  // TRANSCRIPTION STANDBY takeover-cancel (operator 2026-07-08: one 👂 per note —
+  // transcription primary/standby, the same coordination-free watch-the-chat pattern
+  // as the responder; both nodes still transcribe for their own records). A standby
+  // holds its 👂 an extra takeover margin; when the timer finally fires, `peerAcked`
+  // reports whether the PRIMARY already posted a 👂 for THIS SAME note (the bridge saw
+  // it as an inbound 👂 quote-replying the note). If so the standby stays silent — one
+  // 👂 either way, just later. `peerAcked` is null on a primary (posts exactly as today).
+  if (e.peerAcked && e.peerAcked(key)) {
+    e.onLog(`👂 ack skipped — transcription primary already acked ${key} (this node is standby)`);
+    return Promise.resolve();
+  }
   const body = '👂 ' + e.items.join('\n\n');
   return Promise.resolve(e.reply(body)).catch((err) => e.onLog(`👂 ack failed: ${err?.message ?? err}`));
 }
@@ -110,6 +121,14 @@ export function _resetPostsBackDebounce() {
  * @param {string}   [o.debounceKey] stable chat id → debounce + coalesce the 👂
  *                                  echo per chat. Omit/null → post immediately.
  * @param {number}   [o.postsBackDelayMs] trailing-debounce window for the echo.
+ * @param {number}   [o.takeoverMs] TRANSCRIPTION STANDBY margin (operator 2026-07-08):
+ *                                  extra ms held BEYOND the normal debounce before the
+ *                                  standby posts its 👂 — generous vs the debounce so
+ *                                  the primary's 👂 lands first. 0 (default / primary) =
+ *                                  today's behavior. Only effective on the debounced path.
+ * @param {Function} [o.peerAcked] (debounceKey) => boolean, checked at FIRE time: did the
+ *                                  transcription primary already post a 👂 for this note?
+ *                                  true → the standby skips its own. null (primary) = post.
  * @param {object}   [o.scheduler] { set, clear } timer injection (tests).
  * @param {Function} [o.onLog]
  * @param {object}   [o.meta]      out-param: the transcriber fills `durationSec`
@@ -128,6 +147,8 @@ export async function transcribeVoiceNote({
   author = null,
   debounceKey = null,
   postsBackDelayMs = POSTS_BACK_DELAY_MS,
+  takeoverMs = 0,
+  peerAcked = null,
   scheduler = _defaultScheduler,
   onLog = () => {},
   meta = null,
@@ -149,10 +170,14 @@ export async function transcribeVoiceNote({
   if (flagged !== transcript) { onLog(`transcription flagged unreliable (repetition loop): ${JSON.stringify(transcript.slice(0, 80))}`); transcript = flagged; }
   if (reply && postsBack && !muted) {
     const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
-    if (debounceKey && postsBackDelayMs > 0) {
+    // TRANSCRIPTION STANDBY (operator 2026-07-08: one 👂 per note): a standby holds its
+    // echo an extra takeover margin beyond the normal debounce, then (at fire time) skips
+    // if the primary already acked. takeoverMs=0 on a primary → identical to today.
+    const holdMs = postsBackDelayMs + (takeoverMs > 0 ? takeoverMs : 0);
+    if (debounceKey && holdMs > 0) {
       // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.
-      _queueAck(debounceKey, line, reply, onLog, postsBackDelayMs, scheduler);
-      onLog(`👂 ack queued (debounced ${Math.round(postsBackDelayMs / 1000)}s, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
+      _queueAck(debounceKey, line, reply, onLog, holdMs, scheduler, peerAcked);
+      onLog(`👂 ack queued (debounced ${Math.round(holdMs / 1000)}s${takeoverMs > 0 ? ' +standby takeover' : ''}, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
     } else {
       try { await reply(`👂 ${line}`); }
       catch (e) { onLog(`👂 ack failed: ${e?.message ?? e}`); }

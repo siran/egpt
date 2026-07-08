@@ -179,6 +179,18 @@ export async function startBeeperBridge(opts = {}) {
     // false = transcribe + log but NEVER post the 👂 — for BOTH live and BACKLOG voice notes
     // (one flag, one meaning: "this node posts 👂 acks"). Lets one node in a mesh own the ack.
     transcribeAck = true,
+    // TRANSCRIPTION PRIMARY/STANDBY (operator 2026-07-08: one 👂 per note — same
+    // coordination-free watch-the-chat pattern as the responder; both nodes still
+    // transcribe locally for their OWN records, only the 👂 post is de-duplicated).
+    // 'primary' (default / absent) posts the 👂 exactly as today. 'standby' HOLDS its 👂 an
+    // extra transcribeTakeoverMs beyond the normal debounce, then SKIPS it if the primary
+    // already posted a 👂 for the same note (seen as an inbound 👂 quote-replying that note).
+    // Separate from `role` (a node can be responder-standby yet transcription-primary — DOLLY).
+    // transcribeAck:false still wins (never post, role irrelevant).
+    transcribeRole = 'primary',
+    // The standby's extra hold (ms) beyond the normal debounce before it posts its 👂 —
+    // generous vs the 15-min debounce so the primary's 👂 reliably lands first.
+    transcribeTakeoverMs = 60_000,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -399,6 +411,22 @@ export async function startBeeperBridge(opts = {}) {
   // in-place edits). Our live edits re-upsert the message; without this guard the
   // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
   const _ourStreamIds = new Set();
+  // TRANSCRIPTION STANDBY seen-acks (operator 2026-07-08: one 👂 per note). A standby
+  // watches the chat for the PRIMARY's 👂 the same coordination-free way the responder
+  // watches for a peer answer: the primary's 👂 arrives as an INBOUND message whose text
+  // starts with 👂 and quote-replies the voice note (replyToId = the note's id). We record
+  // it keyed `${chatID}:${noteMsgId}` — the SAME format as the pending-ack debounceKey
+  // (`${chatID}:${msg.id}`, dispatchMessage) — so a standby's fire-time check is a plain
+  // Set.has. IN-MEMORY + bounded ONLY (operator's restart caveat): a restart forgets seen
+  // acks — worst case a late duplicate 👂 after a restart race, log-only; NEVER persisted.
+  const _peerAcks = new Set();
+  const PEER_ACK_CAP = 2000;
+  function _recordPeerAck(chatID, noteMsgId) {
+    if (!chatID || noteMsgId == null) return;
+    _peerAcks.add(`${chatID}:${noteMsgId}`);
+    _capSet(_peerAcks, PEER_ACK_CAP);
+  }
+  const _peerAckedNote = (key) => _peerAcks.has(key);   // (debounceKey) => did the primary already 👂 this note?
   // Normalize for echo matching — module-scope normEchoText (strips HTML/entities
   // AND flattens list markers so a re-marked echo still compares equal).
   const _normEcho = normEchoText;
@@ -941,6 +969,11 @@ export async function startBeeperBridge(opts = {}) {
           // postsBackDelayMs (config.yaml posts_back_delay_ms), applied per note.
           debounceKey: `${chatID}:${msg.id}`,
           postsBackDelayMs,
+          // TRANSCRIPTION STANDBY (operator 2026-07-08): hold the 👂 an extra takeover
+          // margin, then skip it if the primary already 👂'd this note (watch-the-chat).
+          // Primary/absent → takeoverMs 0 + peerAcked null = today's behavior exactly.
+          takeoverMs: transcribeRole === 'standby' ? transcribeTakeoverMs : 0,
+          peerAcked: transcribeRole === 'standby' ? _peerAckedNote : null,
           onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         });
@@ -1030,6 +1063,15 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
+    // TRANSCRIPTION STANDBY watch (operator 2026-07-08: one 👂 per note): an inbound 👂 that
+    // quote-replies a voice note is the PRIMARY's transcription ack for that note — record it
+    // (chatID, noteMsgId) so a standby's held 👂 for the same note skips at fire time. Only a
+    // standby needs the watch; a primary posts regardless, so it does zero extra work. Our OWN
+    // 👂 echo never reaches here (isEcho returns above), so this only ever captures a peer's.
+    if (transcribeRole === 'standby' && replyToId != null && String(text).trimStart().startsWith('👂')) {
+      _recordPeerAck(chatID, replyToId);
+      onLog(`beeper: saw primary 👂 for note ${chatID}:${replyToId} [${info.title}] — standby will skip its own`);
+    }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,

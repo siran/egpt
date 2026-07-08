@@ -177,4 +177,82 @@ describe('transcribeVoiceNote — 👂 posts-back debounce (operator 2026-06-21)
   });
 });
 
+// TRANSCRIPTION PRIMARY/STANDBY — one 👂 per note (operator 2026-07-08: same
+// coordination-free watch-the-chat pattern as the responder; both nodes still
+// transcribe locally, only the in-chat 👂 is de-duplicated). A standby holds its 👂
+// an extra takeover margin BEYOND the debounce, then skips it if the primary already
+// acked (peerAcked, evaluated at FIRE time — so an ack landing DURING the hold cancels).
+describe('transcribeVoiceNote — transcription standby takeover (operator 2026-07-08)', () => {
+  beforeEach(() => _resetPostsBackDebounce());
+
+  it('standby holds the 👂 an extra takeover margin, then POSTS when the primary never acked', async () => {
+    const sent = [];
+    const sched = makeScheduler();
+    const t = await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: fakeTranscribe, reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, debounceKey: 'chat-1:note-1', scheduler: sched,
+      postsBackDelayMs: 1000, takeoverMs: 60000, peerAcked: () => false,
+    });
+    expect(t).toBe('hola que tal');   // HEARD instantly, regardless of role
+    expect(sent).toEqual([]);         // held (queued), not posted yet
+    expect(sched.setCount).toBe(1);
+    await sched.fire();
+    expect(sent).toEqual(['👂 hola que tal']);   // no primary ack → the standby posts (one 👂, just later)
+  });
+
+  it('standby SKIPS its 👂 when the primary already acked the SAME note (takeover, even with a 0 debounce)', async () => {
+    const sent = [];
+    const sched = makeScheduler();
+    const acked = new Set(['chat-1:note-1']);   // the primary's 👂 was already seen for this note
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: fakeTranscribe, reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, debounceKey: 'chat-1:note-1', scheduler: sched,
+      postsBackDelayMs: 0, takeoverMs: 60000, peerAcked: (key) => acked.has(key),
+    });
+    expect(sched.setCount).toBe(1);   // a standby still QUEUES (uses the takeover) even at 0 debounce
+    expect(sent).toEqual([]);
+    await sched.fire();
+    expect(sent).toEqual([]);         // primary already 👂'd → standby stays silent (one 👂 per note)
+  });
+
+  it('peerAcked is evaluated at FIRE time — a primary ack landing DURING the hold still cancels', async () => {
+    const sent = [];
+    const sched = makeScheduler();
+    const acked = new Set();          // empty when the note is queued …
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: fakeTranscribe, reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, debounceKey: 'chat-1:note-1', scheduler: sched,
+      takeoverMs: 60000, peerAcked: (key) => acked.has(key),
+    });
+    acked.add('chat-1:note-1');       // … the primary acks WHILE the standby holds
+    await sched.fire();
+    expect(sent).toEqual([]);         // the fire-time check sees it → skip
+  });
+
+  it('the correlation is per (chat, note): a primary ack for a DIFFERENT note does not suppress ours', async () => {
+    const sent = [];
+    const sched = makeScheduler();
+    const acked = new Set(['chat-1:OTHER']);   // primary acked a different note
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: fakeTranscribe, reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, debounceKey: 'chat-1:note-1', scheduler: sched,
+      takeoverMs: 60000, peerAcked: (key) => acked.has(key),
+    });
+    await sched.fire();
+    expect(sent).toEqual(['👂 hola que tal']);   // our note-1 ack still posts (no ack for note-1)
+  });
+
+  it('primary (takeoverMs 0, peerAcked null) posts exactly as today', async () => {
+    const sent = [];
+    const sched = makeScheduler();
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: fakeTranscribe, reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, debounceKey: 'chat-1:note-1', scheduler: sched,
+      postsBackDelayMs: 1000,   // default takeoverMs 0, peerAcked null → unchanged
+    });
+    await sched.fire();
+    expect(sent).toEqual(['👂 hola que tal']);
+  });
+});
+
 // (pickTelegramMedia tests removed 2026-06-24 with the direct Telegram-bot transport.)

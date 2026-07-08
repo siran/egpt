@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
+import { _resetPostsBackDebounce } from '../src/incoming-media.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -1017,6 +1018,59 @@ describe('beeper bridge — trusted network gate (wake words + peer-output)', ()
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
     await waitFor(() => incoming.some((i) => i.text === 'sentinel-own'));
     expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped, never reaches the host
+  });
+});
+
+// TRANSCRIPTION PRIMARY/STANDBY 👂 dedup (operator 2026-07-08: one 👂 per note — two
+// nodes share a chat, both transcribe locally, but only ONE 👂 lands. The standby watches
+// the chat coordination-free: the primary's 👂 arrives as an inbound reply to the note, so
+// the standby holds its own 👂 an extra takeover margin then skips if the primary's showed).
+describe('beeper bridge — transcription standby 👂 dedup', () => {
+  beforeEach(() => _resetPostsBackDebounce());   // shared incoming-media debounce state
+  const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
+  const svcPostsBack = async () => ({ enabled: true, postsBack: true });
+  const voiceNote = (id) => liveMsg({ id, text: null, type: 'VOICE', attachments: [{ id: `att-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }] });
+  const primaryEar = (noteId) => liveMsg({ isSender: false, senderName: 'do', text: '👂 An: fake transcript', linkedMessageID: noteId });
+  const ears = () => fake.posts.filter((p) => String(p.text).startsWith('👂'));
+
+  it('standby: the primary 👂 for the note lands before the margin → OUR 👂 is skipped', async () => {
+    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 300, resolveTranscriptionService: svcPostsBack });
+    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-1')] });
+    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));   // HEARD + 👂 queued (held for takeover)
+    // the PRIMARY's 👂 arrives as an inbound reply to the SAME note, before the 300ms margin elapses
+    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-1')] });
+    await waitMs(500);                                                          // past the takeover — held 👂 fires, sees the primary's, skips
+    expect(ears()).toHaveLength(0);                                            // one 👂 in the chat (the primary's), NOT two
+  });
+
+  it('standby: NO primary 👂 → ours posts after the debounce + takeover margin (the standby covers a sleeping primary)', async () => {
+    await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 150, resolveTranscriptionService: svcPostsBack });
+    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-2')] });
+    await waitFor(() => ears().length === 1);                                   // eventually posts — one 👂 either way, just later
+  });
+
+  it('standby: a primary 👂 for a DIFFERENT note does NOT suppress ours (correlation is chat + note id)', async () => {
+    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 200, resolveTranscriptionService: svcPostsBack });
+    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-3')] });
+    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));
+    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-999')] });  // ack for a DIFFERENT note id
+    await waitFor(() => ears().length === 1);                                   // our note-3 ack still posts
+    expect(ears()[0].replyToMessageID).toBe('note-3');
+  });
+
+  it('primary (default / absent transcribe_role): posts the 👂 as today, even with a peer 👂 already in the chat', async () => {
+    await startBridge({ resolveTranscriptionService: svcPostsBack });           // no transcribeRole → primary
+    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-4')] });    // a peer 👂 already present — a primary ignores it
+    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-4')] });
+    await waitFor(() => ears().length === 1);                                   // immediate (postsBackDelayMs 0), unchanged
+  });
+
+  it('transcribe_ack:false silences the 👂 regardless of role (standby)', async () => {
+    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 100, transcribeAck: false, resolveTranscriptionService: svcPostsBack });
+    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-5')] });
+    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));    // HEARD (transcribed + logged)
+    await waitMs(300);                                                          // past the takeover — never queued, never posts
+    expect(ears()).toHaveLength(0);
   });
 });
 

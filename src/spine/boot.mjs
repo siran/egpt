@@ -149,6 +149,11 @@ export async function boot({
   // 👂 ack role-gate (operator 2026-07-08): only false silences this node's 👂 acks (live +
   // backlog); absent/true = today's behavior. Lets one node in a mesh own the transcription ack.
   const transcribeAck = cfg.network?.transcribe_ack !== false;
+  // TRANSCRIPTION PRIMARY/STANDBY (operator 2026-07-08: one 👂 per note). SEPARATE from
+  // network.role — a node can be responder-standby yet transcription-primary (DOLLY). standby
+  // holds its 👂 an extra transcribe_takeover_ms, then skips if the primary already acked.
+  const transcribeRole = cfg.network?.transcribe_role === 'standby' ? 'standby' : 'primary';
+  const transcribeTakeoverMs = Number.isFinite(cfg.network?.transcribe_takeover_ms) ? cfg.network.transcribe_takeover_ms : 60_000;
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
@@ -179,6 +184,8 @@ export async function boot({
     wakeWords,                            // e/egpt + the persona agent's name + handles (honors @ed, operator 2026-07-07)
     peerStamps,                           // peer node reply stamps → sibling-output guard (operator 2026-07-08)
     transcribeAck,                        // 👂 ack role-gate: false = transcribe+log but never post the 👂 (operator 2026-07-08)
+    transcribeRole,                       // transcription primary|standby: standby holds+skips a duplicate 👂 (operator 2026-07-08)
+    transcribeTakeoverMs,                 // standby's extra 👂 hold beyond the debounce (operator 2026-07-08)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
