@@ -585,6 +585,18 @@ following is LANDED, test-locked, and (where marked) live-verified:
   the text — the true chokepoint behind the telegram fence-glue mangling
   (parseMesh now tolerates it, c62360b; a proper fenced-block rendering
   ```\n…\n``` would fix it at the source for ALL consumers, not just the mesh).
+- **INCIDENT (2026-07-08, FIXED 22acb58): suite runs polluted the LIVE
+  beeper.log** — the bridge's internal onLog appends to
+  EGPT_HOME/config/logs/beeper.log unconditionally, and tests ran with
+  EGPT_HOME unset (= real profile). Fixture lines (chat-1/Bea/"fake
+  transcript") landed in production logs and briefly derailed a live
+  diagnosis. Fix: vitest setupFile forces a throwaway EGPT_HOME
+  (~/.egpt-test-home) suite-wide + no-live-profile-leak tripwire test.
+  Live log verified byte-identical across suite runs after the fix. NB the
+  pollution from before the fix (≈16:09–16:11Z lines) remains in the live
+  log — recognizable by fixture names; left in place (history, not
+  scrubbed).
+
 - **BUG: 👂 voice ack shows the raw LID instead of the push name (live
   2026-07-08)**: `👂 @whatsapp_lid-85555832479795:beeper.local (92s): …` in
   the morgan chat — should be the sender's pushed name (operator: "it should
