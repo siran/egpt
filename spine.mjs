@@ -364,6 +364,13 @@ export function createSpine({
     // has no holds — cancelHolds is a no-op — but must never re-answer a peer's output).
     if (ev.peerOutput) { await transcript.log(ev); cancelHolds(ev.chatId); return; }
 
+    // BACKLOG BACKFILL (operator 2026-07-08, S3 wake): a message older than bridge start —
+    // the node slept and woke to a replay — is transcript-logged (the record stays complete)
+    // but NEVER dispatched: no command, no mesh, no gate, no mode:on (the woken node backfills,
+    // it does not re-answer stale traffic). Same log-but-never-dispatch seam as peerOutput, but
+    // it does NOT cancel standby holds — an OLD message must not stand a live standby down.
+    if (ev.backlog) { await transcript.log(ev); return; }
+
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
     // to the brain. Logged like any inbound, then executed (lifecycle exits the
     // process; the daemon respawns). Runs before gating: a /restart works even in

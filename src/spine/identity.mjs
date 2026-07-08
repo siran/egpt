@@ -57,6 +57,10 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         // Peer node's own output (its reply stamp leads the text, flagged by the bridge):
         // the spine transcript-logs it but NEVER dispatches it (sibling-output guard).
         peerOutput: !!f.peerOutput,
+        // Backlog: older than bridge start (a woken node's replay, flagged by the bridge).
+        // Same seam as peerOutput — the spine transcript-logs it (backfill) but NEVER
+        // dispatches it (operator 2026-07-08: a waking node backfills, never re-answers).
+        backlog: !!f.backlog,
         authorized: !!f.authorized, isSender: !!f.isSender, isVoice: !!f.isTranscriptFromVoice,
         raw: from,
       };

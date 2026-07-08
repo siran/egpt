@@ -174,6 +174,11 @@ export async function startBeeperBridge(opts = {}) {
     // OWN output — flagged `peerOutput` so the host transcript-logs it but NEVER dispatches
     // (sibling-output guard) and a standby cancels its takeover holds. Default [] = no peers.
     peerStamps = [],
+    // 👂 ACK ROLE-GATE (operator 2026-07-08, trusted network): does THIS node post the 👂
+    // transcription ack? true (default / absent) = today's behavior (svc.postsBack decides).
+    // false = transcribe + log but NEVER post the 👂 — for BOTH live and BACKLOG voice notes
+    // (one flag, one meaning: "this node posts 👂 acks"). Lets one node in a mesh own the ack.
+    transcribeAck = true,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -735,9 +740,20 @@ export async function startBeeperBridge(opts = {}) {
     if (wa) return `+${wa[1]}`;
     return id || null;                                // other networks: the stable id (still non-private)
   }
+  // PUSHED NAME from a WhatsApp LID sender (operator 2026-07-08: the morgan 👂 posted the
+  // raw LID `@whatsapp_lid-…:beeper.local` where the push name "le_moi" belonged). A LID
+  // (`@whatsapp_lid-<digits>`) is an UNSAVED contact — you don't have their number — so
+  // Beeper's senderName is the person's OWN pushed/profile name, NOT a saved contact-list
+  // label (the private-annotation leak the senderName rule guards against; a SAVED contact
+  // arrives as a phone jid, and that path is untouched — it never reaches here). So for a
+  // LID sender the senderName IS the push name and is safe to surface. null when absent →
+  // fallbackSenderId (the raw id) stands, per the "no push name → raw id" allowance.
+  function lidPushName(msg) {
+    return /^@whatsapp_lid-/i.test(String(msg?.senderID ?? '')) ? (msg?.senderName || null) : null;
+  }
   function senderDisplay(msg) {
     if (msg?.isSender) return userName || msg?.senderName || null;   // owner: configured name or own matrix id (never a contact label)
-    return msg?.senderPushName || msg?.pushName || fallbackSenderId(msg);   // others: pushed name → non-private id; NEVER the saved label
+    return msg?.senderPushName || msg?.pushName || lidPushName(msg) || fallbackSenderId(msg);   // others: pushed name (incl. a LID's senderName) → non-private id; NEVER the saved label
   }
 
   function _reactorName(id, network) {
@@ -874,15 +890,20 @@ export async function startBeeperBridge(opts = {}) {
       if (!networks.some(n => String(acct).toLowerCase().startsWith(String(n).toLowerCase()))) return;
     }
 
-    // Backlog gate: replayed/old messages are recorded as seen (above) but
-    // never dispatched — egpt answers live traffic only, same as the
-    // baileys/TG hold-on-reconnect rule.
+    // Backlog gate → BACKFILL (operator 2026-07-08, trusted network / S3 wake): a node
+    // that slept and woke MUST keep a complete record. A replayed/old message (older than
+    // bridge start) is no longer DROPPED here — it is flagged `isBacklog` and rides the
+    // rest of this path so it is transcribed (voice below) + transcript-logged, but the
+    // `backlog` flag on `from` makes the spine log-but-NEVER-dispatch it (no agents, no
+    // commands, no mesh, no mode:on — today's no-dispatch guarantee, kept). Was: returned
+    // before the message ever reached the transcript.
     const tsMs = _msgTimestampMs(msg);
+    let isBacklog = false;
     if (tsMs == null) {
       if (!_warnedNoTimestamp) { _warnedNoTimestamp = true; onLog('beeper: message payload has no parseable timestamp — backlog gate INACTIVE (verify schema with tests-manual/beeper-ws-capture.mjs)'); }
     } else if (tsMs < bridgeStartMs - holdGraceMs) {
-      onLog(`beeper: held backlog message [${info.title}] (${new Date(tsMs).toISOString()} < bridge start) — not dispatched`);
-      return;
+      isBacklog = true;
+      onLog(`beeper: backlog message [${info.title}] (${new Date(tsMs).toISOString()} < bridge start) — backfilled to transcript, not dispatched`);
     }
 
     let _voiceAtt = null, _voicePath = null, _voiceCaption = null;
@@ -908,7 +929,10 @@ export async function startBeeperBridge(opts = {}) {
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
           enabled: svc.enabled,
-          postsBack: svc.postsBack,
+          // 👂 ROLE-GATE (operator 2026-07-08): transcribeAck:false silences the ack on THIS
+          // node (live AND backlog notes) — it still HEARS (transcribes + logs), just never
+          // SPEAKS. true/absent = today's behavior (the room's postsBack verdict decides).
+          postsBack: transcribeAck ? svc.postsBack : false,
           muted: info.isMuted,
           author: voiceAuthor,
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN
@@ -1035,6 +1059,7 @@ export async function startBeeperBridge(opts = {}) {
       atEAnywhere: st.atEAnywhere,
       atEPinned,                            // an OWN-handle mention (@ed) → immediate even on a standby node
       peerOutput,                           // starts with a peer node's stamp → transcript-only, never dispatched
+      backlog: isBacklog,                   // older than bridge start (a woken node's replay) → transcript-only, never dispatched
       replyToBot,                           // true when this is a reply to a message WE sent (gates a reply without @e)
       replyToId,                            // the quoted message id (→ `↩#<id>` in the dispatch line), null when not a reply
       isReaction: false,

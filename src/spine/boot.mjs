@@ -146,6 +146,9 @@ export async function boot({
   // body_emoji, read like any other config block. Absent → [] (no peers → no guard, today's
   // behavior). A message starting with one is peer output: transcript-only, never dispatched.
   const peerStamps = Array.isArray(cfg.network?.peer_stamps) ? cfg.network.peer_stamps : [];
+  // 👂 ack role-gate (operator 2026-07-08): only false silences this node's 👂 acks (live +
+  // backlog); absent/true = today's behavior. Lets one node in a mesh own the transcription ack.
+  const transcribeAck = cfg.network?.transcribe_ack !== false;
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
@@ -175,6 +178,7 @@ export async function boot({
     personaEmoji: bodyEmojiOf('e'),       // 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     wakeWords,                            // e/egpt + the persona agent's name + handles (honors @ed, operator 2026-07-07)
     peerStamps,                           // peer node reply stamps → sibling-output guard (operator 2026-07-08)
+    transcribeAck,                        // 👂 ack role-gate: false = transcribe+log but never post the 👂 (operator 2026-07-08)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});

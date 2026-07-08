@@ -399,6 +399,17 @@ describe('spine — trusted network (sibling-output guard + standby takeover)', 
     expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola' }]);
   });
 
+  // BACKLOG BACKFILL (operator 2026-07-08, S3 wake): an old message (backlog:true) is logged
+  // but NEVER dispatched — even a network-addressed @e in mode:on. The node backfills its
+  // record on wake; it does not re-answer stale traffic. Same seam as the sibling-output guard.
+  it('backlog (backlog:true) is transcript-logged but NEVER dispatched — even @e in mode:on', async () => {
+    const { bridge, brain, transcript } = buildNet();
+    await bridge.emit({ ...MSG, msgId: 'b1', body: '@e estás?', backlog: true });
+    expect(brain.calls).toHaveLength(0);                 // never dispatched (woken node backfills, doesn't re-answer)
+    expect(bridge.sent).toHaveLength(0);
+    expect(transcript.entries).toHaveLength(1);          // …but it IS logged (the record stays complete)
+  });
+
   // PIECE 3 — standby takeover.
   it('standby HOLDS a network-addressed dispatch, then fires after takeover_ms when no peer answers', async () => {
     const { bridge, brain, timers } = buildNet({ network: { role: 'standby', takeover_ms: 5000 } });

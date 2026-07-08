@@ -38,6 +38,12 @@ describe('identity.build', () => {
     expect(identity.build({ body: 'hola', from: FROM }).peerOutput).toBe(false);
   });
 
+  it('flags a backlog message (backlog) — transcript-logged but never dispatched (operator 2026-07-08)', () => {
+    const back = identity.build({ body: 'old', from: { ...FROM, backlog: true } });
+    expect(back.backlog).toBe(true);                 // → a woken node backfills it, never re-answers
+    expect(identity.build({ body: 'hola', from: FROM }).backlog).toBe(false);
+  });
+
   it('classifies a reaction as a stage-direction (bracketed line, kind=reaction)', () => {
     const ev = identity.build({ body: 'reacted 👍 to #m7 "hola"', from: { ...FROM, isReaction: true } });
     expect(ev.kind).toBe('reaction');

@@ -348,6 +348,36 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 Ricki Mejia: fake transcript');   // pushed name, not the label
   });
 
+  // LID PUSH NAME (operator 2026-07-08, morgan chat): a WhatsApp LID sender
+  // (@whatsapp_lid-…) is an UNSAVED contact, so Beeper's senderName is the person's OWN
+  // pushed name (not a saved label). The label must resolve to it, not fall back to the
+  // raw LID — the live 👂 posted "👂 @whatsapp_lid-85555832479795:beeper.local (92s): …".
+  it('a LID-shaped sender uses its pushed name (senderName), not the raw LID', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      isSender: false,
+      senderID: '@whatsapp_lid-85555832479795:beeper.local',
+      senderName: 'le_moi',   // unsaved LID contact → senderName IS the push name
+      text: 'hola',
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.senderName).toBe('le_moi');               // push name, not the raw LID
+    expect(incoming[0].from.senderName).not.toContain('whatsapp_lid');
+  });
+
+  it('the 👂 voice echo for a LID sender carries the pushed name, not the raw LID', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      isSender: false, type: 'VOICE', text: null,
+      senderID: '@whatsapp_lid-85555832479795:beeper.local',
+      senderName: 'le_moi',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 le_moi: fake transcript');   // pushed name, not the raw LID
+  });
+
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
   // handed to onMedia — not transcribed-then-dropped.
   it('a voice note is transcribed AND its file handed to onMedia (caption = transcript)', async () => {
@@ -580,12 +610,49 @@ describe('beeper bridge', () => {
     expect(incoming.map((i) => i.text).sort()).toEqual(['from a', 'from b']);
   });
 
-  it('backlog gate: messages older than bridge start are never dispatched', async () => {
+  // BACKLOG BACKFILL (operator 2026-07-08, S3 wake): a message older than bridge start is
+  // no longer DROPPED — it reaches the transcript flagged `backlog` (the spine logs it but
+  // never dispatches). Was: `incoming.length === 1`, the stale message never surfaced.
+  it('backlog backfill: an old message reaches the transcript flagged backlog; a fresh one is not', async () => {
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'stale', timestamp: Date.now() - 60_000 })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ text: 'fresh' })] });
+    await waitFor(() => incoming.length === 2);
+    const stale = incoming.find((i) => i.text === 'stale');
+    const fresh = incoming.find((i) => i.text === 'fresh');
+    expect(stale.from.backlog).toBe(true);    // backfilled — the spine logs it, never dispatches (no re-answer)
+    expect(fresh.from.backlog).toBe(false);   // live traffic — dispatched normally
+  });
+
+  // A HELD (backlog) voice note MUST still be transcribed locally so the backfill carries
+  // text, not "[voice note]" — and the 👂 still posts on a default (transcribe_ack:true) node.
+  it('backlog voice note is transcribed + logged, and the 👂 posts (default transcribe_ack)', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].text).toBe('fresh');
+    expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // …but STILL transcribed locally
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');               // default transcribe_ack → 👂 posts
+  });
+
+  // 👂 ROLE-GATE (operator 2026-07-08): transcribe_ack:false transcribes + LOGS but never
+  // posts the 👂 — for live notes too (one flag, one meaning: "this node posts 👂 acks").
+  it('transcribe_ack:false silences the 👂 — the note is still transcribed + logged, never posted', async () => {
+    const { incoming } = await startBridge({
+      transcribeAck: false,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
+    expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed by the role-gate
   });
 
   it('network scope is fail-closed WHEN SET: unknown or foreign accountID drops; prefix instance ids pass', async () => {
