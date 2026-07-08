@@ -420,7 +420,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   b. [backlog backfill on wake: transcript-log + transcribe voice, NO agent
      dispatch, 👂 per role]
      → verify: sleep DOLLY, send voice note, wake: transcript has it, no
-       agent fired, exactly one 👂
+       agent fired, exactly one 👂 — ✅ CODE DONE + DEPLOYED (2026-07-08,
+       0346196; test-locked: stale→transcript flagged backlog, backlog voice
+       transcribed+logged, backlog @e never dispatches even mode:on,
+       network.transcribe_ack:false silences the 👂, no cancelHolds on
+       backlog). Bundled: the 👂 LID push-name bug FIXED (a LID sender is an
+       UNSAVED contact so senderName IS the push name — "le_moi" now shows,
+       raw id only when no push name exists). LIVE sleep-window verify still
+       to run (the DOLLY 5-min cycle test above).
   c. [beeper accounts registry config block]
      → verify: block parsed; /status shows the network's named accounts
   d. [transcription role wiring: do = primary transcriber]
