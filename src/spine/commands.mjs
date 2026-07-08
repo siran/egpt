@@ -171,6 +171,25 @@ export function createCommands({
   const writeFile = io.writeFile ?? fsWriteFile;
   const mkdir = io.mkdir ?? fsMkdir;
 
+  // Beeper accounts REGISTRY (operator 2026-07-08, trusted-network chunk c): a NAMED map
+  // of this trusted network's Beeper accounts — which account each node fronts + its own
+  // API token. v1 is REGISTRY + OBSERVABILITY ONLY: parsed here once (this runs at
+  // construction, i.e. once per boot, not once per /status call) and surfaced by /status
+  // as name + ACCOUNT ONLY — the token is discarded right here and never held past this
+  // block, so it can't leak into /status, a log line, or an error. PHYSICAL FACT: a token
+  // only answers on ITS OWN machine's local API, so acting on a sibling's token is future
+  // work, not v1. An entry missing `account` is skipped + logged by name; never crashes.
+  const beeperAccounts = (() => {
+    const raw = cfg().beeper;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out = {};
+    for (const [name, entry] of Object.entries(raw)) {
+      if (!entry || typeof entry !== 'object' || !entry.account) { onLog(`beeper registry: "${name}" missing account — skipped`); continue; }
+      out[name] = entry.account;
+    }
+    return out;
+  })();
+
   // Armed `/e` wizards, keyed by the OPERATOR's chat (where they type the answers) —
   // NOT the target chat (bare `/e` targets here; `/e <slug>` targets elsewhere). Each
   // entry carries the resolved target + the engine its live warm session runs under
@@ -341,6 +360,12 @@ export function createCommands({
       `conversations: ${convs}`,
     ];
     if (mode) lines.push(`mode: ${mode}`);
+    // Registry + OBSERVABILITY only (never acted on) — name + account, NEVER the token.
+    const beeperNames = Object.keys(beeperAccounts);
+    if (beeperNames.length) {
+      lines.push('beeper_accounts:');
+      for (const name of beeperNames) lines.push(`  ${name}: ${beeperAccounts[name]}`);
+    }
     return '```yaml\n' + lines.join('\n') + '\n```';
   }
 

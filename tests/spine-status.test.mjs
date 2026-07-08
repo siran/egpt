@@ -33,7 +33,7 @@ function threeContacts() {
   return st;
 }
 
-function harness({ io, gitOut, loadState, brains, getConfig } = {}) {
+function harness({ io, gitOut, loadState, brains, getConfig, onLog } = {}) {
   const sent = [];
   const cmds = createCommands({
     getConfig: getConfig ?? (() => ({ whatsapp: { chat_id: '!self' } })),
@@ -43,6 +43,7 @@ function harness({ io, gitOut, loadState, brains, getConfig } = {}) {
     io,
     gitOut,
     brains,
+    onLog,
   });
   return { cmds, sent };
 }
@@ -352,5 +353,76 @@ members:
 
     await cmds.run({ body: '/status hfm', chatId: '!self', surface: 'whatsapp' });
     expect(sent[0].text).toMatch(/members: An, @e/);   // transcript derivation intact (regression)
+  });
+});
+
+// beeper_accounts REGISTRY (operator 2026-07-08, trusted-network chunk c): a named map of
+// this trusted network's Beeper accounts, config.beeper.<name>.{account,token}. v1 is
+// REGISTRY + OBSERVABILITY ONLY — /status shows NAME + ACCOUNT, NEVER the token.
+describe('/status: beeper_accounts registry', () => {
+  const HEALTHY_IO = { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML };
+  const HEALTHY_GIT = (args) => (args.includes('--short') ? 'abc1234' : 's');
+
+  it('no beeper block: bare /status is byte-for-byte unchanged (regression lock)', async () => {
+    const { cmds, sent } = harness({ io: HEALTHY_IO, gitOut: HEALTHY_GIT, loadState: async () => threeContacts() });
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).not.toMatch(/beeper_accounts/);
+  });
+
+  it('beeper block present: beeper_accounts lists each entry\'s name + account, never the token', async () => {
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO,
+      gitOut: HEALTHY_GIT,
+      loadState: async () => threeContacts(),
+      getConfig: () => ({
+        whatsapp: { chat_id: '!self' },
+        beeper: {
+          dolly: { account: 'dolly.egpt@gmail.com', token: 'ROD-SECRET-TOKEN-1' },
+          reve: { account: 'anrodz42@gmail.com', token: 'REVE-SECRET-TOKEN-2' },
+        },
+      }),
+    });
+
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    const { text } = sent[0];
+    expect(text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com\n {2}reve: anrodz42@gmail\.com/);
+    expect(text).not.toContain('ROD-SECRET-TOKEN-1');
+    expect(text).not.toContain('REVE-SECRET-TOKEN-2');
+  });
+
+  it('a malformed entry (missing account) is skipped and logged by name, never crashes boot; valid siblings still show', async () => {
+    const logs = [];
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO,
+      gitOut: HEALTHY_GIT,
+      loadState: async () => threeContacts(),
+      onLog: (m) => logs.push(m),
+      getConfig: () => ({
+        whatsapp: { chat_id: '!self' },
+        beeper: {
+          dolly: { account: 'dolly.egpt@gmail.com', token: 'ROD-SECRET-TOKEN-1' },
+          broken: { token: 'ORPHAN-TOKEN' },   // missing account
+        },
+      }),
+    });
+
+    await expect(cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' })).resolves.toBeUndefined();
+    const { text } = sent[0];
+    expect(text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com/);
+    expect(text).not.toMatch(/broken/);
+    expect(text).not.toContain('ORPHAN-TOKEN');
+    expect(logs.some((m) => m.includes('broken') && m.includes('missing account'))).toBe(true);
+  });
+
+  it('tokens are optional in v1: an accounts-only entry (no token) still registers', async () => {
+    const { cmds, sent } = harness({
+      io: HEALTHY_IO,
+      gitOut: HEALTHY_GIT,
+      loadState: async () => threeContacts(),
+      getConfig: () => ({ whatsapp: { chat_id: '!self' }, beeper: { dolly: { account: 'dolly.egpt@gmail.com' } } }),
+    });
+
+    await cmds.run({ body: '/status', chatId: '!self', surface: 'whatsapp' });
+    expect(sent[0].text).toMatch(/beeper_accounts:\n {2}dolly: dolly\.egpt@gmail\.com/);
   });
 });
