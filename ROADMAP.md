@@ -316,7 +316,12 @@ following is LANDED, test-locked, and (where marked) live-verified:
      to/from/body and one node process; the spine's armTimeout still keys one
      origin-wait timer per chat (timeout-only); config-schema doc string not
      yet updated for the list shape. LIVE on REVE config: carol = path1 rodz1
-     (whatsapp) + path2 egpt-mesh-do-kg (telegram); live fan-out test pending.
+     (whatsapp) + path2 egpt-mesh-do-kg (telegram); live fan-out VERIFIED
+     (2026-07-07 @carol tests). **MESH TEST PROGRAM CLOSED (operator
+     2026-07-08)**: @cara 1-hop live-verified in Self ("Yeah, I'm here." —
+     instant); every transport claim (multi-hop, multi-network, multipath,
+     dedup, reply-home, traceroute) is live-proven. The rodz relay channels
+     stay as the foreign-mesh testbed.
   3. **Traceroute `via:` — LANDED (2026-07-06)**: each forwarding hop appends
      `<being>.<node>` to a comma-separated `via:` provenance key; the terminal
      responder echoes it home; the origin appends a one-line trailer on the
@@ -366,16 +371,43 @@ following is LANDED, test-locked, and (where marked) live-verified:
   ties into the node-keypair/alias identity ideas). Opts ride the envelope
   provenance so every hop sees them. Nothing implemented yet.
 
-- **HRW single-responder for shared channels (operator 2026-07-06)**: when 2+
-  nodes/accounts BOTH host E in the SAME chat (e.g. REVE + DOLLY in a real
-  group), an unqualified `@e` currently gets TWO replies. Default a rendezvous-
-  hashing (HRW / Highest Random Weight — weighted-hrw, already cited in the
-  config skeleton) tiebreak: each node independently computes
-  weight(message-id, node-name) over the E-hosting node set present in the
-  channel; only the max-weight node replies, the rest stay silent. Deterministic,
-  zero cross-account coordination, load-balances across messages. NOT a problem
-  for the relay chain (every hop is explicitly `@being.node` — one answerer);
-  this is only for the unqualified-@e-in-a-shared-channel case.
+- **TRUSTED EGPT NETWORK (operator 2026-07-08 — ADOPTED DIRECTION, supersedes
+  the standalone HRW item and the brief main-spine-to-DOLLY idea)**: REVE stays
+  the main machine. Each node fronts its OWN Beeper account (kg/REVE = An,
+  do/DOLLY = Rodz — the Rodz account does NOT retire, it is the network's
+  second identity); the network = the set of SHARED chats both accounts sit
+  in. Both nodes keep full transcripts of what they hear (they are egpt
+  nodes). Simplicity is king. Decided semantics:
+  1. **PRIMARY/STANDBY single-responder (v1, decided over HRW)**: `@e` → kg
+     answers (primary); if NO reply lands in the chat within **5s**, ed (do)
+     takes over. Coordination-free — the standby just watches the chat.
+     HRW load-balancing can come later. Qualified addressing always pins
+     (`@e`/`@e.kg` vs `@ed`). Reply stamps tell nodes apart: kg = 🐶,
+     do = 🤝 (**body_emoji: 🤝 LIVE on DOLLY 2026-07-08**).
+  2. **Transcription primary/standby**: DOLLY (GPU box) is the transcription
+     PRIMARY; 👂 post-back keeps the 15-min debounce (confirmed 900000 ms);
+     only the role-holder posts the 👂 (one ack, not two).
+  3. **Sibling non-triggering DEFAULT**: agents don't trigger each other;
+     per-chat opt-in may come later ("might be wanted in some cases");
+     agents' polite-silence rules apply in shared chats.
+  4. **Backlog-on-wake (decided)**: a waking spine RECEIVES backlog messages
+     — they must NEVER dispatch agents (only live messages do) but MUST be
+     transcript-logged, and voice notes MUST be transcribed locally; the 👂
+     posts back only per the primary/standby role. (Today held backlog is
+     dropped before transcript-logging — fix needed.)
+  5. **beeper accounts REGISTRY (config shape, operator verbatim)**:
+     ```yaml
+     beeper:
+       dolly: { account: dolly.egpt@gmail.com, token: <rodz token> }
+       reve:  { account: anrodz42@gmail.com,   token: <reve token> }
+     ```
+     the network's named accounts shared as config. Physical note: a token
+     only answers on its OWN machine's local API (and sleeps with it) —
+     cross-account API ops work while the sibling is awake.
+  BUILD ORDER: (a) standby responder + sibling-output guard (+ the atE
+  handles bug fix — the gate must honor ed/egptd for pinned addressing),
+  (b) backlog backfill (log + transcribe, no dispatch, role-gated 👂),
+  (c) accounts registry block, (d) transcription role wiring.
 
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
   dedicated egpt-test chats (like egpt-an — operator-authorized, no real contacts)
