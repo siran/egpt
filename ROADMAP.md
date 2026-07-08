@@ -471,6 +471,31 @@ following is LANDED, test-locked, and (where marked) live-verified:
   first (observability), then the L1 probe (already the top reliability
   item), then wire L-1 duties into the real spine (ingest a beat / process
   due heartbeats during wake windows).
+  - **L-1 PROVEN on DOLLY (2026-07-07 live test)**: operator slept DOLLY;
+    the task WOKE IT from S3 (`powercfg /lastwake`: "Presume Wake Timer …
+    NT TASK\egpt-wake-duty"), net up in 0.1s, spine SURVIVED the sleep
+    (same pid, no deadman — daemon+spine freeze/resume together so the beat
+    never looks stale), and the message sent DURING sleep dispatched and
+    was ANSWERED on resume (backlog hold anchors to process start —
+    process survived, so nothing held). The whole dormant→wake→hear→answer
+    loop works on an S3 box. REVE CANNOT do this: it is Modern Standby
+    (S0 Low Power Idle) — RTC wake timers are not honored there (two ticks
+    slept through, empty wake history); REVE options = stay always-on
+    (current), or buddy-wake via Wake-on-LAN from DOLLY (S0 honors WoL;
+    needs the NIC's "Wake on Magic Packet" enabled + REVE's MAC in DOLLY's
+    duty). Harnesses still armed on both (5-min): DISABLE after testing —
+    `schtasks /change /tn egpt-wake-duty /disable`.
+
+- **BUG: bridge atE wake-word ignores configured persona handles (found by
+  the 2026-07-07 DOLLY sleep test)**: on DOLLY (`agents.egpt.handles:
+  [ed, egptd]`) a live `@ed estás?` logged `atE=false` and was NEVER
+  dispatched (the mention gate runs on the bridge's atE), while `@e estás?`
+  logged `atE=true` and answered — the bridge's mention detection is
+  hardcoded to e/egpt and never reads the agents config. Handles DO work at
+  the router (mesh `to: ed.do` resolves; @ed at the START would route if it
+  survived the gate) — the bug is the bridge gate. Fix: the bridge's
+  wake-word set = the persona agent's name + handles from config (one
+  source of truth), reproduce-first with a DOLLY-shaped config fixture.
 
 - **messages-first-class — open phases** (docs/MESSAGES-FIRST-CLASS-PLAN.md, KEPT
   in the 2026-07-03 cleanup because it is NOT fully shipped). Landed: Phase 1 (inbound
