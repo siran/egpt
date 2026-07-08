@@ -6,12 +6,14 @@
 
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import { Room, ConversationRoom, NamedRoom } from '../src/room-core.mjs';
 import { slugDir, slugTranscriptPath, sanitizeSlug } from '../conversations-state.mjs';
 import { roomDir, roomFilesDir, sanitizeName } from '../src/rooms.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 
-const HOME = homedir();
+// The legacy roots derive from EGPT_HOME (the profile), NOT a hardcoded ~/.egpt: under
+// the suite's isolated EGPT_HOME (tests/setup-egpt-home.mjs, 2026-07-08) that formula IS
+// the byte-identical target, and it still equals join(homedir(),'.egpt',…) when unset.
 
 describe('Room — abstract base', () => {
   it('baseDir() throws on the base (must be implemented by a subclass)', () => {
@@ -24,7 +26,7 @@ describe('ConversationRoom — byte-identical to the legacy slugDir root', () =>
   for (const [surface, slug] of cases) {
     it(`baseDir matches legacy formula + slugDir for ${surface}/${slug}`, () => {
       const room = Room.forChat(surface, slug);
-      const legacy = join(HOME, '.egpt', 'conversations', surface, sanitizeSlug(slug));
+      const legacy = join(EGPT_HOME, 'conversations', surface, sanitizeSlug(slug));
       expect(room.baseDir()).toBe(legacy);
       expect(slugDir(surface, slug)).toBe(legacy);           // delegation = byte-identical
       expect(room).toBeInstanceOf(ConversationRoom);
@@ -41,7 +43,7 @@ describe('NamedRoom — byte-identical to the legacy roomDir root', () => {
   for (const name of ['work', 'ChatGPT CDP', '']) {
     it(`baseDir matches legacy formula + roomDir for "${name}"`, () => {
       const room = Room.named(name);
-      const legacy = join(HOME, '.egpt', 'rooms', sanitizeName(name));
+      const legacy = join(EGPT_HOME, 'rooms', sanitizeName(name));
       expect(room.baseDir()).toBe(legacy);
       expect(roomDir(name)).toBe(legacy);                    // delegation = byte-identical
       expect(room).toBeInstanceOf(NamedRoom);

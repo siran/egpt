@@ -2,14 +2,15 @@
 // HTTP + WS). Covers the hardening contract: room-service 👂 gating (posts_back),
 // backlog gate, persisted dedup, fail-closed network scope, echo
 // suppression.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
+import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
 import { _resetPostsBackDebounce } from '../src/incoming-media.mjs';
@@ -98,6 +99,16 @@ const waitFor = async (cond, ms = 10000) => {
     await new Promise((r) => setTimeout(r, 20));
   }
 };
+
+// 2026-07-08: constructing the REAL bridge fires its internal onLog, which
+// appendFileSync's every line to join(EGPT_HOME, 'config', 'logs', 'beeper.log'). With
+// EGPT_HOME unset that IS the LIVE ~/.egpt log — a `vitest` run polluted it with these
+// very fixtures (chat-1, Bea, "fake transcript"). tests/setup-egpt-home.mjs forces
+// EGPT_HOME to a throwaway temp before this module's (hoisted) imports freeze _BEEPER_LOG;
+// assert that precondition held, so this file fails LOUD if the suite isolation is dropped.
+beforeAll(() => {
+  expect(EGPT_HOME, 'EGPT_HOME must be an isolated temp — see tests/setup-egpt-home.mjs').not.toBe(join(homedir(), '.egpt'));
+});
 
 let fake, stateDir, bridges;
 beforeEach(async () => {

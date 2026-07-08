@@ -14,9 +14,17 @@ vi.mock('node:os', async () => {
 });
 
 const tempHomes = [];
+// 2026-07-08: this file isolates via a MOCKED homedir + EGPT_HOME UNSET (so the profile
+// derives homedir→join(home,'.egpt')). The suite now forces EGPT_HOME to an isolated
+// value (tests/setup-egpt-home.mjs), which would OVERRIDE the homedir mock — so clear it
+// per-load and restore it after, letting the mock drive the derivation as before (the
+// mocked home is a fresh temp, so nothing leaks into the real profile either way).
+const SUITE_EGPT_HOME = process.env.EGPT_HOME;
 
 afterEach(() => {
   vi.resetModules();
+  if (SUITE_EGPT_HOME === undefined) delete process.env.EGPT_HOME;
+  else process.env.EGPT_HOME = SUITE_EGPT_HOME;
   while (tempHomes.length) {
     rmSync(tempHomes.pop(), { recursive: true, force: true });
   }
@@ -26,6 +34,7 @@ async function loadWithTempHome() {
   const home = mkdtempSync(join(tmpdir(), 'egpt-outbox-send-'));
   tempHomes.push(home);
   mockHome.current = home;
+  delete process.env.EGPT_HOME;   // let the mocked homedir be the profile root
   vi.resetModules();
   const mod = await import('../src/tools/outbox-send.mjs');
   return { home, mod };

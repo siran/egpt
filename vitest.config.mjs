@@ -5,6 +5,12 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // 2026-07-08: a suite run polluted the LIVE ~/.egpt/config/logs/beeper.log with test
+    // fixtures (the bridge's default onLog sink derives from EGPT_HOME, which is the real
+    // profile when unset). This setup forces EGPT_HOME to a throwaway profile (a sibling of
+    // ~/.egpt, never the live one) for the suite so no test can write into the live
+    // profile. See tests/setup-egpt-home.mjs.
+    setupFiles: ['./tests/setup-egpt-home.mjs'],
     coverage: {
       provider: 'v8',
       all: true,
