@@ -409,7 +409,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   a. [standby responder + sibling-output guard + atE-handles fix]
      → verify: shared-chat @e answered ONCE (🐶); with kg silent, 🤝 answers
        at +5s; @ed pinned answers immediately; sibling-stamped messages never
-       trigger dispatch — IN FLIGHT (agent dispatched 2026-07-08)
+       trigger dispatch — ✅ DONE + LIVE-VERIFIED (2026-07-08, 875594a):
+       both-up @e in rodz2 → ONE 🐶 answer, DOLLY heard (atE=true) and
+       stayed silent; kg muted → 🤝 fired at +5.6s ("secondary instance
+       responding. Primary appears silent."). Config live: kg
+       network{role:primary, peer_stamps:[🤝]}, do network{role:standby,
+       takeover_ms:5000, peer_stamps:[🐶]} + An's ids added to DOLLY
+       whatsapp.allowed_users (the standby must AUTHORIZE the peer operator
+       to take over — an activation requirement, now on both nodes).
   b. [backlog backfill on wake: transcript-log + transcribe voice, NO agent
      dispatch, 👂 per role]
      → verify: sleep DOLLY, send voice note, wake: transcript has it, no
