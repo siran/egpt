@@ -59,17 +59,35 @@ export function resolveBeingMode({ autoModes = {}, autoEModes = {}, chatId, bein
 // E sees the chat at all? (everything except 'off')
 export function receives(mode) { return mode !== 'off'; }
 
-// Standalone @e / @egpt wake-word detection. Must be a real mention token:
-// preceded by start-or-whitespace and followed by a word boundary — so
-// "To @e my assistant" counts but "me@e.com" / "hey@egpt" (glued to a word
-// char) do NOT. Returns { atEStart, atEAnywhere }.
+// Standalone wake-word detection. Must be a real mention token: preceded by
+// start-or-whitespace and followed by a word boundary — so "To @e my assistant"
+// counts but "me@e.com" / "hey@egpt" (glued to a word char) do NOT. Returns
+// { atEStart, atEAnywhere }.
+//
+// WAKE-WORD SET (operator 2026-07-07: the bridge gate must honor configured
+// handles). The DEFAULT set is the network-wide persona address e/egpt. A caller
+// (the bridge, from boot's persona agent) may pass an explicit `wakeWords` list —
+// the persona agent's name + every configured handle (e.g. DOLLY's [ed, egptd]) PLUS
+// the network defaults — so an unqualified @e wakes every node AND a node's own @ed
+// wakes it too. The bug this fixes: a live `@ed estás?` logged atE=false because the
+// gate was hardcoded to e/egpt and never read the agents config.
+const _escapeWake = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const RE_ANYWHERE = /(^|\s)@(?:egpt|e)\b/i;
 const RE_START    = /^@(?:egpt|e)\b/i;
-export function mentionStatus(text) {
+function wakeMatchers(wakeWords) {
+  if (!Array.isArray(wakeWords) || !wakeWords.length) return { anywhere: RE_ANYWHERE, start: RE_START };
+  // longest-first so @egpt matches 'egpt' not 'e' (\b backtracking also handles it, but be explicit)
+  const alt = [...new Set(wakeWords.map((w) => String(w).toLowerCase()).filter(Boolean))]
+    .sort((a, b) => b.length - a.length).map(_escapeWake).join('|');
+  if (!alt) return { anywhere: RE_ANYWHERE, start: RE_START };
+  return { anywhere: new RegExp(`(^|\\s)@(?:${alt})\\b`, 'i'), start: new RegExp(`^@(?:${alt})\\b`, 'i') };
+}
+export function mentionStatus(text, wakeWords) {
   const t = String(text ?? '');
+  const { anywhere, start } = wakeMatchers(wakeWords);
   return {
-    atEAnywhere: RE_ANYWHERE.test(t),
-    atEStart:    RE_START.test(t.replace(/^\s+/, '')),
+    atEAnywhere: anywhere.test(t),
+    atEStart:    start.test(t.replace(/^\s+/, '')),
   };
 }
 

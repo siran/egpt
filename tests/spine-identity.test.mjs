@@ -27,7 +27,15 @@ describe('identity.build', () => {
 
   it('carries the bridge-computed mention status onto ev.mention', () => {
     const ev = identity.build({ body: '@e hi', from: { ...FROM, atEStart: true, atEAnywhere: true } });
-    expect(ev.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });
+    expect(ev.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false, pinned: false });   // network @e (no own-handle) → not pinned
+  });
+
+  it('flags a configured own-handle mention (atEPinned) and a peer node output (peerOutput)', () => {
+    const pinned = identity.build({ body: '@ed hi', from: { ...FROM, atEStart: true, atEAnywhere: true, atEPinned: true } });
+    expect(pinned.mention.pinned).toBe(true);        // → a standby answers @ed immediately
+    const peer = identity.build({ body: '🤝 egpt\nya', from: { ...FROM, peerOutput: true } });
+    expect(peer.peerOutput).toBe(true);              // → transcript-logged but never dispatched
+    expect(identity.build({ body: 'hola', from: FROM }).peerOutput).toBe(false);
   });
 
   it('classifies a reaction as a stage-direction (bracketed line, kind=reaction)', () => {

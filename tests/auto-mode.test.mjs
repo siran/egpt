@@ -18,6 +18,27 @@ describe('mentionStatus', () => {
   it('handles leading whitespace for atEStart', () => {
     expect(mentionStatus('   @e hi').atEStart).toBe(true);
   });
+
+  // WAKE-WORD SET honors configured handles (operator 2026-07-07, DOLLY sleep-test bug):
+  // the gate was hardcoded to e/egpt, so a node configured with handles [ed, egptd] never
+  // woke on @ed. mentionStatus now takes the wake set the bridge derives from the config.
+  it('honors a configured wake-word set (@ed) while keeping the network-wide @e', () => {
+    const wake = ['e', 'egpt', 'ed', 'egptd'];   // DOLLY-shaped: network defaults + persona handles
+    // BEFORE (default set) the DOLLY handle failed the gate — this is the reproduce:
+    expect(mentionStatus('@ed estás?')).toEqual({ atEAnywhere: false, atEStart: false });
+    // AFTER (honoring the set) @ed wakes the node, at start and anywhere…
+    expect(mentionStatus('@ed estás?', wake)).toEqual({ atEAnywhere: true, atEStart: true });
+    expect(mentionStatus('oye @egptd ayuda', wake)).toEqual({ atEAnywhere: true, atEStart: false });
+    // …and the network-wide @e / @egpt still wake it (regression).
+    expect(mentionStatus('@e estás?', wake).atEStart).toBe(true);
+    expect(mentionStatus('@egpt hola', wake).atEAnywhere).toBe(true);
+    // @egpt must match 'egpt', not the shorter 'e' then stop (no false glue).
+    expect(mentionStatus('hey@ed', wake)).toEqual({ atEAnywhere: false, atEStart: false });
+  });
+  it('an empty/absent wake set falls back to the network default e/egpt', () => {
+    expect(mentionStatus('@e hi', [])).toEqual({ atEAnywhere: true, atEStart: true });
+    expect(mentionStatus('@ed hi', [])).toEqual({ atEAnywhere: false, atEStart: false });   // no handles → @ed does not wake
+  });
 });
 
 describe('replyAllowed', () => {

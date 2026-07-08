@@ -51,7 +51,12 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         replyToId: f.replyToId ?? null,   // the quoted message id (→ `↩#<id>`), null when not a reply
         ts, body, kind,
         // mention status the bridge already computed — the gating service's input.
-        mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot },
+        // `pinned` = an OWN-handle mention (@ed) vs the network-wide @e (operator
+        // 2026-07-08, trusted network): a standby answers a pinned address immediately.
+        mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot, pinned: !!f.atEPinned },
+        // Peer node's own output (its reply stamp leads the text, flagged by the bridge):
+        // the spine transcript-logs it but NEVER dispatches it (sibling-output guard).
+        peerOutput: !!f.peerOutput,
         authorized: !!f.authorized, isSender: !!f.isSender, isVoice: !!f.isTranscriptFromVoice,
         raw: from,
       };

@@ -899,6 +899,60 @@ describe('beeper bridge — per-surface authorization', () => {
   });
 });
 
+// TRUSTED EGPT NETWORK (operator 2026-07-08) + the atE-handles fix (operator 2026-07-07).
+// The bridge's persona gate must honor the CONFIGURED wake-word set (network defaults e/egpt
+// PLUS the node's own handles), and it flags a peer node's OWN output (its reply stamp leads
+// the text) so the host can transcript-log-but-never-dispatch it (sibling-output guard).
+describe('beeper bridge — trusted network gate (wake words + peer-output)', () => {
+  // DOLLY-shaped wake set: network-wide e/egpt + the persona agent's handles [ed, egptd].
+  const DOLLY_WAKE = ['e', 'egpt', 'ed', 'egptd'];
+
+  it('atE=true for a configured handle @ed (the DOLLY sleep-test bug) + atEPinned true', async () => {
+    const { incoming } = await startBridge({ wakeWords: DOLLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@ed estás?' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEStart).toBe(true);       // pre-fix: false — never dispatched
+    expect(incoming[0].from.atEAnywhere).toBe(true);
+    expect(incoming[0].from.atEPinned).toBe(true);       // an OWN handle → a standby answers it immediately
+  });
+
+  it('regression: the network-wide @e still wakes, but is NOT pinned (it is the shared address)', async () => {
+    const { incoming } = await startBridge({ wakeWords: DOLLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@e estás?' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEStart).toBe(true);
+    expect(incoming[0].from.atEPinned).toBe(false);      // network address → held for takeover on a standby
+  });
+
+  it('a node with NO configured handles (default wake set) does NOT wake on @ed', async () => {
+    const { incoming } = await startBridge();   // no wakeWords → default e/egpt
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@ed estás?' })] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'sentinel' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
+    const m = incoming.find((i) => i.text === '@ed estás?');
+    expect(m.from.atEAnywhere).toBe(false);              // unchanged for a node without handles
+    expect(m.from.atEPinned).toBe(false);
+  });
+
+  it("a peer-stamped message is flagged peerOutput (reaches the host, which drops it); a plain one is not", async () => {
+    const { incoming } = await startBridge({ personaEmoji: '🐶', peerStamps: ['🤝'] });   // kg node: own 🐶, peer 🤝
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'do', text: '🤝 egpt\nya respondí' })] });   // the peer node's own reply
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'hola normal' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'hola normal'));
+    const peer = incoming.find((i) => i.text.startsWith('🤝'));
+    expect(peer.from.peerOutput).toBe(true);             // the host transcript-logs but never dispatches it
+    expect(incoming.find((i) => i.text === 'hola normal').from.peerOutput).toBe(false);
+  });
+
+  it("regression: the node's OWN persona echo (🐶) is STILL dropped outright, even with peer stamps configured", async () => {
+    const { incoming } = await startBridge({ personaEmoji: '🐶', peerStamps: ['🤝'] });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: '🐶 egpt\nmy own reply' })] });   // our own echo
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
+    await waitFor(() => incoming.some((i) => i.text === 'sentinel-own'));
+    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped, never reaches the host
+  });
+});
+
 // Conversation-E LIMBS (ROADMAP §3): the bridge SEND primitives + the inbound
 // replyToBot signal. Reaction/reply-to/media hit the real Beeper endpoints; a reply
 // to a message WE sent is flagged replyToBot so the gate fires without an @e.

@@ -163,6 +163,17 @@ export async function startBeeperBridge(opts = {}) {
     // posts as the operator's account, so id/text echo-suppression can race; this
     // content marker never does, and it keeps transcript.md linear).
     personaEmoji = null,
+    // The persona wake-word set (operator 2026-07-07): the network-wide default e/egpt
+    // PLUS the persona agent's name + every configured handle (boot derives it from the
+    // agents block). The gate hardcoded e/egpt and never read the config, so a node
+    // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
+    // for a node that passes nothing).
+    wakeWords = ['e', 'egpt'],
+    // Peer node reply stamps (operator 2026-07-08, trusted network): the OTHER node(s)'
+    // body_emoji (e.g. 🤝). An inbound whose text starts with one of these is a peer's
+    // OWN output — flagged `peerOutput` so the host transcript-logs it but NEVER dispatches
+    // (sibling-output guard) and a standby cancels its takeover holds. Default [] = no peers.
+    peerStamps = [],
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -968,7 +979,21 @@ export async function startBeeperBridge(opts = {}) {
       return;
     }
 
-    const st = mentionStatus(text || '');
+    const st = mentionStatus(text || '', wakeWords);
+    // PINNED wake word (operator 2026-07-08, trusted network): an OWN-handle mention
+    // (@ed/@egptd) — the wake set MINUS the network-wide e/egpt — is a DIRECT address to
+    // THIS node, so a standby answers it immediately (no takeover hold). An unqualified @e
+    // is the shared network address (held for takeover on a standby). Empty pinned set
+    // (a node with no extra handles) → never pinned.
+    const pinnedWords = wakeWords.filter((w) => w !== 'e' && w !== 'egpt');
+    const atEPinned = pinnedWords.length ? mentionStatus(text || '', pinnedWords).atEAnywhere : false;
+    // SIBLING-OUTPUT GUARD (operator 2026-07-08, trusted network): a message that starts
+    // with a PEER node's body_emoji stamp is that peer's OWN output — same prefix concept
+    // as the own-persona marker above, but NOT dropped here: the host still needs it (the
+    // transcript, and a standby's takeover-cancel), so it rides `from.peerOutput` and the
+    // spine logs-but-never-dispatches it.
+    const _peerTrim = String(text).trimStart();
+    const peerOutput = peerStamps.some((s) => s && _peerTrim.startsWith(String(s)));
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
     // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:
@@ -1008,6 +1033,8 @@ export async function startBeeperBridge(opts = {}) {
       authorized: !!msg.isSender || isAllowedUser(msg.senderID, acct),
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
+      atEPinned,                            // an OWN-handle mention (@ed) → immediate even on a standby node
+      peerOutput,                           // starts with a peer node's stamp → transcript-only, never dispatched
       replyToBot,                           // true when this is a reply to a message WE sent (gates a reply without @e)
       replyToId,                            // the quoted message id (→ `↩#<id>` in the dispatch line), null when not a reply
       isReaction: false,

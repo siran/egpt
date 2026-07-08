@@ -136,6 +136,17 @@ export async function boot({
   // the bridge (voice notes) and the media service (a video's audio).
   const tx = createTranscription({ getConfig, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
 
+  // The persona wake-word set (operator 2026-07-07: the bridge gate must honor configured
+  // handles) — the network-wide default e/egpt PLUS the persona agent's name + every handle,
+  // ONE source of truth (the agents block). agentIds already lowercases name+handles. On a
+  // DOLLY-shaped config (agents.egpt.handles: [ed, egptd]) this is [e, egpt, ed, egptd], so
+  // the live @ed that logged atE=false now wakes the node.
+  const wakeWords = (() => { const pa = personaAgent(); return [...new Set(['e', 'egpt', ...agentIds(pa.name, pa.agent)])]; })();
+  // Peer node reply stamps (operator 2026-07-08, trusted network): the OTHER node(s)'
+  // body_emoji, read like any other config block. Absent → [] (no peers → no guard, today's
+  // behavior). A message starting with one is peer output: transcript-only, never dispatched.
+  const peerStamps = Array.isArray(cfg.network?.peer_stamps) ? cfg.network.peer_stamps : [];
+
   // --- ports ---
   const bridge = await createBeeperBridgePort({
     beeperToken: cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
@@ -162,6 +173,8 @@ export async function boot({
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf('e'),       // 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
+    wakeWords,                            // e/egpt + the persona agent's name + handles (honors @ed, operator 2026-07-07)
+    peerStamps,                           // peer node reply stamps → sibling-output guard (operator 2026-07-08)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
@@ -346,7 +359,7 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, network: cfg.network ?? {}, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

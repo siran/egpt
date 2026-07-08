@@ -346,6 +346,99 @@ describe('spine — mode:auto (operator impersonation)', () => {
   });
 });
 
+// TRUSTED EGPT NETWORK (operator 2026-07-08): the sibling-output guard (piece 2) and the
+// standby takeover hold (piece 3). Peer output (a peer node's own stamped reply) is logged
+// but NEVER dispatched — any mode, incl mode:on. On a STANDBY node a network-addressed
+// dispatch is HELD for takeover_ms and cancelled if the primary answers (a peer reply lands
+// in the chat); a PINNED own-handle mention bypasses the hold. primary/absent = no change.
+describe('spine — trusted network (sibling-output guard + standby takeover)', () => {
+  function fakeTimers() {
+    let seq = 0; const pending = new Map();
+    return {
+      setTimeout: (fn) => { const id = ++seq; pending.set(id, fn); return { __id: id, unref() {} }; },
+      clearTimeout: (t) => { if (t && t.__id != null) pending.delete(t.__id); },
+      size: () => pending.size,
+      flush() { const fns = [...pending.values()]; pending.clear(); for (const fn of fns) fn(); },
+    };
+  }
+  const yieldMacro = () => new Promise((r) => setTimeout(r, 0));
+  async function settle(timers, rounds = 16) {
+    for (let i = 0; i < rounds; i++) { await yieldMacro(); if (timers.size() === 0) break; timers.flush(); }
+    await yieldMacro();
+  }
+  // mode:on gating so a bare message (no @e) still dispatches — models the shared-chat gate pass.
+  const onGating = { async decide() { return { mode: 'on', receives: true, mayReply: true, sendToEgpt: 'mode' }; }, surfaces: () => true };
+  function buildNet({ network } = {}) {
+    const bridge = fakeBridge();
+    const brain = fakeBrain();
+    const transcript = fakeTranscript();
+    const timers = fakeTimers();
+    const spine = createSpine({
+      bridge, brain, store: fakeStore(),
+      identity: fakeIdentity, router: fakeRouter, gating: onGating,
+      sender: fakeSender(bridge), transcript, heartbeats: fakeHeartbeats(),
+      network, clock: { now: () => 1000 }, turnTimeoutMs: 0,
+      setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
+    });
+    spine.start();
+    return { spine, bridge, brain, transcript, timers };
+  }
+
+  // PIECE 2 — sibling-output guard.
+  it('peer output (peerOutput:true) is transcript-logged but NEVER dispatched — even in mode:on', async () => {
+    const { bridge, brain, transcript } = buildNet();   // no network block → primary; guard is default-on
+    await bridge.emit({ ...MSG, msgId: 'p1', body: '🤝 egpt\nya respondí', peerOutput: true });
+    expect(brain.calls).toHaveLength(0);                 // never dispatched (no mode:on trigger, no gate pass)
+    expect(bridge.sent).toHaveLength(0);
+    expect(transcript.entries).toHaveLength(1);          // …but it IS logged (still flows to the transcript)
+  });
+  it('regression: a NON-peer message in mode:on still dispatches normally', async () => {
+    const { bridge, brain } = buildNet();
+    await bridge.emit({ ...MSG, msgId: 'n1', body: 'hola' });
+    expect(brain.calls).toHaveLength(1);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ hola' }]);
+  });
+
+  // PIECE 3 — standby takeover.
+  it('standby HOLDS a network-addressed dispatch, then fires after takeover_ms when no peer answers', async () => {
+    const { bridge, brain, timers } = buildNet({ network: { role: 'standby', takeover_ms: 5000 } });
+    await bridge.emit({ ...MSG, msgId: 's1', body: '@e estás?' });   // no pinned → held
+    expect(brain.calls).toHaveLength(0);                 // held, not dispatched yet
+    expect(timers.size()).toBe(1);                       // one pending takeover hold
+    await settle(timers);                                // no peer reply → the hold fires
+    expect(brain.calls).toHaveLength(1);                 // dispatched after the delay
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ @e estás?' }]);
+  });
+  it('standby CANCELS the held dispatch when a peer-stamped reply lands in the same chat within the window', async () => {
+    const { bridge, brain, transcript, timers } = buildNet({ network: { role: 'standby', takeover_ms: 5000 } });
+    await bridge.emit({ ...MSG, msgId: 's2', body: '@e estás?' });         // held
+    expect(timers.size()).toBe(1);
+    await bridge.emit({ ...MSG, msgId: 'peer', body: '🤝 egpt\nyo contesto', peerOutput: true });   // the primary answered
+    expect(timers.size()).toBe(0);                       // the hold was cancelled
+    await settle(timers);
+    expect(brain.calls).toHaveLength(0);                 // the standby stayed silent
+    expect(bridge.sent).toHaveLength(0);
+    expect(transcript.entries.map((e) => e.ev.msgId)).toEqual(['s2', 'peer']);   // both received messages logged
+  });
+  it('standby answers a PINNED own-handle mention (@ed) IMMEDIATELY — no hold', async () => {
+    const { bridge, brain, timers } = buildNet({ network: { role: 'standby', takeover_ms: 5000 } });
+    await bridge.emit({ ...MSG, msgId: 'd1', body: '@ed estás?', mention: { atEStart: true, atEAnywhere: true, replyToBot: false, pinned: true } });
+    expect(brain.calls).toHaveLength(1);                 // dispatched at once, no timer
+    expect(timers.size()).toBe(0);
+    expect(bridge.sent).toEqual([{ chat: MSG.chatId, text: '↩ @ed estás?' }]);
+  });
+  it('regression: role:primary (and an absent network block) = zero behavior change — dispatches immediately, no hold', async () => {
+    const primary = buildNet({ network: { role: 'primary' } });
+    await primary.bridge.emit({ ...MSG, msgId: 'pr', body: '@e hi' });
+    expect(primary.brain.calls).toHaveLength(1);
+    expect(primary.timers.size()).toBe(0);               // no hold armed for a primary
+    const absent = buildNet();                            // no network block at all
+    await absent.bridge.emit({ ...MSG, msgId: 'ab', body: '@e hi' });
+    expect(absent.brain.calls).toHaveLength(1);
+    expect(absent.timers.size()).toBe(0);
+  });
+});
+
 // mode: auto answer routing (ROADMAP §3): an operator quote-reply in the advice channel
 // is intercepted EARLY (before gating), logged, and routed to the origin — never treated
 // as a normal message where the ask was posted (E must not reply in the advice channel).

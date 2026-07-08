@@ -92,6 +92,11 @@ export function createSpine({
   mesh,                                // optional §2c mesh service (Phase 4b cross-node relay)
   actions,                             // optional §2c reply-actions service (E's limbs: react/reply/media/edit/delete emitted in a reply)
   advice,                              // optional §2c advice service (mode: auto — /ask + operator-answer routing)
+  // TRUSTED EGPT NETWORK (operator 2026-07-08): { role, takeover_ms } from config.network.
+  // role:'standby' HOLDS a network-addressed persona dispatch for takeover_ms — if the
+  // primary answers first (a peer-stamped message lands in the chat), the standby stays
+  // silent. Absent / role:'primary' = today's behavior EXACTLY (no hold, immediate dispatch).
+  network = {},
   defaultBeing = 'e',                  // the persona a mesh-target message is gated as (it's still THIS chat's message)
   clock = { now: () => Date.now() },
   log = {},
@@ -256,6 +261,51 @@ export function createSpine({
     turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0, preLogged: true }));
   }
 
+  // --- STANDBY TAKEOVER (operator 2026-07-08, TRUSTED EGPT NETWORK). On a standby node a
+  //     NETWORK-addressed persona dispatch (unqualified @e / mode:on / any non-pinned gate
+  //     pass) is HELD for takeoverMs instead of firing at once. If the PRIMARY answers first
+  //     — a peer-stamped message lands in the same chat, cancelling the hold — the standby
+  //     stays silent; otherwise it dispatches after the delay (the primary was asleep). A
+  //     PINNED own-handle mention (@ed) or a directly-@named local being bypasses the hold
+  //     (mention.pinned) — a direct address answers immediately. In-memory only (a restart
+  //     loses pending holds — the next message re-triggers). role:'primary'/absent = no
+  //     holds ever armed, so every path is byte-for-byte today's behavior. ---
+  const standby = String(network?.role ?? '').toLowerCase() === 'standby';
+  const takeoverMs = Number(network?.takeover_ms) > 0 ? Number(network.takeover_ms) : 5000;
+  const holdsBy = new Map();                    // holdKey -> { to, ev, d, mention, turnKey, chatId, at, timer }
+  let holdSeq = 0;
+  async function armHold({ to, ev, d, mention, turnKey }) {
+    // Received = logged (C1.2) + accumulated NOW (awaited, same as the dwell branch, so the
+    // serial pump keeps transcript order), so a fired turn prompts with the whole window and
+    // a peer-cancelled message is still recorded (it never runs a turn).
+    await transcript.log(ev);
+    pushCycle(turnKey, ev.line ?? ev.body);
+    const holdKey = `${turnKey} ${ev.msgId ?? `h${++holdSeq}`}`;
+    const prev = holdsBy.get(holdKey);
+    if (prev?.timer) clearTimeoutFn(prev.timer);
+    const timer = setTimeoutFn(() => { fireHold(holdKey).catch((e) => note(`hold ${holdKey}: ${e?.message ?? e}`)); }, takeoverMs);
+    timer?.unref?.();
+    holdsBy.set(holdKey, { to, ev, d, mention, turnKey, chatId: ev.chatId, at: clock.now(), timer });
+  }
+  async function fireHold(holdKey) {
+    const entry = holdsBy.get(holdKey);
+    if (!entry) return;                         // cancelled by a peer reply — stand down
+    holdsBy.delete(holdKey);
+    const { to, ev, d, mention, turnKey } = entry;
+    openAndRunReply({ to, ev, d, mention, turnKey, preLogged: true });   // ev already logged+cycled at arm
+  }
+  // A peer-stamped message cancels the standby holds it supersedes. The fast pump is
+  // SERIAL, so every hold currently pending in this chat was armed BEFORE this peer message
+  // — i.e. it is older, exactly the set the spec cancels ("only holds OLDER than it").
+  function cancelHolds(chatId) {
+    for (const [k, h] of holdsBy) {
+      if (h.chatId !== chatId) continue;
+      if (h.timer) clearTimeoutFn(h.timer);
+      holdsBy.delete(k);
+      note(`standby: hold ${k} cancelled — peer answered in ${chatId}`);
+    }
+  }
+
   // enqueue resolves when THIS message's turn (if any) completes, so a caller — and
   // the pipe tests — can await a message end-to-end even though the pump itself
   // returns as soon as the fast phase has dispatched the turn.
@@ -305,6 +355,14 @@ export function createSpine({
   //     when the message runs no turn. ---
   async function handleFast(msg) {
     const ev = identity.build(msg);
+
+    // SIBLING-OUTPUT GUARD (operator 2026-07-08, TRUSTED EGPT NETWORK): a peer node's OWN
+    // output (its reply stamp leads the text — the bridge flagged it) is transcript-logged
+    // but NEVER dispatched here — no command, no mesh, no gate, no mode:on trigger. FIRST,
+    // before everything. It ALSO cancels this chat's standby takeover holds: the primary
+    // answered, so the standby stands down (piece 3). Default-on for every role (a primary
+    // has no holds — cancelHolds is a no-op — but must never re-answer a peer's output).
+    if (ev.peerOutput) { await transcript.log(ev); cancelHolds(ev.chatId); return; }
 
     // operator slash command (Self DM / authorized) → handled here, NEVER routed
     // to the brain. Logged like any inbound, then executed (lifecycle exits the
@@ -393,23 +451,20 @@ export function createSpine({
     }
 
     if (d.mayReply) {
+      // STANDBY TAKEOVER (operator 2026-07-08, trusted network): on a standby node a
+      // NETWORK-addressed dispatch (unqualified @e / mode:on / other gate pass) is HELD
+      // for takeoverMs — the primary answers first, and only if it doesn't (a peer stamp
+      // never lands to cancel) does this node dispatch after the delay. A PINNED address
+      // (an own-handle @ed mention, or a directly-@named local being) bypasses the hold
+      // and answers at once. primary/absent network → standby is false → never held.
+      if (standby && !mention?.pinned) { await armHold({ to, ev, d, mention, turnKey }); return; }
       // Reply branch (the reply train). Open THIS mention's OWN placeholder NOW, on
-      // arrival — the per-message ack + streaming target, quoting the triggering
-      // message (operator: "mentions should always be replied to the message"). If a
-      // train is already in flight for this conversation, the placeholder opens in the
-      // QUEUED state (showing how many trains are ahead) and the turn WAITS its turn on
-      // turnBy; when it reaches the front it activates and streams. The `out` handle is
-      // captured into THIS turn's onPartial closure — a turn's stream only ever edits
-      // its own placeholder, never conversation-global state. Uses the ROUTED mention so
-      // a sibling's @name reply quotes correctly too.
-      const m = mention ?? {};
-      const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
-      const ahead = bumpTrain(turnKey);
-      // mode:auto posts the reply as PLAIN operator text — no persona line, no ∎, and NO
-      // thinking scaffold (no placeholder, no streamed edits): the sender's auto handle
-      // post-once's on finish. `auto` selects it.
-      const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
-      const turn = turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0 }));
+      // arrival — the per-message ack + streaming target, quoting the triggering message
+      // (operator: "mentions should always be replied to the message"). If a train is
+      // already in flight for this conversation, the placeholder opens in the QUEUED state
+      // and the turn WAITS its turn on turnBy; when it reaches the front it activates and
+      // streams. Uses the ROUTED mention so a sibling's @name reply quotes correctly too.
+      const turn = openAndRunReply({ to, ev, d, mention, turnKey });
       return { turn };
     }
 
@@ -442,6 +497,18 @@ export function createSpine({
       }
       throw e;
     } finally { clearTimeoutFn(timer); }
+  }
+
+  // Open THIS mention's placeholder + enqueue its reply turn on the per-conversation FIFO.
+  // The ONE seam both the immediate reply branch and the standby-hold fire go through, so a
+  // held-then-fired dispatch is byte-identical to an immediate one (preLogged only when the
+  // hold already logged+accumulated ev at arm time). Returns the turn's completion promise.
+  function openAndRunReply({ to, ev, d, mention, turnKey, preLogged = false }) {
+    const m = mention ?? {};
+    const replyTo = (m.atEAnywhere || m.atEStart || m.replyToBot) ? ev.msgId : null;
+    const ahead = bumpTrain(turnKey);
+    const out = sender.open(ev.chatId, { being: to, replyTo, queued: ahead > 0, queuedAhead: ahead, auto: d.mode === 'auto' });
+    return turnBy(turnKey, () => runReplyTurn({ to, ev, d, out, turnKey, queued: ahead > 0, preLogged }));
   }
 
   // The reply train's turn body (DEFECT 1 + accumulation FEATURE). Fully guarded: from
@@ -543,6 +610,8 @@ export function createSpine({
   }
   function stop() {
     if (timer) { clearIntervalFn(timer); timer = null; }
+    for (const h of holdsBy.values()) if (h.timer) clearTimeoutFn(h.timer);   // don't let a standby hold fire after stop
+    holdsBy.clear();
     bridge.stop?.();
     note('spine: stopped');
   }
