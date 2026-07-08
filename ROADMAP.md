@@ -430,6 +430,10 @@ following is LANDED, test-locked, and (where marked) live-verified:
        to run (the DOLLY 5-min cycle test above).
   c. [beeper accounts registry config block]
      → verify: block parsed; /status shows the network's named accounts
+     — ✅ DONE + LIVE-VERIFIED (2026-07-08, 2c3e93d): /status on kg shows
+       beeper_accounts (reve/dolly names+addresses); tokens never surfaced
+       (asserted absent in tests; deployed configs hold accounts-only
+       entries — tokens deliberately omitted until cross-account ops exist).
   d. [transcription role wiring: do = primary transcriber]
      → verify: shared-chat voice note transcribed by do, 👂 posted once,
        15-min debounce intact
