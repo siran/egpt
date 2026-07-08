@@ -436,7 +436,20 @@ following is LANDED, test-locked, and (where marked) live-verified:
        entries — tokens deliberately omitted until cross-account ops exist).
   d. [transcription role wiring: do = primary transcriber]
      → verify: shared-chat voice note transcribed by do, 👂 posted once,
-       15-min debounce intact
+       15-min debounce intact — ✅ CODE DONE + DEPLOYED (2026-07-08,
+       86395c8): network.transcribe_role primary|standby (separate from
+       network.role — do is responder-standby but transcription-PRIMARY) +
+       transcribe_takeover_ms (default 60s). Standby holds its 👂 past the
+       debounce and skips at FIRE time if the primary's 👂 for THAT note
+       appeared (bridge records inbound 👂-acks keyed chat+note, standby
+       only, bounded in-memory). Configs live: do=transcription-primary,
+       kg=transcription-standby. LIVE shared-chat voice-note verify pending
+       (send one, expect ONE 👂 — do's).
+  CHECKLIST a→d: ALL CODE LANDED + DEPLOYED 2026-07-08 (875594a, 0346196,
+  2c3e93d, 86395c8). The trusted network is LIVE: one answerer (5s
+  takeover verified), complete transcripts through sleep, named accounts
+  in /status, one ear per note. Remaining live verifies: b's sleep-window
+  backfill + d's shared-chat voice note.
   ```
 
 - **Live mesh smoke — egpt-test channel CHAIN** (operator 2026-07-03): create 3–4
