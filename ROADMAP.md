@@ -443,12 +443,17 @@ following is LANDED, test-locked, and (where marked) live-verified:
   assume). Sketch:
   - **L-1 DORMANT** — machine asleep; scheduled WakeToRun duty cycles: wake,
     do egpt things, exit (exiting releases the scheduler's wake lock → machine
-    drifts back to sleep). TEST HARNESS LIVE 2026-07-07 on DOLLY: task
-    `egpt-wake-duty` (every 15 min, WakeToRun, batteries ok) → runs
-    C:\Users\an\egpt-wake-duty.ps1 → logs svc/spinePid/beeperApi/lastwake to
-    C:\Users\an\egpt-wake-duty.log; wake timers enabled AC+DC; DOLLY supports
-    S3; manual fire verified (svc=Running alive=True beeperApi=True). Sleep
-    test = operator puts DOLLY to sleep, expect a wake + log line ≤15 min.
+    drifts back to sleep). TEST HARNESSES LIVE 2026-07-07, task
+    `egpt-wake-duty` → C:\Users\an\egpt-wake-duty.ps1 → appends to
+    C:\Users\an\egpt-wake-duty.log; wake timers enabled AC+DC on both:
+    - REVE (operator: test here first): every 5 MIN, duty also WAITS FOR
+      NETWORKING (up to 30s, pings DOLLY + 1.1.1.1, logs seconds-to-net) —
+      manual fire verified (net 0.1s, svc=Running, spine alive, beeperApi up).
+    - DOLLY: every 15 min; S3 supported; manual fire verified.
+    Sleep test = operator sleeps the machine, expect wake + log line within
+    one interval; `lastwake` should name the task. NB while the task is
+    enabled a sleeping machine RE-WAKES every interval — disable after
+    testing (`schtasks /change /tn egpt-wake-duty /disable`).
   - **L0 BOOT** — service starts at boot, NO login: VERIFIED 2026-07-07 both
     nodes (`egpt-daemon`, startMode=Auto, .\an). Headless duties (heartbeats,
     cron, textecutables, claude turns) should run; Beeper is a GUI app so no
