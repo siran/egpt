@@ -373,10 +373,25 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 - **TRUSTED EGPT NETWORK (operator 2026-07-08 — ADOPTED DIRECTION, supersedes
   the standalone HRW item and the brief main-spine-to-DOLLY idea)**: REVE stays
-  the main machine. Each node fronts its OWN Beeper account (kg/REVE = An,
-  do/DOLLY = Rodz — the Rodz account does NOT retire, it is the network's
-  second identity); the network = the set of SHARED chats both accounts sit
-  in. Both nodes keep full transcripts of what they hear (they are egpt
+  the main machine.
+  **TOPOLOGY CORRECTION (operator 2026-07-08 evening, supersedes the
+  each-node-its-own-account reading below): BOTH nodes track AN'S account** —
+  DOLLY's Beeper signs into An's account (two desktop sessions of one
+  account, each machine its own local API+token), so do has ITS OWN ears on
+  every chat An sees (including while REVE sleeps — the availability goal)
+  and both nodes log everything ("both would log"). Identities stay
+  node-bound: E (🐶) belongs to kg, ED (🤝) to do — the chunk-a wake-word
+  sets already implement exactly this (@e wakes both/primary answers;
+  @ed pins do). The Rodz account does NOT retire — it remains the network's
+  second identity (registry, foreign-mesh tests, its phone); it just stops
+  being what DOLLY's desktop is signed into. All a→d machinery
+  (stamps, holds, backfill, ack roles) is account-agnostic and transfers
+  unchanged, now covering EVERY chat instead of only rodz-shared ones.
+  SWITCH IN PROGRESS 2026-07-08 (operator does the DOLLY Beeper re-login;
+  orchestrator wires token + verifies).
+  Original (superseded) reading: each node fronts its OWN Beeper account
+  (kg/REVE = An, do/DOLLY = Rodz); the network = the set of SHARED chats
+  both accounts sit in. Both nodes keep full transcripts of what they hear (they are egpt
   nodes). Simplicity is king. Decided semantics:
   1. **PRIMARY/STANDBY single-responder (v1, decided over HRW)**: `@e` → kg
      answers (primary); if NO reply lands in the chat within **5s**, ed (do)
@@ -597,13 +612,21 @@ following is LANDED, test-locked, and (where marked) live-verified:
   log — recognizable by fixture names; left in place (history, not
   scrubbed).
 
-- **BUG: 👂 voice ack shows the raw LID instead of the push name (live
-  2026-07-08)**: `👂 @whatsapp_lid-85555832479795:beeper.local (92s): …` in
-  the morgan chat — should be the sender's pushed name (operator: "it should
-  use push name"). An existing test locks pushed-name behavior for the 👂
-  echo, so the LID-shaped sender path misses the resolver (ties into the
-  LID↔phone stats duty). QUEUED behind trusted-network chunk (a) — same
-  file (beeper.mjs).
+- **BUG FIXED (0346196): 👂 voice ack shows the push name for LID senders**
+  (was the raw `@whatsapp_lid-…` in the morgan chat — a LID is an unsaved
+  contact so senderName IS the push name).
+- **👂 max-age bound — IN FLIGHT (operator 2026-07-08 "go", after the
+  Zohykar ancient-note acks)**: `network.transcribe_ack_max_age_ms`
+  (default 1h) — a 👂 posts only for notes younger than the bound; resync-
+  resurrected notes transcribe + log SILENTLY; sleep-window notes (<1h)
+  keep their courtesy ack. Agent dispatched.
+- **DONE (a95c46b): /reply redundancy guard** — a /reply targeting the
+  message being answered is stripped (the Zohykar rogue-twin); doc updated,
+  profiles refreshed.
+- **VERIFIED IN CODE (2026-07-08): third-party @e IS answered** —
+  ev.authorized gates ONLY slash commands (commands.mjs); the reply gate is
+  mode-based, so guests in any chat can @e (flood guard bounds abuse).
+  Per-chat guest control would be a NEW feature if ever wanted.
 - Test flakes under full-suite port/timing contention: tests/transcriptor.test.mjs,
   tests/beeper-bridge.test.mjs "newest isSender match" (real retry timers).
   Both pass in isolation. Fix: fake timers / serialize the port-binding tests.
