@@ -44,6 +44,25 @@ describe('parseReplyActions — the pure split', () => {
     expect(parseReplyActions('/reply hola', EV).stripped).toHaveLength(1);
   });
 
+  // REDUNDANCY GUARD (operator 2026-07-08, Zohykar #159710): E's streamed reply already
+  // quote-replies the message it's answering — a /reply at that SAME message id only
+  // posts a second, near-duplicate message (a rogue twin). Stripped like any malformed
+  // limb; a /reply at any OTHER message is untouched (regression-lock).
+  it('reply: targeting the message being answered (ev.msgId) is REDUNDANT — stripped, never executed', () => {
+    const ev = { ...EV, msgId: '159710' };
+    const { run, stripped } = parseReplyActions('/reply #159710 Hola Zohy 👋', ev);
+    expect(run).toEqual([]);
+    expect(stripped).toHaveLength(1);
+    expect(stripped[0].reason).toMatch(/targets the message being answered/);
+  });
+
+  it('reply: targeting a DIFFERENT message than the trigger still executes (regression-lock)', () => {
+    const ev = { ...EV, msgId: '159710' };
+    const { run, stripped } = parseReplyActions('/reply #157204 sounds good to me', ev);
+    expect(stripped).toEqual([]);
+    expect(run).toEqual([{ type: 'reply', chatId: EV.chatId, targetId: '157204', text: 'sounds good to me' }]);
+  });
+
   it('media: a relative path is accepted; an absolute path or .. is stripped', () => {
     expect(parseReplyActions('/media chart.png here you go', EV).run[0])
       .toEqual({ type: 'media', chatId: EV.chatId, path: 'chart.png', caption: 'here you go' });

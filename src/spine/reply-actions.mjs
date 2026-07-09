@@ -17,6 +17,8 @@
 //     (mode: auto) via the injected `askAdvice` callback — never an arbitrary chat,
 //     and fail-closed (dropped + logged) when no advice channel is configured;
 //   - a malformed action line is STRIPPED and LOGGED, never surfaced, never executed;
+//   - a /reply targeting the message being answered is REDUNDANT (operator 2026-07-08,
+//     Zohykar rogue-twin: the streamed reply already quotes it) — stripped like malformed;
 //   - a /media path must resolve INSIDE the conversation dir (E's confined cwd) —
 //     traversal / absolute paths are rejected at parse AND re-checked at execute;
 //   - /edit and /delete only touch a message the bridge itself SENT (wasSentByUs);
@@ -101,6 +103,15 @@ function parseOne(verb, args, ev) {
       // #<id> <text>
       const m = ID_TEXT_RE.exec(raw);
       if (!m) return { ok: false, reason: 'reply: expected "#<id> <text>"' };
+      // REDUNDANCY GUARD (operator 2026-07-08, Zohykar rogue-twin): E's streamed prose
+      // reply ALREADY quote-replies the message it is answering, so a /reply whose
+      // target is THAT SAME message (ev.msgId, the triggering event) only duplicates
+      // the train as a second, un-stamped post — it read as a rogue twin to the humans.
+      // Malformed-by-construction here, not merely discouraged: strip it like any other
+      // malformed limb (logged, never posted). A /reply at any OTHER message (e.g. an
+      // earlier one in scrollback) is unaffected — that's the real, useful case.
+      const triggerId = ev?.msgId != null ? String(ev.msgId) : null;
+      if (triggerId && m[1] === triggerId) return { ok: false, reason: 'reply: targets the message being answered — the main reply already quotes it' };
       return { ok: true, action: { type: 'reply', chatId, targetId: m[1], text: m[2].trim() } };
     }
     case 'edit': {
