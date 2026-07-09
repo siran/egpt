@@ -371,8 +371,42 @@ following is LANDED, test-locked, and (where marked) live-verified:
   ties into the node-keypair/alias identity ideas). Opts ride the envelope
   provenance so every hop sees them. Nothing implemented yet.
 
-- **TRUSTED EGPT NETWORK (operator 2026-07-08 — ADOPTED DIRECTION, supersedes
-  the standalone HRW item and the brief main-spine-to-DOLLY idea)**: REVE stays
+- **⭐ SYMMETRIC NODES — the model (operator 2026-07-09, SUPERSEDES the
+  primary/standby build below)**: after building the a→d primary/standby stack
+  (peer_stamps, standby holds, transcribe_role — chunks 875594a/0346196/2c3e93d/
+  86395c8), the operator rejected the whole apparatus: "these suppressions are
+  mostly always a bug." The clean model:
+  - **Nodes are symmetric.** Each responds ONLY to the agents IT configures —
+    nothing injected. `@e`→whoever hosts `e`; `@ed`→whoever hosts `ed`. Two
+    nodes hosting the same name BOTH reply (fine — same being; body_emoji shows
+    which spoke). Different names → single answerer. The double-answer the
+    standby stack suppressed was self-inflicted by injecting network-wide
+    e/egpt into every node; remove the injection → nothing to suppress.
+  - **There is NOTHING TO DEDUP.** Duplication is prevented by config/symmetry,
+    not suppressed at runtime. peer_stamps / standby / watch-and-cancel = gone.
+  - **HRW (NOT dedup) for "exactly one" when wanted** (mainly the 👂 echo):
+    each eligible node computes over the ROOM'S MEMBERS (the candidate set is
+    who's IN the chat — the 1:1/group — NOT a config registry), keyed by the
+    event id, whether IT is the winner; only the winner acts. Ranked + timeout:
+    if rank-1 is silent past the timeout, rank-2 promotes (covers offline). No
+    watching in the normal path, no roles. Same-account co-spines collapse to
+    one room member, so a config `account_peers: [kg, do]` completes the
+    candidate set for them.
+  - **Transcription = standalone LAN service** (whisper-server; any node hosts
+    and/or uses one, local fallback — the existing transcription_service). The
+    **👂 echo** (who posts) is separate: a per-node `echo:` boolean for now, HRW
+    rotation later.
+  - **Config shape** (new skeleton 883e667): `beeper: {use, <named accts w/
+    account+token>}`; `networks: {whatsapp/telegram/signal: {chat_ids[],
+    allowed_users[]}}`; `account_peers`; `node_alias`; `echo`/`echo_max_age_ms`.
+  - IN FLIGHT 2026-07-09: config-shape migration + machinery removal (back-compat
+    old shape) dispatched; then regenerate live configs + deploy; then HRW echo.
+  - Live now: DOLLY switched to An's account (token bdapi_…gJZ0 wired); both
+    nodes on anrodz42, still running the OLD standby config until the migration
+    deploys.
+
+- **TRUSTED EGPT NETWORK (operator 2026-07-08 — SUPERSEDED by the symmetric
+  model above; kept for the build history)**: REVE stays
   the main machine.
   **TOPOLOGY CORRECTION (operator 2026-07-08 evening, supersedes the
   each-node-its-own-account reading below): BOTH nodes track AN'S account** —
