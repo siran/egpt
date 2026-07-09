@@ -1,229 +1,98 @@
-# config.yaml — a node's config. A fresh install starts from this file: copy it
-# to your profile's config/config.yaml (canonical: ~/.egpt/config/config.yaml),
-# fill in the token + your ids, and you have a working node.
+# config.yaml - one eGPT node.
 #
-# Every key here is registered in config/config-schema.mjs — that file is the
-# authority on what each key means and does; the comments below are the short
-# version. What ships uncommented is a working default; commented blocks are
-# optional overrides — uncomment and edit only the ones you want to change.
+# Don't configure by hand. Please run configuration script: <>
+#
+#
+# Please copy this file, and paste into you favorite agentic coder, or configure
+# manually, old-school way.
+#
+#
+# Copy this file to ~/.egpt/config/config.yaml, fill the
+# blanks, and the node runs. Uncommented = working default; commented = optional
+# override (default shown). Full key reference: config/config-schema.mjs.
+# Comments are ASCII-only on purpose: this file is copied/seeded across machines,
+# and non-ASCII punctuation corrupts through some encodings.
 
-# ── 1. Beeper token ──────────────────────────────────────────────────────────
-# The ONE credential. eGPT reaches the world through Beeper Desktop's local API
-# (127.0.0.1:23373); this is the access token for it — Beeper Desktop → Settings
-# → Developer → Desktop API. Every node needs its OWN Beeper account (one login =
-# one node). Keep this out of any shared or checked-in file.
-beeper_token: "PASTE_YOUR_BEEPER_TOKEN_HERE"
+# --- Beeper accounts ---------------------------------------------------------
+# eGPT reaches the world through Beeper Desktop's local API (127.0.0.1:23373).
+# Store one or MANY accounts (each account + its token together); `use` selects
+# the one this node connects with - switch by changing `use`, no re-typing tokens.
+# Keep this file private. Token: Beeper Desktop > Settings > Developer > Desktop API.
+beeper:
+  use: main                       # which account below this node connects with
+  main:
+    account: "you@example.com"    # the account this token belongs to (label)
+    token: "PASTE_YOUR_TOKEN_HERE"
+  # alt:
+  #   account: "other@example.com"
+  #   token: "PASTE_YOUR_TOKEN_HERE"
 
-# ── 2. Who you are ───────────────────────────────────────────────────────────
-# user_name — your handle, the human typing here. Shown in cross-surface
-# mirroring as <user_name>@<surface>. This is the general default; a per-bridge
-# override can live in a surface block below.
-user_name: "you"
+# --- This node's identity ----------------------------------------------------
+node_name: kg                     # this node's name on the network
+# node_alias: [kg2, kg3]            # extra identities this ONE process also answers to
+user_name: "John"                  # the human here; shown as <user_name>@<surface>
 
-# node_name — the identity this node uses on the mesh bus (e.g. kg, home, chr1).
-# Optional; defaults to "node". Only matters once more than one node is in play.
-# node_name: kg
-#
-# node_alias — extra identities this ONE process ALSO answers to (a list). node_name
-# together with node_alias is the node's SELF-set: a relay envelope or a fully-qualified
-# @being.<name> whose <name> is any self-name is handled locally (never forwarded to
-# ourselves), and the reply is stamped with the identity it was addressed as. Lets one
-# process host several node identities. NOTE: a node still can't relay to ITSELF across a
-# chat — the bridge suppresses a node re-seeing its own sends — so true room-to-room
-# transit between separate rooms needs distinct nodes.
-# node_alias: [do, mo]
+# account_peers - node identities sharing THIS Beeper account (include self).
+# Nodes on DIFFERENT accounts appear as distinct room members and need no listing;
+# co-account nodes collapse to one member, so list them here to complete the HRW
+# candidate set. Omit for a solo node.
+# account_peers: [kg, do]
 
-# ── 3. Who eGPT is ───────────────────────────────────────────────────────────
-# The persona's visible label + emoji come from the persona agent (§3b): its `name`
-# is the label the bridge stamps on the first line ("🐶 egpt"), its `body_emoji` the
-# marker. Rename / restyle there to rebrand the voice.
-#
-# emojis — author tags for cross-surface mirroring. Defaults shown; uncomment to
-# recolor. user = your messages, persona = eGPT's chat reply, egpt = its
-# status/system voice, human = the extension's default surface tag.
-# emojis:
-#   user: "🦅"
-#   egpt: "🧠"
-#   persona: "🐶"
-#   human: "🌐"
-
-# ── 3b. Agents (the modern unified registry) ─────────────────────────────────
-# `agents:` IS the configuration (operator 2026-07-02): the ONE block for the persona
-# identity, the local beings, and mesh addressing. It is REQUIRED — a node without an
-# agents block (or without a persona entry) refuses to boot. An AGENT = { configuration,
-# handles, and — for a relay — relay_channel }.
-#
-#   configuration — names an AGENT-TYPE file (a brain def) in config/agents/<type>.yaml
-#                   (see §6), OR the literal "relay" for a forwarding agent.
-#   handles       — alternate @<token> routes; the map key routes too.
-#   relay_channel — (relay only) the chat this agent forwards to: a chat NAME or a
-#                   raw Beeper room id — both work (names are resolved for you).
-#   name/body_emoji — display label + outbound emoji (default to the persona ones).
-#
-# @<token> resolution matches an agent's name or any handle (case-insensitive); a
-# local agent runs as its own being, a relay agent forwards to its channel, and the
-# PERSONA agent (handles include e/egpt) is the persona — its label/emoji show, but
-# routing still yields the canonical "e" being so warm sessions stay stable.
-#
-# The SHIPPED default: `egpt` is the persona; its configuration resolves to config/
-# agents/egpt.yaml (seeded on first boot — the warm Claude Code CLI, your `claude` login).
+# --- Agents (what this node answers to) --------------------------------------
+# REQUIRED. A node answers ONLY the agents it lists - nothing is injected. Two
+# nodes hosting the same name BOTH reply (same being); use different names for a
+# single answerer. The bridge stamps body_emoji so humans see which node spoke.
 agents:
   egpt:
-    configuration: egpt      # the persona's brain — config/agents/egpt.yaml
-    handles: [e, egpt]
-  # don:                     # a REMOTE agent: mentions of @don forward over the relay
-  #   relay_channel: Rodz    # a chat name or a room id — @don forwards there
-  #                          # (relay_channel alone marks a relay agent; the far-end
-  #                          #  owner of `don` answers — open-channel)
-  #
-  # A declarative relay CHAIN (operator 2026-07-05): each hop re-addresses onward via
-  # `to: <being>.<node>`, posting into its own relay_channel; the chain terminates when
-  # a hop's `to` resolves to a LOCAL being (which answers). `@carol hola` → Rodz1 →
-  # (don.do) Rodz2 → (wren.kg) → egpt answers; the reply routes back the way it came.
-  # carol: { relay_channel: Rodz1, to: don.do }
-  # don:   { relay_channel: Rodz2, to: wren.kg }
-  # wren:  { relay_channel: Rodz3, to: egpt.kg }   # egpt is local on node kg → answers
+    configuration: egpt           # brain: config/agents/egpt.yaml (warm claude CLI)
+    handles: [e, egpt]            # @e / @egpt reach this node's persona
+    # body_emoji: "<emoji>"       # reply stamp the bridge enforces; default is the dog.
+    #                             # A 2nd node sets its OWN so humans see which node spoke.
 
-# ── 3c. Mesh (cross-node being relay) ────────────────────────────────────────
-# OPTIONAL. `@being.node` in a chat reaches a being hosted on ANOTHER node; the reply
-# streams home into the origin chat as a living-mirror placeholder. Inert until `nodes:`
-# is configured (no matching node → "no route", nothing is forwarded).
+# Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
+# forwards a mention into another chat; `to:` chains hops. Not needed within one account.
+# carol: { relay_channel: rodz1, to: don.do }
+
+# --- Surfaces (who may command this node) ------------------------------------
+# Per-surface, because ids are per-network namespaces. allowed_users = STABLE ids
+# (jids / room ids, never display names); [] = deny (the account owner is always
+# allowed). chat_id = your Self-DM command channel, auto-captured on first contact.
+networks:
+  whatsapp:
+    chat_ids: [] # chats that accept commands (/egpt, /restart, /upgrade, etc)
+    allowed_users: [] # id of user allowed to issue commands in the chat_ids
+  telegram: { chat_ids: [], allowed_users: [] }
+  signal:   { chat_ids: [], allowed_users: [] }
+
+# --- Transcription: a standalone LAN service ---------------------------------
+# By default eGPT launches a whisper-server to transcribe audio notes
+# (ask your AI to download models from: https://huggingface.co/ggerganov/whisper.cpp)
 #
-#   timeout_ms — how long the origin waits before "<target> did not answer" (default 60000).
-#   nodes      — the routing table: <node-name> -> routes: [ { room_id } ]. Only routes[0]
-#                is used — the chat that carries the envelope to/from that node (a chat NAME
-#                or a short Beeper room id, both resolved for you). You need a nodes.<target>
-#                entry to ORIGINATE a relay toward <target>; a pure responder needs none. In a
-#                multi-hop chain each entry is the NEXT-HOP room toward that node, not the room
-#                the node itself sits in.
-# mesh:
-#   timeout_ms: 60000
-#   nodes:
-#     do:                    # to reach node `do`, this node posts the envelope into the chat below
-#       routes:
-#         - room_id: "Rodz"  # a chat name or a short Beeper room id
-
-# ── 4. Surfaces (who may command this node, per surface) ─────────────────────
-# eGPT talks through Beeper, which bridges several networks. Each surface has its
-# OWN authorization block, because ids are per-surface NAMESPACES — a WhatsApp jid
-# authorizes NOTHING on Telegram — so every surface carries its own list.
-#   chat_id       — your Self-DM room on that surface (the operator command
-#                   channel), auto-captured on first contact; paste it to pin it.
-#   allowed_users — STABLE sender ids that may command this node HERE: a network
-#                   jid / Beeper room id, NEVER a display name (a chat title is
-#                   attacker-controllable). EMPTY = deny (fail-closed); your own
-#                   account-owner messages are always authorized regardless.
-#
-# whatsapp is ALSO the transport block: Beeper's transport config (networks, …)
-# rides the whatsapp-named block, so it carries a few extra keys the others don't.
-whatsapp:
-  chat_id: ""
-  allowed_users: []
-  # networks — which Beeper networks the bridge processes. [] = the firehose,
-  # every network Beeper bridges. Set e.g. ["whatsapp", "signal"] to narrow scope.
-  networks: []
-telegram:
-  chat_id: ""
-  allowed_users: []
-signal:
-  chat_id: ""
-  allowed_users: []
-
-# ── 5. Time zone ─────────────────────────────────────────────────────────────
-# Interprets timezone-less heartbeat `when:` times. IANA name preferred
-# ("America/New_York"); aliases accepted ("New York", "ET"/"EST", "PT", "UTC").
-# Absent = the machine's local zone.
-# default_time_zone: "America/New_York"
-
-# ── 6. Agent types (a.k.a. brains) ───────────────────────────────────────────
-# An agent's `configuration` (§3b) names a TYPE file — an ENGINE config — resolved
-# across layers, most-specific winning: src/brains (built-in) < config/agents < a
-# conversation's own brains/. config/agents/<type>.yaml is the canonical home. `egpt`
-# ships seeded there (config/agents/egpt.yaml — the warm Claude Code CLI, no API key,
-# your `claude` login); config/agents/sonnet-high.yaml is seeded as a commented example.
-# Point agents.egpt.configuration at whichever you want new conversations to start on. A
-# type's allowed_tools lists tools explicitly (a LIST) to confine its file tools to each
-# conversation dir + allowed_paths; `all` is accepted but discouraged (trusted/unconfined).
-
-# ── 7. Warm sessions ─────────────────────────────────────────────────────────
-# eGPT runs each conversation as a resident background agent — the process stays
-# warm so its context lives in memory instead of re-spawning + --resume per
-# message. A conversation stays warm until it goes quiet for
-# idle_ttl_by_class.conversation (default 15m), then it is evicted; `max` caps how
-# many stay warm at once (least-recently-used dropped past it). Raise `max` to
-# keep more (or all) chats warm; a single chat can override its own TTL in its
-# conversation folder's config.yaml (warm: { idle_ttl: 1h }, or 0 = always warm).
-# warm:
-#   max: 6
-#   idle_ttl_by_class:
-#     conversation: 15m    # quiet-time before a chat goes cold; 0 = never evict
-
-# ── 8. Guards & cadence ──────────────────────────────────────────────────────
-# flood — last-line send-flood guard at the bridge chokepoint: more than `limit`
-# bot sends to one chat within window_ms pauses that chat for cooldown_ms. A
-# fail-safe against a reply loop; the process stays up, only that chat is paused.
-# flood:
-#   limit: 10
-#   window_ms: 3000
-#   cooldown_ms: 60000
-#
-# compaction — a cooling period after eGPT's last reply, if the warm session grew
-# past `ratio` of the model window, native-/compact it in place so it stays fast
-# (the full record stays in transcript.md — nothing is lost).
-# compaction:
-#   enabled: true
-#   ratio: 0.20            # compact once past 20% of the context window
-#   cooling_ms: 120000     # quiet period after the last reply before the check
-#
-# heartbeats — declarative timers: a map of <name> -> { frequency|when, command|ai_run }.
-# The spine materializes the resolved set to state/heartbeats.readonly.yaml; delete
-# that file to hot-reload without a restart. Per-chat/room beats live in their own
-# config.yaml. Paste-ready template: config/skeletons/heartbeats.yaml.
-# heartbeats:
-#   daily-sweep:
-#     frequency: 24h
-#     command: echo swept > last-sweep.txt
-
-# ── 9. Transcription ─────────────────────────────────────────────────────────
-# Voice notes are transcribed by a per-note fallback CHAIN: each engine in
-# fallback_order is tried in order, first transcript wins. `use_config` names the
-# active profile (the one line that differs machine-to-machine). Engine types:
-# whisper-server-remote (another node's GPU worker), whisper-server-local (a
-# resident whisper.cpp server), whisper-cli (per-note binary — the always-available
-# floor). Uncomment and point the paths at your whisper build to enable.
 # transcription_service:
 #   enabled: true
-#   use_config: local-only
-#   local-only:
-#     fallback_order: [cli]
-#     cli:
-#       type: whisper-cli
-#       command: C:\path\to\whisper-cli.exe
-#       model_path: C:\path\to\ggml-large-v3.bin
-#       language: es
-#       ffmpeg_command: C:\path\to\ffmpeg.exe
-#       threads: 12
-
-# ── 10. Aliases ──────────────────────────────────────────────────────────────
-# Display-name overrides for the /status member counters. Any sender id you see
-# in a conversation's stats.yaml `members:` block (a phone, WhatsApp jid, or
-# Beeper id) can be given a stable label shown in /status. Read at display time
-# only; edit + /restart to apply.
-# aliases:
-#   "@whatsapp_5215512345678:beeper.local": An
-
-# ── 11. Auto mode & the advice channel ───────────────────────────────────────
-# A conversation set to `mode: auto` (via `/e auto auto <chat>`) makes eGPT play
-# YOUR role there: helpful and of service, follows links, does as told — and CONSULTS
-# YOU when in doubt (irreversible/costly actions, commitments, personal matters). It
-# gates exactly like `mode: on` (replies to every message); the difference is the
-# operator-role stance and the consult path.
+#   use_config: main
+#   main:
+#     fallback_order: [gpu, local]
+#     gpu:   { type: whisper-server-remote, endpoint: "http://192.168.1.102:23390", token: "SHARED_SECRET" }
+#     local: { type: whisper-cli, command: C:\path\whisper-cli.exe, model_path: C:\path\ggml-large-v3.bin, language: es, ffmpeg_command: C:\path\ffmpeg.exe }
 #
-# `advice_channel` names the ONE chat eGPT posts those consult questions to (its `/ask`
-# limb). A chat NAME or a Beeper room id — both resolve. This is the SOLE cross-chat
-# message a conversation can emit, and only ever to THIS channel; unset = the `/ask` is
-# dropped (fail-closed) and eGPT's normal reply still goes out. Reply (quote-reply) to
-# eGPT's question in this channel and your answer is routed back into the origin chat.
-# Per-conversation opt-in only — no chat is auto unless you set it. An "EGPT AUTO" chat
-# is a good shape for this.
-# advice_channel: "EGPT AUTO"
+# To HOST the server for other nodes (the GPU box):
+# transcriptor: { enabled: true, bind: "0.0.0.0", port: 23390 }
+# transcription_token: "SHARED_SECRET"   # same value on the server and its clients
+
+# --- Transcript echo: who posts the ear ("listened") transcript --------------
+# The echo posts a voice note's transcript back into the chat. Among the echo-capable
+# eGPT nodes present in a room, HRW picks exactly ONE to post each note (rotates per
+# note - no fixed echoer, no duplicate). If the picked node stays silent past
+# echo_timeout_ms, the next-ranked node takes over (covers an offline node).
+# echo: true                      # this node may echo (default true)
+# echo_timeout_ms: 5000           # rank N+1 promotes after this much silence
+# echo_max_age_ms: 3600000        # never echo a note older than this (skips resynced backlog)
+
+# --- Everyday knobs (defaults shown) -----------------------------------------
+# default_time_zone: "America/New_York"                       # timezone-less heartbeat times
+# warm: { max: 6, idle_ttl_by_class: { conversation: 15m } }  # keep chats warm; 0 = never evict
+# compaction: { enabled: true, ratio: 0.20, cooling_ms: 120000 }
+# flood: { limit: 10, window_ms: 3000, cooldown_ms: 60000 }   # send-loop guard
+# advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
+# aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
