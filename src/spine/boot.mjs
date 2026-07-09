@@ -154,6 +154,10 @@ export async function boot({
   // holds its 👂 an extra transcribe_takeover_ms, then skips if the primary already acked.
   const transcribeRole = cfg.network?.transcribe_role === 'standby' ? 'standby' : 'primary';
   const transcribeTakeoverMs = Number.isFinite(cfg.network?.transcribe_takeover_ms) ? cfg.network.transcribe_takeover_ms : 60_000;
+  // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): the 👂 only posts for a
+  // note within this age of its OWN timestamp — a Beeper resync's ancient backlog notes get
+  // transcribed + logged (unaffected) but never acked into the live chat. Default 1h.
+  const transcribeAckMaxAgeMs = Number.isFinite(cfg.network?.transcribe_ack_max_age_ms) ? cfg.network.transcribe_ack_max_age_ms : 3_600_000;
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
@@ -186,6 +190,7 @@ export async function boot({
     transcribeAck,                        // 👂 ack role-gate: false = transcribe+log but never post the 👂 (operator 2026-07-08)
     transcribeRole,                       // transcription primary|standby: standby holds+skips a duplicate 👂 (operator 2026-07-08)
     transcribeTakeoverMs,                 // standby's extra 👂 hold beyond the debounce (operator 2026-07-08)
+    transcribeAckMaxAgeMs,                 // 👂 only acks a note within this age of its own timestamp (operator 2026-07-08)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});

@@ -191,6 +191,17 @@ export async function startBeeperBridge(opts = {}) {
     // The standby's extra hold (ms) beyond the normal debounce before it posts its 👂 —
     // generous vs the 15-min debounce so the primary's 👂 reliably lands first.
     transcribeTakeoverMs = 60_000,
+    // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): a Beeper resync
+    // re-delivered 12-DAY-OLD voice notes — the backlog backfill correctly transcribed
+    // them for the record, but the 👂 ack machinery then posted their transcriptions
+    // into the LIVE chat, visibly stale to the other human ("ese era un mensaje viejo").
+    // The 👂 is a live-conversation courtesy, not an archaeology announcement: it only
+    // posts when the NOTE ITSELF (its own message timestamp, not bridge start) is within
+    // this bound of now. Default 1h covers the sleep-window courtesy (a node waking 15
+    // min later still acks a note that arrived while it slept). 0 or negative = no bound
+    // (always ack, today's behavior). A note with no parseable timestamp acks normally
+    // (fail-open, matching the backlog gate's own inactive-timestamp behavior).
+    transcribeAckMaxAgeMs = 3_600_000,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -953,6 +964,13 @@ export async function startBeeperBridge(opts = {}) {
         // Owner's own sends carry the matrix id as senderName — substitute userName;
         // otherwise the person's pushed name / non-private id, NEVER the saved label.
         const voiceAuthor = senderDisplay(msg);
+        // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): gate on the NOTE'S
+        // OWN timestamp (tsMs, already computed above for the backlog gate) vs now — NOT
+        // bridge start, so a note that arrived during sleep still acks on wake as long as
+        // the note itself is within the bound. No parseable timestamp → fail-open (ack),
+        // same as the backlog gate's own inactive-timestamp behavior.
+        const tooOldForAck = transcribeAckMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > transcribeAckMaxAgeMs;
+        if (tooOldForAck) onLog(`beeper: ack suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${transcribeAckMaxAgeMs}ms)`);
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
@@ -960,7 +978,8 @@ export async function startBeeperBridge(opts = {}) {
           // 👂 ROLE-GATE (operator 2026-07-08): transcribeAck:false silences the ack on THIS
           // node (live AND backlog notes) — it still HEARS (transcribes + logs), just never
           // SPEAKS. true/absent = today's behavior (the room's postsBack verdict decides).
-          postsBack: transcribeAck ? svc.postsBack : false,
+          // tooOldForAck (above) wins independently — an ancient note never acks regardless.
+          postsBack: (transcribeAck && !tooOldForAck) ? svc.postsBack : false,
           muted: info.isMuted,
           author: voiceAuthor,
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN

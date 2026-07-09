@@ -667,6 +667,60 @@ describe('beeper bridge', () => {
     expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed by the role-gate
   });
 
+  // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): a Beeper resync re-delivered
+  // 12-DAY-OLD voice notes; the backlog backfill correctly transcribed them for the record, but
+  // the 👂 posted their transcriptions into the LIVE chat, stale and confusing ("ese era un
+  // mensaje viejo"). The 👂 now only posts when the NOTE ITSELF is recent — transcription +
+  // transcript-logging are unaffected. REPRODUCE: before this fix, the 👂 posted here too.
+  const voiceNoteAt = (ageMs) => liveMsg({
+    text: null, type: 'VOICE', timestamp: Date.now() - ageMs,
+    attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+  });
+  it('a 12-day-old voice note is transcribed + logged, but the 👂 is NOT posted (age bound)', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
+    expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed — too old
+  });
+
+  it('a 10-minute-old voice note still gets its 👂 (sleep-window courtesy, well within the default 1h bound)', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(10 * 60 * 1000)] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+  });
+
+  it('default bound (transcribeAckMaxAgeMs absent) is ~1h: a note just past it is not acked', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(61 * 60 * 1000)] });   // 61 min — just past the default 1h
+    await waitFor(() => incoming.length === 1);
+    expect(fake.posts).toHaveLength(0);
+  });
+
+  it('transcribeAckMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂', async () => {
+    const { incoming } = await startBridge({
+      transcribeAckMaxAgeMs: 0,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+  });
+
+  it('a voice note with NO parseable timestamp still gets its 👂 (fail-open, matching the backlog gate)', async () => {
+    const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE', timestamp: undefined,
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+  });
+
   it('network scope is fail-closed WHEN SET: unknown or foreign accountID drops; prefix instance ids pass', async () => {
     fake.chats.set(CHAT('chat-unknown'), { title: 'X', type: 'single', isMuted: false, accountID: null });
     fake.chats.set(CHAT('chat-telegram'), { title: 'T', type: 'single', isMuted: false, accountID: 'telegram' });
