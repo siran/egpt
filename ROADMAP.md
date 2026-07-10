@@ -585,6 +585,17 @@ following is LANDED, test-locked, and (where marked) live-verified:
 
 ## 4. Backlog (known warts, smallest last)
 
+- **Author-name enrichment via the stats members map (operator 2026-07-10, BACKBURNER):**
+  the message/👂 author resolves push name → WA number → Matrix-id localpart → raw id
+  (src/bridges/beeper.mjs senderDisplay/fallbackSenderId, the 2026-07-10 author-rule).
+  Enrich it with the per-chat `members` id→name map (state/stats/<surface>/<chatId>.yaml)
+  and — if it works — a Beeper contact-API fetch. TWO unknowns to resolve FIRST: (a) what
+  feeds `members[id].name` — must NOT be the saved-contact `senderName` label, or it
+  reintroduces the private-annotation leak the author-rule just closed; (b) whether
+  Beeper's contact/user/participant endpoints return anything (they 404'd 2026-07-03).
+  Net today the owner reads as `anrodriguez` (localpart) — clean enough; this is polish,
+  NOT a Phase-3 blocker.
+
 - **Service levels — "a conversation to be had" (operator 2026-07-03):** the node
   runs as `.\an` (the claude login, ~/.local/bin PATH, and the profile all live in
   the user's home — maximum capability, node = the operator). The alternative end
