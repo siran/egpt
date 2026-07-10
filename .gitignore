@@ -22,3 +22,6 @@ setup/bin/
 
 # AI-CLI scratch instruction files — never track
 AGENTS.md
+
+# disposable local runbooks (operator convention: *.disposable.md are ignored)
+*.disposable.md
