@@ -24,6 +24,7 @@ import {
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
+import { isEchoWinner } from './echo-hrw.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
@@ -259,17 +260,28 @@ export async function boot({
   // on @ed, NOT @e. (Reverted the 2026-07-08 network-wide e/egpt injection — that overlap was
   // self-inflicted and the whole suppression apparatus it needed is gone.)
   const wakeWords = (() => { const pa = personaAgent(); return [...new Set(agentIds(pa.name, pa.agent))]; })();
-  // 👂 ECHO (operator 2026-07-09): does THIS node post the voice-note transcript echo? echo:false
-  // still transcribes + logs, just never posts the 👂 (repurposes the old transcribe_ack gate).
-  // HRW rotation across co-account nodes is a LATER phase; this is the interim per-node boolean.
-  const echo = cfg.echo !== false;
   // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident; renamed from transcribe_ack_max_age_ms):
   // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
   // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
-  // Parsed + exposed only — a LATER HRW phase for the 👂 echo rotation consumes it. No behavior yet.
+  // The candidate set the HRW 👂-echo PICK rotates over (see echoDecider below).
   const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
+
+  // 👂 ECHO — HRW PICK (operator 2026-07-10, Phase 3a; plans/2607101713-HRW-ECHO-PLAN.md). NOT
+  // dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both saw each voice note and both posted
+  // its 👂 → double-👂. Instead of act-then-cancel, each node decides UPFRONT — per note, no
+  // coordination — whether IT is the one to echo, via rendezvous hashing over account_peers. The
+  // SHARED Beeper message id + the identical account_peers make the two nodes agree on exactly ONE
+  // winner, rotating per note (echo-hrw.mjs). The bridge calls echoDecider(noteId) where noteId is
+  // the voice note's stable Beeper message id (msg.id) — the shared identity that makes them agree.
+  // HARD OPT-OUT preserved: echo:false folds into an always-false decider, so an explicit opt-out
+  // still means this node NEVER posts the 👂 (it still transcribes + logs) even under HRW.
+  const node_name = cfg.node_name ?? null;
+  const echoPeers = accountPeers.length ? accountPeers : [node_name];
+  const echoDecider = cfg.echo === false
+    ? () => false
+    : (noteId) => isEchoWinner(noteId, node_name, echoPeers);
 
   // Per-surface config resolver (operator 2026-07-09): the NEW shape wraps the per-surface
   // blocks under `networks:` and lists command channels as `chat_ids` (plural); the OLD shape
@@ -321,7 +333,7 @@ export async function boot({
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
-    echo,                                 // 👂 echo gate: false = transcribe+log but never post the 👂 (operator 2026-07-09)
+    echoDecider,                          // 👂 echo PICK: (noteId) => is THIS node the HRW winner for this note? (operator 2026-07-10, Phase 3a). echo:false folds into always-false.
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),

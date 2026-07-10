@@ -688,11 +688,14 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 An: fake transcript');               // default echo → 👂 posts
   });
 
-  // 👂 ECHO gate (operator 2026-07-09): echo:false transcribes + LOGS but never posts the 👂
-  // — for live notes too (one per-node boolean, "does this node post the 👂 echo").
-  it('echo:false silences the 👂 — the note is still transcribed + logged, never posted', async () => {
+  // 👂 ECHO PICK (operator 2026-07-10, Phase 3a HRW): the static per-node `echo` boolean became a
+  // per-note echoDecider(noteId) — the rendezvous-hash pick that makes exactly ONE co-account node
+  // echo each note (NOT dedup). At the bridge the decision is just "did the decider say post?"; the
+  // pick itself is unit-tested in echo-hrw.test.mjs. A NON-winner (also the echo:false opt-out,
+  // which boot folds into an always-false decider) still HEARS — transcribes + logs — never SPEAKS.
+  it('a NON-winner (echoDecider→false, also the echo:false opt-out) transcribes + logs but NEVER posts the 👂', async () => {
     const { incoming } = await startBridge({
-      echo: false,
+      echoDecider: () => false,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -701,7 +704,62 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
-    expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed by the role-gate
+    expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed — not the winner
+  });
+
+  it('a WINNER (echoDecider→true) posts the 👂', async () => {
+    const { incoming } = await startBridge({
+      echoDecider: () => true,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE', senderPushName: 'An',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+  });
+
+  // The bridge feeds the note's SHARED Beeper message id (msg.id) to the decider — that shared
+  // identity is what makes the two co-account nodes agree. Lock it: an id-keyed decider posts for
+  // exactly the note it names, and BOTH notes are still transcribed + logged.
+  it('the echoDecider is keyed on the note\'s Beeper message id — exactly the named note posts, both are transcribed', async () => {
+    const { incoming } = await startBridge({
+      echoDecider: (noteId) => noteId === 'note-win',
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    const voice = (id) => liveMsg({
+      id, text: null, type: 'VOICE', senderPushName: 'An',
+      attachments: [{ id: `a-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    });
+    fake.emit({ type: 'message.upserted', entries: [voice('note-lose')] });
+    fake.emit({ type: 'message.upserted', entries: [voice('note-win')] });
+    await waitFor(() => incoming.length === 2);
+    // Both HEARD (transcribed + logged) …
+    expect(incoming.map((i) => i.text)).toEqual(['(voice transcription) fake transcript', '(voice transcription) fake transcript']);
+    // … but only the id the decider picked got the in-chat 👂 (as a reply to ITSELF).
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts).toHaveLength(1);
+    expect(fake.posts[0].replyToMessageID).toBe('note-win');
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+  });
+
+  // The age bound is ORTHOGONAL to the pick: a too-old note never echoes even for a WINNER.
+  it('echoMaxAgeMs still suppresses an old note even for a WINNER (age bound is independent of the pick)', async () => {
+    const { incoming } = await startBridge({
+      echoDecider: () => true,   // this node IS the winner …
+      echoMaxAgeMs: 3_600_000,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      text: null, type: 'VOICE', timestamp: Date.now() - 2 * 3_600_000,   // 2h old — past the bound
+      senderPushName: 'An',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // still HEARD
+    expect(fake.posts).toHaveLength(0);                                        // … but too old to SPEAK
   });
 
   // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): a Beeper resync re-delivered

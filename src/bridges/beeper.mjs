@@ -169,11 +169,14 @@ export async function startBeeperBridge(opts = {}) {
     // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
     // for a node that passes nothing).
     wakeWords = ['e', 'egpt'],
-    // 👂 ECHO gate (operator 2026-07-09): does THIS node post the 👂 transcript echo? true
-    // (default / absent) = post per the room's posts_back verdict; false = transcribe + LOG the
-    // note but NEVER post the 👂 (live AND backlog). Interim per-node boolean (repurposes the
-    // old transcribe_ack); HRW rotation across co-account nodes is a LATER phase.
-    echo = true,
+    // 👂 ECHO DECIDER (operator 2026-07-10, Phase 3a HRW; plans/2607101713-HRW-ECHO-PLAN.md):
+    // (noteId) => boolean — does THIS node post the 👂 transcript echo for this note? Boot injects
+    // a rendezvous-hash PICK over the co-account peer set so exactly ONE of the co-account nodes
+    // echoes each note, rotating per note — NOT dedup, no coordination, no watch-and-cancel. A
+    // non-winner still HEARS (transcribes + logs); only the in-chat 👂 POST is gated. Default
+    // always-true (a solo node / no HRW config posts as before). An explicit echo:false is folded
+    // by boot into an always-false decider (hard opt-out → this node NEVER posts the 👂).
+    echoDecider = () => true,
     // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar 1:1 incident; renamed from
     // transcribe_ack_max_age_ms): a Beeper resync can re-deliver ancient backlog voice notes;
     // the 👂 is a live-conversation courtesy, not an archaeology announcement, so it only posts
@@ -947,10 +950,14 @@ export async function startBeeperBridge(opts = {}) {
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
           enabled: svc.enabled,
-          // 👂 ECHO gate (operator 2026-07-09): echo:false silences the 👂 on THIS node (live
-          // AND backlog notes) — it still HEARS (transcribes + logs), just never SPEAKS.
-          // tooOldForEcho (above) wins independently — an ancient note never echoes regardless.
-          postsBack: (echo && !tooOldForEcho) ? svc.postsBack : false,
+          // 👂 ECHO PICK (operator 2026-07-10, Phase 3a HRW): echoDecider(msg.id). msg.id is the
+          // voice note's stable Beeper message id — IDENTICAL on both co-account nodes (one shared
+          // account → the same message → the same per-chat sequence id), so the rendezvous-hash
+          // pick AGREES and exactly ONE node posts the 👂, rotating per note (NOT dedup). A
+          // non-winner still HEARS (transcribes + logs); only the POST is gated. echo:false folds
+          // into an always-false decider (hard opt-out). tooOldForEcho wins independently — an
+          // ancient note never echoes regardless of the pick.
+          postsBack: (echoDecider(msg.id) && !tooOldForEcho) ? svc.postsBack : false,
           muted: info.isMuted,
           author: voiceAuthor,
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂

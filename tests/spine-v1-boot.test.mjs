@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import os from 'node:os';
+import { isEchoWinner } from '../src/spine/echo-hrw.mjs';   // pure (no EGPT_HOME) → safe to static-import
 
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
@@ -252,7 +253,7 @@ describe('boot()', () => {
 // CONFIG-SHAPE MIGRATION (operator 2026-07-09): the new beeper:/networks:/account_peers shape
 // (back-compat with the old flat shape) + the REMOVED wake-word injection (symmetric nodes wake on
 // their OWN handles only). Assert boot RESOLVES each by capturing the opts it hands the bridge
-// (token / wakeWords / echo / echoMaxAgeMs / isAllowedUser) and app.accountPeers.
+// (token / wakeWords / echoDecider / echoMaxAgeMs / isAllowedUser) and app.accountPeers.
 describe('boot() — config-shape migration', () => {
   const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
   async function captureBoot(config) {
@@ -308,15 +309,32 @@ describe('boot() — config-shape migration', () => {
     normal.app.stop();
   });
 
-  it('echo: default true; cfg.echo:false silences; echoMaxAgeMs default 1h + override', async () => {
+  // 👂 ECHO — HRW PICK (operator 2026-07-10, Phase 3a): boot no longer hands the bridge a static
+  // `echo` boolean — it hands an echoDecider(noteId) built from node_name + account_peers. A solo
+  // node (no peers) always wins (echoes as before); cfg.echo:false folds into an always-false
+  // decider (hard opt-out); echoMaxAgeMs is unchanged (orthogonal age bound).
+  it('echoDecider: default solo node ALWAYS wins; cfg.echo:false NEVER; echoMaxAgeMs default 1h + override', async () => {
     const def = await captureBoot({ agents: AG });
-    expect(def.opts.echo).toBe(true);
+    expect(typeof def.opts.echoDecider).toBe('function');
+    expect(def.opts.echoDecider('any-note')).toBe(true);    // solo → always echo (lone-node behavior)
     expect(def.opts.echoMaxAgeMs).toBe(3_600_000);
     def.app.stop();
     const off = await captureBoot({ agents: AG, echo: false, echo_max_age_ms: 1000 });
-    expect(off.opts.echo).toBe(false);
+    expect(off.opts.echoDecider('any-note')).toBe(false);    // hard opt-out — this node never posts the 👂
     expect(off.opts.echoMaxAgeMs).toBe(1000);
     off.app.stop();
+  });
+
+  it('echoDecider: co-account HRW pick — node_name + account_peers make EXACTLY ONE node echo each note', async () => {
+    const kg = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });
+    const doNode = await captureBoot({ agents: AG, node_name: 'do', account_peers: ['kg', 'do'] });
+    for (let i = 1; i <= 50; i++) {
+      const id = String(i);
+      expect(kg.opts.echoDecider(id)).toBe(isEchoWinner(id, 'kg', ['kg', 'do']));   // boot wired node_name + peers straight in
+      expect(kg.opts.echoDecider(id)).toBe(!doNode.opts.echoDecider(id));           // exactly one of the two echoes the SAME note
+    }
+    kg.app.stop();
+    doNode.app.stop();
   });
 
   it('account_peers parsed + exposed on the boot return', async () => {
