@@ -382,9 +382,11 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.senderName).not.toContain('deudor');
   });
 
-  // The voice-note 👂 echo header carries the note author — same preference: the
-  // person's pushed name, not the operator's saved label.
-  it('the 👂 voice echo uses the sender\'s pushed name, not the contact-list label', async () => {
+  // The 👂 voice echo NO LONGER carries an author (operator 2026-07-10): Beeper exposes no
+  // push name, so the author would be a bare number/id — the per-note quoted reply carries
+  // attribution instead. The MODEL envelope still gets the pushed name (never the saved
+  // label), so the leak guard holds where it matters (the transcript fed to the model).
+  it('the 👂 voice echo omits the author; the model envelope still carries the pushed name (not the label)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
@@ -393,7 +395,9 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 Ricki Mejia: fake transcript');   // pushed name, not the label
+    expect(fake.posts[0].text).toBe('👂 fake transcript');              // author-less echo (attribution via the quote)
+    expect(incoming[0].from.senderName).toBe('Ricki Mejia');            // …but the model still gets the pushed name
+    expect(incoming[0].from.senderName).not.toContain('amigo diana');   // never the saved label
   });
 
   // LID PUSH NAME (operator 2026-07-08, morgan chat): a WhatsApp LID sender
@@ -413,7 +417,7 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.senderName).not.toContain('whatsapp_lid');
   });
 
-  it('the 👂 voice echo for a LID sender carries the pushed name, not the raw LID', async () => {
+  it('the 👂 voice echo for a LID sender omits the author; the envelope keeps the pushed name (not the raw LID)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       isSender: false, type: 'VOICE', text: null,
@@ -423,7 +427,9 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 le_moi: fake transcript');   // pushed name, not the raw LID
+    expect(fake.posts[0].text).toBe('👂 fake transcript');                  // author-less echo
+    expect(incoming[0].from.senderName).toBe('le_moi');                     // …envelope keeps the LID push name
+    expect(incoming[0].from.senderName).not.toContain('whatsapp_lid');
   });
 
   // CONTRACT C2 (the regression): a voice note must be transcribed AND its file
@@ -678,14 +684,13 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
-      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // …but STILL transcribed locally
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');               // default echo → 👂 posts
+    expect(fake.posts[0].text).toBe('👂 fake transcript');               // default echo → 👂 posts
   });
 
   // 👂 ECHO PICK (operator 2026-07-10, Phase 3a HRW): the static per-node `echo` boolean became a
@@ -713,12 +718,12 @@ describe('beeper bridge', () => {
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
-      text: null, type: 'VOICE', senderPushName: 'An',
+      text: null, type: 'VOICE',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
   // The bridge feeds the note's SHARED Beeper message id (msg.id) to the decider — that shared
@@ -730,7 +735,7 @@ describe('beeper bridge', () => {
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     const voice = (id) => liveMsg({
-      id, text: null, type: 'VOICE', senderPushName: 'An',
+      id, text: null, type: 'VOICE',
       attachments: [{ id: `a-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     });
     fake.emit({ type: 'message.upserted', entries: [voice('note-lose')] });
@@ -742,7 +747,7 @@ describe('beeper bridge', () => {
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].replyToMessageID).toBe('note-win');
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
   // The age bound is ORTHOGONAL to the pick: a too-old note never echoes even for a WINNER.
@@ -754,7 +759,6 @@ describe('beeper bridge', () => {
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 2 * 3_600_000,   // 2h old — past the bound
-      senderPushName: 'An',
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
@@ -769,7 +773,6 @@ describe('beeper bridge', () => {
   // transcript-logging are unaffected. REPRODUCE: before this fix, the 👂 posted here too.
   const voiceNoteAt = (ageMs) => liveMsg({
     text: null, type: 'VOICE', timestamp: Date.now() - ageMs,
-    senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
     attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
   });
   it('a 12-day-old voice note is transcribed + logged, but the 👂 is NOT posted (age bound)', async () => {
@@ -785,7 +788,7 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(10 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
   it('default bound (echoMaxAgeMs absent) is ~1h: a note just past it is not acked', async () => {
@@ -803,19 +806,18 @@ describe('beeper bridge', () => {
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
   it('a voice note with NO parseable timestamp still gets its 👂 (fail-open, matching the backlog gate)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: undefined,
-      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
   it('network scope is fail-closed WHEN SET: unknown or foreign accountID drops; prefix instance ids pass', async () => {
@@ -848,7 +850,6 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'chat-enrolled' }) });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
-      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });
@@ -860,7 +861,7 @@ describe('beeper bridge', () => {
     // …but only the posts_back chat got the in-chat 👂 reply.
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].chatID).toBe(CHAT('chat-enrolled'));
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');   // echo carries the note's author
+    expect(fake.posts[0].text).toBe('👂 fake transcript');   // author-less echo (attribution via the quote)
     expect(fake.posts[0].replyToMessageID).toBeTruthy();         // …as a reply to the audio note
   });
 

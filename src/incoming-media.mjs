@@ -39,12 +39,18 @@ const _pendingAcks = new Map();
 const _defaultScheduler = { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) };
 
 // Format ONE 👂-ack line's BODY — without the 👂 prefix, which the firing/immediate
-// paths add once: "<author> (<Ns>): <transcript>". Author + duration are omitted
-// when unknown, so a bare transcript stays "<transcript>" (callers that pass
-// neither are unaffected).
+// paths add once. The duration is DECOUPLED from the author (operator 2026-07-10) so
+// it survives when the author is omitted (Beeper exposes no push name → the limb passes
+// no author; the quoted reply carries attribution):
+//   author + duration → "<author> (<Ns>): <transcript>"
+//   author, no dur    → "<author>: <transcript>"
+//   no author, dur    → "(<Ns>) <transcript>"
+//   neither           → "<transcript>"
 function _ackItem({ author, durationSec, transcript } = {}) {
-  const dur = (Number.isFinite(durationSec) && durationSec > 0) ? ` (${Math.round(durationSec)}s)` : '';
-  const head = author ? `${author}${dur}: ` : '';
+  const dur = (Number.isFinite(durationSec) && durationSec > 0) ? `(${Math.round(durationSec)}s)` : '';
+  let head = '';
+  if (author) head = dur ? `${author} ${dur}: ` : `${author}: `;   // author head, duration inside it when known
+  else if (dur) head = `${dur} `;                                  // no author → duration still leads the line
   return `${head}${transcript}`;
 }
 
@@ -105,8 +111,8 @@ export function _resetPostsBackDebounce() {
  *                                  fail-closed; the host supplies the real verdict)
  * @param {boolean}  [o.muted]     transport mute → suppress the ack send
  * @param {string}   [o.author]    voice note sender's display name → shown in the
- *                                  👂 ack as "👂 <author> (<Ns>): <text>" (omitted
- *                                  when absent, so the ack stays "👂 <text>")
+ *                                  👂 ack as "👂 <author> (<Ns>): <text>". Absent →
+ *                                  the duration still leads: "👂 (<Ns>) <text>"
  * @param {string}   [o.debounceKey] stable chat id → debounce + coalesce the 👂
  *                                  echo per chat. Omit/null → post immediately.
  * @param {number}   [o.postsBackDelayMs] trailing-debounce window for the echo.

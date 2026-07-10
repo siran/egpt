@@ -47,6 +47,20 @@ describe('transcribeVoiceNote — room service (enabled + postsBack)', () => {
     expect(sent).toEqual(['👂 An (8s): hola que tal']);
   });
 
+  // NO author (operator 2026-07-10): Beeper exposes no push name, so the limb passes no
+  // author; the duration MUST survive on its own (the ack "👂 (Ns) <text>"), and the
+  // per-note quoted reply carries attribution. Guards the author/duration decoupling.
+  it('OMITS the author but KEEPS the duration when no author is given', async () => {
+    const sent = [];
+    const t = await transcribeVoiceNote({
+      localPath: '/tmp/n.ogg',
+      transcribe: async (_p, _cfg, _log, meta) => { meta.durationSec = 164; return 'hola que tal'; },
+      reply: (x) => sent.push(x), enabled: true, postsBack: true,   // NO author passed
+    });
+    expect(t).toBe('hola que tal');
+    expect(sent).toEqual(['👂 (164s) hola que tal']);   // author dropped, duration survives
+  });
+
   it('postsBack:false → transcript still returns, but NO ack (heard, not spoken)', async () => {
     const sent = [];
     const t = await transcribeVoiceNote({

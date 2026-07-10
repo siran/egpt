@@ -936,10 +936,6 @@ export async function startBeeperBridge(opts = {}) {
         // whenever enabled; postsBack only gates the 👂. See src/incoming-media.mjs.
         const svc = await resolveTranscriptionService(chatID);
         const vmeta = {};
-        // The note's sender, for the 👂 echo header ("👂 <author> (<Ns>): <text>").
-        // ONE rule for everyone incl. the owner: the person's pushed name / non-private
-        // id, NEVER the node's configured userName, NEVER the saved label.
-        const voiceAuthor = senderDisplay(msg);
         // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident): gate on the NOTE'S OWN
         // timestamp (tsMs, computed above for the backlog gate) vs now — NOT bridge start, so a
         // note that arrived during sleep still echoes on wake if the note itself is within the
@@ -959,7 +955,12 @@ export async function startBeeperBridge(opts = {}) {
           // ancient note never echoes regardless of the pick.
           postsBack: (echoDecider(msg.id) && !tooOldForEcho) ? svc.postsBack : false,
           muted: info.isMuted,
-          author: voiceAuthor,
+          // NO author on the 👂 ack (operator 2026-07-10): Beeper exposes no push name,
+          // so senderDisplay would yield a bare phone number / id — useless as a name.
+          // The ack is ALREADY a per-note quoted reply to the note itself, so attribution
+          // comes from the quote; the ack just shows "👂 (<Ns>) <transcript>" (duration
+          // kept). The MODEL envelope still carries senderDisplay(msg) — this drops it
+          // ONLY from the in-chat echo.
           // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂
           // transcript, posted as a reply to ITSELF (operator 2026-06-24), never coalesced.
           debounceKey: `${chatID}:${msg.id}`,
