@@ -1261,7 +1261,7 @@ export async function startBeeperBridge(opts = {}) {
 if (process.argv[1]?.endsWith('beeper.mjs')) {
   let media = {}, token = process.env.BEEPER_ACCESS_TOKEN;
   let transcribeCfg = null;
-  try { const cfg = (await import('../tools/config-io.mjs')).readConfigSync(); media = cfg?.whatsapp?.media || {}; transcribeCfg = cfg?.transcription?.whisper ?? cfg?.whatsapp?.media?.audio_transcribe ?? null; token = token || cfg?.beeper_token || cfg?.whatsapp?.beeper_token; } catch { /* ignore */ }
+  try { const cfg = (await import('../tools/config-io.mjs')).readConfigSync(); media = cfg?.whatsapp?.media || {}; transcribeCfg = cfg?.transcription?.cli ?? cfg?.transcription?.whisper ?? cfg?.whatsapp?.media?.audio_transcribe ?? null; token = token || cfg?.beeper_token || cfg?.whatsapp?.beeper_token; } catch { /* ignore */ }
   startBeeperBridge({
     beeperToken: token,
     media,

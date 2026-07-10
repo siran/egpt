@@ -67,6 +67,15 @@ networks:
   telegram: { chat_ids: [], allowed_users: [] }
   signal:   { chat_ids: [], allowed_users: [] }
 
+# --- Dispatch: global E-routing knobs ----------------------------------------
+# E is a sibling, not a network, so these live OUTSIDE the transport blocks.
+# Per-chat modes live in each conversation (set via /e auto <mode> <chat>); these
+# are the node-wide defaults. All commented = defaults shown.
+# dispatch:
+#   auto_default_mode: mention      # reply mode for a chat with no explicit mode (on|mute|mention-direct|mention|off)
+#   auto_paused: false              # absolute @e-emit kill-switch (/e auto pause|resume)
+#   send_to_egpt: mode              # global default: keep the persona in context even when it will not reply (always|mode)
+
 # --- Transcription: a standalone LAN service ---------------------------------
 # By default eGPT launches a whisper-server to transcribe audio notes
 # (ask your AI to download models from: https://huggingface.co/ggerganov/whisper.cpp)
@@ -79,9 +88,25 @@ networks:
 #     gpu:   { type: whisper-server-remote, endpoint: "http://192.168.1.102:23390", token: "SHARED_SECRET" }
 #     local: { type: whisper-cli, command: C:\path\whisper-cli.exe, model_path: C:\path\ggml-large-v3.bin, language: es, ffmpeg_command: C:\path\ffmpeg.exe }
 #
-# To HOST the server for other nodes (the GPU box):
-# transcriptor: { enabled: true, bind: "0.0.0.0", port: 23390 }
-# transcription_token: "SHARED_SECRET"   # same value on the server and its clients
+# To HOST the server for other nodes (the GPU box - the "transcriptor" worker role):
+# transcriptor:
+#   enabled: true                 # answer POST /v1/transcribe for a main spine (this node's WORKER role)
+#   bind: "0.0.0.0"               # LAN ip / 0.0.0.0 to accept a remote spine; NEVER the internet
+#   port: 23390                   # what a client's transcription_service endpoint points at
+#   server:                       # resident whisper.cpp server: load the model ONCE (~12s per note -> ~2s)
+#     enabled: true
+#     command: C:\path\whisper-server.exe
+#     model: C:\path\ggml-large-v3.bin   # falls back to transcription.cli.model_path below
+#     host: 127.0.0.1
+#     port: 8089
+#     language: es
+# transcription:
+#   server: { token: "SHARED_SECRET" }   # HMAC auth; SAME value on the worker and its clients
+#   cli:                          # whisper-cli binary/model: the worker's engine + the universal fallback
+#     command: C:\path\whisper-cli.exe
+#     model_path: C:\path\ggml-large-v3.bin
+#     language: es
+#     ffmpeg_command: C:\path\ffmpeg.exe
 
 # --- Transcript echo: who posts the ear ("listened") transcript --------------
 # The echo posts a voice note's transcript back into the chat. Among the echo-capable

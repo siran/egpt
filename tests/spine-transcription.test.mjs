@@ -72,4 +72,21 @@ describe('createTranscription', () => {
     expect(tx.postsBackDelayMs).toBe(999);
     expect(tx.cliCfg.ffmpeg_command).toBe('ff2');
   });
+
+  // cliCfg resolution — the whisper-cli binary/model, canonical `transcription.cli`
+  // with a legacy fallback to `whatsapp.media.audio_transcribe` (the DOLLY-worker
+  // relocation, operator 2026-07-10). Deploying onto a legacy-shaped config is a NO-OP.
+  it('cliCfg: reads the legacy whatsapp.media.audio_transcribe block when transcription.cli is absent (back-compat)', () => {
+    const tx = createTranscription({ getConfig: () => ({ whatsapp: { media: { audio_transcribe: { model_path: '/legacy/large-v3.bin', ffmpeg_command: 'ffL' } } } }) });
+    expect(tx.cliCfg.model_path).toBe('/legacy/large-v3.bin');
+    expect(tx.cliCfg.ffmpeg_command).toBe('ffL');
+  });
+
+  it('cliCfg: canonical transcription.cli WINS over the legacy whatsapp.media.audio_transcribe', () => {
+    const tx = createTranscription({ getConfig: () => ({
+      transcription: { cli: { model_path: '/canon/large-v3.bin' } },
+      whatsapp: { media: { audio_transcribe: { model_path: '/legacy/large-v3.bin' } } },
+    }) });
+    expect(tx.cliCfg.model_path).toBe('/canon/large-v3.bin');
+  });
 });
