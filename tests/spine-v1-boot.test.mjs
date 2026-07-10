@@ -29,11 +29,14 @@ afterAll(async () => {
   try { await fs.rm(tmpHome, { recursive: true, force: true }); } catch {}
 });
 
-// Pre-seed a conversation's E mode in the shared state (modes live in
-// conversations.yaml now, not config.auto_modes). No threadId → still "fresh".
+// Pre-seed a conversation's persona mode in the shared state (modes live in
+// conversations.yaml now, not config.auto_modes). The persona is a NESTED being keyed by its
+// map key — 'egpt' in these configs (operator 2026-07-10) — so the mode goes under
+// entry.egpt, where gating reads it via getBeing(defaultKey). No threadId → still "fresh".
 function seedMode(state, mode, chatId = '!room:beeper.com', name = 'fam') {
   const ens = ensureContact(state, 'whatsapp', chatId, { pushedName: name, slugHint: name });
-  ens.state.contacts.whatsapp[chatId].mode = mode;
+  const entry = ens.state.contacts.whatsapp[chatId];
+  entry.egpt = { ...(entry.egpt ?? {}), mode };
   return ens.state;
 }
 
@@ -66,7 +69,7 @@ describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
 
     const app = await boot({
       readConfig: () => config,
@@ -99,10 +102,11 @@ describe('boot()', () => {
     expect(spy.streams[0].chatId).toBe('!room:beeper.com');
     expect(spy.sent).toHaveLength(0);   // stream delivered → no fallback send
 
-    // the conversation's claude session was persisted onto the contact
+    // the conversation's claude session was persisted onto the contact — NESTED under the
+    // persona being 'egpt' now (operator 2026-07-10), not a flat threadId
     const c = state.contacts?.whatsapp ?? {};
     const entry = Object.values(c)[0];
-    expect(entry.threadId).toBe('sess-1');
+    expect(entry.egpt.threadId).toBe('sess-1');
 
     app.stop();
   });
@@ -110,7 +114,7 @@ describe('boot()', () => {
   it("respects gating: a 'mute' chat invokes no brain and sends nothing", async () => {
     const { start, spy } = fakeStart();
     let state = seedMode(emptyState(), 'mute');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const app = await boot({
       readConfig: () => config, startBridge: start, makeSession: fakeSession,
       loadState: async () => state, writeState: async (s) => { state = s; },
@@ -125,7 +129,7 @@ describe('boot()', () => {
   it('registers the alive beat as a spawned command: spine.pid written, immediate first beat on tick, cadence honored, env carries EGPT_HOME + pump stats', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     let clock = Date.UTC(2026, 5, 29, 14, 5);   // June 29 14:05 UTC
 
     // Observe the beat as a SPAWN, not a written alive.txt — the alive beat is a
@@ -176,7 +180,7 @@ describe('boot()', () => {
     // must size the tick DOWN to the finest cadence. An explicit config alive loads
     // even though aliveMs is unset (0). Observe the effective tick via a fake
     // setInterval (only the spine's tick timer flows through this seam).
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } }, heartbeats: { alive: { frequency: '1s' } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } }, heartbeats: { alive: { frequency: '1s' } } };
     const intervals = [];
     const spawnCalls = [];
     const fakeSpawn = (cmd, opts) => { spawnCalls.push({ cmd, opts }); return { on(ev, cb) { if (ev === 'exit') cb(0); return this; } }; };
@@ -213,7 +217,7 @@ describe('boot()', () => {
   it('the readonly view has NO internal row; deleting the file and ticking hot-reloads it', async () => {
     const { start } = fakeStart();
     let state = seedMode(emptyState(), 'on');
-    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } } };
+    const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
     const fakeSpawn = () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } });
 
     const app = await boot({
@@ -250,7 +254,7 @@ describe('boot()', () => {
 // their OWN handles only). Assert boot RESOLVES each by capturing the opts it hands the bridge
 // (token / wakeWords / echo / echoMaxAgeMs / isAllowedUser) and app.accountPeers.
 describe('boot() — config-shape migration', () => {
-  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
   async function captureBoot(config) {
     let opts = null;
     const start = async (o) => {
@@ -295,7 +299,7 @@ describe('boot() — config-shape migration', () => {
   });
 
   it('WAKE INJECTION GONE: handles [ed, egptd] → wakeWords excludes bare "e"; a default node keeps "e"', async () => {
-    const dolly = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ed', 'egptd'] } } });
+    const dolly = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ed', 'egptd'], default: true } } });
     expect(dolly.opts.wakeWords).not.toContain('e');   // pre-2026-07-09: injected → contained "e" → @e woke it
     expect(dolly.opts.wakeWords).toContain('ed');
     dolly.app.stop();
@@ -328,7 +332,7 @@ describe('boot() — config-shape migration', () => {
 // never comes. On boot we reap the stray, but ONLY when this node does not legitimately run
 // a resident server (the transcriptor WORKER, or an ACTIVE whisper-server-local engine).
 describe('boot() — stray whisper-server reap', () => {
-  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
   const profile = (extra) => ({ agents: AG, transcription_service: { use_config: 'reve', reve: {
     remote: { type: 'whisper-server-remote', endpoint: 'http://worker:23390' },
     cli: { type: 'whisper-cli', model_path: '/m/large-v3.bin' },
@@ -420,6 +424,47 @@ describe('boot() — stray whisper-server reap', () => {
       now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
     });
     expect(reaped).toEqual([]);   // the active local engine owns its server — never reaped
+    app.stop();
+  });
+});
+
+// PERSONA = `default: true` (operator 2026-07-10, agent-identity refactor): the persona is
+// the single default agent, resolved by the `default: true` marker — NOT hardcoded e/egpt.
+// boot is FATAL on zero or more-than-one default agent, and the persona's KEY becomes the
+// being-id (so a persona keyed `assistant` boots + wakes on its OWN handles, no e/egpt magic).
+describe('boot() — persona default:true rule', () => {
+  const bootWith = (agents) => {
+    const { start } = fakeStart();
+    return boot({
+      readConfig: () => ({ whatsapp: {}, agents }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+  };
+
+  it('FATAL when NO agent carries default:true (was: any e/egpt handle)', async () => {
+    await expect(bootWith({ egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } })).rejects.toThrow(/default: true/);
+  });
+
+  it('FATAL when MORE THAN ONE agent carries default:true', async () => {
+    await expect(bootWith({
+      egpt: { configuration: 'egpt', handles: ['e'], default: true },
+      alt:  { configuration: 'egpt', handles: ['a'], default: true },
+    })).rejects.toThrow(/exactly one/);
+  });
+
+  it('a persona keyed "assistant" (default:true, handles [a]) boots + wakes on its OWN handles, personaEmoji from IT (no e/egpt)', async () => {
+    let opts = null;
+    const start = async (o) => { opts = o; return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} }; };
+    const app = await boot({
+      readConfig: () => ({ whatsapp: {}, agents: { assistant: { configuration: 'egpt', handles: ['a'], body_emoji: '🤖', default: true } } }),
+      startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    expect(opts.wakeWords.sort()).toEqual(['a', 'assistant']);   // the default agent's key + handles — NOT e/egpt
+    expect(opts.personaEmoji).toBe('🤖');                        // resolved from the default agent's body_emoji
     app.stop();
   });
 });

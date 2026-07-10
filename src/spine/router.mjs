@@ -5,9 +5,10 @@
 // resolve() matches a leading @token (word-boundary, case-insensitive) against an agent's
 // name or any handle. A LOCAL agent (configuration ≠ 'relay') routes like a being (being =
 // agent name); a RELAY agent (configuration: relay) routes to a mesh target whose ROUTE is
-// the agent's relay_channel; the PERSONA agent (handles include e/egpt) routes to the
-// canonical default being 'e' (its key is display identity only — routing keeps 'e' so warm
-// keys / threads / transcripts stay stable). An unknown / disabled @token falls through to E.
+// the agent's relay_channel; the DEFAULT (persona) agent — the one carrying `default: true`,
+// whose KEY boot injects as `defaultBeing` — routes to its own key (operator 2026-07-10: the
+// being-id IS the map key, no hardcoded 'e'/'egpt'). An unknown / disabled @token falls
+// through to the persona (defaultBeing).
 //
 // resolve() returns { being, mention }. The mention RIDE-ALONG matters because ev.mention is
 // @e-specific (the bridge computes it for the persona wake-word): a local agent picked by its
@@ -90,8 +91,10 @@ export function createRouter({ getAgents = () => ({}), defaultBeing = 'e', getNo
               const mesh = { being: name, route: { room_id: agent.relay_channel, ...(agent.network ? { network: String(agent.network).toLowerCase() } : {}) }, ...(to ? { to } : {}) };
               return { being: null, mesh, mention: { ...MENTION } };
             }
-            // The PERSONA agent routes to the canonical default being (stable keys).
-            if (agentIds(name, agent).some((h) => h === defaultBeing || h === 'e' || h === 'egpt')) {
+            // The DEFAULT (persona) agent routes to its own key (= defaultBeing), keeping
+            // the bridge-computed ev.mention. Matched by key OR the `default: true` marker —
+            // no 'e'/'egpt' literals (operator 2026-07-10).
+            if (name === defaultBeing || agent.default === true) {
               return { being: defaultBeing, mention: ev?.mention };
             }
             // Any other LOCAL agent → being = its name, with a synthetic mention.

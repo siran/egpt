@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { createBrainPool, parseWarmBlock } from '../src/spine/brainpool.mjs';
 import { createContacts } from '../src/spine/contacts.mjs';
 import { buildClaudeArgs, DEFAULT_ALLOWED_TOOLS } from '../src/claude-args.mjs';
-import { emptyState, getBeing, ensureContact, recordThread, patchContact } from '../conversations-state.mjs';
+import { emptyState, getBeing, getContact, ensureContact, recordThread, patchContact } from '../conversations-state.mjs';
 
 // A fake warm pool that records run() calls and lets a test script the results.
 function fakePool(scriptedResults) {
@@ -30,8 +30,13 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
   if (seedSession || seedMode) {   // pre-register the contact (WITH a stored thread and/or an E mode)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
     state = ens.state;
-    if (seedSession) state = recordThread(state, ev.surface, ev.chatId, seedSession);
-    if (seedMode) state = patchContact(state, ev.surface, ev.chatId, { mode: seedMode });   // e.g. 'auto'
+    // Seed the persona under its NESTED 'e' block (operator 2026-07-10: the persona is a normal
+    // nested being; the brainpool defaults defaultKey to 'e', so 'e' is the persona here).
+    if (seedSession) state = recordThread(state, ev.surface, ev.chatId, seedSession, undefined, 'e');
+    if (seedMode) {
+      const prior = getContact(state, ev.surface, ev.chatId)?.entry?.e ?? {};
+      state = patchContact(state, ev.surface, ev.chatId, { e: { ...prior, mode: seedMode } });   // e.g. 'auto'
+    }
   }
   const pool = fakePool(scriptedResults);
   const loadState = async () => state;
@@ -105,7 +110,7 @@ describe('brainpool.turn', () => {
     const brains = { resolve: () => ({ name: 'default', type: 'ccode', model: null, allowed_tools: 'all' }) };
     const { brain, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
-    const ro = getState().contacts.whatsapp['!room:beeper.com'].readonly;
+    const ro = getState().contacts.whatsapp['!room:beeper.com'].e.readonly;   // nested under the persona being (operator 2026-07-10)
     expect(ro.agent).toBe('default');            // the new key
     expect('brain' in ro).toBe(false);           // the legacy key is NOT written going forward
     expect('personality' in ro).toBe(false);     // the retired personality key is NOT written either
@@ -117,7 +122,7 @@ describe('brainpool.turn', () => {
     const brains = { resolve: () => ({ name: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low', allowed_tools: 'all' }) };
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains });
     await brain.turn('e', ev);
-    const ro = getState().contacts.whatsapp['!room:beeper.com'].readonly;
+    const ro = getState().contacts.whatsapp['!room:beeper.com'].e.readonly;   // nested under the persona being (operator 2026-07-10)
     expect(ro).toMatchObject({ agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'low' });
     // the SAME resolved values reach the run (snapshot and run always agree)
     expect(pool.calls[0].brainOptions).toMatchObject({ model: 'opus', effort: 'low' });
@@ -149,7 +154,7 @@ describe('brainpool.turn', () => {
   it('persona agent type (agents block) supplies E\'s fresh-conversation def, resolved through the registry', async () => {
     // the persona agent points at type "sonnet-high"; the registry resolves that type file
     const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' }) : null };
-    const config = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] } } };
+    const config = { agents: { egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true } } };
     const { brain, pool, getState } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/^e:ccode:whatsapp:SPOILER-\d{10}$/);
@@ -160,7 +165,7 @@ describe('brainpool.turn', () => {
 
   it('persona agent type that does NOT resolve falls through to the shipped "egpt" type', async () => {
     const brains = { resolve: (name) => name === 'egpt' ? ({ name: 'egpt', type: 'codex' }) : null };
-    const config = { agents: { egpt: { configuration: 'ghost-type', handles: ['e', 'egpt'] } } };
+    const config = { agents: { egpt: { configuration: 'ghost-type', handles: ['e', 'egpt'], default: true } } };
     const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, config });
     await brain.turn('e', ev);
     expect(pool.calls[0].key).toMatch(/:codex:/);   // fell through to the last-resort 'egpt' type (codex)
@@ -444,7 +449,9 @@ function harnessWithLog(logs, brains) {
 }
 
 describe('getBeing — readonly.agent read (new-config-only)', () => {
-  const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', readonly: ro } } } });
+  // readonly lives in the being's NESTED block now (operator 2026-07-10 — the persona 'e' is a
+  // normal nested being; no flat readonly fallback).
+  const mk = (ro) => ({ contacts: { whatsapp: { '!r:beeper.local': { slug: 'x', e: { readonly: ro } } } } });
   it('resolves the def name from a readonly.agent entry', () => {
     const v = getBeing(mk({ agent: 'sonnet-high', type: 'ccode' }), 'whatsapp', '!r:beeper.local', 'e');
     expect(v.brain).toBe('sonnet-high');   // `brain` stays the returned property

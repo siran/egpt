@@ -71,6 +71,22 @@ describe('sender — single-message reply train', () => {
     await out.fail(new Error('boom'));
     expect(bridge.streams[0].finals[0]).toMatch(/partial … ❌ Sending failed\./);
   });
+
+  // SIGNATURE end-marker (operator 2026-07-10): the reply-train terminator is the answering
+  // being's SIGNATURE (injected signatureOf), replacing the hardcoded ∎. Default resolves to
+  // '∎' (above), so this only changes once a per-being/node signature is configured.
+  it('the train end-marker is the being\'s resolved signature (both the reply and the no-reply marker)', async () => {
+    const bridge = fakeBridge();
+    const signatureOf = (being) => (being === 'wren' ? '~ wren' : '∎');
+    const sender = createSender({ bridge, bodyEmojiOf: () => '🐦', signatureOf });
+    const out = sender.open('!c', { being: 'wren', replyTo: 'm1' });
+    await out.finish({ text: 'listo' });
+    expect(bridge.streams[0].finals).toEqual(['listo ~ wren']);   // wren's signature, not ∎
+
+    const out2 = sender.open('!c', { being: 'wren' });
+    await out2.finish({ text: '' }, { surface: true });           // empty → no-reply marker carries the signature too
+    expect(bridge.streams[1].finals).toEqual(['⚠️ no reply (turn failed/empty) ~ wren']);
+  });
 });
 
 // mode:auto — E impersonates the operator (operator 2026-07-05): the reply is PLAIN

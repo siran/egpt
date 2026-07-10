@@ -17,6 +17,7 @@ import { join } from 'node:path';
 export function createTranscript({
   contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
   persona = null,
+  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot — the fallback label when a reply carries no being
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
   now = () => new Date(),
   onLog = () => {},
@@ -61,7 +62,7 @@ export function createTranscript({
         }
         if (reply != null) {
           const text = typeof reply === 'string' ? reply : reply.text;
-          const being = (typeof reply === 'object' && reply.being) || 'e';
+          const being = (typeof reply === 'object' && reply.being) || defaultKey;
           const surfaced = typeof reply === 'object' ? reply.surfaced !== false : true;
           await appendFile(fpath, replyLine({ being, body: text, surfaced, now: now() }) + '\n\n', 'utf8');
         }

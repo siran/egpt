@@ -302,8 +302,8 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   function placeholderState() {
     const r = ensureContact(emptyState(), WA, ROOM, {});   // no name → contact-<ts>
     expect(r.slug).toMatch(/^contact-\d{10}$/);
-    // pretend a thread was already spawned at the placeholder cwd
-    return { state: recordThread(r.state, WA, ROOM, 'thread-abc'), placeholderSlug: r.slug };
+    // pretend a thread was already spawned at the placeholder cwd (persona = nested 'e')
+    return { state: recordThread(r.state, WA, ROOM, 'thread-abc', undefined, 'e'), placeholderSlug: r.slug };
   }
 
   it('renames the slug to the resolved name, keeping the firstSeen suffix', () => {
@@ -351,7 +351,7 @@ describe('ensureContact — self-heals a placeholder slug when the title resolve
   it('tracks a RENAME of an already-named contact/group (not frozen)', () => {
     // morgan exists with a real name + a live thread; the contact/group is renamed.
     let s = ensureContact(emptyState(), WA, ROOM, { pushedName: 'morgan' }).state;
-    s = recordThread(s, WA, ROOM, 'thread-xyz');
+    s = recordThread(s, WA, ROOM, 'thread-xyz', undefined, 'e');
     const before = s.contacts[WA][ROOM].slug;            // morgan-<suffix>
     const suffix = before.match(/-(\d{10})$/)[1];
     const r = ensureContact(s, WA, ROOM, { pushedName: 'Mauricio' });
@@ -427,26 +427,28 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     expect(() => patchContact(baseState(), 'mars', 'j', {}))
       .toThrow(/unknown surface/);
   });
-  it('recordThread sets threadId + ISO timestamp on the primary', () => {
+  it('recordThread sets threadId + ISO timestamp in the being\'s NESTED block on the primary', () => {
     const s = { contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default' } } } };
-    const s2 = recordThread(s, WA, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z');
-    expect(s2.contacts[WA].j.threadId).toBe('thr-abc');
-    expect(s2.contacts[WA].j.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
-    expect(s2.contacts[WA].j.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+    const s2 = recordThread(s, WA, 'j', 'thr-abc', '2026-05-19T18:34:00.000Z', 'e');
+    expect(s2.contacts[WA].j.e.threadId).toBe('thr-abc');
+    expect(s2.contacts[WA].j.e.threadCreatedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.e.identityInjectedAt).toBe('2026-05-19T18:34:00.000Z');
+    expect(s2.contacts[WA].j.threadId).toBeUndefined();   // NO flat write (operator 2026-07-10: persona is a nested being)
   });
 
-  // being-aware recordThread: 'e' stays flat (unchanged); any other being writes a
-  // nested per-being block so its thread persists alongside E's.
+  // being-aware recordThread: EVERY being (persona included, operator 2026-07-10) writes a
+  // NESTED per-being block; nothing is written flat anymore.
   const nestBase = () => ({ contacts: { whatsapp: { 'j': { slug: 'diego', personality: 'default', pushedName: 'D' } } } });
-  it("default 'e' still writes FLAT thread fields (no nested block)", () => {
-    const s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z');
-    expect(s.contacts[WA].j.threadId).toBe('thr-e');
+  it("the persona 'e' writes a NESTED block (no flat thread fields)", () => {
+    const s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');
+    expect(s.contacts[WA].j.e.threadId).toBe('thr-e');
+    expect(s.contacts[WA].j.threadId).toBeUndefined();
     expect(s.contacts[WA].j.wren).toBeUndefined();
   });
-  it('a sibling writes a NESTED <being> block, leaving E flat fields intact', () => {
-    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z');          // E flat
-    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');             // wren nested
-    expect(s.contacts[WA].j.threadId).toBe('thr-e');                                          // E untouched
+  it('two beings each write their OWN nested block, side by side', () => {
+    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');       // persona nested
+    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');              // wren nested
+    expect(s.contacts[WA].j.e.threadId).toBe('thr-e');                                         // persona intact
     expect(s.contacts[WA].j.wren).toEqual({
       threadId: 'thr-wren', threadCreatedAt: '2026-05-20T10:00:00.000Z', identityInjectedAt: '2026-05-20T10:00:00.000Z',
     });
@@ -459,7 +461,8 @@ describe('patchContact + recordThread (surface-scoped)', () => {
     });
   });
   it('residentsOf lists the sibling after a nested thread record', () => {
-    const s = recordThread(nestBase(), WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
+    let s = recordThread(nestBase(), WA, 'j', 'thr-e', '2026-05-19T18:34:00.000Z', 'e');
+    s = recordThread(s, WA, 'j', 'thr-wren', '2026-05-20T10:00:00.000Z', 'wren');
     expect(residentsOf(s.contacts[WA].j)).toEqual(['e', 'wren']);
   });
   it('being-aware recordThread accepts a slug key too', () => {
@@ -536,16 +539,17 @@ describe('isMuted predicate', () => {
 });
 
 describe('residentsOf — resident beings vs flat blocks', () => {
-  it('a flat `readonly` (instanced-brain) block is NOT a resident — only ["e"]', () => {
-    // Shape the brainpool writes into the entry for the default 'e' being.
+  it('a legacy FLAT entry (flat mode/readonly, no nested block) has NO residents — [] (operator 2026-07-10: no implicit "e")', () => {
+    // A legacy pre-nested entry: flat readonly + mode are CONTACT/legacy-flat keys, not
+    // nested beings. residentsOf synthesizes nothing — a caller threads the default key itself.
     const entry = {
       slug: 'fam', pushedName: 'fam', mode: 'on',
       readonly: { brain: 'default', type: 'claude', model: null, effort: null, allowed_tools: 'all', personality: 'default' },
     };
-    expect(residentsOf(entry)).toEqual(['e']);
+    expect(residentsOf(entry)).toEqual([]);
   });
-  it('a real nested being block IS a resident (with implicit "e" first)', () => {
-    const entry = { slug: 'fam', dora: { mode: 'on', readonly: { model: 'x' } } };
+  it('nested being blocks ARE residents, in entry order (no implicit "e" prepended)', () => {
+    const entry = { slug: 'fam', e: { mode: 'on' }, dora: { mode: 'on', readonly: { model: 'x' } } };
     expect(residentsOf(entry)).toEqual(['e', 'dora']);
   });
 });

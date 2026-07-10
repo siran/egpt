@@ -17,11 +17,14 @@ import { receives, replyAllowed, mayEmitChat, isSilenceReply, isAutoMode, DEFAUL
 
 const _send = (v) => (v === 'always' || v === 'mode') ? v : null;
 
-export function createGating({ getConfig = () => ({}), loadState = null } = {}) {
+export function createGating({ getConfig = () => ({}), loadState = null, defaultKey = 'e' } = {}) {
   const cfg = () => getConfig() ?? {};
 
+  // The persona (being === defaultKey, injected by boot from the single `default:true`
+  // agent — operator 2026-07-10, no hardcoded 'e') follows the node's auto_e_default; every
+  // other being defaults to 'mention'.
   function defaultMode(being, c) {
-    const def = being === 'e' ? c.whatsapp?.auto_e_default : 'mention';
+    const def = being === defaultKey ? c.whatsapp?.auto_e_default : 'mention';
     return isAutoMode(def) ? def : DEFAULT_AUTO_MODE;
   }
 
@@ -42,10 +45,10 @@ export function createGating({ getConfig = () => ({}), loadState = null } = {}) 
     const paused = !!c.whatsapp?.auto_e_paused;
     const allowed = replyAllowed(mode, mention ?? {});
     const mayReply = mayEmitChat({ paused, mode, replyAllowed: allowed, isReaction: ev.kind === 'reaction' });
-    // send_to_egpt keeps E in a chat's context even when it won't reply — that's an
-    // E concern. A sibling is an engineer, not a context-follower: it runs ONLY when
-    // it may reply, so force 'mode' for a non-E being (never 'always').
-    const sendToEgpt = being !== 'e'
+    // send_to_egpt keeps the persona in a chat's context even when it won't reply — that's a
+    // persona concern. A sibling is an engineer, not a context-follower: it runs ONLY when it
+    // may reply, so force 'mode' for any non-persona being (never 'always').
+    const sendToEgpt = being !== defaultKey
       ? 'mode'
       : (_send(bv?.send_to_egpt) ?? _send(c.whatsapp?.send_to_egpt) ?? 'mode');
     return { mode, receives: receives(mode), mayReply, sendToEgpt };

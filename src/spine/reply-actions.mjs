@@ -180,7 +180,7 @@ export function parseReplyActions(text, ev = {}) {
  * conversation-dir resolver (for /media confinement). Exposes .parse (the pure
  * split) and .execute (run the actions against the bridge, confined + logged).
  */
-export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, onLog = () => {} } = {}) {
+export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf = () => null, resolveConvDir = async () => null, askAdvice = null, defaultKey = 'e', onLog = () => {} } = {}) {
   if (!bridge) throw new Error('createReplyActions: bridge is required');
   // The /ask limb delegates the sole sanctioned cross-chat post to the advice service
   // (createAdvice.ask). Absent (unit tests, no advice wiring) → fail-closed: log + drop,
@@ -246,7 +246,7 @@ export function createReplyActions({ bridge, bodyEmojiOf = () => null, labelOf =
      * action targets ev.chatId (the emit syntax has no cross-chat target); errors are
      * swallowed to onLog so a bad limb can never crash the turn.
      */
-    async execute(run = [], stripped = [], ev = {}, { being = 'e' } = {}) {
+    async execute(run = [], stripped = [], ev = {}, { being = defaultKey } = {}) {
       for (const s of stripped) onLog(`stripped malformed action (${s.reason}): ${JSON.stringify(String(s.raw).slice(0, 120))}`);
       for (const a of run) {
         try { await runOne(a, ev, being); }

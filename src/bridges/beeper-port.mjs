@@ -33,16 +33,17 @@ import { createFloodGuard } from '../flood-guard.mjs';
 // resolves to its own id too. ⇒ no two coexisting placeholders share text; no
 // disambiguating nonce needed.
 
-// The bridge-ENFORCED persona identifier: body_emoji + persona name as the FIRST
-// LINE, then the reply. A leading model-written self-label ("egpt:") is stripped so
-// the identifier is the bridge's, not the model's. No body_emoji (system sends) →
-// text passes through untouched.
+// The bridge-ENFORCED persona identifier: body_emoji + the agent's name + a ": " lead-in,
+// INLINE with the reply — "🐶 egpt: <reply>" (operator 2026-07-10, was a two-line header). A
+// leading model-written self-label ("egpt:") is still stripped first so the identifier is the
+// bridge's, not the model's. No body_emoji (system sends) → text passes through untouched;
+// body_emoji with no label (echo sends) → inline emoji only, no name/colon.
 const _escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function personaStamp(bodyEmoji, label, text) {
   if (!bodyEmoji) return text;
-  if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no header line
+  if (!label) return `${bodyEmoji} ${text}`;   // body_emoji only (system/echo sends) → inline, no name
   const clean = String(text).replace(new RegExp(`^\\s*${_escapeRe(label)}\\s*[:：]\\s*`, 'i'), '');
-  return `${bodyEmoji} ${label}\n${clean}`;      // persona line: "🐶 egpt" then the reply
+  return `${bodyEmoji} ${label}: ${clean}`;      // inline persona stamp: "🐶 egpt: <reply>"
 }
 
 /**

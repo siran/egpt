@@ -145,41 +145,53 @@ export async function boot({
   if (ingest) { try { seedSkeletons({ onLog: (m) => log.line?.(`[seed] ${m}`) }); } catch (e) { log.line?.(`[boot] seed failed: ${e?.message ?? e}`); } }
 
   // The `agents:` block is the ONE registry (operator 2026-07-02, new-config-only): the
-  // persona identity + local beings + mesh addressing all live here. It is REQUIRED — a
-  // node without an agents block, or without a persona entry (an agent whose name/handles
-  // include e/egpt), is a fatal misconfiguration, not a silent fallback to a guessed
-  // default. Fail loudly so the operator fixes it (the skeleton ships the block uncommented).
+  // persona identity + local beings + mesh addressing all live here. It is REQUIRED, and
+  // exactly ONE agent must carry `default: true` — that agent IS the persona (it answers
+  // un-@mentioned messages and terminates relay chains that resolve to it). No agents block,
+  // no default agent, or MORE THAN ONE default agent is a fatal misconfiguration, not a
+  // silent fallback to a guessed default. Fail loudly so the operator fixes it — the
+  // agent-identity refactor (operator 2026-07-10) removed the hardcoded e/egpt persona test:
+  // the persona is `default: true`, its being-id is its MAP KEY, nothing about the key
+  // string is magic anywhere below.
   const agents = () => cfg.agents ?? {};
   const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
+  const CONFIG_FILE = 'config/config.yaml';   // named in the fatal message so the operator knows where to fix it
   const personaAgent = () => {
+    const found = [];
     for (const [name, a] of Object.entries(agents())) {
       if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return { name, agent: a };
+      if (a.default === true) found.push({ name, agent: a });
     }
-    return null;
+    if (found.length === 1) return found[0];
+    if (found.length === 0) {
+      throw new Error(`boot: no persona agent — config.agents must declare exactly one agent with \`default: true\` (${CONFIG_FILE}). See config/skeletons/config.yaml.`);
+    }
+    throw new Error(`boot: ${found.length} agents carry \`default: true\` (${found.map((f) => f.name).join(', ')}) — exactly one is allowed (${CONFIG_FILE}).`);
   };
-  if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents) || !personaAgent()) {
-    throw new Error('boot: config.agents must declare a persona agent (an entry whose name or handles include "e"/"egpt"). No agents block / no persona entry is a fatal misconfiguration — see config/skeletons/config.yaml.');
+  if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) {
+    throw new Error(`boot: config.agents must be a map declaring exactly one persona agent (\`default: true\`) — no agents block is a fatal misconfiguration (${CONFIG_FILE}). See config/skeletons/config.yaml.`);
   }
+  // The persona's being-id: the lowercased MAP KEY of the single default agent, resolved
+  // ONCE here and injected into the pure modules (router/gating/brainpool) that can't read
+  // config. Every persona check downstream compares against this, never against 'e'/'egpt'.
+  const defaultKey = personaAgent().name.toLowerCase();
 
-  // The being's body_emoji + display label (the bridge enforces the emoji on outbound; the
-  // label rides the persona's first line "🐶 <label>"), resolved purely from the agents
-  // registry: the PERSONA agent supplies E's emoji/label, a LOCAL agent keyed by being name
-  // supplies its own.
+  // A being's body_emoji + display label + reply signature, resolved purely from the agents
+  // registry BY KEY (the being IS the key now — no e/egpt special case). body_emoji falls
+  // back to the dog; name falls back to the key; signature falls back to the node-level
+  // `signature`, then the historical `∎` train end-marker (so behavior is unchanged until a
+  // signature is configured).
   const bodyEmojiOf = (being) => {
-    const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt') return personaAgent()?.agent?.body_emoji ?? '🐶';
-    const a = agents()[b];
+    const a = agents()[String(being ?? '').toLowerCase()];
     return (a && typeof a === 'object' && a.body_emoji) ? a.body_emoji : '🐶';
   };
   const labelOf = (being) => {
-    const b = String(being ?? '').toLowerCase();
-    if (b === 'e' || b === 'egpt') {
-      const pa = personaAgent();
-      return pa ? (pa.agent.name ?? pa.name) : 'egpt';
-    }
-    const a = agents()[b];
-    return (a && typeof a === 'object') ? (a.name ?? b) : b;
+    const a = agents()[String(being ?? '').toLowerCase()];
+    return (a && typeof a === 'object' && a.name) ? a.name : String(being ?? '');
+  };
+  const signatureOf = (being) => {
+    const a = agents()[String(being ?? '').toLowerCase()];
+    return (a && typeof a === 'object' && a.signature != null) ? a.signature : (cfg.signature ?? '∎');
   };
 
   // conv-state YAML IO — default to the real file, missing = empty state.
@@ -280,7 +292,7 @@ export async function boot({
     resolveTranscriptionService: tx.resolveTranscriptionService,// { enabled, postsBack } per chat
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
-    personaEmoji: bodyEmojiOf('e'),       // 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
+    personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
     echo,                                 // 👂 echo gate: false = transcribe+log but never post the 👂 (operator 2026-07-09)
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
@@ -339,12 +351,14 @@ export async function boot({
   // --- services (each DI-wired; none closes over another) ---
   const services = {
     identity: createIdentity({ now }),
-    gating: createGating({ getConfig, loadState: _loadState }),
+    gating: createGating({ getConfig, loadState: _loadState, defaultKey }),
     // Router resolves an @token against the unified `agents:` block (operator 2026-07-02),
     // then cross-node @being.node mesh targets (Phase 4b, inert unless cfg.mesh is configured).
-    router: createRouter({ getAgents: () => cfg.agents ?? {}, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
-    transcript: createTranscript({ contacts, persona: labelOf('e'), io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
-    sender: createSender({ bridge, bodyEmojiOf, labelOf }),
+    // defaultBeing = defaultKey: the persona-route + the un-@mentioned fall-through both yield
+    // the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
+    router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
+    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    sender: createSender({ bridge, bodyEmojiOf, labelOf, signatureOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
     // beat rides the loop's own tick instead of a side timer (operator 2026-07-01).
@@ -360,7 +374,7 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
@@ -378,6 +392,7 @@ export async function boot({
     writeRewindTarget: (ref) => writeFile(join(EGPT_HOME, 'rewind-target.txt'), ref, 'utf8'),
     loadState: _loadState, writeState: _writeState,   // /e auto <mode> + the /e wizard persist into conversations.yaml
     brains,                                           // the /e wizard resolves a picked agent type through the registry
+    defaultKey,                                       // the persona being-id (its map key) — /e auto + /status + wizard key their per-conversation reads/writes/evictions off this, never 'e' (operator 2026-07-10)
     evictWarm: (key) => pool.evict(key),              // drop a re-pointed conversation's warm session so it respawns fresh
     onLog: (m) => log.line?.(`[command] ${m}`),
   });
@@ -398,7 +413,7 @@ export async function boot({
   // quote-reply answer back into the origin conversation (dispatch bound after the spine
   // exists). Fail-closed when advice_channel is unset.
   const advice = createAdvice({ bridge, getConfig, onLog: (m) => log.line?.(`[advice] ${m}`) });
-  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), onLog: (m) => log.line?.(`[actions] ${m}`) });
+  const actions = createReplyActions({ bridge, bodyEmojiOf, labelOf, resolveConvDir, askAdvice: (a) => advice.ask(a), defaultKey, onLog: (m) => log.line?.(`[actions] ${m}`) });
 
   // Heartbeats are DECLARATIVE now (operator 2026-07-01): the loader collects
   // them from the node config.heartbeats block + every conversation/room folder's
@@ -468,7 +483,7 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, defaultBeing: defaultKey, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);

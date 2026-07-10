@@ -8,15 +8,17 @@
 // No SEPARATE knee-jerk message: a per-turn "📨 Sending to E..." piled up and
 // cross-deleted in busy chats (its id-resolution races the next turn's). The reply's
 // own reply-to quote is the ack; nothing to linger. body_emoji is enforced by the
-// bridge; the train markers (⏳ / ∎ / failure) are owned here.
-const END_MARK = '∎';
+// bridge; the train markers (⏳ / the end-marker / failure) are owned here. The end-marker
+// is the ANSWERING being's SIGNATURE now (operator 2026-07-10, signatureOf below), replacing
+// the hardcoded ∎ — but signatureOf defaults to '∎', so nothing visibly changes until a
+// per-agent / node-level `signature` is configured.
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 // A turn that was MEANT to surface but produced no deliverable text (brainpool
 // returned '' / whitespace, OR the spine blanked a failure-shaped result) must
 // resolve its placeholder VISIBLY — never a silent delete or a forever "⏳ Thinking…"
 // (operator 2026-07-04, DEFECT 1: turn 1 vanished with its placeholder stuck). Same
-// "⚠️ … ∎" marker style as the failure train; distinct from FAIL_SUFFIX (a SEND fault).
-const NO_REPLY_MARK = `⚠️ no reply (turn failed/empty) ${END_MARK}`;
+// "⚠️ … <sig>" marker style as the failure train; distinct from FAIL_SUFFIX (a SEND fault).
+const noReplyMark = (sig) => `⚠️ no reply (turn failed/empty) ${sig}`;
 const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -28,11 +30,11 @@ const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in 
 // and — via `ahead` — from every other queued one, so each resolves to its own id.
 const QUEUED = (ahead) => `⏳ Queued (${ahead} ahead)…`;
 
-export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null } = {}) {
+export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, signatureOf = () => '∎', defaultKey = 'e' } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
-    open(chatId, { being = 'e', replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
+    open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
       // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
       // NO persona line (no body_emoji/label tag passed → the port stamps nothing), NO ∎
       // terminator, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
@@ -53,7 +55,8 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
       }
       const bodyEmoji = bodyEmojiOf(being);
       const label = labelOf(being);
-      const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona line (emoji + label) from these
+      const endMark = signatureOf(being);          // the reply-train end-marker: this being's signature (agent → node → '∎')
+      const tag = { bodyEmoji, label, replyTo };   // the bridge enforces the persona stamp (emoji + label) from these
       const stream = bridge.startStream?.(chatId, queued ? QUEUED(queuedAhead) : THINKING, { ...tag, persona: being });
       let acc = '';
       return {
@@ -69,7 +72,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).
-          const body = t.trim() ? `${t} ${END_MARK}` : NO_REPLY_MARK;
+          const body = t.trim() ? `${t} ${endMark}` : noReplyMark(endMark);
           if (stream) {
             await stream.finish?.(body);
             if (!stream.delivered) await bridge.send(chatId, body, tag);   // §7 fallback

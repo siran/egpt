@@ -102,7 +102,7 @@ beforeAll(async () => {
     // auto_e_default 'mute' → an UNKNOWN chat (the empty-registry regression) stays
     // silent; our KNOWN chat's own mode 'on' is the only thing that can produce a reply.
     whatsapp: { chat_id: 'self@fixture', allowed_users: ['u-1'], auto_e_chats: [], auto_e_default: 'mute' },
-    agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } },
+    agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } },
   };
   await fs.writeFile(P.config, YAML.stringify(config), 'utf8');
 
@@ -111,11 +111,15 @@ beforeAll(async () => {
       whatsapp: {
         [CHAT_ID]: {
           slug: SLUG,
-          mode: 'on',
-          threadId: THREAD_ID,
-          readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
           conversation_path: `.egpt-boot-contract/conversations/whatsapp/${SLUG}`,
           home_dir: '/c/Users/fixture',
+          // The persona is a NESTED being keyed by the default agent's KEY 'egpt' (operator
+          // 2026-07-10) — mode/thread/readonly live here, not flat on the contact.
+          egpt: {
+            mode: 'on',
+            threadId: THREAD_ID,
+            readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+          },
         },
       },
     },

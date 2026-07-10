@@ -26,7 +26,7 @@
 // into readonly), it gets NO identity kickoff (engineers, not the persona), and its
 // thread persists in a per-being NESTED block (recordThread(..., being)). codex/URL
 // brains + emitted-command stripping (the comm-handler's job, Phase 4) layer in later.
-import { slugDir, getBeing, recordThread, readIdentityFeed, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
+import { slugDir, getBeing, getContact, recordThread, readIdentityFeed, readAutoModeLayer, patchContact, appendThreadStat, mutateState, nowIsoString, DETERMINISTIC_MODEL, DETERMINISTIC_EFFORT, DEFAULT_ALLOWED_TOOLS } from '../../conversations-state.mjs';
 import { isContextOverflowError, isDeadSessionError } from '../../dispatch.mjs';
 import { parseFrequency } from './heartbeat-loader.mjs';
 import { WRITE_TOOLS } from '../claude-args.mjs';
@@ -126,6 +126,7 @@ export function createBrainPool({
   contacts,                          // the shared contact-resolver (createContacts) — slug + rename self-heal
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
+  defaultKey = 'e',                  // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona-vs-sibling split keys off this, never 'e' (operator 2026-07-10)
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
   isOverflow = isContextOverflowError,
@@ -199,15 +200,14 @@ export function createBrainPool({
   // being name supplies that being's CONFIGURATION, resolved through the brains registry
   // (config/agents layer). The PERSONA agent (handles include e/egpt) supplies E's default.
   const agents = () => (getConfig() ?? {}).agents ?? {};
-  const agentIds = (name, a) => [name, ...(Array.isArray(a?.handles) ? a.handles : [])].map((h) => String(h).toLowerCase());
-  // The persona agent's `configuration` (agents block) — the agent-type file a fresh E
-  // conversation is instanced from — or null when no persona agent is declared. New-config-
+  // The persona agent's `configuration` (agents block) — the agent-type file a fresh persona
+  // conversation is instanced from — or null when no default agent is declared. The persona is
+  // the single `default: true` agent (operator 2026-07-10 — no e/egpt handle test); new-config-
   // only (operator 2026-07-02): reads `configuration`, never the retired `type` back-read.
   function personaAgentConfiguration() {
-    for (const [name, a] of Object.entries(agents())) {
+    for (const [, a] of Object.entries(agents())) {
       if (!a || typeof a !== 'object' || Array.isArray(a)) continue;
-      if (String(a.configuration ?? '').toLowerCase() === 'relay') continue;   // relay isn't a brain
-      if (agentIds(name, a).some((h) => h === 'e' || h === 'egpt')) return a.configuration ?? null;
+      if (a.default === true) return a.configuration ?? null;
     }
     return null;
   }
@@ -270,7 +270,7 @@ export function createBrainPool({
       if (!slug) throw new Error(`brainpool: no slug for ${ev.surface}/${ev.chatId}`);
 
       const convDir = slugDir(ev.surface, slug);
-      const isSibling = being !== 'e';
+      const isSibling = being !== defaultKey;
       // 'mode: auto' — E plays the operator's role here (siblings are engineers, never auto).
       const wantAuto = !isSibling && mode === 'auto';
       const autoKey = (tid) => `${ev.surface}:${ev.chatId}:${tid}`;
@@ -298,13 +298,18 @@ export function createBrainPool({
         runModel = def.model ?? DETERMINISTIC_MODEL;
         runEffort = def.effort ?? DETERMINISTIC_EFFORT;
         if (fresh) {
-          // Freeze the instanced def under readonly.agent with the RESOLVED concrete model/effort
-          // (operator 2026-07-02: new-config-only — the vocabulary is `agent`; getBeing reads
-          // readonly.agent). NO `personality` is written — that key is RETIRED; the identity feed
-          // is a property of the agent type (def.personality), read fresh at kickoff below.
+          // Freeze the instanced def under the persona's NESTED `<being>` block as readonly.agent
+          // with the RESOLVED concrete model/effort (operator 2026-07-02: new-config-only — the
+          // vocabulary is `agent`; getBeing reads readonly.agent). NESTED, not flat (operator
+          // 2026-07-10 — the persona is a normal nested being keyed by defaultKey; getBeing reads
+          // entry[being].readonly with no flat fallback). Merge over the existing block so a
+          // pre-set mode survives the freeze. NO `personality` is written — that key is RETIRED;
+          // the identity feed is a property of the agent type (def.personality), read at kickoff.
           await mutateState(writeState, async () => {
-            await writeState(patchContact(await loadState(), ev.surface, ev.chatId, {
-              readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
+            const s = await loadState();
+            const existing = getContact(s, ev.surface, ev.chatId)?.entry?.[being] ?? {};
+            await writeState(patchContact(s, ev.surface, ev.chatId, {
+              [being]: { ...existing, readonly: { agent: def.name, type: def.type ?? brainType, model: runModel, effort: runEffort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS } },
             }));
           });
         }
@@ -412,7 +417,7 @@ export function createBrainPool({
       const text = typeof r === 'string' ? r : (r?.text ?? '');
       const newSession = (r && typeof r === 'object' && r.sessionId) || null;
       // Persist a freshly-minted session so the next turn resumes it — being-aware:
-      // flat threadId for 'e', a nested <being> block for a sibling.
+      // a nested <being> block for EVERY being (the persona included, operator 2026-07-10).
       // A fresh thread's kickoff already carried the auto layer (wrapFresh) — mark the
       // newly-minted thread delivered so a later RESUMED turn on it doesn't re-inject.
       if (wantAuto && newSession) markAuto(autoKey(newSession));

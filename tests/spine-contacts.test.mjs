@@ -47,7 +47,7 @@ describe('contacts.resolve', () => {
     // A KNOWN contact WITH a stored thread, so we can prove the rename invalidates it.
     let seed = emptyState();
     const ens = ensureContact(seed, SURFACE, CHAT, { pushedName: 'fam', slugHint: 'fam' });
-    seed = recordThread(ens.state, SURFACE, CHAT, 'sess-old');
+    seed = recordThread(ens.state, SURFACE, CHAT, 'sess-old', undefined, 'e');
     const oldSlug = ens.slug;
 
     const { contacts, renames, appends, getState } = harness(seed);

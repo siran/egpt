@@ -39,13 +39,19 @@ export function portExplicitTools(state) {
     for (const [jid, entry] of Object.entries(bucket)) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry) || entry.aliasOf) { nextBucket[jid] = entry; continue; }
       let nextEntry = entry;
+      // Legacy FLAT readonly (the pre-nested persona slot, labeled 'e') — residentsOf no
+      // longer synthesizes an implicit 'e' (operator 2026-07-10), so port it explicitly.
+      if (entry.readonly && typeof entry.readonly === 'object' && isLegacyAll(entry.readonly.allowed_tools)) {
+        nextEntry = { ...nextEntry, readonly: { ...entry.readonly, allowed_tools: [...DEFAULT_ALLOWED_TOOLS] } };
+        touched.push({ surface, jid, being: 'e' });
+      }
+      // Nested per-being readonly blocks (siblings, and — going forward — the persona keyed
+      // by its own map key).
       for (const being of residentsOf(entry)) {
-        const ro = being === 'e' ? entry.readonly : entry[being]?.readonly;
+        const ro = entry[being]?.readonly;
         if (!ro || typeof ro !== 'object' || !isLegacyAll(ro.allowed_tools)) continue;
         const coerced = { ...ro, allowed_tools: [...DEFAULT_ALLOWED_TOOLS] };
-        nextEntry = being === 'e'
-          ? { ...nextEntry, readonly: coerced }
-          : { ...nextEntry, [being]: { ...nextEntry[being], readonly: coerced } };
+        nextEntry = { ...nextEntry, [being]: { ...nextEntry[being], readonly: coerced } };
         touched.push({ surface, jid, being });
       }
       nextBucket[jid] = nextEntry;

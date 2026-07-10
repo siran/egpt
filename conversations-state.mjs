@@ -1057,43 +1057,43 @@ export function getContact(state, surface, jid) {
 }
 
 // ── per-being view (#2: per-resident conversation shape) ────────────────────
-// A conversation can host several resident beings (E + custom agents), each its own
-// sub-block: `<being>: { mode, readonly: { model, effort, personality }, threadId,
+// A conversation can host several resident beings (the persona + custom agents), each
+// its own sub-block: `<being>: { mode, readonly: { model, effort, personality }, threadId,
 // threadCreatedAt, identityInjectedAt }`. `mode` is the hot reply-gate; `readonly` is
 // how the thread was started (changing it reloads the agent via /e new|identity|brain).
 //
-// READER-CONVERGENCE (stage 1): read the nested block, falling back to today's FLAT
-// fields for the default 'e' so an un-migrated conversation resolves identically. No
-// writer or migration yet — nothing nested exists until the migrate stage, so every
-// read still lands on the flat fallback. Behavior-neutral by construction.
+// KEY-AS-BEING (operator 2026-07-10, agent-identity refactor): the persona is a NORMAL
+// nested being keyed by its agents-map key (resolved from `default: true`, injected as the
+// spine's defaultKey), with NO special flat fallback for its being-level fields — that
+// fallback is precisely what made 'e' special. Being-level fields (threadId, mode,
+// send_to_egpt, readonly, …) live in `entry[being]`; only CONTACT-level fields (slug,
+// pushedName, jids, aliasOf, …) stay flat. Consequence (accepted, one-time on deploy): a
+// legacy conversation's flat persona thread/mode/instanced-brain is abandoned — the
+// persona resets to a fresh nested block; transcript.md history stays on disk.
 const _FLAT_ENTRY_KEYS = new Set([
   'slug', 'personality', 'threadId', 'threadCreatedAt', 'identityInjectedAt', 'threadCwd',
   'pushedName', 'firstSeenAt', 'mode', 'send_to_egpt', 'aliasOf', 'jids', 'transcribe',
-  // `readonly` is object-valued but FLAT: it's the instanced-brain block the
-  // brainpool writes for the default 'e' (getBeing reads flat.readonly), NOT a
-  // nested resident-being. Without this, residentsOf would list a phantom
-  // "readonly" resident on any v2-instanced conversation.
+  // `readonly` is object-valued but a LEGACY flat key (the pre-nested instanced-brain
+  // slot); it is NOT a nested resident-being, so residentsOf must skip it or it would
+  // list a phantom "readonly" resident on any legacy-flat conversation.
   'readonly',
 ]);
 
-// Resolve a resident being's view of a conversation. `entry[being]` (nested) wins;
-// for 'e' it falls back to the legacy flat fields. Returns null when there's no contact.
-export function getBeing(state, surface, jid, being = 'e') {
+// Resolve a resident being's view of a conversation, reading ONLY its nested `entry[being]`
+// block (no flat fallback — the persona is a normal nested being now). Returns null when
+// there's no contact. `being` is REQUIRED (callers pass the resolved key explicitly).
+export function getBeing(state, surface, jid, being) {
   const c = getContact(state, surface, jid);
   if (!c) return null;
   const e = c.entry ?? {};
   const b = (e[being] && typeof e[being] === 'object' && !Array.isArray(e[being])) ? e[being] : null;
-  const flat = being === 'e' ? e : {};
-  // `readonly` (the instanced brain) reads from the nested being block, or — for the
-  // legacy flat 'e' — a flat `readonly` (which is where the brainpool instances it, so
-  // we never have to migrate a flat entry to nested).
-  const ro = b?.readonly ?? (being === 'e' ? (flat.readonly ?? {}) : {});
+  const ro = b?.readonly ?? {};
   return {
     jid: c.jid, slug: c.slug, surface, being,
-    present:            !!b || being === 'e',                                   // 'e' is the implicit legacy resident
-    mode:               b?.mode               ?? flat.mode               ?? null,
-    send_to_egpt:       b?.send_to_egpt       ?? flat.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
-    threadId:           b?.threadId           ?? flat.threadId           ?? null,
+    present:            !!b,
+    mode:               b?.mode               ?? null,
+    send_to_egpt:       b?.send_to_egpt       ?? null,  // per-conv 'always'|'mode' override
+    threadId:           b?.threadId           ?? null,
     model:              ro.model              ?? null,
     effort:             ro.effort             ?? null,
     // The def name this thread was instanced from (operator 2026-07-02: new-config-only —
@@ -1106,15 +1106,15 @@ export function getBeing(state, surface, jid, being = 'e') {
   };
 }
 
-// The resident being names configured on an entry: the nested per-being keys, plus an
-// implicit 'e' for a legacy flat entry (which has no nested blocks). 'e' is always first.
+// The resident being names configured on an entry: the nested per-being keys, in entry
+// order. PURE — no implicit persona synthesized (operator 2026-07-10: a hardcoded 'e'
+// return is exactly the specialness we removed). A caller that needs "the default resident
+// when none are named" threads the config-resolved default key at its own call site.
 export function residentsOf(entry) {
   if (!entry || typeof entry !== 'object') return [];
-  const named = Object.keys(entry).filter(
+  return Object.keys(entry).filter(
     (k) => !_FLAT_ENTRY_KEYS.has(k) && entry[k] && typeof entry[k] === 'object' && !Array.isArray(entry[k]),
   );
-  if (!named.length) return ['e'];
-  return named.includes('e') ? named : ['e', ...named];
 }
 
 // Top-N primary contacts across surfaces, newest first — the `/e` / `/egpt` browser.
@@ -1390,19 +1390,11 @@ export function patchContact(state, surface, jidOrSlug, patch) {
 }
 
 // Record that a new claude thread was just spawned for a contact's resident being.
-// The default 'e' writes the FLAT thread fields exactly as before (an un-migrated
-// conversation is byte-identical). Any OTHER being writes a NESTED `<being>` block
-// so its thread persists alongside E's — merged over the block's existing fields
-// (mode/readonly survive), and it then shows up as a resident (residentsOf), which
-// is the intended per-being conversation shape.
-export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being = 'e') {
-  if (being === 'e') {
-    return patchContact(state, surface, jidOrSlug, {
-      threadId,
-      threadCreatedAt: nowIso,
-      identityInjectedAt: nowIso,
-    });
-  }
+// EVERY being (persona included, operator 2026-07-10) writes a NESTED `<being>` block so
+// its thread persists alongside the others — merged over the block's existing fields
+// (mode/readonly survive), and it then shows up as a resident (residentsOf), the intended
+// per-being conversation shape. `being` is REQUIRED (callers pass the resolved key).
+export function recordThread(state, surface, jidOrSlug, threadId, nowIso = nowIsoString(), being) {
   const existing = _entryByJidOrSlug(state, surface, jidOrSlug)?.[being] ?? {};
   return patchContact(state, surface, jidOrSlug, {
     [being]: { ...existing, threadId, threadCreatedAt: nowIso, identityInjectedAt: nowIso },

@@ -38,7 +38,7 @@ function harness(config = {}, mode) {
   if (mode !== undefined) {
     const ens = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' });
     state = ens.state;
-    if (mode) state.contacts.whatsapp['!room:beeper.com'].mode = mode;   // '' → leave default
+    if (mode) state.contacts.whatsapp['!room:beeper.com'].e = { mode };   // persona mode is NESTED under 'e' now (operator 2026-07-10); '' → leave default
   }
   const loadState = async () => state;
   const writeState = async (s) => { state = s; };
@@ -222,7 +222,7 @@ function siblingHarness(config = {}, { eMode, wrenMode } = {}) {
   const ens = ensureContact(state, 'whatsapp', '!room:beeper.com', { pushedName: 'fam', slugHint: 'fam' });
   state = ens.state;
   const entry = state.contacts.whatsapp['!room:beeper.com'];
-  if (eMode) entry.mode = eMode;
+  if (eMode) entry.e = { mode: eMode };            // persona mode is NESTED under 'e' now (operator 2026-07-10)
   if (wrenMode) entry.wren = { mode: wrenMode };   // a nested resident-being block
   const loadState = async () => state;
   const writeState = async (s) => { state = s; };

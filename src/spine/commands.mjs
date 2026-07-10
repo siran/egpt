@@ -154,6 +154,7 @@ export function createCommands({
   writeRewindTarget,
   loadState = null, writeState = null,   // conv-state IO — lets /e auto persist a mode
   brains = null,                         // the brain registry (createBrains) — the /e wizard resolves a picked agent type through it
+  defaultKey = 'e',                      // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona's per-conversation mode/readonly reads+writes and its warm-key prefix all key off this, never a hardcoded 'e' (operator 2026-07-10)
   evictWarm = () => {},                  // (warmKey) -> drop that conversation's warm session so a re-point respawns fresh
   listAgentTypes = defaultListAgentTypes,// () -> string[] agent-type names for the wizard's first pick (injected in tests)
   listIdentityLayers = defaultListIdentityLayers, // () -> string[] identity-layer names for the custom branch's personality pick
@@ -280,7 +281,11 @@ export function createCommands({
           if (r.error) { await send?.(ev.chatId, `/e auto: ${r.error}`); return; }
           jid = r.jid; where = `for ${r.name}`; targetSurface = r.surface;
         }
-        await writeState(patchContact(state, targetSurface, jid, { mode }));
+        // The persona is a NESTED being keyed by defaultKey now (operator 2026-07-10) — write
+        // its mode into that block (merged over the existing one), NOT a flat entry.mode, so
+        // gating reads it back via getBeing(defaultKey).
+        const prior = getContact(state, targetSurface, jid)?.entry?.[defaultKey] ?? {};
+        await writeState(patchContact(state, targetSurface, jid, { [defaultKey]: { ...prior, mode } }));
         await send?.(ev.chatId, `✅ E mode ${where} → ${mode}`);
       } catch (e) { onLog(`/e auto ${ev.chatId}: ${e?.message ?? e}`); await send?.(ev.chatId, `/e auto: failed — ${e?.message ?? e}`); }
       return;
@@ -350,7 +355,7 @@ export function createCommands({
           }
         }
         convs = String(n);
-        try { mode = getBeing(st, ev.surface, ev.chatId, 'e')?.mode ?? null; } catch { mode = null; }
+        try { mode = getBeing(st, ev.surface, ev.chatId, defaultKey)?.mode ?? null; } catch { mode = null; }
       }
     } catch { convs = '?'; }
 
@@ -425,7 +430,7 @@ export function createCommands({
     let convPath = c?.entry?.conversation_path;
     if (!convPath) { try { convPath = conversationPathOf(r.surface, slug); } catch { convPath = '?'; } }
 
-    const b = getBeing(state, r.surface, r.jid, 'e');
+    const b = getBeing(state, r.surface, r.jid, defaultKey);
     const mode = b?.mode ?? `${DEFAULT_AUTO_MODE} (default)`;
 
     // Instanced = this being took a first turn and froze a readonly brain (getBeing's
@@ -572,7 +577,7 @@ export function createCommands({
     // The conversation's CURRENT instanced def marks the matching option `(current)`
     // and its frozen engine keys the warm entry to evict on done (null = never
     // instanced → fall back to the new def's engine at apply time).
-    const cur = getBeing(state, targetSurface, jid, 'e');
+    const cur = getBeing(state, targetSurface, jid, defaultKey);
     // The tools-branch "keep current" display: the live frozen list, coerced (a legacy
     // 'all' shows — and later freezes — as the explicit list, never perpetuated).
     const curTools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? null;
@@ -626,12 +631,15 @@ export function createCommands({
       // deterministic floor when the type omits them (matching the brainpool's freeze).
       const model = result.model ?? def.model ?? DETERMINISTIC_MODEL;
       const effort = result.effort ?? def.effort ?? DETERMINISTIC_EFFORT;
+      // Freeze into the persona's NESTED block (operator 2026-07-10 — keyed by defaultKey,
+      // merged over the existing block so threadId/mode survive the re-point).
+      const prior = c?.entry?.[defaultKey] ?? {};
       await writeState(patchContact(state, surface, jid, {
-        readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS },
+        [defaultKey]: { ...prior, readonly: { agent: def.name ?? result.configuration, type: engine, model, effort, allowed_tools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS } },
       }));
-      // The live warm session runs under the OLD engine (or the new one on a
-      // never-instanced conversation); the pool keys it `e:<engine>:<surface>:<slug>`.
-      evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
+      // The live warm session runs under the OLD engine (or the new one on a never-instanced
+      // conversation); the pool keys it `<defaultKey>:<engine>:<surface>:<slug>`.
+      evictWarm(`${defaultKey}:${wm.oldEngine ?? engine}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${def.name ?? result.configuration} · ${model}/${effort} (respawns next turn)`);
     } catch (e) { onLog(`/e wizard ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
@@ -662,10 +670,11 @@ export function createCommands({
       const c = getContact(state, surface, jid);
       const slug = c?.slug ?? result.slug;
       const displayName = c?.entry?.pushedName ?? slug;
+      const prior = c?.entry?.[defaultKey] ?? {};
       await writeState(patchContact(state, surface, jid, {
-        readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS },
+        [defaultKey]: { ...prior, readonly: { agent: name, type: CCODE, model: result.model, effort: result.effort, allowed_tools: DEFAULT_ALLOWED_TOOLS } },
       }));
-      evictWarm(`e:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
+      evictWarm(`${defaultKey}:${wm.oldEngine ?? CCODE}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» → ${name} · ${result.model}/${result.effort} (new type created, respawns next turn)`);
     } catch (e) { onLog(`/e wizard custom ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }
@@ -682,23 +691,27 @@ export function createCommands({
       const c = getContact(state, surface, jid);
       const slug = c?.slug ?? result.slug;
       const displayName = c?.entry?.pushedName ?? slug;
-      const cur = getBeing(state, surface, jid, 'e');
+      const cur = getBeing(state, surface, jid, defaultKey);
       let tools;
       if (result.tools === 'default') tools = DEFAULT_ALLOWED_TOOLS;
       else if (result.tools === 'readonly') tools = READONLY_ALLOWED_TOOLS;
       else if (result.tools === 'custom') tools = result.toolsCustom?.length ? result.toolsCustom : DEFAULT_ALLOWED_TOOLS;
       else tools = coerceAllowedTools({ allowed_tools: cur?.allowedTools ?? null })?.allowed_tools ?? DEFAULT_ALLOWED_TOOLS;   // 'current'
       const engine = cur?.brainType ?? wm.oldEngine ?? CCODE;
+      const prior = c?.entry?.[defaultKey] ?? {};
       await writeState(patchContact(state, surface, jid, {
-        readonly: {
-          agent: cur?.agent ?? 'egpt',
-          type: engine,
-          model: cur?.model ?? DETERMINISTIC_MODEL,
-          effort: cur?.effort ?? DETERMINISTIC_EFFORT,
-          allowed_tools: tools,
+        [defaultKey]: {
+          ...prior,
+          readonly: {
+            agent: cur?.agent ?? 'egpt',
+            type: engine,
+            model: cur?.model ?? DETERMINISTIC_MODEL,
+            effort: cur?.effort ?? DETERMINISTIC_EFFORT,
+            allowed_tools: tools,
+          },
         },
       }));
-      evictWarm(`e:${wm.oldEngine ?? engine}:${surface}:${slug}`);
+      evictWarm(`${defaultKey}:${wm.oldEngine ?? engine}:${surface}:${slug}`);
       await send?.(wm.chatId, `✅ «${displayName}» tools → [${tools.join(', ')}] (respawns next turn)`);
     } catch (e) { onLog(`/e wizard tools ${wm.chatId}: ${e?.message ?? e}`); await send?.(wm.chatId, `/e: failed — ${e?.message ?? e}`); }
   }

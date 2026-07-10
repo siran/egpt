@@ -236,8 +236,10 @@ describe('/e wizard', () => {
 
   it('picking an existing type applies IMMEDIATELY with its pinned model/effort, freezes readonly (threadId preserved), evicts warm', async () => {
     let state = contact();
-    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');   // existing context
-    state = patchContact(state, 'whatsapp', '!room', { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } });
+    // existing context, seeded in the persona's NESTED block (operator 2026-07-10): readonly
+    // first, then recordThread MERGES the thread in so both survive.
+    state = patchContact(state, 'whatsapp', '!room', { e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } } });
+    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');
     const brains = { resolve: (name) => ({ name, type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] }) };
     const { cmds, sent, evicts, getState } = harness({ state, brains });
     const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
@@ -373,7 +375,7 @@ describe('/e wizard: structured-yaml view + custom branch', () => {
 
   it('custom branch (free-text personality): writes the type file + identity layer, freezes readonly, evicts', async () => {
     let state = contact();
-    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');   // existing context to preserve
+    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');   // existing context to preserve (nested persona thread)
     const { cmds, sent, evicts, writes, files, getState } = harness({ state, agentTypes: ['egpt'], identityLayers: ['default', 'secretary'] });
     await cmds.run({ ...ev, body: '/e' });          // arm — configs [egpt] + tools = option 2, custom = option 3
     await cmds.run({ ...ev, body: '3' });           // custom → model step
@@ -451,8 +453,10 @@ describe('/e wizard: tools branch', () => {
   const ev = { chatId: '!room', surface: 'whatsapp', authorized: true };
   const instanced = (tools) => {
     let state = ensureContact(emptyState(), 'whatsapp', '!room', { pushedName: 'fam', slugHint: 'fam' }).state;
-    state = recordThread(state, 'whatsapp', '!room', 'THREAD-1');
-    return patchContact(state, 'whatsapp', '!room', { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: tools } });
+    // instanced brain + thread in the persona's NESTED block (operator 2026-07-10): readonly
+    // first, then recordThread MERGES the thread so both survive.
+    state = patchContact(state, 'whatsapp', '!room', { e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: tools } } });
+    return recordThread(state, 'whatsapp', '!room', 'THREAD-1', undefined, 'e');
   };
 
   it('the CFG_STEP menu offers "tools" (never "all") and arming reaches it via bare /e', async () => {

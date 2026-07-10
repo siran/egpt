@@ -15,25 +15,27 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
   // The operator's exact shape: a persona agent (handles e/egpt) + a relay agent, plus
   // a local (non-persona) agent to prove being = its own name.
   const agents = {
-    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'] },   // persona
+    egpt: { configuration: 'sonnet-high', handles: ['e', 'egpt'], default: true },   // persona (default:true)
     don:  { configuration: 'relay', relay_channel: 'Rodz' },          // relay → chat "Rodz"
     'don-tg': { configuration: 'relay', relay_channel: 'Rodz', network: 'Telegram' },   // relay → chat "Rodz" pinned to telegram
     'don-local': { configuration: 'sonnet-high', name: 'Don' },       // local being, hyphenated name
     off:  { configuration: 'sonnet-high', enabled: false },           // disabled → not routable
     _note: 'a comment key, never routable',
   };
-  const arouter = createRouter({ getAgents: () => agents });
+  // boot injects defaultBeing = the default agent's KEY ('egpt' here). The persona routes to
+  // its own key now (operator 2026-07-10 — no hardcoded 'e').
+  const arouter = createRouter({ getAgents: () => agents, defaultBeing: 'egpt' });
 
-  it('@e (persona handle) → the CANONICAL being "e", ev.mention preserved (display identity ≠ routing)', () => {
+  it('@e (persona handle) → the persona KEY "egpt", ev.mention preserved', () => {
     const m = { atEStart: true, atEAnywhere: true, replyToBot: false };
     const r = arouter.resolve(ev('@e hola', m));
-    expect(r.being).toBe('e');       // NOT "egpt" — the persona key is display only
+    expect(r.being).toBe('egpt');    // the persona being-id IS its map key
     expect(r.mesh).toBeUndefined();
     expect(r.mention).toBe(m);       // persona keeps the bridge-computed mention
   });
 
-  it('@egpt (persona name key) also → being "e"', () => {
-    expect(arouter.resolve(ev('@egpt yo')).being).toBe('e');
+  it('@egpt (persona name key) also → being "egpt"', () => {
+    expect(arouter.resolve(ev('@egpt yo')).being).toBe('egpt');
   });
 
   it('a LOCAL agent @don-local → being "don-local" with a synthetic mention', () => {
@@ -62,18 +64,31 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
     expect(arouter.resolve(ev('@DON hi')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });
   });
 
-  it('a disabled agent falls through (→ e); a _note key never routes', () => {
-    expect(arouter.resolve(ev('@off hi')).being).toBe('e');
-    expect(arouter.resolve(ev('@_note hi')).being).toBe('e');
+  it('a disabled agent falls through (→ defaultBeing); a _note key never routes', () => {
+    expect(arouter.resolve(ev('@off hi')).being).toBe('egpt');
+    expect(arouter.resolve(ev('@_note hi')).being).toBe('egpt');
   });
 
-  it('an unknown @token falls through to e', () => {
-    expect(arouter.resolve(ev('@nobody hi')).being).toBe('e');
+  it('an unknown @token falls through to the persona (defaultBeing)', () => {
+    expect(arouter.resolve(ev('@nobody hi')).being).toBe('egpt');
   });
 
-  it('no agents block → always e (no local beings without a registry)', () => {
-    const bare = createRouter();
-    expect(bare.resolve(ev('@wren do X')).being).toBe('e');
+  it('no agents block → always defaultBeing (no local beings without a registry)', () => {
+    const bare = createRouter({ defaultBeing: 'egpt' });
+    expect(bare.resolve(ev('@wren do X')).being).toBe('egpt');
+  });
+
+  // KEY-AS-BEING (operator 2026-07-10): the resolved persona being IS the default agent's
+  // KEY, matched by the `default: true` marker — NOT the 'e'/'egpt' strings. A config whose
+  // persona is keyed `assistant` (handles [a]) resolves to `assistant`; a renamed key routes
+  // to the new key.
+  it('persona resolution follows `default: true`, not e/egpt: key "assistant" (handles [a]) → being "assistant"', () => {
+    const ag = { assistant: { configuration: 'sonnet-high', handles: ['a'], default: true }, don: { configuration: 'relay', relay_channel: 'Rodz' } };
+    const r = createRouter({ getAgents: () => ag, defaultBeing: 'assistant' });
+    expect(r.resolve(ev('@a hola')).being).toBe('assistant');          // matched via handle → its key
+    expect(r.resolve(ev('@assistant hola')).being).toBe('assistant');  // matched via key
+    expect(r.resolve(ev('@nobody hi')).being).toBe('assistant');       // fall-through → the persona key
+    expect(r.resolve(ev('@don ping')).mesh).toEqual({ being: 'don', route: { room_id: 'Rodz' } });  // a non-default agent still routes normally
   });
 });
 

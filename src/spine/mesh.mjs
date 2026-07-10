@@ -73,9 +73,6 @@ export function createMeshService({
     }
     return null;
   };
-  // The PERSONA agent is the one whose key/handle includes e/egpt (same test the router uses).
-  const isPersonaAgent = (name, agent) => agentIds(name, agent).some((h) => h === 'e' || h === 'egpt');
-
   // Relay-chat resolution (unchanged from the old wiring): a node's listen route is
   // config.mesh.nodes.<node>.routes[0]; its room_id is the chat the envelope rides.
   const resolveRoute = (toNode) => {
@@ -137,16 +134,15 @@ export function createMeshService({
     isSelfNode,                          // node_name ∪ node_alias → several identities on one process
     log: onLog,
     resolveRoute,
-    // A local being: the persona (e/egpt), or a LOCAL agent (enabled, configuration ≠ 'relay')
-    // matched by its KEY *or any of its handles* (so `ed`, a handle of the egpt persona, is
-    // recognized here just as the router recognizes a bare @ed). A hosted-but-disabled agent is
-    // treated as not-here (the engine answers "no <being>.<node> here" — never silence),
+    // A local being: any LOCAL agent (enabled, configuration ≠ 'relay') matched by its KEY
+    // *or any of its handles* — including the persona, which lives in the registry like any
+    // other agent (operator 2026-07-10: no e/egpt shortcut; a handle like `ed` resolves via
+    // findAgentByToken exactly as the router resolves a bare @ed). A hosted-but-disabled agent
+    // is treated as not-here (the engine answers "no <being>.<node> here" — never silence),
     // respecting availability. (A relay agent forwards elsewhere via the route-direct path, so
     // it is NOT local.)
     isLocalBeing: (name) => {
-      const n = String(name).toLowerCase();
-      if (n === 'e' || n === 'egpt') return true;
-      const found = findAgentByToken(n);
+      const found = findAgentByToken(name);
       if (!found) return false;
       const a = found.agent;
       // A relay agent (has relay_channel / to, or explicit configuration: relay) forwards
@@ -154,18 +150,14 @@ export function createMeshService({
       const isRelay = !!a.relay_channel || !!a.to || String(a.configuration ?? '').toLowerCase() === 'relay';
       return !isRelay;
     },
-    // Resolve a local being addressed by a HANDLE to the canonical being that actually RUNS:
-    // a persona handle (`ed`, `egptd`) runs the persona being `e` (stable warm keys/threads,
-    // the same mapping the router applies to persona handles → defaultBeing); any other local
-    // agent's handle runs that agent's own key. The reply is still STAMPED with the addressed-as
-    // handle (the engine keeps `by: <handle>.<node>`) — only the run-being is resolved.
+    // Resolve a being addressed by a HANDLE to the KEY that actually RUNS: findAgentByToken
+    // maps a handle (`ed`, `donny`) to its agent's canonical key, which IS the run-being now
+    // (operator 2026-07-10 — the persona is no longer special-cased to 'e'; it runs its own
+    // key like any agent). The reply is still STAMPED with the addressed-as handle (the engine
+    // keeps `by: <handle>.<node>`) — only the run-being is resolved.
     resolveLocalBeing: (name) => {
-      const n = String(name).toLowerCase();
-      if (n === 'e' || n === 'egpt') return 'e';
-      const found = findAgentByToken(n);
-      if (!found) return n;
-      if (isPersonaAgent(found.name, found.agent)) return 'e';
-      return found.name;
+      const found = findAgentByToken(name);
+      return found ? found.name : String(name ?? '').toLowerCase();
     },
     // RELAY-RECORD (declarative chain): a relay agent with `to: <being>.<node>` re-addresses
     // an arriving request onward. Returns { being, node, route } — the next hop's being/node

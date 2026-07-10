@@ -11,10 +11,12 @@ const state = { contacts: { whatsapp: {
 } } };
 
 describe('per-being reader convergence (#2)', () => {
-  it('flat entry resolves e through the legacy fields (no nested block needed)', () => {
-    expect(getBeing(state, 'whatsapp', '!flat:beeper.local', 'e')).toMatchObject({
-      present: true, being: 'e', mode: 'mention', threadId: 'T1', model: null, effort: null,
-    });
+  it('a legacy FLAT entry no longer resolves the persona from flat fields — present:false (operator 2026-07-10: one-time reset, persona is a nested being now)', () => {
+    const v = getBeing(state, 'whatsapp', '!flat:beeper.local', 'e');
+    expect(v.present).toBe(false);          // no nested `e` block → the flat mode/thread are abandoned
+    expect(v.mode).toBe(null);
+    expect(v.threadId).toBe(null);
+    expect(v.slug).toBe('flat');            // contact-level fields (slug) still resolve
   });
 
   it('nested entry resolves e through the e: block', () => {
@@ -40,8 +42,8 @@ describe('per-being reader convergence (#2)', () => {
     expect(getBeing(state, 'whatsapp', '!nope:beeper.local', 'e')).toBe(null);
   });
 
-  it('residentsOf: flat → [e]; nested → [e, wren]', () => {
-    expect(residentsOf(state.contacts.whatsapp['!flat:beeper.local'])).toEqual(['e']);
+  it('residentsOf: flat → []; nested → [e, wren] (operator 2026-07-10: no implicit "e")', () => {
+    expect(residentsOf(state.contacts.whatsapp['!flat:beeper.local'])).toEqual([]);
     expect(residentsOf(state.contacts.whatsapp['!nested:beeper.local'])).toEqual(['e', 'wren']);
   });
 });

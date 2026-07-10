@@ -340,17 +340,18 @@ describe('mesh service — loop safety', () => {
 
 // ── HANDLE RESOLUTION (Part A): the mesh resolves a being addressed by a HANDLE exactly as
 //    the router does. `ed` is a handle of the egpt persona → isLocalBeing('ed') is true and the
-//    RUN-being resolves to `e` (stable warm keys), while the reply stays stamped `by: ed.do`. ──
+//    RUN-being resolves to the agent's KEY `egpt` (operator 2026-07-10 — the persona runs its
+//    own key, no longer special-cased to 'e'), while the reply stays stamped `by: ed.do`. ──
 describe('mesh service — being resolved by a handle (Part A)', () => {
-  it('answers an envelope to a persona HANDLE (ed.do) by running the persona being `e`, stamped by: ed.do (FAILS pre-Part-A: "no ed.do here")', async () => {
+  it('answers an envelope to a persona HANDLE (ed.do) by running the persona KEY `egpt`, stamped by: ed.do', async () => {
     const brain = fakeBrain({ reply: 'hola' });
     const { bridge, mesh } = svc({ node: 'do', agents: { egpt: { configuration: 'egpt', handles: ['ed'] } }, brain });
     const req = encodeMesh({ by: 'An', body: '@ed hola', from: 'HFM', from_node: 'kg', to: 'ed.do', post_id: 'p1' });
     await mesh.handle({ surface: 'wa', chatId: 'RELAY', msgId: 'm1', body: req });
     await flush();
-    // ran the RESOLVED persona being `e`, not the literal handle `ed`
+    // ran the RESOLVED persona being KEY `egpt`, not the literal handle `ed`
     expect(brain.calls).toHaveLength(1);
-    expect(brain.calls[0].being).toBe('e');
+    expect(brain.calls[0].being).toBe('egpt');
     // it answered (streamed), stamped with the addressed-as handle identity — never "no ed.do here"
     expect(bridge.streams).toHaveLength(1);
     expect(parseMesh(bridge.streams[0].finals.at(-1))).toMatchObject({ by: 'ed.do', re: 'HFM.kg', post_id: 'p1', done: true });

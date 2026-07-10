@@ -139,7 +139,7 @@ describe('/status', () => {
 
   it('includes this chat\'s E mode when the contact has one set', async () => {
     let st = ensureContact(emptyState(), 'whatsapp', '!fam:beeper.local', { pushedName: 'fam', slugHint: 'fam' }).state;
-    st = { ...st, contacts: { whatsapp: { '!fam:beeper.local': { ...st.contacts.whatsapp['!fam:beeper.local'], mode: 'mute' } } } };
+    st = { ...st, contacts: { whatsapp: { '!fam:beeper.local': { ...st.contacts.whatsapp['!fam:beeper.local'], e: { mode: 'mute' } } } } };   // persona mode is nested now (operator 2026-07-10)
     const { cmds, sent } = harness({
       io: { stat: async () => ({ mtimeMs: Date.now() }), readFile: async () => READONLY_YAML },
       gitOut: (args) => (args.includes('--short') ? 'abc1234' : 's'),
@@ -233,11 +233,11 @@ describe('/status <target>', () => {
   it('an INSTANCED conversation: frozen agent/model/effort/allowed_tools, personality resolved via the brains registry, thread id, and members from the transcript tail', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     const slug = first.slug;
-    let state = recordThread(first.state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1');
-    state = patchContact(state, 'whatsapp', '!hfm:beeper.local', {
-      mode: 'on',
-      readonly: { agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] },
+    // instanced brain + mode + thread in the persona's NESTED block (operator 2026-07-10)
+    let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', {
+      e: { mode: 'on', readonly: { agent: 'sonnet-high', type: 'ccode', model: 'opus', effort: 'high', allowed_tools: ['Read'] } },
     });
+    state = recordThread(state, 'whatsapp', '!hfm:beeper.local', 'THREAD-1', undefined, 'e');
     const transcript = [
       'An@[HFM].wa (10:00): hola',
       '',
@@ -271,7 +271,7 @@ describe('/status <target>', () => {
   it('a resolved type file that omits `personality:` falls back to \'egpt\' (same fallback the brainpool applies)', async () => {
     const first = ensureContact(emptyState(), 'whatsapp', '!hfm:beeper.local', { pushedName: 'HFM', slugHint: 'HFM' });
     let state = patchContact(first.state, 'whatsapp', '!hfm:beeper.local', {
-      readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' },
+      e: { readonly: { agent: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all' } },
     });
     const brains = { resolve: (name) => (name === 'egpt' ? { name, type: 'ccode', model: 'sonnet', effort: 'high' } : null) };   // no personality field
     const { cmds, sent } = harness({
