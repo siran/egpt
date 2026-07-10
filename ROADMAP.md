@@ -420,11 +420,21 @@ following is LANDED, test-locked, and (where marked) live-verified:
     DOWN on the restart (clean config dropped the local engine). Backups:
     each node's config.yaml.bak-phase2. Deferred to a later phase (operator):
     the `networks:`/`chat_ids` surface restructure.
-  - **IN FLIGHT**: whisper auto-reap on boot (reap a stray whisper-server
-    when this node's config doesn't run one) — belt-and-suspenders; the
-    live orphan is already down.
+  - **Whisper auto-reap DONE + LIVE-VERIFIED (1ec00b9, 2026-07-10)**: on boot
+    a node reaps a stray whisper-server IFF it doesn't run one. Fail-safe
+    detection (don't reap if audio_transcribe.server.enabled /
+    transcriptor.server.enabled / transcriptor.enabled / active
+    whisper-server-local). Caught a deploy-blocker in review — the first
+    cut used the wrong DOLLY shape and would have taskkill'd DOLLY's own
+    worker every boot; fixed + reproduce-locked. Live logs: REVE "reaped
+    stray on :8089 (killed 0)"; DOLLY "runs a resident whisper-server -
+    leaving :8089 untouched".
+  - **✅ PHASE 2 COMPLETE (2026-07-10, both nodes on 1ec00b9)**: symmetric
+    wake, clean key-diff-gated configs, whisper orphan gone + auto-reap,
+    bridges on beeper.use. Awaiting operator review, then align for Phase 3.
   - **Phase 3 (next, after operator review)**: HRW 👂 echo — room-membership
     rendezvous decides who posts after the posts_back delay; ranked+timeout.
+    (Interim until then: `echo` removed → both nodes echo → double-👂.)
 
 - **TRUSTED EGPT NETWORK (operator 2026-07-08 — SUPERSEDED by the symmetric
   model above; kept for the build history)**: REVE stays
