@@ -406,14 +406,25 @@ following is LANDED, test-locked, and (where marked) live-verified:
     the Self DM: `@e` -> REVE atE=true (answers 🐶), DOLLY atE=FALSE (the
     de-injection - it no longer wakes on @e); `@ed` -> DOLLY atE=true
     (answers 🤝), REVE atE=false. One answerer each, zero suppression.
-  - REMAINING: **2b** full clean rewrite of both live configs to the new
-    shape (whole-file Write - removes the now-dead `network:` block + the
-    tokenless beeper registry, adopts beeper.use/networks/chat_ids/
-    account_peers) so all copies match the skeleton; the 👂 single-echo is
-    config-set but not yet voice-tested (send a note to a shared chat);
-    **Phase 3** HRW echo rotation; vibe propagation to sibling skeletons +
-    config-schema.
-  - Live now: both nodes on anrodz42 (An's account); DOLLY token bdapi_…gJZ0.
+  - **Phase 2b DONE + LIVE-VERIFIED (2026-07-10)**: both live configs
+    rewritten CLEAN (concise ASCII comments, painful/stale comments gone),
+    validated key-by-key vs the originals (zero dropped/changed keys — a
+    parsed-leaf diff gated the deploy). Applied: `beeper.use` (token moved
+    in), `account_peers: [kg, do]`, `network:` block removed, tokenless
+    beeper registry removed, `echo` static flag REMOVED (operator: HRW owns
+    who-posts-when, not a static role — so both default echo-capable, interim
+    double-👂 accepted until Phase 3). Transcription: REVE `[remote, cli]`
+    (uses DOLLY's GPU worker, cli fallback, NO local resident server);
+    DOLLY keeps its transcriptor-worker block. Both bridges reconnected on
+    the new beeper.use token; REVE's orphaned whisper-server (3.4GB) came
+    DOWN on the restart (clean config dropped the local engine). Backups:
+    each node's config.yaml.bak-phase2. Deferred to a later phase (operator):
+    the `networks:`/`chat_ids` surface restructure.
+  - **IN FLIGHT**: whisper auto-reap on boot (reap a stray whisper-server
+    when this node's config doesn't run one) — belt-and-suspenders; the
+    live orphan is already down.
+  - **Phase 3 (next, after operator review)**: HRW 👂 echo — room-membership
+    rendezvous decides who posts after the posts_back delay; ranked+timeout.
 
 - **TRUSTED EGPT NETWORK (operator 2026-07-08 — SUPERSEDED by the symmetric
   model above; kept for the build history)**: REVE stays
