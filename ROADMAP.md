@@ -399,11 +399,21 @@ following is LANDED, test-locked, and (where marked) live-verified:
   - **Config shape** (new skeleton 883e667): `beeper: {use, <named accts w/
     account+token>}`; `networks: {whatsapp/telegram/signal: {chat_ids[],
     allowed_users[]}}`; `account_peers`; `node_alias`; `echo`/`echo_max_age_ms`.
-  - IN FLIGHT 2026-07-09: config-shape migration + machinery removal (back-compat
-    old shape) dispatched; then regenerate live configs + deploy; then HRW echo.
-  - Live now: DOLLY switched to An's account (token bdapi_…gJZ0 wired); both
-    nodes on anrodz42, still running the OLD standby config until the migration
-    deploys.
+  - **Phase 1 DONE (6be3a9b)**: config-shape migration + machinery removal
+    (back-compat old shape), suite green.
+  - **Phase 2a DONE + LIVE-VERIFIED (2026-07-10)**: both nodes on 6be3a9b,
+    echo flags set (REVE echo:false / DOLLY echo:true). Live log proof from
+    the Self DM: `@e` -> REVE atE=true (answers 🐶), DOLLY atE=FALSE (the
+    de-injection - it no longer wakes on @e); `@ed` -> DOLLY atE=true
+    (answers 🤝), REVE atE=false. One answerer each, zero suppression.
+  - REMAINING: **2b** full clean rewrite of both live configs to the new
+    shape (whole-file Write - removes the now-dead `network:` block + the
+    tokenless beeper registry, adopts beeper.use/networks/chat_ids/
+    account_peers) so all copies match the skeleton; the 👂 single-echo is
+    config-set but not yet voice-tested (send a note to a shared chat);
+    **Phase 3** HRW echo rotation; vibe propagation to sibling skeletons +
+    config-schema.
+  - Live now: both nodes on anrodz42 (An's account); DOLLY token bdapi_…gJZ0.
 
 - **TRUSTED EGPT NETWORK (operator 2026-07-08 — SUPERSEDED by the symmetric
   model above; kept for the build history)**: REVE stays
