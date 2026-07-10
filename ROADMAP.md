@@ -596,6 +596,14 @@ following is LANDED, test-locked, and (where marked) live-verified:
   Net today the owner reads as `anrodriguez` (localpart) — clean enough; this is polish,
   NOT a Phase-3 blocker.
 
+- **Merge `transcription` + `transcription_service` config blocks (operator 2026-07-10,
+  BACKBURNER):** a node that is both a worker AND a client (e.g. DOLLY) carries both a
+  `transcription:` block (worker cli/model + `server.token`) and a `transcription_service:`
+  block (the client fallback chain) — with the whisper binary/model duplicated across them.
+  They could fold into one block. Currently WORKING (both spines' configs verified good), so
+  this is pure tidiness; no behavior change. Watch the read-sites' canonical/legacy fallbacks
+  when doing it (src/spine/transcription.mjs, transcriptor-worker.mjs, boot whisper-reap).
+
 - **Service levels — "a conversation to be had" (operator 2026-07-03):** the node
   runs as `.\an` (the claude login, ~/.local/bin PATH, and the profile all live in
   the user's home — maximum capability, node = the operator). The alternative end
