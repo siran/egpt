@@ -80,7 +80,7 @@ describe('beeper-port adapter', () => {
     expect(s.delivered).toBe(true);          // reflects the live handle
   });
 
-  it('B reply stream: enforces the inline "🐶 egpt: " persona stamp on every frame + strips a model self-label, replies-to', async () => {
+  it('B reply stream: enforces the "🐶 egpt" persona header line on every frame + strips a model self-label, replies-to', async () => {
     const { start, spy } = fakeStart();
     const port = await createBeeperBridgePort({}, { start });
     const s = port.startStream('!room', '⏳', { persona: 'e', bodyEmoji: '🐶', label: 'egpt', replyTo: 'm7' });
@@ -88,10 +88,10 @@ describe('beeper-port adapter', () => {
     s.update('egpt: Aquí estoy bien ⏳');                          // model wrote "egpt:" → bridge strips it
     s.finish('Aquí estoy bien ∎');                                // sender supplies the ∎ end-mark
     const h = spy.streams[0];
-    expect(h.init).toBe('🐶 egpt: ⏳');                            // inline persona stamp + placeholder, no nonce suffix
+    expect(h.init).toBe('🐶 egpt\n⏳');                            // persona header line + placeholder, no nonce suffix
     expect(h.opts).toMatchObject({ chatId: '!room', persona: 'e', replyToMessageID: 'm7' });
-    expect(h.updates).toEqual(['🐶 egpt: Aquí estoy ⏳', '🐶 egpt: Aquí estoy bien ⏳']);   // stamp on every frame; "egpt:" stripped
-    expect(h.finals).toEqual(['🐶 egpt: Aquí estoy bien ∎']);
+    expect(h.updates).toEqual(['🐶 egpt\nAquí estoy ⏳', '🐶 egpt\nAquí estoy bien ⏳']);   // header on every frame; "egpt:" stripped
+    expect(h.finals).toEqual(['🐶 egpt\nAquí estoy bien ∎']);
   });
 
   it('stream.delete proxies to the real handle (tearing down a withheld reply)', async () => {
