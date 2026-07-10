@@ -59,31 +59,67 @@ signature: "..."             # fallback signature when an agent declares none
   - `name`      = agent.name ?? key
   - `signature` = agent.signature ?? node.signature (the train end-marker; replaces `∎`)
 
-## De-special-casing (implementation scope)
+## De-special-casing (implementation scope — FULL blast radius, verified by grep 2026-07-10)
 
-Remove hardcoded `'e'`/`'egpt'` + `defaultBeing='e'`; resolve persona/default via `default: true`:
+Remove hardcoded `'e'`/`'egpt'` + `defaultBeing='e'`; resolve persona/default via `default: true`.
+`boot` computes the default agent's KEY once (`defaultKey`) and INJECTS it into the pure
+modules (router/mesh/brainpool/gating/conversations-state) — those can't read config.
 
-- **src/spine/boot.mjs** — `personaAgent()` = the `default:true` agent (fatal if none, or
-  if more than one). `bodyEmojiOf` / `wakeWords` / persona-configuration derive from it;
-  the being-id it resolves to is its KEY (not `'e'`).
-- **src/spine/router.mjs** — `defaultBeing` = the default agent's key; the persona-route
-  branch matches the default agent, not `'e'`/`'egpt'`.
-- **src/spine/mesh.mjs** — `isPersonaAgent` / `resolveLocalBeing` / `isLocalBeing` use
-  `default:true` + the key, not `'e'`/`'egpt'`.
-- **src/spine/brainpool.mjs** — `personaAgentConfiguration()` reads the default agent.
-- **src/bridges/beeper-port.mjs** — the enforced stamp uses agent `name` + `signature`;
-  the `∎` end-marker becomes the signature.
+- **src/spine/boot.mjs** — `personaAgent()` = the `default:true` agent. Fatal if none OR
+  more than one (`throw`, not fallback). `bodyEmojiOf` / `labelOf` / `wakeWords` /
+  `personaEmoji` / transcript `persona` all resolve via `defaultKey`, not `'e'`/`'egpt'`.
+  The being-id it resolves to is `defaultKey` (its map key).
+- **src/spine/router.mjs** — `defaultBeing` (injected = `defaultKey`); the persona-route
+  branch matches the default agent (its key), not the `'e'`/`'egpt'` literals.
+- **src/spine/mesh.mjs** — `isPersonaAgent` (agent.default===true), `isLocalBeing`,
+  `resolveLocalBeing` (persona handle → `defaultKey`, not `'e'`); drop the `'e'`/`'egpt'`
+  shortcuts (findAgentByToken already resolves a handle like `ed` to the key).
+- **src/spine/brainpool.mjs** — `personaAgentConfiguration()` reads the default agent;
+  `isSibling = being !== defaultKey` (was `!== 'e'`).
+- **src/spine/gating.mjs** — `defaultMode`/`sendToEgpt` key off `being === defaultKey`
+  (injected), not `'e'`. (NOT in the original plan list — found by grep.)
+- **conversations-state.mjs** — `getBeing` / `recordThread` / `residentsOf` must not
+  hardcode `'e'`. CLEAN design (accepted reset, operator 2026-07-10): the default being is
+  a NORMAL nested being keyed by `defaultKey` — its being-level fields (threadId, mode,
+  send_to_egpt, readonly, personality, thread*) live in `nested[defaultKey]`, NOT the flat
+  entry. NO flat fallback for being-level fields (that fallback is what made `'e'` special).
+  Contact-level fields (slug, pushedName, firstSeenAt, jids, aliasOf, conversation_path,
+  transcribe) STAY flat. `residentsOf` must not synthesize an implicit `'e'`: thread the
+  default key from config at each call site (verify callers) rather than a hardcoded return.
+  Consequence (accepted): existing flat persona state is abandoned on deploy → per-conv
+  thread + mode + instanced-brain reset once; transcript.md preserved. (NOT in the original
+  plan list — found by grep; this is the delicate part.)
+- **src/bridges/beeper-port.mjs** — the enforced stamp becomes `<body_emoji> <name>: <text>`
+  (name = agent.name ?? key; inline colon replaces the old two-line `<emoji> <label>\n`).
+  Keep the leading model-self-label strip.
+- **src/spine/sender.mjs** — the `∎` END_MARK becomes the SIGNATURE (train end-marker),
+  resolved per-being via an injected `signatureOf(being)` = agent.signature ?? node
+  signature ?? `'∎'` (so behavior is unchanged until a signature is configured).
 - **config/config-schema.mjs** + **config/skeletons/config.yaml** — document `name`,
-  `default`, `signature` (agent + node-level).
+  `default`, `signature` (agent-level) + top-level node `signature`.
+- **Verify-if-live-in-v2 (grep hits; fix or explicitly rule out):** `src/dispatch-helpers.mjs`,
+  `src/item-format.mjs`, `src/auto-mode.mjs`, `src/room.mjs` each still carry `'e'`/`'egpt'`
+  literals. Confirm whether the v2 spine path reaches them; de-magic the ones it does.
+- **Tests:** boot's exactly-one-`default:true` rule will break every fixture that builds an
+  agents block without it — update fixtures + add a test asserting boot throws on 0 or >1
+  default agents. Router/mesh/brainpool tests asserting being `'e'` move to the key.
 
-## Compat / migration
+## Compat / migration — FINAL DECISION (operator 2026-07-10)
 
-- Live persona agents are keyed `egpt` with handles `[e,egpt]` (REVE) / `[ed,egptd]`
-  (DOLLY). Add `default: true` to each. Being-id shifts `'e'` -> key `egpt` -> each
-  persona's warm session/threads reset ONCE (acceptable; transcript.md history preserved).
-- Boot rule (DECIDE at implementation): require exactly one `default: true` (fatal
-  otherwise) — cleanest — OR, for one release, fall back to "handles include e/egpt" +
-  warn. Lean: require it, and migrate the two live configs in the same deploy.
+**Option 3 accepted: clean, key-as-being, NO special treatment of the key anywhere.**
+`default: true` is the SOLE persona marker. Renaming a key resets that agent's warm
+session + thread on its next message (fresh key → fresh session; the old warm entry
+idle-evicts in ≤15m or via LRU — the warm pool is the manager, there is no thread GC for
+persisted threads, they simply orphan). NO flat back-compat read, NO hidden stable being
+(those were rejected as fudges that reintroduce the specialness).
+
+- Boot rule: **require exactly one `default: true` (fatal otherwise).** No handles-based
+  fallback. The two live configs get `default: true` added in the SAME deploy as the code
+  (else boot fatals) — operator-gated `~/.egpt` edit, key-diff validated.
+- First-deploy reset is ACCEPTED: switching the persona being `'e'` → `defaultKey` (`egpt`
+  on both live nodes) abandons the flat persona state, so each persona conversation resets
+  its thread + mode + instanced brain once. Operator confirmed: default mode is `mention`,
+  so mode reversion is a non-issue; transcript.md history is preserved on disk.
 
 ## Open / not here
 
