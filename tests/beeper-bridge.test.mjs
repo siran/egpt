@@ -270,20 +270,37 @@ describe('beeper bridge', () => {
     expect(incoming[1].from.authorized).toBe(false);   // not allow-listed → unauthorized
   });
 
-  it("self-sent (isSender) messages show the configured userName; others show their pushed name", async () => {
-    // Beeper gives the self participant no fullName — senderName is the matrix id
-    // ('@anrodriguez:beeper.com'). The bridge substitutes the configured userName
-    // for the owner's own lines; other contacts get their OWN pushed name — never the
-    // operator's saved contact-list label (op 2026-06-16 / privacy op 2026-07-03).
-    const { incoming } = await startBridge({ userName: 'Andrés' });
+  // THE AUTHOR IS ALWAYS THE PUSH NAME (operator 2026-07-10): the OWNER's OWN sends are
+  // attributed to the owner's push name, NEVER the node's configured userName. Live bug
+  // (DOLLY, user_name "Don"/"AnDo"): An's OWN voice note echoed "👂 Don" — the node
+  // userName mislabeled the owner as a person named Don (REVE, no such userName, showed
+  // "An"). One rule for everyone: push name → number → stable id.
+  it("the owner's OWN sends are attributed to the owner's push name, NOT the node userName", async () => {
+    const { incoming } = await startBridge({ userName: 'Don' });   // node user_name that must NOT be the author
     fake.emit({ type: 'message.upserted', entries: [
-      liveMsg({ isSender: true, senderName: '@anrodriguez:beeper.com', text: 'mío' }),
+      liveMsg({ isSender: true, senderPushName: 'An', senderName: '@anrodriguez:beeper.com', text: 'mío' }),
       liveMsg({ isSender: false, senderName: 'Bea (mi vecina)', senderPushName: 'Bea', text: 'suyo' }),
     ] });
     await waitFor(() => incoming.length === 2);
-    expect(incoming[0].from.senderName).toBe('Andrés');   // self → configured name
+    expect(incoming[0].from.senderName).toBe('An');    // owner → OWN push name, NOT userName "Don"
     expect(incoming[0].from.isSender).toBe(true);
-    expect(incoming[1].from.senderName).toBe('Bea');      // other → pushed name, not the saved label
+    expect(incoming[1].from.senderName).toBe('Bea');   // other → pushed name, not the saved label
+  });
+
+  // The owner with NO push name falls through the SAME non-private chain — the number
+  // (from a WhatsApp jid), else the stable id — never the node userName (op 2026-07-10).
+  it("the owner with no push name falls to the phone number, then the stable id — never userName", async () => {
+    const { incoming } = await startBridge({ userName: 'Don' });
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ id: 'own-wa', isSender: true, senderID: '@whatsapp_16468217865:beeper.local', senderName: '@anrodriguez:beeper.com', text: 'wa' }),
+      liveMsg({ id: 'own-mx', isSender: true, senderID: '@anrodriguez:beeper.com', senderName: '@anrodriguez:beeper.com', text: 'mx' }),
+    ] });
+    await waitFor(() => incoming.length === 2);
+    const wa = incoming.find((i) => i.text === 'wa').from;
+    const mx = incoming.find((i) => i.text === 'mx').from;
+    expect(wa.senderName).toBe('+16468217865');            // owner, no push name, jid → number
+    expect(mx.senderName).toBe('@anrodriguez:beeper.com'); // owner, no push name, non-jid → raw stable id
+    for (const v of [wa.senderName, mx.senderName]) expect(v).not.toBe('Don');   // never the node userName
   });
 
   // The SENDER identity is the person's OWN pushed/profile name, NOT the operator's
@@ -641,6 +658,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
+      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
@@ -673,6 +691,7 @@ describe('beeper bridge', () => {
   // transcript-logging are unaffected. REPRODUCE: before this fix, the 👂 posted here too.
   const voiceNoteAt = (ageMs) => liveMsg({
     text: null, type: 'VOICE', timestamp: Date.now() - ageMs,
+    senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
     attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
   });
   it('a 12-day-old voice note is transcribed + logged, but the 👂 is NOT posted (age bound)', async () => {
@@ -713,6 +732,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: undefined,
+      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     })] });
     await waitFor(() => incoming.length === 1);
@@ -750,6 +770,7 @@ describe('beeper bridge', () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async (id) => ({ enabled: true, postsBack: id === 'chat-enrolled' }) });
     const voice = (chatID) => liveMsg({
       chatID, text: null, type: 'VOICE',
+      senderPushName: 'An',   // owner's OWN push name → the 👂 author (the node userName is NEVER the author)
       attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
     });
     fake.emit({ type: 'message.upserted', entries: [voice(CHAT('chat-quiet'))] });

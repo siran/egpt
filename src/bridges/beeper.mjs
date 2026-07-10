@@ -725,7 +725,8 @@ export async function startBeeperBridge(opts = {}) {
   // message.senderName with EXACTLY that saved label for a saved contact (verified
   // live 2026-07-03: senderName == the participant's fullName == the chat title; no
   // separate pushName is exposed — every /v1/contacts|users|participants-by-id
-  // endpoint 404s). So for a NON-owner we never surface senderName; instead:
+  // endpoint 404s). So we never surface senderName as the author; instead, for EVERY
+  // sender (owner included, operator 2026-07-10):
   //   1. the person's OWN pushed/profile name if the payload carries one
   //      (msg.senderPushName / msg.pushName — schema-tolerant, like _msgTimestampMs);
   //   2. else a HUMAN-READABLE NON-PRIVATE id — the phone number embedded in a
@@ -733,9 +734,12 @@ export async function startBeeperBridge(opts = {}) {
   //   3. else the stable senderID itself; 4. else null (caller's own fallback).
   // The chat label / [chatname] / conversation folder (conversations.yaml pushedName)
   // KEEP the operator's label — that's the CHAT's name, not the person's. Display-only:
-  // authorization stays id-based (GENOME I6). The OWNER's own (isSender) sends are
-  // exempt — there senderName is the account's OWN matrix id (never a contact label),
-  // so the configured userName substitutes it, else the id stands.
+  // authorization stays id-based (GENOME I6). The OWNER (isSender) is NO LONGER exempt
+  // (operator 2026-07-10): the author is ALWAYS the push name, then number, then stable
+  // id — NEVER the node's configured userName (that mislabeled An's OWN voice notes as
+  // the node's user_name, e.g. DOLLY echoed "👂 Don"; REVE labeled the same note "An").
+  // The owner's own push name is their OWN profile name — safe. userName still names the
+  // owner for REACTION attribution (_reactorName) and cross-surface mirroring, not here.
   function fallbackSenderId(msg) {
     const id = String(msg?.senderID ?? '');
     const wa = /^@whatsapp_(\d{6,15}):/i.exec(id);   // WhatsApp jid → phone number (human-readable, non-private)
@@ -754,8 +758,10 @@ export async function startBeeperBridge(opts = {}) {
     return /^@whatsapp_lid-/i.test(String(msg?.senderID ?? '')) ? (msg?.senderName || null) : null;
   }
   function senderDisplay(msg) {
-    if (msg?.isSender) return userName || msg?.senderName || null;   // owner: configured name or own matrix id (never a contact label)
-    return msg?.senderPushName || msg?.pushName || lidPushName(msg) || fallbackSenderId(msg);   // others: pushed name (incl. a LID's senderName) → non-private id; NEVER the saved label
+    // ONE rule for EVERYONE incl. the owner (operator 2026-07-10): pushed name (incl. a
+    // LID's senderName) → non-private id (number, then stable id). NEVER the node's
+    // configured userName, NEVER the saved contact label. See the block above.
+    return msg?.senderPushName || msg?.pushName || lidPushName(msg) || fallbackSenderId(msg);
   }
 
   function _reactorName(id, network) {
@@ -924,8 +930,8 @@ export async function startBeeperBridge(opts = {}) {
         const svc = await resolveTranscriptionService(chatID);
         const vmeta = {};
         // The note's sender, for the 👂 echo header ("👂 <author> (<Ns>): <text>").
-        // Owner's own sends carry the matrix id as senderName — substitute userName;
-        // otherwise the person's pushed name / non-private id, NEVER the saved label.
+        // ONE rule for everyone incl. the owner: the person's pushed name / non-private
+        // id, NEVER the node's configured userName, NEVER the saved label.
         const voiceAuthor = senderDisplay(msg);
         // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident): gate on the NOTE'S OWN
         // timestamp (tsMs, computed above for the backlog gate) vs now — NOT bridge start, so a
@@ -1030,10 +1036,11 @@ export async function startBeeperBridge(opts = {}) {
       userId: msg.senderID || chatID,
       // username / firstName / senderName ALL go through senderDisplay so the
       // operator's saved contact-list label NEVER leaks into the sender identity —
-      // not even via the identity.build `senderName ?? firstName` fallback. The
-      // owner's own sends substitute the configured userName; other contacts get
-      // their OWN pushed name, else a non-private id, NEVER the saved label
-      // (operator 2026-07-03: privacy — the label carries private annotations).
+      // not even via the identity.build `senderName ?? firstName` fallback. ONE rule
+      // for every sender incl. the owner (operator 2026-07-10): their OWN pushed name,
+      // else a non-private id (number, then stable id) — NEVER the node's configured
+      // userName, NEVER the saved label (operator 2026-07-03: privacy — the label
+      // carries private annotations).
       username: senderDisplay(msg) || undefined,
       firstName: senderDisplay(msg) || undefined,
       senderName: senderDisplay(msg),
