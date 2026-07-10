@@ -244,3 +244,80 @@ describe('boot()', () => {
     app.stop();
   });
 });
+
+// CONFIG-SHAPE MIGRATION (operator 2026-07-09): the new beeper:/networks:/account_peers shape
+// (back-compat with the old flat shape) + the REMOVED wake-word injection (symmetric nodes wake on
+// their OWN handles only). Assert boot RESOLVES each by capturing the opts it hands the bridge
+// (token / wakeWords / echo / echoMaxAgeMs / isAllowedUser) and app.accountPeers.
+describe('boot() — config-shape migration', () => {
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
+  async function captureBoot(config) {
+    let opts = null;
+    const start = async (o) => {
+      opts = o;
+      return { async send() { return { ok: true }; }, startStreamMessage() { return { delivered: false, update() {}, async finish() {} }; }, isAlive: () => true, stop() {} };
+    };
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+    });
+    return { opts, app };
+  }
+
+  it('beeper.use resolves the ACTIVE account token', async () => {
+    const { opts, app } = await captureBoot({ agents: AG, beeper: { use: 'main', main: { account: 'a@b', token: 'TOK-main' }, alt: { account: 'c@d', token: 'TOK-alt' } } });
+    expect(opts.beeperToken).toBe('TOK-main');
+    app.stop();
+  });
+
+  it('back-compat: no beeper block → top-level beeper_token still resolves the token', async () => {
+    const { opts, app } = await captureBoot({ agents: AG, beeper_token: 'TOK-legacy' });
+    expect(opts.beeperToken).toBe('TOK-legacy');
+    app.stop();
+  });
+
+  it('networks: wrapper — per-surface allowed_users; chat_ids is a LIST (self-DM = first)', async () => {
+    const { opts, app } = await captureBoot({ agents: AG, networks: {
+      whatsapp: { chat_ids: ['self-1', 'self-2'], allowed_users: ['op@wa'] },
+      telegram: { chat_ids: [], allowed_users: ['op@tg'] },
+    } });
+    expect(opts.isAllowedUser('op@wa', 'whatsapp')).toBe(true);
+    expect(opts.isAllowedUser('op@tg', 'telegram')).toBe(true);
+    expect(opts.isAllowedUser('op@tg', 'whatsapp')).toBe(false);   // per-surface namespace, not shared
+    app.stop();
+  });
+
+  it('back-compat: old top-level whatsapp block + SINGULAR chat_id — allowed_users still resolve', async () => {
+    const { opts, app } = await captureBoot({ agents: AG, whatsapp: { chat_id: 'self-old', allowed_users: ['op@old'] } });
+    expect(opts.isAllowedUser('op@old', 'whatsapp')).toBe(true);
+    app.stop();
+  });
+
+  it('WAKE INJECTION GONE: handles [ed, egptd] → wakeWords excludes bare "e"; a default node keeps "e"', async () => {
+    const dolly = await captureBoot({ agents: { egpt: { configuration: 'egpt', handles: ['ed', 'egptd'] } } });
+    expect(dolly.opts.wakeWords).not.toContain('e');   // pre-2026-07-09: injected → contained "e" → @e woke it
+    expect(dolly.opts.wakeWords).toContain('ed');
+    dolly.app.stop();
+    const normal = await captureBoot({ agents: AG });
+    expect(normal.opts.wakeWords).toContain('e');       // a node that configures e still wakes on @e
+    normal.app.stop();
+  });
+
+  it('echo: default true; cfg.echo:false silences; echoMaxAgeMs default 1h + override', async () => {
+    const def = await captureBoot({ agents: AG });
+    expect(def.opts.echo).toBe(true);
+    expect(def.opts.echoMaxAgeMs).toBe(3_600_000);
+    def.app.stop();
+    const off = await captureBoot({ agents: AG, echo: false, echo_max_age_ms: 1000 });
+    expect(off.opts.echo).toBe(false);
+    expect(off.opts.echoMaxAgeMs).toBe(1000);
+    off.app.stop();
+  });
+
+  it('account_peers parsed + exposed on the boot return', async () => {
+    const { app } = await captureBoot({ agents: AG, account_peers: ['kg', 'do'] });
+    expect(app.accountPeers).toEqual(['kg', 'do']);
+    app.stop();
+  });
+});

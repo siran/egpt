@@ -197,15 +197,25 @@ export function createCommands({
   const wizards = new Map();   // chatKey -> { state, surface, chatId, oldEngine, ts }
   const chatKey = (ev) => `${ev?.surface ?? 'whatsapp'}:${ev?.chatId}`;
 
+  // Per-surface self-DM command channels (operator 2026-07-09): the NEW shape lists them under
+  // networks:.<surface>.chat_ids (plural); the OLD shape has <surface>.chat_id (singular). Read
+  // BOTH, preferring networks:, always yielding a LIST — a command typed in ANY of the surface's
+  // command channels is the operator (a singular chat_id normalizes to a 1-element list).
+  function commandChatIds(surface) {
+    const c = cfg() ?? {};
+    const raw = (c.networks?.[surface] && typeof c.networks[surface] === 'object') ? c.networks[surface]
+              : (c[surface] && typeof c[surface] === 'object') ? c[surface] : {};
+    return Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
+  }
   // The operator gate — reused by isCommand AND the wizard's first-refusal. Same
   // authorization every slash command uses: the origin surface's own Self DM (ids
   // are per-surface namespaces), an authorized sender, or the account owner (isSender).
   function isOperator(ev) {
-    const selfDm = cfg()[ev?.surface ?? 'whatsapp']?.chat_id;
-    // Compare in short space (shortChatId is a no-op on an id that's already
-    // short) so a config chat_id in either form still matches the bridge's
-    // now-always-short ev.chatId.
-    return (selfDm && shortChatId(ev?.chatId) === shortChatId(selfDm)) || !!ev?.authorized || !!ev?.isSender;
+    // Compare in short space (shortChatId is a no-op on an id that's already short) so a config
+    // chat_id in either form still matches the bridge's now-always-short ev.chatId.
+    const here = shortChatId(ev?.chatId);
+    const inSelfDm = commandChatIds(ev?.surface ?? 'whatsapp').some((id) => shortChatId(id) === here);
+    return inSelfDm || !!ev?.authorized || !!ev?.isSender;
   }
 
   // Is an un-expired `/e` wizard armed for this chat? Prunes an expired one (so an

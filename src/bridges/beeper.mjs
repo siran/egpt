@@ -169,39 +169,18 @@ export async function startBeeperBridge(opts = {}) {
     // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
     // for a node that passes nothing).
     wakeWords = ['e', 'egpt'],
-    // Peer node reply stamps (operator 2026-07-08, trusted network): the OTHER node(s)'
-    // body_emoji (e.g. 🤝). An inbound whose text starts with one of these is a peer's
-    // OWN output — flagged `peerOutput` so the host transcript-logs it but NEVER dispatches
-    // (sibling-output guard) and a standby cancels its takeover holds. Default [] = no peers.
-    peerStamps = [],
-    // 👂 ACK ROLE-GATE (operator 2026-07-08, trusted network): does THIS node post the 👂
-    // transcription ack? true (default / absent) = today's behavior (svc.postsBack decides).
-    // false = transcribe + log but NEVER post the 👂 — for BOTH live and BACKLOG voice notes
-    // (one flag, one meaning: "this node posts 👂 acks"). Lets one node in a mesh own the ack.
-    transcribeAck = true,
-    // TRANSCRIPTION PRIMARY/STANDBY (operator 2026-07-08: one 👂 per note — same
-    // coordination-free watch-the-chat pattern as the responder; both nodes still
-    // transcribe locally for their OWN records, only the 👂 post is de-duplicated).
-    // 'primary' (default / absent) posts the 👂 exactly as today. 'standby' HOLDS its 👂 an
-    // extra transcribeTakeoverMs beyond the normal debounce, then SKIPS it if the primary
-    // already posted a 👂 for the same note (seen as an inbound 👂 quote-replying that note).
-    // Separate from `role` (a node can be responder-standby yet transcription-primary — DOLLY).
-    // transcribeAck:false still wins (never post, role irrelevant).
-    transcribeRole = 'primary',
-    // The standby's extra hold (ms) beyond the normal debounce before it posts its 👂 —
-    // generous vs the 15-min debounce so the primary's 👂 reliably lands first.
-    transcribeTakeoverMs = 60_000,
-    // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): a Beeper resync
-    // re-delivered 12-DAY-OLD voice notes — the backlog backfill correctly transcribed
-    // them for the record, but the 👂 ack machinery then posted their transcriptions
-    // into the LIVE chat, visibly stale to the other human ("ese era un mensaje viejo").
-    // The 👂 is a live-conversation courtesy, not an archaeology announcement: it only
-    // posts when the NOTE ITSELF (its own message timestamp, not bridge start) is within
-    // this bound of now. Default 1h covers the sleep-window courtesy (a node waking 15
-    // min later still acks a note that arrived while it slept). 0 or negative = no bound
-    // (always ack, today's behavior). A note with no parseable timestamp acks normally
-    // (fail-open, matching the backlog gate's own inactive-timestamp behavior).
-    transcribeAckMaxAgeMs = 3_600_000,
+    // 👂 ECHO gate (operator 2026-07-09): does THIS node post the 👂 transcript echo? true
+    // (default / absent) = post per the room's posts_back verdict; false = transcribe + LOG the
+    // note but NEVER post the 👂 (live AND backlog). Interim per-node boolean (repurposes the
+    // old transcribe_ack); HRW rotation across co-account nodes is a LATER phase.
+    echo = true,
+    // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar 1:1 incident; renamed from
+    // transcribe_ack_max_age_ms): a Beeper resync can re-deliver ancient backlog voice notes;
+    // the 👂 is a live-conversation courtesy, not an archaeology announcement, so it only posts
+    // when the NOTE ITSELF (its own message timestamp, not bridge start) is within this bound of
+    // now. Default 1h covers the sleep-window courtesy. 0 or negative = no bound. A note with no
+    // parseable timestamp echoes normally (fail-open, matching the backlog gate).
+    echoMaxAgeMs = 3_600_000,
     // Authorization: is this STABLE sender id an operator (may emit commands /
     // mentions) ON THIS network? Signature is (senderId, network) — the host reads
     // the PER-SURFACE allowed_users live (operator 2026-07-02: ids are per-surface
@@ -422,22 +401,6 @@ export async function startBeeperBridge(opts = {}) {
   // in-place edits). Our live edits re-upsert the message; without this guard the
   // bridge would surface each as an incoming "edit" stage-direction (spam / loop).
   const _ourStreamIds = new Set();
-  // TRANSCRIPTION STANDBY seen-acks (operator 2026-07-08: one 👂 per note). A standby
-  // watches the chat for the PRIMARY's 👂 the same coordination-free way the responder
-  // watches for a peer answer: the primary's 👂 arrives as an INBOUND message whose text
-  // starts with 👂 and quote-replies the voice note (replyToId = the note's id). We record
-  // it keyed `${chatID}:${noteMsgId}` — the SAME format as the pending-ack debounceKey
-  // (`${chatID}:${msg.id}`, dispatchMessage) — so a standby's fire-time check is a plain
-  // Set.has. IN-MEMORY + bounded ONLY (operator's restart caveat): a restart forgets seen
-  // acks — worst case a late duplicate 👂 after a restart race, log-only; NEVER persisted.
-  const _peerAcks = new Set();
-  const PEER_ACK_CAP = 2000;
-  function _recordPeerAck(chatID, noteMsgId) {
-    if (!chatID || noteMsgId == null) return;
-    _peerAcks.add(`${chatID}:${noteMsgId}`);
-    _capSet(_peerAcks, PEER_ACK_CAP);
-  }
-  const _peerAckedNote = (key) => _peerAcks.has(key);   // (debounceKey) => did the primary already 👂 this note?
   // Normalize for echo matching — module-scope normEchoText (strips HTML/entities
   // AND flattens list markers so a re-marked echo still compares equal).
   const _normEcho = normEchoText;
@@ -964,36 +927,27 @@ export async function startBeeperBridge(opts = {}) {
         // Owner's own sends carry the matrix id as senderName — substitute userName;
         // otherwise the person's pushed name / non-private id, NEVER the saved label.
         const voiceAuthor = senderDisplay(msg);
-        // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): gate on the NOTE'S
-        // OWN timestamp (tsMs, already computed above for the backlog gate) vs now — NOT
-        // bridge start, so a note that arrived during sleep still acks on wake as long as
-        // the note itself is within the bound. No parseable timestamp → fail-open (ack),
-        // same as the backlog gate's own inactive-timestamp behavior.
-        const tooOldForAck = transcribeAckMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > transcribeAckMaxAgeMs;
-        if (tooOldForAck) onLog(`beeper: ack suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${transcribeAckMaxAgeMs}ms)`);
+        // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident): gate on the NOTE'S OWN
+        // timestamp (tsMs, computed above for the backlog gate) vs now — NOT bridge start, so a
+        // note that arrived during sleep still echoes on wake if the note itself is within the
+        // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
+        const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
+        if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
           enabled: svc.enabled,
-          // 👂 ROLE-GATE (operator 2026-07-08): transcribeAck:false silences the ack on THIS
-          // node (live AND backlog notes) — it still HEARS (transcribes + logs), just never
-          // SPEAKS. true/absent = today's behavior (the room's postsBack verdict decides).
-          // tooOldForAck (above) wins independently — an ancient note never acks regardless.
-          postsBack: (transcribeAck && !tooOldForAck) ? svc.postsBack : false,
+          // 👂 ECHO gate (operator 2026-07-09): echo:false silences the 👂 on THIS node (live
+          // AND backlog notes) — it still HEARS (transcribes + logs), just never SPEAKS.
+          // tooOldForEcho (above) wins independently — an ancient note never echoes regardless.
+          postsBack: (echo && !tooOldForEcho) ? svc.postsBack : false,
           muted: info.isMuted,
           author: voiceAuthor,
-          // PER-NOTE key (chat + this note's id): each voice note gets its OWN
-          // delayed 👂 transcript, posted as a reply to ITSELF — never coalesced
-          // with other notes into one block (operator 2026-06-24). The delay is
-          // postsBackDelayMs (config.yaml posts_back_delay_ms), applied per note.
+          // PER-NOTE key (chat + this note's id): each voice note gets its OWN delayed 👂
+          // transcript, posted as a reply to ITSELF (operator 2026-06-24), never coalesced.
           debounceKey: `${chatID}:${msg.id}`,
           postsBackDelayMs,
-          // TRANSCRIPTION STANDBY (operator 2026-07-08): hold the 👂 an extra takeover
-          // margin, then skip it if the primary already 👂'd this note (watch-the-chat).
-          // Primary/absent → takeoverMs 0 + peerAcked null = today's behavior exactly.
-          takeoverMs: transcribeRole === 'standby' ? transcribeTakeoverMs : 0,
-          peerAcked: transcribeRole === 'standby' ? _peerAckedNote : null,
-          onLog: (m) => onLog(`beeper: ${m}`),
+                    onLog: (m) => onLog(`beeper: ${m}`),
           meta: vmeta,
         });
         if (transcript) {
@@ -1056,20 +1010,6 @@ export async function startBeeperBridge(opts = {}) {
     }
 
     const st = mentionStatus(text || '', wakeWords);
-    // PINNED wake word (operator 2026-07-08, trusted network): an OWN-handle mention
-    // (@ed/@egptd) — the wake set MINUS the network-wide e/egpt — is a DIRECT address to
-    // THIS node, so a standby answers it immediately (no takeover hold). An unqualified @e
-    // is the shared network address (held for takeover on a standby). Empty pinned set
-    // (a node with no extra handles) → never pinned.
-    const pinnedWords = wakeWords.filter((w) => w !== 'e' && w !== 'egpt');
-    const atEPinned = pinnedWords.length ? mentionStatus(text || '', pinnedWords).atEAnywhere : false;
-    // SIBLING-OUTPUT GUARD (operator 2026-07-08, trusted network): a message that starts
-    // with a PEER node's body_emoji stamp is that peer's OWN output — same prefix concept
-    // as the own-persona marker above, but NOT dropped here: the host still needs it (the
-    // transcript, and a standby's takeover-cancel), so it rides `from.peerOutput` and the
-    // spine logs-but-never-dispatches it.
-    const _peerTrim = String(text).trimStart();
-    const peerOutput = peerStamps.some((s) => s && _peerTrim.startsWith(String(s)));
     // Quoted/replied-to target (operator 2026-07-04). Beeper carries a reply's quoted
     // message id as a BARE `linkedMessageID` (verified live 2026-06-16, MESSAGES-
     // FIRST-CLASS-PLAN — no inline quoted text/sender). We surface it two ways:
@@ -1082,15 +1022,6 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
-    // TRANSCRIPTION STANDBY watch (operator 2026-07-08: one 👂 per note): an inbound 👂 that
-    // quote-replies a voice note is the PRIMARY's transcription ack for that note — record it
-    // (chatID, noteMsgId) so a standby's held 👂 for the same note skips at fire time. Only a
-    // standby needs the watch; a primary posts regardless, so it does zero extra work. Our OWN
-    // 👂 echo never reaches here (isEcho returns above), so this only ever captures a peer's.
-    if (transcribeRole === 'standby' && replyToId != null && String(text).trimStart().startsWith('👂')) {
-      _recordPeerAck(chatID, replyToId);
-      onLog(`beeper: saw primary 👂 for note ${chatID}:${replyToId} [${info.title}] — standby will skip its own`);
-    }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,
@@ -1118,8 +1049,6 @@ export async function startBeeperBridge(opts = {}) {
       authorized: !!msg.isSender || isAllowedUser(msg.senderID, acct),
       atEStart: st.atEStart,
       atEAnywhere: st.atEAnywhere,
-      atEPinned,                            // an OWN-handle mention (@ed) → immediate even on a standby node
-      peerOutput,                           // starts with a peer node's stamp → transcript-only, never dispatched
       backlog: isBacklog,                   // older than bridge start (a woken node's replay) → transcript-only, never dispatched
       replyToBot,                           // true when this is a reply to a message WE sent (gates a reply without @e)
       replyToId,                            // the quoted message id (→ `↩#<id>` in the dispatch line), null when not a reply

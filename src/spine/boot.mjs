@@ -136,32 +136,51 @@ export async function boot({
   // the bridge (voice notes) and the media service (a video's audio).
   const tx = createTranscription({ getConfig, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
 
-  // The persona wake-word set (operator 2026-07-07: the bridge gate must honor configured
-  // handles) — the network-wide default e/egpt PLUS the persona agent's name + every handle,
-  // ONE source of truth (the agents block). agentIds already lowercases name+handles. On a
-  // DOLLY-shaped config (agents.egpt.handles: [ed, egptd]) this is [e, egpt, ed, egptd], so
-  // the live @ed that logged atE=false now wakes the node.
-  const wakeWords = (() => { const pa = personaAgent(); return [...new Set(['e', 'egpt', ...agentIds(pa.name, pa.agent)])]; })();
-  // Peer node reply stamps (operator 2026-07-08, trusted network): the OTHER node(s)'
-  // body_emoji, read like any other config block. Absent → [] (no peers → no guard, today's
-  // behavior). A message starting with one is peer output: transcript-only, never dispatched.
-  const peerStamps = Array.isArray(cfg.network?.peer_stamps) ? cfg.network.peer_stamps : [];
-  // 👂 ack role-gate (operator 2026-07-08): only false silences this node's 👂 acks (live +
-  // backlog); absent/true = today's behavior. Lets one node in a mesh own the transcription ack.
-  const transcribeAck = cfg.network?.transcribe_ack !== false;
-  // TRANSCRIPTION PRIMARY/STANDBY (operator 2026-07-08: one 👂 per note). SEPARATE from
-  // network.role — a node can be responder-standby yet transcription-primary (DOLLY). standby
-  // holds its 👂 an extra transcribe_takeover_ms, then skips if the primary already acked.
-  const transcribeRole = cfg.network?.transcribe_role === 'standby' ? 'standby' : 'primary';
-  const transcribeTakeoverMs = Number.isFinite(cfg.network?.transcribe_takeover_ms) ? cfg.network.transcribe_takeover_ms : 60_000;
-  // 👂 ACK AGE BOUND (operator 2026-07-08, Zohykar 1:1 incident): the 👂 only posts for a
-  // note within this age of its OWN timestamp — a Beeper resync's ancient backlog notes get
-  // transcribed + logged (unaffected) but never acked into the live chat. Default 1h.
-  const transcribeAckMaxAgeMs = Number.isFinite(cfg.network?.transcribe_ack_max_age_ms) ? cfg.network.transcribe_ack_max_age_ms : 3_600_000;
+  // The persona wake-word set (operator 2026-07-09: SYMMETRIC nodes — each wakes on its OWN
+  // configured handles only, NOTHING is injected network-wide). ONE source of truth (the agents
+  // block): the persona agent's name + every configured handle, lowercased (agentIds does that).
+  // So @e wakes only a node whose persona configures `e`; a node with handles [ed, egptd] wakes
+  // on @ed, NOT @e. (Reverted the 2026-07-08 network-wide e/egpt injection — that overlap was
+  // self-inflicted and the whole suppression apparatus it needed is gone.)
+  const wakeWords = (() => { const pa = personaAgent(); return [...new Set(agentIds(pa.name, pa.agent))]; })();
+  // 👂 ECHO (operator 2026-07-09): does THIS node post the voice-note transcript echo? echo:false
+  // still transcribes + logs, just never posts the 👂 (repurposes the old transcribe_ack gate).
+  // HRW rotation across co-account nodes is a LATER phase; this is the interim per-node boolean.
+  const echo = cfg.echo !== false;
+  // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar incident; renamed from transcribe_ack_max_age_ms):
+  // never echo a note whose OWN timestamp is older than this — a Beeper resync's ancient backlog
+  // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
+  const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
+  // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
+  // Parsed + exposed only — a LATER HRW phase for the 👂 echo rotation consumes it. No behavior yet.
+  const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
+
+  // Per-surface config resolver (operator 2026-07-09): the NEW shape wraps the per-surface
+  // blocks under `networks:` and lists command channels as `chat_ids` (plural); the OLD shape
+  // has top-level whatsapp:/telegram:/signal: blocks with a singular `chat_id`. ONE resolver
+  // reads BOTH, PREFERS `networks:`, and always yields a `chat_ids` LIST so every reader below
+  // is shape-agnostic (a singular chat_id normalizes to a 1-element list).
+  const surfaceCfg = (surface) => {
+    const raw = (cfg.networks?.[surface] && typeof cfg.networks[surface] === 'object') ? cfg.networks[surface]
+              : (cfg[surface] && typeof cfg[surface] === 'object') ? cfg[surface]
+              : {};
+    const chat_ids = Array.isArray(raw.chat_ids) ? raw.chat_ids : (raw.chat_id != null ? [raw.chat_id] : []);
+    const allowed_users = Array.isArray(raw.allowed_users) ? raw.allowed_users : [];
+    return { ...raw, chat_ids, allowed_users };
+  };
+  // Active Beeper token (operator 2026-07-09): the new `beeper:` block selects an account with
+  // `use` → beeper[use].token. BACK-COMPAT: no block / no `use` → the top-level beeper_token key,
+  // then the BEEPER_ACCESS_TOKEN env var (unchanged).
+  const beeperToken = (() => {
+    const b = cfg.beeper;
+    const sel = b && typeof b === 'object' ? b.use : null;
+    const acct = sel && b[sel] && typeof b[sel] === 'object' ? b[sel] : null;
+    return acct?.token ?? cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN;
+  })();
 
   // --- ports ---
   const bridge = await createBeeperBridgePort({
-    beeperToken: cfg.beeper_token ?? process.env.BEEPER_ACCESS_TOKEN,
+    beeperToken,
     userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
     // Per-surface authorization (operator 2026-07-02): ids are per-surface
     // NAMESPACES — a WhatsApp jid authorizes nothing on Telegram — so the sender
@@ -177,7 +196,7 @@ export async function boot({
     // shortChatId (a no-op on anything that isn't a '!...:beeper.local' room
     // id — sender ids/phone numbers pass through untouched) so a short OR
     // legacy full-form entry compares equal to the delivered id either way.
-    isAllowedUser: (id, network) => ((cfg[surfaceOf(network)]?.allowed_users) ?? []).map(shortChatId).includes(shortChatId(id)),
+    isAllowedUser: (id, network) => surfaceCfg(surfaceOf(network)).allowed_users.map(shortChatId).includes(shortChatId(id)),
     media: cfg.whatsapp?.media ?? {},
     transcribe: tx.transcribe,                                  // the fallback-chain transcriber
     transcribeCfg: tx.cliCfg,
@@ -185,12 +204,9 @@ export async function boot({
     postsBackDelayMs: tx.postsBackDelayMs,                      // how fast the 👂 transcript echoes back
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf('e'),       // 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
-    wakeWords,                            // e/egpt + the persona agent's name + handles (honors @ed, operator 2026-07-07)
-    peerStamps,                           // peer node reply stamps → sibling-output guard (operator 2026-07-08)
-    transcribeAck,                        // 👂 ack role-gate: false = transcribe+log but never post the 👂 (operator 2026-07-08)
-    transcribeRole,                       // transcription primary|standby: standby holds+skips a duplicate 👂 (operator 2026-07-08)
-    transcribeTakeoverMs,                 // standby's extra 👂 hold beyond the debounce (operator 2026-07-08)
-    transcribeAckMaxAgeMs,                 // 👂 only acks a note within this age of its own timestamp (operator 2026-07-08)
+    wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
+    echo,                                 // 👂 echo gate: false = transcribe+log but never post the 👂 (operator 2026-07-09)
+    echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),
   }, startBridge ? { start: startBridge } : {});
@@ -207,7 +223,7 @@ export async function boot({
   const gitOut = (args) => { try { return spawnSync('git', args, { cwd: process.cwd() }).stdout?.toString().trim() || ''; } catch { return ''; } };
   const shortSha = () => gitOut(['rev-parse', '--short', 'HEAD']) || '?';
   async function announceAndExit(code) {
-    const selfDm = cfg.whatsapp?.chat_id;
+    const selfDm = surfaceCfg('whatsapp').chat_ids[0];   // first command channel = the Self-DM announce target
     try { await mkdir(join(EGPT_HOME, 'state'), { recursive: true }); await writeFile(sidecar, JSON.stringify({ chatId: selfDm, kind: KIND_OF[code] ?? '?', preSha: shortSha(), pid: process.pid })); } catch {}
     // best-effort going-down — names the PID going down (capped so a slow POST can't wedge the exit)
     try { if (selfDm) await Promise.race([bridge.send(selfDm, `↻ ${KIND_OF[code] ?? 'restart'}… (pid ${process.pid})`), new Promise((r) => setTimeout(r, 3000))]); } catch {}
@@ -375,7 +391,7 @@ export async function boot({
   const { finestMs } = await heartbeatLoader.collect();
   const effectiveTickMs = tickMs > 0 ? Math.max(500, Math.min(tickMs, finestMs ?? tickMs)) : tickMs;
 
-  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, network: cfg.network ?? {}, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
+  const spine = createSpine({ bridge, brain, ...services, commands, mesh, actions, advice, clock: { now }, log, tickMs: effectiveTickMs, setInterval: setIntervalFn, clearInterval: clearIntervalFn });
   // Bind the advice service's answer-routing dispatch now that the spine exists: an
   // operator answer in the advice channel re-enters the pipe as a turn in the origin chat.
   advice.useDispatch(spine.handleInbound);
@@ -425,7 +441,7 @@ export async function boot({
   }
 
   return {
-    spine, bridge, pool, cfg,
+    spine, bridge, pool, cfg, accountPeers,
     stop: () => {
       // No alive-timer teardown: the beat is a heartbeat now, riding the spine's
       // tick timer, which spine.stop() clears.

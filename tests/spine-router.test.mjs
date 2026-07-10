@@ -40,7 +40,7 @@ describe('router.resolve — agents registry (operator 2026-07-02)', () => {
     const r = arouter.resolve(ev('@don-local do X'));
     expect(r.being).toBe('don-local');
     expect(r.mesh).toBeUndefined();
-    expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false, pinned: true });   // a direct @name is pinned → immediate on a standby node
+    expect(r.mention).toEqual({ atEStart: true, atEAnywhere: true, replyToBot: false });   // a direct @name synthesizes an addressed mention
   });
 
   it('a RELAY agent @don → a mesh target routed by relay_channel (route-direct), no local being', () => {

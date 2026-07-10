@@ -68,7 +68,7 @@ describe('config/skeletons/config.yaml', () => {
     const doc = YAML.parse(text);
     const keys = Object.keys(doc);
     // sanity: the skeleton actually sets the core keys (not an empty parse)
-    expect(keys).toContain('beeper_token');
+    expect(keys).toContain('beeper');   // the beeper accounts block (replaced top-level beeper_token, operator 2026-07-09)
     expect(keys.length).toBeGreaterThanOrEqual(4);
     for (const key of keys) {
       expect(CONFIG_SCHEMA, `skeleton sets "${key}" but it is not in CONFIG_SCHEMA`).toHaveProperty(key);

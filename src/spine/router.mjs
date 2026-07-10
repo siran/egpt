@@ -21,10 +21,7 @@ import { resolveMeshAddress } from '../mesh/names.mjs';
 import { agentPaths } from '../mesh/relay.mjs';
 
 // The mention a mesh (or agent) @name synthesizes for its gate: it IS addressed.
-// `pinned` (operator 2026-07-08, trusted network): a leading @name/@handle is a DIRECT,
-// unambiguous address to a specific local target, so a standby node answers it
-// immediately — only the ambiguous network-wide @e (ev.mention, pinned:false) is held.
-const MENTION = { atEStart: true, atEAnywhere: true, replyToBot: false, pinned: true };
+const MENTION = { atEStart: true, atEAnywhere: true, replyToBot: false };
 
 // An agent's routable identity tokens: its map KEY plus any `handles:` aliases, all
 // lowercased. Used to match a leading @token and to spot the persona agent.

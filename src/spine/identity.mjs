@@ -51,15 +51,10 @@ export function createIdentity({ formatLine = formatDispatchLine, now = () => Da
         replyToId: f.replyToId ?? null,   // the quoted message id (→ `↩#<id>`), null when not a reply
         ts, body, kind,
         // mention status the bridge already computed — the gating service's input.
-        // `pinned` = an OWN-handle mention (@ed) vs the network-wide @e (operator
-        // 2026-07-08, trusted network): a standby answers a pinned address immediately.
-        mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot, pinned: !!f.atEPinned },
-        // Peer node's own output (its reply stamp leads the text, flagged by the bridge):
-        // the spine transcript-logs it but NEVER dispatches it (sibling-output guard).
-        peerOutput: !!f.peerOutput,
+        mention: { atEStart: !!f.atEStart, atEAnywhere: !!f.atEAnywhere, replyToBot: !!f.replyToBot },
         // Backlog: older than bridge start (a woken node's replay, flagged by the bridge).
-        // Same seam as peerOutput — the spine transcript-logs it (backfill) but NEVER
-        // dispatches it (operator 2026-07-08: a waking node backfills, never re-answers).
+        // The spine transcript-logs it (backfill) but NEVER dispatches it (operator
+        // 2026-07-08: a waking node backfills, never re-answers stale traffic).
         backlog: !!f.backlog,
         authorized: !!f.authorized, isSender: !!f.isSender, isVoice: !!f.isTranscriptFromVoice,
         raw: from,

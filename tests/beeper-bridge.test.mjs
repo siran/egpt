@@ -13,7 +13,6 @@ import { startBeeperBridge, newerMsgId } from '../src/bridges/beeper.mjs';
 import { EGPT_HOME } from '../src/egpt-home.mjs';
 import { encodeMesh } from '../src/mesh/relay.mjs';
 import { surfaceOf } from '../src/spine/identity.mjs';
-import { _resetPostsBackDebounce } from '../src/incoming-media.mjs';
 
 async function startFakeBeeper() {
   const posts = [];   // POSTs to /v1/chats/:id/messages
@@ -637,8 +636,8 @@ describe('beeper bridge', () => {
   });
 
   // A HELD (backlog) voice note MUST still be transcribed locally so the backfill carries
-  // text, not "[voice note]" — and the 👂 still posts on a default (transcribe_ack:true) node.
-  it('backlog voice note is transcribed + logged, and the 👂 posts (default transcribe_ack)', async () => {
+  // text, not "[voice note]" — and the 👂 still posts on a default (echo:true) node.
+  it('backlog voice note is transcribed + logged, and the 👂 posts (default echo)', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
       text: null, type: 'VOICE', timestamp: Date.now() - 60_000,   // older than bridge start → backlog
@@ -648,14 +647,14 @@ describe('beeper bridge', () => {
     expect(incoming[0].from.backlog).toBe(true);                              // backfilled, never dispatched
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');  // …but STILL transcribed locally
     await waitFor(() => fake.posts.length === 1);
-    expect(fake.posts[0].text).toBe('👂 An: fake transcript');               // default transcribe_ack → 👂 posts
+    expect(fake.posts[0].text).toBe('👂 An: fake transcript');               // default echo → 👂 posts
   });
 
-  // 👂 ROLE-GATE (operator 2026-07-08): transcribe_ack:false transcribes + LOGS but never
-  // posts the 👂 — for live notes too (one flag, one meaning: "this node posts 👂 acks").
-  it('transcribe_ack:false silences the 👂 — the note is still transcribed + logged, never posted', async () => {
+  // 👂 ECHO gate (operator 2026-07-09): echo:false transcribes + LOGS but never posts the 👂
+  // — for live notes too (one per-node boolean, "does this node post the 👂 echo").
+  it('echo:false silences the 👂 — the note is still transcribed + logged, never posted', async () => {
     const { incoming } = await startBridge({
-      transcribeAck: false,
+      echo: false,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -692,16 +691,16 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 An: fake transcript');
   });
 
-  it('default bound (transcribeAckMaxAgeMs absent) is ~1h: a note just past it is not acked', async () => {
+  it('default bound (echoMaxAgeMs absent) is ~1h: a note just past it is not acked', async () => {
     const { incoming } = await startBridge({ resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }) });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(61 * 60 * 1000)] });   // 61 min — just past the default 1h
     await waitFor(() => incoming.length === 1);
     expect(fake.posts).toHaveLength(0);
   });
 
-  it('transcribeAckMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂', async () => {
+  it('echoMaxAgeMs: 0 disables the bound — even a 12-day-old note still gets its 👂', async () => {
     const { incoming } = await startBridge({
-      transcribeAckMaxAgeMs: 0,
+      echoMaxAgeMs: 0,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [voiceNoteAt(12 * 24 * 60 * 60 * 1000)] });
@@ -1033,109 +1032,43 @@ describe('beeper bridge — per-surface authorization', () => {
 });
 
 // TRUSTED EGPT NETWORK (operator 2026-07-08) + the atE-handles fix (operator 2026-07-07).
-// The bridge's persona gate must honor the CONFIGURED wake-word set (network defaults e/egpt
-// PLUS the node's own handles), and it flags a peer node's OWN output (its reply stamp leads
-// the text) so the host can transcript-log-but-never-dispatch it (sibling-output guard).
-describe('beeper bridge — trusted network gate (wake words + peer-output)', () => {
-  // DOLLY-shaped wake set: network-wide e/egpt + the persona agent's handles [ed, egptd].
-  const DOLLY_WAKE = ['e', 'egpt', 'ed', 'egptd'];
+// The bridge's persona gate honors the node's OWN configured wake-word set (operator 2026-07-09:
+// SYMMETRIC nodes wake on their own handles, NOTHING is injected network-wide). boot derives the
+// set from the persona agent's name + handles; the bridge just applies it.
+describe('beeper bridge — wake words (own handles only, no injection)', () => {
+  // A DOLLY-shaped node: persona handles [ed, egptd] ONLY — no network-wide e/egpt injected.
+  const DOLLY_WAKE = ['ed', 'egptd'];
 
-  it('atE=true for a configured handle @ed (the DOLLY sleep-test bug) + atEPinned true', async () => {
+  it('@ed wakes a node whose handles include ed (the DOLLY sleep-test bug)', async () => {
     const { incoming } = await startBridge({ wakeWords: DOLLY_WAKE });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@ed estás?' })] });
-    await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.atEStart).toBe(true);       // pre-fix: false — never dispatched
-    expect(incoming[0].from.atEAnywhere).toBe(true);
-    expect(incoming[0].from.atEPinned).toBe(true);       // an OWN handle → a standby answers it immediately
-  });
-
-  it('regression: the network-wide @e still wakes, but is NOT pinned (it is the shared address)', async () => {
-    const { incoming } = await startBridge({ wakeWords: DOLLY_WAKE });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@e estás?' })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].from.atEStart).toBe(true);
-    expect(incoming[0].from.atEPinned).toBe(false);      // network address → held for takeover on a standby
+    expect(incoming[0].from.atEAnywhere).toBe(true);
   });
 
-  it('a node with NO configured handles (default wake set) does NOT wake on @ed', async () => {
-    const { incoming } = await startBridge();   // no wakeWords → default e/egpt
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@ed estás?' })] });
+  it('the network-wide @e does NOT wake a node whose handles are [ed, egptd] (no injection)', async () => {
+    const { incoming } = await startBridge({ wakeWords: DOLLY_WAKE });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@e estás?' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'sentinel' })] });
-    await waitFor(() => incoming.some((i) => i.text === 'sentinel'));
-    const m = incoming.find((i) => i.text === '@ed estás?');
-    expect(m.from.atEAnywhere).toBe(false);              // unchanged for a node without handles
-    expect(m.from.atEPinned).toBe(false);
+    await waitFor(() => incoming.some((m) => m.text === 'sentinel'));
+    const m = incoming.find((x) => x.text === '@e estás?');
+    expect(m.from.atEAnywhere).toBe(false);   // pre-2026-07-09: true, via the removed network-wide injection
   });
 
-  it("a peer-stamped message is flagged peerOutput (reaches the host, which drops it); a plain one is not", async () => {
-    const { incoming } = await startBridge({ personaEmoji: '🐶', peerStamps: ['🤝'] });   // kg node: own 🐶, peer 🤝
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'do', text: '🤝 egpt\nya respondí' })] });   // the peer node's own reply
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: 'hola normal' })] });
-    await waitFor(() => incoming.some((i) => i.text === 'hola normal'));
-    const peer = incoming.find((i) => i.text.startsWith('🤝'));
-    expect(peer.from.peerOutput).toBe(true);             // the host transcript-logs but never dispatches it
-    expect(incoming.find((i) => i.text === 'hola normal').from.peerOutput).toBe(false);
+  it('a node with handles [e, egpt] still wakes on @e (default wake set)', async () => {
+    const { incoming } = await startBridge();   // default wakeWords e/egpt
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, senderName: 'Bea', text: '@e estás?' })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].from.atEAnywhere).toBe(true);
   });
 
-  it("regression: the node's OWN persona echo (🐶) is STILL dropped outright, even with peer stamps configured", async () => {
-    const { incoming } = await startBridge({ personaEmoji: '🐶', peerStamps: ['🤝'] });
-    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: '🐶 egpt\nmy own reply' })] });   // our own echo
+  it("the node's OWN persona echo (🐶) is still dropped outright by the persona marker", async () => {
+    const { incoming } = await startBridge({ personaEmoji: '🐶' });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: '🐶 egpt\nmy own reply' })] });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({ isSender: false, text: 'sentinel-own' })] });
-    await waitFor(() => incoming.some((i) => i.text === 'sentinel-own'));
-    expect(incoming.map((i) => i.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped, never reaches the host
-  });
-});
-
-// TRANSCRIPTION PRIMARY/STANDBY 👂 dedup (operator 2026-07-08: one 👂 per note — two
-// nodes share a chat, both transcribe locally, but only ONE 👂 lands. The standby watches
-// the chat coordination-free: the primary's 👂 arrives as an inbound reply to the note, so
-// the standby holds its own 👂 an extra takeover margin then skips if the primary's showed).
-describe('beeper bridge — transcription standby 👂 dedup', () => {
-  beforeEach(() => _resetPostsBackDebounce());   // shared incoming-media debounce state
-  const waitMs = (ms) => new Promise((r) => setTimeout(r, ms));
-  const svcPostsBack = async () => ({ enabled: true, postsBack: true });
-  const voiceNote = (id) => liveMsg({ id, text: null, type: 'VOICE', attachments: [{ id: `att-${id}`, isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }] });
-  const primaryEar = (noteId) => liveMsg({ isSender: false, senderName: 'do', text: '👂 An: fake transcript', linkedMessageID: noteId });
-  const ears = () => fake.posts.filter((p) => String(p.text).startsWith('👂'));
-
-  it('standby: the primary 👂 for the note lands before the margin → OUR 👂 is skipped', async () => {
-    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 300, resolveTranscriptionService: svcPostsBack });
-    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-1')] });
-    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));   // HEARD + 👂 queued (held for takeover)
-    // the PRIMARY's 👂 arrives as an inbound reply to the SAME note, before the 300ms margin elapses
-    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-1')] });
-    await waitMs(500);                                                          // past the takeover — held 👂 fires, sees the primary's, skips
-    expect(ears()).toHaveLength(0);                                            // one 👂 in the chat (the primary's), NOT two
-  });
-
-  it('standby: NO primary 👂 → ours posts after the debounce + takeover margin (the standby covers a sleeping primary)', async () => {
-    await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 150, resolveTranscriptionService: svcPostsBack });
-    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-2')] });
-    await waitFor(() => ears().length === 1);                                   // eventually posts — one 👂 either way, just later
-  });
-
-  it('standby: a primary 👂 for a DIFFERENT note does NOT suppress ours (correlation is chat + note id)', async () => {
-    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 200, resolveTranscriptionService: svcPostsBack });
-    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-3')] });
-    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));
-    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-999')] });  // ack for a DIFFERENT note id
-    await waitFor(() => ears().length === 1);                                   // our note-3 ack still posts
-    expect(ears()[0].replyToMessageID).toBe('note-3');
-  });
-
-  it('primary (default / absent transcribe_role): posts the 👂 as today, even with a peer 👂 already in the chat', async () => {
-    await startBridge({ resolveTranscriptionService: svcPostsBack });           // no transcribeRole → primary
-    fake.emit({ type: 'message.upserted', entries: [primaryEar('note-4')] });    // a peer 👂 already present — a primary ignores it
-    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-4')] });
-    await waitFor(() => ears().length === 1);                                   // immediate (postsBackDelayMs 0), unchanged
-  });
-
-  it('transcribe_ack:false silences the 👂 regardless of role (standby)', async () => {
-    const { incoming } = await startBridge({ transcribeRole: 'standby', transcribeTakeoverMs: 100, transcribeAck: false, resolveTranscriptionService: svcPostsBack });
-    fake.emit({ type: 'message.upserted', entries: [voiceNote('note-5')] });
-    await waitFor(() => incoming.some((i) => i.from.isTranscriptFromVoice));    // HEARD (transcribed + logged)
-    await waitMs(300);                                                          // past the takeover — never queued, never posts
-    expect(ears()).toHaveLength(0);
+    await waitFor(() => incoming.some((m) => m.text === 'sentinel-own'));
+    expect(incoming.map((m) => m.text)).not.toContain('🐶 egpt\nmy own reply');   // dropped, never reaches the host
   });
 });
 
