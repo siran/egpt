@@ -730,8 +730,10 @@ export async function startBeeperBridge(opts = {}) {
   //   1. the person's OWN pushed/profile name if the payload carries one
   //      (msg.senderPushName / msg.pushName — schema-tolerant, like _msgTimestampMs);
   //   2. else a HUMAN-READABLE NON-PRIVATE id — the phone number embedded in a
-  //      WhatsApp senderID ('@whatsapp_<digits>:beeper.local' → '+<digits>');
-  //   3. else the stable senderID itself; 4. else null (caller's own fallback).
+  //      WhatsApp senderID ('@whatsapp_<digits>:beeper.local' → '+<digits>'), else
+  //      the localpart of a Matrix id ('@<localpart>:<domain>' → '<localpart>', a
+  //      public handle — e.g. '@anrodriguez:beeper.com' → 'anrodriguez', not a label);
+  //   3. else the raw stable senderID itself; 4. else null (caller's own fallback).
   // The chat label / [chatname] / conversation folder (conversations.yaml pushedName)
   // KEEP the operator's label — that's the CHAT's name, not the person's. Display-only:
   // authorization stays id-based (GENOME I6). The OWNER (isSender) is NO LONGER exempt
@@ -744,7 +746,9 @@ export async function startBeeperBridge(opts = {}) {
     const id = String(msg?.senderID ?? '');
     const wa = /^@whatsapp_(\d{6,15}):/i.exec(id);   // WhatsApp jid → phone number (human-readable, non-private)
     if (wa) return `+${wa[1]}`;
-    return id || null;                                // other networks: the stable id (still non-private)
+    const mx = /^@([^:]+):[^:]+$/.exec(id);          // Matrix id '@<localpart>:<domain>' → localpart (public handle, no leak)
+    if (mx) return mx[1];
+    return id || null;                                // neither shape: the raw stable id (still non-private)
   }
   // PUSHED NAME from a WhatsApp LID sender (operator 2026-07-08: the morgan 👂 posted the
   // raw LID `@whatsapp_lid-…:beeper.local` where the push name "le_moi" belonged). A LID

@@ -288,8 +288,8 @@ describe('beeper bridge', () => {
   });
 
   // The owner with NO push name falls through the SAME non-private chain — the number
-  // (from a WhatsApp jid), else the stable id — never the node userName (op 2026-07-10).
-  it("the owner with no push name falls to the phone number, then the stable id — never userName", async () => {
+  // (from a WhatsApp jid), else a Matrix id's localpart — never the node userName (op 2026-07-10).
+  it("the owner with no push name falls to the phone number, then the matrix localpart — never userName", async () => {
     const { incoming } = await startBridge({ userName: 'Don' });
     fake.emit({ type: 'message.upserted', entries: [
       liveMsg({ id: 'own-wa', isSender: true, senderID: '@whatsapp_16468217865:beeper.local', senderName: '@anrodriguez:beeper.com', text: 'wa' }),
@@ -298,9 +298,29 @@ describe('beeper bridge', () => {
     await waitFor(() => incoming.length === 2);
     const wa = incoming.find((i) => i.text === 'wa').from;
     const mx = incoming.find((i) => i.text === 'mx').from;
-    expect(wa.senderName).toBe('+16468217865');            // owner, no push name, jid → number
-    expect(mx.senderName).toBe('@anrodriguez:beeper.com'); // owner, no push name, non-jid → raw stable id
+    expect(wa.senderName).toBe('+16468217865');   // owner, no push name, jid → number
+    expect(mx.senderName).toBe('anrodriguez');    // owner, no push name, matrix id → localpart (decoration stripped)
     for (const v of [wa.senderName, mx.senderName]) expect(v).not.toBe('Don');   // never the node userName
+  });
+
+  // MATRIX-ID DECORATION STRIP (operator 2026-07-10): with no push name, a bare Matrix
+  // stable id reads as its localpart (a public handle), not the raw '@localpart:domain'
+  // — An's own notes showed '@anrodriguez:beeper.com', wanted 'anrodriguez'. The WA-jid
+  // number case still wins first; an id matching neither shape is unchanged.
+  it('a matrix-shaped stable id resolves to its localpart; wa-jid → number; other id unchanged', async () => {
+    const { incoming } = await startBridge();
+    fake.emit({ type: 'message.upserted', entries: [
+      liveMsg({ id: 'mx1', isSender: false, senderID: '@anrodriguez:beeper.com', senderName: 'saved label', text: 'a' }),
+      liveMsg({ id: 'mx2', isSender: false, senderID: '@user:beeper.local', senderName: 'saved label', text: 'b' }),
+      liveMsg({ id: 'wa1', isSender: false, senderID: '@whatsapp_16468217865:beeper.local', senderName: 'saved label', text: 'c' }),
+      liveMsg({ id: 'raw1', isSender: false, senderID: 'zoot-42', senderName: 'saved label', text: 'd' }),
+    ] });
+    await waitFor(() => incoming.length === 4);
+    const by = (t) => incoming.find((i) => i.text === t).from.senderName;
+    expect(by('a')).toBe('anrodriguez');    // matrix id → localpart
+    expect(by('b')).toBe('user');           // matrix id → localpart
+    expect(by('c')).toBe('+16468217865');   // wa jid → number (the number case wins first)
+    expect(by('d')).toBe('zoot-42');        // matches neither shape → raw id unchanged
   });
 
   // The SENDER identity is the person's OWN pushed/profile name, NOT the operator's
@@ -347,9 +367,9 @@ describe('beeper bridge', () => {
     }
   });
 
-  // Non-WhatsApp / unparseable id → the stable senderID stands in (still non-private);
-  // the label is still never used.
-  it('with no pushed name and a non-phone id, the stable id stands in (never the label)', async () => {
+  // A Matrix-shaped non-phone id → its localpart stands in (decoration stripped, still
+  // non-private); the saved label is still never used (operator 2026-07-10).
+  it('with no pushed name and a matrix-shaped id, the localpart stands in (never the label)', async () => {
     fake.chats.set(CHAT('chat-tg'), { title: 'Primo (deudor)', type: 'single', isMuted: false, accountID: 'telegram' });
     const { incoming } = await startBridge();
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -358,7 +378,7 @@ describe('beeper bridge', () => {
       senderName: 'Primo (deudor)', text: 'hola',
     })] });
     await waitFor(() => incoming.length === 1);
-    expect(incoming[0].from.senderName).toBe('@telegram_88164392:beeper.local');   // stable id, not the label
+    expect(incoming[0].from.senderName).toBe('telegram_88164392');   // matrix localpart, not the label
     expect(incoming[0].from.senderName).not.toContain('deudor');
   });
 
