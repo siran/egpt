@@ -1,5 +1,5 @@
 // The real Bridge adapter, unit-tested with a FAKE startBeeperBridge — no Beeper,
-// no network (SPINE-REWRITE-PLAN.md Phase 2). Locks the shape translation: real
+// no network (plans/2606291226-SPINE-REWRITE-PLAN.md Phase 2). Locks the shape translation: real
 // onIncoming → port onMessage, and the flipped send/startStream arg order. The
 // LIVE echo (the Phase 2 verify gate) is tests-manual/phase2-echo.mjs.
 import { describe, it, expect } from 'vitest';

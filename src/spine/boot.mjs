@@ -1,4 +1,4 @@
-// boot.mjs — wire the ports + services and start the loop (SPINE-REWRITE-PLAN.md
+// boot.mjs — wire the ports + services and start the loop (plans/2606291226-SPINE-REWRITE-PLAN.md
 // §2a boot()). This is the ONE place dependencies are assembled; the loop and
 // every service stay ignorant of how they were constructed. The discipline holds
 // here too: boot wires each service with an explicit dependency list and hands

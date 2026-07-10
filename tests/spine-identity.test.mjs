@@ -1,5 +1,5 @@
 // identity service: raw bridge { body, from } → the one InboundEvent + dispatch
-// line (SPINE-REWRITE-PLAN.md §3, C7.6). Locks the network→surface/node mapping
+// line (plans/2606291226-SPINE-REWRITE-PLAN.md §3, C7.6). Locks the network→surface/node mapping
 // and the kind/mention classification.
 import { describe, it, expect } from 'vitest';
 import { createIdentity } from '../src/spine/identity.mjs';

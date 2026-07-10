@@ -1,4 +1,4 @@
-// beeper-port.mjs — the real Bridge behind the §2b port (SPINE-REWRITE-PLAN.md
+// beeper-port.mjs — the real Bridge behind the §2b port (plans/2606291226-SPINE-REWRITE-PLAN.md
 // Phase 2). A thin adapter over startBeeperBridge that exposes ONLY the loop's
 // Bridge interface, so the spine never sees the bridge's larger surface:
 //

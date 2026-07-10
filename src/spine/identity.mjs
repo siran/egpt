@@ -1,5 +1,5 @@
 // identity.mjs — the §2c identity service: classify a raw bridge payload and
-// build the InboundEvent ONCE (SPINE-REWRITE-PLAN.md §3, contract C7.6/C7.6e).
+// build the InboundEvent ONCE (plans/2606291226-SPINE-REWRITE-PLAN.md §3, contract C7.6/C7.6e).
 // Every downstream path (gating, transcript, brain) consumes this single
 // envelope; the dispatch `line` every brain sees is built here and nowhere else.
 //

@@ -3,7 +3,7 @@
 > Written 2026-07-02 (session: the big feature push). Purpose: survive context
 > compaction — everything decided-but-not-yet-done lives HERE, not in a chat
 > buffer. Update this file as items land; delete sections that ship.
-> Companion: SPINE-REWRITE-PLAN.md (the architecture + phase plan, mostly done).
+> Companion: plans/2606291226-SPINE-REWRITE-PLAN.md (the architecture + phase plan, mostly done).
 
 ## 1. Where we are
 
@@ -94,7 +94,7 @@ following is LANDED, test-locked, and (where marked) live-verified:
   config/skeletons/heartbeats.yaml); shipped plan docs removed per precedent. README /
   MANUAL / TESTING rewritten to v2 truth (lean). Root IDEAS.md seeds merged into
   docs/IDEAS.md (LATER deleted in the 2026-07-03 docs sweep — operator "can be
-  forgone. full of BS"). KEPT by decision: MESSAGES-FIRST-CLASS-PLAN.md (its Phases 3–5 +
+  forgone. full of BS"). KEPT by decision: plans/2606161146-MESSAGES-FIRST-CLASS-PLAN.md (its Phases 3–5 +
   Phase-1 OWED reply-path restructure are NOT shipped — only Phase 1's inbound `#id`
   and Phase 2 reactions landed; see §4 note).
 
@@ -652,7 +652,7 @@ following is LANDED, test-locked, and (where marked) live-verified:
   wake-word set = the persona agent's name + handles from config (one
   source of truth), reproduce-first with a DOLLY-shaped config fixture.
 
-- **messages-first-class — open phases** (docs/MESSAGES-FIRST-CLASS-PLAN.md, KEPT
+- **messages-first-class — open phases** (plans/2606161146-MESSAGES-FIRST-CLASS-PLAN.md, KEPT
   in the 2026-07-03 cleanup because it is NOT fully shipped). Landed: Phase 1 (inbound
   `#id` in the transcript line, C7.6e) + Phase 2 (reactions ingested/surfaced).
   STILL OPEN: Phase 1's ⏳ OWED reply-path restructure (E's OWN reply lines carry no

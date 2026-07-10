@@ -1,4 +1,4 @@
-// v1 end-to-end pipe (SPINE-REWRITE-PLAN.md §9 "pipe test"): the REAL identity +
+// v1 end-to-end pipe (plans/2606291226-SPINE-REWRITE-PLAN.md §9 "pipe test"): the REAL identity +
 // gating + transcript + sender + router services wired through createSpine,
 // against a fake Bridge + fake Brain. Asserts, per auto-mode, that gating +
 // transcript + delivery all behave — no network, no Claude, no live account.

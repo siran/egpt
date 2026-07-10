@@ -1,4 +1,4 @@
-// The spine pipe, end-to-end against fakes (SPINE-REWRITE-PLAN.md §6 Phase 1
+// The spine pipe, end-to-end against fakes (plans/2606291226-SPINE-REWRITE-PLAN.md §6 Phase 1
 // verify gate: "boots; fake Bridge+Brain round-trip a msg"). No network, no
 // Claude process — every port/service is a fake, so this locks the LOOP shape
 // and the gating branches, independent of the real subsystems layered in later.

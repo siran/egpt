@@ -1,4 +1,4 @@
-// heartbeats.mjs — the spine's cadence registry (SPINE-REWRITE-PLAN.md §2c). A
+// heartbeats.mjs — the spine's cadence registry (plans/2606291226-SPINE-REWRITE-PLAN.md §2c). A
 // heartbeat is a named function the loop's tick() runs on a fixed cadence. The
 // registry is deliberately dumb: no scheduler, no drift correction, no
 // priorities — tick() calls runDue(now) every tickMs and each entry fires once

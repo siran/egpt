@@ -1,4 +1,4 @@
-// mesh.mjs — the §2c mesh service: cross-node being relay (SPINE-REWRITE-PLAN.md
+// mesh.mjs — the §2c mesh service: cross-node being relay (plans/2606291226-SPINE-REWRITE-PLAN.md
 // Phase 4b). `@being.node` in a chat reaches a being on ANOTHER machine; the reply
 // streams back into the origin chat as a LIVING MIRROR (an edit-streamed placeholder
 // that fills in as the remote being answers).

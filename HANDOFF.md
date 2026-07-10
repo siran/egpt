@@ -1,7 +1,7 @@
 # eGPT — HANDOFF (state of affairs, 2026-07-03)
 
 > Orientation layer above ROADMAP.md. Read this first, then ROADMAP §1 (landed)
-> + §3 (next). GENOME.md = the heart/DNA; CONTRACTS.md = the 16 one-line
+> + §3 (next). plans/2606131545-GENOME.md = the heart/DNA; plans/2606120753-CONTRACTS.md = the 16 one-line
 > promises.
 
 
@@ -234,7 +234,7 @@ agent-built, deployed live at 63d4073 / pid 23728):
   opt-in only.
 - **Mesh: egpt-test channel chain** (`@don.kg → @moe.kg → @e.kg`) for multi-hop
   smoke on one node; DOLLY 2-node smoke later.
-- **RNG / GCP2** (docs/RNG-GCP2.md): host a $300 HeartMath RNG; Mesh alignment
+- **RNG / GCP2** (plans/2607031636-RNG-GCP2.md): host a $300 HeartMath RNG; Mesh alignment
   is TWO-FOLD — per-node USB TRNG entropy (interpretation contested) AND the
   mesh's own network health as a causally-grounded collective-activity signal (a
   NetVar-style coherence net, free from the existing primitives).

@@ -2,7 +2,7 @@
 // with fakes ONLY at the transport (startBeeperBridge) + process (claude session)
 // boundary. Drives an inbound through the fake bridge and asserts it round-trips
 // to a streamed reply with the transcript written — the v1 pipe, exactly as
-// production wires it, minus Beeper and minus claude. (SPINE-REWRITE-PLAN.md
+// production wires it, minus Beeper and minus claude. (plans/2606291226-SPINE-REWRITE-PLAN.md
 // Phase 3 verify gate, offline half.)
 //
 // Runs against an isolated EGPT_HOME so the spine's boot-time writes (the
