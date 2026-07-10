@@ -428,6 +428,73 @@ describe('boot() — stray whisper-server reap', () => {
   });
 });
 
+// TRANSCRIPTOR WORKER ROLE (operator 2026-06-10, ported v1 egpt-spine.mjs → v2 boot 2026-07-10):
+// a node with `transcriptor.enabled: true` (DOLLY) must serve the signed :23390 endpoint (and,
+// with a resident server configured, spawn a whisper-server). REPRODUCE: pre-port, v2 boot never
+// started the worker — nothing bound :23390 and DOLLY's transcription failed. These assert boot
+// (a) starts the worker with the RESOLVED config on a real node, (b) is INGEST-GATED so
+// ingest:false never binds, and (c) tears BOTH down on stop() — all through fake spawn seams.
+describe('boot() — transcriptor worker role', () => {
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } };
+
+  it('WIRING: transcriptor.enabled + real node → startTranscriptorServer bound with resolved {port,bind,keyB64} (whisper-cli per-note)', async () => {
+    const { start } = fakeStart();
+    const captured = [];
+    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390 }, transcription: { server: { token: 'BUSKEY' } } };
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: true,                                            // real-node flag → the worker side effect runs
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: () => 0,                                                    // transcriptor.enabled → no reap fires, but keep the killer faked
+      startTranscriptorServer: async (opts) => { captured.push(opts); return { port: opts.port, close() {} }; },
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    // no resident server → startTranscriptorServer is the first await, called synchronously as
+    // boot fires the (un-awaited) worker start → recorded by the time boot resolves.
+    expect(captured).toHaveLength(1);                                       // REPRODUCE: pre-port this was [] (worker never started)
+    expect(captured[0]).toMatchObject({ port: 23390, bind: '0.0.0.0', keyB64: 'BUSKEY' });
+    expect(captured[0].transcribe).toBeUndefined();                        // whisper-cli per-note
+    app.stop();
+  });
+
+  it('INGEST-GATED: ingest:false + transcriptor.enabled → the worker start seam is NEVER invoked (no real :23390 bind)', async () => {
+    const { start } = fakeStart();
+    const captured = [];
+    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, port: 23390 }, transcription: { server: { token: 'K' } } };
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: false, tickMs: 0, log: { line: () => {} },
+      startWhisperServer: async () => { throw new Error('must not spawn under ingest:false'); },
+      startTranscriptorServer: async (opts) => { captured.push(opts); return { port: opts.port, close() {} }; },
+    });
+    expect(captured).toHaveLength(0);   // gate holds: existing ingest:false boot tests never bind a real port
+    app.stop();
+  });
+
+  it('TEARDOWN: boot.stop() stops BOTH the resident whisper-server and the :23390 endpoint', async () => {
+    const { start } = fakeStart();
+    const stops = { whisper: 0, server: 0 };
+    const config = { whatsapp: {}, agents: AG, transcriptor: { enabled: true, port: 23390, server: { enabled: true, command: 'ws.exe', model: '/m/large-v3.bin', port: 8089 } }, transcription: { server: { token: 'K' } } };
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => emptyState(), writeState: async () => {},
+      io: memIo(), ingest: true,
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: () => 0,
+      startWhisperServer: async () => ({ url: 'http://127.0.0.1:8089', isAlive: () => true, stop: () => { stops.whisper++; } }),
+      startTranscriptorServer: async (opts) => ({ port: opts.port, close: () => { stops.server++; } }),
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    // resident server enabled → whisper-server spawn is the first await; let the un-awaited chain settle.
+    await new Promise((r) => setTimeout(r, 0));
+    app.stop();
+    expect(stops.whisper).toBe(1);
+    expect(stops.server).toBe(1);
+  });
+});
+
 // PERSONA = `default: true` (operator 2026-07-10, agent-identity refactor): the persona is
 // the single default agent, resolved by the `default: true` marker — NOT hardcoded e/egpt.
 // boot is FATAL on zero or more-than-one default agent, and the persona's KEY becomes the

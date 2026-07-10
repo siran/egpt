@@ -37,6 +37,9 @@ import { createReplyActions } from './reply-actions.mjs';
 import { createAdvice } from './advice.mjs';
 import { createMedia } from './media.mjs';
 import { createTranscription } from './transcription.mjs';
+import { createTranscriptorWorker } from './transcriptor-worker.mjs';
+import { startWhisperServer } from '../tools/whisper-server.mjs';
+import { startTranscriptorServer } from '../tools/transcriptor.mjs';
 import { createBrains } from './brains.mjs';
 import { createMeshService } from './mesh.mjs';
 import { createCompaction } from './compaction.mjs';
@@ -119,6 +122,11 @@ export async function boot({
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
   reapPort: reapPortFn = reapPort,    // port-killer seam — the boot-time stray-whisper reap goes through here; tests inject a fake so the real netstat/taskkill NEVER runs against a live server
+  // transcriptor WORKER-role process-boundary seams — the resident whisper-server + the :23390
+  // endpoint spawn through here. Default to the real spawners; tests inject fakes so a boot with
+  // transcriptor.enabled NEVER spawns a real whisper-server or binds a real port (see below).
+  startWhisperServer: startWhisperServerFn = startWhisperServer,
+  startTranscriptorServer: startTranscriptorServerFn = startTranscriptorServer,
 
   ingest = true,                      // watch EGPT_HOME/state/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
@@ -224,6 +232,25 @@ export async function boot({
       log.line?.(`[whisper-reap] this node runs a resident whisper-server — leaving :${wport} untouched`);
     }
   }
+
+  // WORKER ROLE: transcriptor (operator 2026-06-10, ported from v1 egpt-spine.mjs to v2 boot
+  // 2026-07-10). A node whose config declares `transcriptor.enabled: true` (e.g. DOLLY, the GPU
+  // box) serves the signed POST /v1/transcribe endpoint for the MAIN spine's voice notes, and —
+  // when transcriptor.server (legacy: whatsapp.media.audio_transcribe.server) is enabled — runs a
+  // resident whisper-server so it answers in ~encode+decode time. INGEST-GATED like the other
+  // real-node side effects (whisper-reap, seedSkeletons): start() spawns/binds only on a real node
+  // (tests pass ingest:false → never called → no real port). FIRE-AND-FORGET (not awaited): the
+  // resident whisper-server's model-load readiness wait (up to 120s) must NOT stall the spine's
+  // tick + alive heartbeat. Reconciles with the whisper-reap above: a transcriptor.enabled node
+  // makes shouldReapStrayWhisper() false, so boot never reaps the very port the worker is about to
+  // bind (whisper-server.mjs reaps its OWN orphan just-in-time before its spawn).
+  const transcriptorWorker = createTranscriptorWorker({
+    getConfig,
+    startWhisperServer: startWhisperServerFn,
+    startTranscriptorServer: startTranscriptorServerFn,
+    onLog: (m) => log.line?.(`[transcriptor] ${m}`),
+  });
+  if (ingest) transcriptorWorker.start();
 
   // The persona wake-word set (operator 2026-07-09: SYMMETRIC nodes — each wakes on its OWN
   // configured handles only, NOTHING is injected network-wide). ONE source of truth (the agents
@@ -539,6 +566,7 @@ export async function boot({
       // tick timer, which spine.stop() clears.
       ingestWatcher?.stop();
       compaction.stop();
+      transcriptorWorker.stop();   // stops BOTH the resident whisper-server + the :23390 endpoint
       spine.stop();
     },
   };
