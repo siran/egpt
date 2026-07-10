@@ -19,9 +19,9 @@ import os from 'node:os';
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
 
-let boot, emptyState, ensureContact;
+let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf;
 beforeAll(async () => {
-  ({ boot } = await import('../src/spine/boot.mjs'));
+  ({ boot, shouldReapStrayWhisper, whisperPortOf } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -318,6 +318,108 @@ describe('boot() — config-shape migration', () => {
   it('account_peers parsed + exposed on the boot return', async () => {
     const { app } = await captureBoot({ agents: AG, account_peers: ['kg', 'do'] });
     expect(app.accountPeers).toEqual(['kg', 'do']);
+    app.stop();
+  });
+});
+
+// STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a profile's
+// fallback_order (→ [remote, cli]) orphans the resident whisper-server the old chain
+// spawned — the pipeline only reaps on the NEXT local spawn (whisper-server.mjs), which now
+// never comes. On boot we reap the stray, but ONLY when this node does not legitimately run
+// a resident server (the transcriptor WORKER, or an ACTIVE whisper-server-local engine).
+describe('boot() — stray whisper-server reap', () => {
+  const AG = { egpt: { configuration: 'egpt', handles: ['e', 'egpt'] } };
+  const profile = (extra) => ({ agents: AG, transcription_service: { use_config: 'reve', reve: {
+    remote: { type: 'whisper-server-remote', endpoint: 'http://worker:23390' },
+    cli: { type: 'whisper-cli', model_path: '/m/large-v3.bin' },
+    ...extra,
+  } } });
+
+  // DECISION helpers (pure) — the reproduce case: today the reap never fires for [remote, cli].
+  it('decision: fallback_order [remote, cli] (no local, no worker) → REAP on the whisper default port', () => {
+    const cfg = profile({ fallback_order: ['remote', 'cli'] });
+    expect(shouldReapStrayWhisper(cfg)).toBe(true);
+    expect(whisperPortOf(cfg)).toBe(8089);
+  });
+
+  it('decision: an ACTIVE whisper-server-local engine owns + supervises its server → NO reap (uses its port)', () => {
+    const cfg = profile({
+      fallback_order: ['remote', 'local', 'cli'],
+      local: { type: 'whisper-server-local', command: 'ws', model: '/m', port: 8091 },
+    });
+    expect(shouldReapStrayWhisper(cfg)).toBe(false);
+    expect(whisperPortOf(cfg)).toBe(8091);
+  });
+
+  it('decision: the transcriptor WORKER keeps its resident server → NO reap', () => {
+    const cfg = { agents: AG, transcriptor: { enabled: true, server: { enabled: true, port: 8089 } } };
+    expect(shouldReapStrayWhisper(cfg)).toBe(false);
+    expect(whisperPortOf(cfg)).toBe(8089);   // resolved from transcriptor.server.port
+  });
+
+  // DOLLY's REAL live config (operator 2026-07-10): the GPU worker runs its resident server
+  // under whatsapp.media.audio_transcribe.server + transcriptor.enabled, and NO
+  // transcription_service. Reap must NOT fire, or boot taskkills DOLLY's own worker on :8089.
+  it('decision: DOLLY-shaped worker (audio_transcribe.server + transcriptor.enabled, no transcription_service) → NO reap', () => {
+    const cfg = { agents: AG,
+      whatsapp: { media: { audio_transcribe: { enabled: true, server: { enabled: true, command: 'ws.exe', port: 8089 } } } },
+      transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390 },
+      transcription_token: 'tok', transcription_endpoint: 'http://127.0.0.1:23390',
+    };
+    expect(shouldReapStrayWhisper(cfg)).toBe(false);   // REPRODUCE: pre-fix this returned true → boot reaped DOLLY's own server
+    expect(whisperPortOf(cfg)).toBe(8089);             // resolved from audio_transcribe.server.port
+  });
+
+  it('decision: transcriptor.enabled worker role alone (no server block) → NO reap (conservative)', () => {
+    const cfg = { agents: AG, transcriptor: { enabled: true, bind: '0.0.0.0', port: 23390 } };
+    expect(shouldReapStrayWhisper(cfg)).toBe(false);
+  });
+
+  it('port: a whisper-server-local DEFINITION dropped from fallback_order still yields ITS port to reap', () => {
+    // operator removed `local` from the order but left its definition → reap that exact port
+    const cfg = profile({
+      fallback_order: ['remote', 'cli'],
+      local: { type: 'whisper-server-local', command: 'ws', model: '/m', port: 8090 },
+    });
+    expect(shouldReapStrayWhisper(cfg)).toBe(true);
+    expect(whisperPortOf(cfg)).toBe(8090);
+  });
+
+  // WIRING: on a real-node boot the reap actually fires through the (faked) port-killer.
+  it('wiring: a node with no resident whisper reaps the stray port ONCE on boot', async () => {
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, ...profile({ fallback_order: ['remote', 'cli'] }) };
+    const reaped = [];
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: true,                                            // real-node flag → the reap side effect runs
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: (port) => { reaped.push(port); return 1; },                 // fake killer — observe, never taskkill
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    expect(reaped).toEqual([8089]);   // REPRODUCE: without the boot reap this is [] (never called)
+    app.stop();
+  });
+
+  it('wiring: a node that DOES run a resident local whisper never touches the port', async () => {
+    const { start } = fakeStart();
+    let state = seedMode(emptyState(), 'on');
+    const config = { whatsapp: {}, ...profile({
+      fallback_order: ['remote', 'local', 'cli'],
+      local: { type: 'whisper-server-local', command: 'ws', model: '/m', port: 8089 },
+    }) };
+    const reaped = [];
+    const app = await boot({
+      readConfig: () => config, startBridge: start, makeSession: fakeSession,
+      loadState: async () => state, writeState: async (s) => { state = s; },
+      io: memIo(), ingest: true,
+      spawn: () => ({ on(ev, cb) { if (ev === 'exit') cb(0); return this; } }),
+      reapPort: (port) => { reaped.push(port); return 1; },
+      now: () => Date.UTC(2026, 5, 29, 14, 5), tickMs: 0, log: { line: () => {} },
+    });
+    expect(reaped).toEqual([]);   // the active local engine owns its server — never reaped
     app.stop();
   });
 });

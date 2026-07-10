@@ -18,6 +18,7 @@ import { createBeeperBridgePort } from '../bridges/beeper-port.mjs';
 import { createWarmPool } from '../warm-sessions.mjs';
 import { createWarmCliSession } from '../warm-cli-session.mjs';
 import { readConfigSync } from '../tools/config-io.mjs';
+import { reapPort } from '../tools/reap-port.mjs';
 import {
   CONV_YAML_PATH, parse as parseConvState, serialize as serializeConvState, emptyState, KNOWN_SURFACES, slugDir,
 } from '../../conversations-state.mjs';
@@ -43,6 +44,66 @@ import { createHeartbeats } from './heartbeats.mjs';
 import { createHeartbeatLoader, parseHeartbeatsBlock } from './heartbeat-loader.mjs';
 import { seedSkeletons } from './seed.mjs';
 
+// STRAY WHISPER-SERVER REAP (operator 2026-07-10): dropping `local` from a
+// transcription profile's fallback_order (e.g. → [remote, cli] so this node leans on
+// another node's GPU worker) ORPHANS the resident whisper-server the old chain spawned
+// (~3.4GB with large-v3). The pipeline only reapPorts on the NEXT local spawn
+// (src/tools/whisper-server.mjs), which now never happens — so the stray lingers holding
+// the port + RAM. On boot we reap it, but ONLY when THIS node does not legitimately run a
+// resident whisper-server. FAIL-SAFE: err toward NOT reaping — a lingering stray is far less
+// bad than killing a live worker's server. Configs that legitimately run one, and MUST be
+// left alone (operator 2026-07-10, DOLLY-shape correction):
+//   1. the WORKER (GPU box e.g. DOLLY) runs a resident whisper-server under
+//      whatsapp.media.audio_transcribe.server.enabled (the definitive DOLLY flag), and/or
+//      the newer transcriptor.server.enabled; transcriptor.enabled (worker role) also implies
+//      a worker box that runs one — treat any of these as "keep it";
+//   2. a spine whose ACTIVE transcription profile still lists a whisper-server-local engine
+//      in fallback_order — that engine lazily spawns + supervises its own.
+const WHISPER_DEFAULT_PORT = 8089;   // mirrors src/tools/whisper-server.mjs (port = 8089)
+
+// The active transcription_service profile (transcription_service[use_config]) — the same
+// resolution src/spine/transcription.mjs uses; {} when unset.
+function activeTxProfile(cfg) {
+  const txSvc = cfg?.transcription_service;
+  const profile = txSvc?.[txSvc?.use_config];
+  return (profile && typeof profile === 'object') ? profile : {};
+}
+
+// Only an engine that is actually IN fallback_order gets spawned + supervised, so the
+// DECISION reads fallback_order (a merely-defined-but-dropped engine does NOT count).
+function hasActiveLocalWhisper(cfg) {
+  const profile = activeTxProfile(cfg);
+  const order = Array.isArray(profile.fallback_order) ? profile.fallback_order : [];
+  return order.some((name) => profile?.[name]?.type === 'whisper-server-local');
+}
+
+// This node legitimately runs a resident whisper-server iff it is a WORKER box (DOLLY's
+// audio_transcribe.server, the newer transcriptor.server, or the transcriptor worker role)
+// or its active transcription chain owns a local one → reap ONLY when NONE hold (fail-safe).
+export function shouldReapStrayWhisper(cfg) {
+  if (cfg?.whatsapp?.media?.audio_transcribe?.server?.enabled === true) return false;   // DOLLY's resident server (the definitive worker flag)
+  if (cfg?.transcriptor?.server?.enabled === true) return false;                        // newer worker resident-server shape
+  if (cfg?.transcriptor?.enabled === true) return false;                                // worker role → conservatively assume it runs one
+  if (hasActiveLocalWhisper(cfg)) return false;
+  return true;
+}
+
+// The port a stray whisper-server would hold: prefer a whisper-server-local engine's
+// configured port — a DROPPED engine's definition (removed from fallback_order but still in
+// the profile) still carries the port of the orphan we must kill — else the worker
+// resident-server port (transcriptor.server.port, then DOLLY's audio_transcribe.server.port),
+// else the whisper-server default.
+export function whisperPortOf(cfg) {
+  const profile = activeTxProfile(cfg);
+  for (const [name, eng] of Object.entries(profile)) {
+    if (name === 'fallback_order') continue;
+    if (eng && typeof eng === 'object' && eng.type === 'whisper-server-local' && eng.port != null) return Number(eng.port);
+  }
+  const tport = cfg?.transcriptor?.server?.port ?? cfg?.whatsapp?.media?.audio_transcribe?.server?.port;
+  if (tport != null) return Number(tport);
+  return WHISPER_DEFAULT_PORT;
+}
+
 export async function boot({
   readConfig = readConfigSync,
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
@@ -57,6 +118,8 @@ export async function boot({
   tickMs = 30_000,
   aliveMs = 0,                        // >0: register the alive-file writer as a heartbeat so the daemon's wedge check sees liveness
   spawn: spawnFn = spawn,             // child_process.spawn seam — heartbeat command beats (incl. the alive script) spawn through here; tests inject a fake to observe the beat WITHOUT a real process
+  reapPort: reapPortFn = reapPort,    // port-killer seam — the boot-time stray-whisper reap goes through here; tests inject a fake so the real netstat/taskkill NEVER runs against a live server
+
   ingest = true,                      // watch EGPT_HOME/state/ingest for /restart, /upgrade, /rewind (tests pass false)
   exit = (code) => process.exit(code),// how a lifecycle command leaves (the daemon respawns on 42/43/44)
   setInterval: setIntervalFn = globalThis.setInterval,       // the spine tick-timer seam; injected so a test can observe the effective cadence
@@ -135,6 +198,20 @@ export async function boot({
   // server → cli), driven by config.transcription_service. One transcriber feeds
   // the bridge (voice notes) and the media service (a video's audio).
   const tx = createTranscription({ getConfig, onLog: (m) => log.line?.(`[transcribe] ${m}`) });
+
+  // Reap a stray resident whisper-server this node no longer runs (operator 2026-07-10):
+  // when `local` was dropped from the active profile's fallback_order, the old chain's
+  // whisper-server is orphaned — reap it (see shouldReapStrayWhisper). Real-node only
+  // (ingest-gated) so tests never invoke the real killer; best-effort (reapPort never throws).
+  if (ingest) {
+    const wport = whisperPortOf(cfg);
+    if (shouldReapStrayWhisper(cfg)) {
+      const killed = reapPortFn(wport, (m) => log.line?.(`[whisper-reap] ${m}`));
+      log.line?.(`[whisper-reap] no resident whisper-server on this node — reaped stray on :${wport} (killed ${killed})`);
+    } else {
+      log.line?.(`[whisper-reap] this node runs a resident whisper-server — leaving :${wport} untouched`);
+    }
+  }
 
   // The persona wake-word set (operator 2026-07-09: SYMMETRIC nodes — each wakes on its OWN
   // configured handles only, NOTHING is injected network-wide). ONE source of truth (the agents

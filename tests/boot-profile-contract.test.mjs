@@ -148,6 +148,8 @@ beforeAll(async () => {
     makeSession: fakeSession,
     ingest: true,                              // exercise seeding + the ingest watcher
     spawn: fakeSpawn,
+    reapPort: () => 0,                         // fake the stray-whisper port-killer — this config has no resident whisper, so the REAL reapPort(8089) would fire here and taskkill a live server
+
     exit: () => {},                            // a lifecycle ingest must never kill the test
     now: () => Date.UTC(2026, 6, 3, 14, 5),
     tickMs: 0,
