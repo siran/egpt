@@ -83,6 +83,44 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
     expect(contact[1]).toContain('@whatsapp_555:beeper.local');  // body sender_id anchor preserved
   });
 
+  // NODE-QUALIFIED BEING LABEL (operator 2026-07-10): the reply line records <being>.<node_name>
+  // (e.g. egpt.kg, wren.do) so the transcript shows WHICH node on this shared Beeper account
+  // produced the line. Bare being label (no node_name) is unchanged (back-compat).
+  const mkIo = (files) => ({
+    appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
+    mkdir: async () => {},
+    existsSync: (p) => files.has(p),
+    readFile: async (p) => { if (!files.has(p)) throw new Error('ENOENT'); return files.get(p); },
+    writeFile: async (p, d) => { files.set(p, d); },
+    readdir: readdirOver(files),
+  });
+  const transcriptText = (files) => [...files.entries()].find(([p]) => p.endsWith('transcript.md'))?.[1] ?? '';
+
+  it('qualifies the PERSONA reply label as <being>.<node_name>, not the bare being', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'kg', defaultKey: 'egpt' });
+    expect(await t.log(ev, { text: 'hi from egpt', being: 'egpt', surfaced: true })).toBe(true);
+    const text = transcriptText(files);
+    expect(text).toContain('[@egpt.kg ');    // node-qualified reply label
+    expect(text).not.toMatch(/\[@egpt \(/);  // NOT the bare being label
+  });
+
+  it('qualifies a LOCAL SIBLING reply too (this node\'s node_name for every being it labels)', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files), node_name: 'do' });
+    await t.log(ev, { text: 'sibling line', being: 'wren' });
+    expect(transcriptText(files)).toContain('[@wren.do ');
+  });
+
+  it('no node_name → the bare being label is unchanged (back-compat)', async () => {
+    const files = new Map();
+    const t = createTranscript({ contacts: fakeContacts, io: mkIo(files) });   // node_name unset
+    await t.log(ev, { text: 'hi', being: 'egpt' });
+    const text = transcriptText(files);
+    expect(text).toContain('[@egpt (');
+    expect(text).not.toContain('egpt.');
+  });
+
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const files = new Map();

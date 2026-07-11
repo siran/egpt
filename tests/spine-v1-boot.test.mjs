@@ -20,9 +20,9 @@ import { isEchoWinner } from '../src/spine/echo-hrw.mjs';   // pure (no EGPT_HOM
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
 
-let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf;
+let boot, emptyState, ensureContact, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity;
 beforeAll(async () => {
-  ({ boot, shouldReapStrayWhisper, whisperPortOf } = await import('../src/spine/boot.mjs'));
+  ({ boot, shouldReapStrayWhisper, whisperPortOf, buildNodeIdentity } = await import('../src/spine/boot.mjs'));
   ({ emptyState, ensureContact } = await import('../conversations-state.mjs'));
 });
 afterAll(async () => {
@@ -371,6 +371,36 @@ describe('boot() — config-shape migration', () => {
     const { app } = await captureBoot({ agents: AG, account_peers: ['kg', 'do'] });
     expect(app.accountPeers).toEqual(['kg', 'do']);
     app.stop();
+  });
+});
+
+// READABLE NODE-IDENTITY (operator 2026-07-10): the persona's who/where-am-I addendum, assembled
+// ONCE by boot from node_name + the persona agent's name/handles/emoji + account_peers, then handed
+// to the brain pool (persona-turn system prompt). buildNodeIdentity is the pure assembler — tested
+// directly here (mirrors shouldReapStrayWhisper / whisperPortOf).
+describe('buildNodeIdentity — the persona node-identity string', () => {
+  const sample = { name: 'Don', nodeName: 'do', userName: 'An', handles: ['d', 'don'], emoji: '🤝', accountPeers: ['kg', 'do'] };
+
+  it('contains the address, node, @handles, emoji, owner, and the OTHER peer (self filtered)', () => {
+    const s = buildNodeIdentity(sample);
+    expect(s).toContain('don.do');                             // <name>.<node_name> lowercased
+    expect(s).toContain('node "do"');                          // the node name
+    expect(s).toContain('@d @don');                            // the persona agent handles
+    expect(s).toContain('🤝');                                 // this node's reply stamp
+    expect(s).toContain('An');                                 // the account owner
+    expect(s).toMatch(/Other nodes on this account: kg\./);    // peer kg present; self (do) filtered out
+  });
+
+  it('omits the "Other nodes" sentence when account_peers is just self', () => {
+    const s = buildNodeIdentity({ ...sample, accountPeers: ['do'] });   // only this node on the account
+    expect(s).not.toContain('Other nodes');
+    expect(s).toContain('don.do');                             // the rest of the identity is still assembled
+  });
+
+  it('filters node_alias out of the peers too (all of this node\'s self-names)', () => {
+    const s = buildNodeIdentity({ ...sample, accountPeers: ['kg', 'do', 'dolly'], nodeAlias: ['dolly'] });
+    expect(s).toMatch(/Other nodes on this account: kg\./);
+    expect(s).not.toMatch(/dolly/);                            // an alias of THIS node is not a peer
   });
 });
 

@@ -18,6 +18,7 @@ export function createTranscript({
   contacts,                              // the shared contact-resolver (createContacts) — chatId → slug + rename self-heal
   persona = null,
   defaultKey = 'e',                      // the persona being-id (its map key), injected by boot — the fallback label when a reply carries no being
+  node_name = null,                      // this node's name — qualifies the being's reply label as <being>.<node_name> so the record shows WHICH node produced a line (provenance; operator 2026-07-10). null → bare being label unchanged
   io = {},                               // { appendFile, mkdir, existsSync } — real by default
   now = () => new Date(),
   onLog = () => {},
@@ -64,7 +65,11 @@ export function createTranscript({
           const text = typeof reply === 'string' ? reply : reply.text;
           const being = (typeof reply === 'object' && reply.being) || defaultKey;
           const surfaced = typeof reply === 'object' ? reply.surfaced !== false : true;
-          await appendFile(fpath, replyLine({ being, body: text, surfaced, now: now() }) + '\n\n', 'utf8');
+          // Node-qualify the being label (operator 2026-07-10): <being>.<node_name> (e.g. e.kg,
+          // wren.do) so the record shows WHICH node on this shared account produced the line.
+          // Applies to whatever beings the transcript labels — it's this node's node_name for all.
+          const label = node_name ? `${being}.${node_name}` : being;
+          await appendFile(fpath, replyLine({ being: label, body: text, surfaced, now: now() }) + '\n\n', 'utf8');
         }
         return true;
       } catch (e) { onLog(`transcript ${ev?.surface}/${ev?.chatId}: ${e?.message ?? e}`); return false; }

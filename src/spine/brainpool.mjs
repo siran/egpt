@@ -127,6 +127,7 @@ export function createBrainPool({
   loadState, writeState,            // conversations-state YAML IO (injected)
   brains = null,                     // the brain registry (createBrains) — resolves the default a fresh conv is instanced from
   defaultKey = 'e',                  // the persona being-id (its map key), injected by boot from the single `default:true` agent — the persona-vs-sibling split keys off this, never 'e' (operator 2026-07-10)
+  nodeIdentity = null,               // the persona's node-identity addendum (boot's buildNodeIdentity) — appended to the PERSONA turn's system prompt so who/where-am-I survives resumes; null on a node with no node_name (operator 2026-07-10)
   brainType = 'ccode',               // fallback engine when a brain def / registry is absent
   io = {},
   isOverflow = isContextOverflowError,
@@ -328,12 +329,20 @@ export function createBrainPool({
 
       const key = `${being}:${engine}:${ev.surface}:${slug}`;
       lastKeyByConv.set(`${being}:${ev.surface}:${ev.chatId}`, key);
+      // Node-identity addendum (operator 2026-07-10): the PERSONA turn ALWAYS carries the
+      // concise who/where-am-I line so identity survives RESUMES (the first-turn kickoff feed
+      // only lands on a fresh thread). It COMBINES with the def's own system_prompt (both,
+      // blank-line joined) — never replaces it. Siblings are engineers, out of scope: their
+      // system prompt stays exactly the def's.
+      const appendSystemPrompt = isSibling
+        ? def.system_prompt
+        : [def.system_prompt, nodeIdentity].filter(Boolean).join('\n\n');
       const baseOpts = {
         cwd,
         allowedTools: def.allowed_tools ?? DEFAULT_ALLOWED_TOOLS,
         ...(runModel ? { model: runModel } : {}),
         ...(runEffort ? { effort: runEffort } : {}),
-        ...(def.system_prompt ? { appendSystemPrompt: def.system_prompt } : {}),
+        ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
         // Resume the conversation's OWN thread, or null = fresh. NOT
         // default_brain.session_id — that would cross-wire every chat onto one
         // session; the auto-dispatch path keys the session per conversation

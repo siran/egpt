@@ -25,7 +25,7 @@ function fakePool(scriptedResults) {
 
 const ev = { surface: 'whatsapp', chatId: '!room:beeper.com', chatName: 'SPOILER', line: 'An@[SPOILER].wa (14:05) #m1: hola', body: 'hola' };
 
-function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, brains, afterTurn, io } = {}) {
+function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, loadFeed, loadManifest, loadAutoLayer, seedSession, seedMode, brains, afterTurn, io, nodeIdentity } = {}) {
   let state = emptyState();
   if (seedSession || seedMode) {   // pre-register the contact (WITH a stored thread and/or an E mode)
     const ens = ensureContact(state, ev.surface, ev.chatId, { pushedName: ev.chatName, slugHint: ev.chatName });
@@ -52,6 +52,7 @@ function harness(scriptedResults, { config = {}, isOverflow, isDeadSession, load
     io: io ?? { mkdir: async () => {}, readFile: async () => null, writeFile: async () => {} },
     loadFeed: loadFeed ?? (async () => ''),        // default: no folder feed
     loadManifest: loadManifest ?? (async () => ''),// default: no manifest → raw line (focus on warm logic)
+    ...(nodeIdentity != null ? { nodeIdentity } : {}),   // persona node-identity addendum (operator 2026-07-10)
     ...(loadAutoLayer ? { loadAutoLayer } : {}),   // the mode:auto operator-role layer (default: real file)
     ...(brains ? { brains } : {}),                 // omit → falls back to a bare ccode def
     ...(afterTurn ? { afterTurn } : {}),
@@ -351,6 +352,38 @@ describe('brainpool.turn — local sibling beings (agents registry)', () => {
     await brain.turn('wren', ev);
     expect(pool.calls[0].brainOptions.sessionId).toBe(null);   // first turn: fresh
     expect(pool.calls[1].brainOptions.sessionId).toBe('w1');   // second resumes the nested thread
+  });
+});
+
+// READABLE NODE-IDENTITY (operator 2026-07-10): the persona's who/where-am-I addendum is appended
+// to the PERSONA turn's system prompt so it survives RESUMED threads (the first-turn kickoff feed
+// only lands on a fresh thread). It COMBINES with the def's own system_prompt (both), never
+// replaces it. Siblings are engineers — out of scope, their turn never carries it.
+describe('brainpool.turn — node-identity system prompt', () => {
+  const NODE_ID = 'You are the eGPT persona "Don" running as don.do — node "do".';
+
+  it('PERSONA turn: appendSystemPrompt COMBINES nodeIdentity with the def system_prompt (both present)', async () => {
+    const brains = { resolve: () => ({ name: 'egpt', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'all', system_prompt: 'DEF-PROMPT' }) };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { brains, nodeIdentity: NODE_ID });
+    await brain.turn('e', ev);
+    const asp = pool.calls[0].brainOptions.appendSystemPrompt;
+    expect(asp).toContain(NODE_ID);        // node identity present
+    expect(asp).toContain('DEF-PROMPT');   // the def's own system prompt ALSO present — combined, not replaced
+  });
+
+  it('PERSONA turn with NO def system_prompt: appendSystemPrompt is exactly the nodeIdentity', async () => {
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 's' }], { nodeIdentity: NODE_ID });
+    await brain.turn('e', ev);
+    expect(pool.calls[0].brainOptions.appendSystemPrompt).toBe(NODE_ID);
+  });
+
+  it('SIBLING turn: appendSystemPrompt does NOT include the nodeIdentity', async () => {
+    const brains = { resolve: (name) => name === 'sonnet-high' ? ({ name: 'sonnet-high', type: 'ccode', model: 'sonnet', effort: 'high', allowed_tools: 'Read,Bash' }) : null };
+    const config = { agents: { wren: { configuration: 'sonnet-high', name: 'wren' } } };
+    const { brain, pool } = harness([{ text: 'ok', sessionId: 'w1' }], { brains, config, nodeIdentity: NODE_ID });
+    await brain.turn('wren', ev);
+    const asp = pool.calls[0].brainOptions.appendSystemPrompt;
+    expect(asp === undefined || !String(asp).includes(NODE_ID)).toBe(true);   // a sibling turn never carries the node identity
   });
 });
 

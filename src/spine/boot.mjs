@@ -108,6 +108,35 @@ export function whisperPortOf(cfg) {
   return WHISPER_DEFAULT_PORT;
 }
 
+// READABLE NODE-IDENTITY (operator 2026-07-10): two co-account spines (REVE `kg`, DOLLY `do`)
+// share ONE Beeper account, so on the wire every line looks "from the account owner" and the
+// persona itself couldn't say which node it is. Assemble a concise, FACTUAL who/where-am-I line
+// the persona always carries in its system prompt (brainpool appends it to the PERSONA turn
+// only), so identity survives RESUMED threads — the first-turn kickoff feed only lands on a
+// FRESH thread. NOT a signature, NOT invisible encoding: the visible in-chat node marker stays
+// the per-node body_emoji. Pure so it is testable directly (mirrors shouldReapStrayWhisper).
+//   address  = <name>.<node_name> lowercased (don.do, egpt.kg)
+//   handles  = the persona agent's handles as `@d @don`
+//   peers    = account_peers MINUS this node's own names (node_name ∪ node_alias); the "Other
+//              nodes" sentence is OMITTED when that leaves nothing (a solo node).
+export function buildNodeIdentity({
+  name,                 // persona display name (labelOf(defaultKey))
+  nodeName,             // cfg.node_name
+  userName,             // cfg.user_name (whatsapp.user_name wins, mirroring the bridge)
+  handles = [],         // the persona agent's `handles`
+  emoji,                // bodyEmojiOf(defaultKey) — this node's reply stamp
+  accountPeers = [],    // node identities sharing this Beeper account (incl. self)
+  nodeAlias = [],       // this node's extra self-names (cfg.node_alias)
+} = {}) {
+  const address = `${String(name).toLowerCase()}.${String(nodeName).toLowerCase()}`;
+  const handleStr = handles.map((h) => `@${h}`).join(' ');
+  const own = new Set([nodeName, ...nodeAlias].filter(Boolean).map((s) => String(s).toLowerCase()));
+  const peers = accountPeers.filter((p) => !own.has(String(p).toLowerCase()));
+  let s = `You are the eGPT persona "${name}" running as ${address} — node "${nodeName}", ${userName}'s account. You answer to ${handleStr}; your reply stamp is ${emoji}.`;
+  if (peers.length) s += ` Other nodes on this account: ${peers.join(', ')}.`;
+  return s;
+}
+
 export async function boot({
   readConfig = readConfigSync,
   startBridge = null,                 // createBeeperBridgePort's `start` seam (null = real beeper)
@@ -283,6 +312,23 @@ export async function boot({
     ? () => false
     : (noteId) => isEchoWinner(noteId, node_name, echoPeers);
 
+  // The persona's node-identity addendum (operator 2026-07-10): assembled ONCE from the pieces
+  // already resolved above + the persona agent's handles, and handed to the brain pool, which
+  // appends it to the PERSONA turn's system prompt (siblings are engineers, out of scope). Only
+  // when this node has a node_name — without one the "who/where" is meaningless, so we omit it
+  // (brainpool's filter(Boolean) leaves the def's own system_prompt untouched).
+  const nodeIdentity = node_name
+    ? buildNodeIdentity({
+        name: labelOf(defaultKey),
+        nodeName: node_name,
+        userName: cfg.whatsapp?.user_name ?? cfg.user_name ?? null,
+        handles: (() => { const a = personaAgent().agent; return Array.isArray(a?.handles) ? a.handles : []; })(),
+        emoji: bodyEmojiOf(defaultKey),
+        accountPeers,
+        nodeAlias: Array.isArray(cfg.node_alias) ? cfg.node_alias : [],
+      })
+    : null;
+
   // Per-surface config resolver (operator 2026-07-09): the NEW shape wraps the per-surface
   // blocks under `networks:` and lists command channels as `chat_ids` (plural); the OLD shape
   // has top-level whatsapp:/telegram:/signal: blocks with a singular `chat_id`. ONE resolver
@@ -396,7 +442,7 @@ export async function boot({
     // defaultBeing = defaultKey: the persona-route + the un-@mentioned fall-through both yield
     // the persona's KEY (operator 2026-07-10 — no hardcoded 'e'/'egpt').
     router: createRouter({ getAgents: () => cfg.agents ?? {}, defaultBeing: defaultKey, getNode: () => cfg.node_name ?? null, getAliases: () => cfg.node_alias ?? [], meshEnabled: () => !!cfg.mesh }),
-    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
+    transcript: createTranscript({ contacts, persona: labelOf(defaultKey), defaultKey, node_name, io, onLog: (m) => log.line?.(`[transcript] ${m}`) }),
     sender: createSender({ bridge, bodyEmojiOf, labelOf, signatureOf, defaultKey }),
     // The real cadence registry the spine's tick() drives. The heartbeat LOADER
     // (below) collects every declarative heartbeat and registers it here, so each
@@ -413,7 +459,7 @@ export async function boot({
   // Auto-compaction: keep each conversation's warm session thin (native /compact a
   // cooling period after the last reply, once it's over ratio of the window).
   const compaction = createCompaction({ pool, getConfig, onLog: (m) => log.line?.(`[compact] ${m}`) });
-  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
+  const brain = createBrainPool({ pool, getConfig, contacts, loadState: _loadState, writeState: _writeState, brains, defaultKey, nodeIdentity, afterTurn: compaction.afterTurn, io, onLog: (m) => log.line?.(`[brain] ${m}`) });
 
   // Cross-node being relay (Phase 4b). Supplies the mesh engine's host callbacks from
   // v2 services: bridge (send/postStatus/startStream), brain (the responder's turn),
