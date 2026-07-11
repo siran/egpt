@@ -99,6 +99,27 @@ const waitFor = async (cond, ms = 10000) => {
   }
 };
 
+// A fake clock for the Phase 3b promotion timers — injected as the bridge's `scheduler` so a
+// rank>1 node's (rank-1)*echoTimeoutMs promotion elapses WITHOUT a real wait. Timers fire in
+// deadline order as time advances; advance() fires the callbacks but doesn't await their async
+// sends, so tests use waitFor(posts) after advancing.
+function makeClock() {
+  let seq = 0, now = 0;
+  const timers = [];   // { id, fn, at }
+  return {
+    set(fn, ms) { const id = ++seq; timers.push({ id, fn, at: now + ms }); return { id, unref() {} }; },
+    clear(h) { const i = timers.findIndex((t) => h && t.id === h.id); if (i >= 0) timers.splice(i, 1); },
+    async advance(ms) {
+      now += ms;
+      let t;
+      while ((t = timers.filter((x) => x.at <= now).sort((a, b) => a.at - b.at)[0])) {
+        timers.splice(timers.indexOf(t), 1);
+        await t.fn();
+      }
+    },
+  };
+}
+
 // 2026-07-08: constructing the REAL bridge fires its internal onLog, which
 // appendFileSync's every line to join(EGPT_HOME, 'config', 'logs', 'beeper.log'). With
 // EGPT_HOME unset that IS the LIVE ~/.egpt log — a `vitest` run polluted it with these
@@ -693,14 +714,14 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');               // default echo → 👂 posts
   });
 
-  // 👂 ECHO PICK (operator 2026-07-10, Phase 3a HRW): the static per-node `echo` boolean became a
-  // per-note echoDecider(noteId) — the rendezvous-hash pick that makes exactly ONE co-account node
-  // echo each note (NOT dedup). At the bridge the decision is just "did the decider say post?"; the
-  // pick itself is unit-tested in echo-hrw.test.mjs. A NON-winner (also the echo:false opt-out,
-  // which boot folds into an always-false decider) still HEARS — transcribes + logs — never SPEAKS.
-  it('a NON-winner (echoDecider→false, also the echo:false opt-out) transcribes + logs but NEVER posts the 👂', async () => {
+  // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): the per-note gate is now
+  // echoPlan(noteId) → { rank, winner } — rank 1 posts now, rank>1 HOLDS + arms a promotion, rank 0
+  // is the echo:false hard opt-out. The rank/order itself is unit-tested in echo-hrw.test.mjs; here
+  // we lock the BRIDGE behavior. A rank-1 winner posts; the echo:false opt-out (rank 0) never
+  // posts/promotes; and both are still transcribed + logged (HEARD).
+  it('the echo:false opt-out (rank 0) transcribes + logs but NEVER posts the 👂 (hard opt-out)', async () => {
     const { incoming } = await startBridge({
-      echoDecider: () => false,
+      echoPlan: () => ({ rank: 0, winner: false }),
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -709,12 +730,12 @@ describe('beeper bridge', () => {
     })] });
     await waitFor(() => incoming.length === 1);
     expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD (transcribed + logged)
-    expect(fake.posts).toHaveLength(0);                                        // SPOKEN suppressed — not the winner
+    expect(fake.posts).toHaveLength(0);                                        // SPOKEN never — opt-out (no promotion either)
   });
 
-  it('a WINNER (echoDecider→true) posts the 👂', async () => {
+  it('a rank-1 WINNER posts the 👂 (3a preserved for the all-up case)', async () => {
     const { incoming } = await startBridge({
-      echoDecider: () => true,
+      echoPlan: () => ({ rank: 1, winner: true }),
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     fake.emit({ type: 'message.upserted', entries: [liveMsg({
@@ -726,12 +747,12 @@ describe('beeper bridge', () => {
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
-  // The bridge feeds the note's SHARED Beeper message id (msg.id) to the decider — that shared
-  // identity is what makes the two co-account nodes agree. Lock it: an id-keyed decider posts for
-  // exactly the note it names, and BOTH notes are still transcribed + logged.
-  it('the echoDecider is keyed on the note\'s Beeper message id — exactly the named note posts, both are transcribed', async () => {
+  // The bridge feeds the note's SHARED Beeper message id (msg.id) to echoPlan — that shared identity
+  // is what makes the two co-account nodes agree on the rank. Lock it: a rank keyed on the id posts
+  // (rank 1) for exactly the note it names, and BOTH notes are still transcribed + logged.
+  it('echoPlan is keyed on the note\'s Beeper message id — exactly the rank-1 note posts, both are transcribed', async () => {
     const { incoming } = await startBridge({
-      echoDecider: (noteId) => noteId === 'note-win',
+      echoPlan: (noteId) => ({ rank: noteId === 'note-win' ? 1 : 0, winner: noteId === 'note-win' }),
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });
     const voice = (id) => liveMsg({
@@ -743,17 +764,88 @@ describe('beeper bridge', () => {
     await waitFor(() => incoming.length === 2);
     // Both HEARD (transcribed + logged) …
     expect(incoming.map((i) => i.text)).toEqual(['(voice transcription) fake transcript', '(voice transcription) fake transcript']);
-    // … but only the id the decider picked got the in-chat 👂 (as a reply to ITSELF).
+    // … but only the rank-1 note got the in-chat 👂 (as a reply to ITSELF).
     await waitFor(() => fake.posts.length === 1);
     expect(fake.posts).toHaveLength(1);
     expect(fake.posts[0].replyToMessageID).toBe('note-win');
     expect(fake.posts[0].text).toBe('👂 fake transcript');
   });
 
-  // The age bound is ORTHOGONAL to the pick: a too-old note never echoes even for a WINNER.
-  it('echoMaxAgeMs still suppresses an old note even for a WINNER (age bound is independent of the pick)', async () => {
+  // ORDERED FAILOVER (Phase 3b) at the bridge, fake-clock driven:
+  //   - rank-1 posts immediately (all-up) — see the WINNER test above;
+  //   - a rank-2 node HOLDS, and PROMOTES after its window when rank-1 stays silent (rank-1 down);
+  //   - a rank-2 node that OBSERVES rank-1's 👂 (a reply-to-note 👂 inbound) stands down — no double.
+  it('rank-1 DOWN: a rank-2 node PROMOTES the held 👂 after its window (exactly one 👂, delayed)', async () => {
+    const clock = makeClock();
     const { incoming } = await startBridge({
-      echoDecider: () => true,   // this node IS the winner …
+      echoPlan: () => ({ rank: 2, winner: false }),
+      echoTimeoutMs: 20_000, scheduler: clock,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-p', isSender: false, text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    expect(incoming[0].text).toBe('(voice transcription) fake transcript');   // HEARD …
+    expect(fake.posts).toHaveLength(0);                                        // … but held (rank-1 would post first)
+    await clock.advance(20_000);                                              // rank-1 stayed silent → +T promote
+    await waitFor(() => fake.posts.length === 1);
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
+    expect(fake.posts[0].replyToMessageID).toBe('note-p');                     // same quoted reply as rank-1 would use
+  });
+
+  it('all-up: a rank-2 node OBSERVES rank-1\'s 👂 (reply-to-note) and stands down — exactly one 👂', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 2, winner: false }),
+      echoTimeoutMs: 20_000, scheduler: clock,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    // the voice note → this (rank-2) node arms a promotion (held, no post)
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-o', isSender: false, text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    // rank-1 (the co-account peer) posts its 👂 as a quoted reply to the note — arrives here as a
+    // normal inbound (peer's account/process, not ours). The bridge observes it → cancels our timer.
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'peer-echo', isSender: false, text: '👂 fake transcript', linkedMessageID: 'note-o',
+    })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'peer-echo'));
+    await clock.advance(20_000);                                    // our promotion window elapses …
+    await new Promise((r) => setTimeout(r, 30));                    // let any stray send settle
+    expect(fake.posts).toHaveLength(0);                             // … cancelled → we NEVER posted (no double)
+  });
+
+  it('an UNRELATED inbound does NOT cancel: a non-👂 reply to the note, or a 👂 to a different note, still promotes', async () => {
+    const clock = makeClock();
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 2, winner: false }),
+      echoTimeoutMs: 20_000, scheduler: clock,
+      resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
+    });
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({
+      id: 'note-u', isSender: false, text: null, type: 'VOICE',
+      attachments: [{ id: 'a1', isVoiceNote: true, srcURL: 'file:///tmp/note.ogg' }],
+    })] });
+    await waitFor(() => incoming.length === 1);
+    // a human replies to the SAME note but with prose (NOT a 👂) → must not cancel
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'human', isSender: false, text: 'gracias!', linkedMessageID: 'note-u' })] });
+    // a 👂 replying to a DIFFERENT note → must not cancel note-u's promotion
+    fake.emit({ type: 'message.upserted', entries: [liveMsg({ id: 'other', isSender: false, text: '👂 otra cosa', linkedMessageID: 'some-other-note' })] });
+    await waitFor(() => incoming.some((i) => i.from.msgKey === 'other'));
+    await clock.advance(20_000);
+    await waitFor(() => fake.posts.length === 1);                   // unobserved → still promotes
+    expect(fake.posts[0].replyToMessageID).toBe('note-u');
+    expect(fake.posts[0].text).toBe('👂 fake transcript');
+  });
+
+  // The age bound is ORTHOGONAL to the rank: a too-old note never echoes even for a rank-1 winner.
+  it('echoMaxAgeMs still suppresses an old note even for a rank-1 winner (age bound is independent of the rank)', async () => {
+    const { incoming } = await startBridge({
+      echoPlan: () => ({ rank: 1, winner: true }),   // this node IS rank-1 …
       echoMaxAgeMs: 3_600_000,
       resolveTranscriptionService: async () => ({ enabled: true, postsBack: true }),
     });

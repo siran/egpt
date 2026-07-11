@@ -51,7 +51,7 @@
 //     gates cover edit/receipt re-fires and crash replays.
 import WebSocket from 'ws';
 import { transcribeAudioFile } from '../tools/transcribe.mjs';
-import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS } from '../incoming-media.mjs';
+import { transcribeVoiceNote, voiceTranscriptBody, POSTS_BACK_DELAY_MS, cancelPromotion, ECHO_MARKER } from '../incoming-media.mjs';
 import { htmlToMarkdown } from '../html-to-markdown.mjs';
 import { reactionAction, editAction } from '../dispatch-line.mjs';
 import { mentionStatus } from '../auto-mode.mjs';
@@ -169,14 +169,22 @@ export async function startBeeperBridge(opts = {}) {
     // configured with handles [ed, egptd] never woke on @ed. Default = e/egpt (unchanged
     // for a node that passes nothing).
     wakeWords = ['e', 'egpt'],
-    // 👂 ECHO DECIDER (operator 2026-07-10, Phase 3a HRW; plans/2607101713-HRW-ECHO-PLAN.md):
-    // (noteId) => boolean — does THIS node post the 👂 transcript echo for this note? Boot injects
-    // a rendezvous-hash PICK over the co-account peer set so exactly ONE of the co-account nodes
-    // echoes each note, rotating per note — NOT dedup, no coordination, no watch-and-cancel. A
-    // non-winner still HEARS (transcribes + logs); only the in-chat 👂 POST is gated. Default
-    // always-true (a solo node / no HRW config posts as before). An explicit echo:false is folded
-    // by boot into an always-false decider (hard opt-out → this node NEVER posts the 👂).
-    echoDecider = () => true,
+    // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover; plans/2607101713-HRW-ECHO-PLAN.md):
+    // (noteId) => { rank, winner } — this node's 1-indexed failover RANK for the note. rank 1 = the
+    // rendezvous-hash winner, posts now; rank>1 = a lower rank that HOLDS its 👂 and posts only if the
+    // higher ranks stay silent (arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the
+    // note's 👂 from a higher rank); rank 0 = the echo:false hard opt-out (never post / never promote).
+    // Boot builds it from node_name + the co-account peer set so exactly ONE node posts each note,
+    // rotating per note, with ORDERED failover for an offline/silent winner — NOT dedup, no
+    // coordination. A non-winner still HEARS (transcribes + logs). Default rank-1-always (a solo node
+    // / no HRW config posts immediately, as in 3a).
+    echoPlan = () => ({ rank: 1, winner: true }),
+    // 👂 PER-RANK PROMOTION STEP (ms): rank-R waits (R-1)*echoTimeoutMs before posting the 👂 a silent
+    // higher rank didn't. GENEROUS so a merely-SLOW rank-1 isn't mistaken for a DOWN one → double-👂.
+    echoTimeoutMs = 20_000,
+    // Timer seam for the 👂 debounce + promotion (forwarded to incoming-media). undefined → real
+    // setTimeout; tests inject a fake clock so no real wait is needed.
+    scheduler = undefined,
     // 👂 ECHO AGE BOUND (operator 2026-07-09, Zohykar 1:1 incident; renamed from
     // transcribe_ack_max_age_ms): a Beeper resync can re-deliver ancient backlog voice notes;
     // the 👂 is a live-conversation courtesy, not an archaeology announcement, so it only posts
@@ -942,18 +950,26 @@ export async function startBeeperBridge(opts = {}) {
         // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
         const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
         if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
+        // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): this node's rank for the
+        // note over the co-account peer set. msg.id is the note's SHARED Beeper message id — IDENTICAL
+        // on both co-account nodes (one shared account → the same message → the same per-chat sequence
+        // id), so the ranks AGREE: exactly ONE rank-1 posts now, and a lower rank promotes only if the
+        // higher ranks are silent (NOT dedup). rank 0 = echo:false hard opt-out. The age bound is
+        // ORTHOGONAL — tooOldForEcho suppresses ANY post/promotion regardless of rank.
+        const plan = echoPlan(msg.id);
+        const echoOn = plan.rank >= 1 && !tooOldForEcho;   // is an echo POSSIBLE at all for this note on this node?
         const transcript = await transcribeVoiceNote({
           localPath: path, transcribe, audioCfg,
           reply: (t) => sendMessage(chatID, t, { replyToMessageID: msg.id }),
           enabled: svc.enabled,
-          // 👂 ECHO PICK (operator 2026-07-10, Phase 3a HRW): echoDecider(msg.id). msg.id is the
-          // voice note's stable Beeper message id — IDENTICAL on both co-account nodes (one shared
-          // account → the same message → the same per-chat sequence id), so the rendezvous-hash
-          // pick AGREES and exactly ONE node posts the 👂, rotating per note (NOT dedup). A
-          // non-winner still HEARS (transcribes + logs); only the POST is gated. echo:false folds
-          // into an always-false decider (hard opt-out). tooOldForEcho wins independently — an
-          // ancient note never echoes regardless of the pick.
-          postsBack: (echoDecider(msg.id) && !tooOldForEcho) ? svc.postsBack : false,
+          // rank 1 → post now (immediate/debounced); rank>1 → HOLD + arm a promotion at
+          // (rank-1)*echoTimeoutMs (incoming-media). A non-winner still HEARS (transcribes + logs);
+          // only the POST is gated. rank 0 (echo:false) / too-old → echoOn false → neither posts nor
+          // promotes.
+          postsBack: echoOn ? svc.postsBack : false,
+          echoRank: plan.rank,          // 1 = rank-1 (post now); >1 = arm the ordered-failover promotion
+          echoTimeoutMs,                // per-rank promotion step
+          scheduler,                    // fake clock in tests; real setTimeout in prod
           muted: info.isMuted,
           // NO author on the 👂 ack (operator 2026-07-10): Beeper exposes no push name,
           // so senderDisplay would yield a bare phone number / id — useless as a name.
@@ -1040,6 +1056,18 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
+    // 👂 PROMOTION OBSERVE-AND-CANCEL (operator 2026-07-11, Phase 3b ordered failover): a co-account
+    // peer's 👂 arrives here as a NORMAL inbound (its account/process is not ours → not a self-echo;
+    // our OWN 👂 is suppressed by isEcho far above, so this never self-cancels). When it is a 👂
+    // (starts with the marker) REPLYING to a note we hold a pending promotion for, a higher rank has
+    // posted → stand down and cancel our timer (else we'd double the echo). Correlated by reply-to id:
+    // every 👂 is a quoted reply to its note (replyToMessageID = note.id), keyed by the SAME per-note
+    // key the promotion was armed under (`${chatID}:${noteId}`). A reply that is NOT a 👂 (a human
+    // replying to the note), or a 👂 to a different note, never cancels. NOT dedup — this only covers
+    // an offline/slow higher rank; the rank itself is a deterministic upfront pre-assignment.
+    if (replyToId && String(text ?? '').trimStart().startsWith(ECHO_MARKER)) {
+      if (cancelPromotion(`${chatID}:${replyToId}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${replyToId} [${info.title}]`);
+    }
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,

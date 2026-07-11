@@ -15,7 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import os from 'node:os';
-import { isEchoWinner } from '../src/spine/echo-hrw.mjs';   // pure (no EGPT_HOME) → safe to static-import
+import { echoRank } from '../src/spine/echo-hrw.mjs';   // pure (no EGPT_HOME) → safe to static-import
 
 const tmpHome = join(os.tmpdir(), `egpt-v1-boot-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 process.env.EGPT_HOME = tmpHome;
@@ -339,29 +339,33 @@ describe('boot() — config-shape migration', () => {
     normal.app.stop();
   });
 
-  // 👂 ECHO — HRW PICK (operator 2026-07-10, Phase 3a): boot no longer hands the bridge a static
-  // `echo` boolean — it hands an echoDecider(noteId) built from node_name + account_peers. A solo
-  // node (no peers) always wins (echoes as before); cfg.echo:false folds into an always-false
-  // decider (hard opt-out); echoMaxAgeMs is unchanged (orthogonal age bound).
-  it('echoDecider: default solo node ALWAYS wins; cfg.echo:false NEVER; echoMaxAgeMs default 1h + override', async () => {
+  // 👂 ECHO — HRW RANK + ORDERED FAILOVER (operator 2026-07-11, Phase 3b): boot hands the bridge an
+  // echoPlan(noteId) → { rank, winner } (built from node_name + account_peers) PLUS the per-rank
+  // promotion step echoTimeoutMs. A solo node (no peers) is always rank 1 (echoes as before);
+  // cfg.echo:false folds into rank 0 (hard opt-out — never post/promote); echoMaxAgeMs is unchanged
+  // (orthogonal age bound). echoTimeoutMs defaults GENEROUS (20s, the double-👂 hazard).
+  it('echoPlan: default solo node is rank 1 (winner); cfg.echo:false → rank 0 (never); echoTimeoutMs default 20s + override; echoMaxAgeMs default 1h + override', async () => {
     const def = await captureBoot({ agents: AG });
-    expect(typeof def.opts.echoDecider).toBe('function');
-    expect(def.opts.echoDecider('any-note')).toBe(true);    // solo → always echo (lone-node behavior)
+    expect(typeof def.opts.echoPlan).toBe('function');
+    expect(def.opts.echoPlan('any-note')).toEqual({ rank: 1, winner: true });   // solo → rank 1 (lone-node echo behavior)
+    expect(def.opts.echoTimeoutMs).toBe(20_000);                                // generous default (double-👂 hazard)
     expect(def.opts.echoMaxAgeMs).toBe(3_600_000);
     def.app.stop();
-    const off = await captureBoot({ agents: AG, echo: false, echo_max_age_ms: 1000 });
-    expect(off.opts.echoDecider('any-note')).toBe(false);    // hard opt-out — this node never posts the 👂
+    const off = await captureBoot({ agents: AG, echo: false, echo_max_age_ms: 1000, echo_timeout_ms: 5000 });
+    expect(off.opts.echoPlan('any-note')).toEqual({ rank: 0, winner: false });  // hard opt-out — never post/promote
+    expect(off.opts.echoTimeoutMs).toBe(5000);                                  // tunable
     expect(off.opts.echoMaxAgeMs).toBe(1000);
     off.app.stop();
   });
 
-  it('echoDecider: co-account HRW pick — node_name + account_peers make EXACTLY ONE node echo each note', async () => {
+  it('echoPlan: co-account HRW rank — node_name + account_peers give DISTINCT ranks (exactly one rank-1) per note', async () => {
     const kg = await captureBoot({ agents: AG, node_name: 'kg', account_peers: ['kg', 'do'] });
     const doNode = await captureBoot({ agents: AG, node_name: 'do', account_peers: ['kg', 'do'] });
     for (let i = 1; i <= 50; i++) {
       const id = String(i);
-      expect(kg.opts.echoDecider(id)).toBe(isEchoWinner(id, 'kg', ['kg', 'do']));   // boot wired node_name + peers straight in
-      expect(kg.opts.echoDecider(id)).toBe(!doNode.opts.echoDecider(id));           // exactly one of the two echoes the SAME note
+      expect(kg.opts.echoPlan(id).rank).toBe(echoRank(id, 'kg', ['kg', 'do']));                          // boot wired node_name + peers straight in
+      expect(new Set([kg.opts.echoPlan(id).rank, doNode.opts.echoPlan(id).rank])).toEqual(new Set([1, 2]));  // distinct ranks — a permutation of 1..2
+      expect(kg.opts.echoPlan(id).winner).toBe(!doNode.opts.echoPlan(id).winner);                        // exactly one rank-1 (winner) for the SAME note
     }
     kg.app.stop();
     doNode.app.stop();

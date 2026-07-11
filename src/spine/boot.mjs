@@ -24,7 +24,7 @@ import {
 } from '../../conversations-state.mjs';
 
 import { createIdentity, surfaceOf } from './identity.mjs';
-import { isEchoWinner } from './echo-hrw.mjs';
+import { echoRank } from './echo-hrw.mjs';
 import { shortChatId } from '../bridges/chat-id.mjs';
 import { createContacts } from './contacts.mjs';
 import { createGating } from './gating.mjs';
@@ -294,23 +294,29 @@ export async function boot({
   // notes are still transcribed + logged, just never echoed into the live chat. Default 1h.
   const echoMaxAgeMs = Number.isFinite(cfg.echo_max_age_ms) ? cfg.echo_max_age_ms : 3_600_000;
   // account_peers (operator 2026-07-09): node identities sharing THIS Beeper account (incl self).
-  // The candidate set the HRW 👂-echo PICK rotates over (see echoDecider below).
+  // The candidate set the HRW 👂-echo rank rotates over (see echoPlan below).
   const accountPeers = Array.isArray(cfg.account_peers) ? cfg.account_peers : [];
 
-  // 👂 ECHO — HRW PICK (operator 2026-07-10, Phase 3a; plans/2607101713-HRW-ECHO-PLAN.md). NOT
-  // dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both saw each voice note and both posted
-  // its 👂 → double-👂. Instead of act-then-cancel, each node decides UPFRONT — per note, no
-  // coordination — whether IT is the one to echo, via rendezvous hashing over account_peers. The
-  // SHARED Beeper message id + the identical account_peers make the two nodes agree on exactly ONE
-  // winner, rotating per note (echo-hrw.mjs). The bridge calls echoDecider(noteId) where noteId is
-  // the voice note's stable Beeper message id (msg.id) — the shared identity that makes them agree.
-  // HARD OPT-OUT preserved: echo:false folds into an always-false decider, so an explicit opt-out
-  // still means this node NEVER posts the 👂 (it still transcribes + logs) even under HRW.
+  // 👂 ECHO — HRW RANK + ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
+  // NOT dedup. Two co-account spines (REVE `kg`, DOLLY `do`) both see each voice note; 3a made
+  // exactly ONE (the rendezvous-hash rank-1) post its 👂, rotating per note, with NO coordination —
+  // the SHARED Beeper message id + identical account_peers make both nodes agree on the same order.
+  // 3b RANKS all peers so a lower rank posts if the higher ranks are OFFLINE/silent (still exactly
+  // one poster, ORDERED): the bridge posts at rank 1, ARMS a promotion at (rank-1)*echoTimeoutMs for
+  // rank>1, and cancels it when it observes the note's 👂 from a higher rank (echo-hrw.mjs +
+  // incoming-media.mjs). echoPlan(noteId) → { rank (this node's 1-indexed failover position over
+  // echoPeers), winner (rank===1) }; noteId = the voice note's stable Beeper message id (msg.id).
+  // HARD OPT-OUT preserved: echo:false → { rank: 0 }, which the bridge treats as never post / never
+  // promote — the note is still transcribed + logged.
   const node_name = cfg.node_name ?? null;
   const echoPeers = accountPeers.length ? accountPeers : [node_name];
-  const echoDecider = cfg.echo === false
-    ? () => false
-    : (noteId) => isEchoWinner(noteId, node_name, echoPeers);
+  // Per-rank promotion step (operator 2026-07-11). GENEROUS default (20s) ON PURPOSE: a waiter can't
+  // tell "rank-1 DOWN" from "rank-1 SLOW", so too-short pre-empts a merely-slow winner → DOUBLE 👂
+  // (the one real hazard); too-long = slow failover. Tunable per node (config echo_timeout_ms).
+  const echoTimeoutMs = Number.isFinite(cfg.echo_timeout_ms) ? cfg.echo_timeout_ms : 20_000;
+  const echoPlan = cfg.echo === false
+    ? () => ({ rank: 0, winner: false })
+    : (noteId) => { const rank = echoRank(noteId, node_name, echoPeers); return { rank, winner: rank === 1 }; };
 
   // The persona's node-identity addendum (operator 2026-07-10): assembled ONCE from the pieces
   // already resolved above + the persona agent's handles, and handed to the brain pool, which
@@ -379,7 +385,8 @@ export async function boot({
     flood: cfg.flood ?? {},               // send-flood guard (limit / window_ms / cooldown_ms) per chat
     personaEmoji: bodyEmojiOf(defaultKey),// 🐶 — the marker the bridge uses to suppress E's own re-ingested messages
     wakeWords,                            // the persona agent's OWN name + handles only — nothing injected (operator 2026-07-09)
-    echoDecider,                          // 👂 echo PICK: (noteId) => is THIS node the HRW winner for this note? (operator 2026-07-10, Phase 3a). echo:false folds into always-false.
+    echoPlan,                             // 👂 echo PLAN: (noteId) => { rank, winner } — HRW rank + ordered failover (operator 2026-07-11, Phase 3b). rank 1 posts now; rank>1 arms a promotion at (rank-1)*echoTimeoutMs, cancelled on observing the note's 👂; rank 0 (echo:false opt-out) never posts/promotes.
+    echoTimeoutMs,                        // 👂 per-rank promotion step (ms); GENEROUS default so a SLOW rank-1 isn't mistaken for a DOWN one (double-👂 hazard).
     echoMaxAgeMs,                         // 👂 only echoes a note within this age of its own timestamp (operator 2026-07-09)
     stateDir: join(EGPT_HOME, 'state'),   // beeper-seen.jsonl etc. → this profile's state
     onLog: (m) => log.line?.(`[bridge] ${m}`),

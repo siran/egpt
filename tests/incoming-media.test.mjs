@@ -9,7 +9,10 @@
 //   - Telegram's media normalizer maps photo[]/voice/audio/document to one
 //     descriptor (largest photo; voice = audio+isVoiceNote).
 import { describe, it, expect, beforeEach } from 'vitest';
-import { transcribeVoiceNote, POSTS_BACK_DELAY_MS, flushPostsBackAck, _resetPostsBackDebounce } from '../src/incoming-media.mjs';
+import {
+  transcribeVoiceNote, POSTS_BACK_DELAY_MS, flushPostsBackAck, _resetPostsBackDebounce,
+  cancelPromotion, hasPendingPromotion, _resetPromotions, ECHO_MARKER,
+} from '../src/incoming-media.mjs';
 
 const fakeTranscribe = async () => 'hola que tal';
 
@@ -188,6 +191,136 @@ describe('transcribeVoiceNote — 👂 posts-back debounce (operator 2026-06-21)
     expect(sent).toEqual(['👂 bye']);
     await sched.fire();                 // the (now-stale) timer fires into nothing
     expect(sent).toEqual(['👂 bye']);   // no double post
+  });
+});
+
+// 👂 PROMOTION — ORDERED FAILOVER (operator 2026-07-11, Phase 3b). A rank>1 co-account node HOLDS
+// its 👂 and posts it at (rank-1)*echoTimeoutMs ONLY if the higher ranks stay silent; it stands down
+// (cancelPromotion) the instant the note's 👂 is observed from a higher rank. Fake clock — no real
+// waits. cancelPromotion stands in for the bridge's observe-and-cancel hook (which fires it on a 👂
+// reply to a pending note; that correlation is locked at the bridge in beeper-bridge.test.mjs).
+describe('transcribeVoiceNote — 👂 promotion / ordered failover (operator 2026-07-11)', () => {
+  beforeEach(() => { _resetPostsBackDebounce(); _resetPromotions(); });
+
+  // A fake clock that models real time: timers fire in DEADLINE order as time advances, so a
+  // staggered rank-2(+T)/rank-3(+2T) schedule elapses in the right sequence.
+  function makeClock() {
+    let seq = 0;
+    let now = 0;
+    const timers = [];   // { id, fn, at }
+    return {
+      set(fn, ms) { const id = ++seq; timers.push({ id, fn, at: now + ms }); return { id, unref() {} }; },
+      clear(h) { const i = timers.findIndex((t) => h && t.id === h.id); if (i >= 0) timers.splice(i, 1); },
+      async advance(ms) {
+        now += ms;
+        let t;
+        while ((t = timers.filter((x) => x.at <= now).sort((a, b) => a.at - b.at)[0])) {
+          timers.splice(timers.indexOf(t), 1);
+          await t.fn();
+        }
+      },
+      pending() { return timers.length; },
+    };
+  }
+  const armVoice = (over) => transcribeVoiceNote({
+    localPath: '/n.ogg', transcribe: async () => 'hola', reply: over.reply,
+    enabled: true, postsBack: true, muted: false,
+    debounceKey: over.debounceKey, echoRank: over.echoRank, echoTimeoutMs: over.echoTimeoutMs ?? 20_000,
+    scheduler: over.scheduler,
+  });
+
+  it('the marker the bridge correlates on is 👂', () => {
+    expect(ECHO_MARKER).toBe('👂');
+  });
+
+  it('rank-1 POSTS (immediate path) — unchanged from 3a', async () => {
+    const sent = [];
+    const t = await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, echoRank: 1, debounceKey: 'chat:note-1', postsBackDelayMs: 0,
+    });
+    expect(t).toBe('hola');
+    expect(sent).toEqual(['👂 hola']);                       // rank-1 posts now
+    expect(hasPendingPromotion('chat:note-1')).toBe(false);  // no promotion armed for rank-1
+  });
+
+  it('rank-2 HOLDS the 👂 (arms a promotion, posts nothing yet)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-2', echoRank: 2, scheduler: clock });
+    expect(sent).toEqual([]);                                // held — not posted
+    expect(hasPendingPromotion('chat:note-2')).toBe(true);   // armed
+  });
+
+  it('rank-2 OBSERVED before its timer → does NOT post (a higher rank posted; stand down)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-3', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(cancelPromotion('chat:note-3')).toBe(true);       // the bridge observed rank-1's 👂 → cancel
+    await clock.advance(20_000);                             // the timer WOULD have fired here …
+    expect(sent).toEqual([]);                                // … but it was cancelled → no post
+    expect(hasPendingPromotion('chat:note-3')).toBe(false);
+  });
+
+  it('rank-2 UNOBSERVED → posts the HELD transcript exactly at +echoTimeoutMs', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-4', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    await clock.advance(19_999); expect(sent).toEqual([]);           // not yet
+    await clock.advance(1);      expect(sent).toEqual(['👂 hola']);  // fires at +T → promotes the held 👂
+  });
+
+  it('rank-3 PROMOTES only if BOTH higher ranks stay silent — posts at +2×echoTimeoutMs', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-5', echoRank: 3, echoTimeoutMs: 10_000, scheduler: clock });
+    await clock.advance(10_000); expect(sent).toEqual([]);           // +T: rank-2's window (on the peer) — rank-3 waits
+    await clock.advance(10_000); expect(sent).toEqual(['👂 hola']);  // +2T: still silent → rank-3 promotes
+  });
+
+  it('rank-3 STANDS DOWN when it observes rank-2\'s post (staggering → exactly one poster with several ranks down)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-6', echoRank: 3, echoTimeoutMs: 10_000, scheduler: clock });
+    await clock.advance(10_000);                             // +T: rank-2 (a lower-latency peer) posts its 👂 …
+    expect(sent).toEqual([]);                                // rank-3 hasn't reached +2T
+    expect(cancelPromotion('chat:note-6')).toBe(true);       // … which rank-3 observes before its own window → cancel
+    await clock.advance(10_000);                             // +2T
+    expect(sent).toEqual([]);                                // stood down — no double
+  });
+
+  it('an UNRELATED note\'s echo does NOT cancel this promotion (keyed per note)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await armVoice({ reply: (x) => sent.push(x), debounceKey: 'chat:note-A', echoRank: 2, echoTimeoutMs: 20_000, scheduler: clock });
+    expect(cancelPromotion('chat:note-B')).toBe(false);      // a 👂 for a DIFFERENT note → no-op
+    await clock.advance(20_000);
+    expect(sent).toEqual(['👂 hola']);                       // note-A still promotes (its own key untouched)
+  });
+
+  it('a TOO-OLD note (postsBack:false at the bridge) neither posts NOR promotes even at rank>1', async () => {
+    const sent = [];
+    const clock = makeClock();
+    // The bridge folds tooOldForEcho / echo:false-opt-out into postsBack:false.
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: false, echoRank: 2, debounceKey: 'chat:note-7', echoTimeoutMs: 20_000, scheduler: clock,
+    });
+    expect(hasPendingPromotion('chat:note-7')).toBe(false);  // never armed
+    await clock.advance(20_000);
+    expect(sent).toEqual([]);                                // and never posts
+  });
+
+  it('rank>1 with NO per-note key WITHHOLDS (can\'t correlate a cancel → fail-safe, no double)', async () => {
+    const sent = [];
+    const clock = makeClock();
+    await transcribeVoiceNote({
+      localPath: '/n.ogg', transcribe: async () => 'hola', reply: (x) => sent.push(x),
+      enabled: true, postsBack: true, echoRank: 2, debounceKey: null, echoTimeoutMs: 20_000, scheduler: clock,
+    });
+    expect(clock.pending()).toBe(0);   // nothing armed
+    await clock.advance(20_000);
+    expect(sent).toEqual([]);          // withheld
   });
 });
 

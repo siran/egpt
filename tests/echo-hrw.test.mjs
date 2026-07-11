@@ -3,7 +3,7 @@
 // co-account spine echo each voice note — NOT dedup: no coordination, the shared note id + the
 // shared candidate set are the ONLY thing making the two nodes agree on the same winner.
 import { describe, it, expect } from 'vitest';
-import { hrwWinner, isEchoWinner } from '../src/spine/echo-hrw.mjs';
+import { hrwWinner, hrwRanked, isEchoWinner, echoRank } from '../src/spine/echo-hrw.mjs';
 
 describe('hrwWinner', () => {
   it('is DETERMINISTIC + order-independent: same key + candidates → same winner regardless of order', () => {
@@ -85,6 +85,81 @@ describe('isEchoWinner', () => {
     for (let i = 1; i <= 50; i++) {
       const id = String(i);
       expect(isEchoWinner(id, 'KG', ['KG', 'DO'])).toBe(isEchoWinner(id, 'kg', ['kg', 'do']));
+    }
+  });
+});
+
+// Phase 3b ORDERED FAILOVER (operator 2026-07-11): hrwRanked gives the FULL failover order and
+// echoRank this node's 1-indexed position, so a lower rank posts only if the higher ranks are
+// silent. Deterministic + identical on every node — the same coordination-free property as the pick.
+describe('hrwRanked', () => {
+  it('is a DETERMINISTIC full ordering, IDENTICAL regardless of input order, and a permutation of the candidates', () => {
+    const a = hrwRanked('note-1', ['a', 'b', 'c', 'd']);
+    expect(hrwRanked('note-1', ['d', 'c', 'b', 'a'])).toEqual(a);   // reversed input → same order
+    expect(hrwRanked('note-1', ['c', 'a', 'd', 'b'])).toEqual(a);   // shuffled input → same order
+    expect([...a].sort()).toEqual(['a', 'b', 'c', 'd']);            // every candidate present exactly once
+  });
+
+  it('rank-1 of hrwRanked === hrwWinner (the pick is the head of the order — they can never diverge)', () => {
+    for (const key of ['1', '488', 'note-xyz', 'm-9f3']) {
+      expect(hrwRanked(key, ['kg', 'do'])[0]).toBe(hrwWinner(key, ['kg', 'do']));
+      expect(hrwRanked(key, ['a', 'b', 'c', 'd'])[0]).toBe(hrwWinner(key, ['a', 'b', 'c', 'd']));
+    }
+  });
+
+  it('has a STABLE lexicographic tie-break: an equal-hash pair orders smaller-first, either input order', () => {
+    // '123zx' and '1dpad' collide under key 'tie' (the same collision the hrwWinner test uses).
+    expect(hrwRanked('tie', ['123zx', '1dpad'])).toEqual(['123zx', '1dpad']);
+    expect(hrwRanked('tie', ['1dpad', '123zx'])).toEqual(['123zx', '1dpad']);
+  });
+
+  it('returns [] for an empty / absent candidate list', () => {
+    expect(hrwRanked('k', [])).toEqual([]);
+    expect(hrwRanked('k', null)).toEqual([]);
+    expect(hrwRanked('k', undefined)).toEqual([]);
+  });
+});
+
+describe('echoRank', () => {
+  it('is 1-INDEXED; a solo node (empty/absent peers, or just [self]) is ALWAYS rank 1', () => {
+    for (const id of ['1', '42', 'm-abc']) {
+      expect(echoRank(id, 'kg', [])).toBe(1);
+      expect(echoRank(id, 'kg', null)).toBe(1);
+      expect(echoRank(id, 'kg', undefined)).toBe(1);
+      expect(echoRank(id, 'kg', ['kg'])).toBe(1);
+    }
+  });
+
+  it('both co-account peers get DISTINCT ranks that are a PERMUTATION of 1..N for the SAME note', () => {
+    for (let i = 1; i <= 200; i++) {
+      const id = String(i);
+      const rk = echoRank(id, 'kg', ['kg', 'do']);
+      const rd = echoRank(id, 'do', ['kg', 'do']);
+      expect(new Set([rk, rd])).toEqual(new Set([1, 2]));   // distinct, exactly {1,2} — never both 1, never a gap
+    }
+  });
+
+  it('over 3 peers, each note assigns every node a distinct rank — the ranks are a permutation of 1..3', () => {
+    for (let i = 1; i <= 100; i++) {
+      const id = String(i);
+      const ranks = ['a', 'b', 'c'].map((n) => echoRank(id, n, ['a', 'b', 'c']));
+      expect([...ranks].sort()).toEqual([1, 2, 3]);
+    }
+  });
+
+  it('rank === 1 IFF isEchoWinner — the winner is exactly the rank-1 node (3a behavior unchanged)', () => {
+    for (let i = 1; i <= 100; i++) {
+      const id = String(i);
+      for (const [self, peers] of [['kg', ['kg', 'do']], ['do', ['kg', 'do']], ['solo', []], ['a', ['a', 'b', 'c']]]) {
+        expect(echoRank(id, self, peers) === 1).toBe(isEchoWinner(id, self, peers));
+      }
+    }
+  });
+
+  it('is case-insensitive on self + peers (config casing never splits the order)', () => {
+    for (let i = 1; i <= 50; i++) {
+      const id = String(i);
+      expect(echoRank(id, 'KG', ['KG', 'DO'])).toBe(echoRank(id, 'kg', ['kg', 'do']));
     }
   });
 });

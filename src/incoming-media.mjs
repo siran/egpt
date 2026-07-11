@@ -80,6 +80,58 @@ export function _resetPostsBackDebounce() {
   _pendingAcks.clear();
 }
 
+// 👂 PROMOTION — ORDERED FAILOVER (operator 2026-07-11, Phase 3b; plans/2607101713-HRW-ECHO-PLAN.md).
+// A co-account node that is NOT rank-1 for a note (echoRank > 1, echo-hrw.mjs) does NOT drop its 👂
+// as in 3a — it HOLDS the already-made transcript and schedules the post at (rank-1)*echoTimeoutMs,
+// CANCELLING it the instant it observes the note's 👂 from a higher rank (the bridge calls
+// cancelPromotion on a 👂 reply to the note — co-account peers see each other's posts as normal
+// inbound). STAGGERED by rank so failover is ORDERED: rank-2 fires at +T, rank-3 at +2T, … so when
+// rank-2 posts, rank-3 observes it before its own +2T and stands down → still exactly ONE poster
+// even if several top ranks are down. NOT dedup: the rank is a deterministic UPFRONT pre-assignment;
+// the observe only covers an offline/slow higher rank. Distinct from _pendingAcks (rank-1's debounce)
+// because a promotion must be individually CANCELLABLE by note. key = the per-note debounceKey
+// (`${chatID}:${noteId}`), the same id the bridge correlates an inbound 👂 reply against.
+//
+// HAZARD (documented — the operator's one real trade-off): a waiter cannot distinguish "rank-1 DOWN"
+// from "rank-1 SLOW". If echoTimeoutMs < rank-1's worst-case transcribe+post+network latency, rank-2
+// pre-empts a merely-slow winner → DOUBLE 👂. So the boot default is GENEROUS (~20s); tune from live
+// tests. Too-long = slow failover; too-short = double.
+const _pendingPromotions = new Map();   // key -> { rank, handle, scheduler }
+
+function _armPromotion(key, body, reply, onLog, delayMs, scheduler, rank) {
+  const existing = _pendingPromotions.get(key);
+  if (existing) { try { scheduler.clear(existing.handle); } catch { /* ignore */ } }   // re-arm (defensive; a note is processed once)
+  const e = { rank, handle: null, scheduler };
+  e.handle = scheduler.set(() => {
+    _pendingPromotions.delete(key);   // fired → no longer cancellable
+    Promise.resolve(reply(body)).catch((err) => onLog(`👂 promotion post failed: ${err?.message ?? err}`));
+  }, delayMs);
+  if (e.handle && typeof e.handle.unref === 'function') e.handle.unref();   // don't pin the event loop (no-op in browser)
+  _pendingPromotions.set(key, e);
+}
+
+// Observe-and-cancel: a higher rank posted the note's 👂 → stand down. Returns true iff a pending
+// promotion existed and was cancelled (the bridge logs on true); false for an unknown / already-fired
+// / already-cancelled key. This is the ONLY way a promotion is suppressed — never act-then-suppress.
+export function cancelPromotion(key) {
+  const e = _pendingPromotions.get(key);
+  if (!e) return false;
+  try { e.scheduler.clear(e.handle); } catch { /* ignore */ }
+  _pendingPromotions.delete(key);
+  return true;
+}
+export function hasPendingPromotion(key) { return _pendingPromotions.has(key); }
+// Test isolation: clear all promotion timers + pending state.
+export function _resetPromotions() {
+  for (const e of _pendingPromotions.values()) { try { e.scheduler.clear(e.handle); } catch { /* ignore */ } }
+  _pendingPromotions.clear();
+}
+
+// The in-chat 👂 echo MARKER — the prefix every posted transcript ack (immediate, debounced, or
+// promoted) starts with. The bridge uses it to recognize a co-account peer's 👂 (a reply to the
+// note) so it can cancel its own pending promotion (Phase 3b observe-and-cancel).
+export const ECHO_MARKER = '👂';
+
 /**
  * Run the room's transcription service on a voice/audio note: transcribe it
  * (when the service is `enabled`) and post the 👂 ack in-chat (when it
@@ -113,10 +165,21 @@ export function _resetPostsBackDebounce() {
  * @param {string}   [o.author]    voice note sender's display name → shown in the
  *                                  👂 ack as "👂 <author> (<Ns>): <text>". Absent →
  *                                  the duration still leads: "👂 (<Ns>) <text>"
- * @param {string}   [o.debounceKey] stable chat id → debounce + coalesce the 👂
- *                                  echo per chat. Omit/null → post immediately.
- * @param {number}   [o.postsBackDelayMs] trailing-debounce window for the echo.
- * @param {object}   [o.scheduler] { set, clear } timer injection (tests).
+ * @param {string}   [o.debounceKey] stable per-note key (`${chatID}:${noteId}`) → debounce
+ *                                  + coalesce the rank-1 👂 echo, AND the key a Phase 3b
+ *                                  promotion is armed/cancelled under. Omit/null → post
+ *                                  immediately (and a rank>1 caller cannot arm — see below).
+ * @param {number}   [o.postsBackDelayMs] trailing-debounce window for the rank-1 echo.
+ * @param {number}   [o.echoRank]  Phase 3b ORDERED FAILOVER: this node's 1-indexed rank for
+ *                                 the note. 1 (default) = post now (rank-1: immediate or
+ *                                 debounced, i.e. 3a behavior). >1 = do NOT post now — HOLD
+ *                                 the 👂 and ARM a promotion at (rank-1)*echoTimeoutMs,
+ *                                 cancellable via cancelPromotion when a higher rank's 👂 is
+ *                                 observed. Needs a debounceKey to correlate the cancel.
+ * @param {number}   [o.echoTimeoutMs] Phase 3b per-rank promotion step (ms). Only used when
+ *                                 echoRank > 1.
+ * @param {object}   [o.scheduler] { set, clear } timer injection (tests) — drives BOTH the
+ *                                 rank-1 debounce and the rank>1 promotion.
  * @param {Function} [o.onLog]
  * @param {object}   [o.meta]      out-param: the transcriber fills `durationSec`
  *                                 (from the ffmpeg WAV) so the limb can mark the
@@ -134,6 +197,8 @@ export async function transcribeVoiceNote({
   author = null,
   debounceKey = null,
   postsBackDelayMs = POSTS_BACK_DELAY_MS,
+  echoRank = 1,
+  echoTimeoutMs = 0,
   scheduler = _defaultScheduler,
   onLog = () => {},
   meta = null,
@@ -155,7 +220,21 @@ export async function transcribeVoiceNote({
   if (flagged !== transcript) { onLog(`transcription flagged unreliable (repetition loop): ${JSON.stringify(transcript.slice(0, 80))}`); transcript = flagged; }
   if (reply && postsBack && !muted) {
     const line = _ackItem({ author, durationSec: innerMeta.durationSec, transcript });
-    if (debounceKey && postsBackDelayMs > 0) {
+    if (echoRank > 1) {
+      // Phase 3b — this node is NOT rank-1 for the note. Don't post now: ARM a staggered
+      // PROMOTION (see _armPromotion) that fires the HELD 👂 at (rank-1)*echoTimeoutMs, but
+      // ONLY if no higher rank posts first (the bridge cancels it on observing the note's 👂).
+      // The 👂 body + the reply closure (a quoted reply to the note) are identical to rank-1's,
+      // so a promoted echo is indistinguishable from the winner's. Needs the per-note key to
+      // correlate the observe-and-cancel; without one (a non-batching caller) we can't stand
+      // down safely, so we WITHHOLD — fail-safe, since a missed echo beats a double 👂.
+      if (!debounceKey) { onLog('👂 promotion NOT armed — rank>1 needs a per-note debounceKey to correlate the observe-and-cancel; withholding'); }
+      else {
+        const delayMs = (echoRank - 1) * echoTimeoutMs;
+        _armPromotion(debounceKey, `👂 ${line}`, reply, onLog, delayMs, scheduler, echoRank);
+        onLog(`👂 promotion armed (rank ${echoRank}, +${Math.round(delayMs / 1000)}s, cancels on observed echo) for ${debounceKey}`);
+      }
+    } else if (debounceKey && postsBackDelayMs > 0) {
       // HEARD already happened (we return below); hold + coalesce the SPOKEN echo.
       _queueAck(debounceKey, line, reply, onLog, postsBackDelayMs, scheduler);
       onLog(`👂 ack queued (debounced ${Math.round(postsBackDelayMs / 1000)}s, ${_pendingAcks.get(debounceKey)?.items.length ?? 1} pending) for ${debounceKey}`);
