@@ -1,7 +1,7 @@
 // tests/bus-key-load.test.mjs — shell-side key bootstrap.
 // Pins the precedence env > file > generate-and-save.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -10,6 +10,18 @@ import { loadOrCreateBusKey } from '../src/tools/bus.mjs';
 let tmpDir;
 let keyPath;
 const origEnv = process.env.EGPT_BUS_KEY;
+
+async function loadWithoutExistingFile(options) {
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+  try {
+    const key = await loadOrCreateBusKey(options);
+    expect(consoleError).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('ENOENT'));
+    return key;
+  } finally {
+    consoleError.mockRestore();
+  }
+}
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'egpt-buskey-'));
@@ -55,7 +67,7 @@ describe('loadOrCreateBusKey', () => {
   });
 
   it('generates + persists when no file and no env', async () => {
-    const got = await loadOrCreateBusKey({ keyPath });
+    const got = await loadWithoutExistingFile({ keyPath });
     expect(typeof got).toBe('string');
     expect(got).not.toMatch(/[+/=]/);
     const onDisk = (await fs.readFile(keyPath, 'utf8')).trim();
@@ -64,14 +76,14 @@ describe('loadOrCreateBusKey', () => {
 
   it('creates the parent directory if missing', async () => {
     const deeper = path.join(tmpDir, 'a', 'b', 'bus.key');
-    const got = await loadOrCreateBusKey({ keyPath: deeper });
+    const got = await loadWithoutExistingFile({ keyPath: deeper });
     expect(typeof got).toBe('string');
     const stat = await fs.stat(deeper);
     expect(stat.isFile()).toBe(true);
   });
 
   it('uses the same value on a second read (idempotent)', async () => {
-    const first = await loadOrCreateBusKey({ keyPath });
+    const first = await loadWithoutExistingFile({ keyPath });
     const second = await loadOrCreateBusKey({ keyPath });
     expect(second).toBe(first);
   });

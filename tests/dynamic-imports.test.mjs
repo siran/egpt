@@ -1,5 +1,5 @@
-// tests/dynamic-imports.test.mjs — every `await import('./X.mjs')` /
-// `import('./X.mjs')` path in the repo must resolve to a real file.
+// tests/dynamic-imports.test.mjs — every literal relative dynamic import in
+// maintained project source must resolve to a real file.
 //
 // Backstop: Operator 2026-05-22 — the tools/ → src/tools/ move's batch
 // sed updated static imports but missed dynamic imports, silently
@@ -13,31 +13,31 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const SKIP_DIRS = new Set(['node_modules', '.git', 'coverage', 'extension/dist', 'extension/dist-firefox']);
+const SOURCE_DIRS = ['src', 'slash', 'config', 'extension/src'];
+const SOURCE_EXTENSIONS = ['.mjs', '.js', '.jsx'];
 
-async function walkMjs(dir, out = []) {
-  let entries;
-  try { entries = await readdir(dir); }
-  catch (e) { return out; }
-  for (const e of entries) {
-    if (SKIP_DIRS.has(e)) continue;
-    const p = join(dir, e);
-    let st;
-    try { st = await stat(p); }
-    catch (e2) { continue; }
-    if (st.isDirectory()) await walkMjs(p, out);
-    else if (e.endsWith('.mjs')) out.push(p);
+async function walkSource(dir, out = []) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) await walkSource(path, out);
+    else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) out.push(path);
   }
   return out;
 }
 
+async function sourceFiles() {
+  const roots = await Promise.all(SOURCE_DIRS.map((dir) => walkSource(join(REPO_ROOT, dir))));
+  const rootFiles = (await readdir(REPO_ROOT, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
+    .map((entry) => join(REPO_ROOT, entry.name));
+  return [...rootFiles, ...roots.flat()];
+}
+
 describe('dynamic imports', () => {
-  it('every dynamic `import("./X.mjs")` path resolves to a real file', async () => {
-    const files = (await walkMjs(REPO_ROOT))
-      .filter(p => !p.endsWith('dynamic-imports.test.mjs'));   // skip self (contains the regex examples)
-    // Match both `await import('...')` and bare `import('...')` forms,
-    // single or double quoted, relative paths only (we don't validate
-    // bare-module specifiers like 'node:fs' or 'qrcode-terminal').
+  it('every literal relative `import("./X.mjs")` path resolves to a real file', async () => {
+    const files = await sourceFiles();
+    // Template imports and computed specifiers are intentionally outside this
+    // test. Their possible targets cannot be proven by statting one path.
     const re = /\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
     const broken = [];
     for (const file of files) {

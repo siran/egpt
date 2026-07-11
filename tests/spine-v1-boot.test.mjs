@@ -13,7 +13,7 @@
 // (which imports it) is dynamically imported below.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import os from 'node:os';
 import { isEchoWinner } from '../src/spine/echo-hrw.mjs';   // pure (no EGPT_HOME) → safe to static-import
 
@@ -63,8 +63,32 @@ function fakeSession(opts) {
   return { sessionId: opts.sessionId ?? 'sess-1', async turn(message, onUpdate) { onUpdate?.(`↩ ${message}`); return { text: `↩ ${message}`, sessionId: this.sessionId }; }, close() {} };
 }
 
-// in-memory fs seam so the test NEVER writes into the real ~/.egpt profile.
-const memIo = () => ({ appendFile: async () => {}, mkdir: async () => {}, existsSync: () => false });
+// Complete in-memory fs seam: transcript and stats exercise their real read/merge/write
+// paths without falling through to the host filesystem.
+function memIo() {
+  const files = new Map();
+  const dirs = new Set();
+  const missing = (path) => Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+  return {
+    files,
+    appendFile: async (path, data) => files.set(path, `${files.get(path) ?? ''}${data}`),
+    writeFile: async (path, data) => files.set(path, String(data)),
+    readFile: async (path) => {
+      if (!files.has(path)) throw missing(path);
+      return files.get(path);
+    },
+    mkdir: async (path) => { dirs.add(path); },
+    existsSync: (path) => files.has(path) || dirs.has(path),
+    readdir: async (path) => [...files.keys()]
+      .filter((file) => dirname(file) === path)
+      .map((file) => file.slice(path.length + 1)),
+    rename: async (from, to) => {
+      if (!files.has(from)) throw missing(from);
+      files.set(to, files.get(from));
+      files.delete(from);
+    },
+  };
+}
 
 describe('boot()', () => {
   it("assembles the v1 pipe and round-trips an 'on'-mode message bridge→brain→bridge", async () => {
@@ -72,13 +96,14 @@ describe('boot()', () => {
     let state = seedMode(emptyState(), 'on');
     const config = { whatsapp: {}, agents: { egpt: { configuration: 'egpt', handles: ['e', 'egpt'], default: true } } };
 
+    const io = memIo();
     const app = await boot({
       readConfig: () => config,
       startBridge: start,
       makeSession: fakeSession,
       loadState: async () => state,
       writeState: async (s) => { state = s; },
-      io: memIo(), ingest: false,
+      io, ingest: false,
       now: () => Date.UTC(2026, 5, 29, 14, 5),
       tickMs: 0,
       log: { line: () => {} },
@@ -108,6 +133,11 @@ describe('boot()', () => {
     const c = state.contacts?.whatsapp ?? {};
     const entry = Object.values(c)[0];
     expect(entry.egpt.threadId).toBe('sess-1');
+
+    const stats = [...io.files.entries()].find(([path]) => path.endsWith(join('whatsapp', 'fam.yaml')))?.[1];
+    expect(stats).toContain('chat_id: "!room:beeper.com"');
+    expect(stats).toContain('u-1:');
+    expect(stats).toContain('id: sess-1');
 
     app.stop();
   });

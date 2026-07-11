@@ -2,7 +2,7 @@
 // fires recordMemberStat fire-and-forget on every received message, and NEVER throws/rejects
 // even when the collector's io read/write blows up. Same createTranscript harness shape as
 // spine-v1.test.mjs (fake contacts resolver + fake io).
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createTranscript } from '../src/spine/transcript.mjs';
 
 // The collector is fire-and-forget (not awaited by log()); give its async read-merge-write
@@ -84,7 +84,7 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
   });
 
   it('never throws/rejects when the collector io read/write throws — transcript still appended', async () => {
-    const logs = [];
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     const files = new Map();
     const io = {
       appendFile: async (p, d) => { files.set(p, (files.get(p) ?? '') + d); },
@@ -94,10 +94,16 @@ describe('transcript.log — §3.1 stats collector chokepoint', () => {
       writeFile: async () => { throw new Error('write blew up'); },
       readdir: readdirOver(files),
     };
-    const t = createTranscript({ contacts: fakeContacts, io, onLog: (m) => logs.push(m) });
-    await expect(t.log(ev)).resolves.toBe(true);   // collector failure is swallowed, log() still succeeds
-    await settle();
-    const transcript = [...files.entries()].find(([p]) => p.endsWith('transcript.md'));
-    expect(transcript[1]).toContain('hola');        // the transcript append path is untouched by the collector
+    try {
+      const t = createTranscript({ contacts: fakeContacts, io });
+      await expect(t.log(ev)).resolves.toBe(true);   // collector failure is swallowed, log() still succeeds
+      await settle();
+      const transcript = [...files.entries()].find(([p]) => p.endsWith('transcript.md'));
+      expect(transcript[1]).toContain('hola');        // the transcript append path is untouched by the collector
+      expect(consoleError).toHaveBeenCalledTimes(2);
+      expect(consoleError.mock.calls.every(([message]) => String(message).includes('write blew up'))).toBe(true);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

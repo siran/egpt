@@ -7,13 +7,11 @@
 // before that commit fixed it; a test like this one would have caught
 // it the moment the structure went wrong.
 //
-// Runs after `npm run build:ext`. If extension/dist or
-// extension/dist-firefox don't exist yet, tests are skipped (with a
-// clear message) so a fresh checkout doesn't fail before the user
-// has built once.
+// Deletes ignored output and performs a fresh dual-target build before checking
+// either dist, so stale or absent artifacts cannot pass.
 
-import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { beforeAll, describe, it, expect } from 'vitest';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -23,33 +21,25 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 function checkDist(distDir, label) {
   describe(`extension/${label} structure`, () => {
     const distPath = join(ROOT, 'extension', distDir);
-    const built = existsSync(distPath);
 
     it(`${distDir}/manifest.json exists`, () => {
-      if (!built) {
-        return expect.soft(true).toBe(true);  // skip cleanly
-      }
       expect(existsSync(join(distPath, 'manifest.json'))).toBe(true);
     });
 
-    if (!built) return;
-
-    const manifest = JSON.parse(
-      readFileSync(join(distPath, 'manifest.json'), 'utf8'),
-    );
+    const manifest = () => JSON.parse(readFileSync(join(distPath, 'manifest.json'), 'utf8'));
 
     it(`${label}: manifest_version = 3`, () => {
-      expect(manifest.manifest_version).toBe(3);
+      expect(manifest().manifest_version).toBe(3);
     });
 
     it(`${label}: every manifest-referenced file exists`, () => {
-      const refs = collectFileRefs(manifest);
+      const refs = collectFileRefs(manifest());
       const missing = refs.filter(r => !existsSync(join(distPath, r)));
       expect(missing, `missing files: ${missing.join(', ')}`).toEqual([]);
     });
 
     it(`${label}: referenced bundles are non-empty`, () => {
-      const refs = collectFileRefs(manifest).filter(r => r.endsWith('.js'));
+      const refs = collectFileRefs(manifest()).filter(r => r.endsWith('.js'));
       const empty = refs.filter(r => statSync(join(distPath, r)).size === 0);
       expect(empty, `empty bundles: ${empty.join(', ')}`).toEqual([]);
     });
@@ -94,42 +84,40 @@ function collectFileRefs(manifest) {
 // upgrade, while the frozen pre-reorg dist still satisfied the structure
 // tests). This runs the real build and asserts it succeeds — a broken import
 // path or a missing copied asset fails here instead of rotting until /upgrade.
-describe('extension build runs clean', () => {
-  it('npm run build:ext succeeds (no unresolved imports, no missing assets)', () => {
-    const r = spawnSync(process.execPath, ['extension/build.mjs'], {
+describe('fresh extension build', () => {
+  beforeAll(() => {
+    for (const dist of ['dist', 'dist-firefox']) {
+      rmSync(join(ROOT, 'extension', dist), { recursive: true, force: true });
+    }
+    const result = spawnSync(process.execPath, ['extension/build.mjs'], {
       cwd: ROOT, encoding: 'utf8', timeout: 120000,
     });
-    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
     expect(out, out).not.toMatch(/Could not resolve/);
-    expect(r.status, `build exited ${r.status}:\n${out}`).toBe(0);
+    expect(result.status, `build exited ${result.status}:\n${out}`).toBe(0);
   }, 120000);
-});
 
-checkDist('dist',         'chrome');
-checkDist('dist-firefox', 'firefox');
+  checkDist('dist',         'chrome');
+  checkDist('dist-firefox', 'firefox');
 
 // ── Firefox-specific assertions ──────────────────────────────────
 
-describe('firefox manifest specifics', () => {
-  const distPath = join(ROOT, 'extension', 'dist-firefox');
-  if (!existsSync(distPath)) {
-    it.skip('dist-firefox not built; run npm run build:ext', () => {});
-    return;
-  }
-  const manifest = JSON.parse(
-    readFileSync(join(distPath, 'manifest.json'), 'utf8'),
-  );
+  describe('firefox manifest specifics', () => {
+    const manifest = () => JSON.parse(
+      readFileSync(join(ROOT, 'extension', 'dist-firefox', 'manifest.json'), 'utf8'),
+    );
 
-  it('declares browser_specific_settings.gecko.id', () => {
-    // Firefox refuses to load a Temporary Add-on without this.
-    expect(manifest.browser_specific_settings?.gecko?.id).toBeTruthy();
-  });
+    it('declares browser_specific_settings.gecko.id', () => {
+      // Firefox refuses to load a Temporary Add-on without this.
+      expect(manifest().browser_specific_settings?.gecko?.id).toBeTruthy();
+    });
 
-  it('uses background.scripts (not service_worker) for broader compat', () => {
-    // Firefox has supported service_worker since 121, but scripts is
-    // the more reliable cross-version path. If we ever switch to
-    // service_worker, update this test deliberately.
-    expect(manifest.background?.scripts).toBeTruthy();
-    expect(manifest.background?.service_worker).toBeUndefined();
+    it('uses background.scripts (not service_worker) for broader compat', () => {
+      // Firefox has supported service_worker since 121, but scripts is
+      // the more reliable cross-version path. If we ever switch to
+      // service_worker, update this test deliberately.
+      expect(manifest().background?.scripts).toBeTruthy();
+      expect(manifest().background?.service_worker).toBeUndefined();
+    });
   });
 });
