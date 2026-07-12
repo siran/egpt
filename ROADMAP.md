@@ -19,17 +19,20 @@ note — "am I responsible for echoing this?" — and the system decides it, nev
   ONLY if no one else has. The correct response to a known-uncertain state, NOT dedup. LIVE (as the
   arrival-lag grace window + the rank-staggered promotion).
 
-### THE one real open piece — coverage DETECTION (next build)
-The hold-and-cover needs a single input: "has anyone already covered this note?" Today that keys on
-the reply STARTING WITH 👂 — the fragile, position-dependent crutch that also blocks the signature
-`_open` slots. Re-engineer it MARKER-FREE:
-- **content similarity** — token-overlap %, scoped to replies-to-THIS-note (reply-to-id), ~60-70%
-  (generous: the two spines transcribe INDEPENDENTLY — REVE cli / DOLLY GPU — so text drifts,
-  e.g. Haaland/Hanan); PLUS
-- **a short-note egpt-SHAPE floor** — for short transcripts (wrappers/signatures dominate → the
-  score drifts down), if a reply-to-the-note already has egpt-echo shape, stand down anyway.
-Replaces the leading-👂 observe-cancel wholesale → UNLOCKS the `_open` slots. Persona self-suppression
-stays on `wasSentByUs` (id-based, separate concern).
+### Coverage DETECTION — LANDED (94e5147, 2026-07-12) as an ON-DEMAND CHAT QUERY
+The hold-and-cover's one input — "has anyone already covered this note?" — is answered by QUERYING the
+chat (Beeper is the source of truth), NOT a shadow store, and NOT any marker. `noteCovered()` (bridge)
+does `GET /v1/chats/{c}/messages?limit=50`, keeps the replies to this note, and scores each against THIS
+node's OWN transcription by NORMALIZED WORD-TOKEN OVERLAP (`src/text-similarity.mjs`, overlap coefficient,
+threshold `echo_coverage_similarity` default 0.6). Normalization keeps only `[a-z0-9]` tokens, so every
+emoji drops out structurally → NO marker can reach a post/no-post `if` → the `_open` slots are UNLOCKED
+(a covering reply is recognized by its WORDS, whatever it leads with). No short-note floor needed —
+normalization folds `sí💸`/`sí🌉` → `{sí}`. This DELETED the observed-set, the early-observe hook, the
+arming-order fix, AND the whole arrival-lag/grace/reconnect scaffold: a reconnecting node just queries
+"already covered?" and the survivor's echo is right there. KEPT: the static pick + the failover timer,
+which now RE-QUERIES coverage before it fires. Persona self-suppression → `wasSentByUs` (sent-text
+window). Fail-open on query error. Narrow trade: a self-echo delayed past the 60s sent-text TTL could
+slip own-suppression (rare; self-echoes return in seconds).
 
 ### Separate / later tracks
 - **egpt-mesh grid** — pairwise `egpt-mesh-A-B` relay channels + multi-hop (A→…→E) + node-to-node
