@@ -50,7 +50,6 @@ agents:
     # name: "egpt"                # display label the bridge stamps ("<emoji> <name>: <reply>"); defaults to the key.
     # body_emoji: "<emoji>"       # reply stamp the bridge enforces; default is the dog.
     #                             # A 2nd node sets its OWN so humans see which node spoke.
-    # signature: "-- egpt"        # reply/train end-marker the bridge appends; falls back to the node signature below, then a filled-square mark.
 
 # Relay agents (optional - foreign-mesh across SEPARATE accounts). A relay
 # forwards a mention into another chat; `to:` chains hops. Not needed within one account.
@@ -124,4 +123,3 @@ networks:
 # flood: { limit: 10, window_ms: 3000, cooldown_ms: 60000 }   # send-loop guard
 # advice_channel: "EGPT AUTO"     # mode:auto consult chat (fail-closed if unset)
 # aliases: { "@whatsapp_5215512345678:beeper.local": An }     # /status display labels
-# signature: "-- egpt"            # node reply end-marker when an agent declares none (default: a filled-square mark)

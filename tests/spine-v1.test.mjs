@@ -104,7 +104,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     await bridge.emit(msg());
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('e');
-    expect(bridge.streams[0].finals).toEqual(['↩ hola ∎']);   // delivered via stream-edit, ends with ∎
+    expect(bridge.streams[0].finals).toEqual(['↩ hola']);     // delivered via stream-edit — bare reply, no end-marker (2026-07-12)
     expect(bridge.sent).toHaveLength(0);                      // no fallback send
     const t = onlyFile(files);
     expect(t).toContain('An@[fam].wa (14:05) #m1: hola');    // inbound dispatch line
@@ -153,8 +153,8 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     const { bridge, brain, files } = harness({}, 'mention');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
-    expect(bridge.streams[0].finals).toEqual(['↩ @e estas? ∎']);
-    expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');   // transcript has no ∎ — that's a chat-only marker
+    expect(bridge.streams[0].finals).toEqual(['↩ @e estas?']);
+    expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');   // transcript records the bare reply (chat reply is bare too now)
   });
 
   it("legacy 'accum': stored mode degrades to mention — received + logged, withheld without @e", async () => {
@@ -174,7 +174,7 @@ describe('v1 pipe — gated receive → brain → reply → send, per mode', () 
     const { bridge, brain, files } = harness({}, 'accum');
     await bridge.emit(msg({ body: '@e estas?', atE: true }));
     expect(brain.calls).toHaveLength(1);
-    expect(bridge.streams[0].finals).toEqual(['↩ @e estas? ∎']);
+    expect(bridge.streams[0].finals).toEqual(['↩ @e estas?']);
     expect(onlyFile(files)).toContain('[@e (14:05)]: ↩ @e estas?');
   });
 
@@ -265,7 +265,7 @@ describe('v1 pipe — local agent routing (@wren)', () => {
     expect(brain.calls).toHaveLength(1);
     expect(brain.calls[0].being).toBe('wren');
     // delivered via the reply train, tagged with wren's body_emoji + label
-    expect(bridge.streams[0].finals).toEqual(['↩ @wren do X ∎']);
+    expect(bridge.streams[0].finals).toEqual(['↩ @wren do X']);
     expect(bridge.streams[0].tag).toMatchObject({ bodyEmoji: '🐦', label: 'wren' });
     // reply-to quote fires (the sibling is mentioned by its own @name)
     expect(bridge.streams[0].tag.replyTo).toBe('m1');

@@ -2,23 +2,26 @@
 // ONE message: post "⏳ Thinking…" eagerly as a REPLY to the question — the instant
 // ack AND the streaming target in one. FIXED placeholder text so the bridge resolves
 // its id before any edit (and during spin-up → smooth edits, no stutter). Once tokens
-// arrive it edits in place into the answer, ENDING VISIBLY with ∎. A send failure ends
-// it with "… ❌ Sending failed."; an 'on'-mode '...' silence deletes it (posts nothing).
+// arrive it edits in place into the answer. A send failure ends it with
+// "… ❌ Sending failed."; an 'on'-mode '...' silence deletes it (posts nothing).
 //
 // No SEPARATE knee-jerk message: a per-turn "📨 Sending to E..." piled up and
 // cross-deleted in busy chats (its id-resolution races the next turn's). The reply's
 // own reply-to quote is the ack; nothing to linger. body_emoji is enforced by the
-// bridge; the train markers (⏳ / the end-marker / failure) are owned here. The end-marker
-// is the ANSWERING being's SIGNATURE now (operator 2026-07-10, signatureOf below), replacing
-// the hardcoded ∎ — but signatureOf defaults to '∎', so nothing visibly changes until a
-// per-agent / node-level `signature` is configured.
+// bridge; the train markers (⏳ / failure) are owned here. The reply carries NO inline
+// end-marker: the historical signature train end-marker was REMOVED (operator
+// 2026-07-12) — its successor is the `agent_signature_close` layer, applied downstream
+// in beeper-port (default EMPTY → a reply renders with no end-marker unless the operator
+// sets agent_signature_close).
 const FAIL_SUFFIX = '… ❌ Sending failed.';
 // A turn that was MEANT to surface but produced no deliverable text (brainpool
 // returned '' / whitespace, OR the spine blanked a failure-shaped result) must
 // resolve its placeholder VISIBLY — never a silent delete or a forever "⏳ Thinking…"
-// (operator 2026-07-04, DEFECT 1: turn 1 vanished with its placeholder stuck). Same
-// "⚠️ … <sig>" marker style as the failure train; distinct from FAIL_SUFFIX (a SEND fault).
-const noReplyMark = (sig) => `⚠️ no reply (turn failed/empty) ${sig}`;
+// (operator 2026-07-04, DEFECT 1: turn 1 vanished with its placeholder stuck). Its own
+// "⚠️ …" marker; distinct from FAIL_SUFFIX (a SEND fault). It still flows through the
+// port's wrapPersona, so a configured agent_signature_close layer still appends — the
+// marker no longer carries a signature itself.
+const noReplyMark = () => `⚠️ no reply (turn failed/empty)`;
 const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in some clients)
 // A mention that arrives while THIS conversation's train is still running gets its
 // OWN placeholder immediately (the operator's per-message ack), opened in the QUEUED
@@ -30,14 +33,14 @@ const THINKING = '⏳ Thinking…';   // NOT a lone emoji (renders oversized in 
 // and — via `ahead` — from every other queued one, so each resolves to its own id.
 const QUEUED = (ahead) => `⏳ Queued (${ahead} ahead)…`;
 
-export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, signatureOf = () => '∎', agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
+export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () => null, agentSignatureOpenOf = () => '', agentSignatureCloseOf = () => '', defaultKey = 'e' } = {}) {
   if (!bridge) throw new Error('createSender: bridge is required');
   const textOf = (v) => (typeof v === 'string' ? v : v?.text ?? '');
   return {
     open(chatId, { being = defaultKey, replyTo = null, queued = false, queuedAhead = 0, auto = false } = {}) {
       // mode:auto — E impersonates the operator, so the reply is PLAIN operator text:
-      // NO persona line (no body_emoji/label tag passed → the port stamps nothing), NO ∎
-      // terminator, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
+      // NO persona line (no body_emoji/label tag passed → the port stamps nothing), no
+      // end-marker, and NO thinking scaffold — no "⏳ Thinking…" placeholder, no streamed
       // edits, no queued placeholder. It posts ONCE, complete, when the turn finishes, the
       // way a human types a single message. A withheld ('…' silence, surface:false) or
       // empty reply posts NOTHING — silence is a valid operator move.
@@ -48,17 +51,17 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           async finish(reply, { surface = true } = {}) {
             const t = textOf(reply);
             if (!surface || !t.trim()) return;          // withheld / empty → post nothing
-            await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no ∎
+            await bridge.send(chatId, t, { replyTo });   // plain text: no bodyEmoji/label, no end-marker
           },
           async fail() { /* a human doesn't post a typing/failure scaffold — stay silent */ },
         };
       }
       const bodyEmoji = bodyEmojiOf(being);
       const label = labelOf(being);
-      const endMark = signatureOf(being);          // the reply-train end-marker: this being's signature (agent → node → '∎')
       // The per-AGENT signature WRAP (operator 2026-07-12): agent_signature_open/close bracket the
       // stamped reply as the INNER layer (the bridge does the concentric wrap in beeper-port). Resolved
-      // per-being here (agent → node → ''), mirroring signatureOf; default empty → nothing added.
+      // per-being here (agent → node → ''); default empty → nothing added. agent_signature_close is the
+      // SOLE agent close now — the historical inline signature end-marker was removed 2026-07-12.
       const agentSigOpen = agentSignatureOpenOf(being);
       const agentSigClose = agentSignatureCloseOf(being);
       const tag = { bodyEmoji, label, replyTo, agentSigOpen, agentSigClose };   // the bridge enforces the persona stamp (emoji + label) + wraps the layers from these
@@ -77,7 +80,7 @@ export function createSender({ bridge, bodyEmojiOf = () => null, labelOf = () =>
           // Surfaced: deliver the reply, OR — when it came back empty — the no-reply
           // marker (a turn meant to reply that produced nothing is resolved VISIBLY,
           // not silently deleted / left stuck).
-          const body = t.trim() ? `${t} ${endMark}` : noReplyMark(endMark);
+          const body = t.trim() ? t : noReplyMark();
           if (stream) {
             await stream.finish?.(body);
             if (!stream.delivered) await bridge.send(chatId, body, tag);   // §7 fallback

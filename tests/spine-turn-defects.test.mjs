@@ -122,7 +122,7 @@ describe('spine — DEFECT 1: an empty / failed / thrown turn resolves the place
 
     expect(bridge.streams).toHaveLength(1);
     expect(bridge.streams[0].deleted).toBe(false);                                  // NOT silently deleted
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty) ∎']);  // VISIBLE marker
+    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);   // VISIBLE marker (bare — no end-marker, 2026-07-12)
     expect(notes.some((n) => /no deliverable text \(empty\)/.test(n))).toBe(true);   // and it's LOUD in the log
   });
 
@@ -133,7 +133,7 @@ describe('spine — DEFECT 1: an empty / failed / thrown turn resolves the place
     buildSpine({ bridge, brain, sender: createSender({ bridge }), transcript });
     await bridge.emit(mention('@e hola', 'm1'));
 
-    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty) ∎']);   // NOT '!! claude exit… ∎'
+    expect(bridge.streams[0].finals).toEqual(['⚠️ no reply (turn failed/empty)']);   // NOT the raw '!! claude exit…' failure text
     const rec = transcript.entries.find((e) => e.reply);
     expect(rec.reply.text).toBe('!! claude exit 1: boom');                             // raw failure preserved
     expect(rec.reply.surfaced).toBe(false);                                            // recorded, not surfaced

@@ -135,7 +135,7 @@ export async function createBeeperBridgePort(opts = {}, { start = startBeeperBri
     //
     // B — the streaming REPLY (the reply train, operator 2026-06-30). Replies to
     // the question (replyTo). This layer ENFORCES the body_emoji prefix + threads
-    // the reply-to; the train markers (⏳ / ∎ / "… ❌ Sending failed.") are the
+    // the reply-to; the train markers (⏳ / "… ❌ Sending failed.") are the
     // sender's job, so update/finish only stamp + pass text through. opts:
     // { persona, bodyEmoji, replyTo }.
     startStream(chat, init, opts = {}) {
