@@ -228,12 +228,6 @@ export async function startBeeperBridge(opts = {}) {
   if (!token) { onLog('startBeeperBridge: NO TOKEN (set whatsapp.beeper_token / beeper_token / BEEPER_ACCESS_TOKEN) — bridge inert'); }
   onLog(`startBeeperBridge: ENTRY (${baseUrl})`);
   const bridgeStartMs = Date.now();
-  // 👂 PHASE 3c RECONNECT GRACE (operator 2026-07-11, Stage B): the wall-clock ms of the CURRENT WS
-  // connection's open. A voice note whose OWN timestamp is BEFORE this is a REPLAY Beeper re-delivered
-  // late (this node was offline when it arrived) — routed through incoming-media's grace window so a
-  // survivor's ALSO-replayed 👂 can cancel this node's echo (kills the reconnect double). Date.now()
-  // (NOT the injected scheduler) to match this file's other echo-age math (tooOldForEcho). null until open.
-  let lastWsOpenMs = null;
 
   // --- REST ---
   async function api(method, path, body) {
@@ -956,13 +950,20 @@ export async function startBeeperBridge(opts = {}) {
         // bound. No parseable timestamp -> fail-open (echo), same as the backlog gate.
         const tooOldForEcho = echoMaxAgeMs > 0 && tsMs != null && (Date.now() - tsMs) > echoMaxAgeMs;
         if (tooOldForEcho) onLog(`beeper: echo suppressed - note older than bound [${info.title}] (${new Date(tsMs).toISOString()}, bound ${echoMaxAgeMs}ms)`);
-        // 👂 PHASE 3c RECONNECT-REPLAY (operator 2026-07-11, Stage B): a note recorded BEFORE our current
-        // WS connection opened is a replay we are seeing late (offline during its arrival). Route it
-        // through incoming-media's grace window (graceMs below) — even at rank-1 it ARMS then posts only
-        // if unobserved, so the survivor's replayed 👂 (also in this replay stream) cancels it → no double
-        // 👂. A live note (tsMs >= lastWsOpenMs, or no parseable ts) is graceMs 0 — unchanged.
-        const reconnectReplay = tsMs != null && lastWsOpenMs != null && tsMs < lastWsOpenMs;
-        if (reconnectReplay) onLog(`beeper: reconnect-replay voice note [${info.title}] — echo via grace window`);
+        // 👂 PHASE 3c RECONNECT-REPLAY by ARRIVAL LAG (operator 2026-07-12, Stage B fix): the spine↔app
+        // WS is a LOOPBACK socket to the LOCAL Beeper Desktop — a wifi outage drops the app↔server sync
+        // but NOT this loopback, so ws.on('open') never re-fires and there is no reconnect EVENT to key
+        // off (the lastWsOpenMs approach failed live for exactly this reason). A replay is detectable only
+        // by its LAG: echoTimeoutMs is the exact boundary. A note delivered ≥ echoTimeoutMs after its own
+        // timestamp is one the survivor already echoed (its failover promotion would have fired by now), so
+        // we must grace it — route it through incoming-media's grace window (graceMs below) so the survivor's
+        // ALSO-replayed 👂 cancels this node's echo (kills the reconnect double). Below echoTimeoutMs the
+        // returning primary still posts BEFORE the survivor's promotion fires, so the survivor observes-and-
+        // cancels (single echo). A genuinely live note lags a few seconds (well under echoTimeoutMs), so it is
+        // never delayed. No parseable ts → graceMs 0 (unchanged). Date.now() (NOT the injected scheduler) to
+        // match this file's other echo-age math (tooOldForEcho).
+        const reconnectReplay = tsMs != null && (Date.now() - tsMs) > echoTimeoutMs;
+        if (reconnectReplay) onLog(`beeper: reconnect-replay voice note (arrival lag ≥ ${Math.round(echoTimeoutMs / 1000)}s) [${info.title}] — echo via grace window`);
         // 👂 ECHO PLAN (operator 2026-07-11, Phase 3b HRW ordered failover): this node's rank for the
         // note over the co-account peer set. msg.id is the note's SHARED Beeper message id — IDENTICAL
         // on both co-account nodes (one shared account → the same message → the same per-chat sequence
@@ -1070,21 +1071,12 @@ export async function startBeeperBridge(opts = {}) {
     //      possible; the sent-id set IS the signal. auto-mode already gates on it.
     const replyToId = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
     const replyToBot = !!(replyToId && wasSentByUs(chatID, replyToId));
-    // 👂 PROMOTION OBSERVE-AND-CANCEL (operator 2026-07-11, Phase 3b ordered failover): a co-account
-    // peer's 👂 arrives here as a NORMAL inbound (its account/process is not ours → not a self-echo;
-    // our OWN 👂 is suppressed by isEcho far above, so this never self-cancels). When it is a 👂
-    // (starts with the marker) REPLYING to a note we hold a pending promotion for, a higher rank has
-    // posted → stand down and cancel our timer (else we'd double the echo). Correlated by reply-to id:
-    // every 👂 is a quoted reply to its note (replyToMessageID = note.id), keyed by the SAME per-note
-    // key the promotion was armed under (`${chatID}:${noteId}`). A reply that is NOT a 👂 (a human
-    // replying to the note), or a 👂 to a different note, never cancels. NOT dedup — this only covers
-    // an offline/slow higher rank; the rank itself is a deterministic upfront pre-assignment.
-    if (replyToId && String(text ?? '').trimStart().startsWith(ECHO_MARKER)) {
-      // markEchoObserved RECORDS the observation persistently (so a standby that arms its promotion
-      // AFTER this 👂 still stands down — the arming-order double fix) AND cancels any already-armed
-      // promotion, logging only on an actual cancel (its true return), exactly as cancelPromotion did.
-      if (markEchoObserved(`${chatID}:${replyToId}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${replyToId} [${info.title}]`);
-    }
+    // 👂 PROMOTION OBSERVE-AND-CANCEL: a co-account peer's 👂 (a reply to a note we may hold a pending
+    // promotion for) now RECORDS the observation + cancels our timer in the WS `message` handler, the
+    // INSTANT it is delivered — BEFORE this serialized dispatch chain, which a slow voice transcribe backs
+    // up (see the EARLY 👂-observe block in connect()). It formerly ran here, but on a reconnect BURST the
+    // peer's 👂 queued behind the replayed voice notes, so a graced note's timer could fire before its
+    // echo was ever dispatched → double. Moved to delivery order; nothing else depends on it here.
     const from = {
       chatId: chatID,                       // opaque Beeper room id (for send-back)
       chatName: info.title,
@@ -1140,7 +1132,7 @@ export async function startBeeperBridge(opts = {}) {
   function connect() {
     if (_stopped || !token) return;
     ws = new WebSocket(wsUrl, { headers: { Authorization: `Bearer ${token}` } });
-    ws.on('open', () => { lastWsOpenMs = Date.now(); onLog('beeper: WS open'); });
+    ws.on('open', () => onLog('beeper: WS open'));
     ws.on('message', (buf) => {
       let ev; try { ev = JSON.parse(buf.toString()); } catch { return; }
       if (ev.type === 'ready') {
@@ -1159,6 +1151,19 @@ export async function startBeeperBridge(opts = {}) {
           // gave), so everything downstream (dispatch, reactions, edits, onMedia,
           // onIncoming's `from`) sees the SHORT id only.
           const msg = { ...entry, chatID: shortChatId(entry.chatID ?? ev.chatID) };
+          // EARLY 👂-observe (operator 2026-07-12): record a co-account peer's echo in the observed-set the
+          // INSTANT it is delivered — BEFORE the serialized dispatch chain, which a 5-15s voice transcribe backs
+          // up. On a reconnect re-sync BURST the peer's 👂 messages queue behind the replayed voice notes, so a
+          // graced note's timer could fire before its echo is ever dispatched → double. Recording here (delivery
+          // order, not dispatch order) makes it robust to any transcription backlog. Idempotent + id-space-local
+          // (markEchoObserved both records and cancels any already-armed promotion for the note). Matches
+          // against the htmlToMarkdown'd form (same as the dispatch `text` at line ~901) — not raw msg.text —
+          // since Beeper delivers HTML and may wrap/linkify a 👂 line so the raw string doesn't plainly start
+          // with the marker even though the rendered text does.
+          const _rid = msg.linkedMessageID ?? msg.replyToMessageID ?? msg.quotedMessageID ?? null;
+          if (_rid && String(htmlToMarkdown(msg.text) || '').trimStart().startsWith(ECHO_MARKER)) {
+            if (markEchoObserved(`${msg.chatID}:${_rid}`)) onLog(`beeper: 👂 promotion cancelled — observed echo for note ${_rid}`);
+          }
           // serialize: chain dispatch so a 20s transcribe doesn't overlap the next
           _processing = _processing.then(() => dispatchMessage(msg)).catch(e => onLog(`beeper: dispatch error — ${e?.message ?? e}`));
         }
