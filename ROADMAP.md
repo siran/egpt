@@ -5,6 +5,38 @@
 > buffer. Update this file as items land; delete sections that ship.
 > Companion: plans/2606291226-SPINE-REWRITE-PLAN.md (the architecture + phase plan, mostly done).
 
+## 0. Echo architecture — the ALIGNED model (2026-07-12)
+
+The 👂 echo decision is CORRECT-BEHAVIOR, not dedup. There is exactly ONE correct answer per
+note — "am I responsible for echoing this?" — and the system decides it, never posts-then-retracts.
+(Deduping = eager-post-then-suppress-a-mistake; we do not do that. "Dedup" was a mislabel — evicted.)
+
+- **Static pick** (steady state): rank-1 (the `echo_priority` primary) echoes — a coordination-free
+  upfront decision. LIVE.
+- **Aware-hold-and-cover** (failover + reconnect): a node that KNOWS it is uncertain — replaying a
+  reconnect burst (inferred per-note from arrival lag, since the loopback WS to the local Beeper app
+  gives no reconnect EVENT) OR possibly behind a down higher-rank — HOLDS, arms a timer, and covers
+  ONLY if no one else has. The correct response to a known-uncertain state, NOT dedup. LIVE (as the
+  arrival-lag grace window + the rank-staggered promotion).
+
+### THE one real open piece — coverage DETECTION (next build)
+The hold-and-cover needs a single input: "has anyone already covered this note?" Today that keys on
+the reply STARTING WITH 👂 — the fragile, position-dependent crutch that also blocks the signature
+`_open` slots. Re-engineer it MARKER-FREE:
+- **content similarity** — token-overlap %, scoped to replies-to-THIS-note (reply-to-id), ~60-70%
+  (generous: the two spines transcribe INDEPENDENTLY — REVE cli / DOLLY GPU — so text drifts,
+  e.g. Haaland/Hanan); PLUS
+- **a short-note egpt-SHAPE floor** — for short transcripts (wrappers/signatures dominate → the
+  score drifts down), if a reply-to-the-note already has egpt-echo shape, stand down anyway.
+Replaces the leading-👂 observe-cancel wholesale → UNLOCKS the `_open` slots. Persona self-suppression
+stays on `wasSentByUs` (id-based, separate concern).
+
+### Separate / later tracks
+- **egpt-mesh grid** — pairwise `egpt-mesh-A-B` relay channels + multi-hop (A→…→E) + node-to-node
+  conversations + info-carrying yaml tails, on the existing `src/mesh` relay.
+- **Mesh presence** (an OPTIMIZATION, not a replacement) — a node that KNOWS a peer is up can skip the
+  timer wait and decide instantly. Nice-to-have; correctness does not need it.
+
 ## 1. Where we are
 
 Branch `rewrite`, suite ~1403 tests / 0 fail. The node runs live as the
